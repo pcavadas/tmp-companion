@@ -40,7 +40,6 @@ import { MODELS } from "../../models/catalog";
 import { resolveDeviceId } from "../../models/blockArt";
 import {
   buildLevelJob,
-  DYNAMIC_SPREAD_LU,
   resolvedTargetLufs,
   sortRunItems,
   type RunItem,
@@ -110,13 +109,12 @@ function ampBlocks(blocks: LevelBlock[]): Candidate[] {
 
 // The result fields the per-item mappers read — the STRUCTURAL subset shared by
 // `LevelResult` (preset/scene) and `FootswitchLevelResult` (footswitch). The latter
-// has no `verify_by_ear`, so its by-ear cause is dynamic-only.
+// has no `verify_by_ear`, so its by-ear cause is `wet_floor` or none.
 interface LevelOutcomeFields {
   clamped: boolean;
   clamp_reason: string | null;
   verify_lufs: number | null;
   predicted_lufs: number;
-  dynamic_spread_lu: number | null;
   verify_by_ear?: boolean;
   /** Footswitch rows only — `LevelResult` (preset/scene) has no such field, so it stays
    *  optional and those lanes simply never report an unconverged row. */
@@ -149,21 +147,11 @@ const outcomeOf = (r: LevelOutcomeFields): RunItem["outcome"] =>
         : "done";
 const valueOf = (r: LevelOutcomeFields): number =>
   r.verify_lufs ?? r.predicted_lufs;
-// Resolve to a SINGLE by-ear cause. If a row is both dynamic AND rebalance-uncertain (rare —
-// rebalance is opt-in), "dynamic" wins INTENTIONALLY: it's the primary, more common ear-check
-// signal. `wet_floor` ranks between them: it's definitionally a CLAMP cause (why the row
-// stopped where it did), not a measurement-quality flag like `dynamic`, but it only ever
-// rides on a footswitch row, which never sets `verify_by_ear` (scene-only) — so the two
-// can't actually collide in practice. Each row resolves to one cause; the summary footnote
-// counts whichever each resolved to.
+// Resolve to a SINGLE by-ear cause. `wet_floor` only ever rides on a footswitch row, which
+// never sets `verify_by_ear` (scene-only), so the two can't collide in practice. There is no
+// dynamics-spread cause (#241): a wide-spread capture is not a measurement problem.
 const byEarCause = (r: LevelOutcomeFields): RunItem["verifyByEar"] =>
-  (r.dynamic_spread_lu ?? 0) >= DYNAMIC_SPREAD_LU
-    ? "dynamic"
-    : r.wet_floor
-      ? "wet_floor"
-      : r.verify_by_ear
-        ? "rebalance"
-        : undefined;
+  r.wet_floor ? "wet_floor" : r.verify_by_ear ? "rebalance" : undefined;
 
 /** Copy a batched command's run-end re-amp warning (stamped on every row it returned)
  *  onto every run item of the batch, so the Summary can show it. */
@@ -528,7 +516,6 @@ export async function runLeveling(
           entry.item.outcome = outcomeOf(result);
           entry.item.unverified = unverifiedOf(result);
           entry.item.value = valueOf(result);
-          entry.item.spreadLu = result.dynamic_spread_lu;
           entry.item.verifyByEar = causeOf(result);
           finishItem(entry.item, entry.idx);
         } else if (status === "error") {
@@ -617,7 +604,6 @@ export async function runLeveling(
             it.unverified = unverifiedOf(res);
             it.value = valueOf(res);
             it.ceilingLufs = res.constant_c;
-            it.spreadLu = res.dynamic_spread_lu;
             it.truePeakDbtp = res.true_peak_dbtp;
             it.verifyByEar = causeOf(res);
             it.baseBoost = res.base_boost;

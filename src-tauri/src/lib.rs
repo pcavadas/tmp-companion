@@ -1100,8 +1100,8 @@ mod fixture_gates {
     /// oracle fixture. Pins the per-defect param constants TABLE BELOW, which MIRRORS
     /// the fixture JSON — the fixture JSON itself is the actual HW-tuning surface for
     /// the eventual real-Doctor-path verification, and the two must be edited in
-    /// lockstep — and the "base fires nothing" precondition (every one of the 5
-    /// defect blocks bypassed at rest). `buried` is DELIBERATELY absent: it only fires
+    /// lockstep — and the "base fires nothing" precondition (every one of the 4
+    /// defect blocks enabled-neutral at rest). `buried` is DELIBERATELY absent: it only fires
     /// for `Family::Bass|BassVi` with a drive detected, both impossible on this
     /// guitar-topology fixture.
     #[test]
@@ -1111,8 +1111,9 @@ mod fixture_gates {
 
         // Base precondition: amp+cab live, defect blocks ENABLED-NEUTRAL via single-entry
         // ftsw rows — a dual-entry row gets the whole import gutted at commit (see
-        // notes/gotchas.md's "A dual-entry footswitch row…" entry). Only comp1 (SPIKY's
-        // on-off target) stays bypassed in base.
+        // notes/gotchas.md's "A dual-entry footswitch row…" entry). The fixture carries
+        // no bypassed-in-base block: the spiky rule (and its comp1 on-off target)
+        // was removed (#241).
         assert_eq!(base_node_bypass(&p, "ACD_HiwattDR103CanMod"), Some(false));
         assert_eq!(base_node_bypass(&p, "cab1"), Some(false));
         for node in ["eq10", "peq5", "hlp1", "plate1"] {
@@ -1122,7 +1123,11 @@ mod fixture_gates {
                 "{node}: defect blocks ride enabled-neutral in base (single-entry rows)"
             );
         }
-        assert_eq!(base_node_bypass(&p, "comp1"), Some(true));
+        assert_eq!(
+            base_node_bypass(&p, "comp1"),
+            None,
+            "comp1 (the removed spiky rule's target, #241) must not come back"
+        );
 
         // Neutrality: an enabled block must be transparent, or base fires verdicts.
         let node = |id: &str| -> serde_json::Value {
@@ -1244,10 +1249,7 @@ mod fixture_gates {
         // P0-informed, tune-later per the module's own report. ONE param entry per
         // switch row (the dual-entry import discard above); the filter anchors the
         // old multi-entry rows carried (RESONANT/BOXY frequency+Q) now live in the
-        // BASE peq5 params asserted above. SPIKY is on-off only — no verified
-        // CompressorSimpleSoftKnee controlId exists anywhere in this repo; inventing
-        // one risks the exact "wrong id silently no-ops" trap doctor.rs's own
-        // EQ10_BANDS comment warns about.
+        // BASE peq5 params asserted above.
         type DefectRow = (u32, &'static str, &'static str, &'static str, f64, f64);
         let table: &[DefectRow] = &[
             (1, "CONTROL", "eq10", "gain1khz", 0.0, 0.0),
@@ -1299,6 +1301,11 @@ mod fixture_gates {
         ];
 
         let ftsw = p["ftsw"].as_array().expect("ftsw");
+        assert_eq!(
+            ftsw.len(),
+            20,
+            "ftsw keeps all 20 rows (row indices are load-bearing)"
+        );
         for (idx, label, node, pid, va, vb) in table {
             let entries = ftsw[*idx as usize]
                 .as_array()
@@ -1337,14 +1344,12 @@ mod fixture_gates {
             }
         }
 
-        // SPIKY (14): the one on-off row — toggles comp1 into the chain.
-        let spiky = ftsw[14].as_array().expect("ftsw[14] (SPIKY)");
-        assert_eq!(spiky.len(), 1, "SPIKY: exactly one entry");
-        assert_eq!(spiky[0]["func"], "on-off");
+        // Row 14 was SPIKY's on-off row; the spiky rule was removed (#241), so the
+        // row stays EMPTY (every other row keeps its index).
         assert_eq!(
-            spiky[0]["nodes"][0]["nodeId"].as_str(),
-            Some("comp1"),
-            "SPIKY targets comp1"
+            ftsw[14].as_array().map(Vec::len),
+            Some(0),
+            "ftsw[14]: the removed SPIKY row stays empty"
         );
 
         // Scene rows (15/16) stay single-entry scene funcs.

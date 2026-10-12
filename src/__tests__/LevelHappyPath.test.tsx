@@ -59,7 +59,7 @@ function levelResultStub(over: Record<string, unknown> = {}) {
     predicted_lufs: TARGET_LUFS,
     clamped: false,
     clamp_reason: null,
-    dynamic_spread_lu: 1.1, // below DYNAMIC_SPREAD_LU → no "by ear"
+    dynamic_spread_lu: 1.1,
     verify_by_ear: null,
     saved: true,
     verify_lufs: TARGET_LUFS,

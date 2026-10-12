@@ -683,7 +683,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     // `stimulus_samples` all see the same 3 s stimulus.
                     read_stimulus_calibrated(path, cal).map(|s| {
                         let s = leveller::doctor_stim_slice(s);
-                        let spread = leveller::stimulus_spread(&s).momentary_lu;
+                        let spread = leveller::stimulus_momentary_spread(&s);
                         &*e.insert((s, spread))
                     })
                 }

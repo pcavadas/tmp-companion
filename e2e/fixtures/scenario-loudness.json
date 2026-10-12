@@ -50,7 +50,7 @@
       "scenes": [-16.0, -14.0, -11.0]
     },
     "407": {
-      "_comment": "E2E Doctor Oracle (gtrSeries, amp+cab + 5 bypassed defect blocks + 14 defect footswitches). Base C=-14 solves at every default. scenes[0] 'SCRATCH' is the unjudged filler (kept at the base C); scenes[1] 'SCENE JUMP' is authored well below base (-30, a 16 LU drop) so the scene-consistency loudness-jump check has a real jump to detect.",
+      "_comment": "E2E Doctor Oracle (gtrSeries, amp+cab + 4 defect blocks + 13 defect footswitches). Base C=-14 solves at every default. scenes[0] 'SCRATCH' is the unjudged filler (kept at the base C); scenes[1] 'SCENE JUMP' is authored well below base (-30, a 16 LU drop) so the scene-consistency loudness-jump check has a real jump to detect.",
       "base": -14.0,
       "scenes": [-14.0, -30.0]
     },

@@ -36,10 +36,10 @@ use super::stimulus::read_stimulus_48k;
 /// the no-positive rules prove too eager on real captures.
 const NO_POSITIVE_MARGIN: f64 = 3.0;
 
-/// The eight diagnosis rules, in a FIXED order so the report is byte-deterministic
+/// The seven diagnosis rules, in a FIXED order so the report is byte-deterministic
 /// regardless of the (hash-ordered) `--labels` map.
-const RULES: [&str; 8] = [
-    "muddy", "boomy", "harsh", "fizzy", "lost", "washed", "spiky", "buried",
+const RULES: [&str; 7] = [
+    "muddy", "boomy", "harsh", "fizzy", "lost", "washed", "buried",
 ];
 
 /// Min/median/p90/max of a sample set (`None` when empty). Pure.
@@ -143,7 +143,7 @@ fn stim_hash(samples: &[f32]) -> String {
 
 /// One rule's metric value(s), keyed by rule name: `(tilt-space, centered-space)`.
 /// The two differ only for the CONSENSUS band rules (muddy/boomy/harsh/lost/
-/// buried — see `doctor::Thresholds`'s doc); for fizzy/washed/spiky (no centered
+/// buried — see `doctor::Thresholds`'s doc); for fizzy/washed (no centered
 /// gate exists) both fields carry the same single-space value, so every rule's
 /// derivation can go through the one code path below.
 type RuleMetric = (&'static str, f64, f64);
@@ -155,7 +155,7 @@ type SlotMetrics = (u32, Option<f64>, Vec<RuleMetric>);
 /// each threshold (every rule is "metric > threshold"): the target-deviation
 /// tilt-split LOCAL ([`doctor::deviations`] / [`doctor::tilt_split`]) plus the
 /// R6 CONSENSUS [`doctor::centered_deviations`] value for the tonal rules, the
-/// self-difference for fizzy, and the time-domain metrics for washed/spiky.
+/// self-difference for fizzy, and the time-domain tail metric for washed.
 /// Also returns the broadband tilt slope (`tilt_split`'s discarded first value)
 /// so callers building a `tiltDbPerOct` report field don't re-run the same
 /// deviations+tilt_split pass.
@@ -184,7 +184,6 @@ fn rule_metrics(
             ("fizzy", fizzy, fizzy),
             ("lost", -locals[mids], -centered[mids]),
             ("washed", profile.tail_ratio_db, profile.tail_ratio_db),
-            ("spiky", profile.spread_lu, profile.spread_lu),
             ("buried", -locals[lows], -centered[lows]),
         ],
     )

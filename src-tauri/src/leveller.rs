@@ -570,37 +570,6 @@ pub(crate) fn floor_suspect(capture_momentary_lu: f64, stimulus_momentary_lu: f6
     stimulus_momentary_lu > STATIONARY_STIM_LU && capture_momentary_lu <= FLOOR_TRIP_LU
 }
 
-/// Slack over the stimulus spread before a capture counts as aberrant. A driven chain
-/// only ever COMPRESSES dynamics, so out-spread ≤ in-spread is the physical bound and
-/// this margin covers metering noise around it (the two spreads are measured on
-/// different buffers by different meter runs), not any real excess.
-pub(crate) const SPREAD_ABERRANT_MARGIN_LU: f64 = 0.3;
-/// A stimulus whose SHORT-TERM spread is at or below this disarms [`spread_aberrant`].
-/// Deliberately still the 3 s statistic: gates and expanders legitimately expand the
-/// momentary dynamics, so the "a chain cannot expand dynamics" check must not move to it.
-pub(crate) const ABERRANT_STIM_LU: f64 = 0.30;
-
-/// Is this capture MORE dynamic than the stimulus that drove it? Physically impossible
-/// for a genuinely driven amp state (a chain compresses, it does not expand), so it is
-/// the tell for a fire-and-forget preset/scene recall that only PARTIALLY landed — the
-/// capture then reads plausible but belongs to a sound we did not ask for. Both arguments
-/// are SHORT-TERM spreads (`lufs::Loudness::spread_lu`); a stimulus with no short-term
-/// dynamics of its own (or an unmeasurable one, which reports 0.0) can't discriminate, so
-/// it disarms the check rather than trip it on every capture.
-pub(crate) fn spread_aberrant(capture_spread_lu: f64, stimulus_spread_lu: f64) -> bool {
-    stimulus_spread_lu > ABERRANT_STIM_LU
-        && capture_spread_lu > stimulus_spread_lu + SPREAD_ABERRANT_MARGIN_LU
-}
-
-/// The stimulus's own dynamics on both statistics the guard reads.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct StimulusSpread {
-    /// Short-term max − integrated (LU) — arms [`spread_aberrant`].
-    pub short_term_lu: f64,
-    /// P95 − P10 of the momentary loudness (LU) — arms [`floor_suspect`].
-    pub momentary_lu: f64,
-}
-
 /// A floor-guarded measurement's outcome. `StillFlat` carries the retry's loudness for
 /// the caller's log; every caller turns it into [`FLOOR_READ_ERR`].
 pub(crate) enum GuardOutcome {
@@ -608,49 +577,28 @@ pub(crate) enum GuardOutcome {
     StillFlat(lufs::Loudness),
 }
 
-/// Run `measure`; if the capture is aberrant, wait `gap` and retry ONCE with the same
-/// settings (heals a transient inject failure or a half-landed recall). TWO tells, one
-/// retry budget between them:
-///
-/// * FLOOR ([`floor_suspect`]) — no momentary dynamics at all. A persistently flat
-///   capture is reported as [`GuardOutcome::StillFlat`], not swallowed.
-/// * SPREAD ([`spread_aberrant`]) — MORE dynamics out than in. Always resolves to
-///   `Live`: the reading is plausible (just possibly of the wrong sound), so erroring a
-///   row on this heuristic would be the worse failure.
+/// Run `measure`; if the capture looks like a floor read ([`floor_suspect`]: no
+/// momentary dynamics at all), wait `gap` and retry ONCE with the same settings (heals a
+/// transient inject failure). A capture still flat after the retry is reported as
+/// [`GuardOutcome::StillFlat`], not swallowed.
 pub(crate) fn measure_floor_guarded(
     mut measure: impl FnMut() -> Result<lufs::Loudness, String>,
-    stim: StimulusSpread,
+    stimulus_momentary_lu: f64,
     gap: Duration,
 ) -> Result<GuardOutcome, String> {
     let first = measure()?;
-    if floor_suspect(first.momentary_spread_lu, stim.momentary_lu) {
-        log::warn!(
-            "floor guard: capture momentary spread {:.2} LU ≤ {FLOOR_TRIP_LU} — suspected silent \
-             inject, retrying once",
-            first.momentary_spread_lu
-        );
-    } else if spread_aberrant(first.spread_lu(), stim.short_term_lu) {
-        log::warn!(
-            "floor guard: capture spread {:.2} LU exceeds the stimulus's {:.2} LU \
-             — a chain cannot expand dynamics, so the recall likely half-landed; retrying once",
-            first.spread_lu(),
-            stim.short_term_lu
-        );
-    } else {
+    if !floor_suspect(first.momentary_spread_lu, stimulus_momentary_lu) {
         return Ok(GuardOutcome::Live(first));
     }
+    log::warn!(
+        "floor guard: capture momentary spread {:.2} LU ≤ {FLOOR_TRIP_LU} — suspected silent \
+         inject, retrying once",
+        first.momentary_spread_lu
+    );
     settle_or_cancel(gap.as_millis() as u64)?;
     let second = measure()?;
-    if floor_suspect(second.momentary_spread_lu, stim.momentary_lu) {
+    if floor_suspect(second.momentary_spread_lu, stimulus_momentary_lu) {
         return Ok(GuardOutcome::StillFlat(second));
-    }
-    if spread_aberrant(second.spread_lu(), stim.short_term_lu) {
-        log::warn!(
-            "floor guard: capture spread {:.2} LU still exceeds the stimulus's \
-             {:.2} LU after the retry — reporting it, verify this sound by ear",
-            second.spread_lu(),
-            stim.short_term_lu
-        );
     }
     Ok(GuardOutcome::Live(second))
 }
@@ -663,7 +611,7 @@ pub(crate) fn require_live(
 ) -> Result<lufs::Loudness, String> {
     match measure_floor_guarded(
         measure,
-        stimulus_spread(stimulus),
+        stimulus_momentary_spread(stimulus),
         Duration::from_millis(FLOOR_RETRY_GAP_MS),
     )? {
         GuardOutcome::Live(l) => Ok(l),
@@ -679,21 +627,15 @@ pub(crate) fn require_live(
     }
 }
 
-/// The stimulus's own dynamics (arms the floor guard). A measurement failure DISARMS
-/// the guard (both spreads 0.0) — never turn a metering hiccup into false floor errors;
-/// floor reads then pass exactly as they did before the guard existed.
-pub(crate) fn stimulus_spread(stimulus: &[f32]) -> StimulusSpread {
+/// The stimulus's own momentary spread (arms the floor guard). A measurement failure
+/// DISARMS the guard (0.0) — never turn a metering hiccup into false floor errors; floor
+/// reads then pass exactly as they did before the guard existed.
+pub(crate) fn stimulus_momentary_spread(stimulus: &[f32]) -> f64 {
     match lufs::measure_mono(stimulus, RATE) {
-        Ok(l) => StimulusSpread {
-            short_term_lu: l.spread_lu(),
-            momentary_lu: l.momentary_spread_lu,
-        },
+        Ok(l) => l.momentary_spread_lu,
         Err(e) => {
             log::warn!("floor guard disarmed: stimulus spread unmeasurable ({e})");
-            StimulusSpread {
-                short_term_lu: 0.0,
-                momentary_lu: 0.0,
-            }
+            0.0
         }
     }
 }
@@ -8903,11 +8845,8 @@ mod floor_guard_tests {
     fn flat() -> lufs::Loudness {
         loud(-30.18, 0.01, 0.08)
     }
-    /// The shipped stimuli's shape: ~0.26 LU short-term, ~6 LU momentary.
-    const STIM: StimulusSpread = StimulusSpread {
-        short_term_lu: 0.4,
-        momentary_lu: 6.0,
-    };
+    /// The shipped stimuli's momentary spread (~6 LU).
+    const STIM: f64 = 6.0;
 
     fn shipped_stimuli() -> Vec<(String, Vec<f32>)> {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/samples");
@@ -8959,17 +8898,15 @@ mod floor_guard_tests {
     #[test]
     fn every_shipped_stimulus_arms_the_floor_guard() {
         for (name, stim) in shipped_stimuli() {
-            let full = stimulus_spread(&stim);
+            let full = stimulus_momentary_spread(&stim);
             assert!(
-                floor_suspect(0.0, full.momentary_lu),
-                "{name}: leveling stimulus momentary spread {:.2} LU does not arm the guard",
-                full.momentary_lu
+                floor_suspect(0.0, full),
+                "{name}: leveling stimulus momentary spread {full:.2} LU does not arm the guard"
             );
-            let doctor = stimulus_spread(&doctor_stim_slice(stim.clone()));
+            let doctor = stimulus_momentary_spread(&doctor_stim_slice(stim.clone()));
             assert!(
-                floor_suspect(0.0, doctor.momentary_lu),
-                "{name}: Doctor slice momentary spread {:.2} LU does not arm the guard",
-                doctor.momentary_lu
+                floor_suspect(0.0, doctor),
+                "{name}: Doctor slice momentary spread {doctor:.2} LU does not arm the guard"
             );
         }
     }
@@ -8982,7 +8919,7 @@ mod floor_guard_tests {
         let floor = at_lufs(&noise(6.8, 0.1, 0x1234_5678), -27.0);
         let f = lufs::measure_mono(&floor, RATE).unwrap();
         assert!(
-            floor_suspect(f.momentary_spread_lu, STIM.momentary_lu),
+            floor_suspect(f.momentary_spread_lu, STIM),
             "floor momentary spread {:.3} LU",
             f.momentary_spread_lu
         );
@@ -8991,11 +8928,11 @@ mod floor_guard_tests {
             "a floor read at -27 LUFS must not read as engaged"
         );
         for (name, stim) in shipped_stimuli() {
-            let s = stimulus_spread(&stim);
+            let s = stimulus_momentary_spread(&stim);
             let saturated: Vec<f32> = stim.iter().map(|x| (x * 100.0).tanh() * 0.5).collect();
             let l = lufs::measure_mono(&saturated, RATE).unwrap();
             assert!(
-                !floor_suspect(l.momentary_spread_lu, s.momentary_lu),
+                !floor_suspect(l.momentary_spread_lu, s),
                 "{name}: a saturated live capture ({:.2} LU) must not trip the guard",
                 l.momentary_spread_lu
             );
@@ -9095,10 +9032,7 @@ mod floor_guard_tests {
                 calls += 1;
                 Ok(flat())
             },
-            StimulusSpread {
-                short_term_lu: 0.2,
-                momentary_lu: 1.0,
-            },
+            1.0,
             Duration::ZERO,
         )
         .unwrap();
@@ -9106,27 +9040,16 @@ mod floor_guard_tests {
         assert_eq!(calls, 1);
     }
 
-    // A capture cannot be MORE dynamic than the stimulus that drove it (short-term spread —
-    // the "can't expand" premise is NOT applied to momentary dynamics, which gates and
-    // expanders legitimately widen).
+    // BUG→GATE (#241): a gate-like capture with WIDER momentary dynamics than the
+    // stimulus is a live read, measured once. The old "a chain cannot expand dynamics"
+    // retry is gone (gates, expanders, swells and tremolo all expand).
     #[test]
-    fn spread_aberrant_trips_only_above_the_stimulus_with_a_lively_stimulus() {
-        assert!(spread_aberrant(9.0, 6.0));
-        assert!(!spread_aberrant(6.0, 6.0));
-        assert!(!spread_aberrant(5.0, 6.0));
-        assert!(!spread_aberrant(6.0 + SPREAD_ABERRANT_MARGIN_LU, 6.0));
-        assert!(!spread_aberrant(9.0, 0.2)); // stationary stimulus disarms the trip
-    }
-
-    // A gate-like capture with WIDER momentary dynamics than the stimulus is not aberrant:
-    // the spread tell reads the short-term statistic only.
-    #[test]
-    fn momentary_expansion_alone_is_not_aberrant() {
+    fn momentary_expansion_is_a_live_read_with_no_retry() {
         let mut calls = 0;
         let out = measure_floor_guarded(
             || {
                 calls += 1;
-                Ok(loud(-24.0, 0.3, 12.0))
+                Ok(loud(-24.0, 0.9, 12.0))
             },
             STIM,
             Duration::ZERO,
@@ -9134,56 +9057,6 @@ mod floor_guard_tests {
         .unwrap();
         assert!(matches!(out, GuardOutcome::Live(_)));
         assert_eq!(calls, 1);
-    }
-
-    // The spread tell buys exactly ONE re-measure and then reports whatever it got.
-    #[test]
-    fn guarded_measure_retries_once_on_aberrant_spread() {
-        let aberrant = loud(-30.0, 0.9, 5.0);
-        let compressed = loud(-24.0, 0.2, 5.0);
-
-        let mut calls = 0;
-        let out = measure_floor_guarded(
-            || {
-                calls += 1;
-                Ok(if calls == 1 { aberrant } else { compressed })
-            },
-            STIM,
-            Duration::ZERO,
-        )
-        .unwrap();
-        match out {
-            GuardOutcome::Live(l) => assert!((l.integrated_lufs - -24.0).abs() < 1e-9),
-            GuardOutcome::StillFlat(_) => panic!("an aberrant capture must never escalate"),
-        }
-        assert_eq!(calls, 2);
-
-        let mut calls = 0;
-        let out = measure_floor_guarded(
-            || {
-                calls += 1;
-                Ok(aberrant)
-            },
-            STIM,
-            Duration::ZERO,
-        )
-        .unwrap();
-        assert!(matches!(out, GuardOutcome::Live(_)));
-        assert_eq!(calls, 2);
-
-        // The retry can land on a FLOOR read — still reported as flat.
-        let mut calls = 0;
-        let out = measure_floor_guarded(
-            || {
-                calls += 1;
-                Ok(if calls == 1 { aberrant } else { flat() })
-            },
-            STIM,
-            Duration::ZERO,
-        )
-        .unwrap();
-        assert!(matches!(out, GuardOutcome::StillFlat(_)));
-        assert_eq!(calls, 2);
     }
 
     // BUG→GATE (#175): `is_engaged` used the short-term spread (> 0.5 LU), which a healthy

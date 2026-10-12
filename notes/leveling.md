@@ -86,12 +86,12 @@ Two consequences of the force list, both unchanged since the pre-2026-08-19 shap
 
 Opt-in ("Even out parallel amps"), only on a path MERGE (two amps in parallel that re-merge). For each such scene (`level_scenes_rebalance`): mute one lane (`outputLevel = 0`) and measure the other to get each lane's solo ceiling `C`, set the two `outputLevel`s for **equal solo loudness** (quieter lane pinned at max, louder attenuated), then scale BOTH lanes' `outputLevel` by one joint factor `k` to hit the combined target. If a muted lane bleeds into the solo (small solo-above-floor margin, `probe --mute-floor`), the scene is flagged **verify by ear** — the combined target is still hit, only the lane balance is approximate. Non-mergeable scenes skip the isolation step and use the plain joint-k.
 
-## Verify-by-ear causes & the dynamic-spread flag
+## Verify-by-ear causes
 
-The Summary marks a row **verify by ear** for any of THREE causes (`RunItem.verifyByEar`, `"envelope" | "dynamic" | "rebalance"` in `leveling.ts`; the closing footnote spells out only the causes present):
+The Summary marks a row **verify by ear** for any of THREE causes (`RunItem.verifyByEar`, `"envelope" | "wet_floor" | "rebalance"` in `leveling.ts`; the closing footnote spells out only the causes present). The old **dynamic** cause (`dynamic_spread_lu` ≥ 6 LU) was removed (#241): it could not fire on the shipped stimuli, and the momentary statistic that would revive it trips on gates, swells and tremolo. `dynamic_spread_lu` stays on results as a diagnostic.
 
-- **dynamic** — `dynamic_spread_lu` (short-term-max − integrated, gain-invariant, reported by every full-capture measure) ≥ `DYNAMIC_SPREAD_LU` = 6 LU: loud/quiet swings make the integrated number an average, so equal-LUFS presets can still feel uneven (the relative-gate bias; the solver still uses integrated only).
 - **envelope** — the preset contains an envelope-follower effect (`effect_type: "Envelope Filter"`; expression-driven wahs excluded): its response tracks the stimulus's attack/decay envelope, so the synthetic clip can park it in a different regime than real playing — flagged regardless of how clean the numbers look (`ENVELOPE_BIDS` in `useLevelingFlow.ts`).
+- **wet_floor** — a footswitch's wet-mix clamp is pinned at the 25% floor, not headroom.
 - **rebalance** — parallel amps balanced by approximate isolation (mute-lane bleed; see the rebalance section).
 
 Separate from by-ear: a Base row whose PREDICTED true peak (`LevelResult.true_peak_dbtp`, extrapolated from the reference capture — an estimate, never a re-measurement) exceeds the clip threshold earns a "may clip" caveat in the Summary.

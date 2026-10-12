@@ -79,4 +79,4 @@ cargo run --bin probe                         # headless HW re-validation (devic
 
 `C` is each preset's **max reachable** loudness. A louder target clamps, and the ceiling is preset- and model-specific — there is no hard `−17 LUFS` rule (a maxed 65 Twin reached `−11 LUFS` comfortably; convention-adjusted +3 from the mono-era `−20`/`−14` — see `notes/leveling.md`'s metering-convention section). For relative leveling, pick a target below the quietest preset's measured max.
 
-Full model — scene/footswitch recipes, parallel-amp rebalance, Fletcher–Munson playback compensation, the dynamics-spread flag, and the outcome taxonomy: **[`notes/leveling.md`](notes/leveling.md)**.
+Full model — scene/footswitch recipes, parallel-amp rebalance, Fletcher–Munson playback compensation, the verify-by-ear causes, and the outcome taxonomy: **[`notes/leveling.md`](notes/leveling.md)**.

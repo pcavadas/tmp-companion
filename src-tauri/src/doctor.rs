@@ -1,7 +1,7 @@
 //! The Doctor diagnosis engine — PURE (no device I/O, no Tauri).
 //!
 //! Turns a re-amp capture's measurements (`SoundProfile`) into named tone
-//! diagnoses (muddy / boomy / harsh / fizzy / washed / lost / buried / spiky /
+//! diagnoses (muddy / boomy / harsh / fizzy / washed / lost / buried /
 //! dark / bright / thin) with concrete, graph-derived prescriptions (`Rx` →
 //! `DoctorOp`s), plus the scene-loudness consistency check. The device work
 //! (capture, apply) lives in `leveller::doctor_capture` and the `doctor_*`
@@ -103,13 +103,6 @@ pub struct Thresholds {
     pub wash_tail_db: f64,
     /// Lows deficit on a driven bass ⇒ buried clean tone (bass rule).
     pub buried_lows_db: f64,
-    /// Dynamics spread (short-term-max − integrated LU) on a clean chain ⇒
-    /// spiky. Baselined 2026-07-09 under the DOCTOR capture (then a 2.5 s tail;
-    /// the R5 sweep re-derives every threshold under the 3 s + 1.5 s window):
-    /// 0.12–0.81 LU across all 16 library sounds — the feared wet-preset tail
-    /// inflation did not materialize, and `spiky` fires on zero library
-    /// presets by design (see notes/doctor-calibration.md).
-    pub spiky_spread_lu: f64,
     /// Scene-to-base loudness jump ⇒ scene-consistency flag.
     pub scene_delta_db: f64,
     /// Broadband Theil–Sen tilt magnitude (dB/oct) past which the whole tone
@@ -147,8 +140,7 @@ pub struct Thresholds {
 /// = healthy-population max + the R4 repeatability margin (3σ ≈ 1.2 dB for the
 /// band rules; tilt σ ≈ 0.05 dB/oct). `wash_tail_db = −10.0` is ground-truth
 /// (a verified 90%-wet reverb measures ≈−8 dB; the dry population sits
-/// −21…−44) in the R4 aligned-tail space. `spiky_spread_lu` is reachable only
-/// on Capture stimuli — pending the Tier-2 DI sweep. The tilt-space gates are
+/// −21…−44) in the R4 aligned-tail space. The tilt-space gates are
 /// deliberately loose: they fire only in CONSENSUS with `*_centered_db` (see
 /// [`Thresholds`]'s doc); `buried_db` stays `INFINITY` (bass-only). The full
 /// derivation story lives in `notes/doctor-calibration.md`.
@@ -160,7 +152,6 @@ pub const GUITAR: Thresholds = Thresholds {
     lost_db: 3.5,
     wash_tail_db: -10.0,
     buried_lows_db: f64::INFINITY, // bass-only rule
-    spiky_spread_lu: 4.0,
     scene_delta_db: 3.0,
     tilt_db_per_oct: 3.0,
     thin_db: 4.0,
@@ -187,7 +178,6 @@ pub const BASS: Thresholds = Thresholds {
     lost_db: 4.0,
     wash_tail_db: -10.0,
     buried_lows_db: 3.0,
-    spiky_spread_lu: 4.0,
     scene_delta_db: 3.0,
     tilt_db_per_oct: 3.5,
     thin_db: f64::INFINITY, // guitar-only rule
@@ -569,7 +559,6 @@ pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
     SoundProfile {
         bands: db.iter().map(|d| 10f64.powf(d / 10.0)).collect(),
         integrated_lufs: -18.0,
-        // Steady by construction — the showcase never features the spiky card.
         spread_lu: 0.0,
         momentary_spread_lu: 0.0,
         tail_ratio_db: tail,
@@ -1175,7 +1164,7 @@ pub struct Diag {
     /// Coarse tint (High/Med).
     pub sev: Sev,
     /// Magnitude PAST threshold in the rule's natural unit (dB for the
-    /// band/fizzy/washed rules, LU for spiky) — `metric − threshold`, always ≥ 0
+    /// band/fizzy/washed rules) — `metric − threshold`, always ≥ 0
     /// for a fired card. Playback offsets shift the threshold, so they shift this.
     /// The frontend's `isPossible` (a near-threshold "possible" verdict, rendered
     /// muted) reads this directly — see `severity.ts::POSSIBLE_MAX_SEVERITY`. The
@@ -1405,9 +1394,6 @@ const OTHER_EQ_IDS: [&str; 4] = [
 ];
 const HIGH_LOW_PASS: &str = "ACD_HighLowPass";
 const COMPRESSOR: &str = "ACD_DynaComp"; // classic 2-knob pedal comp, schema-verified
-/// Soft-knee studio comp: transparent post-cab leveling (1.0% CPU vs the
-/// DynaComp's 4.8; DynaComp stays the front-of-chain pedal-squish pick).
-const COMPRESSOR_STUDIO: &str = "ACD_CompressorSimpleSoftKnee";
 
 /// EQ-10 band gain range (dB). ponytail: ±12 is the graphic-EQ standard; the
 /// band controlIds' fw schema is the source to re-derive from if a rev differs.
@@ -2036,47 +2022,6 @@ fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
     })
 }
 
-/// The post-cab compressor move (spiky). Comp-aware like `comp_front`, but
-/// the insert lands immediately AFTER the cab — studio-style channel
-/// compression taming output swings. No cab (and no comp) → None; the
-/// caller's advisory covers it.
-fn comp_after_cab(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
-    if let Some(a) = comp_present_advisory(
-        facts,
-        "Turn up the compression on the compressor you already have",
-        "Your chain already runs a compressor — raising its compression (or sustain) knob reins in the level swings without adding another block.",
-        "There's a compressor in the chain but it's switched off — turning it back on reins in the level swings.",
-    ) {
-        return Some(a);
-    }
-    let anchor = after_cab_anchor(nodes, facts)?;
-    // A reverb/delay earlier in the cab's own group would then also sit before
-    // the inserted comp — compressing its wet tail pumps, so bail to the
-    // advisory-only path (the caller's None branch) instead of anchoring a
-    // placement that contradicts the prescription's own detail text.
-    let time_effect_before_cab = nodes[..anchor.at - 1]
-        .iter()
-        .any(|n| n.group_id == anchor.group && !n.bypassed && is_time_effect(&n.model));
-    if time_effect_before_cab {
-        return None;
-    }
-    let cpu_note = insert_cpu_note(nodes, COMPRESSOR_STUDIO)?;
-    Some(Rx {
-        kind: RxKind::Chain,
-        title: "Add a studio compressor after the cab".to_string(),
-        detail: "Evens out the level after the cab, transparently — the right fix when the swings come from your playing rather than an effect doing its job."
-            .to_string(),
-        cpu_note,
-        ops: vec![DoctorOp::InsertNode {
-            group_id: anchor.group.clone(),
-            before_node_id: anchor.before,
-            fender_id: COMPRESSOR_STUDIO.to_string(),
-            params: Vec::new(),
-        }],
-        chain: Some(chain_preview(nodes, "after · +COMP", COMPRESSOR_STUDIO, anchor.at)),
-    })
-}
-
 /// Generate the prescriptions for one diagnosis against the ACTUAL preset
 /// graph. Prescriptions whose insert fails the firmware caps are dropped.
 pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode]) -> Vec<Rx> {
@@ -2226,16 +2171,6 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode]) -> Vec<Rx> {
                 "Ease the drive's gain and bring its level up",
                 "Less gain, more level keeps the grit but stops it swallowing the clean low end.",
             ));
-            rx
-        }
-        "spiky" => {
-            let mut rx = vec![advisory(
-                "Tame the swings at the source",
-                "If the swings come from a volume swell, tremolo, or a delay building up, easing that effect's depth or level is the honest fix — a compressor would flatten the effect.",
-            )];
-            if let Some(m) = comp_after_cab(nodes, &facts) {
-                rx.push(m);
-            }
             rx
         }
         // dark/bright/thin are broadband tilt/local findings, not a single
@@ -2612,21 +2547,6 @@ fn apply_thresholds(
             vec![],
             detail,
             "The reverb is drowning the note — it washes out instead of ringing clearly.",
-        );
-    }
-    // Spread is gain-invariant and preset-intrinsic (lufs::spread_lu), so it's
-    // judged absolutely, cohort-independent — like fizzy. Graph required: a
-    // drive pedal compresses naturally, so spiky is a CLEAN-chain finding.
-    let spiky_margin = profile.spread_lu - t.spiky_spread_lu;
-    if spiky_margin > 0.0 && facts.as_ref().map(|f| f.has_drive) == Some(false) {
-        push(
-            "spiky",
-            "Spiky".to_string(),
-            Sev::Med,
-            spiky_margin,
-            vec![],
-            format!("swings {:.1} LU between peaks and average", profile.spread_lu),
-            "The level jumps between loud peaks and a much quieter average — it pokes out of the mix one moment and disappears the next.",
         );
     }
     let (buried_margin, buried_fires) = consensus(
@@ -3290,7 +3210,7 @@ mod tests {
     /// `tilt_split`'s `locals[band]` reads back EXACTLY `local`, no approximation.
     /// `band` must be one of the 5 body indices ([`Family::semantic_bands`]'s
     /// `lows..=highs`). `spread_lu`/`tail`/`air_flatness` are inert defaults (no
-    /// spiky/washed/capture-gate effect) unless the caller overwrites them.
+    /// washed/capture-gate effect) unless the caller overwrites them.
     fn resid_profile(family: Family, band: usize, local: f64) -> SoundProfile {
         let mut bdb: Vec<f64> = target_curve(family).to_vec();
         bdb[band] += local;
@@ -4551,231 +4471,6 @@ mod tests {
     }
 
     #[test]
-    fn spiky_fires_on_clean_spread_only() {
-        let clean = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        let driven = chain(
-            &["ACD_TubeScreamer", "ACD_TweedDeluxe", "ACD_CabSimTMS"],
-            &[],
-        );
-
-        let mut hot = resid_profile(Family::Guitar, 0, 0.0);
-        hot.spread_lu = GUITAR.spiky_spread_lu + 1.0;
-        assert!(keys(&diagnose(&hot, Some(&clean), Instrument::Guitar)).contains(&"spiky"));
-        // A drive block in the chain means the amp is already compressing it —
-        // spiky is a clean-chain-only finding.
-        assert!(!keys(&diagnose(&hot, Some(&driven), Instrument::Guitar)).contains(&"spiky"));
-
-        let mut cold = resid_profile(Family::Guitar, 0, 0.0);
-        cold.spread_lu = GUITAR.spiky_spread_lu - 1.0;
-        assert!(!keys(&diagnose(&cold, Some(&clean), Instrument::Guitar)).contains(&"spiky"));
-
-        // Without a graph we can't assert "clean" — never fires.
-        assert!(!keys(&diagnose(&hot, None, Instrument::Guitar)).contains(&"spiky"));
-    }
-
-    #[test]
-    fn spiky_comp_inserts_right_after_cab() {
-        let p = chain(
-            &["ACD_TweedDeluxe", "ACD_TMSmallHall"],
-            &["ACD_TweedDeluxe"],
-        );
-        let rx = generate_rx("spiky", &p);
-        let chain_rx: Vec<&Rx> = rx.iter().filter(|r| r.kind == RxKind::Chain).collect();
-        assert_eq!(chain_rx.len(), 1);
-        assert_eq!(chain_rx[0].ops.len(), 1);
-        match &chain_rx[0].ops[0] {
-            DoctorOp::InsertNode {
-                group_id,
-                before_node_id,
-                fender_id,
-                ..
-            } => {
-                assert_eq!(group_id, "G1");
-                assert_eq!(before_node_id.as_deref(), Some("ACD_TMSmallHall"));
-                assert_eq!(fender_id, "ACD_CompressorSimpleSoftKnee");
-            }
-            other => panic!("expected InsertNode, got {other:?}"),
-        }
-        let blocks = &chain_rx[0].chain.as_ref().expect("chain preview")["blocks"];
-        assert_eq!(
-            blocks[1],
-            serde_json::json!({"model": "ACD_CompressorSimpleSoftKnee", "added": true})
-        );
-    }
-
-    #[test]
-    fn spiky_comp_appends_when_cab_ends_group() {
-        let assert_appends_in_g1 = |nodes: &[DoctorNode]| {
-            let rx = generate_rx("spiky", nodes);
-            let chain_rx = rx
-                .iter()
-                .find(|r| r.kind == RxKind::Chain)
-                .expect("chain rx");
-            match &chain_rx.ops[0] {
-                DoctorOp::InsertNode {
-                    group_id,
-                    before_node_id,
-                    ..
-                } => {
-                    assert_eq!(group_id, "G1");
-                    assert!(before_node_id.is_none());
-                }
-                other => panic!("expected InsertNode, got {other:?}"),
-            }
-        };
-
-        // Cab last in its group → append (before_node_id: None).
-        let mut p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        assert_appends_in_g1(&p);
-
-        // A node in a DIFFERENT group right after the cab must never anchor
-        // cross-group (the firmware silently drops a cross-group anchor).
-        p.push(DoctorNode {
-            group_id: "M1".into(),
-            node_id: "ACD_Beta57".into(),
-            model: "ACD_Beta57".into(),
-            bypassed: false,
-            cab_sim_id: None,
-            cab_sim2_enabled: None,
-            params: HashMap::new(),
-        });
-        assert_appends_in_g1(&p);
-    }
-
-    #[test]
-    fn spiky_comp_anchor_is_the_neighbours_node_id() {
-        // Two same-model reverb nodes after the cab: the device matches the
-        // anchor on node id (fw 1.8.58), so it names the cab's own neighbour.
-        let p = vec![
-            DoctorNode {
-                group_id: "G1".into(),
-                node_id: "amp1".into(),
-                model: "ACD_TweedDeluxe".into(),
-                bypassed: false,
-                cab_sim_id: Some("SomeCab".to_string()),
-                cab_sim2_enabled: None,
-                params: HashMap::new(),
-            },
-            DoctorNode {
-                group_id: "G1".into(),
-                node_id: "reverb-a".into(),
-                model: "ACD_TMSmallHall".into(),
-                bypassed: false,
-                cab_sim_id: None,
-                cab_sim2_enabled: None,
-                params: HashMap::new(),
-            },
-        ];
-        let rx = generate_rx("spiky", &p);
-        let chain_rx = rx
-            .iter()
-            .find(|r| r.kind == RxKind::Chain)
-            .expect("chain rx");
-        match &chain_rx.ops[0] {
-            DoctorOp::InsertNode { before_node_id, .. } => {
-                assert_eq!(before_node_id.as_deref(), Some("reverb-a"));
-            }
-            other => panic!("expected InsertNode, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn spiky_comp_anchors_on_the_post_cab_instance_of_a_duplicated_model() {
-        // A SAME-model (non-time-effect) pedal sits BOTH before and after the
-        // cab. A model anchor would name both; the post-cab instance's node id
-        // names only it, so the insert lands right after the cab. Deliberately
-        // NOT a time-effect model — that trips `comp_after_cab`'s separate
-        // time-effect-before-cab advisory bail (see the sibling test below),
-        // which would mask this scenario.
-        let p = vec![
-            DoctorNode {
-                group_id: "G1".into(),
-                node_id: "od-early".into(),
-                model: "ACD_TubeScreamer".into(),
-                bypassed: false,
-                cab_sim_id: None,
-                cab_sim2_enabled: None,
-                params: HashMap::new(),
-            },
-            DoctorNode {
-                group_id: "G1".into(),
-                node_id: "amp1".into(),
-                model: "ACD_TweedDeluxe".into(),
-                bypassed: false,
-                cab_sim_id: Some("SomeCab".to_string()),
-                cab_sim2_enabled: None,
-                params: HashMap::new(),
-            },
-            DoctorNode {
-                group_id: "G1".into(),
-                node_id: "od-late".into(),
-                model: "ACD_TubeScreamer".into(),
-                bypassed: false,
-                cab_sim_id: None,
-                cab_sim2_enabled: None,
-                params: HashMap::new(),
-            },
-        ];
-        let rx = generate_rx("spiky", &p);
-        let chain_rx = rx
-            .iter()
-            .find(|r| r.kind == RxKind::Chain)
-            .expect("chain rx");
-        match &chain_rx.ops[0] {
-            DoctorOp::InsertNode { before_node_id, .. } => {
-                assert_eq!(before_node_id.as_deref(), Some("od-late"));
-            }
-            other => panic!("expected InsertNode, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn spiky_comp_skips_insert_when_time_effect_precedes_cab() {
-        // [delay, cab]: compressing after the cab would still sit after the
-        // delay's wet tail — bail to advisory-only rather than pump it.
-        let p = chain(&["ACD_SpaceEcho", "ACD_CabSimTMS"], &[]);
-        let rx = generate_rx("spiky", &p);
-        assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
-        assert!(rx.iter().all(|r| r.kind == RxKind::Advisory));
-
-        // A BYPASSED time effect before the cab doesn't process signal, so the
-        // insert still fires normally.
-        let mut p = chain(&["ACD_SpaceEcho", "ACD_CabSimTMS"], &[]);
-        p[0].bypassed = true;
-        let rx = generate_rx("spiky", &p);
-        assert!(rx.iter().any(|r| r.kind == RxKind::Chain));
-    }
-
-    #[test]
-    fn spiky_is_comp_aware_and_advisory_without_cab() {
-        // Active comp in the chain → advisory about compression, no Chain rx.
-        // Every case also carries the leading "Tame the swings at the source"
-        // advisory, so assert Chain-rx absence rather than an exact count.
-        let p = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
-        let rx = generate_rx("spiky", &p);
-        assert!(rx
-            .iter()
-            .any(|r| r.kind == RxKind::Advisory && r.title.contains("compression")));
-        assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
-
-        // Bypassed comp → "switch it back on" advisory.
-        let mut p = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
-        p[0].bypassed = true;
-        let rx = generate_rx("spiky", &p);
-        assert!(rx
-            .iter()
-            .any(|r| r.title == "Switch your compressor back on"));
-        assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
-
-        // No comp, no cab → advisory-only, empty ops.
-        let p = chain(&["ACD_TweedDeluxe"], &[]);
-        let rx = generate_rx("spiky", &p);
-        assert!(!rx.is_empty());
-        assert!(rx.iter().all(|r| r.kind == RxKind::Advisory));
-        assert!(rx.iter().all(|r| r.ops.is_empty()));
-    }
-
-    #[test]
     fn freqout_is_not_an_eq() {
         // The substring trap: ACD_Freqout contains "eq" but is a feedback
         // pedal — exact-id matching must never treat it as an EQ carrier.
@@ -5838,7 +5533,7 @@ mod tests {
         // PSD-less-profile shape: curated fixtures, hand-built vectors) —
         // every OTHER diag must be byte-identical, proving the localized rules
         // are a strict addition that never perturbs the pre-existing
-        // band/tilt/washed/spiky/buried rules.
+        // band/tilt/washed/buried rules.
         let p = flagrant_ring(2_600.0);
         let mut peakless = p.clone();
         peakless.peaks = Vec::new();

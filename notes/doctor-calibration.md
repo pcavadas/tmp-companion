@@ -69,7 +69,9 @@ through a cab sim.
   backup JSON; engine unit tests cover rx generation.
 - Re-run: `cargo run --bin probe -- --doctor 0,1,2,3,4,5,6,7,11,12,13,14,15,16
 guitar-humbucker` and `--doctor 8,9 bass-singlecoil`.
-- `spiky` keys on `spread_lu > 4.0` (provisional, both instruments). The
+- **HISTORICAL — `spiky` was REMOVED (#241)** on the evidence below; the
+  `spreadLu` profile field stays for sweep analysis. `spiky` keyed on
+  `spread_lu > 4.0` (provisional, both instruments). The
   0.12–0.8 LU library range above was measured under the 0.8 s **leveling**
   capture; the Doctor capture's 2.5 s tail could in principle inflate spread on
   wet presets, so a fresh doctor-capture baseline was swept (2026-07-09, the
@@ -85,9 +87,9 @@ guitar-humbucker` and `--doctor 8,9 bass-singlecoil`.
   the real graph (Pro Control / the backup scan) before drawing threshold
   conclusions.
 - **Update (real-DI factory sweep, 2026-07):** on real Telecaster/ES-335 DI
-  captures the max observed `spread_lu` was ~1.88 vs the 4.0 gate, so `spiky` is
-  effectively **dead** (unreachable), not merely quiet — a retune should target the
-  real spread distribution, not chase the 4.0 gate. `washed`/tail was separately
+  captures the max observed `spread_lu` was ~1.88 vs the 4.0 gate, so `spiky` was
+  effectively **dead** (unreachable), not merely quiet — the reason it was removed
+  (#241). `washed`/tail was separately
   fragile AT THE TIME of this sweep: its onset detection failed even on the
   synthetic stimulus (a structural weakness, not DI-specific) — HISTORICAL; the
   pad edge + recalibrated onset logic (point 2 at the top of this file) fixed

@@ -84,8 +84,8 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             // Every verdict the engine can emit: the control's whole point is that
             // a clean insert shifts NOTHING.
             must_not_fire: &[
-                "muddy", "boomy", "harsh", "fizzy", "lost", "thin", "washed", "spiky",
-                "buried", "dark", "bright", "resonant", "boxy",
+                "muddy", "boomy", "harsh", "fizzy", "lost", "thin", "washed", "buried",
+                "dark", "bright", "resonant", "boxy",
             ],
         },
         DefectRecipe {
@@ -420,8 +420,8 @@ mod tests {
     /// `doctor.rs`'s `push`/`localized` calls) — pinned here so a recipe
     /// typo'ing a key is caught without HW.
     const KNOWN_VERDICT_KEYS: &[&str] = &[
-        "muddy", "boomy", "harsh", "fizzy", "lost", "thin", "washed", "spiky", "buried", "dark",
-        "bright", "resonant", "boxy",
+        "muddy", "boomy", "harsh", "fizzy", "lost", "thin", "washed", "buried", "dark", "bright",
+        "resonant", "boxy",
     ];
 
     fn fake_read(verdicts: Vec<&'static str>) -> DoctorRead {

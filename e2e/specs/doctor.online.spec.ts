@@ -18,8 +18,8 @@ import {
 // for Doctor instead of three (doctor.spec.ts's online half + doctor-oracle.online.spec.ts +
 // doctor-apply.online.spec.ts, which is separately demoted to on-demand — see its own header).
 //
-// (a) is doctor-oracle.online.spec.ts moved here UNCHANGED (including the 5 wire-seam-only
-//     rows) — the executable proof that all 14 of E2E Doctor Oracle's (407) spectral checks
+// (a) is doctor-oracle.online.spec.ts moved here UNCHANGED (including the 4 wire-seam-only
+//     rows) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
 //     actually diagnose on real audio, not just that the fixture carries the right shape
 //     (that structural half stays pinned offline by lib.rs's fixture_gates).
 // (b) is doctor.spec.ts's online UI run, moved here selecting all three fixtures exactly as
@@ -74,7 +74,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     | { kind: "contains"; diagKey: string } // must fire this kind (co-fire allowed)
     | { kind: "seam" }; // wire-seam-only: assert a real, unerrored capture only
 
-  // The 14 switches, in `ftsw` row order (== the 0-based `footswitch` value to send). One
+  // The 13 switches, in `ftsw` row order (== the 0-based `footswitch` value to send). One
   // entry per src-tauri/src/lib.rs's `fx_doctor_oracle_fires_nothing_in_base_and_carries_
   // its_defect_table` `table` row.
   const SWITCHES: { row: number; label: string; verdict: Verdict }[] = [
@@ -99,7 +99,6 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
       label: "WASHED",
       verdict: { kind: "contains", diagKey: "washed" }, // lost may co-fire
     },
-    { row: 14, label: "SPIKY", verdict: { kind: "seam" } },
   ];
 
   // (a) — moved verbatim from doctor-oracle.online.spec.ts (COVERAGE row 40).
@@ -111,8 +110,8 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
       "online-only: the oracle's verdicts need real audio",
     );
     // Budget arithmetic (added up rather than eyeballed, this file's own style):
-    //   15 sounds (1 base + 14 switches) x 18 s/capture (doctor.spec.ts's own
-    //   documented 12-18 s/capture online range, worst end) = 270 s.
+    //   14 sounds (1 base + 13 switches) x 18 s/capture (doctor.spec.ts's own
+    //   documented 12-18 s/capture online range, worst end) = 252 s.
     //   + up to 3 floor-suspect retries (FLOOR_RETRY_GAP_MS 5 s + one recapture
     //     18 s each, leveller.rs) = 69 s.
     //   + ONE live field-8 isolation read for the whole run (nodes/footswitches
@@ -121,7 +120,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     //   + a cold `ensureScenario` seed, worst case (its own 240_000 ms request
     //     timeout) = 240 s.
     //   + the run-end restore-active-preset reload = ~5 s.
-    //   Baseline ~= 270 + 69 + 5 + 240 + 5 = 589 s. >=2x headroom, PLUS the ceiling
+    //   Baseline ~= 252 + 69 + 5 + 240 + 5 = 571 s. >=2x headroom, PLUS the ceiling
     // must exceed worst-case ensureScenario (240 s) + the request budget below
     // (1080 s) = 1320 s, or a cold-seed run would die on the vaguer test timeout
     // before the request timeout could name the hang => 1_500_000 ms.
@@ -187,7 +186,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     // mirroring level.online.spec.ts's "no silent mid-batch drop" style.
     expect(
       preset.sounds.map((s) => s.key),
-      "all 15 requested sounds must come back, none dropped mid-run",
+      "all 14 requested sounds must come back, none dropped mid-run",
     ).toEqual(items.map((i) => i.key));
 
     // No sound may have failed its capture — a failure would make its diags

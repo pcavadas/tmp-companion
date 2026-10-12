@@ -40,8 +40,8 @@ export interface LevelBlock {
 // P3 additions (ADDITIONS, not replacements — 404/405 stay untouched structurally by P3):
 // Combined Level: the new-flow leveling fixture (FS-alone, scene-alone "BASE SCENE",
 // scene-that-enables-an-FS, parallel Deluxe Reverb + Marshall Plexi, a post-cab compressor).
-// Doctor Oracle: 14 mixed-shape footswitches, one per Doctor spectral check, all bypassed in
-// base. Preset24 Min / Hiwatt Min: the smallest presets still reproducing each incident's own
+// Doctor Oracle: 13 mixed-shape footswitches, one per Doctor spectral check, all
+// enabled-neutral in base. Preset24 Min / Hiwatt Min: the smallest presets still reproducing each incident's own
 // bug class. Friedman 3S (P4, slot 410): a 3-FULL-overlay-scene (Rhythm/Lead/Base Scene)
 // TubeScreamer->MarshallPlexi->CabSimTMS chain — the catalog-verified stand-in for a Friedman
 // HBE-class 3-scene preset (no such amp is cataloged; MarshallPlexi is the closest high-gain

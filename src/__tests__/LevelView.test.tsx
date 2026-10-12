@@ -601,8 +601,10 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(fired("level_scenes_apply_batched")).toBe(true); // FS scenes re-measured live
   });
 
-  it("large dynamics spread → summary flags the sound 'by ear'", async () => {
-    mockLevelingFixture({ spreadLu: 8.2 }); // ≥ DYNAMIC_SPREAD_LU
+  // BUG→GATE (#241): a wide dynamics spread is not a measurement problem, so it no longer
+  // flags the row "by ear".
+  it("large dynamics spread → no 'by ear' marker in the summary", async () => {
+    mockLevelingFixture({ spreadLu: 8.2 });
     renderView(true);
     const user = userEvent.setup();
     await selectBaseOnly(user);
@@ -613,23 +615,18 @@ describe("LevelView — full leveling wizard e2e", () => {
     await user.click(
       await screen.findByRole("button", { name: /start.*1 sound/i }),
     );
-    // The headline stays green (dynamic ≠ failure) but the row + reason-aware footnote flag it.
     expect(
       await screen.findByText("All 1 sound match now.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("by ear").length).toBeGreaterThan(0);
-    expect(
-      screen.getByText(
-        /worth a quick listen — loud\/quiet swings make the number an average\./i,
-      ),
-    ).toBeInTheDocument();
+    expect(screen.queryByText("by ear")).toBeNull();
+    expect(screen.queryByText(/loud\/quiet swings/i)).toBeNull();
   });
 
   it("rebalanced result → summary footnote names the rebalance reason", async () => {
-    // spread below threshold + verify_by_ear true → the byEarCause resolves to "rebalance",
-    // so the reason-aware footnote spells out the parallel-amp cause (not the dynamic one).
+    // verify_by_ear true → the byEarCause resolves to "rebalance", so the reason-aware
+    // footnote spells out the parallel-amp cause.
     mockLevelingFixture({ spreadLu: 1.1, verifyByEar: true });
     renderView(true);
     const user = userEvent.setup();
@@ -654,9 +651,8 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(screen.queryByText(/loud\/quiet swings/i)).toBeNull();
   });
 
-  it("envelope-filter preset → 'by ear' with the envelope reason, beating dynamic", async () => {
-    // High spread AND an envelope block: the envelope cause must WIN (it questions the
-    // measurement itself), so the footnote names it and the dynamic reason is absent.
+  it("envelope-filter preset → 'by ear' with the envelope reason", async () => {
+    // An envelope block questions the measurement itself, so the footnote names it.
     mockLevelingFixture({ spreadLu: 8.2, envelopeBlock: true });
     renderView(true);
     const user = userEvent.setup();
@@ -680,26 +676,6 @@ describe("LevelView — full leveling wizard e2e", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/loud\/quiet swings/i)).toBeNull();
-  });
-
-  it("small dynamics spread → no 'by ear' marker in the summary", async () => {
-    mockLevelingFixture({ spreadLu: 1.1 });
-    renderView(true);
-    const user = userEvent.setup();
-    await selectBaseOnly(user);
-    await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
-    );
-    await ackBackup(user);
-    await user.click(
-      await screen.findByRole("button", { name: /start.*1 sound/i }),
-    );
-    expect(
-      await screen.findByText("All 1 sound match now.", undefined, {
-        timeout: 3000,
-      }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("by ear")).toBeNull();
   });
 
   it("clamped result → 'Re-level clamped…' reopens setup in re-level mode", async () => {

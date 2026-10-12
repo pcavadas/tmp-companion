@@ -216,8 +216,6 @@ export function SummaryPage({
     byEarReasons.push(
       "an envelope filter responds to the test signal differently than to real playing",
     );
-  if (items.some((it) => byEarOf(it) === "dynamic"))
-    byEarReasons.push("loud/quiet swings make the number an average");
   if (items.some((it) => byEarOf(it) === "wet_floor"))
     byEarReasons.push("floored at 25% of its designed mix");
   if (items.some((it) => byEarOf(it) === "rebalance"))
