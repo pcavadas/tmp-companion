@@ -51,6 +51,9 @@ impl HidTransport for Recorder {
         self.note("eager", ms, body);
         self.inner.transact_eager(body, ms)
     }
+    fn template_mark(&self) -> std::sync::Arc<crate::hid::TemplateMark> {
+        crate::hid::HidTransport::template_mark(&self.inner)
+    }
 }
 
 const RIG: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[

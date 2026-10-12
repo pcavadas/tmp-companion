@@ -79,15 +79,20 @@
   let cursor = null;
   const fetchSince = async (after) => {
     const res = await fetch(`${BASE}/ui/events?after=${String(after)}`);
+    if (!res.ok) throw new Error(`/ui/events answered ${String(res.status)}`);
     return res.json();
   };
-  const ready = fetchSince(Number.MAX_SAFE_INTEGER)
-    .then((r) => {
-      cursor = r.head;
-    })
-    .catch(() => {
-      cursor = 0;
-    });
+  // Retry the head read rather than fall back to 0, which would replay pre-load entries.
+  const ready = (async () => {
+    for (;;) {
+      try {
+        cursor = (await fetchSince(Number.MAX_SAFE_INTEGER)).head;
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+      }
+    }
+  })();
 
   // One poll at a time, in order.
   let chain = Promise.resolve();

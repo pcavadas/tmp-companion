@@ -17,7 +17,8 @@
 //! pump), all on that same thread — so the receive buffer needs no locking.
 
 use crossbeam_channel::{bounded, Sender};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::thread::JoinHandle;
 
 use crate::proto;
@@ -172,6 +173,41 @@ impl Drop for Hid {
 /// `Session` stores a `Box<dyn HidTransport>`.
 ///
 /// [`Session`]: crate::session::Session
+/// Device-scoped mark that the unit swapped its working copy for the EMPTY template
+/// (`presetError` 6). It lives with the device, not a `Session`: a rejected load on one
+/// connection leaves the template in place for the next, so a save on a fresh `Session`
+/// must still see it. Set by any reply carrying the error; cleared only by a preset load
+/// that lands without one.
+#[derive(Default)]
+pub struct TemplateMark {
+    set: AtomicBool,
+    /// Bumped on every note, so a load can tell whether its own reply carried the error.
+    epoch: AtomicU64,
+}
+
+impl TemplateMark {
+    /// Record a substitution; `true` when the mark was clear before.
+    pub fn note(&self) -> bool {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        !self.set.swap(true, Ordering::SeqCst)
+    }
+    pub fn is_set(&self) -> bool {
+        self.set.load(Ordering::SeqCst)
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+    /// Clear the mark unless a substitution was noted after `epoch` was read.
+    pub fn clear_unless_noted_since(&self, epoch: u64) {
+        if self.epoch() == epoch {
+            self.set.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+/// The one real device's mark, shared by every `Session` on it.
+static DEVICE_TEMPLATE_MARK: LazyLock<Arc<TemplateMark>> = LazyLock::new(Arc::default);
+
 pub trait HidTransport: Send {
     /// Fire-and-forget send (e.g. heartbeat).
     fn send(&self, body: &[u8]) -> Result<(), String>;
@@ -194,6 +230,11 @@ pub trait HidTransport: Send {
     /// (e.g. fire-and-forget `loadPreset`/`loadScene`) — an early exit could otherwise
     /// drop a late second echo a caller expects.
     fn transact_eager(&self, body: &[u8], max_ms: u64) -> Result<Vec<Vec<u8>>, String>;
+    /// The device's [`TemplateMark`]. The default is the real device's; a fake device
+    /// returns its own so parallel tests never share one, and a wrapper delegates.
+    fn template_mark(&self) -> Arc<TemplateMark> {
+        DEVICE_TEMPLATE_MARK.clone()
+    }
 }
 
 impl HidTransport for Hid {

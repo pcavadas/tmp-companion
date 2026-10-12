@@ -1301,6 +1301,8 @@ fn with_ftsw(json: &str, ftsw: Option<&serde_json::Value>) -> String {
 #[derive(Clone, Default)]
 pub struct SimDevice {
     state: Arc<Mutex<SimState>>,
+    /// This fake's own empty-template mark, so parallel tests never share the real one.
+    template_mark: Arc<crate::hid::TemplateMark>,
 }
 
 impl SimDevice {
@@ -3573,6 +3575,9 @@ impl HidTransport for SimDevice {
         alive(&self.state.lock().expect("sim lock"))?;
         Ok(self.receive(body))
     }
+    fn template_mark(&self) -> Arc<crate::hid::TemplateMark> {
+        self.template_mark.clone()
+    }
 }
 
 // ─── reply encoding ──────────────────────────────────────────────────────────
@@ -5149,6 +5154,9 @@ mod oracle_and_census_tests {
         fn transact_eager(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
             let f = self.sim.transact_eager(body, ms)?;
             Ok(self.pass(body, f, ms))
+        }
+        fn template_mark(&self) -> std::sync::Arc<crate::hid::TemplateMark> {
+            crate::hid::HidTransport::template_mark(&self.sim)
         }
     }
 

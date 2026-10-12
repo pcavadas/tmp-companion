@@ -4078,6 +4078,9 @@ impl crate::hid::HidTransport for CancelAtSceneWrite {
         self.check();
         r
     }
+    fn template_mark(&self) -> std::sync::Arc<crate::hid::TemplateMark> {
+        crate::hid::HidTransport::template_mark(&self.sim)
+    }
 }
 
 /// ⟦F2⟧ CANCEL AFTER A LANDED TRADE RETURNS ITS OUTCOMES AND DISCLOSES THE TRADE — it does not

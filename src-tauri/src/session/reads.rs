@@ -12,7 +12,7 @@ use super::*;
 /// "longest wins" can pick the field-9 content over the fresh push — a caller harvesting the
 /// LOADED document must clear `raw` first and issue no field-8 read on that session
 /// ([`Session::rich_load_collect`] does the former);
-/// `best_json_payload_from_reports_can_prefer_a_stale_field9_reply` below proves the hazard
+/// `session/tests.rs::best_json_payload_from_reports_can_prefer_a_stale_field9_reply` proves the hazard
 /// exists at this layer.
 pub(super) fn best_json_payload_from_reports(reports: &[Vec<u8>]) -> Vec<u8> {
     json_payloads_from_reports(reports)

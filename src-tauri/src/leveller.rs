@@ -12298,6 +12298,9 @@ mod reamp_off_ladder_tests {
             self.log(body);
             self.sim.transact_eager(body, ms)
         }
+        fn template_mark(&self) -> std::sync::Arc<crate::hid::TemplateMark> {
+            crate::hid::HidTransport::template_mark(&self.sim)
+        }
     }
 
     /// The MixerMessage(5) fields `body` carries (empty when it is not a Mixer message).

@@ -69,22 +69,24 @@ pub(super) struct TrackedHid {
     pub(super) auto_reopen: bool,
     /// Reports the reopen's own pump window collected, handed out with the next batch.
     pub(super) reopened: std::cell::RefCell<Vec<Vec<u8>>>,
-    /// Set when any inbound report carried `presetError` 6: the unit swapped the working
-    /// copy for its EMPTY template under the preset's name (a rejected body at load, or
-    /// `loadScene(N≠8)` on a scene-less preset; static RE + device-confirmed). Cleared by
-    /// the next preset load; while set, [`Session::save_current_preset`] refuses.
-    pub(super) template_substituted: std::cell::Cell<bool>,
+    /// The device's empty-template mark, set when any inbound report carries
+    /// `presetError` 6: the unit swapped the working copy for its EMPTY template under the
+    /// preset's name (a rejected body at load, or `loadScene(N≠8)` on a scene-less preset;
+    /// static RE + device-confirmed). Device-scoped, so it outlives this session; cleared
+    /// by a preset load that lands without the error. While set,
+    /// [`Session::save_current_preset`] refuses.
+    pub(super) template_mark: std::sync::Arc<crate::hid::TemplateMark>,
 }
 
 impl TrackedHid {
     pub(super) fn new(inner: Box<dyn HidTransport>) -> Self {
         Self {
+            template_mark: inner.template_mark(),
             inner,
             last_write: std::cell::Cell::new(std::time::Instant::now()),
             nominal_ms: std::cell::Cell::new(0),
             auto_reopen: true,
             reopened: std::cell::RefCell::new(Vec::new()),
-            template_substituted: std::cell::Cell::new(false),
         }
     }
     /// Note a template substitution in any reassembled body of `reports`.
@@ -97,7 +99,7 @@ impl TrackedHid {
         }
     }
     pub(super) fn note_substituted(&self) {
-        if !self.template_substituted.replace(true) {
+        if self.template_mark.note() {
             log::warn!("presetError 6: the unit replaced the working copy with an empty preset");
         }
     }
@@ -187,6 +189,9 @@ impl HidTransport for TrackedHid {
         self.waited(ms);
         r.map(|reports| self.with_reopened(reports))
     }
+    fn template_mark(&self) -> std::sync::Arc<crate::hid::TemplateMark> {
+        self.template_mark.clone()
+    }
 }
 
 impl Session {
@@ -202,16 +207,23 @@ impl Session {
         self.hid.transact_eager(body, ms)
     }
 
-    /// Whether the unit answered `presetError` 6 since the last preset load: the working
-    /// copy is its EMPTY template under this preset's name, and a save would persist it.
+    /// Whether the unit answered `presetError` 6 since the last preset load that landed,
+    /// on this session or an earlier one: the working copy is its EMPTY template under the
+    /// preset's name, and a save would persist it.
     pub fn template_substituted(&self) -> bool {
-        self.hid.template_substituted.get()
+        self.hid.template_mark.is_set()
     }
 
-    /// A preset load starts clean: a real reload restores the stored body, and a body the
-    /// unit rejects re-sets the flag from the load's own reply.
-    pub(super) fn clear_template_substituted(&self) {
-        self.hid.template_substituted.set(false);
+    /// Run a preset load: the mark clears only when `load` succeeds and its own reply
+    /// carried no `presetError` 6 (a real reload restores the stored body).
+    pub(super) fn landing_load<T>(
+        &mut self,
+        load: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let epoch = self.hid.template_mark.epoch();
+        let out = load(self)?;
+        self.hid.template_mark.clear_unless_noted_since(epoch);
+        Ok(out)
     }
 
     /// Whether the device may have dropped this client (see `TrackedHid::maybe_lapsed`).

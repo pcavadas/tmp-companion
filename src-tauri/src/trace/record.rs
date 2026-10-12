@@ -431,6 +431,9 @@ impl HidTransport for RecordingTransport {
             t.transact_eager(body, max_ms)
         })
     }
+    fn template_mark(&self) -> std::sync::Arc<crate::hid::TemplateMark> {
+        self.inner.template_mark()
+    }
 }
 
 impl Drop for RecordingTransport {

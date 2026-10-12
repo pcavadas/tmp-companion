@@ -43,10 +43,11 @@ impl Session {
     /// Song read reports `userPresetSlot=2` for the preset at list index 1, and a
     /// `load_preset(28)` loads list index 27 — i.e. device userSlot = list + 1.
     pub fn load_preset(&mut self, slot: u32) -> Result<(), String> {
-        self.clear_template_substituted();
         // Eager pump: the reports are discarded (fire-and-forget), so exit as
         // soon as the echo burst completes instead of burning the full window.
-        self.transact_eager(&proto::load_preset((slot + 1) as u64, 1), LOAD_ECHO_MS)?;
+        self.landing_load(|s| {
+            s.transact_eager(&proto::load_preset((slot + 1) as u64, 1), LOAD_ECHO_MS)
+        })?;
         Ok(())
     }
 
@@ -63,8 +64,9 @@ impl Session {
         preset_slot: u64,
         tab_enum: u64,
     ) -> Result<(), String> {
-        self.clear_template_substituted();
-        self.transact_eager(&proto::load_preset(preset_slot, tab_enum), LOAD_ECHO_MS)?;
+        self.landing_load(|s| {
+            s.transact_eager(&proto::load_preset(preset_slot, tab_enum), LOAD_ECHO_MS)
+        })?;
         Ok(())
     }
 
@@ -453,10 +455,13 @@ impl Session {
             if let Some(i) = self.loaded_slot() {
                 return Some(i);
             }
+            // An inconclusive name (a duplicate) keeps waiting: the echo may still land.
             if let (Some(name), Some(names)) =
                 (self.active_preset_name(), self.harvest_preset_list_strict())
             {
-                return unique_list_index(&names, &name);
+                if let Some(i) = unique_list_index(&names, &name) {
+                    return Some(i);
+                }
             }
             if waited >= MAX_WAIT_MS {
                 return None;

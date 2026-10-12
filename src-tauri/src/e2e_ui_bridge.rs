@@ -17,7 +17,9 @@
 //!
 //! Not captured: a Channel's end-of-stream (`{end: true}`) notification, which bypasses
 //! the interceptor (the page's Channel just stops receiving), and a Channel a command
-//! builds itself with `Channel::new` (none does today).
+//! builds itself with `Channel::new` (none does today). A Channel send with a RAW body
+//! is recorded as a JSON array of byte values, not reshaped for the page's Channel; every
+//! Channel the commands carry today sends JSON.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;

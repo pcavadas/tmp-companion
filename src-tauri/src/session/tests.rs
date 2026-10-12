@@ -1853,6 +1853,29 @@ fn a_rejected_load_blocks_the_save_until_a_load_lands() {
     assert!(!s.template_substituted());
 }
 
+/// The mark lives with the device, not the session: a fresh `Session` on the same unit
+/// still refuses the save, and only a load that lands clears it.
+#[test]
+fn the_template_guard_survives_a_new_session() {
+    let sim = crate::sim_device::SimDevice::new();
+    sim.arm(crate::sim_device::Injection::RejectNextLoad);
+    Session::from_transport(Box::new(sim.clone()))
+        .load_preset(3)
+        .expect("load");
+    let mut s = Session::from_transport(Box::new(sim.clone()));
+    assert!(
+        s.template_substituted(),
+        "the next session sees the template"
+    );
+    assert_eq!(
+        s.save_current_preset(3).expect_err("refused"),
+        super::preset::TEMPLATE_SAVE_REFUSED
+    );
+    assert_eq!(saved_events(&sim), 0);
+    s.load_preset(4).expect("load another");
+    assert!(!Session::from_transport(Box::new(sim.clone())).template_substituted());
+}
+
 /// The base sentinel (8) and an in-range scene leave the guard clear.
 #[test]
 fn a_valid_scene_recall_keeps_saves_open() {
