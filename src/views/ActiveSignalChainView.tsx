@@ -6,18 +6,14 @@ import { Button } from "../ui/primitives";
 import { nodeTileArt } from "../models/blockArt";
 import { isComboBid } from "../models/catalog";
 import { CPU_BUDGET, cpuStr, presetCpu } from "../models/cpu";
-import { expandDualCab } from "./stripExpand";
+import { toStripRoute } from "./stripExpand";
 import {
   SignalChainView,
   type StripBlock,
   type StripGraph,
-  type StripIndependentLane,
-  type StripInputLane,
-  type StripOutputLane,
-  type StripStage,
 } from "./SignalChainView";
 import { slotLabel } from "../lib/format";
-import type { ActiveGraph, GraphNode, Stage } from "../lib/types";
+import type { ActiveGraph, GraphNode } from "../lib/types";
 
 /** Inline live-scene tag rendered next to the hero name. `neutral` → the loader-free
  * syncing em-dash (no `›`, faint tone, "catching up" tooltip); otherwise a `› {text}`
@@ -86,61 +82,21 @@ function toStripBlock(n: GraphNode): StripBlock {
   };
 }
 
-function toStripStage(st: Stage): StripStage {
-  return st.kind === "split"
-    ? { kind: "split", a: st.a.map(toStripBlock), b: st.b.map(toStripBlock) }
-    : { kind: "series", blocks: st.blocks.map(toStripBlock) };
-}
-
 function toStripGraph(graph: ActiveGraph): StripGraph | null {
-  // Expand any dual-cab CabSim node in a series stage into two parallel cab tiles
+  // Dual-cab CabSim nodes in a series stage expand into two parallel cab tiles
   // (matches Pro Control); single-cab / non-series cabs stay one named tile.
-  const stages = expandDualCab(graph.stages.map(toStripStage));
-  const inputs = graph.inputs
-    ? {
-        a: {
-          type: graph.inputs.a.type,
-          blocks: graph.inputs.a.blocks.map(toStripBlock),
-        } satisfies StripInputLane,
-        b: {
-          type: graph.inputs.b.type,
-          blocks: graph.inputs.b.blocks.map(toStripBlock),
-        } satisfies StripInputLane,
-      }
-    : null;
-  const outputs = graph.outputs
-    ? {
-        a: {
-          type: graph.outputs.a.type,
-          blocks: graph.outputs.a.blocks.map(toStripBlock),
-        } satisfies StripOutputLane,
-        b: {
-          type: graph.outputs.b.type,
-          blocks: graph.outputs.b.blocks.map(toStripBlock),
-        } satisfies StripOutputLane,
-      }
-    : null;
-  const lanes = graph.lanes
-    ? graph.lanes.map((lane): StripIndependentLane => ({
-        input: lane.input,
-        output: lane.output,
-        blocks: lane.blocks.map(toStripBlock),
-      }))
-    : null;
+  const route = toStripRoute(graph, toStripBlock);
   const hasRoute =
-    stages.length > 0 ||
-    inputs != null ||
-    outputs != null ||
-    (lanes != null && lanes.length > 0);
+    route.stages.length > 0 ||
+    route.inputs != null ||
+    route.outputs != null ||
+    route.lanes != null;
   return hasRoute
     ? {
         template: graph.template,
         inputType: graph.input_type ?? undefined,
         outputType: graph.output_type ?? undefined,
-        inputs,
-        outputs,
-        lanes,
-        stages,
+        ...route,
       }
     : null;
 }
@@ -205,7 +161,7 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
   // Map the device's ordered stages once per graph change. Memoizing the whole
   // StripGraph object (not just the inner array) keeps the prop referentially
   // stable, so the memoized SignalChainView skips re-render on unrelated ticks.
-  // (`toStripStage` is a module-level pure fn — safe to omit from deps.)
+  // (`toStripGraph` is a module-level pure fn — safe to omit from deps.)
   const mappedGraph = useMemo<StripGraph | null>(
     () => (graph ? toStripGraph(graph) : null),
     [graph],

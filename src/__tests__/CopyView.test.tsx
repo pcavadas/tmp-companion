@@ -7,6 +7,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { CopyView } from "../views/copy";
 import {
+  activeFromEditGraph,
   applyEditOp,
   cpuOfGraph,
   diffToOps,
@@ -15,6 +16,7 @@ import {
   isEdited,
   originBlocks,
   removeEditBlock,
+  retargetHistory,
   type EditBlock,
   type PresetEdit,
 } from "../views/copy/copyModel";
@@ -248,6 +250,86 @@ describe("copyModel — edits → device ops", () => {
       nodes: [node("G1", "x", "ACD_Comp"), node("G1", "y", "ACD_Comp")],
     };
     expect(originBlocks(dupGraph).map((o) => o.model)).toEqual(["ACD_Comp"]);
+  });
+});
+
+describe("copyModel — retargetHistory (#292)", () => {
+  const g0 = seriesGraph();
+  const g1 = { ...seriesGraph(), slot: 1 };
+  const graphs = new Map<number, ActiveGraph>([
+    [0, g0],
+    [1, g1],
+  ]);
+  const graphFor = (s: number): ActiveGraph | null => graphs.get(s) ?? null;
+  const replaceTwin = (e: PresetEdit): PresetEdit =>
+    applyEditOp(e, firstSeries(e)[1].uid, "replace", "ACD_DeluxeReverb65");
+
+  // Two edit steps: step 1 edits slot 0, step 2 edits slot 1.
+  function twoSlotHistory() {
+    const h = retargetHistory(null, [0, 1], graphFor);
+    const s0 = h.stack[0];
+    const e0 = s0[0];
+    const e1 = s0[1];
+    if (!e0 || !e1) throw new Error("missing slot");
+    const s1 = { ...s0, 0: replaceTwin(e0) };
+    const s2 = { ...s1, 1: replaceTwin(e1) };
+    return { ...h, stack: [s0, s1, s2], idx: 2 };
+  }
+
+  it("keeps every staged edit and the pointer when the selection is unchanged", () => {
+    const h = twoSlotHistory();
+    const r = retargetHistory(h, [0, 1], graphFor);
+    expect(r.stack).toHaveLength(3);
+    expect(r.idx).toBe(2);
+    expect(r.stack[2][0]).toBe(h.stack[2][0]);
+    expect(r.stack[2][1]).toBe(h.stack[2][1]);
+  });
+
+  it("drops a deselected slot and collapses the steps that only touched it", () => {
+    const h = twoSlotHistory();
+    const r = retargetHistory(h, [0], graphFor);
+    expect(r.stack).toHaveLength(2); // the slot-1 step became a no-op
+    expect(r.idx).toBe(1);
+    expect(r.stack[1][1]).toBeUndefined();
+    expect(r.stack[1][0]).toBe(h.stack[2][0]);
+  });
+
+  it("re-initialises a reset slot, or one whose library graph changed", () => {
+    const h = twoSlotHistory();
+    const reset = retargetHistory(h, [0, 1], graphFor, new Set([1]));
+    const fresh1 = reset.stack[reset.idx][1];
+    expect(fresh1 && isEdited(fresh1)).toBe(false);
+    const kept0 = reset.stack[reset.idx][0];
+    expect(kept0 && isEdited(kept0)).toBe(true);
+
+    const rescanned = new Map(graphs).set(0, { ...g0 });
+    const r = retargetHistory(h, [0, 1], (s) => rescanned.get(s) ?? null);
+    const fresh0 = r.stack[r.idx][0];
+    expect(fresh0 && isEdited(fresh0)).toBe(false);
+  });
+});
+
+describe("copyModel — bypass state (#293)", () => {
+  it("carries bypass through the edit graph; replaced and inserted blocks are active", () => {
+    const g = seriesGraph();
+    const nodes = g.nodes.map((n) => ({ ...n, bypassed: true }));
+    const bypassed: ActiveGraph = {
+      ...g,
+      nodes,
+      stages: [{ kind: "series", blocks: nodes }],
+    };
+    let e = initEdit([0], () => bypassed)[0];
+    expect(firstSeries(e).map((b) => b.bypassed)).toEqual([true, true, true]);
+    e = applyEditOp(e, firstSeries(e)[1].uid, "replace", "ACD_Klon");
+    e = applyEditOp(e, firstSeries(e)[0].uid, "after", "ACD_Klon");
+    expect(
+      activeFromEditGraph(e.graph).nodes.map((n) => [n.model, n.bypassed]),
+    ).toEqual([
+      ["ACD_Comp", true],
+      ["ACD_Klon", false],
+      ["ACD_Klon", false],
+      ["ACD_SmallHall", true],
+    ]);
   });
 });
 

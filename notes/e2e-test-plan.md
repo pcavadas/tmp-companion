@@ -61,7 +61,7 @@ single rollback at the end.
 | -------------------- | -------------------- | ---------------------- | ------------------------------------------------- | ------------------------------------------------------------------- |
 | Connection lifecycle | C1–C7                | M-C1–M-C3              | unit (`connectError`, `DeviceStatus`, `firmware`) | mid-op disconnect; Pro-Control-grab red banner live                 |
 | Level + wizard       | L1–L14               | M-L1–M-L8              | e2e happy paths + many vitest                     | **cancel mid-run**, partial failure, clamp/offbranch live           |
-| Copy                 | P1–P10               | M-P1–M-P5              | e2e + vitest happy paths                          | save-abort, partial save failure, Back-discards-edits               |
+| Copy                 | P1–P10               | M-P1–M-P5              | e2e + vitest happy paths                          | physical unplug mid-save (partial failure + Back gated in Vitest)   |
 | Songs                | S1–S13               | M-S1–M-S4              | e2e CRUD + vitest                                 | **add-to-setlist + reorder e2e**, BPM-didn't-stick warn             |
 | Catalog              | T1–T7                | M-T1–M-T2              | model-wall + `CatalogView` interaction unit tests | scroll/DnD only (filters/sort/facets now in `CatalogView.test.tsx`) |
 | Settings             | E1–E10               | M-E1–M-E3              | vitest only                                       | **calibration flow live**, slider/drag, no e2e at all               |
@@ -188,18 +188,21 @@ device write is `copy_apply` on Save.
 - **P8 — Save gate** — "Save to the unit" disabled unless ≥1 edited target + nothing over budget +
   backup ack ticked.
 - **P9 — Save run** — SaveOverlay streams per-slot status (active spinner / queued / done "updated"
-  or "no change" / error); ProgressBar; Done medallion + Pro-Control restore note → resets to Step 1.
+  or "no change" / error); ProgressBar; Done medallion + Pro-Control restore note → resets to Step 1 when every target saved; a partial or total failure shows a warn medallion and returns to Step 2 with the unsaved edits (#291).
 - **P10 — Multi-preset save** — two targets, different edits each; both written; re-open shows edits
   carried via optimistic cache patch (no second 22 s scan; `read_library_via_backup` called once).
 
 ### Monkey/chaos
 
-- **M-P1 — Back discards staged edits.** Edit blocks in Step 2 → Back → "Place the blocks" again →
-  edits silently gone (fresh `initEdit`). Confirm this is the actual behavior and decide if it's a
-  bug (likely a UX trap worth a guard/warning).
-- **M-P2 — Save-abort / disconnect mid-save.** Pull device during a 2-preset save → partial results;
-  what does the optimistic cache do on partial failure? Done screen still reached on full failure
-  (catch sets `saveDone`). _Untested._
+- **M-P1 — Back keeps staged edits.** Edit blocks in Step 2 → Back → "Place the blocks" again →
+  the edits and their undo steps are still there for every target still selected; a newly picked
+  target starts fresh, a deselected one drops out (`retargetHistory`). Fixed for #292; gated by
+  `CopyStagedEdits.test.tsx`.
+- **M-P2 — Save-abort / disconnect mid-save.** Pull device during a 2-preset save → partial results.
+  The done screen derives all / partial / none from the per-preset results (no green success unless
+  every target saved); the cache is patched only for the presets that saved, including those the
+  channel reported before a rejection; Done keeps the unsaved presets' edits on Step 2 (#291,
+  `CopyStagedEdits.test.tsx`). The physical unplug is still untested.
 - **M-P3 — Partial save failure** — one of N presets returns `error` → row shows warn-tri, others
   "updated", only updated items patch the cache. _No test injects an error item._
 - **M-P4 — Double-click Save** — must fire `copy_apply` once.
@@ -324,11 +327,9 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
    only ever set `true`; once opened, the subcategory rows can't be hidden again. Minor, but a real
    one-way toggle. Confirmed via grep (`src/views/CatalogView.tsx`): `setFxOpen` is called exactly
    once, with `true` — the behavior described is unchanged.
-4. ⚠️ still open (2026-07-05): **Copy "Back" silently discards staged edits** (fresh `initEdit` on
-   re-entering Step 2) — a UX trap worth either a guard/confirm or a doc note. Confirmed via grep
-   (`src/views/copy/CopyView.tsx`): `onBack` only does `setStep(1)`, and `onContinue`/`enterStep2`
-   re-runs `initEdit(toSlots, graphForSlot)` on return to Step 2 — still discards the prior history
-   stack.
+4. ✅ resolved (2026-10-12, #292): **Copy "Back" no longer discards staged edits.** Re-entering
+   Step 2 re-targets the history (`retargetHistory` in `copyModel.ts`): targets still selected keep
+   their edits and undo steps, and only new targets start from their library graph.
 
 ---
 
@@ -336,13 +337,13 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 
 Mapping the scenarios above to the cheapest durable layer. "Have" = already covered.
 
-| Layer                                                                                   | Add these (highest value first)                                                                                                                                                                                                                                                                                                                               |
-| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Rust unit** (have: proto/session/leveller/lufs/monitor/library/variants)              | `bpm_warning` propagation path; a `copy_apply` partial-failure (one slot `error`) shaping the streamed items.                                                                                                                                                                                                                                                 |
-| **Vitest component** (have: most happy paths)                                           | **Cancel-mid-run RunBody → Summary "Not leveled" + levels-kept** (inject cancel); **partial-failure item** (`status:"error"`) in Level _and_ Copy streaming; **double-click guard** on Level/Copy/Songs primaries; BPM-warn Toast render; Copy "Back discards edits" assertion; Settings calibration phase machine (countdown→recording→abort, `abortedRef`). |
-| **Playwright offline** (have: copy/level/songs happy paths + `CatalogView` interaction) | **Add-song-to-setlist + reorder + remove** (current songs spec only makes an empty setlist); empty-library Copy/Level UX; backup-scan-failure rendering; tab-switch-during-scan. Settings spec (none exists); a Catalog Playwright spec is optional (the vitest one covers filters/sort/facets).                                                              |
-| **Playwright online** (have: all 3 specs GREEN online, attended)                        | The genuinely hardware-only ones: **Stop-mid-run leaves unit un-muted**; clamp/off-branch on a real hard target; cold-boot SetReport window; Pro-Control-grab red banner; ~22 s backup latency. Most overlap with the manual run order in §10.                                                                                                                |
-| **Manual / Claude-driven only** (cannot reasonably automate)                            | Real LUFS convergence accuracy; native-window chrome (Dock icon, focus, OS dialogs); `cliclick` left-display caveat; physical replug timing.                                                                                                                                                                                                                  |
+| Layer                                                                                   | Add these (highest value first)                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rust unit** (have: proto/session/leveller/lufs/monitor/library/variants)              | `bpm_warning` propagation path; a `copy_apply` partial-failure (one slot `error`) shaping the streamed items.                                                                                                                                                                                                                                                       |
+| **Vitest component** (have: most happy paths)                                           | **Cancel-mid-run RunBody → Summary "Not leveled" + levels-kept** (inject cancel); **partial-failure item** (`status:"error"`) in Level streaming (Copy: done, #291); **double-click guard** on Level/Copy/Songs primaries; BPM-warn Toast render; Copy Back keeps edits (done, #292); Settings calibration phase machine (countdown→recording→abort, `abortedRef`). |
+| **Playwright offline** (have: copy/level/songs happy paths + `CatalogView` interaction) | **Add-song-to-setlist + reorder + remove** (current songs spec only makes an empty setlist); empty-library Copy/Level UX; backup-scan-failure rendering; tab-switch-during-scan. Settings spec (none exists); a Catalog Playwright spec is optional (the vitest one covers filters/sort/facets).                                                                    |
+| **Playwright online** (have: all 3 specs GREEN online, attended)                        | The genuinely hardware-only ones: **Stop-mid-run leaves unit un-muted**; clamp/off-branch on a real hard target; cold-boot SetReport window; Pro-Control-grab red banner; ~22 s backup latency. Most overlap with the manual run order in §10.                                                                                                                      |
+| **Manual / Claude-driven only** (cannot reasonably automate)                            | Real LUFS convergence accuracy; native-window chrome (Dock icon, focus, OS dialogs); `cliclick` left-display caveat; physical replug timing.                                                                                                                                                                                                                        |
 
 ---
 

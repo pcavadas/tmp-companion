@@ -104,7 +104,10 @@ export function TargetEditCard({
           Tap a block to replace, remove, or add one next to it.
         </div>
       ) : (
+        // Keyed on the open block so tapping another tile remounts the editor: its
+        // local `mode` starts again at the documented default, Replace.
         <BlockEditor
+          key={openUid}
           block={openBlock}
           counts={counts}
           fromName={fromName}

@@ -16,9 +16,8 @@ import {
   SignalChainView,
   type StripBlock,
   type StripGraph,
-  type StripStage,
 } from "../SignalChainView";
-import { expandDualCab } from "../stripExpand";
+import { toStripRoute } from "../stripExpand";
 import { type EditBlock, type EditGraph } from "./copyModel";
 
 export interface CopyPathProps {
@@ -41,6 +40,7 @@ export function CopyPath({ graph, onTap, selectedUid }: CopyPathProps) {
       return {
         ...nodeTileArt(b.model, b.cabSimId, isComboBid(b.model)),
         model: b.model,
+        bypassed: b.bypassed,
         onClick: onTap
           ? () => {
               onTap(b.uid);
@@ -53,34 +53,10 @@ export function CopyPath({ graph, onTap, selectedUid }: CopyPathProps) {
         cabSim2Enabled: b.cabSim2Enabled,
       };
     };
-    const mkLane = <T extends string>(l: { type: T; blocks: EditBlock[] }) => ({
-      type: l.type,
-      blocks: l.blocks.map(mkTile),
-    });
-    const stages: StripStage[] = expandDualCab(
-      graph.stages.map((st) =>
-        st.kind === "split"
-          ? { kind: "split", a: st.a.map(mkTile), b: st.b.map(mkTile) }
-          : { kind: "series", blocks: st.blocks.map(mkTile) },
-      ),
-    );
     return {
       inputType: graph.inputType ?? undefined,
       outputType: graph.outputType ?? undefined,
-      inputs: graph.inputs
-        ? { a: mkLane(graph.inputs.a), b: mkLane(graph.inputs.b) }
-        : null,
-      outputs: graph.outputs
-        ? { a: mkLane(graph.outputs.a), b: mkLane(graph.outputs.b) }
-        : null,
-      lanes: graph.lanes
-        ? graph.lanes.map((l) => ({
-            input: l.input,
-            output: l.output,
-            blocks: l.blocks.map(mkTile),
-          }))
-        : null,
-      stages,
+      ...toStripRoute(graph, mkTile),
     };
   }, [graph, onTap, selectedUid]);
 

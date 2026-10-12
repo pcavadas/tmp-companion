@@ -36,6 +36,7 @@ function block(model: string, opts: Partial<EditBlock> = {}): EditBlock {
     nodeId: opts.nodeId ?? `n${String(uidSeq)}`,
     model,
     change: null,
+    bypassed: false,
     cabSim2Enabled: opts.cabSim2Enabled,
   };
 }

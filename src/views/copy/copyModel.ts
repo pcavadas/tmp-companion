@@ -49,6 +49,12 @@ export interface EditBlock {
   model: string;
   /** The edit that produced this tile, or null for an untouched original. */
   change: Change | null;
+  /** The device's bypass state. Carried so Copy's strips draw a bypassed block the
+   *  way the Level hero does, and so the optimistic cache patch after a save keeps
+   *  every untouched block's state. A replaced or inserted block is a new device
+   *  node built from the model id alone (no params ride the op), so it is drawn
+   *  active (`false`); the device read-back, when adopted, carries its real state. */
+  bypassed: boolean;
   /** Dual-cab CabSim params (display-only; carried so the Copy strip can name the
    *  cab + expand a dual-cab into two parallel tiles). NOT part of the edit/diff —
    *  `editBlockToNode` drops them. */
@@ -151,6 +157,7 @@ function toEditBlock(n: GraphNode): EditBlock {
     nodeId: n.node_id,
     model: n.model,
     change: null,
+    bypassed: n.bypassed,
     cabSimId: n.cab_sim_id,
     cabSimId2: n.cab_sim_id2,
     cabSim2Enabled: n.cab_sim2_enabled,
@@ -214,7 +221,7 @@ function editBlockToNode(b: EditBlock): GraphNode {
     group_id: b.group,
     node_id: b.nodeId ?? b.uid,
     model: b.model,
-    bypassed: false,
+    bypassed: b.bypassed,
     params: {}, // the edit model doesn't carry params; the optimistic cache doesn't need them
   };
 }
@@ -382,6 +389,64 @@ export function initEdit(
   return out;
 }
 
+/** The Copy step-2 undo/redo history: a snapshot stack of the whole staged edit plus a
+ *  pointer (the working copy is `stack[idx]`), and the library graph each slot's edit
+ *  was built from. */
+export interface EditHistory {
+  stack: EditMap[];
+  idx: number;
+  /** slot → the `ActiveGraph` its working copy was derived from (identity-compared:
+   *  a re-scan or a save's cache patch hands the slot a new object). */
+  bases: Map<number, ActiveGraph | null>;
+}
+
+/** Re-target a history onto the slots now selected, keeping every staged edit (and its
+ *  undo/redo steps) that is still valid. A slot keeps its edit when it was already in
+ *  the history, is not in `reset`, and its library graph is the very object the edit was
+ *  built from; any other slot gets a fresh working copy. Deselected slots drop out of
+ *  every snapshot, and the steps that only touched them collapse, so undo never lands on
+ *  a no-op step. With no prior history this is a fresh one-step history. */
+export function retargetHistory(
+  prev: EditHistory | null,
+  slots: number[],
+  graphForSlot: (slot: number) => ActiveGraph | null,
+  reset: ReadonlySet<number> = new Set(),
+): EditHistory {
+  const bases = new Map(slots.map((s) => [s, graphForSlot(s)] as const));
+  const keep = prev
+    ? slots.filter(
+        (s) =>
+          !reset.has(s) &&
+          prev.bases.has(s) &&
+          prev.bases.get(s) === bases.get(s),
+      )
+    : [];
+  const fresh = initEdit(
+    slots.filter((s) => !keep.includes(s)),
+    graphForSlot,
+  );
+  if (!prev) return { stack: [fresh], idx: 0, bases };
+
+  const project = (snap: EditMap): EditMap => {
+    const out: EditMap = { ...fresh };
+    for (const s of keep) out[s] = snap[s];
+    return out;
+  };
+  // A step is a no-op once projected when every kept slot's edit is the same object as
+  // in the step before (a commit copies the map and replaces only the slot it edited).
+  const same = (a: EditMap, b: EditMap): boolean =>
+    keep.every((s) => a[s] === b[s]);
+  const stack: EditMap[] = [];
+  let idx = 0;
+  prev.stack.forEach((snap, i) => {
+    const p = project(snap);
+    const last = stack.length > 0 ? stack[stack.length - 1] : null;
+    if (!last || !same(last, p)) stack.push(p);
+    if (i === prev.idx) idx = stack.length - 1;
+  });
+  return { stack, idx, bases };
+}
+
 // ── derived helpers ──────────────────────────────────────────────────────────
 
 /** Has this preset been edited? True iff it would produce device ops — a replace
@@ -452,7 +517,7 @@ export function applyEditOp(
     // settings onto the target. An inserted block (no nodeId) stays "added" since it's
     // net-new; an original block becomes "replaced".
     const change: Change = anchor.nodeId == null ? "added" : "replaced";
-    arr[i] = { ...anchor, model, change };
+    arr[i] = { ...anchor, model, change, bypassed: false };
   } else {
     const inserted: EditBlock = {
       uid: newUid(),
@@ -460,6 +525,7 @@ export function applyEditOp(
       nodeId: null,
       model,
       change: "added",
+      bypassed: false,
     };
     arr.splice(mode === "before" ? i : i + 1, 0, inserted);
   }

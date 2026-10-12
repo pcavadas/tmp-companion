@@ -60,7 +60,15 @@ const copyGraph = (model: string, cabSimId: string): EditGraph => ({
     {
       kind: "series",
       blocks: [
-        { uid: "u1", group: "G1", nodeId: "n1", model, change: null, cabSimId },
+        {
+          uid: "u1",
+          group: "G1",
+          nodeId: "n1",
+          model,
+          change: null,
+          bypassed: false,
+          cabSimId,
+        },
       ],
     },
   ],

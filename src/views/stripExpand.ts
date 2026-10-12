@@ -1,8 +1,8 @@
 // src/views/stripExpand.ts — decompose a dual-cab CabSim block into two parallel
 // cab tiles, so the signal-chain strip mirrors the unit (Pro Control draws a
-// dual-cab as two cabs in parallel). Shared by the Level hero
-// (`ActiveSignalChainView.toStripGraph`) and the Copy strip (`CopyPath`) so the two
-// stay identical by construction.
+// dual-cab as two cabs in parallel), and map a routed graph onto the strip engine's
+// `StripGraph` (`toStripGraph`). Shared by the Level hero (`ActiveSignalChainView`)
+// and the Copy strip (`CopyPath`) so the two stay identical by construction.
 //
 // A dual-cab is ONE device node (one `ACD_CabSimTMS`, one nodeId) carrying both
 // cabinets in its params (`cabSimId` + `cabSimId2`, `cabSim2Enabled`). We split it
@@ -11,7 +11,73 @@
 // so the Copy strip still selects/edits the single CabSim container.
 
 import { blockArtTile } from "../models/blockArt";
-import type { StripBlock, StripStage } from "./SignalChainView";
+import type {
+  SinkType,
+  SourceType,
+  StripBlock,
+  StripGraph,
+  StripStage,
+} from "./SignalChainView";
+
+/** The routing both the device's `ActiveGraph` and Copy's `EditGraph` share, generic
+ *  over the block type: dual `inputs`/`outputs`, independent `lanes`, and ordered
+ *  series/split `stages`. */
+export interface RoutedGraph<B> {
+  inputs?: {
+    a: { type: SourceType; blocks: B[] };
+    b: { type: SourceType; blocks: B[] };
+  } | null;
+  outputs?: {
+    a: { type: Extract<SinkType, "out1" | "out2">; blocks: B[] };
+    b: { type: Extract<SinkType, "out1" | "out2">; blocks: B[] };
+  } | null;
+  lanes?:
+    | {
+        input: SourceType;
+        output: Extract<SinkType, "out1" | "out2">;
+        blocks: B[];
+      }[]
+    | null;
+  stages: (
+    { kind: "series"; blocks: B[] } | { kind: "split"; a: B[]; b: B[] }
+  )[];
+}
+
+/** The routing part of a `StripGraph`: every block mapped through `mkTile`, and every
+ *  dual-cab in a series stage expanded (`expandDualCab`). The caller adds the header
+ *  fields (`template` / `inputType` / `outputType`). An empty `lanes` array maps to null. */
+export function toStripRoute<B>(
+  graph: RoutedGraph<B>,
+  mkTile: (b: B) => StripBlock,
+): Required<Pick<StripGraph, "inputs" | "outputs" | "lanes" | "stages">> {
+  const lane = <T extends string>(l: { type: T; blocks: B[] }) => ({
+    type: l.type,
+    blocks: l.blocks.map(mkTile),
+  });
+  return {
+    inputs: graph.inputs
+      ? { a: lane(graph.inputs.a), b: lane(graph.inputs.b) }
+      : null,
+    outputs: graph.outputs
+      ? { a: lane(graph.outputs.a), b: lane(graph.outputs.b) }
+      : null,
+    lanes:
+      graph.lanes && graph.lanes.length > 0
+        ? graph.lanes.map((l) => ({
+            input: l.input,
+            output: l.output,
+            blocks: l.blocks.map(mkTile),
+          }))
+        : null,
+    stages: expandDualCab(
+      graph.stages.map((st): StripStage =>
+        st.kind === "split"
+          ? { kind: "split", a: st.a.map(mkTile), b: st.b.map(mkTile) }
+          : { kind: "series", blocks: st.blocks.map(mkTile) },
+      ),
+    ),
+  };
+}
 
 /** Expand every dual-cab node inside a SERIES stage into
  *  `series(before) → split([cab1],[cab2]) → series(after)`, dropping empty

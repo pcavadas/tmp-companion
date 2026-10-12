@@ -25,9 +25,10 @@ import {
   reconcileReadBack,
   applyEditOp,
   diffToOps,
-  initEdit,
   isEdited,
   removeEditBlock,
+  retargetHistory,
+  type EditHistory,
   type EditMap,
 } from "./copyModel";
 import {
@@ -66,10 +67,9 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
   const [toSet, setToSet] = useState<Set<number>>(new Set());
   // Offline undo/redo: a snapshot stack of the whole staged edit + a pointer. The
   // working copy is `edit = hist.stack[hist.idx]`. Local to the editing session — it
-  // never touches the unit (the only device write is Save).
-  const [hist, setHist] = useState<{ stack: EditMap[]; idx: number } | null>(
-    null,
-  );
+  // never touches the unit (the only device write is Save). It survives Back → Place
+  // the blocks and a failed save; only a fully saved run clears it.
+  const [hist, setHist] = useState<EditHistory | null>(null);
   const [open, setOpen] = useState<{ slot: number; uid: string } | null>(null);
   const [backedUp, setBackedUp] = useState(false);
 
@@ -104,8 +104,10 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
     [presets, toSet],
   );
 
+  // Re-entering Step 2 keeps the staged edits (and their undo steps) of every target
+  // still selected; only a newly picked target starts from its library graph.
   const enterStep2 = (): void => {
-    setHist({ stack: [initEdit(toSlots, graphForSlot)], idx: 0 });
+    setHist((h) => retargetHistory(h, toSlots, graphForSlot));
     setOpen(null);
     setStep(2);
   };
@@ -116,7 +118,7 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
       if (!h) return h;
       const next = updater(h.stack[h.idx]);
       const stack = [...h.stack.slice(0, h.idx + 1), next];
-      return { stack, idx: stack.length - 1 };
+      return { ...h, stack, idx: stack.length - 1 };
     });
   };
   const undo = (): void => {
@@ -194,50 +196,50 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
     setSaveDone(false);
     setSaveError(null);
     setSaving(true);
-    // Per-preset progress for the overlay (the streamed channel; online only).
+    // Every result this run has seen: the streamed channel (online only) plus the
+    // resolved list (the offline bridge streams nothing). A rejected run still keeps
+    // the presets the channel already reported as saved.
+    const seen = new Map<number, CopyApplyItem>();
     const onResult = (item: CopyApplyItem): void => {
-      setResults((prev) => {
-        const n = new Map(prev);
-        n.set(item.slot, item);
-        return n;
-      });
+      seen.set(item.slot, item);
+      setResults(new Map(seen));
     };
-    copyApply(jobs, true, onResult)
-      .then((items) => {
-        // Patch the cached library graph in place so a second edit reads the just-saved
-        // path WITHOUT a ~22 s backup re-scan — an edit NEVER triggers a refetch. The edit
-        // the device acked is the truth (optimistic); the device's working-copy read
-        // (taken by the backend BEFORE the save) is adopted only when it shows those same
-        // blocks (`reconcileReadBack`) — the earlier buffer-scraped read-back once handed
-        // back the LOAD-TIME graph and patched the cache back to the pre-edit blocks.
-        // Done from the resolved result (not the channel, which the offline bridge
-        // doesn't stream). ONLY for a CONFIRMED save: a "skipped"/"error" item (device
-        // rejected the edit) must NOT patch the cache, or it would assert blocks the unit
-        // never saved.
-        for (const item of items) {
-          if (item.outcome !== "updated") continue;
-          const staged = edit?.[item.slot];
-          if (!staged) continue;
-          const patch = reconcileReadBack(
-            activeFromEditGraph(
-              staged.graph,
-              graphForSlot(item.slot) ?? undefined,
-            ),
-            item.graph,
-          );
-          patchLibraryGraph(item.slot, patch);
-          // BUG-2: a live block edit pushes no device field-3, so optimistically
-          // repaint the hero when we just edited the ACTIVE preset (no device re-read).
-          if (item.slot === activeSlot) patchLiveGraph(patch);
-        }
-        setSaveDone(true);
-      })
-      .catch((e: unknown) => {
-        // The whole run failed (device error / lost connection) — surface it instead of a
-        // false "saved" (previously this swallowed the rejection and showed success).
-        setSaveError(e instanceof Error ? e.message : String(e));
-        setSaveDone(true);
-      });
+    const settle = (items: CopyApplyItem[]): void => {
+      for (const item of items) seen.set(item.slot, item);
+      setResults(new Map(seen));
+      // Patch the cached library graph in place so a second edit reads the just-saved
+      // path WITHOUT a ~22 s backup re-scan — an edit NEVER triggers a refetch. The edit
+      // the device acked is the truth (optimistic); the device's working-copy read
+      // (taken by the backend BEFORE the save) is adopted only when it shows those same
+      // blocks (`reconcileReadBack`) — the earlier buffer-scraped read-back once handed
+      // back the LOAD-TIME graph and patched the cache back to the pre-edit blocks.
+      // Done once the run settles, from every result seen. ONLY for a CONFIRMED save: a "skipped"/"error" item (device
+      // rejected the edit) must NOT patch the cache, or it would assert blocks the unit
+      // never saved.
+      for (const item of seen.values()) {
+        if (item.outcome !== "updated") continue;
+        const staged = edit?.[item.slot];
+        if (!staged) continue;
+        const patch = reconcileReadBack(
+          activeFromEditGraph(
+            staged.graph,
+            graphForSlot(item.slot) ?? undefined,
+          ),
+          item.graph,
+        );
+        patchLibraryGraph(item.slot, patch);
+        // BUG-2: a live block edit pushes no device field-3, so optimistically
+        // repaint the hero when we just edited the ACTIVE preset (no device re-read).
+        if (item.slot === activeSlot) patchLiveGraph(patch);
+      }
+      setSaveDone(true);
+    };
+    void copyApply(jobs, true, onResult).then(settle, (e: unknown) => {
+      // The whole run failed (device error / lost connection) — surface it instead of a
+      // false "saved" (previously this swallowed the rejection and showed success).
+      setSaveError(e instanceof Error ? e.message : String(e));
+      settle([]);
+    });
   };
 
   const onSave = (): void => {
@@ -255,16 +257,30 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
   };
 
   const onSaveDone = (): void => {
+    // A preset is written when its result is "updated" (or "skipped": it had nothing to
+    // write). An "error" row, or no row at all (a rejected or stopped run), was not saved.
+    const written = saveSlots.filter((s) => {
+      const r = results.get(s);
+      return r != null && r.outcome !== "error";
+    });
     setSaving(false);
     setSaveSlots([]);
     setResults(new Map());
     setSaveDone(false);
     setSaveError(null);
-    // Discard the staged work + return to Step 1 (the device now matches the edit).
-    setHist(null);
     setOpen(null);
-    setBackedUp(false);
-    setStep(1);
+    if (written.length === saveSlots.length) {
+      // Everything saved: the unit now matches the edit, so discard the staged work and
+      // return to Step 1.
+      setHist(null);
+      setBackedUp(false);
+      setStep(1);
+      return;
+    }
+    // Some or all presets did not save: stay on Step 2 with their staged edits (and
+    // undo steps) intact. The written presets restart from their just-saved graph.
+    // The backup acknowledgment stands — those presets are still as backed up.
+    setHist((h) => retargetHistory(h, toSlots, graphForSlot, new Set(written)));
   };
 
   // ── render ────────────────────────────────────────────────────────────────

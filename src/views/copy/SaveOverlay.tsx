@@ -3,9 +3,12 @@
 // Driven by the REAL `copy_apply` run (the channel streams one result per preset), NOT a
 // synthetic timer: `results` fills as each preset commits, `activeSlot` is the one being
 // written. Progress phase lists every target slot with a status icon (spinner / queued
-// dot / green check / warn for an error). Done phase shows a green medallion + the count
-// + a Pro Control backup-restore note (writes to the unit are not undoable from here —
-// undo/redo is offline, pre-save only) and a single Done button.
+// dot / green check / warn for an error). The done phase has three outcomes, derived from
+// how many targets actually saved: ALL saved → a green medallion + the count + a Pro
+// Control backup-restore note (writes to the unit are not undoable from here — undo/redo
+// is offline, pre-save only); SOME or NONE saved → a warn medallion, the counts, and a
+// note that the unsaved presets keep their changes (Done returns to editing them). A
+// single Done button either way.
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Dialog, DialogBody, DialogFooter } from "../../ui/Dialog";
@@ -27,8 +30,9 @@ export interface SaveOverlayProps {
   /** Every target has a result. */
   done: boolean;
   /** Set when the whole `copy_apply` run REJECTED (device error / lost connection), as
-   *  opposed to per-preset errors that stream into `results`. Flips the done phase from
-   *  the green success medallion to a warn medallion + this message. */
+   *  opposed to per-preset errors that stream into `results`. Shown in the done phase;
+   *  the outcome itself is derived from `results` (a rejected run may have saved some
+   *  presets before it failed). */
   failed?: string | null;
   onDone: () => void;
 }
@@ -46,9 +50,23 @@ export function SaveOverlay({
   const total = slots.length;
   const doneCount = results.size;
   const pct = total === 0 ? 100 : Math.round((doneCount / total) * 100);
-  const errored = [...results.values()].filter(
-    (r) => r.outcome === "error",
-  ).length;
+  // A target saved when it has a non-error result; an error row, or no row at all (a
+  // rejected or stopped run), means it did not.
+  const saved = slots.filter((s) => {
+    const r = results.get(s);
+    return r != null && r.outcome !== "error";
+  }).length;
+  const unsaved = total - saved;
+  const outcome: "all" | "partial" | "none" =
+    unsaved === 0 ? "all" : saved === 0 ? "none" : "partial";
+  const ok = outcome === "all";
+  const title =
+    outcome === "all"
+      ? "Saved to the unit."
+      : outcome === "partial"
+        ? "Some presets weren’t saved."
+        : "Save failed.";
+  const plural = (n: number): string => (n === 1 ? "" : "s");
 
   return (
     <Dialog size="sm" zIndex={60} label="Saving to the unit">
@@ -64,14 +82,14 @@ export function SaveOverlay({
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  background: failed ? t.warnSoft : t.goodSoft,
-                  border: `0.5px solid ${failed ? t.warnBorder : t.goodBorder}`,
+                  background: ok ? t.goodSoft : t.warnSoft,
+                  border: `0.5px solid ${ok ? t.goodBorder : t.warnBorder}`,
                 }}
               >
                 <Icon
-                  name={failed ? "warn-tri" : "check"}
+                  name={ok ? "check" : "warn-tri"}
                   size={24}
-                  stroke={failed ? t.warn : t.good}
+                  stroke={ok ? t.good : t.warn}
                   strokeWidth={2.2}
                 />
               </span>
@@ -83,7 +101,7 @@ export function SaveOverlay({
                   marginTop: t.space6,
                 }}
               >
-                {failed ? "Save failed." : "Saved to the unit."}
+                {title}
               </div>
               <div
                 style={{
@@ -93,20 +111,22 @@ export function SaveOverlay({
                   marginTop: t.space3,
                 }}
               >
-                {failed ?? (
+                {outcome === "none" ? (
+                  (failed ??
+                  `${String(total)} preset${plural(total)} could not be saved.`)
+                ) : (
                   <>
-                    {String(total - errored)} preset
-                    {total - errored === 1 ? "" : "s"} updated
-                    {errored > 0
-                      ? ` · ${String(errored)} could not be saved`
+                    {String(saved)} preset{plural(saved)} updated
+                    {unsaved > 0
+                      ? ` · ${String(unsaved)} could not be saved`
                       : ""}
-                    .
+                    .{failed ? ` ${failed}` : ""}
                   </>
                 )}
               </div>
               {/* Once written, the unit can't be rolled back from here — the only
                   recovery is restoring a Pro Control backup (undo/redo was offline,
-                  pre-save only). */}
+                  pre-save only). Unsaved presets keep their staged changes. */}
               <div
                 style={{
                   display: "flex",
@@ -130,9 +150,24 @@ export function SaveOverlay({
                     color: t.mutedInk,
                   }}
                 >
-                  Changes are now on the unit and can’t be undone from here. To
-                  roll back, restore your last{" "}
-                  <strong style={{ color: t.ink2 }}>Pro Control</strong> backup.
+                  {outcome === "none" ? (
+                    <>
+                      Nothing was saved to the unit. Your changes are kept, so
+                      you can try again.
+                    </>
+                  ) : (
+                    <>
+                      {outcome === "all"
+                        ? "Changes are now on the unit"
+                        : "The presets that saved are changed on the unit"}{" "}
+                      and can’t be undone from here. To roll back, restore your
+                      last{" "}
+                      <strong style={{ color: t.ink2 }}>Pro Control</strong>{" "}
+                      backup.
+                      {outcome === "partial" &&
+                        " The others keep your changes, so you can try again."}
+                    </>
+                  )}
                 </span>
               </div>
             </div>
