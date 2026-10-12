@@ -87,15 +87,20 @@ export interface LibraryScan {
   presets: { slot: number; name: string }[];
   /** Song slot → the preset LIST INDICES that song uses (`SongPresets` table), for the
    *  Songs tab's read-only "songs per preset" view. The song slot is the live song
-   *  list's 1-based positional slot. Read from the same backup. */
-  songPresetSlots: Map<number, number[]>;
+   *  list's 1-based positional slot. Read from the same backup. `null` = UNKNOWN: a
+   *  song add/remove shifted every song slot since the scan, so the join can't be
+   *  trusted until a reconnect rescans (`invalidateSongPresetJoin`). */
+  songPresetSlots: Map<number, number[]> | null;
   /** Full song list (`Songs` table) — for the Songs tab's INSTANT first paint in steady
-   *  state. After first paint SongsView holds its own state; live reads stay the
-   *  read-back-after-write source for CRUD. */
+   *  state. Live reads stay the read-back-after-write source for CRUD, and SongsView
+   *  writes its post-edit state back here (`patchLibrarySongs`), so a tab switch
+   *  repaints what the unit holds now, not the startup scan. */
   songs: SongRecord[];
-  /** Full setlist list (`Setlists` table) — instant first paint. */
+  /** Full setlist list (`Setlists` table) — instant first paint. Patched like `songs`. */
   setlists: SetlistRecord[];
-  /** Setlist slot → ordered global song slots (`SetlistSongs`) — instant rail counts. */
+  /** Setlist slot → global song slots by device position (`SetlistSongs`; index `i` is
+   *  position `i + 1`, a gap is `0`) — instant rail counts. Every scanned setlist gets
+   *  an entry, an empty one `[]`. Patched like `songs`; a missing entry = not known. */
   setlistSongs: Map<number, number[]>;
 }
 
@@ -214,11 +219,17 @@ export async function ensureLibraryScan(): Promise<void> {
     // emits the live read types (SongRecord/SetlistRecord), so no conversion.
     const songs = res.songs;
     const setlists = res.setlists;
-    // setlist slot → ordered song slots (backend already ORDER BY setlist, position).
-    const setlistSongs = new Map<number, number[]>();
+    // setlist slot → song slots BY POSITION, the shape the live read returns: the
+    // membership edits address a song by position, so a gap stays a `0` rather than
+    // shifting every later song onto the wrong position. Every setlist gets an entry —
+    // an empty setlist is a known `[]`, not "unread".
+    const setlistSongs = new Map<number, number[]>(
+      setlists.map((l) => [l.slot, []]),
+    );
     res.setlist_songs.forEach((r) => {
       const cur = setlistSongs.get(r.setlist_slot) ?? [];
-      cur.push(r.song_slot);
+      while (cur.length < r.position - 1) cur.push(0);
+      cur[r.position - 1] = r.song_slot;
       setlistSongs.set(r.setlist_slot, cur);
     });
     set({
@@ -269,21 +280,33 @@ export function patchLibraryGraph(listIndex: number, graph: ActiveGraph): void {
   set({ graphByIndex: next });
 }
 
-/** Invalidate the backup-sourced SONG data after a slot-shifting song CRUD (add/remove
- *  bumps every song slot, so `songPresetSlots` — keyed by song slot — would join the
- *  Presets axis against WRONG bindings, and the song/setlist seed is now stale). Clears
- *  it to empty (honest "unknown after edit") rather than confidently-wrong; the preset
- *  list itself is unaffected by song edits, so `presets`/`ready` are kept.
- *  ponytail: clear-all; a precise old→new slot remap is the upgrade path if the Presets
- *  axis needs to survive edits without a reconnect re-scan. */
-export function invalidateLibrarySongs(): void {
+/** Mark the song↔preset join UNKNOWN after a slot-shifting song CRUD: add/remove bumps
+ *  every song slot, so `songPresetSlots` (keyed by song slot) would join the Presets axis
+ *  against WRONG bindings. `null` renders as "unknown, reconnect to refresh", never as a
+ *  confident zero. The preset list itself is unaffected, so `presets`/`ready` are kept.
+ *  ponytail: a precise old→new slot remap is the upgrade path if the Presets axis needs
+ *  to survive edits without a reconnect re-scan. */
+export function invalidateSongPresetJoin(): void {
   if (!state.ready) return;
-  set({
-    songs: [],
-    setlists: [],
-    setlistSongs: new Map(),
-    songPresetSlots: new Map(),
-  });
+  set({ songPresetSlots: null });
+}
+
+/** Write the Songs tab's post-edit lists back into the snapshot, so a tab switch (which
+ *  unmounts the view) repaints what the unit holds now instead of the startup scan.
+ *  No-op until the scan has settled — the scan's own result would overwrite it. */
+export function patchLibrarySongs(
+  next: Pick<LibraryScan, "songs" | "setlists" | "setlistSongs">,
+): void {
+  if (!state.ready) return;
+  set(next);
+}
+
+/** Drop the Songs-tab seed (songs, setlists, membership) so the next Songs mount reads
+ *  them live: a Songs write that finished after the view unmounted changed the unit,
+ *  but there was no view left to patch the snapshot with its reply. */
+export function forgetLibrarySongs(): void {
+  if (!state.ready) return;
+  set({ songs: [], setlists: [], setlistSongs: new Map() });
 }
 
 /** Reset on disconnect so the NEXT connection scans fresh. */

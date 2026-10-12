@@ -10,12 +10,19 @@
 // reorder, and that a failed write surfaces a Toast WITHOUT mutating state.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { SongsView } from "../views/songs";
+import { DASH } from "../lib/format";
 import type {
   ActiveGraph,
   BackupReadResult,
@@ -173,6 +180,7 @@ describe("SongsView (device-backed)", () => {
         notes: null,
         bpm: null,
         addToSetlist: null,
+        expectSetlistName: null,
       });
     });
     expect(await screen.findByText("Toto")).toBeInTheDocument();
@@ -204,8 +212,10 @@ describe("SongsView (device-backed)", () => {
       expect(callsTo("update_song_full")).toBe(1);
     });
     // Notes unchanged → null (the backend writes only the changed fields).
+    // `expectName` is the name BEFORE the edit: the backend refuses if slot 2 moved.
     expect(lastArgsTo("update_song_full")).toEqual({
       slot: 2,
+      expectName: "Toto",
       name: "Toto Toto",
       notes: null,
       bpm: 102,
@@ -307,7 +317,9 @@ describe("SongsView (device-backed)", () => {
     await waitFor(() => {
       expect(lastArgsTo("remove_setlist_song")).toEqual({
         setlistSlot: 1,
+        expectName: "Set A",
         setlistSongSlot: 1,
+        expectSongSlot: 3,
       });
     });
   });
@@ -331,8 +343,10 @@ describe("SongsView (device-backed)", () => {
     await waitFor(() => {
       expect(lastArgsTo("move_setlist_song")).toEqual({
         setlistSlot: 1,
+        expectName: "Set A",
         oldPos: 1,
         newPos: 2,
+        expectSongSlot: 3,
       });
     });
   });
@@ -370,6 +384,7 @@ describe("SongsView (device-backed)", () => {
       notes: null,
       bpm: null,
       addToSetlist: 1,
+      expectSetlistName: "Set A",
     });
     expect(await screen.findByText("Fresh")).toBeInTheDocument();
   });
@@ -514,5 +529,354 @@ describe("SongsView — Presets axis", () => {
     expect(
       await screen.findByText(/no songs use this preset/i),
     ).toBeInTheDocument();
+  });
+});
+
+// ── Stale-slot regressions (#295–#299) ───────────────────────────────────────────
+// Setlist and song slots are list index + 1 and shift on every delete/add, so every
+// cache keyed on them goes stale after an edit. These run against a small fake unit
+// that applies each write and returns the fresh lists, like the backend does.
+
+interface FakeUnit {
+  songs: SongRecord[];
+  setlists: SetlistRecord[];
+  members: Map<number, number[]>;
+}
+
+/** Route every Songs command to `unit`, mutating it like the device would. With
+ *  `held`, the FIRST call of `held.cmd` replies only once `held.until` resolves. */
+function fakeUnit(
+  unit: FakeUnit,
+  held?: { cmd: string; until: Promise<void> },
+) {
+  let holding = held;
+  const renumber = () => {
+    unit.setlists = unit.setlists.map((l, i) => ({ ...l, slot: i + 1 }));
+  };
+  vi.mocked(invoke).mockImplementation((cmd, raw) => {
+    const a = (raw ?? {}) as Record<string, unknown>;
+    const reply = (): unknown => {
+      switch (cmd) {
+        case "read_library_via_backup":
+          return {
+            ...PRESET_BACKUP,
+            songs: unit.songs,
+            setlists: unit.setlists,
+            setlist_songs: [...unit.members].flatMap(([sl, m]) =>
+              m.map((song_slot, i) => ({
+                setlist_slot: sl,
+                song_slot,
+                position: i + 1,
+              })),
+            ),
+          };
+        case "list_songs":
+          return unit.songs;
+        case "read_setlists":
+          return unit.setlists;
+        case "list_setlist_songs":
+          return unit.members.get(Number(a.setlistSlot)) ?? [];
+        case "rename_setlist":
+          unit.setlists = unit.setlists.map((l) =>
+            l.slot === a.slot ? { ...l, name: String(a.name) } : l,
+          );
+          return unit.setlists;
+        case "add_setlist":
+          unit.setlists = [
+            ...unit.setlists,
+            { slot: unit.setlists.length + 1, name: String(a.name) },
+          ];
+          return unit.setlists;
+        case "remove_setlist": {
+          const slot = Number(a.slot);
+          unit.setlists = unit.setlists.filter((l) => l.slot !== slot);
+          const shifted = new Map<number, number[]>();
+          unit.members.forEach((m, k) => {
+            if (k !== slot) shifted.set(k > slot ? k - 1 : k, m);
+          });
+          unit.members = shifted;
+          renumber();
+          return unit.setlists;
+        }
+        case "remove_setlist_song": {
+          const sl = Number(a.setlistSlot);
+          const m = [...(unit.members.get(sl) ?? [])];
+          m.splice(Number(a.setlistSongSlot) - 1, 1);
+          unit.members.set(sl, m);
+          return m;
+        }
+        case "create_song_full": {
+          unit.songs = [
+            song(1, String(a.name)),
+            ...unit.songs.map((s) => ({ ...s, slot: s.slot + 1 })),
+          ];
+          return { songs: unit.songs, members: null, bpm_warning: null };
+        }
+        default:
+          return [];
+      }
+    };
+    if (holding?.cmd !== cmd) return Promise.resolve(reply());
+    const wait = holding.until;
+    holding = undefined;
+    return wait.then(reply);
+  });
+}
+
+/** A promise plus the function that resolves it. */
+function gate(): { until: Promise<void>; open: () => void } {
+  let resolve: (() => void) | undefined;
+  const until = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return {
+    until,
+    open: () => {
+      resolve?.();
+    },
+  };
+}
+
+/** The rail row for `name` (rows are role="tab"). */
+const railRow = (name: string): HTMLElement => {
+  const row = screen
+    .getAllByRole("tab")
+    .find((t) => within(t).queryByText(name, { exact: true }) != null);
+  if (!row) throw new Error(`no rail row "${name}"`);
+  return row;
+};
+
+describe("SongsView — stale slots after edits (#295–#299)", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+    resetLibraryScan();
+  });
+
+  it("#295: after a rename and a delete, leaving and returning repaints the post-edit setlists", async () => {
+    const unit: FakeUnit = {
+      songs: [song(1, "Song A")],
+      setlists: [
+        { slot: 1, name: "Set A" },
+        { slot: 2, name: "Set B" },
+        { slot: 3, name: "Set C" },
+      ],
+      members: new Map([
+        [1, [1]],
+        [2, []],
+        [3, []],
+      ]),
+    };
+    fakeUnit(unit);
+    await ensureLibraryScan();
+
+    const first = renderMgr(true);
+    const user = userEvent.setup();
+    await screen.findByText("Set B");
+
+    // Delete B.
+    await user.click(screen.getByText("Set B"));
+    await screen.findByText(/No songs in this setlist yet/);
+    await user.click(screen.getByTitle("Setlist options"));
+    await user.click(screen.getByText("Delete setlist"));
+    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await waitFor(() => {
+      expect(screen.queryByText("Set B")).not.toBeInTheDocument();
+    });
+
+    // Rename A.
+    await user.click(screen.getByText("Set A"));
+    await user.click(await screen.findByTitle("Rename"));
+    const input = screen.getByDisplayValue("Set A");
+    await user.clear(input);
+    await user.type(input, "Openers{Enter}");
+    await screen.findAllByText("Openers");
+    expect(lastArgsTo("rename_setlist")).toEqual({
+      slot: 1,
+      expectName: "Set A",
+      name: "Openers",
+    });
+
+    // Leave the tab (unmount) and come back: the rail shows the unit's lists now.
+    first.unmount();
+    renderMgr(true);
+    await screen.findByText("Openers");
+    expect(screen.queryByText("Set A")).not.toBeInTheDocument();
+    expect(screen.queryByText("Set B")).not.toBeInTheDocument();
+    expect(screen.getByText("Set C")).toBeInTheDocument();
+  });
+
+  it("#296: a second setlist click during the first one's read still loads the second", async () => {
+    const unit: FakeUnit = {
+      songs: [song(1, "Alpha"), song(2, "Beta")],
+      setlists: [
+        { slot: 1, name: "Set A" },
+        { slot: 2, name: "Set B" },
+      ],
+      members: new Map([
+        [1, [1]],
+        [2, [2]],
+      ]),
+    };
+    // No scan: both setlists' memberships are unknown until read live.
+    const first = gate();
+    fakeUnit(unit, { cmd: "list_setlist_songs", until: first.until });
+    renderMgr(true);
+    const user = userEvent.setup();
+    await screen.findByText("Set B");
+
+    await user.click(screen.getByText("Set A")); // read held
+    await user.click(screen.getByText("Set B")); // queued behind it — never dropped
+    expect(callsTo("list_setlist_songs")).toBe(1);
+    // Let A's read land; B's read then runs and B's song shows.
+    first.open();
+    expect(await screen.findByText("Beta")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(callsTo("list_setlist_songs")).toBe(2);
+    });
+    expect(lastArgsTo("list_setlist_songs")).toEqual({ setlistSlot: 2 });
+  });
+
+  it("#296: a setlist rename committed while another op runs is applied, not lost", async () => {
+    const unit: FakeUnit = {
+      songs: [],
+      setlists: [{ slot: 1, name: "Set A" }],
+      members: new Map([[1, []]]),
+    };
+    const read = gate();
+    fakeUnit(unit, { cmd: "list_setlist_songs", until: read.until });
+    await ensureLibraryScan();
+    renderMgr(true);
+    const user = userEvent.setup();
+
+    // Selecting re-reads the membership — that read is held, so the view is busy.
+    await user.click(await screen.findByText("Set A"));
+    await user.click(await screen.findByTitle("Rename"));
+    const input = screen.getByDisplayValue("Set A");
+    await user.clear(input);
+    await user.type(input, "Set Z{Enter}");
+    expect(callsTo("rename_setlist")).toBe(0); // queued behind the read
+
+    read.open();
+    await waitFor(() => {
+      expect(callsTo("rename_setlist")).toBe(1);
+    });
+    expect(await screen.findAllByText("Set Z")).not.toHaveLength(0);
+  });
+
+  it("#297: deleting a middle setlist keeps each remaining rail row on its own count", async () => {
+    const unit: FakeUnit = {
+      songs: [song(1, "S1"), song(2, "S2"), song(3, "S3"), song(4, "S4")],
+      setlists: [
+        { slot: 1, name: "Set A" },
+        { slot: 2, name: "Set B" },
+        { slot: 3, name: "Set C" },
+        { slot: 4, name: "Set D" },
+      ],
+      members: new Map([
+        [1, [1]],
+        [2, [1, 2]],
+        [3, [1, 2, 3]],
+        [4, [1, 2, 3, 4]],
+      ]),
+    };
+    fakeUnit(unit);
+    await ensureLibraryScan();
+    renderMgr(true);
+    const user = userEvent.setup();
+    await screen.findByText("Set B");
+
+    // Open B's options from its detail and delete it.
+    await user.click(screen.getByText("Set B"));
+    await user.click(screen.getByTitle("Setlist options"));
+    await user.click(screen.getByText("Delete setlist"));
+    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await waitFor(() => {
+      expect(screen.queryByText("Set B")).not.toBeInTheDocument();
+    });
+
+    expect(within(railRow("Set A")).getByText("1")).toBeInTheDocument();
+    expect(within(railRow("Set C")).getByText("3")).toBeInTheDocument();
+    expect(within(railRow("Set D")).getByText("4")).toBeInTheDocument();
+  });
+
+  it("#297: a setlist below a deleted one keeps its own songs under its new slot", async () => {
+    const unit: FakeUnit = {
+      songs: [song(1, "Only Song")],
+      setlists: [
+        { slot: 1, name: "Set A" },
+        { slot: 2, name: "Set B" },
+      ],
+      members: new Map([
+        [1, []],
+        [2, [1]],
+      ]),
+    };
+    fakeUnit(unit);
+    await ensureLibraryScan();
+    renderMgr(true);
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("Set A"));
+    await user.click(screen.getByTitle("Setlist options"));
+    await user.click(screen.getByText("Delete setlist"));
+    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await waitFor(() => {
+      expect(screen.queryByText("Set A")).not.toBeInTheDocument();
+    });
+    // B is now slot 1 and still carries its own song.
+    await user.click(screen.getByText("Set B"));
+    expect(await screen.findAllByText("Only Song")).not.toHaveLength(0);
+    expect(lastArgsTo("list_setlist_songs")).toEqual({ setlistSlot: 1 });
+  });
+
+  it("#298: an unresolvable member is shown, and a later row is removed at its real device position", async () => {
+    const unit: FakeUnit = {
+      songs: [song(3, "Song C"), song(5, "Song E")],
+      setlists: [{ slot: 1, name: "Set A" }],
+      // Position 2 holds a song slot the app's song list doesn't have.
+      members: new Map([[1, [3, 99, 5]]]),
+    };
+    fakeUnit(unit);
+    renderMgr(true);
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("Set A"));
+    await screen.findByText("Song E");
+    expect(screen.getByText("Unknown song")).toBeInTheDocument();
+
+    // Song E is row 3, so its device position is 3 — not 2, as filtering would make it.
+    await user.click(screen.getAllByTitle("Remove from setlist")[2]);
+    await waitFor(() => {
+      expect(lastArgsTo("remove_setlist_song")).toEqual({
+        setlistSlot: 1,
+        expectName: "Set A",
+        setlistSongSlot: 3,
+        expectSongSlot: 5,
+      });
+    });
+  });
+
+  it("#299: after a song add, the Presets axis shows the song counts as unknown, not 0", async () => {
+    const unit: FakeUnit = {
+      songs: [song(1, "Song A"), song(2, "Song B")],
+      setlists: [],
+      members: new Map(),
+    };
+    fakeUnit(unit);
+    await ensureLibraryScan();
+    renderMgr(true);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /new song/i }));
+    await user.type(screen.getByPlaceholderText("Song name"), "Fresh{Enter}");
+    await screen.findByText("Fresh");
+
+    await user.click(screen.getByRole("radio", { name: /presets/i }));
+    expect(within(railRow("Stadium Lead")).getByText(DASH)).toBeInTheDocument();
+    await user.click(screen.getByText("Stadium Lead"));
+    expect(
+      await screen.findByText(/songs using this preset: unknown/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/no songs use this preset/i),
+    ).not.toBeInTheDocument();
   });
 });

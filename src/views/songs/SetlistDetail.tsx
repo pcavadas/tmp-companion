@@ -1,6 +1,8 @@
 // src/views/songs/SetlistDetail.tsx — SETLIST DETAIL: membership is read from the
-// device (ordered global song slots), with SetlistRow co-located (its only parent is
-// SetlistDetail).
+// device (global song slots by position), with SetlistRow co-located (its only parent
+// is SetlistDetail). Each row carries its DEVICE position; an entry whose song slot
+// resolves to no song is shown as an unknown row rather than dropped, so every row
+// keeps the position the device holds it at.
 import { useRef, useState } from "react";
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
@@ -11,9 +13,20 @@ import type { SetlistRecord, SongRecord } from "../../lib/types";
 import { LIST_COLS, IconBtn } from "./shared";
 import { plainInput } from "../../theme/tokens";
 import type { SongDraft } from "./shared";
+import type { SetlistEntry } from "./songUtil";
 import { AddSongs } from "./AddSongs";
 import { SongRow } from "./SongRow";
 import { ListHeader } from "./ListHeader";
+
+/** What an unresolved entry renders as: it is on the unit's setlist, but its song
+ *  slot names no song in the list the app holds. Says so, rather than guessing. */
+const unknownSong = (songSlot: number): SongRecord => ({
+  slot: songSlot,
+  name: "Unknown song",
+  notes: "Not in the unit's song list. Reconnect to refresh, or remove it.",
+  bpm: 0,
+  bpm_active: false,
+});
 
 interface SetlistRowProps {
   song: SongRecord;
@@ -80,22 +93,23 @@ function SetlistRow({
 
 interface SetlistDetailProps {
   setlist: SetlistRecord;
-  /** The setlist's member songs in device order, or null while not yet read. */
-  members: SongRecord[] | null;
-  available: SongRecord[];
+  /** The setlist's entries in device order, or null while not yet read. */
+  entries: SetlistEntry[] | null;
+  /** Songs not yet in the setlist, or null while its membership is unknown. */
+  available: SongRecord[] | null;
   busy: boolean;
   onRename: (name: string) => void;
   onDelete: () => void;
-  /** position = 1-based index within the setlist. */
-  onRemoveSong: (position: number) => void;
-  onReorder: (oldPos: number, newPos: number) => void;
-  onAdd: (songSlots: number[]) => void;
+  /** Addressed by the entry's DEVICE position. */
+  onRemoveSong: (entry: SetlistEntry) => void;
+  onReorder: (from: SetlistEntry, to: SetlistEntry) => void;
+  onAdd: (songs: SongRecord[]) => void;
   onCreateAndAdd: (d: SongDraft) => void;
 }
 
 export function SetlistDetail({
   setlist,
-  members,
+  entries,
   available,
   busy,
   onRename,
@@ -111,7 +125,7 @@ export function SetlistDetail({
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(setlist.name);
   const [menu, setMenu] = useState(false);
-  const dragPos = useRef<number | null>(null);
+  const dragFrom = useRef<SetlistEntry | null>(null);
 
   // Reset the rename draft when a different setlist (or a renamed one) is shown —
   // via React's "adjust state during render when a prop changes" pattern.
@@ -125,8 +139,8 @@ export function SetlistDetail({
     setRenaming(false);
   }
 
-  const songsInList = members ?? [];
-  const count = members?.length ?? 0;
+  const rows = entries ?? [];
+  const count = entries?.length ?? 0;
   const saveName = () => {
     const n = name.trim();
     if (n && n !== setlist.name) onRename(n);
@@ -159,7 +173,7 @@ export function SetlistDetail({
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={s.kicker(t.accentDeep)}>
             Setlist
-            {members != null
+            {entries != null
               ? ` · ${String(count)} song${count === 1 ? "" : "s"}`
               : ""}
           </div>
@@ -271,7 +285,7 @@ export function SetlistDetail({
         </div>
       </div>
 
-      {members == null ? (
+      {entries == null ? (
         <div
           style={{
             flex: 1,
@@ -287,7 +301,7 @@ export function SetlistDetail({
         >
           Reading this setlist…
         </div>
-      ) : songsInList.length === 0 ? (
+      ) : rows.length === 0 ? (
         <PaneEmpty
           icon="music"
           title="No songs in this setlist yet"
@@ -326,22 +340,22 @@ export function SetlistDetail({
               overflowY: "auto",
             }}
           >
-            {songsInList.map((rec, i) => (
+            {rows.map((entry, i) => (
               <SetlistRow
-                key={rec.slot}
-                song={rec}
+                key={entry.position}
+                song={entry.song ?? unknownSong(entry.songSlot)}
                 idx={i}
                 busy={busy}
                 onRemove={() => {
-                  onRemoveSong(i + 1);
+                  onRemoveSong(entry);
                 }}
                 onGrab={() => {
-                  dragPos.current = i + 1;
+                  dragFrom.current = entry;
                 }}
                 onDropOn={() => {
-                  if (dragPos.current != null)
-                    onReorder(dragPos.current, i + 1);
-                  dragPos.current = null;
+                  if (dragFrom.current != null)
+                    onReorder(dragFrom.current, entry);
+                  dragFrom.current = null;
                 }}
               />
             ))}

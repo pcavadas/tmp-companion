@@ -11,8 +11,10 @@ import type { SongDraft } from "./shared";
 import { SongForm } from "./SongForm";
 
 interface AddSongsProps {
-  available: SongRecord[];
-  onAdd: (songSlots: number[]) => void;
+  /** Songs not yet in the setlist; null while its membership is still unknown — then
+   *  nothing can be picked, since a song already in it can't be told apart. */
+  available: SongRecord[] | null;
+  onAdd: (songs: SongRecord[]) => void;
   onCreateAndAdd: (d: SongDraft) => void;
   onClose: () => void;
 }
@@ -27,7 +29,7 @@ export function AddSongs({
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<Set<number>>(() => new Set());
   const [creating, setCreating] = useState(false);
-  const filtered = available.filter((s) =>
+  const filtered = (available ?? []).filter((s) =>
     s.name.toLowerCase().includes(q.trim().toLowerCase()),
   );
   const toggle = (slot: number) => {
@@ -39,7 +41,8 @@ export function AddSongs({
     });
   };
   const add = () => {
-    if (sel.size) onAdd([...sel]);
+    const picked = (available ?? []).filter((s) => sel.has(s.slot));
+    if (picked.length) onAdd(picked);
     onClose();
   };
 
@@ -163,9 +166,11 @@ export function AddSongs({
                 lineHeight: 1.5,
               }}
             >
-              {available.length === 0
-                ? "Every song is already in this setlist."
-                : "No songs match."}
+              {available == null
+                ? "Reading this setlist…"
+                : available.length === 0
+                  ? "Every song is already in this setlist."
+                  : "No songs match."}
             </div>
           )}
         </div>

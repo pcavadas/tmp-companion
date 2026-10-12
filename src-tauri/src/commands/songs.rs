@@ -46,6 +46,27 @@ pub(crate) async fn rename_song(
     .await
 }
 
+/// Refuse unless song `slot` still reads `expect_name` in `songs`. Song slots shift on
+/// every song add/remove, so a slot the UI read earlier can name another song now; the
+/// guard lives in the same slot space as the write (danger.md).
+pub(crate) fn check_song_slot(
+    songs: &[session::SongRecord],
+    slot: u32,
+    expect_name: &str,
+) -> Result<(), String> {
+    let rec = songs
+        .iter()
+        .find(|r| r.slot == slot)
+        .ok_or_else(|| format!("song slot {slot} no longer exists (list changed) — refused"))?;
+    if rec.name != expect_name {
+        return Err(format!(
+            "refused: song slot {slot} reads {:?}, expected {:?} (list changed)",
+            rec.name, expect_name
+        ));
+    }
+    Ok(())
+}
+
 /// Delete a song by slot — DESTRUCTIVE. Guarded: a fresh read in the SAME slot space
 /// must still show `expect_name` at `slot` (tolerant of duplicate names elsewhere),
 /// else refuse. Returns the fresh song list.
@@ -56,17 +77,7 @@ pub(crate) async fn remove_song(
     expect_name: String,
 ) -> Result<Vec<session::SongRecord>, String> {
     with_released_seize(state.session.clone(), move || {
-        let before = read_song_list()?;
-        let rec = before
-            .iter()
-            .find(|r| r.slot == slot)
-            .ok_or_else(|| format!("song slot {slot} no longer exists — refusing to delete"))?;
-        if rec.name != expect_name {
-            return Err(format!(
-                "guarded remove refused: song slot {slot} reads {:?}, expected {:?} (list changed)",
-                rec.name, expect_name
-            ));
-        }
+        check_song_slot(&read_song_list()?, slot, &expect_name)?;
         {
             let mut s = Session::connect()?;
             s.remove_song(slot)?;
@@ -164,7 +175,9 @@ fn bpm_warning(songs: &[session::SongRecord], slot: u32, bpm: f32) -> Option<Str
 /// Create a song with optional notes / BPM / setlist membership on ONE connection —
 /// replaces the UI's add → read → notes → read → bpm → read → addToSetlist → read
 /// chain. The created song is resolved BY NAME from the post-add read (the device
-/// assigns the slot).
+/// assigns the slot). With `add_to_setlist`, `expect_setlist_name` must name the
+/// setlist at that slot; it is checked before the song is created, so a stale slot
+/// refuses the whole save instead of adding the song to another setlist.
 #[tauri::command]
 pub(crate) async fn create_song_full(
     state: State<'_, AppState>,
@@ -172,6 +185,7 @@ pub(crate) async fn create_song_full(
     notes: Option<String>,
     bpm: Option<f32>,
     add_to_setlist: Option<u32>,
+    expect_setlist_name: Option<String>,
 ) -> Result<SongSaveOutcome, String> {
     with_released_seize(state.session.clone(), move || {
         let notes = notes.filter(|n| !n.trim().is_empty());
@@ -179,6 +193,12 @@ pub(crate) async fn create_song_full(
             let mut s = Session::connect()?;
             // Before any read clears the handshake replies it comes from.
             let prior = bpm.and_then(|_| s.active_slot_live());
+            if let Some(setlist_slot) = add_to_setlist {
+                let expect = expect_setlist_name
+                    .as_deref()
+                    .ok_or("adding to a setlist needs its expected name — refused")?;
+                crate::commands::setlists::guard_setlist_on(&mut s, setlist_slot, expect)?;
+            }
             s.add_song(&name)?;
             let listed = s.song_list_strict()?.ok_or_else(|| {
                 format!("song {name:?} created, but the song list didn't read back")
@@ -222,11 +242,13 @@ pub(crate) async fn create_song_full(
 
 /// Update a song's changed fields (rename / notes / BPM) on ONE connection — replaces
 /// the UI's per-field command chain. `None` = field unchanged. The caller skips the
-/// call entirely when nothing changed.
+/// call entirely when nothing changed. Guarded: song `slot` must still read
+/// `expect_name` (its name before this edit) on the same connection, before any write.
 #[tauri::command]
 pub(crate) async fn update_song_full(
     state: State<'_, AppState>,
     slot: u32,
+    expect_name: String,
     name: Option<String>,
     notes: Option<String>,
     bpm: Option<f32>,
@@ -236,6 +258,10 @@ pub(crate) async fn update_song_full(
             let mut s = Session::connect()?;
             // Before any read clears the handshake replies it comes from.
             let prior = bpm.and_then(|_| s.active_slot_live());
+            let before = s.song_list_strict()?.ok_or(
+                "the song list didn't read back, so the song can't be confirmed — refused",
+            )?;
+            check_song_slot(&before, slot, &expect_name)?;
             if let Some(n) = &name {
                 s.rename_song(slot, n)?;
             }

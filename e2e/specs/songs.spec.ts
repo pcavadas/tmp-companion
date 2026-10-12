@@ -96,3 +96,65 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     });
   });
 });
+
+// #295: tabs unmount on switch, and the Songs tab repaints from the startup library scan.
+// A setlist renamed here must come back under its NEW name after a tab round-trip — a
+// stale old name sits on a slot that every later setlist write would then address.
+const SETLIST_NEW = "E2E Setlist Renamed";
+
+test.describe("Songs — edits survive a tab switch (self-cleaning)", () => {
+  test.afterEach(async ({ page }) => {
+    await clearScenario(page);
+  });
+
+  test("a renamed setlist keeps its new name after leaving and returning to Songs", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
+    await page.getByRole("button", { name: "Songs", exact: true }).click();
+
+    await page.getByRole("button", { name: "New setlist" }).click();
+    await page.getByPlaceholder("Name this setlist").fill(SETLIST);
+    await page.getByTitle("Create").click();
+    await expect(page.getByText(SETLIST, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // RENAME it from its detail title.
+    await page.getByText(SETLIST, { exact: true }).click();
+    await expect(page.getByText(/reading this setlist/i)).toHaveCount(0, {
+      timeout: 30_000,
+    });
+    await page.getByTitle("Rename").click();
+    // The title editor opens focused on the current name.
+    const title = page.locator("input:focus");
+    await title.fill(SETLIST_NEW);
+    await title.press("Enter");
+    await expect(
+      page.getByText(SETLIST_NEW, { exact: true }).first(),
+    ).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // Leave the tab and come back: the rail shows the new name, not the scan's.
+    await page.getByRole("button", { name: "Copy", exact: true }).click();
+    await page.getByRole("button", { name: "Songs", exact: true }).click();
+    await expect(page.getByText(SETLIST_NEW, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText(SETLIST, { exact: true })).toHaveCount(0);
+
+    // DELETE it — cleanup, and the guarded delete must accept the CURRENT name.
+    await page.getByText(SETLIST_NEW, { exact: true }).click();
+    await expect(page.getByText(/reading this setlist/i)).toHaveCount(0, {
+      timeout: 30_000,
+    });
+    await page.getByTitle("Setlist options").click();
+    await page.getByText(/Delete setlist/).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(page.getByText(SETLIST_NEW, { exact: true })).toHaveCount(0, {
+      timeout: 30_000,
+    });
+  });
+});

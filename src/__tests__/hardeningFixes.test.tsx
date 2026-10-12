@@ -54,7 +54,7 @@ describe("SetlistDetail — mutate gated while busy (BUG-5)", () => {
   const setlist: SetlistRecord = { slot: 1, name: "Set 1" };
   const baseProps = {
     setlist,
-    members: [song],
+    entries: [{ position: 1, songSlot: 1, song }],
     available: [],
     onRename: vi.fn(),
     onDelete: vi.fn(),
@@ -92,7 +92,11 @@ describe("SetlistDetail — mutate gated while busy (BUG-5)", () => {
       ),
     ).toBe("true");
     await user.click(screen.getByTitle("Remove from setlist"));
-    expect(onRemoveSong).toHaveBeenCalledWith(1); // 1-based position
+    expect(onRemoveSong).toHaveBeenCalledWith({
+      position: 1, // 1-based device position
+      songSlot: 1,
+      song,
+    });
   });
 });
 

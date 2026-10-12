@@ -12,3 +12,28 @@ export function songBpm(rec: SongRecord): number | null {
 export function bpmStr(b: number | null): string {
   return b != null ? String(b) : DASH;
 }
+
+/** One setlist entry as the device holds it: its 1-based `position` (what remove and
+ *  move address), the global song slot there, and that song — `null` when the slot
+ *  resolves to no song on the unit (a gap, or an edit made on the unit since the
+ *  read). Unresolved entries are SHOWN, never filtered: filtering one would shift
+ *  every later row onto another entry's position. */
+export interface SetlistEntry {
+  position: number;
+  songSlot: number;
+  song: SongRecord | null;
+}
+
+/** Re-key a membership cache after setlist `removed` is deleted: every later setlist
+ *  shifts down one slot, so its cached songs move with it. */
+export function shiftMembershipAfterDelete(
+  m: Map<number, number[]>,
+  removed: number,
+): Map<number, number[]> {
+  const n = new Map<number, number[]>();
+  m.forEach((v, k) => {
+    if (k < removed) n.set(k, v);
+    else if (k > removed) n.set(k - 1, v);
+  });
+  return n;
+}

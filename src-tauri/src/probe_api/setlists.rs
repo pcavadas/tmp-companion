@@ -66,15 +66,14 @@ pub(crate) fn read_setlist_songs_raw(setlist_slot: u32) -> Result<Vec<u32>, Stri
     ))
 }
 
-/// A setlist's member song slots in device order, DENSE — trailing `songSlot==0`
-/// padding (unassigned slots) dropped. This is the membership every command + the UI
-/// consume, so the "songSlot 0 = not a member" invariant lives HERE, once, rather
-/// than re-applied at each call site. Empty Vec = an empty setlist.
+/// A setlist's member song slots in device order, with the trailing `songSlot==0`
+/// padding (unassigned slots) dropped by [`session::trim_setlist_padding`], which also
+/// says why a `0` between members is kept. Index `i` is device position `i + 1` — the
+/// position every membership command and the UI address. Empty Vec = an empty setlist.
 pub(crate) fn read_setlist_songs(setlist_slot: u32) -> Result<Vec<u32>, String> {
-    Ok(read_setlist_songs_raw(setlist_slot)?
-        .into_iter()
-        .filter(|&s| s != 0)
-        .collect())
+    Ok(session::trim_setlist_padding(read_setlist_songs_raw(
+        setlist_slot,
+    )?))
 }
 
 /// Probe (`--setlist-songs`): for every Setlist on the device, list the songs it

@@ -14,7 +14,9 @@ import type {
 import {
   ensureLibraryScan,
   getLibraryScan,
-  invalidateLibrarySongs,
+  invalidateSongPresetJoin,
+  patchLibrarySongs,
+  forgetLibrarySongs,
   patchLibraryGraph,
   resetLibraryScan,
 } from "../views/level/libraryScan";
@@ -107,8 +109,8 @@ describe("libraryScan — songs↔presets axis data", () => {
       { slot: 7, name: "Plexi Crunch" },
       { slot: 57, name: "Stadium Lead" },
     ]);
-    expect(lib.songPresetSlots.get(1)).toEqual([7, 57]);
-    expect(lib.songPresetSlots.get(2)).toEqual([57]);
+    expect(lib.songPresetSlots?.get(1)).toEqual([7, 57]);
+    expect(lib.songPresetSlots?.get(2)).toEqual([57]);
   });
 
   it("derives songs + setlists + ordered membership for the Songs tab first paint", async () => {
@@ -143,6 +145,80 @@ describe("libraryScan — songs↔presets axis data", () => {
     expect(lib.setlistSongs.get(1)).toEqual([2, 1]);
   });
 
+  it("keeps a membership gap as 0 at its position, and gives an empty setlist []", async () => {
+    // Remove/move address a song by DEVICE position, so a gap must not shift the songs
+    // after it (#298); an empty setlist is a known [] — not "unread" (#296).
+    const backup: BackupReadResult = {
+      ...BACKUP,
+      setlists: [
+        { slot: 1, name: "Gappy" },
+        { slot: 2, name: "Empty" },
+      ],
+      setlist_songs: [
+        { setlist_slot: 1, song_slot: 4, position: 1 },
+        { setlist_slot: 1, song_slot: 6, position: 3 },
+      ],
+    };
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup"
+        ? Promise.resolve(backup)
+        : Promise.resolve(null),
+    );
+
+    await ensureLibraryScan();
+    const lib = getLibraryScan();
+
+    expect(lib.setlistSongs.get(1)).toEqual([4, 0, 6]);
+    expect(lib.setlistSongs.get(2)).toEqual([]);
+  });
+
+  it("forgetLibrarySongs drops the Songs seed so the next Songs visit reads live", async () => {
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup"
+        ? Promise.resolve({
+            ...BACKUP,
+            songs: [
+              { slot: 1, name: "Intro", notes: "", bpm_active: false, bpm: 0 },
+            ],
+            setlists: [{ slot: 1, name: "Main set" }],
+          })
+        : Promise.resolve(null),
+    );
+    await ensureLibraryScan();
+    forgetLibrarySongs();
+    const lib = getLibraryScan();
+    expect(lib.songs).toEqual([]);
+    expect(lib.setlists).toEqual([]);
+    expect(lib.presets).toHaveLength(2);
+  });
+
+  it("patchLibrarySongs replaces the Songs-tab lists once the scan has settled (#295)", async () => {
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup"
+        ? Promise.resolve(BACKUP)
+        : Promise.resolve(null),
+    );
+    // Before the scan settles a patch is dropped — the scan's own result would win.
+    patchLibrarySongs({
+      songs: [],
+      setlists: [{ slot: 1, name: "Early" }],
+      setlistSongs: new Map(),
+    });
+    expect(getLibraryScan().setlists).toEqual([]);
+
+    await ensureLibraryScan();
+    patchLibrarySongs({
+      songs: [],
+      setlists: [{ slot: 1, name: "Renamed" }],
+      setlistSongs: new Map([[1, [3]]]),
+    });
+    const lib = getLibraryScan();
+    expect(lib.setlists).toEqual([{ slot: 1, name: "Renamed" }]);
+    expect(lib.setlistSongs.get(1)).toEqual([3]);
+    // The preset side of the snapshot is untouched.
+    expect(lib.presets).toHaveLength(2);
+  });
+
   it("invalidates the stale song↔preset join after a slot-shifting CRUD, keeps presets", async () => {
     vi.mocked(invoke).mockImplementation((cmd: string) =>
       cmd === "read_library_via_backup"
@@ -151,7 +227,7 @@ describe("libraryScan — songs↔presets axis data", () => {
     );
     await ensureLibraryScan();
 
-    invalidateLibrarySongs();
+    invalidateSongPresetJoin();
     const lib = getLibraryScan();
 
     // The preset list is unaffected by song edits — kept.
@@ -159,9 +235,10 @@ describe("libraryScan — songs↔presets axis data", () => {
       { slot: 7, name: "Plexi Crunch" },
       { slot: 57, name: "Stadium Lead" },
     ]);
-    // The slot-keyed song→preset map is cleared (would otherwise join wrong slots).
-    expect(lib.songPresetSlots.size).toBe(0);
-    expect(lib.songs).toEqual([]);
+    // The slot-keyed song→preset map is UNKNOWN now (null), not an empty map that
+    // would read as "no song uses any preset" (#299).
+    expect(lib.songPresetSlots).toBeNull();
+    expect(lib.ready).toBe(true);
   });
 
   it("caches only LEVELABLE footswitches per index (filters empty level_params)", async () => {

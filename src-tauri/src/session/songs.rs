@@ -42,6 +42,17 @@ pub struct SetlistRecord {
     pub name: String,
 }
 
+/// Drop a setlist reply's TRAILING `songSlot == 0` padding (the unassigned slots after
+/// the last member). A `0` between members is kept: the membership setters address a
+/// song by its position in this reply, so dropping a middle entry would shift every
+/// later position onto the wrong song. Callers render a kept `0` as an unknown entry.
+pub(crate) fn trim_setlist_padding(mut members: Vec<u32>) -> Vec<u32> {
+    while members.last() == Some(&0) {
+        members.pop();
+    }
+    members
+}
+
 impl Session {
     /// Assign a user preset (+ its scene) to a Song row — `assignSongPreset`.
     /// `user_list_index` is a **0-based list index**; the device `userPresetSlot` is
@@ -295,8 +306,16 @@ impl Session {
         self.request_harvest(&req, 8, Self::harvest_songs_strict)
     }
 
-    /// Read setlist `setlist_slot`'s member song slots on this session, dense (the
-    /// `songSlot == 0` padding dropped), strict (complete replies only).
+    /// Read the whole setlist list on this session, strict (complete replies only). A
+    /// batch-3 request is answered mid-session, the same shape as [`Self::song_list_strict`].
+    pub(crate) fn setlist_list_strict(&mut self) -> Result<Option<Vec<SetlistRecord>>, String> {
+        let req = proto::setlist_list_request(Some(proto::BATCH_DRAIN));
+        self.request_harvest(&req, 8, Self::harvest_setlists_strict)
+    }
+
+    /// Read setlist `setlist_slot`'s member song slots on this session, strict (complete
+    /// replies only), with the trailing `songSlot == 0` padding dropped
+    /// ([`trim_setlist_padding`]): index `i` is device position `i + 1`.
     pub(crate) fn setlist_songs_strict(
         &mut self,
         setlist_slot: u32,
@@ -304,7 +323,7 @@ impl Session {
         let req = proto::setlist_song_list_request(setlist_slot as u64, Some(proto::BATCH_DRAIN));
         let members =
             self.request_harvest(&req, 8, |s| s.harvest_setlist_songs_strict(setlist_slot))?;
-        Ok(members.map(|m| m.into_iter().filter(|&x| x != 0).collect()))
+        Ok(members.map(trim_setlist_padding))
     }
 
     /// Decode `song_slot`'s Song-preset reply from the accumulated streams. Largest

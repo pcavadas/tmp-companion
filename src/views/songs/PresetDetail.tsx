@@ -49,13 +49,14 @@ export function UnitBadge({ note = "on unit" }: { note?: string }) {
 export interface PresetDetailProps {
   /** `slot` is the 0-based My-Presets list index; `slotLabel` renders it as `058`. */
   preset: { slot: number; name: string };
-  /** The songs that use this preset (read-only). */
-  members: SongRecord[];
+  /** The songs that use this preset (read-only); null = UNKNOWN, because a song was
+   *  added or removed since the startup scan and the song slots it joined on shifted. */
+  members: SongRecord[] | null;
 }
 
 export function PresetDetail({ preset, members }: PresetDetailProps) {
   const { t } = useTheme();
-  const n = members.length;
+  const n = members?.length ?? 0;
   return (
     <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
       <div
@@ -97,11 +98,19 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
             color: t.mutedInk,
           }}
         >
-          {n} song{n === 1 ? "" : "s"} use{n === 1 ? "s" : ""} this preset
+          {members == null
+            ? "Songs using this preset: unknown"
+            : `${String(n)} song${n === 1 ? "" : "s"} use${n === 1 ? "s" : ""} this preset`}
         </div>
       </div>
 
-      {n === 0 ? (
+      {members == null ? (
+        <PaneEmpty
+          icon="wave"
+          title="Not known since a song was added or removed"
+          body="Adding or removing a song renumbers the unit's songs, so the list read at connect no longer matches. Reconnect the unit to read it again."
+        />
+      ) : n === 0 ? (
         <PaneEmpty
           icon="wave"
           title="No songs use this preset"
