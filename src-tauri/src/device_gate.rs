@@ -171,9 +171,11 @@ impl Drop for MonitorPauseGuard {
 /// and waits (bounded) for the ack. Hold the returned guard for the whole device
 /// operation; its Drop resumes the monitor. See [`DEVICE_OP_LOCK`] / [`MonitorPauseGuard`].
 ///
-/// Deadlock-free by construction: the monitor acquires NO lock, so the command's
-/// bounded *sleep* on `MONITOR_PAUSED_ACK` is never a lock-acquire cycle. The monitor
-/// owns only the device, which the pause protocol forces it to release.
+/// Deadlock-free by construction: the monitor never BLOCKS on a lock — it only
+/// `try_lock`s this gate for its connect + startup-snapshot window
+/// ([`try_lock_for_monitor_connect`]) and backs off when a command holds it — so the
+/// command's bounded *sleep* on `MONITOR_PAUSED_ACK` is never a lock-acquire cycle. The
+/// monitor owns only the device, which the pause protocol forces it to release.
 pub(crate) fn lock_device_op() -> MonitorPauseGuard {
     let g = lock_ok(&DEVICE_OP_LOCK);
     // Every device op starts with a clean abort flag, by construction — arming here rather
@@ -220,6 +222,26 @@ pub(crate) fn lock_device_op() -> MonitorPauseGuard {
     // Proceed even if not acked within budget (see PAUSE_WAIT_TRIES) — hid.rs's
     // open-retry covers the residual seize-recycle race.
     MonitorPauseGuard(g)
+}
+
+/// The monitor's side of [`DEVICE_OP_LOCK`]: held across its connect + startup snapshot,
+/// the one window where it opens the device WITHOUT checking `MONITOR_PAUSE_REQ` (a HID
+/// open that retries, a handshake, preset-list drains — seconds on a busy line). Without
+/// it, a command arriving just after the monitor's pre-connect pause check waited out the
+/// ack budget and then opened the device while the monitor still held or was acquiring it.
+/// With it, the command queues on the lock until the snapshot is done, and the monitor's
+/// pump loop (which checks the pause every pump) acks it.
+///
+/// `try_lock` only — never blocks — so the monitor can never deadlock against a command
+/// waiting for its ack: `None` means a command owns the device, and the monitor backs
+/// off and re-checks the pause. Poison-tolerant like [`lock_device_op`]. A free lock also
+/// means no `MonitorPauseGuard` is alive, so no pause request is pending.
+pub(crate) fn try_lock_for_monitor_connect() -> Option<std::sync::MutexGuard<'static, ()>> {
+    match DEVICE_OP_LOCK.try_lock() {
+        Ok(g) => Some(g),
+        Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
 }
 
 /// Run blocking device work with the app's HID seize released — the leveller and
@@ -294,6 +316,48 @@ mod tests {
             "a 10 s wait must not be sat out after a Stop"
         );
         OP_ABORT.store(false, SeqCst);
+    }
+
+    /// BUG→GATE (#263): a command arriving while the monitor is mid connect + startup
+    /// snapshot (a window with no pause check) used to wait out the ack budget and then
+    /// open the device under the monitor. The monitor now holds the device-op gate for that
+    /// window, so the command's `lock_device_op` cannot return — and the command cannot
+    /// open the transport — until the monitor's connect window has closed, however long it
+    /// runs (the lock wait has no budget to time out). And the monitor's `try_lock` never
+    /// blocks: while a command holds the gate it reports `None` and backs off.
+    #[test]
+    fn a_command_never_opens_the_device_during_the_monitors_connect_window() {
+        use std::sync::atomic::AtomicBool;
+        static MONITOR_CONNECTING: AtomicBool = AtomicBool::new(false);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let monitor = std::thread::spawn(move || {
+            // Another test's device op may hold the gate: retry like the monitor does.
+            let gate = loop {
+                if let Some(g) = try_lock_for_monitor_connect() {
+                    break g;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            MONITOR_CONNECTING.store(true, SeqCst);
+            started_tx.send(()).expect("signal");
+            // A slow fake connect + snapshot.
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            MONITOR_CONNECTING.store(false, SeqCst);
+            drop(gate);
+        });
+        started_rx.recv().expect("monitor started connecting");
+        let op = lock_device_op();
+        // The command's first transport open would happen here.
+        assert!(
+            !MONITOR_CONNECTING.load(SeqCst),
+            "the command got the device while the monitor was still connecting"
+        );
+        assert!(
+            try_lock_for_monitor_connect().is_none(),
+            "the monitor must back off while a command holds the device"
+        );
+        drop(op);
+        monitor.join().expect("monitor thread");
     }
 
     /// NON-REGRESSION GATE: the offline settle collapse must never reach hardware.

@@ -7,8 +7,9 @@ use super::*;
 /// Re-amp engage/disengage counters (ALWAYS compiled — the e2e verification harness
 /// reads them over the bridge, offline AND online, to assert every leveling/doctor run
 /// disengages at least as often as it engages). Incremented at the top of
-/// [`Session::set_reamp_mode`] by flag, so `OFF >= ON` proves the app-side
-/// `reamp_off_guaranteed` backstop ran and isn't being masked by a spec teardown rescue.
+/// [`Session::set_reamp_mode`] by flag, so `OFF >= ON` proves the app-side run-end OFF
+/// (`leveller::ReampRunGuard`) ran and isn't being masked by a spec teardown rescue. The guard
+/// also reads `REAMP_ON_COUNT` to decide whether an unfinished run engaged.
 pub static REAMP_ON_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub static REAMP_OFF_COUNT: AtomicU32 = AtomicU32::new(0);

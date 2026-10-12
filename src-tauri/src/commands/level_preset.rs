@@ -307,6 +307,9 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
     with_released_seize(state.session.clone(), move || {
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
+        // The run-owned re-amp OFF, armed before any session: a panic or an early return after
+        // an engage still sends it on a fresh connection (see `ReampRunGuard`).
+        let reamp = leveller::ReampRunGuard::new("level_preset");
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         let mut opts = leveller::LevelOptions { save, verify: true, ..Default::default() };
         let cancelled = || PRESET_LEVEL_CANCEL.load(SeqCst);
@@ -396,8 +399,9 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // `ftsw` sits at the field-8 truncation cliff, so a short read yields a short
                 // force list — pedals left on, and the wrong `presetLevel` SAVED. The shared
                 // read REFUSES on a truncated `ftsw` rather than leveling a guess. Refusing
-                // here returns BEFORE the run-end `reamp_off_guaranteed` backstop, safe only
-                // because every step above is a pure read: nothing has engaged re-amp yet.
+                // here returns BEFORE the run-end `reamp.finish()` backstop, safe because every
+                // step above is a pure read: nothing has engaged re-amp yet (and the guard's
+                // `Drop` would send the OFF if something had).
                 let (preset, has_fs_scenes, force, restore_scene) =
                     crate::commands::doctor::read_base_isolation(slot)?;
                 // The original `lastLoadedScene` must be re-stamped by the save: the
@@ -459,8 +463,7 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the
         // device drops an in-session OFF sent after ~1 s of idle — every capture).
         // Its read-back verdict rides the result (`LevelResult::reamp_warning`).
-        leveller::reamp_off_guaranteed("level_preset")
-            .stamp(result, |r, w| r.reamp_warning = w)
+        reamp.finish().stamp(result, |r, w| r.reamp_warning = w)
     })
     .await
 }

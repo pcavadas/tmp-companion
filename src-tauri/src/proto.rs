@@ -1341,7 +1341,12 @@ pub fn parse(buf: &[u8]) -> Vec<(u32, Val)> {
                 let Some(len) = read_varint(buf, &mut pos) else {
                     break;
                 };
-                let end = (pos + len as usize).min(buf.len());
+                // A declared length can be any 64-bit value (a 10-byte varint), so the
+                // end is saturated, never added unchecked: an overflowing `pos + len`
+                // panicked in debug and wrapped below `pos` in release (a slice-index
+                // panic). Tolerant semantics: past the buffer yields the remaining bytes.
+                let len = usize::try_from(len).unwrap_or(usize::MAX);
+                let end = pos.saturating_add(len).min(buf.len());
                 out.push((field_no, Val::Bytes(buf[pos..end].to_vec())));
                 pos = end;
             }
@@ -1423,7 +1428,8 @@ pub fn parse_strict(buf: &[u8]) -> Result<Vec<(u32, Val)>, String> {
                 out.push((field_no, Val::Fixed64(b)));
             }
             2 => {
-                let len = read_varint(buf, &mut pos).ok_or("truncated length")? as usize;
+                let len = read_varint(buf, &mut pos).ok_or("truncated length")?;
+                let len = usize::try_from(len).map_err(|_| "length overflow")?;
                 let end = pos.checked_add(len).ok_or("length overflow")?;
                 if end > buf.len() {
                     return Err("truncated length-delimited field".into());
@@ -1563,9 +1569,30 @@ pub fn reassemble_streams(reports: &[Vec<u8>]) -> Vec<Stream> {
 /// list responses → systematic tail truncation. The strict list harvests use this
 /// variant; a standalone `0x35` with no open stream is still kept as its own message.
 pub fn reassemble_streams_final(reports: &[Vec<u8>]) -> Vec<Stream> {
+    let (mut streams, open) = reassemble_final_split(reports);
+    if let Some((_, c)) = open {
+        streams.push(Stream { body: c });
+    }
+    streams
+}
+
+/// [`reassemble_streams_final`] stopped at the OPEN tail: the CLOSED streams (each ended by
+/// a `0x35` final frame, or by the next `0x33` start), and how many leading `reports` they
+/// span. Every report from that index on belongs to the still-open stream (or nothing), so
+/// a caller that drains them can drop the consumed prefix and keep only the tail — the
+/// device monitor's bounded live-sync buffer ([`crate::session::Session::take_closed_push_bodies`]).
+pub fn reassemble_closed_streams_final(reports: &[Vec<u8>]) -> (Vec<Stream>, usize) {
+    let (streams, open) = reassemble_final_split(reports);
+    let consumed = open.map_or(reports.len(), |(start, _)| start);
+    (streams, consumed)
+}
+
+/// The closed streams under the `0x35`-is-final rule, plus the open stream (the index of
+/// its first report and its body so far), if one is still open at the end.
+fn reassemble_final_split(reports: &[Vec<u8>]) -> (Vec<Stream>, Option<(usize, Vec<u8>)>) {
     let mut streams = Vec::new();
-    let mut current: Option<Vec<u8>> = None;
-    for data in reports {
+    let mut current: Option<(usize, Vec<u8>)> = None;
+    for (i, data) in reports.iter().enumerate() {
         if data.len() < 4 || data[0] != 0x00 {
             continue;
         }
@@ -1575,17 +1602,17 @@ pub fn reassemble_streams_final(reports: &[Vec<u8>]) -> Vec<Stream> {
         let body = &data[4..end];
         match magic {
             MAGIC_IN_START => {
-                if let Some(c) = current.take() {
+                if let Some((_, c)) = current.take() {
                     streams.push(Stream { body: c });
                 }
-                current = Some(body.to_vec());
+                current = Some((i, body.to_vec()));
             }
             MAGIC_IN_FRAME => match current {
-                Some(ref mut c) => c.extend_from_slice(body),
-                None => current = Some(body.to_vec()),
+                Some((_, ref mut c)) => c.extend_from_slice(body),
+                None => current = Some((i, body.to_vec())),
             },
             MAGIC_OUT => match current.take() {
-                Some(mut c) => {
+                Some((_, mut c)) => {
                     c.extend_from_slice(body);
                     streams.push(Stream { body: c });
                 }
@@ -1596,10 +1623,7 @@ pub fn reassemble_streams_final(reports: &[Vec<u8>]) -> Vec<Stream> {
             _ => {}
         }
     }
-    if let Some(c) = current {
-        streams.push(Stream { body: c });
-    }
-    streams
+    (streams, current)
 }
 
 #[cfg(test)]
@@ -2020,6 +2044,31 @@ mod tests {
         let pm = parse(first_bytes(&top, 2).expect("presetMessage"));
         let req = parse(first_bytes(&pm, 117).expect("importPresetRequest @ 117"));
         assert_eq!(first_bytes(&req, 1), Some(&b"{\"uuid\":\"x\"}"[..]));
+    }
+
+    /// A length-delimited field declaring a `u64::MAX` length (a full 10-byte varint)
+    /// must not panic either decoder: `parse` clips it to the remaining bytes,
+    /// `parse_strict` rejects it. The unchecked `pos + len` overflowed here.
+    #[test]
+    fn huge_varint_length_does_not_panic() {
+        let adversarial = [
+            0x0A, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+        ];
+        let fields = parse(&adversarial);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].0, 1);
+        assert_eq!(fields[0].1.as_bytes(), Some(&[][..]));
+        assert!(parse_strict(&adversarial).is_err());
+        // Same shape with trailing bytes: clipped to the rest, never past it.
+        let mut with_tail = adversarial.to_vec();
+        with_tail.extend_from_slice(&[1, 2, 3]);
+        assert_eq!(parse(&with_tail)[0].1.as_bytes(), Some(&[1u8, 2, 3][..]));
+        assert!(parse_strict(&with_tail).is_err());
+        // Every truncated prefix decodes without panicking too.
+        for cut in 0..=adversarial.len() {
+            let _ = parse(&adversarial[..cut]);
+            let _ = parse_strict(&adversarial[..cut]);
+        }
     }
 
     /// Reassemble chunked output frames the way the device does: strip each

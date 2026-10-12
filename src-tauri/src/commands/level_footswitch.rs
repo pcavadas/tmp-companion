@@ -222,6 +222,8 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
     with_released_seize(state.session.clone(), move || {
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
+        // The run-owned re-amp OFF, armed before any session (see `ReampRunGuard`).
+        let reamp = leveller::ReampRunGuard::new("level_footswitches_apply");
         // THE single field-8 read: it resolves every job AND is the planner's scene-overlay
         // source (per-node bake gate) — never add a second read here. `ftsw` is REQUIRED:
         // a body cut before it plans zero jobs and reports a clean run on a preset whose
@@ -674,7 +676,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         // Guarantee re-amp OFF on a fresh connection, read back; its verdict rides every
         // returned row (the rows already streamed over the channel).
         let rows = write_result.map(|()| results.into_iter().flatten().collect::<Vec<_>>());
-        leveller::reamp_off_guaranteed("level_footswitches_apply").stamp(rows, |rows, w| {
+        reamp.finish().stamp(rows, |rows, w| {
             rows.iter_mut().for_each(|r| r.reamp_warning.clone_from(&w))
         })
     })

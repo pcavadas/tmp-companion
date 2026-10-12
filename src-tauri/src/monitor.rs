@@ -39,9 +39,12 @@
 //!   3. The command's guard Drop clears `MONITOR_PAUSE_REQ`; the monitor reconnects
 //!      and re-reads the (possibly command-changed) state, then emits `sync: false`.
 //!
-//! The monitor never acquires a lock, so the command's bounded *sleep* on the ack
-//! is not a lock cycle → no deadlock. `hid.rs`'s open-retry absorbs the residual
-//! seize-recycle race on reconnect.
+//! The monitor never BLOCKS on a lock, so the command's bounded *sleep* on the ack
+//! is not a lock cycle → no deadlock. It only `try_lock`s `DEVICE_OP_LOCK` for its
+//! connect + startup-snapshot window — the one stretch where it opens the device without
+//! checking the pause — so a command queues behind that window instead of opening the
+//! device mid-handshake; when a command already holds the lock the monitor backs off.
+//! `hid.rs`'s open-retry absorbs the residual seize-recycle race on reconnect.
 
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -606,6 +609,17 @@ fn run_monitor_iteration(
         sleep(RECONNECT_BACKOFF_MS);
         return;
     }
+    // Hold the device-op gate across connect + startup snapshot: this window opens the
+    // device without re-checking the pause, so a command must queue behind it rather than
+    // open the device mid-handshake (`try_lock_for_monitor_connect`). Never blocks: a
+    // command holding the gate means it owns the device — back off and re-check the pause.
+    let Some(op_gate) = crate::device_gate::try_lock_for_monitor_connect() else {
+        log_block("command-holds-device");
+        drain_not_live(live_rx);
+        drain_metadata_not_live(metadata_rx);
+        sleep(PAUSE_WAIT_STEP);
+        return;
+    };
     log_block("connecting");
     // Connect with the firmware request riding the same startup handshake that
     // carries the preset list and usually the active field-3 graph.
@@ -613,6 +627,7 @@ fn run_monitor_iteration(
     let mut session = match Session::connect_with_firmware() {
         Ok(s) => s,
         Err(e) => {
+            drop(op_gate);
             // No device / lost the open race to a command window. Back off and
             // retry; on detach this is the steady state until replug. (The
             // watcher remains the authoritative attach/detach signal for the UI.)
@@ -666,6 +681,7 @@ fn run_monitor_iteration(
                      {graph_retries}/{GRAPH_RETRY_MAX} in {GRAPH_RETRY_BACKOFF_MS} ms"
                 );
                 drop(session);
+                drop(op_gate);
                 emit_sync(app, false);
                 drain_not_live(live_rx);
                 drain_metadata_not_live(metadata_rx);
@@ -685,6 +701,9 @@ fn run_monitor_iteration(
             store_connect_error(e);
         }
     }
+    // The snapshot is done: release the gate. A command queued on it now sets the pause,
+    // which `pump_loop` checks every pump and acks.
+    drop(op_gate);
     emit_sync(app, false);
 
     match pump_loop(app, session, cache, seen, live_rx, metadata_rx) {
@@ -808,12 +827,17 @@ fn pump_loop(
     app: &tauri::AppHandle,
     mut session: Session,
     cache: &Arc<Mutex<LiveCache>>,
-    mut seen: usize,
+    seen: usize,
     live_rx: &Receiver<LiveCmd>,
     metadata_rx: &Receiver<MetadataReadCmd>,
 ) -> PumpExit {
     // Sender-side gate for the live command lane.
     let _live = LiveFlagGuard::arm();
+    // Retire what the connect-time decode already emitted (the first `seen` streams), so
+    // the accumulator holds only the open tail from here on. A last stream that was still
+    // open at connect is decoded again once it closes — complete this time.
+    let retired = session.take_closed_push_bodies();
+    emit_pushes(app, cache, retired.get(seen..).unwrap_or(&[]));
     // First heartbeat due at once: the startup read before this loop may already have
     // used most of the device's host-silence budget (`session::HID_INACTIVITY_DROP_MS`).
     let mut last_hb = std::time::Instant::now()
@@ -849,25 +873,15 @@ fn pump_loop(
             let r = exec_metadata_read(&mut session, &cmd);
             let failed = r.is_err();
             let _ = cmd.reply.send(MetadataReadReply::Done(r));
-            // `read_slot_preset_json` clears the accumulator before harvesting field-9.
-            // Restart the seen cursor so later monitor pushes are decoded normally.
-            seen = 0;
+            // `read_slot_preset_json` clears the accumulator before harvesting field-9; the
+            // drain below then picks up only what arrives after it.
             if failed {
                 return PumpExit::Error;
             }
         }
-        if session.pump_silent(PUMP_MS).is_err() {
-            return PumpExit::Error; // device gone / seize lost — reconnect from the top
-        }
-        let bodies = session.push_bodies();
-        // Decode every NEWLY-completed stream except the newest (it may still be
-        // growing — same "print all but the last" rule as `listen_dump`).
-        if bodies.len() > seen + 1 {
-            let mut c = crate::lock_ok(cache);
-            while seen + 1 < bodies.len() {
-                decode_and_emit(app, &bodies[seen], &mut c);
-                seen += 1;
-            }
+        match pump_closed_pushes(&mut session, PUMP_MS) {
+            Ok(bodies) => emit_pushes(app, cache, &bodies),
+            Err(_) => return PumpExit::Error, // device gone / seize lost — reconnect
         }
         if last_hb.elapsed().as_millis() as u64 >= HEARTBEAT_MS {
             if session.heartbeat().is_err() {
@@ -875,6 +889,27 @@ fn pump_loop(
             }
             last_hb = std::time::Instant::now();
         }
+    }
+}
+
+/// One pump of the live-sync loop: pump `ms`, then DRAIN every stream that closed — each is
+/// decoded exactly once and its reports leave the accumulator, so the receive buffer holds
+/// only the still-open stream between pumps (bounded over any uptime, and no tick re-parses
+/// the history). A stream closed by its `0x35` final frame is returned at once, not held
+/// back until a later stream starts.
+fn pump_closed_pushes(session: &mut Session, ms: u64) -> Result<Vec<Vec<u8>>, String> {
+    session.pump_silent(ms)?;
+    Ok(session.take_closed_push_bodies())
+}
+
+/// Decode and emit `bodies` in order under one cache lock (none taken when empty).
+fn emit_pushes(app: &tauri::AppHandle, cache: &Arc<Mutex<LiveCache>>, bodies: &[Vec<u8>]) {
+    if bodies.is_empty() {
+        return;
+    }
+    let mut c = crate::lock_ok(cache);
+    for body in bodies {
+        decode_and_emit(app, body, &mut c);
     }
 }
 
@@ -1154,6 +1189,112 @@ fn sleep(ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A transport whose every `pump` hands back the next scripted batch of input reports.
+    struct ScriptedPushes(Mutex<std::collections::VecDeque<Vec<Vec<u8>>>>);
+
+    impl crate::hid::HidTransport for ScriptedPushes {
+        fn send(&self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn transact(&self, _: &[u8], _: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(Vec::new())
+        }
+        fn transact_chunked(&self, _: &[u8], _: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(Vec::new())
+        }
+        fn pump(&self, _: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(self.0.lock().unwrap().pop_front().unwrap_or_default())
+        }
+        fn transact_eager(&self, _: &[u8], _: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// One 64-byte input report: report id, magic, `0x00`, body length, body.
+    fn report(magic: u8, body: &[u8]) -> Vec<u8> {
+        let mut r = vec![0x00, magic, 0x00, body.len() as u8];
+        r.extend_from_slice(body);
+        r.resize(64, 0);
+        r
+    }
+
+    /// One multi-report push (`0x33` start, `0x34` continuations, `0x35` final), the shape
+    /// of a preset-load push, tagged with `n` so each decodes to its own body.
+    fn push(n: u8) -> Vec<Vec<u8>> {
+        vec![
+            report(crate::proto::MAGIC_IN_START, &[n; 60]),
+            report(crate::proto::MAGIC_IN_FRAME, &[n; 60]),
+            report(crate::proto::MAGIC_IN_FRAME, &[n; 60]),
+            report(0x35, &[n; 10]), // the `0x35` final frame
+        ]
+    }
+
+    /// BUG→GATE (#262): the live-sync pump re-parsed its whole receive history every 120 ms
+    /// and never released it, so memory and per-tick CPU grew with uptime. N pushes through
+    /// the pump step must leave the buffer bounded (only the open tail), decode each push
+    /// exactly once, and decode a push closed by its `0x35` final frame at once — not held
+    /// back until a later push starts.
+    #[test]
+    fn the_live_sync_buffer_stays_bounded_and_each_push_decodes_once_on_its_final_frame() {
+        const N: u8 = 200;
+        let mut batches: std::collections::VecDeque<Vec<Vec<u8>>> = (0..N).map(push).collect();
+        // A push split across two pumps: start + one continuation, then the rest.
+        let mut split = push(N);
+        let tail = split.split_off(2);
+        batches.push_back(split);
+        batches.push_back(tail);
+        let mut session = Session::from_transport(Box::new(ScriptedPushes(Mutex::new(batches))));
+
+        let mut decoded: Vec<u8> = Vec::new();
+        for n in 0..N {
+            let bodies = pump_closed_pushes(&mut session, 0).expect("pump");
+            assert_eq!(bodies.len(), 1, "push {n} decodes on its own final frame");
+            assert_eq!(bodies[0].len(), 190);
+            decoded.push(bodies[0][0]);
+            assert!(
+                session.raw.is_empty(),
+                "no closed push stays buffered (push {n})"
+            );
+        }
+        // The split push: nothing closed yet, only its open tail is kept…
+        assert!(pump_closed_pushes(&mut session, 0)
+            .expect("pump")
+            .is_empty());
+        assert_eq!(
+            session.raw.len(),
+            2,
+            "only the open stream's reports are kept"
+        );
+        // …and it decodes whole once its final frame lands.
+        let bodies = pump_closed_pushes(&mut session, 0).expect("pump");
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0], [vec![N; 180], vec![N; 10]].concat());
+        assert!(session.raw.is_empty());
+        assert_eq!(
+            decoded,
+            (0..N).collect::<Vec<_>>(),
+            "each push exactly once, in order"
+        );
+    }
+
+    /// The open-tail cap: a stream that never closes cannot grow the buffer without bound.
+    #[test]
+    fn a_never_closing_stream_is_capped() {
+        let reports: Vec<Vec<u8>> = std::iter::once(report(crate::proto::MAGIC_IN_START, &[1]))
+            .chain(
+                (0..crate::session::MAX_OPEN_PUSH_REPORTS)
+                    .map(|_| report(crate::proto::MAGIC_IN_FRAME, &[1])),
+            )
+            .collect();
+        let mut session = Session::from_transport(Box::new(ScriptedPushes(Mutex::new(
+            std::iter::once(reports).collect(),
+        ))));
+        assert!(pump_closed_pushes(&mut session, 0)
+            .expect("pump")
+            .is_empty());
+        assert!(session.raw.is_empty(), "an over-cap open tail is dropped");
+    }
 
     // The base-slot classifier: sceneSlot >= BASE_SCENE_SLOT (the wire constant 8)
     // ⇒ base. Pure logic, mirroring `decode_and_emit`'s test (no device, no AppHandle).

@@ -532,6 +532,7 @@ pub(crate) async fn level_scenes_apply(
     let target_lufs = target_lufs + playback_offset_for(&app, topology_id.as_deref());
     let stim_path = resolve_stimulus(&app, None, topology_id)?;
     with_released_seize(state.session.clone(), move || {
+        let reamp = leveller::ReampRunGuard::new("level_scenes_apply");
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         let run = || -> Result<Vec<leveller::LevelResult>, String> {
             let mut results = Vec::with_capacity(scene_slots.len());
@@ -555,7 +556,7 @@ pub(crate) async fn level_scenes_apply(
         let result = run();
         // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the
         // device drops an in-session OFF sent after ~1 s of idle — every capture).
-        leveller::reamp_off_guaranteed("level_scenes_apply").stamp(result, |rows, w| {
+        reamp.finish().stamp(result, |rows, w| {
             rows.iter_mut().for_each(|r| r.reamp_warning.clone_from(&w))
         })
     })
@@ -613,6 +614,8 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     with_released_seize(state.session.clone(), move || {
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
+        // The run-owned re-amp OFF, armed before any session (see `ReampRunGuard`).
+        let reamp = leveller::ReampRunGuard::new("level_scenes_apply_batched");
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         let mut scene_slots: Vec<u32> = jobs.iter().map(|j| j.scene_slot).collect();
         // Force-append base so the prepass always harvests a base doc — one more chance at a
@@ -983,7 +986,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
         };
         // The rows stream over the channel before this OFF, so its verdict rides the
         // returned rows (every one: it is a fact about the run).
-        leveller::reamp_off_guaranteed("level_scenes_apply_batched").stamp(result, |rows, w| {
+        reamp.finish().stamp(result, |rows, w| {
             rows.iter_mut().for_each(|r| r.reamp_warning.clone_from(&w))
         })
     })
@@ -1664,6 +1667,7 @@ pub(crate) async fn level_setlist(
         })
         .collect::<Result<_, _>>()?;
     with_released_seize(state.session.clone(), move || {
+        let reamp = leveller::ReampRunGuard::new("level_setlist");
         // Own each stimulus (calibrated if the profile has a real-output level),
         // then borrow into entries for the leveller.
         let stims: Vec<(u32, Vec<f32>, f64)> = resolved
@@ -1681,7 +1685,7 @@ pub(crate) async fn level_setlist(
             })
             .collect();
         let result = leveller::level_setlist(&lvl_entries, SETLIST_HEADROOM_LU, 0.5, save);
-        leveller::reamp_off_guaranteed("level_setlist");
+        reamp.finish();
         result
     })
     .await
@@ -1701,8 +1705,13 @@ pub(crate) async fn level_scenes(
 ) -> Result<Vec<f64>, String> {
     let stim_path = resolve_stimulus(&app, None, topology_id)?;
     with_released_seize(state.session.clone(), move || {
+        // Each capture disengages in-session; the run still ends on the guaranteed
+        // fresh-connection OFF, success or failure (a panic: the guard's `Drop`).
+        let reamp = leveller::ReampRunGuard::new("level_scenes");
         let stim = read_stimulus_calibrated(&stim_path, None)?;
-        let cs = leveller::capture_scene_ceilings(slot, scene_count, &stim)?;
+        let cs = leveller::capture_scene_ceilings(slot, scene_count, &stim);
+        reamp.finish();
+        let cs = cs?;
         scenes::normalize_scene_targets(&cs, headroom_lu)
             .ok_or_else(|| "no finite scene loudness measured".to_string())
     })

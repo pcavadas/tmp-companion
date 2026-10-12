@@ -600,6 +600,8 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         })
         .collect::<Result<_, String>>()?;
     with_released_seize(state.session.clone(), move || {
+        // The run-owned re-amp OFF, armed before any session (see `ReampRunGuard`).
+        let reamp = leveller::ReampRunGuard::new("doctor_check");
         // One stimulus decode per (path, calibration) pair — items share them, along
         // with the decoded stimulus's OWN dynamics spread (arms the floor guard below;
         // computed once here rather than per capture).
@@ -861,20 +863,17 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         }
 
         let presets = assemble_results(&resolved, &outcomes);
-        // Belt-and-braces: never leave the unit in re-amp after a run, and put
-        // it back on the pre-run active preset (fallback: the last-scanned
-        // slot) — the reload also clears the 0.5 reference presetLevel from
-        // the edit buffer.
-        if let Err(e) = Session::connect_lean().and_then(|mut s| {
-            if let Err(re) = s.set_reamp_mode(false) {
-                log::warn!("doctor_check: failed to disable re-amp mode after run: {re}");
+        // Belt-and-braces: never leave the unit in re-amp after a run (the guaranteed OFF on
+        // a fresh connection, read back), then put it back on the pre-run active preset
+        // (fallback: the last-scanned slot) — the reload also clears the 0.5 reference
+        // presetLevel from the edit buffer.
+        if !reamp.finish().verified {
+            log::warn!("doctor_check: re-amp OFF after the run could not be verified");
+        }
+        if let Some(slot) = restore_list_index.or(last_scanned) {
+            if let Err(e) = Session::connect_lean().and_then(|mut s| s.load_preset(slot)) {
+                log::warn!("doctor_check: failed to restore active preset after run: {e}");
             }
-            match restore_list_index.or(last_scanned) {
-                Some(slot) => s.load_preset(slot),
-                None => Ok(()),
-            }
-        }) {
-            log::warn!("doctor_check: failed to restore active preset after run: {e}");
         }
         Ok(DoctorCheckResult { presets, stopped })
     })
@@ -1278,6 +1277,8 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         job.profile_id.as_deref(),
     )?;
     with_released_seize(state.session.clone(), move || {
+        // The run-owned re-amp OFF, armed before any session (see `ReampRunGuard`).
+        let reamp = leveller::ReampRunGuard::new("doctor_apply");
         // Refuse a scene-context Param write BEFORE touching device state (no
         // BEFORE-clip capture, no force-bypass writes) whenever
         // `scene_write_verdict_for_param` won't hand it a safe enable-dropped landing —
@@ -1425,7 +1426,7 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         // Run-end backstop, success or failure (see `reamp_off_guaranteed`). ONLY
         // the reamp toggle — never a load_preset here, which would discard the
         // just-applied unsaved edit buffer on the success path.
-        leveller::reamp_off_guaranteed("doctor_apply").stamp(result, |r, w| r.reamp_warning = w)
+        reamp.finish().stamp(result, |r, w| r.reamp_warning = w)
     })
     .await
 }

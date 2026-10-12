@@ -55,6 +55,8 @@ pub use graph::*;
 pub use handshake::*;
 #[cfg(feature = "e2e")]
 pub use link::e2e_transport;
+#[allow(unused_imports)] // read by the monitor's buffer-cap test
+pub(crate) use link::MAX_OPEN_PUSH_REPORTS;
 use link::*;
 pub(crate) use reads::*;
 #[allow(unused_imports)] // the counters and the state type are read by tests and the e2e build

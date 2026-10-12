@@ -5,6 +5,11 @@
 
 use super::*;
 
+/// The longest still-open inbound stream [`Session::take_closed_push_bodies`] keeps between
+/// pumps, in reports (~60 body bytes each, so ~490 KB). A preset push is ~17 KB (~300
+/// reports); a tail past this is never a real message.
+pub(crate) const MAX_OPEN_PUSH_REPORTS: usize = 8192;
+
 /// Offline UI e2e seam (compiled only under `--features e2e`): a process-global factory
 /// that yields the [`HidTransport`] every device open uses, so a Playwright run can drive
 /// the REAL backend against an in-memory `SimDevice` instead of USB. Both device-open
@@ -296,6 +301,31 @@ impl Session {
     /// monitor tracks a "seen" index (the newest stream may still be growing).
     pub fn push_bodies(&self) -> Vec<Vec<u8>> {
         let bodies: Vec<Vec<u8>> = self.streams_final().into_iter().map(|s| s.body).collect();
+        if bodies.iter().any(|b| is_template_substitution(b)) {
+            self.hid.note_substituted();
+        }
+        bodies
+    }
+
+    /// Drain the CLOSED inbound streams out of the accumulator — the device monitor's
+    /// per-pump read. Unlike [`Self::push_bodies`] (which re-assembles everything ever
+    /// accumulated), this removes the reports it returns, so the buffer holds only the
+    /// still-open stream between pumps: it stays bounded over any uptime, each pump parses
+    /// only what is new, and a stream closed by its `0x35` final frame is returned at once
+    /// instead of waiting for a later stream to start. An open tail longer than
+    /// [`MAX_OPEN_PUSH_REPORTS`] is dropped (logged): no device message is that long, so it
+    /// is junk that would otherwise grow without bound.
+    pub fn take_closed_push_bodies(&mut self) -> Vec<Vec<u8>> {
+        let (streams, consumed) = proto::reassemble_closed_streams_final(&self.raw);
+        self.raw.drain(..consumed);
+        if self.raw.len() > MAX_OPEN_PUSH_REPORTS {
+            log::warn!(
+                "dropping an open inbound stream of {} reports (cap {MAX_OPEN_PUSH_REPORTS})",
+                self.raw.len()
+            );
+            self.raw.clear();
+        }
+        let bodies: Vec<Vec<u8>> = streams.into_iter().map(|s| s.body).collect();
         if bodies.iter().any(|b| is_template_substitution(b)) {
             self.hid.note_substituted();
         }
