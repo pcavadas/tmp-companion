@@ -3,14 +3,36 @@ name = "tmp-companion"
 version = "0.0.0-development"
 description = "USB controller for the Fender Tone Master Pro: loudness leveling, block copy, and song/setlist editing"
 authors = ["Pedro CAVADAS"]
+# Edition 2024 is its own change (`cargo fix --edition`, then the unsafe-op lints it
+# brings), kept out of the hygiene pass that set the floor and lints below (#281).
 edition = "2021"
+# The floor is set by the dependencies, not by this crate: tauri 2's crates (and its
+# plugins) declare 1.90. CI builds on `stable`.
+rust-version = "1.90"
 # probe/gen_samples are dev-only helper bins; `tauri dev` runs a bare `cargo run`
 # which is otherwise ambiguous with multiple binaries.
 default-run = "tmp-companion"
 
 [lib]
 name = "tmp_companion_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop only: the app and the dev bins link the rlib. The Tauri mobile template's
+# `staticlib`/`cdylib` were never used and cost a link each per build (#281).
+crate-type = ["rlib"]
+
+# The lint policy CI enforces (`cargo clippy --all-targets -- -D warnings`), so a plain
+# `cargo clippy` or `cargo build` holds a contributor to the same bar (#281). It covers
+# clippy's warnings too.
+[lints.rust]
+warnings = "deny"
+
+# The shipped binary: whole-crate optimisation. Symbols are KEPT (`strip = "debuginfo"`,
+# not "symbols") so a panic backtrace in a user's log still names its frames. No
+# `panic = "abort"`: the monitor's `catch_unwind`, the drop guards (`MonitorPauseGuard`,
+# `LiveLufsGuard`, `ReampRunGuard`) and `lock_ok`'s poison recovery all rely on unwinding.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -50,17 +72,13 @@ sha2 = "0.11"
 
 # macOS-only: IOKit HID (exclusive device seize) is
 # reached by hand-declared `#[link(name = "IOKit", kind = "framework")]` externs
-# in hid.rs — no Rust crate exposes kIOHIDOptionsTypeSeizeDevice. core-foundation
-# gives us the CFType/CFRunLoop wrappers; libc the raw fd/timing primitives.
+# in hid.rs — no Rust crate exposes kIOHIDOptionsTypeSeizeDevice. core-foundation-sys
+# gives us the raw CFType/CFRunLoop bindings hid.rs and watcher.rs call.
 [target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.10"
 core-foundation-sys = "0.8"
-libc = "0.2"
 
 # Linux-only: the TMP is reached through hidraw (`/dev/hidraw*`), found by walking
-# sysfs — no udev crate, no C hidapi. libc supplies open/read/write/poll/close.
-# Same crate and version the macOS target already pulls, so this widens an existing
-# dependency rather than introducing one.
+# sysfs — no udev crate, no C hidapi. libc supplies open/read/write/poll/close/flock.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 

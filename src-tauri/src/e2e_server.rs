@@ -196,47 +196,9 @@ pub fn run_e2e_server() {
         .manage(AppState::default())
         // Every Channel send a command makes reaches the UI bridge's ring.
         .channel_interceptor(crate::e2e_ui_bridge::intercept_channel)
-        .invoke_handler(tauri::generate_handler![
-            app_info,
-            connect_device,
-            list_presets,
-            // The frontend polls this on every mount (`scheduleLibraryScan`); leaving it
-            // unregistered made every call throw "Command current_graph not found" — 16
-            // console errors per test, and no way for a graphless snapshot to recover.
-            current_graph,
-            read_library_via_backup,
-            copy_apply,
-            cancel_copy_apply,
-            get_store,
-            set_auto_install_updates,
-            level_preset,
-            list_level_blocks,
-            cancel_preset_leveling,
-            level_scenes_apply_batched,
-            list_scene_level_handles,
-            cancel_scene_leveling,
-            level_footswitches_apply,
-            cancel_footswitch_leveling,
-            list_footswitch_scene_contexts,
-            doctor_check,
-            cancel_doctor_check,
-            doctor_apply,
-            doctor_save,
-            doctor_discard,
-            list_songs,
-            read_setlists,
-            add_song,
-            rename_song,
-            remove_song,
-            create_song_full,
-            update_song_full,
-            list_setlist_songs,
-            add_setlist,
-            rename_setlist,
-            remove_setlist,
-            add_setlist_songs,
-            remove_setlist_song,
-            move_setlist_song,
+        // Every app command (the same list `bootstrap::run` registers, #270), then the
+        // e2e-only helpers.
+        .invoke_handler(app_invoke_handler!(
             e2e_seed_scenario,
             e2e_mark_seeded,
             e2e_clear_strays,
@@ -245,7 +207,7 @@ pub fn run_e2e_server() {
             e2e_reamp_off,
             e2e_reamp_state,
             e2e_measure_sound
-        ])
+        ))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build e2e mock app");
     crate::e2e_ui_bridge::listen_events(&app);

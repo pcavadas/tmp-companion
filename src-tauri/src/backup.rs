@@ -92,13 +92,14 @@ pub fn snapshot_filename(s: &PresetSnapshot) -> String {
     format!("{ts}_le{}_slot{}.json", s.list_enum, s.slot)
 }
 
-/// Write `snapshot` into `dir` (created as needed); returns the file path.
+/// Write `snapshot` into `dir` (created as needed); returns the file path. Atomic: this
+/// snapshot IS the revert safety net, so a crash mid-write must never leave a truncated
+/// one for `bulk_revert` to restore from (#280).
 pub fn save_snapshot_to_dir(dir: &Path, snapshot: &PresetSnapshot) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
     let path = dir.join(snapshot_filename(snapshot));
     let json =
         serde_json::to_string_pretty(snapshot).map_err(|e| format!("serialize snapshot: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))?;
+    crate::fsutil::write_atomic(&path, json.as_bytes())?;
     Ok(path)
 }
 
@@ -127,7 +128,7 @@ pub fn list_snapshots_in_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
 
 /// `backups/` under the app config dir. App-layer seam wired into a Tauri command
 /// by the first destructive feature.
-pub(crate) fn backups_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn backups_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     use tauri::Manager;
     let dir = app
         .path()

@@ -596,6 +596,13 @@ pub fn set_reamp_mode(active: bool) -> Vec<u8> {
 /// TMS 5 is also served is exactly what `probe --mixer` decides. A silent reply
 /// is a real negative for fw 1.7.75's schema, not proof the mixer is unreadable
 /// on a later firmware.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "reserved for the USB 3/4 mixer-strip read (#157); golden-tested"
+    )
+)]
 pub fn mixer_state_request() -> Vec<u8> {
     mixer_request(2)
 }
@@ -710,7 +717,13 @@ pub fn switch_template(template_type: &str) -> Vec<u8> {
 /// the wire format and make re-testing on a future firmware trivial; the live
 /// slot-read path is `preset_data_request` (field 8). proto3 zero-value omission:
 /// `listEnum`/`presetSlot` of 0 are dropped to match the real serializer.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "reserved wire format (golden-tested); the live slot read is field 8"
+    )
+)]
 pub fn export_preset_request(list_enum: u64, preset_slot: u64, batch: Option<u64>) -> Vec<u8> {
     let mut inner = Vec::new();
     if list_enum != 0 {
@@ -769,7 +782,13 @@ pub fn import_preset_request(payload: &[u8]) -> Vec<u8> {
 /// golden + decode test) to document the wire format and make re-testing on a future
 /// firmware trivial; the live scratch-slot picker finds the empty slot by
 /// **observation** (import, then re-list) — see `lib::run_replace_inplace`.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "reserved wire format (golden-tested); the scratch slot is found by observation"
+    )
+)]
 pub fn request_next_empty_preset_slot(after_slot: u64, batch: Option<u64>) -> Vec<u8> {
     let mut inner = Vec::new();
     if after_slot != 0 {
@@ -1164,7 +1183,13 @@ pub fn export_response_preset_json(tms_body: &[u8]) -> Option<Vec<u8>> {
 /// Decode a `nextEmptyPresetSlotResponse` body (TMS[2] → field 82 → presetSlot[1]
 /// varint). Paired with [`request_next_empty_preset_slot`] — **dead on 1.7.75**,
 /// kept as documented wire format.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "reserved wire format (golden-tested), paired with the request above"
+    )
+)]
 pub fn next_empty_preset_slot_response(tms_body: &[u8]) -> Option<u64> {
     let top = parse(tms_body);
     let pm = first_bytes(&top, 2)?;
@@ -1371,7 +1396,8 @@ pub fn first_varint(fields: &[(u32, Val)], field_no: u32) -> Option<u64> {
         .and_then(|(_, v)| v.as_u64())
 }
 
-/// First fixed32 field `field_no` as an `f32`.
+/// First fixed32 field `field_no` as an `f32`. Only the simulator decodes floats.
+#[cfg(any(test, feature = "e2e"))]
 pub fn first_f32(fields: &[(u32, Val)], field_no: u32) -> Option<f32> {
     fields
         .iter()
@@ -1624,6 +1650,7 @@ impl FinalReassembler {
     }
 
     /// Bytes held for the stream still open (0 when none is).
+    #[cfg(test)]
     pub fn pending_len(&self) -> usize {
         self.current.as_ref().map_or(0, Vec::len)
     }

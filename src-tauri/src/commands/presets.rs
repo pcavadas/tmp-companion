@@ -1,5 +1,4 @@
 //! Active-preset reads, scene scans, and preset load/move/rename/delete commands.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 // ── Active-preset signal chain: live reads + deliberate writes ──────────────────
@@ -261,7 +260,8 @@ pub(crate) async fn read_preset_scenes(
     state: State<'_, AppState>,
     list_index: u32,
 ) -> Result<PresetScenes, String> {
-    if let Some(result) = monitor::try_metadata_read(list_index) {
+    // The monitor lane waits up to its reply timeout: off the async worker (#271).
+    if let Some(result) = blocking(move || Ok(monitor::try_metadata_read(list_index))).await? {
         match result {
             Ok(Some(json)) => return decode_preset_scenes(&json),
             Ok(None) => {
@@ -404,16 +404,17 @@ pub(crate) async fn delete_preset(
 }
 
 /// Reorder a user preset (`moveUserPreset`). DESTRUCTIVE to slot positions (no
-/// undo). 0-based list indices; `session.move_user_preset` adds the device +1.
+/// undo). Goes through [`guarded_move`]: like [`delete_preset`], a fresh read in the
+/// same list-index space must confirm `from` still holds `expect_name` first.
 #[tauri::command]
 pub(crate) async fn move_preset(
     state: State<'_, AppState>,
     from: u32,
     to: u32,
+    expect_name: String,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
-        let mut s = Session::connect()?;
-        s.move_user_preset(from, to)
+        guarded_move(from, to, &expect_name)
     })
     .await
 }
@@ -582,16 +583,7 @@ fn persist_device_settings(path: Option<&std::path::Path>, result: &mut BackupRe
         }
     );
     let Some(path) = path else { return };
-    let write = || -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-        }
-        let tmp = path.with_extension("json.part");
-        std::fs::write(&tmp, &bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
-    };
-    if let Err(e) = write() {
+    if let Err(e) = crate::fsutil::write_atomic(path, &bytes) {
         log::warn!("read_library_via_backup: could not persist device-settings.json: {e}");
     }
 }

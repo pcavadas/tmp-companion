@@ -1,11 +1,12 @@
 //! Block-template capture, variant creation, and bulk-rename commands.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 // ─── Block templates (persisted in the app config dir, applied via OpSpec::ApplyBlock) ─
 
 /// Path to the persisted block-template library (app config dir).
-fn block_lib_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+fn block_lib_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
     use tauri::Manager;
     Ok(app
         .path()
@@ -16,8 +17,8 @@ fn block_lib_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> 
 
 /// The saved block templates.
 #[tauri::command]
-pub(crate) fn list_block_templates(
-    app: tauri::AppHandle,
+pub(crate) fn list_block_templates<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
 ) -> Result<Vec<blocklib::BlockTemplate>, String> {
     Ok(blocklib::load_library_from_path(&block_lib_path(&app)?).unwrap_or_default())
 }
@@ -25,8 +26,8 @@ pub(crate) fn list_block_templates(
 /// Capture the first block of `model` from a source preset into the library under
 /// `name` (replaces a same-named entry). PURE capture + persist to disk; no device.
 #[tauri::command]
-pub(crate) fn save_block_template(
-    app: tauri::AppHandle,
+pub(crate) fn save_block_template<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     source_list_index: u32,
     model: String,
     name: String,

@@ -138,7 +138,7 @@ impl Session {
     /// exercised end-to-end in `cargo test`. `batch` starts at 4 (the post-handshake
     /// value) to mirror a connected session; structural edits and setters carry no
     /// `batchStatus`, so the exact value is immaterial to the paths under test.
-    #[cfg(any(test, feature = "e2e"))]
+    #[cfg(test)]
     pub(crate) fn from_transport(hid: Box<dyn HidTransport>) -> Session {
         Session {
             hid: TrackedHid::new(hid),

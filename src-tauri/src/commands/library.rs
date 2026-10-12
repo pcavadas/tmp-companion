@@ -1,5 +1,4 @@
 //! OFFLINE library import + bulk-run apply/revert Tauri commands.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 // ─── OFFLINE library + bulk-run commands ─────────────────────────────────────────
@@ -60,8 +59,10 @@ pub(crate) async fn import_library(
     state: State<'_, AppState>,
 ) -> Result<library::ReconcileReport, String> {
     let folder_path = std::path::PathBuf::from(&folder);
+    // Decoding a whole folder of `.preset` files is blocking work (#271).
+    let dir = folder_path.clone();
     let (mut records, errors) =
-        library::load_library_from_dir(&folder_path, &library_categories())?;
+        blocking(move || library::load_library_from_dir(&dir, &library_categories())).await?;
     if !errors.is_empty() {
         log::warn!(
             "[import_library] {} file(s) skipped: {errors:?}",
@@ -109,43 +110,53 @@ pub(crate) struct FilterArgs {
 /// List indices of library records matching `filter` (selection feeder).
 /// Only **writable** (matched) records are returned — unmatched/ambiguous ones
 /// (sentinel `u32::MAX`) are dropped so they can't be selected for a write.
+/// Scans the whole library, so it runs on the blocking pool, not the main thread (#271).
 #[tauri::command]
-pub(crate) fn library_filter(
+pub(crate) async fn library_filter(
     filter: FilterArgs,
     state: State<'_, AppState>,
 ) -> Result<Vec<u32>, String> {
-    let guard = lock_ok(&state.library);
-    let lib = guard.as_ref().ok_or("no library imported")?;
-    let f = search::Filter {
-        name_substr: filter.name_substr,
-        amp: filter.amp,
-        block: filter.block,
-        ir: filter.ir,
-        sic: filter.sic,
-        level_lt: filter.level_lt,
-        level_gt: filter.level_gt,
-    };
-    let records: Vec<search::PresetRecord> =
-        lib.records.iter().map(|r| r.search_record()).collect();
-    Ok(search::filter_records(&records, &f)
-        .into_iter()
-        .map(|r| r.list_index)
-        .filter(|&i| i != u32::MAX)
-        .collect())
+    let library = state.library.clone();
+    blocking(move || {
+        let guard = lock_ok(&library);
+        let lib = guard.as_ref().ok_or("no library imported")?;
+        let f = search::Filter {
+            name_substr: filter.name_substr,
+            amp: filter.amp,
+            block: filter.block,
+            ir: filter.ir,
+            sic: filter.sic,
+            level_lt: filter.level_lt,
+            level_gt: filter.level_gt,
+        };
+        let records: Vec<search::PresetRecord> =
+            lib.records.iter().map(|r| r.search_record()).collect();
+        Ok(search::filter_records(&records, &f)
+            .into_iter()
+            .map(|r| r.list_index)
+            .filter(|&i| i != u32::MAX)
+            .collect())
+    })
+    .await
 }
 
 /// Preview a bulk operation over a selection — per-preset change list, writes nothing.
+/// Runs over the selection's decoded presets, so on the blocking pool (#271).
 #[tauri::command]
-pub(crate) fn bulk_dry_run(
+pub(crate) async fn bulk_dry_run(
     selection: Vec<u32>,
     op: bulk_cmd::OpSpec,
     state: State<'_, AppState>,
 ) -> Result<Vec<bulkrun::DryRunEntry>, String> {
-    let guard = lock_ok(&state.library);
-    let lib = guard.as_ref().ok_or("no library imported")?;
-    let targets = targets_from_library(lib, &selection)?;
-    let operation = bulk_cmd::build_operation(&op)?;
-    Ok(bulkrun::dry_run(&targets, operation.as_ref()))
+    let library = state.library.clone();
+    blocking(move || {
+        let guard = lock_ok(&library);
+        let lib = guard.as_ref().ok_or("no library imported")?;
+        let targets = targets_from_library(lib, &selection)?;
+        let operation = bulk_cmd::build_operation(&op)?;
+        Ok(bulkrun::dry_run(&targets, operation.as_ref()))
+    })
+    .await
 }
 #[derive(serde::Serialize)]
 pub(crate) struct BulkApplyResult {
@@ -157,8 +168,8 @@ pub(crate) struct BulkApplyResult {
 /// the run so it can be reverted. Runs with the app's HID seize released (the io
 /// adapters open their own connections).
 #[tauri::command]
-pub(crate) async fn bulk_apply(
-    app: tauri::AppHandle,
+pub(crate) async fn bulk_apply<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     selection: Vec<u32>,
     op: bulk_cmd::OpSpec,
     backup: bool,

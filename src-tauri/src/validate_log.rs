@@ -195,6 +195,7 @@ impl ValidationRow {
         }
     }
 
+    #[cfg(any(test, feature = "e2e"))]
     pub fn with_flags(mut self, clamped: bool, persist_mismatch: Option<bool>) -> Self {
         self.clamped = clamped;
         self.persist_mismatch = persist_mismatch;

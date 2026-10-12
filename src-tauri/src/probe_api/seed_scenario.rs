@@ -132,7 +132,7 @@ fn record_seeded(list_index: u32, name: &str) {
 /// original bug.
 // Its one production caller (`e2e_server::e2e_clear_preset`) is behind `--features e2e`,
 // so a plain lib build sees no user; the unit test below is the other caller.
-#[allow(dead_code)]
+#[cfg(any(test, feature = "e2e"))]
 pub(crate) fn forget_seeded(list_index: u32) {
     let mut map = read_manifest();
     if map.remove(&list_index.to_string()).is_some() {
@@ -142,19 +142,15 @@ pub(crate) fn forget_seeded(list_index: u32) {
 
 fn write_manifest(map: &std::collections::BTreeMap<String, String>) {
     let path = manifest_path();
-    let tmp = path.with_extension("json.tmp");
-    // Write-then-rename (atomic within a directory): a plain `fs::write` truncates in
-    // place, so a kill mid-write (this harness does get killed) would leave partial JSON
-    // that reads back as "nothing was ever seeded" — dropping every lease at once, the
-    // exact stranding this manifest exists to prevent, just for all slots instead of one.
-    let ok = path
-        .parent()
-        .is_none_or(|d| std::fs::create_dir_all(d).is_ok())
-        && serde_json::to_vec(map).is_ok_and(|b| std::fs::write(&tmp, b).is_ok())
-        && std::fs::rename(&tmp, &path).is_ok();
-    if !ok {
-        let _ = std::fs::remove_file(&tmp);
-        eprintln!("[seed] could not write the seed manifest at {path:?} — a fixture saved by a spec may need a manual clear");
+    // Atomic (`fsutil::write_atomic`): a plain `fs::write` truncates in place, so a kill
+    // mid-write (this harness does get killed) would leave partial JSON that reads back as
+    // "nothing was ever seeded" — dropping every lease at once, the exact stranding this
+    // manifest exists to prevent, just for all slots instead of one.
+    let ok = serde_json::to_vec(map)
+        .map_err(|e| e.to_string())
+        .and_then(|b| crate::fsutil::write_atomic(&path, &b));
+    if let Err(e) = ok {
+        eprintln!("[seed] could not write the seed manifest at {path:?} ({e}) — a fixture saved by a spec may need a manual clear");
     }
 }
 

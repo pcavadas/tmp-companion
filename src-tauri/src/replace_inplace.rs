@@ -424,6 +424,43 @@ pub(crate) fn guarded_clear(list_index: u32, expect_name: &str) -> Result<(), St
     Session::connect()?.clear_user_preset(list_index) // session translates list → device slot
 }
 
+/// Reorder the user preset at LIST index `from` to `to` (`moveUserPreset`), but only if
+/// `from` reads `expect_name` — the same expected-name guard [`guarded_clear`] gives a
+/// clear (#267). The list read and the move share ONE connection (the shape
+/// `probe_move_preset` validated on hardware), and both address list-index space;
+/// `Session::move_user_preset` adds the device +1.
+pub(crate) fn guarded_move(from: u32, to: u32, expect_name: &str) -> Result<(), String> {
+    let mut s = Session::connect()?;
+    // Tolerant read, fail-closed: a slot missing from a tail-truncated list refuses.
+    move_guard(&s.list_my_presets()?, from, to, expect_name)?;
+    s.move_user_preset(from, to)
+}
+
+/// The pure half of [`guarded_move`]: refuse unless list index `from` holds
+/// `expect_name`, and refuse a no-op move.
+fn move_guard(
+    list: &[crate::PresetEntry],
+    from: u32,
+    to: u32,
+    expect_name: &str,
+) -> Result<(), String> {
+    if from == to {
+        return Err(format!(
+            "guarded move refused: from == to ({from}), nothing to reorder"
+        ));
+    }
+    let cur = list
+        .iter()
+        .find(|p| p.slot == from)
+        .map(|p| p.name.as_str());
+    if cur != Some(expect_name) {
+        return Err(format!(
+            "guarded move refused: list index {from} reads {cur:?}, expected {expect_name:?}"
+        ));
+    }
+    Ok(())
+}
+
 /// Probe (AC5): restore a backup snapshot to the device IN PLACE — onto the
 /// snapshot's original slot, preserving its Song link. Reads the snapshot JSON,
 /// validates it is a faithful offline backup (refuses `usb-partial` — re-importing
@@ -451,6 +488,27 @@ mod tests {
         json!({"audioGraph": {"template": "gtrSeries", "guitarNodes": {"G1": [
             {"nodeId": "ACD_Comp", "FenderId": "ACD_Comp", "dspUnitParameters": {"bypass": false}}
         ]}}, "info": {"displayName": "Big Rig", "preset_id": id}})
+    }
+
+    fn entry(slot: u32, name: &str) -> crate::PresetEntry {
+        crate::PresetEntry {
+            slot,
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn a_move_proceeds_only_when_the_source_reads_the_expected_name() {
+        let list = [entry(4, "Clean"), entry(5, "Lead")];
+        assert!(move_guard(&list, 5, 9, "Lead").is_ok());
+        // The list-index/device-slot off-by-one: index 4 holds a DIFFERENT preset.
+        let err = move_guard(&list, 4, 9, "Lead").unwrap_err();
+        assert!(err.contains("reads Some(\"Clean\")"), "{err}");
+        // Missing from the read (truncated list or empty slot): fail closed.
+        assert!(move_guard(&list, 6, 9, "Lead").is_err());
+        assert!(move_guard(&list, 5, 5, "Lead")
+            .unwrap_err()
+            .contains("from == to"));
     }
 
     #[test]

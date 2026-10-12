@@ -1,5 +1,4 @@
 //! "Copy blocks between presets" — ordered replace/insert/remove op apply.
-#![allow(clippy::too_many_arguments)]
 use crate::blockcaps::{group_roster, Roster};
 use crate::*;
 

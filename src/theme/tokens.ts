@@ -12,7 +12,7 @@
 import type { CSSProperties } from "react";
 
 // ---------------------------------------------------------------------------
-// Font families. Three Google-Fonts families.
+// Font families. Three bundled families (./fonts, self-hosted for the CSP).
 // ---------------------------------------------------------------------------
 export const FONT_SERIF = "'Source Serif 4', Georgia, serif";
 export const FONT_SANS = "'Inter', system-ui, sans-serif";

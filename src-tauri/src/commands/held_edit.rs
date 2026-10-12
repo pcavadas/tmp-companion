@@ -1,5 +1,4 @@
 //! Held-session single/many replace helpers shared by the block-edit writers.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 /// Edit ONE preset on a HELD session (the validated fast path, E1): load it, re-arm so

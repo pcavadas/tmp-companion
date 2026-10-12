@@ -114,6 +114,7 @@ pub(crate) fn decode_scene_list(body: &[u8]) -> Option<Vec<String>> {
 /// this body is not a `currentPresetDataChanged`, or the partial truncated before
 /// a complete `audioGraph.template`. Thin wrapper over [`decode_current_preset_live`]
 /// so a body is parsed ONCE when both the scene trio and the graph are wanted.
+#[cfg(test)]
 pub(crate) fn decode_current_preset_data(body: &[u8]) -> Option<ActiveGraph> {
     decode_current_preset_live(body)?.graph
 }

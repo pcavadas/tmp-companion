@@ -1,4 +1,7 @@
 use super::super::*;
+// The song/setlist commands are not re-exported at the crate root (the app registers every
+// command by path, `app_commands.rs`); these tests register them by bare name.
+use crate::commands::{setlists::*, songs::*};
 use tauri::test::MockRuntime;
 use tauri::WebviewWindow;
 

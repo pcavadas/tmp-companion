@@ -15,9 +15,29 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tauri::State;
 
-// Several builders/methods are exercised only from M2/M3 onward; silence
-// dead-code noise until then without weakening warnings elsewhere.
-#[allow(dead_code)]
+// The one app command list (`app_commands.rs`) and the one way to register it. Declared
+// ahead of every `mod` below so both registration sites (`bootstrap`, `e2e_server`) see
+// the macros in textual scope.
+#[macro_use]
+mod app_commands;
+#[cfg(test)]
+mod command_surface_tests;
+
+/// `tauri::generate_handler!` over every app command in `app_commands.rs`, followed by
+/// `$extra` (the e2e server's `e2e_*` helpers; the app passes none).
+macro_rules! app_invoke_handler {
+    ($($extra:tt)*) => {
+        with_app_commands!(app_invoke_handler_with!($($extra)*))
+    };
+}
+
+/// The callback `app_invoke_handler!` hands to `with_app_commands!`.
+macro_rules! app_invoke_handler_with {
+    (($($extra:tt)*) [$($m:ident :: $f:ident),* $(,)?]) => {
+        ::tauri::generate_handler![$(crate::commands::$m::$f,)* $($extra)*]
+    };
+}
+
 mod audio;
 mod audiograph;
 mod audition;
@@ -36,17 +56,16 @@ mod e2e_server;
 #[cfg(feature = "e2e")]
 mod e2e_ui_bridge;
 mod footswitch;
+// Crash-safe writes for user data (`write_atomic`), and the app config dir for the CLI.
+mod fsutil;
 // Benefit-aware headroom trade + the clamp-error taxonomy (pure; the device half is in
 // `leveller.rs`).
 mod headroom_trade;
-#[allow(dead_code)]
 mod hid;
 mod ir;
-#[allow(dead_code)]
 mod leveller;
 mod library;
 mod lint;
-#[allow(dead_code)]
 mod lufs;
 mod migration;
 mod monitor;
@@ -56,7 +75,6 @@ mod preset_io;
 mod presetmeta;
 mod probe_api;
 mod profiles;
-#[allow(dead_code)]
 mod proto;
 mod psd;
 mod rename;
@@ -64,7 +82,6 @@ mod replace_inplace;
 mod saved_blocks;
 mod scenes;
 mod search;
-#[allow(dead_code)]
 mod session;
 #[cfg(any(test, feature = "e2e"))]
 mod sim_device;
@@ -79,11 +96,9 @@ pub(crate) mod test_support;
 pub mod topologies;
 // Lossless device traces for online e2e runs; inert unless `TMP_TRACE_DIR` is set.
 // Most of it is reached only from the e2e server and the seed, so default builds see it unused.
-#[allow(dead_code)]
 mod trace;
 // P5 external validation: the JSON-lines expectation log the measurement seams append
 // to when `TMP_E2E_VALIDATE_LOG` is set. Inert (and unallocating) otherwise.
-#[allow(dead_code)]
 mod validate_log;
 mod variants;
 mod watcher;
@@ -134,9 +149,8 @@ pub use session::{ActiveGraph, GraphNode, Stage};
 // ~20 probe_api call sites and the leveling commands keep addressing it as `crate::read_slot_preset_*`.
 pub(crate) use slot_read::*;
 
-#[macro_use]
-mod commands;
 mod bootstrap;
+mod commands;
 pub use bootstrap::run;
 // The command modules' fns/types are crate-internal; this seam makes them nameable at
 // the crate root for `bootstrap::run`'s `generate_handler!` and the e2e handler list.
@@ -146,8 +160,8 @@ pub use bootstrap::run;
 // as dead code); the remaining modules expose only `pub(crate)` items.
 pub use commands::{bulk_replace::*, copy_apply::*, level_scenes::*};
 pub(crate) use commands::{
-    device::*, doctor::*, edit_tools::*, held_edit::*, level_footswitch::*, level_preset::*,
-    library::*, media::*, migration::*, presets::*, setlists::*, settings::*, songs::*, support::*,
+    device::*, held_edit::*, level_footswitch::*, level_preset::*, library::*, media::*,
+    presets::*, settings::*,
 };
 
 /// Lock a state mutex, recovering the guard if a previous holder panicked and poisoned it

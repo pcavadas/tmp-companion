@@ -348,6 +348,7 @@ impl Session {
     /// (field 116 → presetJson 1) payload. For the in-burst AC1 spike
     /// (`connect_with_burst_request`). Keeps pumping while the payload grows so a
     /// large multi-packet preset is fully reassembled before we read it.
+    #[cfg(test)] // the in-burst slot-read spike; only the wire golden runs it
     pub fn harvest_slot_read(&mut self) -> Result<Vec<u8>, String> {
         let best = |s: &Self| s.try_preset_data_json().or_else(|| s.try_export_json());
         // Kept alive: the old "device stops at the same byte count" baseline was measured on

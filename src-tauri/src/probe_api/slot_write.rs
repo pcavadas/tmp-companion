@@ -685,10 +685,12 @@ pub fn probe_bulk_apply(
     let targets = targets_from_library(&lib, &selection)?;
     let operation = bulk_cmd::build_operation(&op)?;
     let mut io = io_for_path(op.io_path());
-    let backup_dir = std::env::temp_dir().join(format!(
-        "tmp-companion-probe-backups-{}",
-        std::process::id()
-    ));
+    // The revert snapshots live with the app's own (`backups/` under its config dir), not
+    // in the temp dir the OS may clean between the apply and a later revert (#280).
+    let backup_dir = crate::fsutil::app_config_dir_for_cli()
+        .ok_or("cannot resolve the app config dir for the revert snapshots (HOME/APPDATA unset)")?
+        .join("backups")
+        .join(format!("probe-{}", std::process::id()));
 
     let report = bulkrun::apply(&targets, operation.as_ref(), io.as_mut(), &backup_dir);
     let mut out = format!(

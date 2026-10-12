@@ -149,7 +149,7 @@ pub fn build_operation(spec: &OpSpec) -> Result<Box<dyn Operation>, String> {
 pub struct StoredRun {
     pub report: RunReport,
     /// Human label of the op that ran — surfaced in the run-history UI (Phase 1).
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "for the run-history UI, which is not built yet")]
     pub op_label: String,
 }
 

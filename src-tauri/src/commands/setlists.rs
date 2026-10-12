@@ -1,5 +1,4 @@
 //! Setlist CRUD + membership Tauri commands.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 // ─── Song & Setlist CRUD for the device-backed Songs page ─────────────────────

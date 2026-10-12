@@ -1,5 +1,4 @@
 //! Audition render + spectrum/EQ-match measurement Tauri commands.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 // ─── Audition (MEASURE — re-amp render → WAV data URL for playback) ──────────────
@@ -56,8 +55,8 @@ pub(crate) fn wav_bytes(samples: &[f32], rate: u32) -> Result<Vec<u8>, String> {
 /// the frontend `<audio>` element can play (MEASURE — drives the device,
 /// HW-pending). A/B and before/after are a later refinement (render two + compare).
 #[tauri::command]
-pub(crate) async fn audition_render(
-    app: tauri::AppHandle,
+pub(crate) async fn audition_render<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     slot: u32,
     topology_id: Option<String>,
     state: State<'_, AppState>,
@@ -91,8 +90,8 @@ pub(crate) struct SpectrumResult {
 /// Re-amp a preset and analyze its captured spectrum (MEASURE — drives the device;
 /// HW-validation pending). Reuses the leveller's validated capture sequence.
 #[tauri::command]
-pub(crate) async fn spectrum_scan(
-    app: tauri::AppHandle,
+pub(crate) async fn spectrum_scan<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     slot: u32,
     topology_id: Option<String>,
     state: State<'_, AppState>,
@@ -122,8 +121,8 @@ pub(crate) struct EqMatchResult {
 /// Re-amp two presets and compute the EQ-match from `source` toward `reference`
 /// (MEASURE — drives the device; HW-validation pending).
 #[tauri::command]
-pub(crate) async fn eq_match(
-    app: tauri::AppHandle,
+pub(crate) async fn eq_match<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     source_slot: u32,
     reference_slot: u32,
     topology_id: Option<String>,
@@ -154,8 +153,8 @@ pub(crate) async fn eq_match(
 /// Re-amp a target + candidate presets and rank the candidates by spectral distance
 /// to the target, nearest first ("best match" — MEASURE; HW-pending).
 #[tauri::command]
-pub(crate) async fn rank_candidates(
-    app: tauri::AppHandle,
+pub(crate) async fn rank_candidates<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     target_slot: u32,
     candidate_slots: Vec<u32>,
     topology_id: Option<String>,

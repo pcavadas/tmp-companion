@@ -1,5 +1,4 @@
 //! Footswitch (engaged-state) leveling command + job resolution.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 // ───────────────────────── Footswitch (engaged-state) leveling ─────────────────────────
@@ -214,12 +213,14 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         profile_id.as_deref(),
         calibration_lufs,
     )?;
-    let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
     let offset = playback_offset_for(&app, topology_id.as_deref());
     FOOTSWITCH_LEVEL_CANCEL.store(false, SeqCst);
     let app_evt = app.clone();
 
     with_released_seize(state.session.clone(), move || {
+        // Decode the stimulus WAV here, off the async runtime (#271), as
+        // `level_scenes_apply_batched` does; a bad file still fails before any device read.
+        let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
         // THE single field-8 read: it resolves every job AND is the planner's scene-overlay

@@ -159,7 +159,13 @@ const PAUSE_WAIT_STEP_MS: u64 = 25;
 /// release→work→reconnect window — it cannot interleave a seize between the command's
 /// own fresh connections (which would break the leveller's latch model). Runs on
 /// unwind too, so a command panic still resumes the monitor.
-pub(crate) struct MonitorPauseGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+pub(crate) struct MonitorPauseGuard(
+    #[expect(
+        dead_code,
+        reason = "held only for its Drop, which releases the pause lock"
+    )]
+    std::sync::MutexGuard<'static, ()>,
+);
 
 impl Drop for MonitorPauseGuard {
     fn drop(&mut self) {
@@ -260,6 +266,19 @@ where
     tauri::async_runtime::spawn_blocking(move || with_released_seize_blocking(arc, work))
         .await
         .map_err(|e| format!("device task failed: {e}"))?
+}
+
+/// Run blocking work that does NOT touch the device (a library scan, a file decode, a
+/// bounded monitor wait) on the blocking pool instead of an async worker or the main
+/// thread (#271). The device-driving counterpart is [`with_released_seize`].
+pub(crate) async fn blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("background task failed: {e}"))?
 }
 
 /// Blocking core of [`with_released_seize`] — split out so commands that try the

@@ -1,5 +1,4 @@
 //! Profile store, loudness targets, playback level, and pickup-topology commands.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 /// A shipped pickup topology surfaced to the UI (Settings "Pickups" dropdown).
@@ -49,8 +48,8 @@ pub(crate) fn get_store<R: tauri::Runtime>(
 
 /// Replace the profile list (keeps the per-slot assignment map intact).
 #[tauri::command]
-pub(crate) fn save_profiles(
-    app: tauri::AppHandle,
+pub(crate) fn save_profiles<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     profiles: Vec<profiles::Profile>,
 ) -> Result<(), String> {
     let old = self::profiles::load(&app)?;
@@ -72,8 +71,8 @@ pub(crate) fn save_profiles(
 
 /// Replace the user's loudness targets (the named live levels edited in Settings).
 #[tauri::command]
-pub(crate) fn save_targets(
-    app: tauri::AppHandle,
+pub(crate) fn save_targets<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     targets: Vec<profiles::Target>,
 ) -> Result<(), String> {
     let mut store = self::profiles::load(&app)?;
@@ -83,8 +82,8 @@ pub(crate) fn save_targets(
 
 /// Set the playback loudness leveling compensates for (Settings "Playback level").
 #[tauri::command]
-pub(crate) fn set_playback_level(
-    app: tauri::AppHandle,
+pub(crate) fn set_playback_level<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     level: profiles::PlaybackLevel,
 ) -> Result<(), String> {
     let mut store = self::profiles::load(&app)?;

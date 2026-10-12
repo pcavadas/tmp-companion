@@ -1,5 +1,4 @@
 //! Bulk Block Edit — live per-node replace across a selection + discovery.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 /// The per-node edit Bulk Block Edit applies on the held session (matches the TS union

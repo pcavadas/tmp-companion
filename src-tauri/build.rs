@@ -1,5 +1,21 @@
 use std::path::Path;
 
+// The one app command list, shared with `bootstrap::run` and the e2e server (#270).
+include!("src/app_commands.rs");
+
+/// The callback `with_app_commands!` expands into: the bare command names.
+macro_rules! command_names {
+    (() [$($m:ident :: $f:ident),* $(,)?]) => {
+        &[$(stringify!($f)),*]
+    };
+}
+
+/// Every app command, by name. Declaring them in the app manifest makes `tauri_build`
+/// generate an `allow-<command>` / `deny-<command>` permission for each, so
+/// `capabilities/default.json` (not just the plugins' permissions) governs what the
+/// webview may invoke (#268). Without a manifest every registered command is callable.
+const APP_COMMANDS: &[&str] = with_app_commands!(command_names!());
+
 fn main() {
     // Fresh clone / git worktree: `dist/` is gitignored, so a bare
     // `cargo {test,clippy,build}` reaches `tauri_build::build()` →
@@ -38,5 +54,10 @@ fn main() {
         println!("cargo:rustc-link-arg-bins=/IGNORE:4075");
     }
 
-    tauri_build::build()
+    println!("cargo:rerun-if-changed=src/app_commands.rs");
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS)),
+    )
+    .expect("tauri_build failed");
 }

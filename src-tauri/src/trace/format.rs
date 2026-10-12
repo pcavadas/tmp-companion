@@ -83,6 +83,7 @@ impl Line {
     }
 
     /// A finite float, or `null` (JSON has no NaN or infinity).
+    #[cfg(test)]
     pub(crate) fn f64(self, key: &str, v: f64) -> Line {
         let json = num_json(v);
         self.raw(key, &json)
@@ -236,6 +237,7 @@ pub(crate) fn utc_millis(since_epoch: std::time::Duration) -> String {
 /// Read a trace back: one JSON value per line, in order. A last line that is cut (no
 /// trailing newline, or not valid JSON) is dropped; a bad line anywhere else is an
 /// error, because only the writer's last line can be cut.
+#[cfg(test)]
 pub(crate) fn read_trace(text: &str) -> Result<Vec<serde_json::Value>, String> {
     let mut lines: Vec<&str> = text.split('\n').collect();
     // `split` leaves a final "" after a trailing newline; anything else there is a line

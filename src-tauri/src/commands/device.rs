@@ -143,7 +143,9 @@ pub(crate) struct SampleInfo {
 
 /// List the synthetic stimulus samples bundled in the app's resource dir.
 #[tauri::command]
-pub(crate) fn list_samples(app: tauri::AppHandle) -> Result<Vec<SampleInfo>, String> {
+pub(crate) fn list_samples<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<SampleInfo>, String> {
     use tauri::Manager;
     let dir = app
         .path()

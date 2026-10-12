@@ -1,5 +1,4 @@
 //! Per-scene leveling commands + setlist common-target leveling.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 /// One resolved amp knob: `(group_id, node_id, current_outputLevel)`.
@@ -509,8 +508,8 @@ fn level_one_scene_legacy(
 /// is re-asserted on every connection). Each scene is a self-contained leveling pass.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn level_scenes_apply(
-    app: tauri::AppHandle,
+pub(crate) async fn level_scenes_apply<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     slot: u32,
     scene_slots: Vec<u32>,
@@ -1641,8 +1640,8 @@ pub(crate) struct SetlistJobEntry {
 /// target just below the quietest, and applies it to all. Like `level_preset`, it
 /// releases the app's seize, runs, then re-establishes the UI session.
 #[tauri::command]
-pub(crate) async fn level_setlist(
-    app: tauri::AppHandle,
+pub(crate) async fn level_setlist<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     entries: Vec<SetlistJobEntry>,
     save: bool,
@@ -1696,8 +1695,8 @@ pub(crate) async fn level_setlist(
 /// and return the per-scene gain offsets to a common target (MEASURE — drives the
 /// device; HW-pending). Supersedes hand-entered C values when hardware is present.
 #[tauri::command]
-pub(crate) async fn level_scenes(
-    app: tauri::AppHandle,
+pub(crate) async fn level_scenes<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     slot: u32,
     scene_count: u32,
     topology_id: Option<String>,

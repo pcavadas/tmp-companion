@@ -92,6 +92,8 @@ e2e/fixtures/test.ts	lane
 e2e/fixtures/port.ts	lane
 e2e/fixtures/scenario-presets.json	lane
 src-tauri/src/e2e_server.rs	lane
+# The one command list the e2e server (and the app) registers.
+src-tauri/src/app_commands.rs	lane
 src-tauri/src/e2e_ui_bridge.rs	lane
 src-tauri/src/validate_log.rs	lane
 src-tauri/src/bin/e2e_server.rs	lane
@@ -108,6 +110,8 @@ src-tauri/src/lufs.rs	level
 src-tauri/src/psd.rs	level
 src-tauri/src/param_class.rs	level
 src-tauri/src/profiles.rs	level
+# Atomic writes of user data; its device-run reach is the settings store a level run saves.
+src-tauri/src/fsutil.rs	level
 src-tauri/src/topologies.rs	level
 src-tauri/src/commands/doctor.rs	level
 src-tauri/src/commands/level_preset.rs	level

@@ -995,26 +995,8 @@ pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio
     )
 }
 
-/// HW-probe MEASURE seam: the captured loudness of `slot` (or of the CURRENT
-/// preset when `slot` is `None`) at its OWN stored level, optionally after
-/// recalling the 0-based `scenes[]` wire index `scene`.
-///
-/// Delegates to `capture_full_at` so a diagnostic arm exercises the EXACT
-/// production choreography (lean handshakes + the HW-validated settles) rather
-/// than a parallel copy of it. `probe --measure-scene` used to hand-roll its own
-/// — two back-to-back FULL `Session::connect()` handshakes with an early engage —
-/// which drops `set_reamp_mode(true)` and yields silent captures that read as
-/// device flakiness (the "no signal captured" class in `notes/leveling.md`).
-pub fn capture_loudness_asis(
-    slot: Option<u32>,
-    scene: Option<u32>,
-    stimulus: &[f32],
-) -> Result<lufs::Loudness, String> {
-    processed_loudness(capture_asis_full(slot, scene, stimulus))
-}
-
-/// Repro instrumentation: the FULL multi-channel as-is capture behind
-/// [`capture_loudness_asis`], so a probe can report EVERY channel's loudness and
+/// Repro instrumentation: the FULL multi-channel as-is capture, run through
+/// `capture_full_at`'s production choreography, so a probe can report EVERY channel's loudness and
 /// make the loudest-channel argmax observable instead of inferred.
 pub fn capture_asis_full(
     slot: Option<u32>,
@@ -2389,6 +2371,13 @@ pub(crate) const KNOB_TOL_LU: f64 = 0.3;
 pub(crate) const ACCEPT_TOL_LU: f64 = 0.25;
 const KNOB_MAX_ITERS: u32 = 6;
 const LIVE_SETTLE_MS: u64 = 350;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "retired controller, kept for the tests that show why hybrid won"
+    )
+)]
 const LIVE_MAX_ITERS: u32 = 5;
 
 /// Live-controller flavors. Only `LiveHybrid` ships (the batched runner's
@@ -2403,8 +2392,22 @@ const LIVE_MAX_ITERS: u32 = 5;
 #[serde(rename_all = "camelCase")]
 pub enum SceneLevelStrategy {
     LiveSecant,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retired controller, kept for the tests that show why hybrid won"
+        )
+    )]
     LiveProportional,
     LiveHybrid,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retired controller, kept for the tests that show why hybrid won"
+        )
+    )]
     FractalStyle,
     /// One preset load + one stream pair per preset; one re-amp engage per
     /// scene; trust-region slope jumps (`level_scenes_live_batched`).
@@ -3027,6 +3030,13 @@ impl ReampRunGuard {
     }
 
     /// The normal run end: the full ladder, always, with its verdict.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no run reads the verdict yet; every run ends through Drop"
+        )
+    )]
     pub(crate) fn finish(mut self) -> ReampOffOutcome {
         self.armed = false;
         let out = reamp_off_ladder(self.tag, &mut self.connect);

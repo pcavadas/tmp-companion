@@ -6,6 +6,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
+import "./theme/fonts";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { installGlobalErrorLogging } from "./lib/log";

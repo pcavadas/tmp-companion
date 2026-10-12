@@ -411,7 +411,8 @@ export const readLibraryViaBackup = (): Promise<BackupReadResult> =>
 /** Copy feature — apply each target preset's staged structural ops (replace / insert /
  * remove) LIVE on a held session, saving a preset only when all its ops confirmed.
  * DEVICE WRITE — only after the backup acknowledgment. Streams a {@link CopyApplyItem}
- * per preset as it goes; {@link cancelCopyApply} stops before the next preset. */
+ * per preset as it goes. (The backend's `cancel_copy_apply` has no caller yet, so the
+ * webview is denied it; see `UNWIRED` in `src-tauri/src/command_surface_tests.rs`.) */
 export const copyApply = (
   jobs: CopyJob[],
   save: boolean,

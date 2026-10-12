@@ -1,5 +1,4 @@
 //! Song CRUD + song-assignment device-write Tauri commands.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 /// Read every Song's metadata (name / notes / BPM) for the Songs overview — the

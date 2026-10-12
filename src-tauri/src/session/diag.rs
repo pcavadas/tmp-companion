@@ -152,6 +152,7 @@ impl Session {
             .join(" ")
     }
 
+    #[cfg(test)] // the in-burst slot-read spike; only the wire golden runs it
     pub(super) fn try_export_json(&self) -> Option<Vec<u8>> {
         // Largest wins: a complete multi-packet stream beats a truncated/early one.
         self.streams()

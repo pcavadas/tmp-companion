@@ -48,6 +48,7 @@ const CLOSE_FLUSH_WAIT: Duration = Duration::from_millis(50);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Backend {
     Device,
+    #[cfg(any(test, feature = "e2e"))]
     Sim,
 }
 
@@ -55,6 +56,7 @@ impl Backend {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Backend::Device => "device",
+            #[cfg(any(test, feature = "e2e"))]
             Backend::Sim => "sim",
         }
     }
@@ -180,7 +182,6 @@ struct Drops {
 /// [`Recorder::flush`].
 pub(crate) struct Recorder {
     tx: Sender<Msg>,
-    t0: Instant,
     next_sid: AtomicU64,
     next_call: AtomicU64,
     next_cap: AtomicU64,
@@ -211,7 +212,6 @@ impl Recorder {
         let (done_tx, done_rx) = bounded(MAX_CAPTURES_IN_FLIGHT);
         let rec = Arc::new(Recorder {
             tx,
-            t0,
             next_sid: AtomicU64::new(1),
             next_call: AtomicU64::new(1),
             next_cap: AtomicU64::new(1),
@@ -317,6 +317,7 @@ impl Recorder {
     }
 
     /// Wait (up to `wait`) for every handed-over capture to be written, then flush.
+    #[cfg(test)]
     pub(crate) fn drain(&self, wait: Duration) {
         let deadline = Instant::now() + wait;
         while self.captures_in_flight.load(Ordering::Acquire) > 0 && Instant::now() < deadline {

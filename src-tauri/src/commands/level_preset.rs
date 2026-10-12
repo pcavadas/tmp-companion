@@ -1,5 +1,4 @@
 //! Preset-level (`presetLevel`) leveling command + stimulus resolution + calibration.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 /// One leveling job from the UI: a preset slot + the LUFS target to hit.
@@ -567,8 +566,8 @@ mod activity_tests {
 /// clip/stimulus-ceiling caveats. The device must be in normal mode with the
 /// guitar in the front INSTRUMENT input.
 #[tauri::command]
-pub(crate) async fn calibrate_profile(
-    app: tauri::AppHandle,
+pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     profile_id: String,
     secs: f32,

@@ -123,6 +123,7 @@ pub(super) const SLOT_READ_REQUEST_MS: u64 = 200;
 pub(super) const SLOT_READ_MAX_WINDOWS: u32 = 24;
 pub(super) const SLOT_READ_WINDOW_MS: u64 = 150;
 /// Round cap of the field-3 slot harvest.
+#[cfg(test)] // the in-burst slot-read spike; only the wire golden runs it
 pub(super) const SLOT_HARVEST_MAX_WINDOWS: u32 = 28;
 /// One beat of the rich-harvest warm-up.
 pub(super) const RICH_WARMUP_BEAT_MS: u64 = 120;

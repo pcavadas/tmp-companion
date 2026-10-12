@@ -1,5 +1,4 @@
 //! Firmware-migration scan/plan/apply + loudness audit + snapshot listing.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 // ─── Firmware-migration analysis over the imported library (no device) ────────────
@@ -15,13 +14,22 @@ pub(crate) struct MigrationRow {
 
 /// Scan the imported library against a target firmware's `target_catalog` (valid block
 /// model ids) and list presets that reference models the target no longer has
-/// (OFFLINE read-only). The user resolves them via Block Replace.
+/// (OFFLINE read-only). The user resolves them via Block Replace. Parses every record's
+/// JSON, so it runs on the blocking pool, not the main thread (#271).
 #[tauri::command]
-pub(crate) fn migration_scan(
+pub(crate) async fn migration_scan(
     target_catalog: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<MigrationRow>, String> {
-    let guard = lock_ok(&state.library);
+    let library = state.library.clone();
+    blocking(move || migration_rows(&library, &target_catalog)).await
+}
+
+fn migration_rows(
+    library: &Mutex<Option<library::Library>>,
+    target_catalog: &[String],
+) -> Result<Vec<MigrationRow>, String> {
+    let guard = lock_ok(library);
     let lib = guard.as_ref().ok_or("no library imported")?;
     // The "old" catalog is every block model actually used across the library.
     let mut in_use: std::collections::BTreeSet<String> = Default::default();
@@ -31,7 +39,7 @@ pub(crate) fn migration_scan(
         }
     }
     let old: Vec<String> = in_use.into_iter().collect();
-    let diff = migration::diff_catalogs(&old, &target_catalog);
+    let diff = migration::diff_catalogs(&old, target_catalog);
     let removed: std::collections::HashSet<String> = diff.removed.into_iter().collect();
     // Index by array position (stable identity), then map results back to records.
     let presets: Vec<(u32, serde_json::Value)> = lib
@@ -94,14 +102,19 @@ fn compute_migration_plan(
 /// Preview the renamed/removed/added block ids + the planned swaps for a
 /// target firmware catalog and a rename map (pure, no device).
 #[tauri::command]
-pub(crate) fn migration_plan(
+pub(crate) async fn migration_plan(
     target_catalog: Vec<String>,
     rename_map: std::collections::BTreeMap<String, String>,
     state: State<'_, AppState>,
 ) -> Result<MigrationPlan, String> {
-    let guard = lock_ok(&state.library);
-    let lib = guard.as_ref().ok_or("no library imported")?;
-    Ok(compute_migration_plan(lib, &target_catalog, &rename_map))
+    // Parses every record's JSON: the blocking pool, not the main thread (#271).
+    let library = state.library.clone();
+    blocking(move || {
+        let guard = lock_ok(&library);
+        let lib = guard.as_ref().ok_or("no library imported")?;
+        Ok(compute_migration_plan(lib, &target_catalog, &rename_map))
+    })
+    .await
 }
 
 /// One preset's migration-apply outcome.
@@ -139,11 +152,11 @@ pub(crate) fn snapshot_before_migrate(
 /// (Block Replace defaults) and re-import OFFLINE in place. `dry_run` previews the swap
 /// counts without writing (HW-pending — device write gated by the read-only policy).
 #[tauri::command]
-pub(crate) async fn migration_apply(
+pub(crate) async fn migration_apply<R: tauri::Runtime>(
     target_catalog: Vec<String>,
     rename_map: std::collections::BTreeMap<String, String>,
     dry_run: bool,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<Vec<MigrationApplyRow>, String> {
     // Build the plan + each affected preset's (original json, edited bytes) under the lock.
@@ -240,8 +253,8 @@ pub(crate) async fn migration_apply(
 /// Re-amp each selected preset and flag clipping + loudness outliers (vs the
 /// median), the gain-stage audit (MEASURE — drives the device; HW-pending).
 #[tauri::command]
-pub(crate) async fn audit_loudness(
-    app: tauri::AppHandle,
+pub(crate) async fn audit_loudness<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     slots: Vec<u32>,
     topology_id: Option<String>,
     outlier_lu: f64,
@@ -280,7 +293,9 @@ pub(crate) async fn audit_loudness(
 /// List the bulk-run backup snapshots on disk (newest first), as file paths — the
 /// audit trail of what `bulk_apply` snapshotted. A missing dir = no backups.
 #[tauri::command]
-pub(crate) fn list_snapshots(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+pub(crate) fn list_snapshots<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<String>, String> {
     Ok(backup::list_snapshots_in_dir(&backup::backups_dir(&app)?)?
         .into_iter()
         .map(|p| p.to_string_lossy().into_owned())

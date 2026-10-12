@@ -255,97 +255,16 @@ pub fn load_from_path(path: &Path) -> Result<Store, String> {
     }
 }
 
-/// Best-effort clear whatever sits at `path` — a plain file OR a leftover
-/// directory (e.g. a prior failed save that somehow left a directory behind).
-/// `remove_file` errors on a directory, so a directory-shaped leftover falls
-/// through to `remove_dir_all`; a missing entry is not an error either way.
-fn remove_any(path: &Path) {
-    // `remove_file` handles the common case (a plain leftover file) and any
-    // already-gone path (its error is simply ignored). It errors on a
-    // directory, so only THEN fall back to `remove_dir_all` — checked via
-    // `path.exists()` so a merely-already-gone path doesn't trigger it too.
-    if std::fs::remove_file(path).is_err() && path.exists() {
-        let _ = std::fs::remove_dir_all(path);
-    }
-}
-
-// Test-only failure injection: when set, `save_to_path` fails its temp-file
-// write right after `File::create`. Kept above the doc comment below so that
-// comment still documents `save_to_path` (clippy: `unused_doc_comments`).
-#[cfg(test)]
-thread_local! {
-    static FAIL_TEMP_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Write the store to `path` (pretty JSON), creating parent dirs as needed.
-/// Atomic: serializes to a same-directory temp file (`<path>.tmp`), flushes +
-/// `sync_all`s it, then `rename`s it onto `path` — same-directory guarantees
-/// the rename is a same-filesystem, atomic replace (a cross-filesystem rename
-/// is not). This matters because `load_from_path`'s meter-convention
-/// migration calls this AUTOMATICALLY and swallows its error: without the
-/// atomic swap, a write that died mid-flight (full disk, permissions) would
-/// leave a truncated, unparseable `profiles.json` that the next launch's
-/// `load_from_path` would hard-fail on — turning a cosmetic persist failure
-/// into total loss of profiles/slot assignments.
-///
-/// The temp path is deterministic rather than uniquely-named, so it is
-/// self-healing against a leftover from a previous failed save: any existing
-/// entry there is cleared FIRST (`remove_any`), and again on this call's own
-/// failure path, so one bad leftover can never wedge every future save.
-///
-/// Windows preserves atomic replacement and syncs the temporary file contents,
-/// but does not sync the replacement directory entry. A successful save is not
-/// guaranteed to survive sudden power loss on Windows.
+/// Write the store to `path` (pretty JSON), creating parent dirs as needed, through
+/// [`crate::fsutil::write_atomic`]. Atomic matters here because `load_from_path`'s
+/// meter-convention migration calls this AUTOMATICALLY and swallows its error: without
+/// the temp-file swap, a write that died mid-flight (full disk, permissions) would leave
+/// a truncated, unparseable `profiles.json` that the next launch's `load_from_path`
+/// would hard-fail on, turning a cosmetic persist failure into total loss of profiles
+/// and slot assignments.
 pub fn save_to_path(path: &Path, store: &Store) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-    }
     let json = serde_json::to_string_pretty(store).map_err(|e| format!("serialize store: {e}"))?;
-
-    let mut tmp_name = path
-        .file_name()
-        .ok_or_else(|| format!("no file name in path {}", path.display()))?
-        .to_os_string();
-    tmp_name.push(".tmp");
-    let tmp = path.with_file_name(tmp_name);
-
-    remove_any(&tmp);
-    let write_result: Result<(), String> = (|| {
-        use std::io::Write;
-        let mut file =
-            std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
-        #[cfg(test)]
-        if FAIL_TEMP_WRITE.with(std::cell::Cell::get) {
-            return Err(format!("write {}: injected test failure", tmp.display()));
-        }
-        file.write_all(json.as_bytes())
-            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        file.sync_all()
-            .map_err(|e| format!("sync {}: {e}", tmp.display()))
-    })();
-    if let Err(e) = write_result {
-        remove_any(&tmp);
-        return Err(e);
-    }
-
-    std::fs::rename(&tmp, path).map_err(|e| {
-        remove_any(&tmp);
-        format!("rename {} to {}: {e}", tmp.display(), path.display())
-    })?;
-
-    // The rename above is durable on disk only once the DIRECTORY ENTRY itself
-    // is synced — without this, a power loss right after a successful rename
-    // can still lose it. `File::open` on a directory succeeds read-only, so
-    // this doesn't need write access to the parent. Unix only: Windows refuses to
-    // open a directory as a plain file (`ERROR_ACCESS_DENIED`). Windows therefore
-    // has the weaker power-loss durability guarantee documented above.
-    #[cfg(unix)]
-    if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|e| format!("sync parent dir {}: {e}", parent.display()))?;
-    }
-    Ok(())
+    crate::fsutil::write_atomic(path, json.as_bytes())
 }
 
 /// Load the store for the running app (config-dir resolved).
@@ -408,8 +327,8 @@ pub(crate) fn existing_capture_for<R: tauri::Runtime>(
 /// - ALWAYS unlink any existing capture first (a clipped/aborted run must not leave
 ///   a stale WAV paired with a fresh scalar).
 /// - `clipped` → store nothing, return `Ok(false)` (leveling falls back to synthetic).
-/// - else write the mono 48 kHz f32 samples via temp-file + rename (no torn WAV can
-///   pass an existence check) and return `Ok(true)`. A write failure is an `Err` so
+/// - else write the mono 48 kHz f32 samples via temp-file + sync + rename
+///   (`fsutil::commit`; no torn WAV can pass an existence check) and return `Ok(true)`. A write failure is an `Err` so
 ///   the caller fails the command BEFORE persisting the scalar.
 pub(crate) fn store_capture(
     config_dir: &Path,
@@ -429,7 +348,8 @@ pub(crate) fn store_capture(
     let tmp = path.with_extension("wav.part");
     let tmp_str = tmp.to_str().ok_or("capture temp path not UTF-8")?;
     crate::probe_api::stimulus::write_wav_mono(tmp_str, samples, 48_000)?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("rename capture {}: {e}", path.display()))?;
+    // Synced before the rename, so a crash can't leave a renamed but empty WAV (#280).
+    crate::fsutil::commit(&tmp, &path).map_err(|e| format!("store capture: {e}"))?;
     Ok(true)
 }
 
@@ -721,7 +641,7 @@ mod tests {
         // Scoped so the injection is off again the instant `load_from_path`
         // returns — before any assertion or cleanup — even on a panic.
         let result = {
-            let _fail = FailTempWrite::on();
+            let _fail = crate::fsutil::FailTempWrite::on();
             load_from_path(&path)
         };
 
@@ -741,108 +661,6 @@ mod tests {
             "expected the write-back to have failed, but the file changed: {raw}"
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn save_to_path_leaves_no_temp_file_behind_on_success() {
-        // Atomic save writes `<path>.tmp` then renames it onto `path` — the
-        // happy path must not leak the temp file.
-        let dir = tmp_dir("save-atomic-happy");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("profiles.json");
-        save_to_path(&path, &sample_store()).unwrap();
-        let tmp = dir.join("profiles.json.tmp");
-        assert!(!tmp.exists(), "temp file leaked after a successful save");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn save_replaces_existing_profile_and_cleans_up_failed_rename() {
-        let dir = tmp_dir("save-replace-and-rename-failure");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("profiles.json");
-        let mut store = sample_store();
-        save_to_path(&path, &store).unwrap();
-        store.playback_level = PlaybackLevel::Quiet;
-        save_to_path(&path, &store).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            serde_json::to_string_pretty(&store).unwrap()
-        );
-        assert!(!dir.join("profiles.json.tmp").exists());
-        // A non-empty destination directory makes rename fail on every platform.
-        let blocked = dir.join("blocked.json");
-        std::fs::create_dir(&blocked).unwrap();
-        std::fs::write(blocked.join("sentinel"), b"keep").unwrap();
-        assert!(save_to_path(&blocked, &store)
-            .unwrap_err()
-            .starts_with("rename "));
-        assert_eq!(std::fs::read(blocked.join("sentinel")).unwrap(), b"keep");
-        assert!(!dir.join("blocked.json.tmp").exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn save_to_path_atomic_failure_leaves_the_original_file_untouched() {
-        // Regression: `save_to_path` used to be `std::fs::write` — truncate
-        // then write. Fix 1's migration adds an AUTOMATIC write during
-        // `load_from_path` whose error is logged-and-swallowed, so a write
-        // that dies mid-flight (full disk, permissions) must NOT leave a
-        // half-written, unparseable `profiles.json` behind: the atomic
-        // temp-write + rename means a failure before the rename can only ever
-        // corrupt the (discarded) temp file, never the real one.
-        let dir = tmp_dir("save-atomic-failure");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("profiles.json");
-        let original = sample_store();
-        save_to_path(&path, &original).unwrap();
-        let original_bytes = std::fs::read(&path).unwrap();
-
-        let mut other = original.clone();
-        other.playback_level = PlaybackLevel::Quiet;
-
-        // Fail the temp-file write deterministically. Scoped so the injection
-        // is off again the instant the risky call returns — before any
-        // assertion or cleanup runs — even if `save_to_path` itself panicked.
-        let result = {
-            let _fail = FailTempWrite::on();
-            save_to_path(&path, &other)
-        };
-
-        assert!(
-            result.is_err(),
-            "a failed temp-file write must fail the save, not silently succeed"
-        );
-        assert!(
-            !dir.join("profiles.json.tmp").exists(),
-            "a failed save must clean up its temp file"
-        );
-        let reloaded_bytes = std::fs::read(&path).unwrap();
-        assert_eq!(
-            reloaded_bytes, original_bytes,
-            "a failed save must leave the original file's bytes untouched"
-        );
-        let reloaded = load_from_path(&path).unwrap();
-        assert_eq!(
-            reloaded, original,
-            "the original file must still parse to the pre-failure store"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Turns on `save_to_path`'s injected temp-write failure for this thread;
-    /// dropping it turns the injection off again, even on a panic.
-    struct FailTempWrite;
-    impl FailTempWrite {
-        fn on() -> Self {
-            FAIL_TEMP_WRITE.with(|f| f.set(true));
-            FailTempWrite
-        }
-    }
-    impl Drop for FailTempWrite {
-        fn drop(&mut self) {
-            FAIL_TEMP_WRITE.with(|f| f.set(false));
-        }
     }
 
     fn tmp_dir(tag: &str) -> PathBuf {

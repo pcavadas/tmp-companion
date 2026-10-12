@@ -68,13 +68,11 @@ pub fn apply_block(preset: &mut Value, template: &BlockTemplate) -> usize {
     })
 }
 
-/// Persist the library (Vec of entries) to `path` as pretty JSON.
+/// Persist the library (Vec of entries) to `path` as pretty JSON, atomically: a crash
+/// mid-save leaves the previous library, never a truncated one (#280).
 pub fn save_library_to_path(path: &Path, lib: &[BlockTemplate]) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
-    }
     let json = serde_json::to_string_pretty(lib).map_err(|e| format!("serialize: {e}"))?;
-    std::fs::write(path, json).map_err(|e| format!("write {}: {e}", path.display()))
+    crate::fsutil::write_atomic(path, json.as_bytes())
 }
 
 /// Load the library from `path`; a missing file is an empty library.

@@ -1,7 +1,6 @@
 //! Tauri app bootstrap — builder, logger, menu, setup, `run()` entry point.
-// The command fns arrive via the crate-root re-export glob; their generated
-// `__cmd__*` macros ride in via `#[macro_use] mod commands` in `lib.rs` (declared
-// before `mod bootstrap`, so its macros are in textual scope here).
+// Commands are registered by path through `app_invoke_handler!` (`lib.rs`), from the
+// one list in `app_commands.rs`.
 use crate::*;
 
 /// Mirrors `scripts/tauri-dev-env.sh`'s Wayland workaround (see its header for the
@@ -174,7 +173,6 @@ fn add_entry<'m, R: tauri::Runtime, M: tauri::Manager<R>>(
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
     if should_force_x11(
@@ -217,97 +215,9 @@ pub fn run() {
         // plugin it relaunches through to apply a downloaded update.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![
-            app_info,
-            connect_device,
-            list_presets,
-            list_samples,
-            list_pickup_topologies,
-            get_store,
-            save_profiles,
-            save_targets,
-            set_playback_level,
-            set_auto_install_updates,
-            calibrate_profile,
-            level_preset,
-            level_setlist,
-            list_level_blocks,
-            import_library,
-            library_records,
-            library_filter,
-            bulk_dry_run,
-            bulk_apply,
-            bulk_revert,
-            migration_scan,
-            bulk_rename,
-            create_variant,
-            list_block_templates,
-            save_block_template,
-            spectrum_scan,
-            audition_render,
-            eq_match,
-            rank_candidates,
-            migration_plan,
-            migration_apply,
-            audit_loudness,
-            list_snapshots,
-            song_assign,
-            song_clear,
-            song_move,
-            song_swap,
-            level_scenes,
-            level_scenes_apply,
-            level_scenes_apply_batched,
-            list_scene_level_handles,
-            cancel_scene_leveling,
-            doctor_check,
-            cancel_doctor_check,
-            doctor_apply,
-            doctor_save,
-            doctor_discard,
-            cancel_preset_leveling,
-            level_footswitches_apply,
-            list_footswitch_scene_contexts,
-            cancel_footswitch_leveling,
-            read_active_preset,
-            current_graph,
-            request_scene_list,
-            stop_live_sync,
-            list_songs,
-            load_preset_on_amp,
-            delete_preset,
-            move_preset,
-            rename_save_preset,
-            load_scene_on_amp,
-            read_setlists,
-            list_setlist_songs,
-            add_song,
-            rename_song,
-            remove_song,
-            set_song_notes,
-            set_song_bpm,
-            add_setlist,
-            rename_setlist,
-            remove_setlist,
-            add_setlist_song,
-            remove_setlist_song,
-            move_setlist_song,
-            create_song_full,
-            update_song_full,
-            add_setlist_songs,
-            read_preset_scenes,
-            scan_preset_scenes,
-            cancel_scene_scan,
-            read_library_via_backup,
-            list_saved_blocks,
-            list_user_irs,
-            bulk_replace_live,
-            cancel_bulk_replace,
-            copy_apply,
-            cancel_copy_apply,
-            save_support_bundle,
-            build_support_bundle
-        ])
+        // Every app command, from the one list in `app_commands.rs` (#270). Which of them the
+        // webview may invoke is `capabilities/default.json`'s call (#268).
+        .invoke_handler(app_invoke_handler!())
         // Native menu, per platform (`menu_plan`). Setting a menu replaces the
         // default, so the standard submenus are rebuilt explicitly (Edit is
         // load-bearing — copy/paste in the rename fields ride its predefined
