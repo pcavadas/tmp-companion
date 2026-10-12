@@ -455,40 +455,47 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
     await listSetlistSongs(4);
     expectCall("list_setlist_songs", { setlistSlot: 4 });
   });
-  it("remove_song uses slot/expectName (guarded delete)", async () => {
-    await removeSong(2, "Toto");
-    expectCall("remove_song", { slot: 2, expectName: "Toto" });
+  it("remove_song uses slot/expectName/expectCount (guarded delete)", async () => {
+    await removeSong(2, "Toto", 7);
+    expectCall("remove_song", { slot: 2, expectName: "Toto", expectCount: 7 });
   });
   it("add_setlist uses name", async () => {
     await addSetlist("Tutu");
     expectCall("add_setlist", { name: "Tutu" });
   });
-  it("rename_setlist uses slot/expectName/name (guarded rename)", async () => {
-    await renameSetlist(4, "Tutu", "Tutu Tutu");
+  it("rename_setlist uses slot/expectName/expectCount/name (guarded rename)", async () => {
+    await renameSetlist(4, "Tutu", 5, "Tutu Tutu");
     expectCall("rename_setlist", {
       slot: 4,
       expectName: "Tutu",
+      expectCount: 5,
       name: "Tutu Tutu",
     });
   });
-  it("remove_setlist uses slot/expectName (guarded delete)", async () => {
-    await removeSetlist(4, "Tutu");
-    expectCall("remove_setlist", { slot: 4, expectName: "Tutu" });
+  it("remove_setlist uses slot/expectName/expectCount (guarded delete)", async () => {
+    await removeSetlist(4, "Tutu", 5);
+    expectCall("remove_setlist", {
+      slot: 4,
+      expectName: "Tutu",
+      expectCount: 5,
+    });
   });
   it("remove_setlist_song uses setlistSlot/setlistSongSlot (1-based POSITION), guarded", async () => {
-    await removeSetlistSong(4, "Tutu", 2, 9);
+    await removeSetlistSong(4, "Tutu", 5, 2, 9);
     expectCall("remove_setlist_song", {
       setlistSlot: 4,
       expectName: "Tutu",
+      expectCount: 5,
       setlistSongSlot: 2,
       expectSongSlot: 9,
     });
   });
   it("move_setlist_song uses setlistSlot/oldPos/newPos (1-based POSITIONS), guarded", async () => {
-    await moveSetlistSong(4, "Tutu", 3, 1, 9);
+    await moveSetlistSong(4, "Tutu", 5, 3, 1, 9);
     expectCall("move_setlist_song", {
       setlistSlot: 4,
       expectName: "Tutu",
+      expectCount: 5,
       oldPos: 3,
       newPos: 1,
       expectSongSlot: 9,

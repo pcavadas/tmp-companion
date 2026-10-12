@@ -84,6 +84,7 @@ type View =
   | { mode: "setlist"; slot: number }
   | { mode: "preset"; slot: number };
 type RailAxis = "setlists" | "presets";
+type DeviceOpEffect = "read" | "write" | "shiftsSongs";
 type Confirm =
   | { kind: "song"; slot: number; name: string }
   | { kind: "setlist"; slot: number; name: string }
@@ -212,13 +213,14 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
 
   // Device ops run one at a time (single USB connection) on a FIFO queue: an op
   // started while another runs waits for it. `apply` runs only on success — a
-  // failed write must NOT leave the UI showing an un-persisted edit. `writes` is false
-  // for a pure read, which changes nothing on the unit.
+  // failed write must NOT leave the UI showing an un-persisted edit. `effect` says what
+  // the op can change on the unit: nothing (a read), the Songs lists, or the song slots
+  // themselves (a song create or delete, which also stales the song↔preset join).
   const runDeviceOp = useCallback(
     <T,>(
       fn: () => Promise<T>,
       apply: (r: T) => void,
-      writes = true,
+      effect: DeviceOpEffect = "write",
     ): Promise<void> => {
       pendingRef.current += 1;
       setBusy(true);
@@ -228,7 +230,10 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           // Left the tab while this ran: the unit changed but no view can apply the
           // reply, so make the next visit read live instead of the stale snapshot.
           if (mountedRef.current) apply(r);
-          else if (writes) forgetLibrarySongs();
+          else if (effect !== "read") {
+            forgetLibrarySongs();
+            if (effect === "shiftsSongs") invalidateSongPresetJoin();
+          }
         } catch (e) {
           if (mountedRef.current) showToast(errMsg(e), "err");
         } finally {
@@ -251,7 +256,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
         (slots) => {
           setMembership((m) => new Map(m).set(slot, slots));
         },
-        false,
+        "read",
       );
     },
     [runDeviceOp],
@@ -283,13 +288,14 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   const addSong = useCallback(
     (d: SongDraft) => {
       void runDeviceOp(
-        () => apiCreateSongFull(d.name, d.notes.trim() || null, d.bpm, null),
+        () => apiCreateSongFull(d.name, d.notes.trim() || null, d.bpm, null, 0),
         (out) => {
           setSongs(out.songs);
           setMembership(new Map());
           invalidateSongPresetJoin(); // slots shifted → backup song↔preset join is stale
           warnBpm(out.bpm_warning);
         },
+        "shiftsSongs",
       );
     },
     [runDeviceOp, warnBpm],
@@ -304,28 +310,30 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
       const bpm = d.bpm != null && d.bpm !== songBpm(rec) ? d.bpm : null;
       if (name == null && notes == null && bpm == null) return;
       void runDeviceOp(
-        () => apiUpdateSongFull(rec.slot, rec.name, name, notes, bpm),
+        () =>
+          apiUpdateSongFull(rec.slot, rec.name, songs.length, name, notes, bpm),
         (out) => {
           setSongs(out.songs);
           warnBpm(out.bpm_warning);
         },
       );
     },
-    [runDeviceOp, warnBpm],
+    [runDeviceOp, warnBpm, songs.length],
   );
 
   const doDeleteSong = useCallback(
     (slot: number, name: string) => {
       void runDeviceOp(
-        () => apiRemoveSong(slot, name),
+        () => apiRemoveSong(slot, name, songs.length),
         (fresh) => {
           setSongs(fresh);
           setMembership(new Map()); // slots shifted — every cached membership is stale
           invalidateSongPresetJoin(); // …and the backup song↔preset join is stale too
         },
+        "shiftsSongs",
       );
     },
-    [runDeviceOp],
+    [runDeviceOp, songs.length],
   );
 
   // ── setlist ops ──
@@ -339,17 +347,17 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   const renameSetlist = useCallback(
     (list: SetlistRecord, name: string) => {
       void runDeviceOp(
-        () => apiRenameSetlist(list.slot, list.name, name),
+        () => apiRenameSetlist(list.slot, list.name, setlists.length, name),
         setSetlists,
       );
     },
-    [runDeviceOp],
+    [runDeviceOp, setlists.length],
   );
 
   const doDeleteSetlist = useCallback(
     (slot: number, name: string) => {
       void runDeviceOp(
-        () => apiRemoveSetlist(slot, name),
+        () => apiRemoveSetlist(slot, name, setlists.length),
         (fresh) => {
           setSetlists(fresh);
           // Every later setlist shifted down one slot: re-key the cache and the view
@@ -365,7 +373,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
         },
       );
     },
-    [runDeviceOp],
+    [runDeviceOp, setlists.length],
   );
 
   // ── membership ops (positions are 1-based within the setlist) ──
@@ -374,13 +382,13 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   const addSongsToSetlist = useCallback(
     (list: SetlistRecord, picked: SongRecord[]) => {
       void runDeviceOp(
-        () => apiAddSetlistSongs(list, picked),
+        () => apiAddSetlistSongs(list, setlists.length, picked, songs.length),
         (members) => {
           setMembership((m) => new Map(m).set(list.slot, members));
         },
       );
     },
-    [runDeviceOp],
+    [runDeviceOp, setlists.length, songs.length],
   );
 
   // Remove/move address the entry's DEVICE position, and carry the song slot found
@@ -392,6 +400,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           apiRemoveSetlistSong(
             list.slot,
             list.name,
+            setlists.length,
             entry.position,
             entry.songSlot,
           ),
@@ -400,7 +409,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
         },
       );
     },
-    [runDeviceOp],
+    [runDeviceOp, setlists.length],
   );
 
   const reorderSetlist = useCallback(
@@ -411,6 +420,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           apiMoveSetlistSong(
             list.slot,
             list.name,
+            setlists.length,
             from.position,
             to.position,
             from.songSlot,
@@ -420,7 +430,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
         },
       );
     },
-    [runDeviceOp],
+    [runDeviceOp, setlists.length],
   );
 
   // Create a song from within a setlist picker and immediately add it — ONE
@@ -432,7 +442,14 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   const createAndAdd = useCallback(
     (list: SetlistRecord, d: SongDraft) => {
       void runDeviceOp(
-        () => apiCreateSongFull(d.name, d.notes.trim() || null, d.bpm, list),
+        () =>
+          apiCreateSongFull(
+            d.name,
+            d.notes.trim() || null,
+            d.bpm,
+            list,
+            setlists.length,
+          ),
         (out) => {
           setSongs(out.songs);
           setMembership(
@@ -443,9 +460,10 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           invalidateSongPresetJoin(); // create shifted slots → stale backup join
           warnBpm(out.bpm_warning);
         },
+        "shiftsSongs",
       );
     },
-    [runDeviceOp, warnBpm],
+    [runDeviceOp, warnBpm, setlists.length],
   );
 
   const commitList = () => {

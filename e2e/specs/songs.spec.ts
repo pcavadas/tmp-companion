@@ -7,17 +7,20 @@ import { clearScenario, invoke } from "../fixtures/scenario";
 // read-after-write the Songs tab performs.
 const SONG = "E2E Song";
 const SONG2 = "E2E Song Renamed";
-const SETLIST = "E2E Setlist";
-const SETLIST_NEW = "E2E Setlist Renamed";
+// Setlist names carry a per-run tag, so the cleanup below can only ever match setlists
+// this run created — never one already on the unit that happens to share a fixed name.
+const RUN = Date.now().toString(36).slice(-4);
+const SETLIST = `E2E Set ${RUN}`;
+const SETLIST_NEW = `E2E Set ${RUN} R2`;
 // BPM has no setter: it is the tap tempo, which lands in the active song only once its
 // BPM flag is on (fw 1.8.58). A new song has no footswitch and its flag off, so the
 // create exercises the fresh-assign path; the edit, the existing-binding path.
 const BPM = "97";
 const BPM2 = "132";
 
-// Setlists only these specs create — swept in afterEach, so a failed assertion can't
-// strand one on the unit (`clearScenario` doesn't touch setlists). Removed highest slot
-// first, each guarded by its name, so a removal never shifts a slot still to come.
+// This run's setlists — swept in afterEach, so a failed assertion can't strand one on
+// the unit (`clearScenario` doesn't touch setlists). Removed highest slot first, each
+// guarded by its name and the list's size, so a removal never shifts a slot still to come.
 const TEST_SETLISTS = [SETLIST, SETLIST_NEW];
 async function removeTestSetlists(
   page: import("@playwright/test").Page,
@@ -29,8 +32,14 @@ async function removeTestSetlists(
   const ours = lists
     .filter((l) => TEST_SETLISTS.includes(l.name))
     .sort((a, b) => b.slot - a.slot);
+  let count = lists.length;
   for (const l of ours) {
-    await invoke(page, "remove_setlist", { slot: l.slot, expectName: l.name });
+    await invoke(page, "remove_setlist", {
+      slot: l.slot,
+      expectName: l.name,
+      expectCount: count,
+    });
+    count -= 1;
   }
 }
 
