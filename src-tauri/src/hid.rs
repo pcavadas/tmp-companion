@@ -24,6 +24,8 @@ use std::thread::JoinHandle;
 use crate::proto;
 
 #[cfg(any(windows, test))]
+mod read_release;
+#[cfg(any(windows, test))]
 mod write_completion;
 
 /// Fender vendor ID / Tone Master Pro product ID.
@@ -370,12 +372,19 @@ mod imp {
         if context.is_null() || report.is_null() || report_length <= 0 {
             return;
         }
+        // SAFETY: `context` is the worker's leaked `Box<Vec<Vec<u8>>>` (checked non-null
+        // above), which outlives every callback (`Seized` frees it after unschedule + close),
+        // and callbacks run only on the worker thread, so this is the one live reference.
         let recv = unsafe { &mut *(context as *mut Vec<Vec<u8>>) };
         let n = (report_length as usize).min(64);
+        // SAFETY: IOKit hands a non-null `report` of `report_length` bytes (checked above), and
+        // `n` never exceeds it.
         let slice = unsafe { std::slice::from_raw_parts(report, n) };
         recv.push(slice.to_vec());
     }
 
+    // SAFETY: `value` is a live i32 for the call, matching `kCFNumberSInt32Type`; the caller
+    // releases the returned ref.
     fn cf_number_i32(value: i32) -> CFTypeRef {
         unsafe {
             CFNumberCreate(
@@ -387,6 +396,8 @@ mod imp {
     }
 
     fn cf_string(s: &str) -> CFStringRef {
+        // SAFETY: `c` is a valid NUL-terminated UTF-8 string that outlives the call; the caller
+        // releases the returned ref.
         let c = std::ffi::CString::new(s).expect("no interior NUL");
         unsafe {
             CFStringCreateWithCString(
@@ -412,6 +423,11 @@ mod imp {
     /// two back-to-back probe sessions failed through 5 s of same-ref retries,
     /// yet a fresh process connected instantly). Genuine Pro Control contention
     /// persists across every attempt and still surfaces the error (~3 s).
+    ///
+    /// # Safety
+    ///
+    /// Must run on the HID worker thread, which then owns both returned refs and releases
+    /// each exactly once (`Seized`'s Drop).
     unsafe fn open_device() -> Result<(IOHIDManagerRef, IOHIDDeviceRef), String> {
         // Short backoff: fw 1.8.58 has no open lockout to wait out.
         const ENUM_RETRIES: u32 = 3;
@@ -443,6 +459,10 @@ mod imp {
     /// One enumeration + open attempt (with the short same-ref retry for the
     /// common few-ms seize-recycle lag). See `open_device` for the outer
     /// re-enumeration loop.
+    ///
+    /// # Safety
+    ///
+    /// As [`open_device`]: worker thread only; the caller owns and releases the returned refs.
     unsafe fn open_device_once() -> Result<(IOHIDManagerRef, IOHIDDeviceRef), String> {
         let manager = IOHIDManagerCreate(kCFAllocatorDefault as CFTypeRef, 0);
         if manager.is_null() {
@@ -523,6 +543,45 @@ mod imp {
         Ok((manager, device))
     }
 
+    /// Everything the worker holds for an open, seized device, released in ONE place: its
+    /// `Drop` (#266). The normal close and a worker unwinding both run the same teardown, so
+    /// a panic can no longer leak the seize (every later open then failing 0xe00002c5) or
+    /// free the report buffer while IOKit can still call back into it.
+    struct Seized {
+        manager: IOHIDManagerRef,
+        device: IOHIDDeviceRef,
+        run_loop: CFRunLoopRef,
+        /// The input callback's context: a `Box<Vec<Vec<u8>>>` leaked to a raw pointer.
+        recv: *mut Vec<Vec<u8>>,
+        /// The buffer IOKit writes each input report into; must outlive the callback.
+        _report_buf: Vec<u8>,
+    }
+
+    impl Drop for Seized {
+        fn drop(&mut self) {
+            // Tear down in spec order: unschedule, one short run-loop turn,
+            // close. NOTE — do NOT add a "drain until quiet" pump here: on a
+            // live-cadence (heartbeat) session, pumping ~1.5 s without
+            // heartbeats before close reliably WEDGED the device's next
+            // exclusive open (HW A/B: identical sequences opened
+            // clean 4/4 without the drain, 0xe00002c5 with it).
+            // SAFETY: runs on the worker thread that opened and scheduled `device` (IOKit's
+            // threading rule); each ref is released exactly once, here, and `recv` is freed
+            // only after the device is unscheduled and closed, so no callback can reach it.
+            unsafe {
+                IOHIDDeviceUnscheduleFromRunLoop(self.device, self.run_loop, kCFRunLoopDefaultMode);
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false as u8);
+                let close_rc = IOHIDDeviceClose(self.device, K_IOHID_OPTIONS_TYPE_SEIZE_DEVICE);
+                if close_rc != 0 {
+                    log::warn!("IOHIDDeviceClose failed: 0x{:08x}", close_rc as u32);
+                }
+                CFRelease(self.device as CFTypeRef);
+                CFRelease(self.manager as CFTypeRef);
+                drop(Box::from_raw(self.recv));
+            }
+        }
+    }
+
     pub fn open() -> Result<Hid, String> {
         // Worker reports the open result back through this oneshot.
         let (ready_tx, ready_rx) = bounded::<Result<(), String>>(1);
@@ -530,28 +589,36 @@ mod imp {
 
         let join = std::thread::Builder::new()
             .name("tmp-hid".into())
+            // SAFETY: the whole worker body is IOKit/CF FFI on this one thread, as IOKit
+            // requires. Every ref it opens is owned by `Seized`, released once by its Drop on
+            // every exit (an unwind included), and the callback context and report buffer it
+            // registers outlive the device's scheduling.
             .spawn(move || unsafe {
-                // Receive buffer lives for the whole thread; raw ptr handed to
-                // the C callback as context. Reclaimed before the thread exits.
-                let recv_ptr: *mut Vec<Vec<u8>> = Box::into_raw(Box::new(Vec::new()));
-                // Persistent 64-byte report buffer the callback writes into.
-                let mut report_buf = vec![0u8; 64];
-
                 let (manager, device) = match open_device() {
                     Ok(d) => d,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
-                        drop(Box::from_raw(recv_ptr));
                         return;
                     }
                 };
-
+                // Receive buffer lives for the whole thread; raw ptr handed to
+                // the C callback as context. Reclaimed by `Seized`'s Drop.
+                let recv_ptr: *mut Vec<Vec<u8>> = Box::into_raw(Box::new(Vec::new()));
                 let run_loop: CFRunLoopRef = CFRunLoopGetCurrent();
+                // Owns the device from here: any exit, an unwind included, tears it down.
+                let mut seized = Seized {
+                    manager,
+                    device,
+                    run_loop,
+                    recv: recv_ptr,
+                    // Persistent 64-byte report buffer the callback writes into.
+                    _report_buf: vec![0u8; 64],
+                };
                 IOHIDDeviceScheduleWithRunLoop(device, run_loop, kCFRunLoopDefaultMode);
                 IOHIDDeviceRegisterInputReportCallback(
                     device,
-                    report_buf.as_mut_ptr(),
-                    report_buf.len() as CFIndex,
+                    seized._report_buf.as_mut_ptr(),
+                    seized._report_buf.len() as CFIndex,
                     input_cb,
                     recv_ptr as *mut c_void,
                 );
@@ -656,21 +723,7 @@ mod imp {
                     }
                 }
 
-                // Tear down in spec order: unschedule, one short run-loop turn,
-                // close. NOTE — do NOT add a "drain until quiet" pump here: on a
-                // live-cadence (heartbeat) session, pumping ~1.5 s without
-                // heartbeats before close reliably WEDGED the device's next
-                // exclusive open (HW A/B: identical sequences opened
-                // clean 4/4 without the drain, 0xe00002c5 with it).
-                IOHIDDeviceUnscheduleFromRunLoop(device, run_loop, kCFRunLoopDefaultMode);
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false as u8);
-                let close_rc = IOHIDDeviceClose(device, K_IOHID_OPTIONS_TYPE_SEIZE_DEVICE);
-                if close_rc != 0 {
-                    log::warn!("IOHIDDeviceClose failed: 0x{:08x}", close_rc as u32);
-                }
-                CFRelease(device as CFTypeRef);
-                CFRelease(manager as CFTypeRef);
-                drop(Box::from_raw(recv_ptr));
+                drop(seized);
             })
             .map_err(|e| format!("spawn HID thread: {e}"))?;
 
@@ -729,6 +782,7 @@ mod imp {
     use crossbeam_channel::unbounded;
     use std::ffi::CString;
     use std::io::Error as IoError;
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
     use std::os::raw::c_void;
     use std::time::{Duration, Instant};
 
@@ -759,8 +813,17 @@ mod imp {
         ))
     }
 
-    fn open_device() -> Result<i32, String> {
-        let path = find_hidraw()?;
+    /// The open, `flock`ed hidraw node. An [`OwnedFd`]: a worker that unwinds still closes
+    /// it, releasing the lock with it (#266). A leaked fd kept its `flock` for the life of
+    /// the process, and every later open failed "already in use by another TMP Companion
+    /// process".
+    fn open_device() -> Result<OwnedFd, String> {
+        open_locked(&find_hidraw()?)
+    }
+
+    /// [`open_device`] on a known `path`: open read-write, then take the exclusive `flock`.
+    fn open_locked(path: &CString) -> Result<OwnedFd, String> {
+        // SAFETY: `path` is a valid NUL-terminated C string that outlives the call.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
         if fd < 0 {
             let err = IoError::last_os_error();
@@ -779,6 +842,9 @@ mod imp {
             };
             return Err(format!("open {}: {err}{hint}", path.to_string_lossy()));
         }
+        // SAFETY: `open` just returned this fd (checked non-negative), and nothing else owns
+        // it: the `OwnedFd` is now its only closer.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
 
         // hidraw has no equivalent of IOKit's exclusive seize: two processes can open
         // the same node and interleave reads and writes on it. Verified — two `probe`
@@ -789,9 +855,10 @@ mod imp {
         // through here, so our own processes mutually exclude. It is advisory, which is
         // enough — Fender ships no Pro Control for Linux, so nothing else contends.
         // The lock releases on close, including on abnormal exit.
-        if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } < 0 {
+        // SAFETY: `fd` is open for the duration of the call (owned above).
+        if unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } < 0 {
             let err = IoError::last_os_error();
-            unsafe { libc::close(fd) };
+            drop(fd);
             if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
                 return Err(
                     "the Tone Master Pro is already in use by another TMP Companion process (app or probe) — close it and retry"
@@ -806,10 +873,12 @@ mod imp {
     /// hidraw takes the report ID as the first byte written. The TMP uses unnumbered
     /// reports, so that byte is `0x00` and the device receives exactly the 63-byte
     /// frame — the same bytes IOKit puts on the wire via `SetReport(reportID = 0)`.
-    fn write_frame(fd: i32, frame: &[u8]) -> Result<(), String> {
+    fn write_frame(fd: RawFd, frame: &[u8]) -> Result<(), String> {
         let mut pkt = Vec::with_capacity(frame.len() + 1);
         pkt.push(0x00);
         pkt.extend_from_slice(frame);
+        // SAFETY: `pkt` is a live buffer of exactly `pkt.len()` bytes; `fd` is the worker's
+        // open device (or a test pipe), valid for the call.
         let n = unsafe { libc::write(fd, pkt.as_ptr() as *const c_void, pkt.len()) };
         if n < 0 {
             return Err(format!("hidraw write: {}", IoError::last_os_error()));
@@ -820,7 +889,7 @@ mod imp {
         Ok(())
     }
 
-    fn send_body(fd: i32, body: &[u8]) -> Result<(), String> {
+    fn send_body(fd: RawFd, body: &[u8]) -> Result<(), String> {
         for pkt in proto::make_chunked_envelopes(body) {
             write_frame(fd, &pkt)?;
         }
@@ -829,7 +898,7 @@ mod imp {
 
     /// Collect reports for up to `ms`, then return — the same "burn the budget" shape
     /// as `CFRunLoopRunInMode`, so callers reassemble cumulatively across pumps.
-    fn pump_into(fd: i32, ms: u64, out: &mut Vec<Vec<u8>>) {
+    fn pump_into(fd: RawFd, ms: u64, out: &mut Vec<Vec<u8>>) {
         let deadline = Instant::now() + Duration::from_millis(ms);
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -841,6 +910,7 @@ mod imp {
                 events: libc::POLLIN,
                 revents: 0,
             };
+            // SAFETY: `pfd` is one valid, initialized `pollfd`, and the count passed is 1.
             let rc =
                 unsafe { libc::poll(&mut pfd, 1, left.as_millis().min(i32::MAX as u128) as i32) };
             if rc < 0 {
@@ -854,6 +924,7 @@ mod imp {
                 return; // budget expired, or POLLERR/POLLHUP — the device is gone
             }
             let mut buf = [0u8; 64];
+            // SAFETY: `buf` is a live 64-byte buffer and the length passed is its own.
             let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
             if n <= 0 {
                 return;
@@ -865,7 +936,7 @@ mod imp {
         }
     }
 
-    fn pump(fd: i32, ms: u64) -> Vec<Vec<u8>> {
+    fn pump(fd: RawFd, ms: u64) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         pump_into(fd, ms, &mut out);
         out
@@ -874,7 +945,7 @@ mod imp {
     /// [`Cmd::TransactEager`]: pump in slices and return once the framing is complete
     /// and the line has gone quiet. Identical policy to the macOS path — it reuses the
     /// same pure [`fold_frame_open`] — with `max_ms` as the hard cap.
-    fn pump_eager(fd: i32, max_ms: u64) -> Vec<Vec<u8>> {
+    fn pump_eager(fd: RawFd, max_ms: u64) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         let mut elapsed = 0u64;
         let mut open = false;
@@ -905,7 +976,7 @@ mod imp {
         let join = std::thread::Builder::new()
             .name("tmp-hid".into())
             .spawn(move || {
-                let fd = match open_device() {
+                let owned = match open_device() {
                     Ok(fd) => fd,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
@@ -913,6 +984,7 @@ mod imp {
                     }
                 };
                 let _ = ready_tx.send(Ok(()));
+                let fd = owned.as_raw_fd();
 
                 for cmd in cmd_rx.iter() {
                     match cmd {
@@ -946,7 +1018,9 @@ mod imp {
                     }
                 }
 
-                if unsafe { libc::close(fd) } < 0 {
+                // The normal close checks its result; an unwind closes through `owned`'s Drop.
+                // SAFETY: `into_raw_fd` hands over the only owner, so this is its one close.
+                if unsafe { libc::close(owned.into_raw_fd()) } < 0 {
                     log::warn!("hidraw close failed: {}", IoError::last_os_error());
                 }
             })
@@ -989,15 +1063,19 @@ mod imp {
 
             // A pipe is fd-compatible with the poll/read loop and needs no hardware.
             let mut fds = [0i32; 2];
+            // SAFETY: `fds` is a live two-element array, as pipe(2) requires.
             assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe()");
             let (rd, wr) = (fds[0], fds[1]);
+            // SAFETY: `raw` is live for `raw.len()` bytes and `wr` is the open write end.
             let written = unsafe { libc::write(wr, raw.as_ptr() as *const c_void, raw.len()) };
             assert_eq!(written, 64, "write()");
             // Close the write end so the pump sees EOF instead of burning its budget.
+            // SAFETY: closes the write end exactly once.
             assert_eq!(unsafe { libc::close(wr) }, 0, "close(wr)");
 
             let mut out = Vec::new();
             pump_into(rd, 250, &mut out);
+            // SAFETY: closes the read end exactly once.
             assert_eq!(unsafe { libc::close(rd) }, 0, "close(rd)");
 
             // Exactly one report, byte-identical to the wire: no byte stripped, none
@@ -1006,6 +1084,30 @@ mod imp {
             // And what came out folds as a CLOSED single frame, so the parsers' own
             // admission test (`len >= 4 && data[0] == 0x00`) passes on it as-is.
             assert!(!fold_frame_open(&out, false));
+        }
+
+        /// #266: a worker that unwinds while holding the device must still release its
+        /// `flock`, or every later open in this process fails "already in use by another
+        /// TMP Companion process". Driven through the real [`open_locked`] on a temp file.
+        #[test]
+        fn a_worker_panic_releases_the_device_lock() {
+            let file = std::env::temp_dir().join(format!("tmp-hid-lock-{}", std::process::id()));
+            std::fs::write(&file, b"").expect("temp file");
+            let path = CString::new(file.to_string_lossy().into_owned()).expect("path");
+            let held = path.clone();
+            let worker = std::thread::spawn(move || {
+                let _fd = open_locked(&held).expect("first open");
+                // A second open while the lock is held is refused, as for a second app.
+                assert!(
+                    open_locked(&held).is_err(),
+                    "the flock excludes a second open"
+                );
+                panic!("the HID worker unwinds mid-command");
+            });
+            assert!(worker.join().is_err(), "the worker panicked");
+            let reopened = open_locked(&path);
+            let _ = std::fs::remove_file(&file);
+            assert!(reopened.is_ok(), "fresh open after the panic: {reopened:?}");
         }
     }
 }
@@ -1076,12 +1178,15 @@ mod imp {
     const HIDP_STATUS_SUCCESS: i32 = 0x0011_0000;
 
     fn last_err() -> IoError {
+        // SAFETY: GetLastError has no preconditions.
         IoError::from_raw_os_error(unsafe { GetLastError() } as i32)
     }
 
     struct DeviceInfoSet(isize);
     impl Drop for DeviceInfoSet {
         fn drop(&mut self) {
+            // SAFETY: the set came from SetupDiGetClassDevsW and is destroyed exactly once,
+            // here.
             unsafe { SetupDiDestroyDeviceInfoList(self.0) };
         }
     }
@@ -1089,8 +1194,12 @@ mod imp {
     /// Every present HID interface path, as NUL-terminated UTF-16 for CreateFile
     /// and as a string for matching. Enumeration performs no device I/O.
     fn hid_interface_paths() -> Result<Vec<(Vec<u16>, String)>, String> {
+        // SAFETY: GUID is plain old data; all-zero is a valid value, overwritten just below.
         let mut guid = unsafe { std::mem::zeroed() };
+        // SAFETY: `guid` is a live, writable GUID.
         unsafe { HidD_GetHidGuid(&mut guid) };
+        // SAFETY: `guid` is live; the null enumerator and parent window are allowed. The
+        // returned set is owned (and destroyed) by `DeviceInfoSet`.
         let set = unsafe {
             SetupDiGetClassDevsW(
                 &guid,
@@ -1107,8 +1216,11 @@ mod imp {
         let mut out = Vec::new();
         let mut index = 0u32;
         loop {
+            // SAFETY: plain old data; all-zero is valid, and `cbSize` is set right after.
             let mut iface: SP_DEVICE_INTERFACE_DATA = unsafe { std::mem::zeroed() };
             iface.cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32;
+            // SAFETY: `set` is a live device-info set, `guid` and `iface` are live and
+            // `iface.cbSize` is set.
             let ok = unsafe {
                 SetupDiEnumDeviceInterfaces(set.0, std::ptr::null(), &guid, index, &mut iface)
             };
@@ -1121,6 +1233,8 @@ mod imp {
             }
             index += 1;
             // First call sizes the detail buffer, second fills it.
+            // SAFETY: the sizing call: null buffer with size 0 is the documented way to ask for
+            // `needed`.
             let mut needed = 0u32;
             unsafe {
                 SetupDiGetDeviceInterfaceDetailW(
@@ -1142,6 +1256,8 @@ mod imp {
             let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
             // cbSize is the FIXED header size (u32 + one u16, padded on 64-bit), not
             // the buffer length — the classic SetupAPI trap.
+            // SAFETY: `buf` holds `needed` bytes, at least the fixed header SetupAPI just
+            // sized, so `detail` points into it.
             unsafe {
                 (*detail).cbSize = if cfg!(target_pointer_width = "64") {
                     8
@@ -1149,6 +1265,7 @@ mod imp {
                     6
                 };
             }
+            // SAFETY: `detail` points to `needed` writable bytes (`buf`), with `cbSize` set.
             let ok = unsafe {
                 SetupDiGetDeviceInterfaceDetailW(
                     set.0,
@@ -1162,10 +1279,14 @@ mod imp {
             if ok == 0 {
                 return Err(format!("SetupDiGetDeviceInterfaceDetailW: {}", last_err()));
             }
+            // SAFETY: `detail` points into the live `buf`; `addr_of!` takes the field address
+            // without reading it.
             let path_ptr = unsafe { std::ptr::addr_of!((*detail).DevicePath) as *const u16 };
             let max = (needed as usize).saturating_sub(4) / 2;
             let mut wide = Vec::with_capacity(max + 1);
             for i in 0..max {
+                // SAFETY: `i < max`, and `max` u16s past `DevicePath` stay inside the
+                // `needed`-byte `buf`.
                 let c = unsafe { *path_ptr.add(i) };
                 wide.push(c);
                 if c == 0 {
@@ -1207,6 +1328,8 @@ mod imp {
             ));
         };
         // Share mode 0 = exclusive: the Windows counterpart of IOKit's seize.
+        // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the call; null security
+        // attributes and template are allowed.
         let handle = unsafe {
             CreateFileW(
                 wide.as_ptr(),
@@ -1229,8 +1352,10 @@ mod imp {
             return Err(format!("open {text}: {err}{hint}"));
         }
         let dev = (|| -> Result<Dev, String> {
+            // SAFETY: plain old data; all-zero is valid, and `Size` is set right after.
             let mut attrs: HIDD_ATTRIBUTES = unsafe { std::mem::zeroed() };
             attrs.Size = std::mem::size_of::<HIDD_ATTRIBUTES>() as u32;
+            // SAFETY: `handle` is open (checked above) and `attrs` is live with `Size` set.
             if !unsafe { HidD_GetAttributes(handle, &mut attrs) } {
                 return Err(format!("HidD_GetAttributes: {}", last_err()));
             }
@@ -1241,11 +1366,16 @@ mod imp {
                 ));
             }
             let mut preparsed = 0isize;
+            // SAFETY: `handle` is open; `preparsed` is a live out-parameter, freed just below.
             if !unsafe { HidD_GetPreparsedData(handle, &mut preparsed) } {
                 return Err(format!("HidD_GetPreparsedData: {}", last_err()));
             }
+            // SAFETY: plain old data; all-zero is valid, overwritten by `HidP_GetCaps`.
             let mut caps: HIDP_CAPS = unsafe { std::mem::zeroed() };
+            // SAFETY: `preparsed` came from `HidD_GetPreparsedData` above and is freed only
+            // after this.
             let st = unsafe { HidP_GetCaps(preparsed, &mut caps) };
+            // SAFETY: frees the preparsed data obtained above, exactly once.
             unsafe { HidD_FreePreparsedData(preparsed) };
             if st != HIDP_STATUS_SUCCESS {
                 return Err(format!("HidP_GetCaps: NTSTATUS 0x{:08x}", st as u32));
@@ -1262,13 +1392,17 @@ mod imp {
                 ));
             }
             let output_len = caps.OutputReportByteLength as usize;
+            // SAFETY: `handle` is open.
             if !unsafe { HidD_SetNumInputBuffers(handle, INPUT_QUEUE_DEPTH) } {
                 log::warn!("HidD_SetNumInputBuffers failed: {}", last_err());
             }
+            // SAFETY: null security attributes and name are allowed; the event is owned by
+            // `Dev`, which closes it.
             let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
             if event.is_null() {
                 return Err(format!("CreateEventW: {}", last_err()));
             }
+            // SAFETY: OVERLAPPED is plain old data; all-zero is its documented initial state.
             let mut overlapped: Box<OVERLAPPED> = Box::new(unsafe { std::mem::zeroed() });
             overlapped.hEvent = event;
             Ok(Dev {
@@ -1281,6 +1415,8 @@ mod imp {
             })
         })();
         if dev.is_err() {
+            // SAFETY: `handle` is open and no `Dev` took ownership of it, so this is its one
+            // close.
             unsafe { CloseHandle(handle) };
         }
         dev
@@ -1293,6 +1429,7 @@ mod imp {
     }
     impl write_completion::PendingWrite for PendingWrite<'_> {
         fn wait(&mut self, timeout_ms: u32) -> Result<bool, String> {
+            // SAFETY: `event` is the write's own live event handle.
             match unsafe { WaitForSingleObject(self.event, timeout_ms) } {
                 WAIT_OBJECT_0 => Ok(true),
                 WAIT_TIMEOUT => Ok(false),
@@ -1300,6 +1437,8 @@ mod imp {
             }
         }
         fn cancel(&mut self) -> Result<(), String> {
+            // SAFETY: `handle` is open and `overlapped` is the in-flight write's, live until
+            // `finish` returns.
             if unsafe { CancelIoEx(self.handle, self.overlapped) } != 0 {
                 Ok(())
             } else {
@@ -1308,6 +1447,8 @@ mod imp {
         }
         fn finish(&mut self) -> Result<u32, String> {
             let mut written = 0;
+            // SAFETY: as above; bWait = 1 blocks until the write is terminal, so its storage
+            // may then be freed.
             if unsafe { GetOverlappedResult(self.handle, self.overlapped, &mut written, 1) } != 0 {
                 Ok(written)
             } else {
@@ -1323,13 +1464,18 @@ mod imp {
             let mut pkt = vec![0u8; self.output_len];
             pkt[1..1 + frame.len()].copy_from_slice(frame);
             // Writes use their own overlapped + event so they never race the pending read.
+            // SAFETY: null security attributes and name are allowed; closed below on every
+            // path.
             let ev = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
             if ev.is_null() {
                 return Err(format!("CreateEventW: {}", last_err()));
             }
+            // SAFETY: plain old data; all-zero is the documented initial state.
             let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
             ov.hEvent = ev;
             let mut written = 0u32;
+            // SAFETY: `pkt` and `ov` live in this frame until the write is terminal
+            // (`write_completion::complete` waits for it), and `handle` is open.
             let ok = unsafe {
                 WriteFile(
                     self.handle,
@@ -1341,6 +1487,7 @@ mod imp {
             };
             let result = if ok != 0 {
                 Ok(written)
+            // SAFETY: GetLastError has no preconditions.
             } else if unsafe { GetLastError() } == ERROR_IO_PENDING {
                 // pkt and ov stay in this stack frame until terminal completion,
                 // including after the five-second cancellation policy fires.
@@ -1352,6 +1499,7 @@ mod imp {
             } else {
                 Err(format!("HID write: {}", last_err()))
             };
+            // SAFETY: the write is terminal here, so its event can be closed, exactly once.
             unsafe { CloseHandle(ev) };
             let n = result?;
             if n as usize != pkt.len() {
@@ -1374,6 +1522,9 @@ mod imp {
                 return Ok(false);
             }
             let mut n = 0u32;
+            // SAFETY: `read_buf` and the boxed `overlapped` belong to this Dev and live until
+            // the read is terminal: `Dev`'s Drop cancels and waits for a pending one before
+            // freeing them.
             let ok = unsafe {
                 ReadFile(
                     self.handle,
@@ -1386,6 +1537,7 @@ mod imp {
             if ok != 0 {
                 return Ok(true);
             }
+            // SAFETY: GetLastError has no preconditions.
             if unsafe { GetLastError() } == ERROR_IO_PENDING {
                 self.read_pending = true;
                 return Ok(false);
@@ -1409,6 +1561,8 @@ mod imp {
                         let mut n = 0u32;
                         // Synchronous completion still reports its length via the
                         // overlapped result.
+                        // SAFETY: the read completed synchronously; this only reads its length
+                        // from the live `overlapped`.
                         unsafe { GetOverlappedResult(self.handle, &*self.overlapped, &mut n, 0) };
                         if let Some(r) = self.take_report(n) {
                             out.push(r);
@@ -1428,6 +1582,7 @@ mod imp {
                 // Reserve INFINITE (u32::MAX); large finite budgets must not
                 // wrap into a short wait or accidentally become unbounded.
                 let wait_ms = left.as_millis().min(u32::MAX as u128 - 1) as u32;
+                // SAFETY: `event` is this Dev's live read event.
                 let wait = unsafe { WaitForSingleObject(self.event, wait_ms) };
                 if wait == WAIT_TIMEOUT {
                     return; // budget expired; the read stays pending for the next pump
@@ -1437,6 +1592,8 @@ mod imp {
                     return;
                 }
                 let mut n = 0u32;
+                // SAFETY: the read's event fired, so its `overlapped` (live, this Dev's) holds
+                // a terminal result.
                 let ok = unsafe { GetOverlappedResult(self.handle, &*self.overlapped, &mut n, 0) };
                 self.read_pending = false;
                 if ok == 0 {
@@ -1480,15 +1637,34 @@ mod imp {
             }
             out
         }
+    }
 
-        fn close(self) {
+    impl read_release::PendingRead for Dev {
+        fn is_pending(&self) -> bool {
+            self.read_pending
+        }
+        fn cancel(&mut self) {
+            // SAFETY: `handle` and the boxed `overlapped` are this Dev's own, still open.
+            unsafe { CancelIoEx(self.handle, &*self.overlapped) };
+        }
+        fn finish(&mut self) {
+            let mut n = 0u32;
+            // SAFETY: as above; bWait = 1 blocks until the read is terminal, so `read_buf`
+            // and `overlapped` are no longer referenced by the kernel when this returns.
+            unsafe { GetOverlappedResult(self.handle, &*self.overlapped, &mut n, 1) };
+            self.read_pending = false;
+        }
+    }
+
+    /// The ONE close path, normal or unwinding (#266): a worker panic used to drop `Dev`
+    /// with its read still pending, and the kernel could then complete it into the freed
+    /// `read_buf` / `OVERLAPPED`.
+    impl Drop for Dev {
+        fn drop(&mut self) {
+            // Cancel the pending read and wait for it, so the buffer outlives the I/O.
+            read_release::release(self);
+            // SAFETY: both handles are this Dev's own and are closed exactly once, here.
             unsafe {
-                if self.read_pending {
-                    CancelIoEx(self.handle, &*self.overlapped);
-                    let mut n = 0u32;
-                    // Wait for the cancel to land so the buffer outlives the I/O.
-                    GetOverlappedResult(self.handle, &*self.overlapped, &mut n, 1);
-                }
                 CloseHandle(self.event);
                 if CloseHandle(self.handle) == 0 {
                     log::warn!("HID close failed: {}", last_err());
@@ -1542,7 +1718,7 @@ mod imp {
                         Cmd::Close => break,
                     }
                 }
-                dev.close();
+                drop(dev);
             })
             .map_err(|e| format!("spawn HID thread: {e}"))?;
 

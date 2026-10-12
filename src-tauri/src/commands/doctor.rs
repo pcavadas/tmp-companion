@@ -861,20 +861,15 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         }
 
         let presets = assemble_results(&resolved, &outcomes);
-        // Belt-and-braces: never leave the unit in re-amp after a run, and put
-        // it back on the pre-run active preset (fallback: the last-scanned
-        // slot) — the reload also clears the 0.5 reference presetLevel from
-        // the edit buffer.
-        if let Err(e) = Session::connect_lean().and_then(|mut s| {
-            if let Err(re) = s.set_reamp_mode(false) {
-                log::warn!("doctor_check: failed to disable re-amp mode after run: {re}");
+        // Never leave the unit in re-amp after a run: the verified run-end OFF ladder, on
+        // its own fresh connection (#261). Then put it back on the pre-run active preset
+        // (fallback: the last-scanned slot) — the reload also clears the 0.5 reference
+        // presetLevel from the edit buffer.
+        let _ = leveller::reamp_off_guaranteed("doctor_check");
+        if let Some(slot) = restore_list_index.or(last_scanned) {
+            if let Err(e) = Session::connect_lean().and_then(|mut s| s.load_preset(slot)) {
+                log::warn!("doctor_check: failed to restore active preset after run: {e}");
             }
-            match restore_list_index.or(last_scanned) {
-                Some(slot) => s.load_preset(slot),
-                None => Ok(()),
-            }
-        }) {
-            log::warn!("doctor_check: failed to restore active preset after run: {e}");
         }
         Ok(DoctorCheckResult { presets, stopped })
     })

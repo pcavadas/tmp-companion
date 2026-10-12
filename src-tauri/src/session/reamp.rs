@@ -13,6 +13,27 @@ pub static REAMP_ON_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub static REAMP_OFF_COUNT: AtomicU32 = AtomicU32::new(0);
 
+thread_local! {
+    /// This thread sent a re-amp ENGAGE that no run-end OFF ladder has settled yet. Set by
+    /// [`Session::set_reamp_mode`]`(true)`, cleared by [`settle_reamp_engage`] (the end of
+    /// `leveller::reamp_off_guaranteed`). Read by `leveller::ReampRunGuard`'s `Drop`, which
+    /// sends the ladder only when this is set — so a panic or early return after an engage
+    /// still leaves the unit OFF, and a run that never engaged opens no extra connection.
+    /// Per THREAD, not global: device work runs on its own blocking thread, and a global
+    /// count would let one test's (or lane's) engage fire another thread's guard.
+    static REAMP_UNSETTLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Has this thread engaged re-amp since its last run-end OFF ladder? See [`REAMP_UNSETTLED`].
+pub fn reamp_engage_unsettled() -> bool {
+    REAMP_UNSETTLED.with(std::cell::Cell::get)
+}
+
+/// Mark this thread's engages settled — the run-end OFF ladder has run.
+pub fn settle_reamp_engage() {
+    REAMP_UNSETTLED.with(|c| c.set(false));
+}
+
 /// The device's re-amp state as [`Session::read_reamp_state`] read it: `None` = that store
 /// gave no reply, `Some(on)` = it answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -49,6 +70,8 @@ impl Session {
     pub fn set_reamp_mode(&mut self, active: bool) -> Result<Option<bool>, String> {
         if active {
             REAMP_ON_COUNT.fetch_add(1, Ordering::Relaxed);
+            // Before the send: an engage whose reply errors may still have landed.
+            REAMP_UNSETTLED.with(|c| c.set(true));
         } else {
             REAMP_OFF_COUNT.fetch_add(1, Ordering::Relaxed);
         }

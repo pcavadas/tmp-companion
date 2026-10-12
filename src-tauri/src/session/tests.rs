@@ -1936,3 +1936,85 @@ fn a_scene_less_preset_has_no_scene_to_restore() {
         "a short list may be a cut read; the device wrote the index itself"
     );
 }
+
+/// #262: the live-sync monitor's receive path. N pushes pumped one tick at a time leave
+/// `raw` empty after every drain (no growth with uptime, no re-parse), each push decodes
+/// on the tick its stream closes — the newest included, with no later stream to unblock
+/// it — and a stream still open across ticks is held, not lost.
+#[test]
+fn drained_pushes_stay_bounded_and_decode_as_they_close() {
+    let push = |i: usize| crate::sim_device::preset_data_changed(1, &[b'a' + (i % 26) as u8; 150]);
+    const N: usize = 200;
+    let mut batches: Vec<Vec<Vec<u8>>> = Vec::new();
+    for i in 0..N {
+        let frames = crate::sim_device::frame_multi(&push(i));
+        assert!(frames.len() > 2, "a multi-frame push");
+        // Split each push across two ticks: the first leaves its stream open.
+        let (a, b) = frames.split_at(1);
+        batches.push(a.to_vec());
+        batches.push(b.to_vec());
+    }
+    let t = crate::test_support::ScriptedTransport::default().with_pending(batches);
+    let mut s = crate::test_support::session_over(&t, Vec::new());
+    let mut pushes = proto::FinalReassembler::default();
+    let mut decoded = Vec::new();
+    for tick in 0..2 * N {
+        s.pump_silent(1).unwrap();
+        let closed = s.drain_closed_pushes(&mut pushes);
+        assert!(
+            s.raw.is_empty(),
+            "tick {tick}: raw kept {} reports",
+            s.raw.len()
+        );
+        if tick % 2 == 0 {
+            assert!(
+                closed.is_empty(),
+                "tick {tick}: an open stream closed early"
+            );
+            assert!(
+                pushes.pending_len() > 0,
+                "tick {tick}: the open stream was dropped"
+            );
+        } else {
+            assert_eq!(
+                closed.len(),
+                1,
+                "tick {tick}: the closed push waited for a later one"
+            );
+            assert_eq!(pushes.pending_len(), 0);
+        }
+        decoded.extend(closed);
+    }
+    assert_eq!(decoded.len(), N);
+    for (i, body) in decoded.iter().enumerate() {
+        assert_eq!(body, &push(i), "push {i} reassembled byte-identically");
+    }
+}
+
+/// The incremental reassembler closes exactly the streams the batch one does, in order.
+#[test]
+fn final_reassembler_matches_the_batch_reassembly() {
+    let mut reports = Vec::new();
+    for len in [10usize, 70, 200, 5, 130] {
+        reports.extend(crate::sim_device::frame_multi(&vec![7u8; len]));
+    }
+    // An open stream cut by a new start, then an orphan continuation left open at the end.
+    reports.push(vec![0x00, 0x33, 0x00, 2, 1, 2]);
+    reports.push(vec![0x00, 0x33, 0x00, 1, 3]);
+    reports.push(vec![0x00, 0x34, 0x00, 1, 4]);
+    let batch = proto::reassemble_streams_final(&reports);
+    let mut r = proto::FinalReassembler::default();
+    let mut closed = Vec::new();
+    for rep in &reports {
+        r.push(rep, &mut closed);
+    }
+    assert_eq!(
+        closed.len(),
+        batch.len() - 1,
+        "all but the open tail closed"
+    );
+    for (a, b) in closed.iter().zip(&batch) {
+        assert_eq!(a.body, b.body);
+    }
+    assert_eq!(r.pending_len(), batch.last().unwrap().body.len());
+}

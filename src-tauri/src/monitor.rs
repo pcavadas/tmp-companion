@@ -39,7 +39,13 @@
 //!   3. The command's guard Drop clears `MONITOR_PAUSE_REQ`; the monitor reconnects
 //!      and re-reads the (possibly command-changed) state, then emits `sync: false`.
 //!
-//! The monitor never acquires a lock, so the command's bounded *sleep* on the ack
+//! The monitor polls the request only between steps, so its connect + startup snapshot
+//! (which can outlast the ack budget) runs under `DEVICE_OP_LOCK` taken with `try_lock`
+//! (`device_gate::try_hold_for_monitor_connect`): a command queues behind that window
+//! instead of opening over it, and a monitor that finds a command running skips the
+//! connect and parks on its pause.
+//!
+//! The monitor never BLOCKS on a lock, so the command's bounded *sleep* on the ack
 //! is not a lock cycle → no deadlock. `hid.rs`'s open-retry absorbs the residual
 //! seize-recycle race on reconnect.
 
@@ -606,6 +612,19 @@ fn run_monitor_iteration(
         sleep(RECONNECT_BACKOFF_MS);
         return;
     }
+    // Hold the device-op gate for the whole connect + startup snapshot (#263). The pause
+    // request is only polled before the connect and inside `pump_loop`, so a command that
+    // arrived just after the check above used to wait out its ack budget and then open the
+    // device while this connect still held it. `try_lock` never blocks, so the monitor still
+    // waits on no lock (the deadlock argument in `device_gate` holds): a command already
+    // running wins, and this iteration parks on its pause at the top of the next one.
+    let Some(connect_hold) = crate::device_gate::try_hold_for_monitor_connect() else {
+        log_block("command-running");
+        drain_not_live(live_rx);
+        drain_metadata_not_live(metadata_rx);
+        sleep(PAUSE_WAIT_STEP);
+        return;
+    };
     log_block("connecting");
     // Connect with the firmware request riding the same startup handshake that
     // carries the preset list and usually the active field-3 graph.
@@ -613,6 +632,7 @@ fn run_monitor_iteration(
     let mut session = match Session::connect_with_firmware() {
         Ok(s) => s,
         Err(e) => {
+            drop(connect_hold);
             // No device / lost the open race to a command window. Back off and
             // retry; on detach this is the steady state until replug. (The
             // watcher remains the authoritative attach/detach signal for the UI.)
@@ -666,6 +686,7 @@ fn run_monitor_iteration(
                      {graph_retries}/{GRAPH_RETRY_MAX} in {GRAPH_RETRY_BACKOFF_MS} ms"
                 );
                 drop(session);
+                drop(connect_hold);
                 emit_sync(app, false);
                 drain_not_live(live_rx);
                 drain_metadata_not_live(metadata_rx);
@@ -686,6 +707,8 @@ fn run_monitor_iteration(
         }
     }
     emit_sync(app, false);
+    // From here the pump loop polls the pause request every ~120 ms and yields on it.
+    drop(connect_hold);
 
     match pump_loop(app, session, cache, seen, live_rx, metadata_rx) {
         PumpExit::Disabled => clear_startup_snapshot(),
@@ -808,7 +831,7 @@ fn pump_loop(
     app: &tauri::AppHandle,
     mut session: Session,
     cache: &Arc<Mutex<LiveCache>>,
-    mut seen: usize,
+    seen: usize,
     live_rx: &Receiver<LiveCmd>,
     metadata_rx: &Receiver<MetadataReadCmd>,
 ) -> PumpExit {
@@ -819,6 +842,23 @@ fn pump_loop(
     let mut last_hb = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_millis(HEARTBEAT_MS))
         .unwrap_or_else(std::time::Instant::now);
+    // Pushes are decoded as their stream CLOSES and their reports dropped (#262): `raw` is
+    // drained every pass, so it never grows with uptime. `skip` = the streams the handshake
+    // decode already emitted (`seen`), which arrive first out of the reassembler.
+    let mut pushes = crate::proto::FinalReassembler::default();
+    let mut skip = seen;
+    let mut decode_closed = |session: &mut Session, skip: &mut usize| {
+        let closed = session.drain_closed_pushes(&mut pushes);
+        if closed.len() > *skip {
+            let mut c = crate::lock_ok(cache);
+            for body in &closed[*skip..] {
+                decode_and_emit(app, body, &mut c);
+            }
+        }
+        *skip = skip.saturating_sub(closed.len());
+    };
+    // Drain the handshake/snapshot reports before any live op can clear `raw`.
+    decode_closed(&mut session, &mut skip);
     loop {
         // Live-sync stopped: drop our Session (free the seize) so `stop_live_sync` can
         // re-establish the persistent UI session. Return to the (disabled) outer loop.
@@ -849,9 +889,8 @@ fn pump_loop(
             let r = exec_metadata_read(&mut session, &cmd);
             let failed = r.is_err();
             let _ = cmd.reply.send(MetadataReadReply::Done(r));
-            // `read_slot_preset_json` clears the accumulator before harvesting field-9.
-            // Restart the seen cursor so later monitor pushes are decoded normally.
-            seen = 0;
+            // `read_slot_preset_json` clears the accumulator before harvesting field-9; every
+            // report before it was already drained into `pushes`, so nothing is lost.
             if failed {
                 return PumpExit::Error;
             }
@@ -859,16 +898,7 @@ fn pump_loop(
         if session.pump_silent(PUMP_MS).is_err() {
             return PumpExit::Error; // device gone / seize lost — reconnect from the top
         }
-        let bodies = session.push_bodies();
-        // Decode every NEWLY-completed stream except the newest (it may still be
-        // growing — same "print all but the last" rule as `listen_dump`).
-        if bodies.len() > seen + 1 {
-            let mut c = crate::lock_ok(cache);
-            while seen + 1 < bodies.len() {
-                decode_and_emit(app, &bodies[seen], &mut c);
-                seen += 1;
-            }
-        }
+        decode_closed(&mut session, &mut skip);
         if last_hb.elapsed().as_millis() as u64 >= HEARTBEAT_MS {
             if session.heartbeat().is_err() {
                 return PumpExit::Error;

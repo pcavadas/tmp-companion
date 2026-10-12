@@ -292,10 +292,27 @@ impl Session {
     /// The reassembled inbound message bodies accumulated so far, using the
     /// 0x35-is-final rule (same as [`Self::streams_final`], the `listen_dump`
     /// reassembly). Public so the device monitor can drain pushes off the open
-    /// connection without `raw`/`streams_final` being module-private to it. The
-    /// monitor tracks a "seen" index (the newest stream may still be growing).
+    /// connection without `raw`/`streams_final` being module-private to it. Re-parses
+    /// all of `raw` on every call: a long-lived reader uses [`Self::drain_closed_pushes`].
     pub fn push_bodies(&self) -> Vec<Vec<u8>> {
         let bodies: Vec<Vec<u8>> = self.streams_final().into_iter().map(|s| s.body).collect();
+        if bodies.iter().any(|b| is_template_substitution(b)) {
+            self.hid.note_substituted();
+        }
+        bodies
+    }
+
+    /// Move every accumulated report into `pushes` and return the bodies of the streams that
+    /// CLOSED, in arrival order — the incremental form of [`Self::push_bodies`] for the
+    /// live-sync monitor (#262). `raw` is left EMPTY, so a session that pumps for hours holds
+    /// one open stream, not its whole push history, and nothing is parsed twice. A closed
+    /// newest stream is returned at once; only a still-open one waits in `pushes`.
+    pub fn drain_closed_pushes(&mut self, pushes: &mut proto::FinalReassembler) -> Vec<Vec<u8>> {
+        let mut closed = Vec::new();
+        for report in self.raw.drain(..) {
+            pushes.push(&report, &mut closed);
+        }
+        let bodies: Vec<Vec<u8>> = closed.into_iter().map(|s| s.body).collect();
         if bodies.iter().any(|b| is_template_substitution(b)) {
             self.hid.note_substituted();
         }

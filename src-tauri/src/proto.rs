@@ -1341,7 +1341,11 @@ pub fn parse(buf: &[u8]) -> Vec<(u32, Val)> {
                 let Some(len) = read_varint(buf, &mut pos) else {
                     break;
                 };
-                let end = (pos + len as usize).min(buf.len());
+                // Saturating: a garbage length (up to `u64::MAX` from a 10-byte
+                // varint) clips to the buffer like any other overrun, never
+                // overflowing or slicing `end < pos` (#260).
+                let len = usize::try_from(len).unwrap_or(usize::MAX);
+                let end = pos.saturating_add(len).min(buf.len());
                 out.push((field_no, Val::Bytes(buf[pos..end].to_vec())));
                 pos = end;
             }
@@ -1423,7 +1427,8 @@ pub fn parse_strict(buf: &[u8]) -> Result<Vec<(u32, Val)>, String> {
                 out.push((field_no, Val::Fixed64(b)));
             }
             2 => {
-                let len = read_varint(buf, &mut pos).ok_or("truncated length")? as usize;
+                let len = read_varint(buf, &mut pos).ok_or("truncated length")?;
+                let len = usize::try_from(len).map_err(|_| "length overflow")?;
                 let end = pos.checked_add(len).ok_or("length overflow")?;
                 if end > buf.len() {
                     return Err("truncated length-delimited field".into());
@@ -1563,11 +1568,32 @@ pub fn reassemble_streams(reports: &[Vec<u8>]) -> Vec<Stream> {
 /// list responses → systematic tail truncation. The strict list harvests use this
 /// variant; a standalone `0x35` with no open stream is still kept as its own message.
 pub fn reassemble_streams_final(reports: &[Vec<u8>]) -> Vec<Stream> {
+    let mut r = FinalReassembler::default();
     let mut streams = Vec::new();
-    let mut current: Option<Vec<u8>> = None;
     for data in reports {
+        r.push(data, &mut streams);
+    }
+    if let Some(c) = r.current {
+        streams.push(Stream { body: c });
+    }
+    streams
+}
+
+/// [`reassemble_streams_final`], one report at a time: [`Self::push`] hands back each stream
+/// as it CLOSES (its `0x35` final frame, or the next `0x33` start), and keeps only the one
+/// still open. A long-lived reader (the live-sync monitor) feeds it every report once and
+/// drops them, so its buffer is one open stream instead of the session's whole history,
+/// re-parsed on every pump (#262).
+#[derive(Debug, Default)]
+pub struct FinalReassembler {
+    current: Option<Vec<u8>>,
+}
+
+impl FinalReassembler {
+    /// Feed one raw report; any stream it closes is appended to `closed`.
+    pub fn push(&mut self, data: &[u8], closed: &mut Vec<Stream>) {
         if data.len() < 4 || data[0] != 0x00 {
-            continue;
+            return;
         }
         let magic = data[1];
         let body_len = data[3] as usize;
@@ -1575,31 +1601,32 @@ pub fn reassemble_streams_final(reports: &[Vec<u8>]) -> Vec<Stream> {
         let body = &data[4..end];
         match magic {
             MAGIC_IN_START => {
-                if let Some(c) = current.take() {
-                    streams.push(Stream { body: c });
+                if let Some(c) = self.current.take() {
+                    closed.push(Stream { body: c });
                 }
-                current = Some(body.to_vec());
+                self.current = Some(body.to_vec());
             }
-            MAGIC_IN_FRAME => match current {
+            MAGIC_IN_FRAME => match self.current {
                 Some(ref mut c) => c.extend_from_slice(body),
-                None => current = Some(body.to_vec()),
+                None => self.current = Some(body.to_vec()),
             },
-            MAGIC_OUT => match current.take() {
+            MAGIC_OUT => match self.current.take() {
                 Some(mut c) => {
                     c.extend_from_slice(body);
-                    streams.push(Stream { body: c });
+                    closed.push(Stream { body: c });
                 }
-                None => streams.push(Stream {
+                None => closed.push(Stream {
                     body: body.to_vec(),
                 }),
             },
             _ => {}
         }
     }
-    if let Some(c) = current {
-        streams.push(Stream { body: c });
+
+    /// Bytes held for the stream still open (0 when none is).
+    pub fn pending_len(&self) -> usize {
+        self.current.as_ref().map_or(0, Vec::len)
     }
-    streams
 }
 
 #[cfg(test)]
@@ -1922,6 +1949,23 @@ mod tests {
         let fields = parse(&buf);
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].1.as_bytes(), Some(&b"ABC"[..]));
+    }
+
+    /// #260: field 1, wire type 2, a 10-byte varint length of `u64::MAX`. The
+    /// unchecked `pos + len` overflowed (debug) or sliced `end < pos` (release).
+    #[test]
+    fn parse_survives_a_u64_max_length() {
+        let buf = [
+            0x0A, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+        ];
+        let fields = parse(&buf);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].1.as_bytes(), Some(&[][..]));
+        assert!(parse_strict(&buf).is_err());
+        // The same length after a byte of payload still clips, not panics.
+        let mut tail = buf.to_vec();
+        tail.push(0x41);
+        assert_eq!(parse(&tail)[0].1.as_bytes(), Some(&b"A"[..]));
     }
 
     #[test]

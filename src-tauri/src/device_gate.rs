@@ -146,7 +146,9 @@ pub(crate) fn settle_or_cancel(ms: u64) -> Result<(), String> {
 /// still exceeded (wedged monitor), the command proceeds anyway — `hid.rs`'s
 /// bounded `IOHIDDeviceOpen` retry (≤0.48 s on `0xe00002c5`) absorbs the residual
 /// race, the same safety net that already covers `with_released_seize`'s own
-/// drop→reconnect lag.
+/// drop→reconnect lag. A missed ack first waits (same budget) for the monitor's handle to
+/// close, and the monitor's connect window holds the gate itself
+/// ([`try_hold_for_monitor_connect`]), so a command cannot open over that connect.
 const PAUSE_WAIT_TRIES: u32 = 160;
 const PAUSE_WAIT_STEP_MS: u64 = 25;
 
@@ -208,18 +210,37 @@ pub(crate) fn lock_device_op() -> MonitorPauseGuard {
             std::thread::sleep(std::time::Duration::from_millis(PAUSE_WAIT_STEP_MS));
         }
         if !acked {
-            // Proceeding anyway (hid.rs's open-retry covers the seize-recycle race), but a
-            // persistent no-ack means the monitor is wedged — every device op then pays the
-            // full wait. Surface it instead of silently eating the latency.
+            // No ack: the monitor is mid-op inside its pump loop (a long live op or metadata
+            // read), or wedged. Don't open over a handle it still holds (#263): wait, bounded,
+            // for every handle in this process to close. A monitor between connects holds
+            // none and cannot start one while this gate is held
+            // ([`try_hold_for_monitor_connect`]), so this returns at once there.
+            let released = crate::hid::wait_released(std::time::Duration::from_millis(
+                u64::from(PAUSE_WAIT_TRIES) * PAUSE_WAIT_STEP_MS,
+            ));
+            // A persistent no-ack means every device op pays the full wait: surface it.
             log::warn!(
                 "device op proceeding without a monitor pause-ack ({PAUSE_WAIT_TRIES} tries × \
-                 {PAUSE_WAIT_STEP_MS}ms) — the monitor may be wedged"
+                 {PAUSE_WAIT_STEP_MS}ms); device handle {} — the monitor may be wedged",
+                if released { "released" } else { "STILL HELD" }
             );
         }
     }
-    // Proceed even if not acked within budget (see PAUSE_WAIT_TRIES) — hid.rs's
-    // open-retry covers the residual seize-recycle race.
     MonitorPauseGuard(g)
+}
+
+/// The monitor's share of [`DEVICE_OP_LOCK`]: taken with `try_lock` (never blocking) for
+/// its connect + startup-snapshot window, the one stretch where it holds the device without
+/// polling `MONITOR_PAUSE_REQ` (#263). `None` = a command holds the gate; the monitor then
+/// skips the connect and parks on that command's pause instead. While the monitor holds it,
+/// commands queue on [`lock_device_op`] behind the connect rather than racing its seize.
+/// Unlike `lock_device_op` it leaves the abort flag and the pause request alone.
+pub(crate) fn try_hold_for_monitor_connect() -> Option<std::sync::MutexGuard<'static, ()>> {
+    match DEVICE_OP_LOCK.try_lock() {
+        Ok(g) => Some(g),
+        Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
 }
 
 /// Run blocking device work with the app's HID seize released — the leveller and
@@ -253,7 +274,13 @@ where
 {
     let _op = lock_device_op(); // serialize the whole release→work→reconnect
     *lock_ok(&arc) = None;
+    // The re-amp backstop for every device command: a no-op unless `work` engaged re-amp and
+    // left without its own run-end OFF — a panic unwinding out of it included (#261). Dropped
+    // after `work`'s own sessions and before the UI reconnect below, so its fresh connection
+    // never meets another seize from this process.
+    let reamp = crate::leveller::ReampRunGuard::new("device command");
     let result = work();
+    drop(reamp);
     // Re-establish the UI session so the connection / preset list survive the
     // command — UNLESS live-sync is active, in which case the MONITOR owns the
     // device: re-grabbing the UI seize here would leave `session = Some` and
@@ -275,6 +302,44 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #263: while the monitor holds the gate for its connect + snapshot, a command QUEUES
+    /// behind it — it never runs (opens the transport) inside that window — and a monitor
+    /// that finds a command running gets `None` instead of blocking.
+    #[test]
+    fn a_command_queues_behind_the_monitors_connect_window() {
+        use std::sync::atomic::AtomicBool;
+        static CONNECT_DONE: AtomicBool = AtomicBool::new(false);
+        // Another test's command may hold the gate for a moment: wait it out.
+        let hold = loop {
+            if let Some(g) = try_hold_for_monitor_connect() {
+                break g;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        CONNECT_DONE.store(false, SeqCst);
+        let command = std::thread::spawn(|| {
+            let _op = lock_device_op();
+            // The command's first device open would happen here.
+            CONNECT_DONE.load(SeqCst)
+        });
+        // A slow connect + snapshot, longer than a command would ever wait for an ack.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        CONNECT_DONE.store(true, SeqCst);
+        drop(hold);
+        assert!(
+            command.join().expect("command thread"),
+            "the command ran before the monitor's connect window closed"
+        );
+        MONITOR_PAUSE_REQ.store(false, SeqCst);
+
+        let op = lock_device_op();
+        assert!(
+            try_hold_for_monitor_connect().is_none(),
+            "the monitor must not connect while a command holds the gate"
+        );
+        drop(op);
+    }
 
     /// The stop-latency contract: an armed wait runs its full duration, an aborted one
     /// returns within a poll interval no matter how long it was asked to sleep. This is

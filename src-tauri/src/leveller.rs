@@ -2832,7 +2832,100 @@ impl ReampOffOutcome {
 /// or delays it, and it never sends Mixer `setReAmpMode`(15), which desyncs the two
 /// stores (`danger.md`). Callers keep calling it on every exit path.
 pub(crate) fn reamp_off_guaranteed(tag: &str) -> ReampOffOutcome {
-    reamp_off_ladder(tag, Session::connect_lean)
+    let out = reamp_off_ladder(tag, Session::connect_lean);
+    // Every rung has been tried, verified or not: nothing is left for a guard to send.
+    crate::session::settle_reamp_engage();
+    out
+}
+
+/// One OFF on a fresh connection, unverified — the MID-run disengage a solve sends after a
+/// failed capture, before it re-engages on another fresh connection, or before a write
+/// session. Not a run-end backstop: that is [`reamp_off_guaranteed`], owned by
+/// [`ReampRunGuard`].
+pub(crate) fn reamp_off_fresh(tag: &str) {
+    if let Err(e) = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false)) {
+        log::warn!("{tag}: fresh-connection re-amp OFF failed ({e})");
+    }
+}
+
+/// The run-end re-amp OFF as a scope guard: the panic-safe form of [`reamp_off_guaranteed`].
+///
+/// Create it before the run's first engage, and declare it BEFORE every `Session` the run
+/// opens, so it drops after them (locals drop in reverse order): the OFF goes out on a fresh
+/// connection with no other seize held in this process, never on a held one (`danger.md`).
+///
+/// - [`Self::finish`] is the normal end: it always runs the ladder and returns its verdict,
+///   which the caller stamps on the run's result.
+/// - `Drop` without `finish` (a panic unwinding, or an early return) runs the ladder only if
+///   this thread engaged re-amp since the guard was created or the last ladder ran
+///   ([`crate::session::reamp_engage_unsettled`]), so an early refusal before any engage
+///   opens no connection. It never panics: a panic
+///   while unwinding aborts the process, so a failure is logged and swallowed.
+///
+/// [`crate::device_gate::with_released_seize_blocking`] holds one around every device
+/// command, so a command that engaged and returned (or panicked) without its own backstop
+/// still ends OFF.
+#[must_use = "the guard sends the run-end re-amp OFF when it drops"]
+pub(crate) struct ReampRunGuard {
+    tag: &'static str,
+    connect: Box<dyn FnMut() -> Result<Session, String>>,
+    /// Cleared by [`Self::finish`], which has already sent the ladder.
+    armed: bool,
+}
+
+impl ReampRunGuard {
+    pub(crate) fn new(tag: &'static str) -> Self {
+        Self::with_connect(tag, Session::connect_lean)
+    }
+
+    /// [`Self::new`] over any `connect` (a test hands it a fake's sessions).
+    pub(crate) fn with_connect(
+        tag: &'static str,
+        connect: impl FnMut() -> Result<Session, String> + 'static,
+    ) -> Self {
+        // The guard answers for engages made in ITS scope only: a pooled blocking thread can
+        // carry an unsettled flag from earlier work that had no guard of its own.
+        crate::session::settle_reamp_engage();
+        Self {
+            tag,
+            connect: Box::new(connect),
+            armed: true,
+        }
+    }
+
+    /// The normal run end: the full ladder, always, with its verdict.
+    pub(crate) fn finish(mut self) -> ReampOffOutcome {
+        self.armed = false;
+        let out = reamp_off_ladder(self.tag, &mut self.connect);
+        crate::session::settle_reamp_engage();
+        out
+    }
+}
+
+impl Drop for ReampRunGuard {
+    fn drop(&mut self) {
+        if !self.armed || !crate::session::reamp_engage_unsettled() {
+            return;
+        }
+        let tag = self.tag;
+        let connect = &mut self.connect;
+        if std::thread::panicking() {
+            log::error!("{tag}: unwinding after a re-amp engage; sending the run-end OFF");
+        } else {
+            log::info!("{tag}: re-amp engaged with no run-end OFF yet; sending it now");
+        }
+        let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reamp_off_ladder(tag, connect)
+        }));
+        crate::session::settle_reamp_engage();
+        match sent {
+            Ok(out) if !out.verified => log::error!("{tag}: {REAMP_STILL_ON_WARNING}"),
+            Ok(_) => {}
+            Err(_) => {
+                log::error!("{tag}: the run-end re-amp OFF panicked; {REAMP_STILL_ON_WARNING}")
+            }
+        }
+    }
 }
 
 /// One rung of the [`reamp_off_ladder`] past the first OFF: its log name and its sends.
@@ -3914,7 +4007,7 @@ pub fn measure_footswitch(
     param: &FsParamTarget,
     intended_preset_level: Option<f32>,
 ) -> Result<FootswitchLevelResult, String> {
-    solve_footswitch(
+    solve_footswitch_with(
         switch,
         engaged_bypass,
         stimulus,
@@ -3922,6 +4015,7 @@ pub fn measure_footswitch(
         method,
         current_value,
         param,
+        || reamp_off_fresh("measure_footswitch"),
         // EVERY capture of this row recalls `scene` before engaging — the isolation list and
         // the intended `presetLevel` are both re-sent per capture for the same reason (a
         // recall re-asserts its own bypass state AND runs the device's level-apply).
@@ -3936,8 +4030,35 @@ pub fn measure_footswitch(
 /// write is silently reverted for captures 2..N and every later point measures a
 /// NON-isolated sound. (It used to be sent only on the first successful capture, on the
 /// since-corrected assumption that working-copy edits alone survive the reconnects — they
-/// do, but the recall undoes them.) Injectable so the loop + its outcome verdict are unit
-/// tested without a device.
+/// do, but the recall undoes them.) Injectable — `reamp_off` too (see
+/// [`solve_param_secant`]) — so the loop + its outcome verdict are unit tested without a
+/// device.
+#[allow(clippy::too_many_arguments)]
+fn solve_footswitch_with(
+    switch: u32,
+    engaged_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    target_lufs: f64,
+    method: &str,
+    current_value: Option<f32>,
+    param: &FsParamTarget,
+    reamp_off: impl FnMut(),
+    mut measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, String>,
+) -> Result<FootswitchLevelResult, String> {
+    let solved = solve_param_secant(
+        stimulus,
+        target_lufs,
+        current_value,
+        param,
+        FS_CORRECT_MAX,
+        reamp_off,
+        |v| measure(engaged_bypass, v),
+    )?;
+    Ok(solved.into_fs_result(switch, target_lufs, method))
+}
+
+/// [`solve_footswitch_with`] with no disengage hook — the solve suites that don't count OFFs.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn solve_footswitch(
     switch: u32,
@@ -3947,17 +4068,19 @@ fn solve_footswitch(
     method: &str,
     current_value: Option<f32>,
     param: &FsParamTarget,
-    mut measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, String>,
+    measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, String>,
 ) -> Result<FootswitchLevelResult, String> {
-    let solved = solve_param_secant(
+    solve_footswitch_with(
+        switch,
+        engaged_bypass,
         stimulus,
         target_lufs,
+        method,
         current_value,
         param,
-        FS_CORRECT_MAX,
-        |v| measure(engaged_bypass, v),
-    )?;
-    Ok(solved.into_fs_result(switch, target_lufs, method))
+        || {},
+        measure,
+    )
 }
 
 /// What the param-space secant ACTUALLY found — the solve's own vocabulary, with no wire
@@ -4043,12 +4166,18 @@ impl ParamSolve {
 /// `measure(v)` captures at knob value `v`; whatever isolation that needs (a footswitch's
 /// engaged-bypass list, a scene recall) is the CALLER's closure to carry — the solve itself
 /// has no footswitch concepts left in it.
+///
+/// `reamp_off()` is the caller's mid-solve disengage (production: [`reamp_off_fresh`]), sent
+/// when the solve leaves early or after a failed capture, because the measurement's own
+/// last disengage can be dropped. The run-end OFF stays the caller's [`ReampRunGuard`], so
+/// the solve itself never opens a connection.
 fn solve_param_secant(
     stimulus: &[f32],
     target_lufs: f64,
     current_value: Option<f32>,
     param: &FsParamTarget,
     correct_max: u32,
+    mut reamp_off: impl FnMut(),
     mut measure_at: impl FnMut(f32) -> Result<lufs::Loudness, String>,
 ) -> Result<ParamSolve, String> {
     // ENTRY GUARD, before any device work: a param the classifier doesn't recognise as a
@@ -4062,12 +4191,6 @@ fn solve_param_secant(
     // `anchored`'s doc); applied here, not at call sites, so it cannot be forgotten.
     let param = &param.anchored(current_value);
     let (bound_lo, bound_hi) = param.bounds();
-
-    // Guaranteed re-amp OFF on a fresh connection — the measurement's last disengage can be
-    // dropped, stranding the unit input-muted. (Not the write-confirm fix; just hygiene.)
-    let reamp_off = || {
-        let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
-    };
 
     // Idempotency probe: if the switch's currently-configured engaged value already hits
     // target, leave it untouched (a re-run must not re-solve + re-randomize an in-tolerance
@@ -4524,7 +4647,7 @@ pub fn write_footswitch_values(
         return Ok(());
     }
     // Guaranteed re-amp OFF first — the measurement's last disengage can be dropped.
-    let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
+    reamp_off_fresh("write_footswitch_values");
     let mut s = Session::connect()?;
     write_fs_values_on_session(&mut s, slot, pending, restore_scene)
 }
@@ -5104,7 +5227,7 @@ pub fn level_scenes_live_batched(
     })();
     // Guaranteed fresh OFF — interrupted live streams can strand re-amp even if
     // the in-session OFF was sent.
-    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    reamp_off_fresh("level_scenes_live_batched");
     restore_after_unsaved_error(slot, save, result)
 }
 
@@ -6082,7 +6205,7 @@ fn run_scene_jobs(
     }
     // Guaranteed fresh re-amp OFF (each `measure_knob_at`/`apply_level` already
     // disengages, but an interrupted capture can strand it).
-    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    reamp_off_fresh("run_scene_jobs");
     // A5/F2 (TRADE-PATH GAP): undo the base-requested isolation HERE, straight after the last
     // capture and BEFORE the one save below — this is the only place left that can, since every
     // capture in the loop above re-asserted `force_bypass` and dropped its own session without
@@ -7124,6 +7247,7 @@ fn handle_one_scene(
         None,
         handle,
         SCENE_HANDLE_CORRECT_MAX,
+        || reamp_off_fresh("scene_handle_solve"),
         |v| {
             measure_knob_at(
                 stimulus,
@@ -7589,7 +7713,7 @@ pub fn mute_floor_report(
     let floor_lufs = measure_mute_floor(stimulus, a, b, saved, None)?;
     let a_solo = measure_knobs_at(stimulus, &[(a, cur_a), (b, 0.0)], saved, None)?;
     let b_solo = measure_knobs_at(stimulus, &[(a, 0.0), (b, cur_b)], saved, None)?;
-    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    reamp_off_fresh("mute_floor_report");
 
     let silent = floor_lufs <= MUTE_FLOOR_SILENT_LUFS + 1e-6;
     let margin_a = a_solo.integrated_lufs - floor_lufs;
@@ -10246,10 +10370,30 @@ mod tests {
     // silence is the quiet EXTREME of the response curve (DATA), not a routing error, for
     // every measurement AFTER the first seed. See `FS_SILENT_GEOMETRY_LUFS`'s doc for why
     // the synthesized pseudo point is pinned there rather than at the true digital-silence
-    // floor `MUTE_FLOOR_SILENT_LUFS`. The first-seed routing-clamp arm is deliberately NOT
-    // exercised here: it calls `reamp_off()` → a real `Session::connect_lean()`, which the
-    // injected-capture suite keeps off-limits (see the isolation test's doc above) — that
-    // arm is byte-unchanged by the silence-as-data fix.
+    // floor `MUTE_FLOOR_SILENT_LUFS`. The first-seed routing-clamp arm has its own test just
+    // below, now that its disengage is injected rather than a real connection.
+
+    /// #261: the solve owns no connection. A silent FIRST seed is the routing clamp; it
+    /// disengages through the caller's hook exactly once, and opens nothing itself.
+    #[test]
+    fn solve_footswitch_routing_clamp_disengages_through_the_callers_hook() {
+        let mut offs = 0u32;
+        let r = solve_footswitch_with(
+            12,
+            &[],
+            &[],
+            -20.0,
+            "baked",
+            None,
+            &fs_unit_param(),
+            || offs += 1,
+            |_, _| Err(NO_SIGNAL_CAPTURED.to_string()),
+        )
+        .expect("a routing clamp is a result, not an error");
+        assert!(r.clamped, "{r:?}");
+        assert_eq!(r.clamp_reason.as_deref(), Some("no signal on USB 1/2"));
+        assert_eq!(offs, 1, "one mid-solve OFF, through the hook");
+    }
 
     /// HW-measured Plumes-pedal `level` knob curve (`probe --fs-sweep`, preset
     /// "TR+BD2+BMP", fw 1.8.45): 0.11→−66.9, 0.20→−24.2, 0.30→−20.1, 0.50→−18.1,
@@ -12258,6 +12402,58 @@ mod reamp_off_ladder_tests {
             format!("boom — {REAMP_STILL_ON_WARNING}")
         );
         assert_eq!(out.annotate_err(CANCELLED.into()), CANCELLED);
+    }
+
+    /// #261: a panic after an engage unwinds through the guard, which sends the OFF ladder
+    /// on a FRESH connection (the run's own session dropped first) — the shipped app's
+    /// equivalent of `probe`'s `ReampOffGuard`.
+    #[test]
+    fn a_panic_after_an_engage_still_sends_the_off_on_a_fresh_connection() {
+        let sim = SimDevice::new();
+        let connects = Arc::new(Mutex::new(0u32));
+        let (fake, n) = (sim.clone(), connects.clone());
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ReampRunGuard::with_connect("test", move || {
+                *n.lock().expect("count") += 1;
+                Ok(session(&fake))
+            });
+            let mut run = session(&sim);
+            run.set_reamp_mode(true).expect("engage");
+            panic!("a reply parser blew up mid-capture");
+        }));
+        assert!(unwound.is_err(), "the panic still propagates");
+        assert_eq!(*connects.lock().expect("count"), 1, "one fresh connection");
+        assert_eq!(reamp_writes(&sim), [true, false]);
+        assert_eq!(
+            session(&sim).read_reamp_state().expect("read").mixer,
+            Some(false)
+        );
+        assert!(!crate::session::reamp_engage_unsettled());
+    }
+
+    /// An early return BEFORE any engage (a refused read, a bad stimulus) opens nothing.
+    #[test]
+    fn a_guard_with_no_engage_opens_no_connection() {
+        crate::session::settle_reamp_engage();
+        let connects = Arc::new(Mutex::new(0u32));
+        let n = connects.clone();
+        drop(ReampRunGuard::with_connect("test", move || {
+            *n.lock().expect("count") += 1;
+            Err("no device".to_string())
+        }));
+        assert_eq!(*connects.lock().expect("count"), 0);
+    }
+
+    /// `finish` is the normal run end: the ladder runs once, its verdict comes back, and the
+    /// guard's own `Drop` sends nothing more.
+    #[test]
+    fn finish_runs_the_ladder_once() {
+        let sim = SimDevice::new();
+        session(&sim).set_reamp_mode(true).expect("engage");
+        let fake = sim.clone();
+        let out = ReampRunGuard::with_connect("test", move || Ok(session(&fake))).finish();
+        assert!(out.verified);
+        assert_eq!(reamp_writes(&sim), [true, false]);
     }
 
     #[test]
