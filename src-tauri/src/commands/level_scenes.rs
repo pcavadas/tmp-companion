@@ -672,9 +672,16 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             // `restore_scene` = the preset's original active scene: the batch-end
             // single save recalls it first so the preset persists in the same
             // base/scene/footswitch state it was loaded in.
-            // DARK: overlay path validated by `probe --overlay-ab` (76/76 scene-amp pairs,
-            // 0 bypass mismatches) but adoption is a gated follow-up — flip to `true` then
-            // (see prepass_scene_docs_via's adoption-time TODO). `false` = live prepass today.
+            // LIVE prepass. The saved-overlay path (`true`: docs derived from the complete
+            // `saved` read above plus its own-connection `load_preset`, validated by
+            // `probe --overlay-ab`, 76/76 scene-amp pairs, 0 bypass mismatches) is
+            // adoption-ready — `prepass_scene_docs_via`'s doc — but flipping it is blocked
+            // OFFLINE: SimDevice answers every `loadScene` with the ONE base graph, and the
+            // slot-403 'Clean' gates (`level_defaults_403_scenes_solve_and_offbranch`, the
+            // #187 verify-retry gate) depend on that base-graph doc. The overlay reads the
+            // scene's real stored amp `outputLevel` 0.0 instead, and the row no longer
+            // reaches the routing clamp. Flip once the sim renders scene overlays and the 403
+            // fixture is re-derived.
             let (docs, restore_scene) =
                 prepass_scene_docs_via(slot, &scene_slots, false, saved.as_ref())?;
             // `build_scene_jobs` stamps a base target on every job; override each with its

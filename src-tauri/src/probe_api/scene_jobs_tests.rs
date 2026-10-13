@@ -416,6 +416,140 @@ fn scene_docs_restore_scene_none_when_absent() {
     assert_eq!(restore, None);
 }
 
+// The restore scene goes through the guarded `last_loaded_scene` every other save lane uses:
+// a scene-less preset naming a scene index must not hand the save an empty-template recall.
+#[test]
+fn scene_docs_restore_scene_is_the_guarded_saved_on_load_scene() {
+    let mut p = saved_preset();
+    p["scenes"] = serde_json::json!([]);
+    let (_, restore) = scene_docs_from_saved(&p, &[session::BASE_SCENE_SLOT]).unwrap();
+    assert_eq!(restore, None);
+    p["lastLoadedScene"] = session::BASE_SCENE_SLOT.into();
+    let (_, restore) = scene_docs_from_saved(&p, &[session::BASE_SCENE_SLOT]).unwrap();
+    assert_eq!(restore, Some(session::BASE_SCENE_SLOT));
+}
+
+// ── #176: the production saved-overlay prepass (`prepass_scene_docs_with`) ───────────────
+
+/// What one `prepass_scene_docs_with` call did on the device: loads issued, live prepasses
+/// run, complete reads issued — and its answer.
+struct PrepassTrace {
+    loads: Vec<u32>,
+    live: u32,
+    reads: u32,
+    result: Result<SceneDocs, String>,
+}
+
+/// Drive the overlay-vs-live decision with recording fakes. `read` answers the complete read
+/// used when the caller has no `saved`; the live fake returns one marker doc and restore 7.
+fn prepass_trace(
+    use_overlay: bool,
+    saved: Option<&serde_json::Value>,
+    read: Result<serde_json::Value, String>,
+    load: Result<(), String>,
+) -> PrepassTrace {
+    let mut loads = Vec::new();
+    let (mut live, mut reads) = (0, 0);
+    let result = prepass_scene_docs_with(
+        ListIndex(12),
+        &[0, session::BASE_SCENE_SLOT],
+        use_overlay,
+        saved,
+        |_| {
+            reads += 1;
+            read
+        },
+        |slot| {
+            loads.push(slot.0);
+            load
+        },
+        |_, slots| {
+            live += 1;
+            Ok((
+                slots
+                    .iter()
+                    .map(|s| (*s, Some(serde_json::json!({ "live": true }))))
+                    .collect(),
+                Some(7),
+            ))
+        },
+    );
+    PrepassTrace {
+        loads,
+        live,
+        reads,
+        result,
+    }
+}
+
+#[test]
+fn overlay_prepass_derives_docs_from_saved_and_loads_the_preset_once() {
+    let saved = saved_preset();
+    let t = prepass_trace(true, Some(&saved), Err("unused".into()), Ok(()));
+    let (docs, restore) = t.result.expect("overlay docs");
+    // The batch runner needs the preset CURRENT: exactly one load of THIS slot, and no
+    // scene-recalling live walk, no second field-8 read (the caller's complete one serves).
+    assert_eq!(t.loads, vec![12]);
+    assert_eq!((t.live, t.reads), (0, 0));
+    let want = scene_docs_from_saved(&saved, &[0, session::BASE_SCENE_SLOT]).unwrap();
+    assert_eq!(docs, want.0);
+    assert_eq!(restore, Some(2), "the saved on-load scene");
+}
+
+#[test]
+fn overlay_prepass_falls_back_to_the_live_walk_when_saved_cannot_answer() {
+    // A requested scene the saved document does not carry (a cut `scenes`).
+    let mut cut = saved_preset();
+    cut["scenes"] = serde_json::json!([]);
+    let t = prepass_trace(true, Some(&cut), Err("unused".into()), Ok(()));
+    let (docs, restore) = t.result.expect("live docs");
+    assert_eq!((t.live, t.reads), (1, 0));
+    assert!(
+        t.loads.is_empty(),
+        "the live prepass makes the preset current itself"
+    );
+    assert_eq!(docs[0].1, Some(serde_json::json!({ "live": true })));
+    assert_eq!(restore, Some(7));
+}
+
+#[test]
+fn overlay_prepass_reads_complete_when_the_caller_has_no_saved_document() {
+    // No `saved`: one complete-or-fail read, then the overlay path as usual.
+    let t = prepass_trace(true, None, Ok(saved_preset()), Ok(()));
+    assert!(t.result.is_ok());
+    assert_eq!((t.reads, t.live), (1, 0));
+    assert_eq!(t.loads, vec![12]);
+    // That read refusing (a truncated preset with no backup answer): the live walk.
+    let t = prepass_trace(true, None, Err("too large".into()), Ok(()));
+    assert!(t.result.is_ok());
+    assert_eq!((t.reads, t.live), (1, 1));
+    assert!(t.loads.is_empty());
+}
+
+#[test]
+fn overlay_prepass_fails_the_run_when_the_load_fails() {
+    // Without the load the runner would write into whatever preset is current — never
+    // swallow it, and never let a doc set describe a preset that was not made current.
+    let saved = saved_preset();
+    let t = prepass_trace(
+        true,
+        Some(&saved),
+        Err("unused".into()),
+        Err("no unit".into()),
+    );
+    assert_eq!(t.result.unwrap_err(), "no unit");
+    assert_eq!(t.live, 0);
+}
+
+#[test]
+fn live_prepass_is_unchanged_when_the_overlay_is_off() {
+    let saved = saved_preset();
+    let t = prepass_trace(false, Some(&saved), Err("unused".into()), Ok(()));
+    assert!(t.result.is_ok());
+    assert_eq!((t.live, t.reads), (1, 0));
+    assert!(t.loads.is_empty());
+}
+
 // ── saved-structure fallback (the oversized-audioGraph class) ───────────────────────────
 // A preset whose audioGraph overruns the device's lean-session field-3 push (~3.4 KB
 // observed; the prepass sessions empirically get the lean cut)
