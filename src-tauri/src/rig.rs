@@ -120,9 +120,100 @@ pub(crate) fn open_transport() -> Result<Box<dyn HidTransport>, DeviceError> {
     with_current(|r| r.open_transport())
 }
 
-/// [`Rig::capture`] on this thread's rig.
+/// [`Rig::capture`] on this thread's rig. Its wall time joins [`WAITS`].
 pub(crate) fn capture(stimulus: &[f32], rate: u32, tail_ms: u64) -> Result<Capture, LevelError> {
-    with_current(|r| r.capture(stimulus, rate, tail_ms))
+    let started = std::time::Instant::now();
+    let result = with_current(|r| r.capture(stimulus, rate, tail_ms));
+    WAITS.note_capture(started.elapsed());
+    result
+}
+
+/// The process's running total of HARDWARE WAITS (#198): every settle the code asked for
+/// and what this rig applied ([`crate::device_gate::settle_ms`]), and the wall time spent
+/// inside re-amp captures ([`capture`]). On the device a capture is the stimulus playing
+/// through the unit (~6.8 s), so these two are the time a run spends waiting on hardware
+/// rather than computing; offline the settles collapse to zero and a capture is the
+/// model's arithmetic plus any armed hold. Process-wide and monotonic: a reader takes a
+/// snapshot before and after the work it times and subtracts (`scripts/e2e.sh`'s online
+/// lane does exactly that per spec, through the e2e server's `GET /timing`).
+///
+/// An abortable settle that a Stop cut short still counts its full applied length, so the
+/// applied total is an upper bound on time actually slept — the case is a cancelled run,
+/// whose timing nobody budgets.
+pub(crate) static WAITS: Waits = Waits::new();
+
+/// See [`WAITS`].
+pub(crate) struct Waits {
+    settle_requested_ms: std::sync::atomic::AtomicU64,
+    settle_applied_ms: std::sync::atomic::AtomicU64,
+    settles: std::sync::atomic::AtomicU64,
+    capture_ms: std::sync::atomic::AtomicU64,
+    captures: std::sync::atomic::AtomicU64,
+}
+
+/// One reading of [`WAITS`].
+#[cfg_attr(
+    not(any(test, feature = "e2e")),
+    expect(
+        dead_code,
+        reason = "only the e2e server's /timing route reads the totals"
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct WaitTotals {
+    pub settle_requested_ms: u64,
+    pub settle_applied_ms: u64,
+    pub settles: u64,
+    pub capture_ms: u64,
+    pub captures: u64,
+}
+
+impl Waits {
+    const fn new() -> Self {
+        use std::sync::atomic::AtomicU64;
+        Waits {
+            settle_requested_ms: AtomicU64::new(0),
+            settle_applied_ms: AtomicU64::new(0),
+            settles: AtomicU64::new(0),
+            capture_ms: AtomicU64::new(0),
+            captures: AtomicU64::new(0),
+        }
+    }
+
+    /// One settle: `requested` ms asked for, `applied` ms this rig waits.
+    pub(crate) fn note_settle(&self, requested: u64, applied: u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.settle_requested_ms.fetch_add(requested, Relaxed);
+        self.settle_applied_ms.fetch_add(applied, Relaxed);
+        self.settles.fetch_add(1, Relaxed);
+    }
+
+    /// One capture that took `took` of wall time (an error included).
+    fn note_capture(&self, took: std::time::Duration) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let ms = u64::try_from(took.as_millis()).unwrap_or(u64::MAX);
+        self.capture_ms.fetch_add(ms, Relaxed);
+        self.captures.fetch_add(1, Relaxed);
+    }
+
+    /// The totals so far.
+    #[cfg_attr(
+        not(any(test, feature = "e2e")),
+        expect(
+            dead_code,
+            reason = "only the e2e server's /timing route reads the totals"
+        )
+    )]
+    pub(crate) fn totals(&self) -> WaitTotals {
+        use std::sync::atomic::Ordering::Relaxed;
+        WaitTotals {
+            settle_requested_ms: self.settle_requested_ms.load(Relaxed),
+            settle_applied_ms: self.settle_applied_ms.load(Relaxed),
+            settles: self.settles.load(Relaxed),
+            capture_ms: self.capture_ms.load(Relaxed),
+            captures: self.captures.load(Relaxed),
+        }
+    }
 }
 
 /// [`Rig::settle_ms`] on this thread's rig.
@@ -158,6 +249,9 @@ mod tests {
     /// A scoped rig answers only inside its closure, nests, and is restored after a panic.
     #[test]
     fn a_scoped_rig_is_this_threads_rig_only_inside_its_closure() {
+        // Both sides read the e2e settle regime, which the IPC tests switch under this lock.
+        #[cfg(feature = "e2e")]
+        let _regime = crate::lock_ok(&crate::e2e_server::TEST_SERIAL);
         assert_eq!(settle_ms(120), default_rig().settle_ms(120));
         scoped(Rc::new(Fixed(7)), || {
             assert_eq!(settle_ms(120), 7);
@@ -175,6 +269,27 @@ mod tests {
         assert!(
             SCOPED.with(|s| s.borrow().is_none()),
             "a panic inside the closure still restores the rig"
+        );
+    }
+
+    /// The wait totals only ever grow, and a settle and a capture each land in their own
+    /// counters: requested and applied apart, so the collapsed offline tier still shows what
+    /// the device would have waited. A private `Waits`, so parallel tests cannot interfere.
+    #[test]
+    fn wait_totals_separate_settles_from_captures() {
+        let w = Waits::new();
+        w.note_settle(400, 0);
+        w.note_settle(150, 150);
+        w.note_capture(std::time::Duration::from_millis(6_800));
+        assert_eq!(
+            w.totals(),
+            WaitTotals {
+                settle_requested_ms: 550,
+                settle_applied_ms: 150,
+                settles: 2,
+                capture_ms: 6_800,
+                captures: 1,
+            }
         );
     }
 }

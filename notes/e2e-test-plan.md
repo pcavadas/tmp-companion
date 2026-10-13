@@ -42,7 +42,10 @@ Add a spec name — `copy` / `songs` / `doctor.online` / `level.online` — to r
 Any passing online run merges the specs it ran into the tree's online stamp (one `#run` line per run, with
 `os=`, `fw=` and `unit=`), so a failed spec re-runs alone. Soak never stamps, a level.online run stamps only
 when the ffmpeg validation passed, and no run stamps unless the unit presents its stock USB interfaces.
-Per-spec wall times land in `$TMPDIR/tmp-companion-e2e/online-timings.tsv`.
+Per-spec wall times land in `$TMPDIR/tmp-companion-e2e/online-timings.tsv` — date, spec, wall s, verdict, tree key,
+then the spec's HARDWARE WAITS: settle s and capture s, read from the server's `GET /timing` (`rig::WAITS`) around
+the spec, so the remainder of the wall time is runtime. Offline, `scripts/e2e-budgets.mjs` prints and persists
+(`e2e/test-results/e2e-phases.json`) the build / run-wall / summed-test-time split; settles collapse offline.
 
 The rest of this doc is the **coverage map** — the per-tab scenario inventory + the still-un-automated
 backlog (§9), independent of how the suite is launched. Markers below: **⌨️** = the scenario needs
