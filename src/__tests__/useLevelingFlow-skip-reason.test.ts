@@ -1,98 +1,38 @@
+// src/__tests__/useLevelingFlow-skip-reason.test.ts — a failed command's own reason
+// reaches the rows it skipped, on all three lanes; a cancel or a client-side skip
+// invents none.
+
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import type { SceneLevelProgressItem } from "../lib/types";
-import type { SetupChoice, SetupOption } from "../views/level/leveling";
-
-const h = vi.hoisted(() => ({
-  levelPreset: vi.fn(),
-  levelScenesApplyBatched: vi.fn(),
-  levelFootswitchesApply: vi.fn(),
-  cancelPresetLeveling: vi.fn(),
-  cancelSceneLeveling: vi.fn(),
-  cancelFootswitchLeveling: vi.fn(),
-}));
-vi.mock("../lib/invoke", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/invoke")>()),
-  ...h,
-}));
-
-import {
-  useLevelingFlow,
-  type UseLevelingFlowDeps,
-} from "../views/level/useLevelingFlow";
+import type { SetupOption } from "../views/level/leveling";
+import { useLevelingFlow } from "../views/level/useLevelingFlow";
 import { resetLevelFlow } from "../views/level/levelRunStore";
+import {
+  fired,
+  makeChoices,
+  makeFootswitchOption,
+  makeLevelingFlowDeps,
+  makeSceneOption,
+  makeSetupOption,
+  mockCommands,
+  rejectWith,
+} from "./commandMocks";
+
+const deps = makeLevelingFlowDeps();
+
+function option(lane: "base" | "scene" | "footswitch", index = 0): SetupOption {
+  if (lane === "base") return makeSetupOption();
+  return lane === "scene"
+    ? makeSceneOption(index)
+    : makeFootswitchOption(index);
+}
+const choices = makeChoices;
 
 // The leveling wizard lives in a module store that outlives a mount; start each case clean.
 beforeEach(() => {
   resetLevelFlow();
-});
-
-const deps: UseLevelingFlowDeps = {
-  rows: [{ slot: 0, name: "Plexi", empty: false }],
-  store: null,
-  sceneInfo: new Map(),
-  footswitchInfo: new Map(),
-  ampCandidates: new Map([
-    [
-      0,
-      [
-        {
-          groupId: "G1",
-          nodeId: "amp",
-          parameterId: "outputLevel",
-          value: 0.5,
-        },
-      ],
-    ],
-  ]),
-  blocksByIndex: new Map(),
-  silenceHintByIndex: new Map(),
-  targetLufsByName: () => -20,
-  deselectKeys: () => {
-    /* This test does not close the wizard. */
-  },
-  refresh: () => Promise.resolve(),
-};
-
-function option(lane: "base" | "scene" | "footswitch", index = 0): SetupOption {
-  return {
-    key: `${lane}:${String(index)}`,
-    slot: 0,
-    presetName: "Plexi",
-    isBase: lane === "base",
-    sceneSlot: lane === "scene" ? index : null,
-    sceneName: lane,
-    tag: null,
-    hasScenes: true,
-    ...(lane === "footswitch"
-      ? {
-          footswitch: {
-            switchIndex: index,
-            levGroupId: "G1",
-            levNodeId: "drive",
-            levParameterId: "level",
-            sceneContext: null,
-          },
-        }
-      : {}),
-  };
-}
-function choices(options: SetupOption[]): SetupChoice[] {
-  return options.map((option) => ({
-    option,
-    instId: "",
-    targetName: "Default",
-  }));
-}
-
-beforeEach(() => {
-  for (const mock of Object.values(h)) mock.mockReset();
-  h.levelScenesApplyBatched.mockResolvedValue([]);
-  h.levelFootswitchesApply.mockResolvedValue([]);
-  h.cancelPresetLeveling.mockResolvedValue(undefined);
-  h.cancelSceneLeveling.mockResolvedValue(undefined);
-  h.cancelFootswitchLeveling.mockResolvedValue(undefined);
+  mockCommands();
 });
 
 describe("leveling failure reasons", () => {
@@ -100,7 +40,7 @@ describe("leveling failure reasons", () => {
     "cannot hold endpoint at unity",
     new Error("cannot hold endpoint at unity"),
   ])("retains a base command rejection: %s", async (error) => {
-    h.levelPreset.mockRejectedValue(error);
+    mockCommands({ level_preset: () => rejectWith(error) });
     const { result } = renderHook(() => useLevelingFlow(deps));
     act(() => {
       result.current.onSetupStart(choices([option("base")]));
@@ -117,9 +57,13 @@ describe("leveling failure reasons", () => {
   it.each(["scene", "footswitch"] as const)(
     "retains a whole %s batch rejection on unresolved rows",
     async (lane) => {
-      const mock =
-        lane === "scene" ? h.levelScenesApplyBatched : h.levelFootswitchesApply;
-      mock.mockRejectedValue(new Error("device disconnected during setup"));
+      const fail = () =>
+        rejectWith(new Error("device disconnected during setup"));
+      mockCommands(
+        lane === "scene"
+          ? { level_scenes_apply_batched: fail }
+          : { level_footswitches_apply: fail },
+      );
       const { result } = renderHook(() => useLevelingFlow(deps));
       act(() => {
         result.current.onSetupStart(
@@ -139,17 +83,17 @@ describe("leveling failure reasons", () => {
   );
 
   it("preserves a resolved row's own reason when the rest of its batch fails", async () => {
-    h.levelScenesApplyBatched.mockImplementation(
-      (_args: unknown, cb: (item: SceneLevelProgressItem) => void) => {
-        cb({
+    mockCommands({
+      level_scenes_apply_batched: ({ onResult }) => {
+        onResult.onmessage({
           sceneSlot: 0,
           status: "error",
           result: null,
           message: "scene shares base knobs",
         });
-        return Promise.reject(new Error("batch interrupted"));
+        return rejectWith(new Error("batch interrupted"));
       },
-    );
+    });
     const { result } = renderHook(() => useLevelingFlow(deps));
     act(() => {
       result.current.onSetupStart(
@@ -169,12 +113,12 @@ describe("leveling failure reasons", () => {
     let reject: (reason: Error) => void = () => {
       throw new Error("batch not started");
     };
-    h.levelScenesApplyBatched.mockImplementation(
-      () =>
+    mockCommands({
+      level_scenes_apply_batched: () =>
         new Promise<never>((_resolve, fail) => {
           reject = fail;
         }),
-    );
+    });
     const { result } = renderHook(() => useLevelingFlow(deps));
     act(() => {
       result.current.onSetupStart(
@@ -211,7 +155,7 @@ describe("leveling failure reasons", () => {
       });
       expect(result.current.run.items[0].outcome).toBe("skipped");
       expect(result.current.run.items[0].skipReason).toBeUndefined();
-      expect(h.levelScenesApplyBatched).not.toHaveBeenCalled();
+      expect(fired("level_scenes_apply_batched")).toBe(false);
     },
   );
 });

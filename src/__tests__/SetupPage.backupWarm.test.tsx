@@ -1,4 +1,4 @@
-// src/__tests__/SetupBodyBackupWarm.test.tsx — Set-up step's eager warm effect (Base +
+// src/__tests__/SetupPage.backupWarm.test.tsx — Set-up step's eager warm effect (Base +
 // Scene) must be provably device-free: it may only populate a row's picker cache from the
 // startup backup scan's maps, gated on MAP KEY PRESENCE (`hasBackupData`), never by
 // unconditionally calling the device-fallback-capable `prefetch` for every group on render.
@@ -16,11 +16,10 @@
 //    when the user actually opens a key-absent row's own picker.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SetupPage } from "../views/level/SetupPage";
 import { WithCard } from "./pickCardTestUtils";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
@@ -32,14 +31,12 @@ import type {
 import {
   makeBackupPresetRow,
   makeBackupRead,
+  makeSetupOption,
   mockCommands,
 } from "./commandMocks";
 import type { SetupOption } from "../views/level/leveling";
 import type { PickOption } from "../views/overlays/Pick";
-
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => undefined),
-}));
+import { renderWithTheme } from "./testKit";
 
 function backupRow(
   slot: number,
@@ -61,36 +58,30 @@ async function seedScan(
   await ensureLibraryScan();
 }
 
-const baseOpt: SetupOption = {
-  key: "p0",
-  slot: 0,
+const baseOpt: SetupOption = makeSetupOption({
   presetName: "Clean",
-  isBase: true,
-  sceneSlot: null,
   sceneName: "Whole preset",
   tag: null,
   hasScenes: false,
-};
+});
 
 const instrumentOptions: PickOption[] = [{ id: "none", label: "None" }];
 const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
 
 function renderSetup(options: SetupOption[]) {
-  return render(
-    <ThemeProvider>
-      <WithCard>
-        <SetupPage
-          options={options}
-          isRelevel={false}
-          instrumentOptions={instrumentOptions}
-          targetOptions={targetOptions}
-          defaultInst="none"
-          defaultTarget="Rhythm"
-          onCancel={vi.fn()}
-          onStart={vi.fn()}
-        />
-      </WithCard>
-    </ThemeProvider>,
+  return renderWithTheme(
+    <WithCard>
+      <SetupPage
+        options={options}
+        isRelevel={false}
+        instrumentOptions={instrumentOptions}
+        targetOptions={targetOptions}
+        defaultInst="none"
+        defaultTarget="Rhythm"
+        onCancel={vi.fn()}
+        onStart={vi.fn()}
+      />
+    </WithCard>,
   );
 }
 

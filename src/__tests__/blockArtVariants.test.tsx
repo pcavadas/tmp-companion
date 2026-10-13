@@ -11,19 +11,13 @@
 //    ids under its own prefix: two tiles on one screen sharing an id makes one
 //    tile's `url(#…)` paint the other's defs.
 
-import { describe, it, expect, beforeAll } from "vitest";
-import { render } from "@testing-library/react";
-import { ThemeProvider } from "../theme/ThemeProvider";
+import { describe, it, expect } from "vitest";
 import { BlockArt, HalfStackArt, type ArtVariant } from "../ui/BlockArt";
 import { formFor } from "../ui/blockart/shared";
 import { resolveBlockArt, type BlockArtSpec } from "../models/blockArt";
 import { TMP_CATALOG } from "../models/blockArtCatalog";
 import { ART_VARIANT } from "../models/blockArtCatalog/variants";
-
-beforeAll(() => {
-  (SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox =
-    () => ({ x: 0, y: 0, width: 72, height: 100 }) as DOMRect;
-});
+import { renderWithTheme } from "./testKit";
 
 /** Every catalogued id once, resolved the way the Catalog and strips resolve it. */
 function allSpecs(): BlockArtSpec[] {
@@ -108,8 +102,8 @@ describe("block-art variant — explicit, and identical to the old caption picks
 describe("block-art SVG ids — unique per instance", () => {
   it("every [id] is unique and every url(#…) resolves, with ALL art in one document", () => {
     const specs = allSpecs();
-    const { container } = render(
-      <ThemeProvider>
+    const { container } = renderWithTheme(
+      <>
         {specs.map((art) => (
           <BlockArt
             key={art.id}
@@ -146,7 +140,7 @@ describe("block-art SVG ids — unique per instance", () => {
               cabTone={art.tone}
             />
           ))}
-      </ThemeProvider>,
+      </>,
     );
     const ids = Array.from(container.querySelectorAll("[id]"), (el) => el.id);
     expect(ids.length).toBeGreaterThan(0);

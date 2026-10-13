@@ -13,88 +13,43 @@
 // invariant at the STATE layer: exactly one row carries `status === "active"` after
 // the backend names a second row active, and it's the row the backend actually named.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 import type { SceneLevelProgressItem } from "../lib/types";
-
-const h = vi.hoisted(() => ({
-  levelScenesApplyBatched: vi.fn(),
-}));
-
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return {
-    ...actual,
-    levelScenesApplyBatched: h.levelScenesApplyBatched,
-  };
-});
-
-// Imported AFTER the mock so the hook picks up the mocked seam.
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
-import type { SetupChoice, SetupOption } from "../views/level/leveling";
+import type { SetupChoice } from "../views/level/leveling";
 import { resetLevelFlow } from "../views/level/levelRunStore";
+import {
+  makeLevelingFlowDeps,
+  makeSceneOption,
+  mockCommands,
+} from "./commandMocks";
 
 // The leveling wizard lives in a module store that outlives a mount; start each case clean.
 beforeEach(() => {
   resetLevelFlow();
 });
 
-function sceneOption(sceneSlot: number, name: string): SetupOption {
-  return {
-    key: `s0:${String(sceneSlot)}`,
-    slot: 0,
-    presetName: "Plexi",
-    isBase: false,
-    sceneSlot,
-    sceneName: name,
-    tag: `FS${String(sceneSlot + 1)}`,
-    hasScenes: true,
-  };
-}
+const sceneOption = (sceneSlot: number, name: string) =>
+  makeSceneOption(sceneSlot, { presetName: "Plexi", sceneName: name });
 
 describe("useLevelingFlow — at most one active row at a time (BUG 2)", () => {
   it("clears the previous active row when the channel names a new one active", () => {
     let onResult: ((item: SceneLevelProgressItem) => void) | undefined;
-    h.levelScenesApplyBatched.mockImplementation(
-      (
-        _args: unknown,
-        cb: (item: SceneLevelProgressItem) => void,
-      ): Promise<never> => {
-        onResult = cb;
+    mockCommands({
+      level_scenes_apply_batched: (args) => {
+        onResult = (item) => {
+          args.onResult.onmessage(item);
+        };
         return new Promise<never>(() => {
           /* held open — never resolves, mirrors an in-flight batch */
         });
       },
-    );
+    });
 
     const { result } = renderHook(() =>
-      useLevelingFlow({
-        rows: [{ slot: 0, name: "Plexi", empty: false }],
-        store: null,
-        sceneInfo: new Map(),
-        footswitchInfo: new Map(),
-        ampCandidates: new Map([
-          [
-            0,
-            [
-              {
-                groupId: "g",
-                nodeId: "n",
-                parameterId: "outputLevel",
-                value: 0.5,
-              },
-            ],
-          ],
-        ]),
-        blocksByIndex: new Map(),
-        silenceHintByIndex: new Map(),
-        targetLufsByName: () => -20,
-        deselectKeys: () => {
-          /* no-op */
-        },
-        refresh: () => Promise.resolve(),
-      }),
+      useLevelingFlow(makeLevelingFlowDeps()),
     );
 
     const choices: SetupChoice[] = [

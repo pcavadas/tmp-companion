@@ -6,16 +6,14 @@
 // and a replug re-runs the whole handshake cycle.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { DeviceStatus } from "../ui/DeviceStatus";
+import { renderWithTheme } from "./testKit";
 
 function renderStatus(connected: boolean, firmwareVersion: string | null) {
-  return render(
-    <ThemeProvider>
-      <DeviceStatus connected={connected} firmwareVersion={firmwareVersion} />
-    </ThemeProvider>,
+  return renderWithTheme(
+    <DeviceStatus connected={connected} firmwareVersion={firmwareVersion} />,
   );
 }
 
@@ -91,20 +89,12 @@ describe("DeviceStatus", () => {
     expect(screen.getByText("connected")).toBeTruthy();
 
     // Unplug: straight to off — no cached version.
-    view.rerender(
-      <ThemeProvider>
-        <DeviceStatus connected={false} firmwareVersion={null} />
-      </ThemeProvider>,
-    );
+    view.rerender(<DeviceStatus connected={false} firmwareVersion={null} />);
     expect(screen.getByText("disconnected")).toBeTruthy();
     expect(screen.queryByText(/1\.7\.75/)).toBeNull();
 
     // Replug: the detection cycle replays from "reading".
-    view.rerender(
-      <ThemeProvider>
-        <DeviceStatus connected={true} firmwareVersion="1.7.75" />
-      </ThemeProvider>,
-    );
+    view.rerender(<DeviceStatus connected={true} firmwareVersion="1.7.75" />);
     expect(screen.getByText("reading firmware…")).toBeTruthy();
     act(() => {
       vi.advanceTimersByTime(900);

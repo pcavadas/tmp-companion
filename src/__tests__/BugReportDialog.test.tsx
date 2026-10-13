@@ -13,13 +13,13 @@
 // Real timers (RTL's waitFor/findBy hang under vitest fake timers here).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { BugReportDialog } from "../views/BugReportDialog";
 import { mockCommands } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 // The real endpoint is a placeholder empty string pre-deploy; stub a non-empty
 // one here so the success/failure send tests actually reach `fetch`.
@@ -29,14 +29,8 @@ vi.mock("../lib/reportEndpoint", () => ({
 }));
 
 function renderDialog(connected = false, onClose = vi.fn()) {
-  render(
-    <ThemeProvider>
-      <BugReportDialog
-        connected={connected}
-        firmware={null}
-        onClose={onClose}
-      />
-    </ThemeProvider>,
+  renderWithTheme(
+    <BugReportDialog connected={connected} firmware={null} onClose={onClose} />,
   );
   return onClose;
 }

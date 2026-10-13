@@ -1,16 +1,16 @@
 // InstrumentRow's post-calibration "what was captured" readout: spread + a
 // per-band coverage dot row + a sparse-take hint. Session-only (CalibrateResult
 // isn't persisted), so it renders right after a successful calibrate_profile call.
-// Mirrors hardeningFixes.test.tsx's InstrumentRow (BUG-6) setup pattern.
+// Mirrors InstrumentRow.test.tsx's setup pattern.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { InstrumentRow } from "../views/settings/InstrumentRow";
 import type { Profile } from "../lib/types";
 import { mockCommands } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 const profile: Profile = {
   id: "tele",
@@ -31,18 +31,16 @@ describe("InstrumentRow — capture quality readout", () => {
         band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
       }),
     });
-    render(
-      <ThemeProvider>
-        <InstrumentRow
-          profile={profile}
-          topology={null}
-          connected={true}
-          onCalibrated={vi.fn()}
-          onEdit={vi.fn()}
-          onDelete={vi.fn()}
-          onMove={vi.fn()}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <InstrumentRow
+        profile={profile}
+        topology={null}
+        connected={true}
+        onCalibrated={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onMove={vi.fn()}
+      />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /calibrate/i }));
@@ -69,18 +67,16 @@ describe("InstrumentRow — capture quality readout", () => {
         band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
       }),
     });
-    render(
-      <ThemeProvider>
-        <InstrumentRow
-          profile={profile}
-          topology={null}
-          connected={true}
-          onCalibrated={vi.fn()}
-          onEdit={vi.fn()}
-          onDelete={vi.fn()}
-          onMove={vi.fn()}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <InstrumentRow
+        profile={profile}
+        topology={null}
+        connected={true}
+        onCalibrated={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onMove={vi.fn()}
+      />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /calibrate/i }));
@@ -99,18 +95,16 @@ describe("InstrumentRow — capture quality readout", () => {
         band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
       }),
     });
-    render(
-      <ThemeProvider>
-        <InstrumentRow
-          profile={profile}
-          topology={null}
-          connected={true}
-          onCalibrated={vi.fn()}
-          onEdit={vi.fn()}
-          onDelete={vi.fn()}
-          onMove={vi.fn()}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <InstrumentRow
+        profile={profile}
+        topology={null}
+        connected={true}
+        onCalibrated={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onMove={vi.fn()}
+      />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /calibrate/i }));

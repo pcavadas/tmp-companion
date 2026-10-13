@@ -36,14 +36,14 @@ reviews:
           The bugs that ship from this repo are OMISSIONS, not bad added lines. Two recent examples:
           the leveling wizard's Summary stage lacked the accidental-backdrop-click protection its Run
           stage already had (#109); Doctor's run screen lacked the stop-requested/stopped/done footer
-          states Leveling's RunBody already had (#108). Reading each hunk in isolation cannot catch
+          states Leveling's run stage (now RunPage) already had (#108). Reading each hunk in isolation cannot catch
           either — the defect is a guard that is present next door and absent here.
 
           For this PR:
           1. Name the siblings of every changed unit — the other stages of the same wizard, the other
              cases of the same state machine, the other branch of the same conditional, the other view
-             rendering the same flow (e.g. src/views/doctor/DoctorRun vs src/views/overlays/RunBody, or
-             SetupBody / RunBody / SummaryBody).
+             rendering the same flow (e.g. src/views/doctor/DoctorRun vs src/views/level/RunPage, or
+             SetupPage / RunPage / SummaryPage).
           2. For each guard, confirmation gate, cancel path, loading / stopping / error state, or
              cleanup present in a sibling but MISSING from the changed code, report it as a finding
              citing both file paths. Say which sibling has it.

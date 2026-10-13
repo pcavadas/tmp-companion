@@ -15,103 +15,74 @@
 // write the wrong preset. A run in flight resets once it has wound down.
 
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import type { LevelResult } from "../lib/types";
-import type { SetupChoice, SetupOption } from "../views/level/leveling";
-
-const h = vi.hoisted(() => ({
-  levelPreset: vi.fn(),
-  listLevelBlocks: vi.fn(),
-  levelScenesApplyBatched: vi.fn(),
-  levelFootswitchesApply: vi.fn(),
-  cancelPresetLeveling: vi.fn(),
-  cancelSceneLeveling: vi.fn(),
-  cancelFootswitchLeveling: vi.fn(),
-}));
-vi.mock("../lib/invoke", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/invoke")>()),
-  ...h,
-}));
-
-import {
-  useLevelingFlow,
-  type UseLevelingFlowDeps,
-} from "../views/level/useLevelingFlow";
+import type { SetupOption } from "../views/level/leveling";
+import { useLevelingFlow } from "../views/level/useLevelingFlow";
 import {
   isLevelRunning,
   onDeviceDetached,
   resetLevelFlow,
 } from "../views/level/levelRunStore";
+import {
+  callsOf,
+  fired,
+  makeChoices,
+  makeLevelingFlowDeps,
+  makeLevelResult,
+  makeSceneOption,
+  makeSetupOption,
+  mockCommands,
+  rejectWith,
+} from "./commandMocks";
 
-const deps: UseLevelingFlowDeps = {
-  rows: [{ slot: 0, name: "Plexi", empty: false }],
-  store: null,
-  sceneInfo: new Map(),
-  footswitchInfo: new Map(),
-  // No backup candidates for slot 0, so a scene row needs the live block read.
-  ampCandidates: new Map(),
-  blocksByIndex: new Map(),
-  silenceHintByIndex: new Map(),
-  targetLufsByName: () => -20,
-  deselectKeys: () => {
-    /* Not exercised here. */
-  },
-  refresh: () => Promise.resolve(),
-};
+// No backup candidates for slot 0, so a scene row needs the live block read.
+const deps = makeLevelingFlowDeps({ ampCandidates: new Map() });
 
-function option(lane: "base" | "scene", index = 0): SetupOption {
-  return {
-    key: `${lane}:${String(index)}`,
-    slot: 0,
-    presetName: "Plexi",
-    isBase: lane === "base",
-    sceneSlot: lane === "scene" ? index : null,
-    sceneName: lane,
-    tag: null,
-    hasScenes: true,
-  };
-}
-const choices = (options: SetupOption[]): SetupChoice[] =>
-  options.map((o) => ({ option: o, instId: "none", targetName: "Default" }));
+const option = (lane: "base" | "scene", index = 0): SetupOption =>
+  lane === "base" ? makeSetupOption() : makeSceneOption(index);
+const choices = (options: SetupOption[]) =>
+  makeChoices(options, { instId: "none" });
 
-const leveled = {
-  clamped: false,
-  clamp_reason: null,
+const leveled = makeLevelResult({
   verify_lufs: -20,
   predicted_lufs: -20,
   dynamic_spread_lu: null,
   constant_c: -10,
-  true_peak_dbtp: null,
-  base_boost: null,
-  reamp_warning: null,
-} as unknown as LevelResult;
+});
+
+/** A `level_preset` that stays in flight until the test calls `finish`. */
+function holdLevelPreset(): { finish: (r: LevelResult) => void } {
+  const held = {
+    finish: (_r: LevelResult): void => undefined,
+  };
+  mockCommands({
+    level_preset: () =>
+      new Promise<LevelResult>((res) => {
+        held.finish = res;
+      }),
+  });
+  return held;
+}
+
+const levelPresetCalls = () => callsOf("level_preset").length;
 
 beforeEach(() => {
   resetLevelFlow();
-  for (const mock of Object.values(h)) mock.mockReset();
-  h.cancelPresetLeveling.mockResolvedValue(undefined);
-  h.cancelSceneLeveling.mockResolvedValue(undefined);
-  h.cancelFootswitchLeveling.mockResolvedValue(undefined);
-  h.levelScenesApplyBatched.mockResolvedValue([]);
+  mockCommands();
 });
 
 describe("a leveling run outlives the Level tab (#283)", () => {
   it("shows the same run after a remount, and its Stop ends it", async () => {
-    let finish: (r: LevelResult) => void = () => undefined;
-    h.levelPreset.mockImplementation(
-      () =>
-        new Promise<LevelResult>((res) => {
-          finish = res;
-        }),
-    );
+    const held = holdLevelPreset();
 
     const first = renderHook(() => useLevelingFlow(deps));
     act(() => {
       first.result.current.onSetupStart(choices([option("base")]));
     });
     await waitFor(() => {
-      expect(h.levelPreset).toHaveBeenCalledTimes(1);
+      expect(levelPresetCalls()).toBe(1);
     });
     // The user switches tab: App renders only the active tab, so the view unmounts.
     first.unmount();
@@ -126,10 +97,10 @@ describe("a leveling run outlives the Level tab (#283)", () => {
     act(() => {
       second.result.current.onRunCancel();
     });
-    expect(h.cancelPresetLeveling).toHaveBeenCalledTimes(1);
+    expect(callsOf("cancel_preset_leveling")).toHaveLength(1);
     expect(second.result.current.run.stopping).toBe(true);
     act(() => {
-      finish(leveled);
+      held.finish(leveled);
     });
     await waitFor(() => {
       expect(second.result.current.run.done).toBe(true);
@@ -139,19 +110,13 @@ describe("a leveling run outlives the Level tab (#283)", () => {
   });
 
   it("refuses a second run while one is in flight", async () => {
-    let finish: (r: LevelResult) => void = () => undefined;
-    h.levelPreset.mockImplementation(
-      () =>
-        new Promise<LevelResult>((res) => {
-          finish = res;
-        }),
-    );
+    const held = holdLevelPreset();
     const { result, unmount } = renderHook(() => useLevelingFlow(deps));
     act(() => {
       result.current.onSetupStart(choices([option("base")]));
     });
     await waitFor(() => {
-      expect(h.levelPreset).toHaveBeenCalledTimes(1);
+      expect(levelPresetCalls()).toBe(1);
     });
     unmount();
 
@@ -159,7 +124,7 @@ describe("a leveling run outlives the Level tab (#283)", () => {
     act(() => {
       again.result.current.onSetupStart(choices([option("base")]));
     });
-    expect(h.levelPreset).toHaveBeenCalledTimes(1);
+    expect(levelPresetCalls()).toBe(1);
     // Closing the wizard is refused mid-run too, so the run can't be hidden.
     act(() => {
       again.result.current.onCancel();
@@ -167,7 +132,7 @@ describe("a leveling run outlives the Level tab (#283)", () => {
     expect(again.result.current.stage).toBe("run");
 
     act(() => {
-      finish(leveled);
+      held.finish(leveled);
     });
     await waitFor(() => {
       expect(again.result.current.run.done).toBe(true);
@@ -178,7 +143,9 @@ describe("a leveling run outlives the Level tab (#283)", () => {
 
 describe("a throwing live block read ends the run (#285)", () => {
   it("skips the scene group with the error and releases the run", async () => {
-    h.listLevelBlocks.mockRejectedValue(new Error("Device not connected"));
+    mockCommands({
+      list_level_blocks: () => rejectWith(new Error("Device not connected")),
+    });
     const { result } = renderHook(() => useLevelingFlow(deps));
     act(() => {
       result.current.onSetupStart(
@@ -197,23 +164,23 @@ describe("a throwing live block read ends the run (#285)", () => {
         skipReason: "Device not connected",
       });
     }
-    expect(h.levelScenesApplyBatched).not.toHaveBeenCalled();
+    expect(fired("level_scenes_apply_batched")).toBe(false);
     expect(isLevelRunning()).toBe(false);
 
     // The run is released: a new one starts.
-    h.levelPreset.mockResolvedValue(leveled);
+    mockCommands({ level_preset: () => leveled });
     act(() => {
       result.current.onSetupStart(choices([option("base")]));
     });
     await waitFor(() => {
-      expect(h.levelPreset).toHaveBeenCalledTimes(1);
+      expect(levelPresetCalls()).toBe(1);
     });
   });
 });
 
 describe("a device detach closes the flow", () => {
   it("closes an idle Summary at once", async () => {
-    h.levelPreset.mockResolvedValue(leveled);
+    mockCommands({ level_preset: () => leveled });
     const { result } = renderHook(() => useLevelingFlow(deps));
     act(() => {
       result.current.onSetupStart(choices([option("base")]));
@@ -234,19 +201,13 @@ describe("a device detach closes the flow", () => {
   });
 
   it("lets a run in flight end, then closes instead of showing its Summary", async () => {
-    let finish: (r: LevelResult) => void = () => undefined;
-    h.levelPreset.mockImplementation(
-      () =>
-        new Promise<LevelResult>((res) => {
-          finish = res;
-        }),
-    );
+    const held = holdLevelPreset();
     const { result } = renderHook(() => useLevelingFlow(deps));
     act(() => {
       result.current.onSetupStart(choices([option("base")]));
     });
     await waitFor(() => {
-      expect(h.levelPreset).toHaveBeenCalledTimes(1);
+      expect(levelPresetCalls()).toBe(1);
     });
 
     act(() => {
@@ -257,7 +218,7 @@ describe("a device detach closes the flow", () => {
     expect(isLevelRunning()).toBe(true);
 
     act(() => {
-      finish(leveled);
+      held.finish(leveled);
     });
     await waitFor(() => {
       expect(result.current.stage).toBe("closed");

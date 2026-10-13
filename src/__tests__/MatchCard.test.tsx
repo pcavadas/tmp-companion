@@ -4,10 +4,8 @@
 // back to inserting one. doctorApply is mocked (PrescriptionCard's apply path).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-
-import { ThemeProvider } from "../theme/ThemeProvider";
 
 vi.mock("../lib/invoke", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/invoke")>();
@@ -21,6 +19,7 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 import { doctorApply } from "../lib/invoke";
 import { MatchCard } from "../views/doctor/MatchCard";
 import type { DoctorSoundResult, GraphNode } from "../lib/types";
+import { renderWithTheme } from "./testKit";
 
 const LABELS = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
 
@@ -59,18 +58,16 @@ const referenceSound = sound([3, 0, 0, 0, 0, 0]);
 const thisSound = sound([0, 0, 0, 0, 0, 0]);
 
 function renderCard(nodes: GraphNode[]) {
-  return render(
-    <ThemeProvider>
-      <MatchCard
-        cardId="0|p0|match"
-        sound={thisSound}
-        reference={referenceSound}
-        listIndex={0}
-        presetName="Test Preset"
-        nodes={nodes}
-        footswitches={[]}
-      />
-    </ThemeProvider>,
+  return renderWithTheme(
+    <MatchCard
+      cardId="0|p0|match"
+      sound={thisSound}
+      reference={referenceSound}
+      listIndex={0}
+      presetName="Test Preset"
+      nodes={nodes}
+      footswitches={[]}
+    />,
   );
 }
 

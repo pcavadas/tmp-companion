@@ -1,10 +1,12 @@
 // src/__tests__/CopyView.test.tsx — the Copy feature: the save-diff model (the
-// load-bearing logic — it maps the staged edits onto real device ops) + a render smoke.
+// load-bearing logic — it maps the staged edits onto real device ops), a render smoke,
+// and the view's live-device regressions: BUG-7 (the ON-UNIT chip follows the live
+// preset) and BUG-2 (a save to the active preset optimistically repaints the hero).
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { CopyView } from "../views/copy";
 import {
   activeFromEditGraph,
@@ -22,7 +24,27 @@ import {
   type PresetEdit,
 } from "../views/copy/copyModel";
 import { invoke } from "@tauri-apps/api/core";
-import type { ActiveGraph, GraphNode } from "../lib/types";
+import type { ActiveGraph, CopyApplyItem, GraphNode } from "../lib/types";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
+import { resetLiveDevice, useLiveDevice } from "../device/useLiveDevice";
+import { backupRow, seriesGraph as fixtureGraph } from "./copyFixtures";
+import {
+  forceTauri,
+  makeActiveGraph,
+  makeBackupRead,
+  mockCommands,
+  mockLiveEvents,
+} from "./commandMocks";
+import { renderWithTheme } from "./testKit";
+
+const listeners = mockLiveEvents();
+
+/** Nearest ancestor matching `sel` — avoids the lint-forbidden non-null `!`. */
+function ancestor(el: HTMLElement, sel: string): HTMLElement {
+  const found = el.closest(sel);
+  if (!found) throw new Error(`no ${sel} ancestor`);
+  return found as HTMLElement;
+}
 
 const node = (group: string, id: string, model: string): GraphNode => ({
   group_id: group,
@@ -337,53 +359,216 @@ describe("copyModel — bypass state (#293)", () => {
 describe("CopyView — render", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
+    mockCommands();
   });
 
   it("shows the disconnected empty state when no unit", () => {
-    render(
-      <ThemeProvider>
-        <CopyView connected={false} />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<CopyView connected={false} />);
     expect(
       screen.getByText("Copy lives on the Tone Master Pro"),
     ).toBeInTheDocument();
   });
 
   it("shows Step 1 when connected", async () => {
-    vi.mocked(invoke).mockImplementation((cmd: string) => {
-      if (cmd === "list_presets")
-        return Promise.resolve([{ slot: 0, name: "Stadium Lead" }]);
-      if (cmd === "get_store")
-        return Promise.resolve({
-          profiles: [],
-          profile_by_slot: {},
-          targets: [],
-          playback_level: "stage",
-        });
-      if (cmd === "read_library_via_backup")
-        return Promise.resolve({
-          members: [],
-          db_bytes: 0,
-          total_rows: 0,
-          scene_mode: "off",
-          presets: [],
-          song_presets: [],
-          songs: [],
-          setlists: [],
-          setlist_songs: [],
-        });
-      return Promise.resolve(null);
+    mockCommands({
+      list_presets: () => [{ slot: 0, name: "Stadium Lead" }],
+      read_library_via_backup: () => makeBackupRead({ scene_mode: "off" }),
     });
-    render(
-      <ThemeProvider>
-        <CopyView connected={true} />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<CopyView connected={true} />);
     await waitFor(() => {
       expect(
         screen.getByText("Copy blocks between presets"),
       ).toBeInTheDocument();
+    });
+  });
+});
+
+// The live bridges subscribe only in-app; each case below starts with clean module stores.
+describe("CopyView — live device", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+    resetLibraryScan();
+    resetLiveDevice();
+    localStorage.clear();
+    return forceTauri();
+  });
+
+  describe("regression: BUG-7 the ON UNIT chip follows the live preset", () => {
+    it("moves the chip from the connect-time slot to the live one on a tmp://live-preset push", async () => {
+      mockCommands({
+        list_presets: () => [
+          { slot: 0, name: "Alpha" },
+          { slot: 1, name: "Beta" },
+        ],
+      });
+      renderWithTheme(
+        <CopyView
+          connected={true}
+          initialGraph={makeActiveGraph({
+            name: "On Unit",
+            slot: 1,
+            template: "gtrSeries",
+          })}
+        />,
+      );
+      // Exactly one ON UNIT chip; it starts in Beta's row (the connect-time graph slot).
+      // Anchor on the unique chip, not the name (names can repeat across Copy's columns).
+      const chip0 = await screen.findByText("ON UNIT");
+      expect(
+        within(ancestor(chip0, "div")).getByText("Beta"),
+      ).toBeInTheDocument();
+      expect(within(ancestor(chip0, "div")).queryByText("Alpha")).toBeNull();
+
+      // A hardware preset change to slot 0 arrives — the chip follows to Alpha.
+      await waitFor(() => {
+        expect(listeners.has("tmp://live-preset")).toBe(true);
+      });
+      act(() => {
+        listeners.get("tmp://live-preset")?.({
+          payload: {
+            listIndex: 0,
+            name: "Alpha",
+            isDirty: false,
+            isFavorite: false,
+          },
+        });
+      });
+      await waitFor(() => {
+        const chip = screen.getByText("ON UNIT"); // still exactly one
+        expect(
+          within(ancestor(chip, "div")).queryByText("Alpha"),
+        ).toBeInTheDocument();
+      });
+      expect(
+        within(ancestor(screen.getByText("ON UNIT"), "div")).queryByText(
+          "Beta",
+        ),
+      ).toBeNull();
+    });
+  });
+
+  // A live structural edit pushes NO device field-3, so the hero (driven by useLiveDevice's
+  // graph) would stay stale until the monitor reconnects. CopyView must patch the live graph
+  // optimistically when the edited target IS the active preset — no device re-read.
+  describe("regression: BUG-2 saving to the active preset optimistically repaints the hero", () => {
+    // The post-save read-back the device returns on the item's `graph` field: the EDITED
+    // roster (Twin → DynaComp) under a distinct name so the hero assertion is unambiguous.
+    // It must show the acked edit — CopyView adopts a read-back only when its blocks match
+    // the edit (a pre-edit document is a stale held-session buffer and is ignored).
+    const SAVED: ActiveGraph = (() => {
+      const g = fixtureGraph("HERO-AFTER-SAVE", 1);
+      const nodes = g.nodes.map((n) =>
+        n.node_id === "n2" ? { ...n, model: "ACD_DynaComp" } : n,
+      );
+      return { ...g, nodes, stages: [{ kind: "series", blocks: nodes }] };
+    })();
+
+    function HeroProbe() {
+      const live = useLiveDevice(true);
+      return <div data-testid="hero-graph">{live.graph?.name ?? "none"}</div>;
+    }
+
+    it("repaints the hero with the saved graph when the edited target is the active preset", async () => {
+      mockCommands({
+        list_presets: () => [
+          { slot: 0, name: "Stadium Lead" },
+          { slot: 1, name: "Clean Verse" },
+        ],
+        read_library_via_backup: () =>
+          makeBackupRead({
+            total_rows: 2,
+            scene_mode: "off",
+            presets: [
+              backupRow(0, "Stadium Lead"),
+              backupRow(1, "Clean Verse"),
+            ],
+          }),
+        copy_apply: ({ jobs, onResult }) => {
+          const items: CopyApplyItem[] = jobs.map((j) => ({
+            slot: j.listIndex,
+            name: j.name,
+            outcome: "updated",
+            detail: "",
+            graph: SAVED, // authoritative device read-back
+          }));
+          items.forEach((i) => {
+            onResult.onmessage(i);
+          });
+          return items;
+        },
+      });
+      const user = userEvent.setup();
+      // active preset = slot 1 ("Clean Verse") via initialGraph; that's also the target we edit
+      renderWithTheme(
+        <>
+          <CopyView
+            connected={true}
+            initialGraph={fixtureGraph("Clean Verse", 1)}
+          />
+          <HeroProbe />
+        </>,
+      );
+      void ensureLibraryScan();
+
+      // Hero starts WITHOUT the saved graph.
+      expect(screen.getByTestId("hero-graph").textContent).not.toBe(
+        "HERO-AFTER-SAVE",
+      );
+
+      // Step 1: reference = Stadium Lead (slot 0), target = Clean Verse (slot 1 = active).
+      await screen.findByText("Copy blocks between presets", undefined, {
+        timeout: 3000,
+      });
+      const stadium = await screen.findAllByText("Stadium Lead", undefined, {
+        timeout: 3000,
+      });
+      await user.click(stadium[0]);
+      const clean = await screen.findAllByText("Clean Verse", undefined, {
+        timeout: 3000,
+      });
+      await user.click(clean[clean.length - 1]);
+      await user.click(
+        await screen.findByRole(
+          "button",
+          { name: /place the blocks/i },
+          { timeout: 3000 },
+        ),
+      );
+
+      // Step 2: replace the TwinReverb tile with DynaComp, back up, Save.
+      const twin = await screen.findAllByText("65 TWN", undefined, {
+        timeout: 3000,
+      });
+      await user.click(twin[twin.length - 1]);
+      await user.click(
+        await screen.findByText("DYNAMIC COMPRESSOR", undefined, {
+          timeout: 3000,
+        }),
+      );
+      await user.click(
+        await screen.findByText(/backed up with pro control/i, undefined, {
+          timeout: 3000,
+        }),
+      );
+      await act(async () => {
+        await user.click(
+          await screen.findByRole(
+            "button",
+            { name: /save to the unit/i },
+            { timeout: 3000 },
+          ),
+        );
+      });
+      await screen.findByText("Saved to the unit.", undefined, {
+        timeout: 3000,
+      });
+
+      // The lock: the hero now shows the saved graph (optimistic, no device re-read).
+      await waitFor(() => {
+        expect(screen.getByTestId("hero-graph").textContent).toBe(
+          "HERO-AFTER-SAVE",
+        );
+      });
     });
   });
 });

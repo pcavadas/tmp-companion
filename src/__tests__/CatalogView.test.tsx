@@ -4,19 +4,12 @@
 // on a mono-only category, and the CPU sort toggle. (Phase-4 bug-hunt: drive the surface the
 // online specs don't reach. CatalogView takes no device props, so it renders standalone.)
 
-import { describe, it, expect, beforeEach, beforeAll, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { CatalogView } from "../views/CatalogView";
-
-// jsdom has no SVGGraphicsElement.getBBox (HalfStackArt measures real geometry in a layout
-// effect); stub it so the catalog's block art can render here.
-beforeAll(() => {
-  (SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox =
-    () => ({ x: 0, y: 0, width: 72, height: 100 }) as DOMRect;
-});
+import { renderWithTheme } from "./testKit";
 
 // Each test renders the full model wall (hundreds of BlockArt SVGs) and a search/
 // facet/sort interaction re-renders it several times over; that's routinely
@@ -27,11 +20,7 @@ beforeAll(() => {
 vi.setConfig({ testTimeout: 20000 });
 
 function renderCatalog() {
-  return render(
-    <ThemeProvider>
-      <CatalogView />
-    </ThemeProvider>,
-  );
+  return renderWithTheme(<CatalogView />);
 }
 
 describe("CatalogView — search + facets + sort", () => {

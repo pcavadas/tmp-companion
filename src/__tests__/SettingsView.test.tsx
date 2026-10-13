@@ -11,16 +11,16 @@
 //     toggle — driven entirely off the injected `updater` prop (no invoke calls).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SettingsView } from "../views/settings";
 import type { UpdaterApi } from "../lib/useUpdater";
 import type { CommandName } from "../lib/commands";
 import type { PlaybackLevel } from "../lib/types";
 import { callsOf, makeStore, mockCommands } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 const SEED_TARGETS = [
   { name: "Rhythm", lufs: -26.0 },
@@ -64,13 +64,11 @@ function makeStubUpdater(): UpdaterApi {
 }
 
 function renderView(updaterOverrides: Partial<UpdaterApi> = {}) {
-  render(
-    <ThemeProvider>
-      <SettingsView
-        connected={false}
-        updater={{ ...makeStubUpdater(), ...updaterOverrides }}
-      />
-    </ThemeProvider>,
+  renderWithTheme(
+    <SettingsView
+      connected={false}
+      updater={{ ...makeStubUpdater(), ...updaterOverrides }}
+    />,
   );
 }
 

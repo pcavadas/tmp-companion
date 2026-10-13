@@ -9,16 +9,16 @@
 //     instrument row carries no fake drag grip.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SettingsView } from "../views/settings";
 import { TargetRow } from "../views/settings/TargetRow";
 import type { UpdaterApi } from "../lib/useUpdater";
 import type { Store, Target } from "../lib/types";
 import { callsOf, makeStore, mockCommands } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 const updater: UpdaterApi = {
   phase: "idle",
@@ -41,11 +41,7 @@ const updater: UpdaterApi = {
 const store = (targets: Target[]) => makeStore({ targets });
 
 function renderView() {
-  render(
-    <ThemeProvider>
-      <SettingsView connected={false} updater={updater} />
-    </ThemeProvider>,
-  );
+  renderWithTheme(<SettingsView connected={false} updater={updater} />);
 }
 
 const savedTargets = () => callsOf("save_targets").map((a) => a.targets);
@@ -195,20 +191,18 @@ describe("Settings — click-only reorder and slider cancel (#302)", () => {
   it("the slider's pointercancel ends the drag without committing", () => {
     const onChange = vi.fn();
     const onCommit = vi.fn();
-    render(
-      <ThemeProvider>
-        <TargetRow
-          name="Rhythm"
-          lufs={-21}
-          onRename={vi.fn()}
-          onChange={onChange}
-          onCommit={onCommit}
-          onDelete={vi.fn()}
-          onGrab={vi.fn()}
-          onDropOn={vi.fn()}
-          onDragEnd={vi.fn()}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <TargetRow
+        name="Rhythm"
+        lufs={-21}
+        onRename={vi.fn()}
+        onChange={onChange}
+        onCommit={onCommit}
+        onDelete={vi.fn()}
+        onGrab={vi.fn()}
+        onDropOn={vi.fn()}
+        onDragEnd={vi.fn()}
+      />,
     );
     const track = screen.getByTitle("Drag to set level");
     // A 160 px track: 10 px per LU over the −29…−13 domain.

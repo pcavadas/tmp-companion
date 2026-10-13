@@ -1,4 +1,4 @@
-// src/__tests__/SetupBodySceneHandlePreselect.test.tsx — issue 5: a scene whose
+// src/__tests__/SetupPage.sceneHandlePreselect.test.tsx — issue 5: a scene whose
 // overlay un-bypasses a block the base graph keeps bypassed (Solo un-bypassing
 // ACD_Boost, the plan's own example) should default its leveling handle to THAT
 // block's own control, not "Amp output level" — the amp barely moves the sound the
@@ -10,11 +10,10 @@
 // `null`), and never pick anything outside the row's own resolved candidate list.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SetupPage } from "../views/level/SetupPage";
 import { WithCard } from "./pickCardTestUtils";
 import { blockArtTile } from "../models/blockArt";
@@ -24,14 +23,12 @@ import type { SceneHandleCandidate, SceneHandleRow } from "../lib/types";
 import {
   makeBackupPresetRow,
   makeBackupRead,
+  makeSceneOption,
   mockCommands,
 } from "./commandMocks";
 import type { SetupOption } from "../views/level/leveling";
 import type { PickOption } from "../views/overlays/Pick";
-
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => undefined),
-}));
+import { renderWithTheme } from "./testKit";
 
 const BOOST_LABEL = (() => {
   const art = blockArtTile("ACD_Boost");
@@ -75,36 +72,28 @@ function seedScan(rows: SceneHandleRow[]) {
   return ensureLibraryScan();
 }
 
-const sceneOpt: SetupOption = {
-  key: "s0:0",
-  slot: 0,
+const sceneOpt: SetupOption = makeSceneOption(0, {
   presetName: "Friedman HBE",
-  isBase: false,
-  sceneSlot: 0,
   sceneName: "Solo",
-  tag: "FS1",
-  hasScenes: true,
-};
+});
 
 const instrumentOptions: PickOption[] = [{ id: "none", label: "None" }];
 const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
 
 function renderSetup(options: SetupOption[]) {
-  return render(
-    <ThemeProvider>
-      <WithCard>
-        <SetupPage
-          options={options}
-          isRelevel={false}
-          instrumentOptions={instrumentOptions}
-          targetOptions={targetOptions}
-          defaultInst="none"
-          defaultTarget="Rhythm"
-          onCancel={vi.fn()}
-          onStart={vi.fn()}
-        />
-      </WithCard>
-    </ThemeProvider>,
+  return renderWithTheme(
+    <WithCard>
+      <SetupPage
+        options={options}
+        isRelevel={false}
+        instrumentOptions={instrumentOptions}
+        targetOptions={targetOptions}
+        defaultInst="none"
+        defaultTarget="Rhythm"
+        onCancel={vi.fn()}
+        onStart={vi.fn()}
+      />
+    </WithCard>,
   );
 }
 

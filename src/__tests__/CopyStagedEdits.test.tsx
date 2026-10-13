@@ -8,25 +8,11 @@
 //   #294  opening another block resets the editor to Replace.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, waitFor, within } from "@testing-library/react";
+import { screen, act, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
-import type { ActiveGraph } from "../lib/types";
-
-const listeners = new Map<string, (e: { payload: unknown }) => void>();
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (name: string, cb: (e: { payload: unknown }) => void) => {
-    listeners.set(name, cb);
-    return Promise.resolve(() => listeners.delete(name));
-  },
-}));
-
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return { ...actual, isTauri: () => true };
-});
+import type { ActiveGraph, BackupPresetRow, CopyApplyItem } from "../lib/types";
 
 import { CopyView } from "../views/copy";
 import {
@@ -35,6 +21,16 @@ import {
   resetLibraryScan,
 } from "../device/libraryScan";
 import { backupRow, seriesGraph } from "./copyFixtures";
+import {
+  forceTauri,
+  makeBackupRead,
+  mockCommands,
+  rejectWith,
+} from "./commandMocks";
+import { renderWithTheme } from "./testKit";
+
+// In-app: the live bridges and the library scan subscribe.
+forceTauri();
 
 const NAMES = ["Stadium Lead", "Clean Verse", "Lead Two"];
 const TWIN = "ACD_TwinReverb65NoFx";
@@ -48,7 +44,11 @@ interface Opts {
   bypassHall?: number[];
 }
 
-function rowFor(listIndex: number, name: string, bypassHall: boolean) {
+function rowFor(
+  listIndex: number,
+  name: string,
+  bypassHall: boolean,
+): BackupPresetRow {
   const row = backupRow(listIndex, name);
   if (!bypassHall) return row;
   const g = seriesGraph(name);
@@ -64,59 +64,35 @@ function rowFor(listIndex: number, name: string, bypassHall: boolean) {
 }
 
 function installInvoke(opts: Opts = {}) {
-  vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
-    switch (command) {
-      case "list_presets":
-        return Promise.resolve(NAMES.map((name, slot) => ({ slot, name })));
-      case "get_store":
-        return Promise.resolve({
-          profiles: [],
-          profile_by_slot: {},
-          targets: [],
-          playback_level: "stage",
-        });
-      case "read_library_via_backup":
-        return Promise.resolve({
-          members: [],
-          db_bytes: 0,
-          total_rows: NAMES.length,
-          scene_mode: "off",
-          presets: NAMES.map((name, i) =>
-            rowFor(i, name, opts.bypassHall?.includes(i) ?? false),
-          ),
-          song_presets: [],
-          songs: [],
-          setlists: [],
-          setlist_songs: [],
-        });
-      case "copy_apply": {
-        const a = args as {
-          jobs: { listIndex: number; name: string }[];
-          onResult?: { onmessage?: (i: unknown) => void };
-        };
-        const items = a.jobs.map((j) => ({
-          slot: j.listIndex,
-          name: j.name,
-          outcome: opts.outcome?.[j.listIndex] ?? "updated",
-          detail: "",
-        }));
-        items.forEach((i) => a.onResult?.onmessage?.(i));
-        if (opts.reject)
-          return Promise.reject(new Error("device disconnected mid-save"));
-        return Promise.resolve(items);
-      }
-      default:
-        return Promise.resolve(null);
-    }
+  mockCommands({
+    list_presets: () => NAMES.map((name, slot) => ({ slot, name })),
+    read_library_via_backup: () =>
+      makeBackupRead({
+        total_rows: NAMES.length,
+        scene_mode: "off",
+        presets: NAMES.map((name, i) =>
+          rowFor(i, name, opts.bypassHall?.includes(i) ?? false),
+        ),
+      }),
+    copy_apply: ({ jobs, onResult }) => {
+      const items: CopyApplyItem[] = jobs.map((j) => ({
+        slot: j.listIndex,
+        name: j.name,
+        outcome: opts.outcome?.[j.listIndex] ?? "updated",
+        detail: "",
+      }));
+      items.forEach((i) => {
+        onResult.onmessage(i);
+      });
+      if (opts.reject)
+        return rejectWith(new Error("device disconnected mid-save"));
+      return items;
+    },
   });
 }
 
 function renderView() {
-  render(
-    <ThemeProvider>
-      <CopyView connected={true} />
-    </ThemeProvider>,
-  );
+  renderWithTheme(<CopyView connected={true} />);
   void ensureLibraryScan();
 }
 
@@ -210,7 +186,6 @@ const PRISTINE = ["ACD_DynaComp", TWIN, "ACD_TMSmallHall"];
 
 beforeEach(() => {
   vi.mocked(invoke).mockReset();
-  listeners.clear();
   resetLibraryScan();
   localStorage.clear();
 });

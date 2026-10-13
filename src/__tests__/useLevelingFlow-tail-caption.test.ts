@@ -5,93 +5,66 @@
 // must read `tail` BEFORE its "unknown key" guard drops the item, publish it as
 // `RunState.tailMessage`, and clear it once the run completes.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { beforeEach, describe, expect, it } from "vitest";
+import { renderHook, act, waitFor } from "@testing-library/react";
 
-import type { SceneLevelProgressItem } from "../lib/types";
-
-const h = vi.hoisted(() => ({
-  levelScenesApplyBatched: vi.fn(),
-}));
-
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return {
-    ...actual,
-    levelScenesApplyBatched: h.levelScenesApplyBatched,
-  };
-});
-
-// Imported AFTER the mock so the hook picks up the mocked seam.
+import type { LevelResult, SceneLevelProgressItem } from "../lib/types";
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
-import type { SetupChoice, SetupOption } from "../views/level/leveling";
+import type { SetupChoice } from "../views/level/leveling";
 import { resetLevelFlow } from "../views/level/levelRunStore";
+import {
+  makeLevelingFlowDeps,
+  makeLevelResult,
+  makeSceneOption,
+  mockCommands,
+} from "./commandMocks";
 
 // The leveling wizard lives in a module store that outlives a mount; start each case clean.
 beforeEach(() => {
   resetLevelFlow();
 });
 
-function sceneOption(sceneSlot: number, name: string): SetupOption {
-  return {
-    key: `s0:${String(sceneSlot)}`,
-    slot: 0,
-    presetName: "Friedman HBE",
-    isBase: false,
-    sceneSlot,
-    sceneName: name,
-    tag: `FS${String(sceneSlot + 1)}`,
-    hasScenes: true,
-  };
-}
-
-const deps = {
+const deps = makeLevelingFlowDeps({
   rows: [{ slot: 0, name: "Friedman HBE", empty: false }],
-  store: null,
-  sceneInfo: new Map(),
-  footswitchInfo: new Map(),
-  ampCandidates: new Map([
-    [
-      0,
-      [
-        {
-          groupId: "g",
-          nodeId: "ampA",
-          parameterId: "outputLevel",
-          value: 0.5,
-        },
-      ],
-    ],
-  ]),
-  blocksByIndex: new Map(),
-  silenceHintByIndex: new Map(),
-  targetLufsByName: () => -20,
-  deselectKeys: () => {
-    /* no-op */
+});
+
+const choices: SetupChoice[] = [
+  {
+    option: makeSceneOption(0, {
+      presetName: "Friedman HBE",
+      sceneName: "Rhythm",
+    }),
+    instId: "",
+    targetName: "Rhythm",
   },
-  refresh: () => Promise.resolve(),
-};
+];
+
+/** Hold the scene batch open: `emit` streams progress over its channel, `finish`
+ * returns the call. */
+function holdSceneBatch() {
+  const held = {
+    emit: (_item: SceneLevelProgressItem): void => undefined,
+    finish: (_rows: LevelResult[]): void => undefined,
+  };
+  mockCommands({
+    level_scenes_apply_batched: ({ onResult }) => {
+      held.emit = (item) => {
+        onResult.onmessage(item);
+      };
+      return new Promise<LevelResult[]>((resolve) => {
+        held.finish = resolve;
+      });
+    },
+  });
+  return held;
+}
 
 describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
   it("a tail-only item sets tailMessage and touches no row", () => {
-    let onResult: ((item: SceneLevelProgressItem) => void) | undefined;
-    h.levelScenesApplyBatched.mockImplementation(
-      (
-        _args: unknown,
-        cb: (item: SceneLevelProgressItem) => void,
-      ): Promise<never> => {
-        onResult = cb;
-        return new Promise<never>(() => {
-          /* held open — never resolves, mirrors an in-flight batch */
-        });
-      },
-    );
+    // Held open — never returns, mirrors an in-flight batch.
+    const batch = holdSceneBatch();
 
     const { result } = renderHook(() => useLevelingFlow(deps));
-
-    const choices: SetupChoice[] = [
-      { option: sceneOption(0, "Rhythm"), instId: "", targetName: "Rhythm" },
-    ];
 
     act(() => {
       result.current.onSetupStart(choices);
@@ -104,7 +77,7 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
     // appeared in the dispatched jobs) — exactly the shape the backend emits once
     // every scene in the group already resolved.
     act(() => {
-      onResult?.({
+      batch.emit({
         sceneSlot: 999,
         status: "active",
         result: null,
@@ -122,30 +95,13 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
   });
 
   it("clears tailMessage once the run completes", async () => {
-    let onResult: ((item: SceneLevelProgressItem) => void) | undefined;
-    h.levelScenesApplyBatched.mockReset();
-    // A DEFERRED promise — held open until this test explicitly resolves it, so the
-    // run can't race to "done" before the tail + done events are delivered in order
-    // (an already-resolved mock promise settles on its own schedule, independent of
-    // when `onResult` is invoked).
-    let resolveBatch: ((v: never[]) => void) | undefined;
-    h.levelScenesApplyBatched.mockImplementation(
-      (
-        _args: unknown,
-        cb: (item: SceneLevelProgressItem) => void,
-      ): Promise<never[]> => {
-        onResult = cb;
-        return new Promise<never[]>((resolve) => {
-          resolveBatch = resolve;
-        });
-      },
-    );
+    // A DEFERRED batch — held open until this test explicitly finishes it, so the run
+    // can't race to "done" before the tail + done events are delivered in order (an
+    // already-resolved promise settles on its own schedule, independent of when the
+    // channel is fed).
+    const batch = holdSceneBatch();
 
     const { result } = renderHook(() => useLevelingFlow(deps));
-
-    const choices: SetupChoice[] = [
-      { option: sceneOption(0, "Rhythm"), instId: "", targetName: "Rhythm" },
-    ];
 
     act(() => {
       result.current.onSetupStart(choices);
@@ -155,11 +111,10 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
     // does the batch's deferred-save/persist-verify tail caption ride in — this is
     // the gap the "tail" name describes.
     act(() => {
-      onResult?.({
+      batch.emit({
         sceneSlot: 0,
         status: "done",
-        result: {
-          slot: 0,
+        result: makeLevelResult({
           scene_slot: 0,
           ref_level: 1,
           measured_lufs: -20,
@@ -167,28 +122,17 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
           final_level: 0.62,
           target_lufs: -20,
           predicted_lufs: -20,
-          clamped: false,
-          saved: true,
           verify_lufs: null,
           verification: "predicted",
-          iterations: 1,
           dynamic_spread_lu: null,
-          clamp_reason: null,
-          verify_by_ear: false,
-          previous_level: null,
-          true_peak_dbtp: null,
-          persist_mismatch: null,
-          clamp_kind: null,
-          trade: null,
-          base_boost: null,
-        },
+        }),
         message: null,
       });
     });
     expect(result.current.run.tailMessage).toBeNull();
 
     act(() => {
-      onResult?.({
+      batch.emit({
         sceneSlot: 999,
         status: "active",
         result: null,
@@ -200,16 +144,14 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
     // until the run's own completion.
     expect(result.current.run.tailMessage).toBe("Verifying…");
 
-    // Let the batch call return, then flush the microtask chain to the run's own
+    // Let the batch call return, then wait out the microtask chain to the run's own
     // completion publish (sweep → `await refresh()` → final `publish(total, true, …)`).
-    await act(async () => {
-      resolveBatch?.([]);
-      for (let i = 0; i < 8; i += 1) {
-        await Promise.resolve();
-      }
+    act(() => {
+      batch.finish([]);
     });
-
-    expect(result.current.run.done).toBe(true);
+    await waitFor(() => {
+      expect(result.current.run.done).toBe(true);
+    });
     expect(result.current.run.tailMessage).toBeNull();
   });
 });

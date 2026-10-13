@@ -3,9 +3,7 @@
 // inline `since` fields. A drift here means the source JSON changed or the
 // ingest mapping regressed.
 
-import { describe, it, expect, beforeAll } from "vitest";
-import { render } from "@testing-library/react";
-import { ThemeProvider } from "../theme/ThemeProvider";
+import { describe, it, expect } from "vitest";
 import { BlockArt } from "../ui/BlockArt";
 import {
   MODELS,
@@ -17,6 +15,7 @@ import {
   isHalfStackBid,
 } from "../models/catalog";
 import { resolveBlockArt, resolveBlockArtByName } from "../models/blockArt";
+import { renderWithTheme } from "./testKit";
 
 describe("isComboBid — combo-form discriminator (keeps combos off the half-stack path)", () => {
   it("is true for a combo amp id and false for a half-stack-only id", () => {
@@ -282,11 +281,6 @@ describe("Firmware 1.8 catalog additions", () => {
   });
 
   describe("renders through BlockArt (catalog → art → engine)", () => {
-    beforeAll(() => {
-      (SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox =
-        () => ({ x: 0, y: 0, width: 72, height: 100 }) as DOMRect;
-    });
-
     const PICK: [label: string, bid: string][] = [
       ["combo", "ACD_HypersonicAmp6L6Green"],
       ["cab", "ACD_Evh412G12H30"],
@@ -304,16 +298,14 @@ describe("Firmware 1.8 catalog additions", () => {
       expect(r, bid).toBeDefined();
       const art = resolveBlockArt(bid);
       if (art === null) throw new Error(`${bid}: expected resolved art`);
-      const { container } = render(
-        <ThemeProvider>
-          <BlockArt
-            icon={art.icon}
-            tone={art.tone}
-            lab={art.short}
-            size={56}
-            label={false}
-          />
-        </ThemeProvider>,
+      const { container } = renderWithTheme(
+        <BlockArt
+          icon={art.icon}
+          tone={art.tone}
+          lab={art.short}
+          size={56}
+          label={false}
+        />,
       );
       expect(container.querySelector("svg"), bid).not.toBeNull();
     });

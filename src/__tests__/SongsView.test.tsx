@@ -10,44 +10,34 @@
 // reorder, and that a failed write surfaces a Toast WITHOUT mutating state.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import {
-  render,
-  screen,
-  waitFor,
-  fireEvent,
-  within,
-} from "@testing-library/react";
+import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SongsView } from "../views/songs";
 import { DASH } from "../lib/format";
-import type {
-  ActiveGraph,
-  BackupReadResult,
-  SetlistRecord,
-  SongRecord,
-} from "../lib/types";
+import type { CommandName } from "../lib/commands";
+import type { BackupReadResult, SetlistRecord, SongRecord } from "../lib/types";
 import {
   ensureLibraryScan,
   getLibraryScan,
   resetLibraryScan,
 } from "../device/libraryScan";
+import {
+  callsOf,
+  makeBackupPresetRow,
+  makeBackupRead,
+  mockCommands,
+  rejectWith,
+  type Handlers,
+} from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 function renderMgr(connected: boolean) {
-  return render(
-    <ThemeProvider>
-      <SongsView connected={connected} />
-    </ThemeProvider>,
-  );
+  return renderWithTheme(<SongsView connected={connected} />);
 }
 
-const connectedTree = (
-  <ThemeProvider>
-    <SongsView connected={true} />
-  </ThemeProvider>
-);
+const connectedTree = <SongsView connected={true} />;
 
 const song = (
   slot: number,
@@ -68,35 +58,25 @@ interface DeviceState {
   members?: Record<number, number[]>;
 }
 
-/** Install a persistent invoke implementation: reads return the seeded state,
- *  writes default to an empty array (override per-call with mockImplementationOnce
- *  to simulate a specific read-back). */
-function baseMock(state: DeviceState = {}) {
+/** Route the Songs reads to the seeded state; every write falls through to its typed
+ *  default (an empty read-back) unless `overrides` names a specific one. */
+function baseMock(state: DeviceState = {}, overrides: Partial<Handlers> = {}) {
   const songs = state.songs ?? [];
   const setlists = state.setlists ?? [];
   const members = state.members ?? {};
-  vi.mocked(invoke).mockImplementation((cmd, args) => {
-    switch (cmd) {
-      case "list_songs":
-        return Promise.resolve(songs);
-      case "read_setlists":
-        return Promise.resolve(setlists);
-      case "list_setlist_songs":
-        return Promise.resolve(
-          members[
-            Number((args as { setlistSlot?: number } | undefined)?.setlistSlot)
-          ] ?? [],
-        );
-      default:
-        return Promise.resolve([]);
-    }
+  mockCommands({
+    list_songs: () => songs,
+    read_setlists: () => setlists,
+    list_setlist_songs: ({ setlistSlot }) => members[setlistSlot] ?? [],
+    ...overrides,
   });
 }
 
-const callsTo = (name: string) =>
-  vi.mocked(invoke).mock.calls.filter((c) => c[0] === name).length;
-const lastArgsTo = (name: string) =>
-  [...vi.mocked(invoke).mock.calls].reverse().find((c) => c[0] === name)?.[1];
+const callsTo = (name: CommandName) => callsOf(name).length;
+const lastArgsTo = <K extends CommandName>(name: K) => {
+  const calls = callsOf(name);
+  return calls.length ? calls[calls.length - 1] : undefined;
+};
 
 /** Resolve the draggable row wrapping a song's label, throwing if absent
  *  (a missing row is a test failure, not a silent non-null assertion). */
@@ -139,9 +119,16 @@ describe("SongsView (device-backed)", () => {
   });
 
   it("survives the error→ready transition via Try again (guards the hook-order rule)", async () => {
-    baseMock();
-    vi.mocked(invoke).mockImplementationOnce(() =>
-      Promise.reject(new Error("device offline")),
+    let offline = true; // the first songs read fails; Try again succeeds
+    baseMock(
+      {},
+      {
+        list_songs: () => {
+          if (!offline) return [];
+          offline = false;
+          throw new Error("device offline");
+        },
+      },
     );
     renderMgr(true);
     const user = userEvent.setup();
@@ -166,12 +153,15 @@ describe("SongsView (device-backed)", () => {
     await user.type(screen.getByPlaceholderText("Song name"), "Toto");
 
     // The create_song_full read-back returns the new song at protocol slot 1.
-    vi.mocked(invoke).mockImplementationOnce(() =>
-      Promise.resolve({
-        songs: [song(1, "Toto")],
-        members: null,
-        bpm_warning: null,
-      }),
+    baseMock(
+      { songs: [] },
+      {
+        create_song_full: () => ({
+          songs: [song(1, "Toto")],
+          members: null,
+          bpm_warning: null,
+        }),
+      },
     );
     await user.keyboard("{Enter}");
 
@@ -201,12 +191,15 @@ describe("SongsView (device-backed)", () => {
     await user.type(nameInput, "Toto Toto");
     await user.type(screen.getByPlaceholderText("—"), "102");
 
-    vi.mocked(invoke).mockImplementation(() =>
-      Promise.resolve({
-        songs: [song(2, "Toto Toto", { bpm: 102, bpm_active: true })],
-        members: null,
-        bpm_warning: null,
-      }),
+    baseMock(
+      { songs: [song(2, "Toto")] },
+      {
+        update_song_full: () => ({
+          songs: [song(2, "Toto Toto", { bpm: 102, bpm_active: true })],
+          members: null,
+          bpm_warning: null,
+        }),
+      },
     );
     await user.keyboard("{Enter}");
 
@@ -268,7 +261,10 @@ describe("SongsView (device-backed)", () => {
     await user.click(screen.getByTitle("Setlist options"));
     await user.click(screen.getByText("Delete setlist"));
     // remove_setlist returns the fresh (now empty) list; view falls back.
-    vi.mocked(invoke).mockImplementationOnce(() => Promise.resolve([]));
+    baseMock(
+      { setlists: [{ slot: 1, name: "Set A" }], members: { 1: [] } },
+      { remove_setlist: () => [] },
+    );
     await user.click(screen.getByRole("button", { name: /^delete$/i }));
 
     await waitFor(() => {
@@ -374,12 +370,15 @@ describe("SongsView (device-backed)", () => {
 
     await user.type(screen.getByPlaceholderText("Song name"), "Fresh");
     // The batched transaction returns the fresh songs AND the fresh membership.
-    vi.mocked(invoke).mockImplementationOnce(() =>
-      Promise.resolve({
-        songs: [song(1, "Fresh")],
-        members: [1],
-        bpm_warning: null,
-      }),
+    baseMock(
+      { setlists: [{ slot: 1, name: "Set A" }], members: { 1: [] } },
+      {
+        create_song_full: () => ({
+          songs: [song(1, "Fresh")],
+          members: [1],
+          bpm_warning: null,
+        }),
+      },
     );
     await user.keyboard("{Enter}");
 
@@ -409,8 +408,9 @@ describe("SongsView (device-backed)", () => {
     await user.clear(nameInput);
     await user.type(nameInput, "Renamed");
 
-    vi.mocked(invoke).mockImplementationOnce(() =>
-      Promise.reject(new Error("rename refused")),
+    baseMock(
+      { songs: [song(2, "Keeper")] },
+      { update_song_full: () => rejectWith(new Error("rename refused")) },
     );
     await user.keyboard("{Enter}");
 
@@ -426,39 +426,13 @@ describe("SongsView (device-backed)", () => {
 // startup backup scan (libraryScan store), NOT a live device read. Selecting a preset
 // shows a READ-ONLY list of the songs that use it.
 
-const emptyGraph: ActiveGraph = {
-  name: null,
-  slot: null,
-  template: null,
-  split_mix: null,
-  nodes: [],
-  stages: [],
-};
-const pRow = (slot: number, name: string) => ({
-  slot,
-  name,
-  preset_id: null,
-  scene_count: 0,
-  scenes: [],
-  amp_candidates: [],
-  base_active_amp_count: 0,
-  blocks: [],
-  graph: emptyGraph,
-  footswitches: [],
-  silence_hint: null,
-  scene_handles: [],
-  base_handles: [],
-  scene_overrides: [],
-  fs_scene_contexts: [],
-});
+const pRow = (slot: number, name: string) =>
+  makeBackupPresetRow({ slot, name });
 
 // Presets at device slots 8 / 58 / 100 (→ list indices 7 / 57 / 99). Bindings:
 // Song A (slot 1) → presets 8 + 58 ; Song B (slot 2) → preset 58 ; preset 100 unused.
-const PRESET_BACKUP: BackupReadResult = {
-  members: [],
-  db_bytes: 0,
+const PRESET_BACKUP: BackupReadResult = makeBackupRead({
   total_rows: 3,
-  scene_mode: "test",
   presets: [
     pRow(8, "Plexi Crunch"),
     pRow(58, "Stadium Lead"),
@@ -469,26 +443,16 @@ const PRESET_BACKUP: BackupReadResult = {
     { song_slot: 1, preset_slot: 58 },
     { song_slot: 2, preset_slot: 58 },
   ],
-  songs: [],
-  setlists: [],
-  setlist_songs: [],
-};
+});
 
 describe("SongsView — Presets axis", () => {
   beforeEach(async () => {
     vi.mocked(invoke).mockReset();
     resetLibraryScan();
-    vi.mocked(invoke).mockImplementation((cmd) => {
-      switch (cmd) {
-        case "list_songs":
-          return Promise.resolve([song(1, "Song A"), song(2, "Song B")]);
-        case "read_setlists":
-          return Promise.resolve([]);
-        case "read_library_via_backup":
-          return Promise.resolve(PRESET_BACKUP);
-        default:
-          return Promise.resolve([]);
-      }
+    mockCommands({
+      list_songs: () => [song(1, "Song A"), song(2, "Song B")],
+      read_setlists: () => [],
+      read_library_via_backup: () => PRESET_BACKUP,
     });
     // Seed the shared backup store (App drives this on connect in production).
     await ensureLibraryScan();
@@ -556,86 +520,85 @@ interface FakeUnit {
  *  `held`, the FIRST call of `held.cmd` replies only once `held.until` resolves. */
 function fakeUnit(
   unit: FakeUnit,
-  held?: { cmd: string; until: Promise<void> },
+  held?: { cmd: CommandName; until: Promise<void> },
 ) {
   let holding = held;
   const renumber = () => {
     unit.setlists = unit.setlists.map((l, i) => ({ ...l, slot: i + 1 }));
   };
-  vi.mocked(invoke).mockImplementation((cmd, raw) => {
-    const a = (raw ?? {}) as Record<string, unknown>;
-    const reply = (): unknown => {
-      switch (cmd) {
-        case "read_library_via_backup":
-          return {
-            ...PRESET_BACKUP,
-            songs: unit.songs,
-            setlists: unit.setlists,
-            setlist_songs: [...unit.members].flatMap(([sl, m]) =>
-              m.map((song_slot, i) => ({
-                setlist_slot: sl,
-                song_slot,
-                position: i + 1,
-              })),
-            ),
-          };
-        case "list_songs":
-          return unit.songs;
-        case "read_setlists":
-          return unit.setlists;
-        case "list_setlist_songs":
-          return unit.members.get(Number(a.setlistSlot)) ?? [];
-        case "rename_setlist":
-          unit.setlists = unit.setlists.map((l) =>
-            l.slot === a.slot ? { ...l, name: String(a.name) } : l,
-          );
-          return unit.setlists;
-        case "add_setlist":
-          unit.setlists = [
-            ...unit.setlists,
-            { slot: unit.setlists.length + 1, name: String(a.name) },
-          ];
-          return unit.setlists;
-        case "remove_setlist": {
-          const slot = Number(a.slot);
-          unit.setlists = unit.setlists.filter((l) => l.slot !== slot);
-          const shifted = new Map<number, number[]>();
-          unit.members.forEach((m, k) => {
-            if (k !== slot) shifted.set(k > slot ? k - 1 : k, m);
-          });
-          unit.members = shifted;
-          renumber();
-          return unit.setlists;
-        }
-        case "remove_setlist_song": {
-          const sl = Number(a.setlistSlot);
-          const m = [...(unit.members.get(sl) ?? [])];
-          m.splice(Number(a.setlistSongSlot) - 1, 1);
-          unit.members.set(sl, m);
-          return m;
-        }
-        case "remove_song": {
-          const slot = Number(a.slot);
-          unit.songs = unit.songs
-            .filter((x) => x.slot !== slot)
-            .map((x) => (x.slot > slot ? { ...x, slot: x.slot - 1 } : x));
-          return unit.songs;
-        }
-        case "create_song_full": {
-          unit.songs = [
-            song(1, String(a.name)),
-            ...unit.songs.map((s) => ({ ...s, slot: s.slot + 1 })),
-          ];
-          return { songs: unit.songs, members: null, bpm_warning: null };
-        }
-        default:
-          return [];
-      }
-    };
-    if (holding?.cmd !== cmd) return Promise.resolve(reply());
+  /** `reply()` now — or, for the first call of the held command, once it opens. */
+  const answer = <T,>(cmd: CommandName, reply: () => T): T | Promise<T> => {
+    if (holding?.cmd !== cmd) return reply();
     const wait = holding.until;
     holding = undefined;
     return wait.then(reply);
+  };
+  mockCommands({
+    read_library_via_backup: () =>
+      answer("read_library_via_backup", () => ({
+        ...PRESET_BACKUP,
+        songs: unit.songs,
+        setlists: unit.setlists,
+        setlist_songs: [...unit.members].flatMap(([sl, m]) =>
+          m.map((song_slot, i) => ({
+            setlist_slot: sl,
+            song_slot,
+            position: i + 1,
+          })),
+        ),
+      })),
+    list_songs: () => answer("list_songs", () => unit.songs),
+    read_setlists: () => answer("read_setlists", () => unit.setlists),
+    list_setlist_songs: ({ setlistSlot }) =>
+      answer("list_setlist_songs", () => unit.members.get(setlistSlot) ?? []),
+    rename_setlist: ({ slot, name }) =>
+      answer("rename_setlist", () => {
+        unit.setlists = unit.setlists.map((l) =>
+          l.slot === slot ? { ...l, name } : l,
+        );
+        return unit.setlists;
+      }),
+    add_setlist: ({ name }) =>
+      answer("add_setlist", () => {
+        unit.setlists = [
+          ...unit.setlists,
+          { slot: unit.setlists.length + 1, name },
+        ];
+        return unit.setlists;
+      }),
+    remove_setlist: ({ slot }) =>
+      answer("remove_setlist", () => {
+        unit.setlists = unit.setlists.filter((l) => l.slot !== slot);
+        const shifted = new Map<number, number[]>();
+        unit.members.forEach((m, k) => {
+          if (k !== slot) shifted.set(k > slot ? k - 1 : k, m);
+        });
+        unit.members = shifted;
+        renumber();
+        return unit.setlists;
+      }),
+    remove_setlist_song: ({ setlistSlot, setlistSongSlot }) =>
+      answer("remove_setlist_song", () => {
+        const m = [...(unit.members.get(setlistSlot) ?? [])];
+        m.splice(setlistSongSlot - 1, 1);
+        unit.members.set(setlistSlot, m);
+        return m;
+      }),
+    remove_song: ({ slot }) =>
+      answer("remove_song", () => {
+        unit.songs = unit.songs
+          .filter((x) => x.slot !== slot)
+          .map((x) => (x.slot > slot ? { ...x, slot: x.slot - 1 } : x));
+        return unit.songs;
+      }),
+    create_song_full: ({ name }) =>
+      answer("create_song_full", () => {
+        unit.songs = [
+          song(1, name),
+          ...unit.songs.map((x) => ({ ...x, slot: x.slot + 1 })),
+        ];
+        return { songs: unit.songs, members: null, bpm_warning: null };
+      }),
   });
 }
 

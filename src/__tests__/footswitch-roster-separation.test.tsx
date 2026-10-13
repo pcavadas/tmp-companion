@@ -17,36 +17,26 @@
 // here instead of needing another by-hand catch.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
-
-const listeners = new Map<string, (e: { payload: unknown }) => void>();
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (name: string, cb: (e: { payload: unknown }) => void) => {
-    listeners.set(name, cb);
-    return Promise.resolve(() => listeners.delete(name));
-  },
-}));
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return { ...actual, isTauri: () => true };
-});
-
-// Imported AFTER the mocks so both views pick up the forced isTauri().
 import { LevelView } from "../views/level";
 import { DoctorView } from "../views/doctor";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import { resetLiveDevice } from "../device/useLiveDevice";
 import type { FootswitchInfo } from "../lib/types";
 import {
+  forceTauri,
   makeBackupPresetRow,
   makeBackupRead,
   makeStore,
   mockCommands,
 } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
+
+// In-app: the live bridges and the library scan subscribe.
+forceTauri();
 
 const SOLO_FOOTSWITCH: FootswitchInfo = {
   switch: 4, // → tag FS5
@@ -95,7 +85,6 @@ function mockPresetWithBothFootswitches() {
 
 function freshConnection() {
   vi.mocked(invoke).mockClear();
-  listeners.clear();
   resetLibraryScan();
   resetLiveDevice();
 }
@@ -105,11 +94,7 @@ describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression gu
     freshConnection();
     mockPresetWithBothFootswitches();
     const user = userEvent.setup();
-    render(
-      <ThemeProvider>
-        <LevelView connected={true} />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<LevelView connected={true} />);
     void ensureLibraryScan();
 
     await screen.findByText("Studio Clean");
@@ -139,11 +124,7 @@ describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression gu
     freshConnection();
     mockPresetWithBothFootswitches();
     const user = userEvent.setup();
-    render(
-      <ThemeProvider>
-        <DoctorView connected={true} />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<DoctorView connected={true} />);
     void ensureLibraryScan();
 
     await screen.findByText("Studio Clean");

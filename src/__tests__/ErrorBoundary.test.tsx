@@ -4,11 +4,11 @@
 // window with no on-disk trace.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
+import { renderWithTheme } from "./testKit";
 
 // log.ts imports @tauri-apps/plugin-log; stub it so componentDidCatch's logError
 // path is inert under jsdom (it's also guarded by isTauri(), false in tests).
@@ -27,12 +27,10 @@ describe("ErrorBoundary", () => {
   });
 
   it("renders the fallback (not blank) when a child throws", () => {
-    render(
-      <ThemeProvider>
-        <ErrorBoundary>
-          <Boom />
-        </ErrorBoundary>
-      </ThemeProvider>,
+    renderWithTheme(
+      <ErrorBoundary>
+        <Boom />
+      </ErrorBoundary>,
     );
 
     expect(screen.getByText("Something went wrong")).toBeInTheDocument();
@@ -50,12 +48,10 @@ describe("ErrorBoundary", () => {
       return <div>recovered</div>;
     }
 
-    render(
-      <ThemeProvider>
-        <ErrorBoundary>
-          <Flaky />
-        </ErrorBoundary>
-      </ThemeProvider>,
+    renderWithTheme(
+      <ErrorBoundary>
+        <Flaky />
+      </ErrorBoundary>,
     );
 
     expect(screen.getByText("Something went wrong")).toBeInTheDocument();
@@ -77,12 +73,10 @@ describe("ErrorBoundary", () => {
       const thrown: unknown = "the unit stopped answering";
       throw thrown;
     }
-    render(
-      <ThemeProvider>
-        <ErrorBoundary>
-          <ThrowsString />
-        </ErrorBoundary>
-      </ThemeProvider>,
+    renderWithTheme(
+      <ErrorBoundary>
+        <ThrowsString />
+      </ErrorBoundary>,
     );
 
     expect(screen.getByText("Something went wrong")).toBeInTheDocument();
@@ -90,12 +84,10 @@ describe("ErrorBoundary", () => {
   });
 
   it("renders children unchanged when they do not throw", () => {
-    render(
-      <ThemeProvider>
-        <ErrorBoundary>
-          <div>healthy child</div>
-        </ErrorBoundary>
-      </ThemeProvider>,
+    renderWithTheme(
+      <ErrorBoundary>
+        <div>healthy child</div>
+      </ErrorBoundary>,
     );
 
     expect(screen.getByText("healthy child")).toBeInTheDocument();

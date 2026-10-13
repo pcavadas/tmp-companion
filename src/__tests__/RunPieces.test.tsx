@@ -2,24 +2,17 @@
 // stop prompt, shared by the Doctor "Check" run and the Leveling run), RunRow (the
 // Doctor run's progress row), and useAutoAdvance (the natural-finish → summary jump).
 
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { act, screen, fireEvent } from "@testing-library/react";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { ConfirmBar } from "../ui/ConfirmBar";
 import { RunRow } from "../ui/RunRow";
 import { useAutoAdvance } from "../lib/useAutoAdvance";
-
-function under(node: ReactNode) {
-  return render(<ThemeProvider>{node}</ThemeProvider>);
-}
-
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+import { renderWithTheme } from "./testKit";
 
 describe("ConfirmBar", () => {
   it("renders the message and both default labels (Continue / Stop)", () => {
-    under(
+    renderWithTheme(
       <ConfirmBar
         message="Stop the check? Checked sounds keep their results."
         onCancel={vi.fn()}
@@ -34,7 +27,7 @@ describe("ConfirmBar", () => {
   });
 
   it("honors custom labels", () => {
-    under(
+    renderWithTheme(
       <ConfirmBar
         message="m"
         onCancel={vi.fn()}
@@ -50,7 +43,9 @@ describe("ConfirmBar", () => {
   it("wires the cancel button to onCancel and the confirm button to onConfirm", () => {
     const onCancel = vi.fn();
     const onConfirm = vi.fn();
-    under(<ConfirmBar message="m" onCancel={onCancel} onConfirm={onConfirm} />);
+    renderWithTheme(
+      <ConfirmBar message="m" onCancel={onCancel} onConfirm={onConfirm} />,
+    );
 
     fireEvent.click(screen.getByText("Continue"));
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -63,7 +58,7 @@ describe("ConfirmBar", () => {
 
 describe("RunRow", () => {
   it("renders name, tag, instrument chip and status content", () => {
-    under(
+    renderWithTheme(
       <RunRow
         name="Reverse Delay"
         tag="FS1"
@@ -81,7 +76,7 @@ describe("RunRow", () => {
   });
 
   it("omits the instrument chip and tag when not provided", () => {
-    under(
+    renderWithTheme(
       <RunRow
         name="Plain"
         statusWidth={150}
@@ -94,7 +89,7 @@ describe("RunRow", () => {
   });
 
   it("applies statusWidth to the status cell", () => {
-    under(
+    renderWithTheme(
       <RunRow
         name="n"
         statusWidth={150}
@@ -108,7 +103,7 @@ describe("RunRow", () => {
   });
 
   it("colors the tag with tagColor", () => {
-    under(
+    renderWithTheme(
       <RunRow
         name="n"
         tag="BASE"
@@ -133,25 +128,48 @@ function Advancer(props: {
   return null;
 }
 
+// Fake timers: the advance is a plain timeout, and nothing here awaits a `findBy`/`waitFor`
+// (which would poll on the frozen clock).
 describe("useAutoAdvance", () => {
-  it("fires after a natural finish (done && !stopped)", async () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Run the clock 60 ms — three times the 20 ms delay under test. */
+  const elapse = () => {
+    act(() => {
+      vi.advanceTimersByTime(60);
+    });
+  };
+
+  it("fires after a natural finish (done && !stopped)", () => {
     const onAdvance = vi.fn();
-    under(<Advancer done stopped={false} onAdvance={onAdvance} delayMs={20} />);
+    renderWithTheme(
+      <Advancer done stopped={false} onAdvance={onAdvance} delayMs={20} />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(19);
+    });
     expect(onAdvance).not.toHaveBeenCalled();
-    await wait(60);
+    elapse();
     expect(onAdvance).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT fire after a manual stop (done && stopped)", async () => {
+  it("does NOT fire after a manual stop (done && stopped)", () => {
     const onAdvance = vi.fn();
-    under(<Advancer done stopped onAdvance={onAdvance} delayMs={20} />);
-    await wait(60);
+    renderWithTheme(
+      <Advancer done stopped onAdvance={onAdvance} delayMs={20} />,
+    );
+    elapse();
     expect(onAdvance).not.toHaveBeenCalled();
   });
 
-  it("does NOT fire while the run is still going (not done)", async () => {
+  it("does NOT fire while the run is still going (not done)", () => {
     const onAdvance = vi.fn();
-    under(
+    renderWithTheme(
       <Advancer
         done={false}
         stopped={false}
@@ -159,7 +177,7 @@ describe("useAutoAdvance", () => {
         delayMs={20}
       />,
     );
-    await wait(60);
+    elapse();
     expect(onAdvance).not.toHaveBeenCalled();
   });
 });

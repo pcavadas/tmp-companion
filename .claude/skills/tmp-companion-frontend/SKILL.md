@@ -73,16 +73,13 @@ The SAME module-store pattern (not component `useState`) backs `src/device/useLi
 
 Tests are **Vitest + React Testing Library**, jsdom environment, rendered through the theme provider. The full pattern (mock overrides, async `findBy`, asserting an `invoke` was called with the right args) is in `references/testing.md`. The essentials:
 
-- **Render through `<ThemeProvider>`** — `useTheme`/`useStyles` throw outside it:
+- **Render through the theme provider** — `useTheme`/`useStyles` throw outside it. `renderWithTheme` (`src/__tests__/testKit.tsx`) wraps it:
   ```tsx
-  render(
-    <ThemeProvider>
-      <SettingsView connected={false} />
-    </ThemeProvider>,
-  );
+  renderWithTheme(<SettingsView connected={false} />);
   ```
+- **The kit covers the environment:** `forceTauri()` for the in-app paths, `mockLiveEvents()` to push `tmp://` events, the `getBBox` stub is global. Name a test file after its unit; a bug lock is a `describe("regression: …")` inside it.
 - **`invoke` is globally mocked** in `src/__tests__/setup.ts` — every command resolves its typed empty default (`DEFAULT_HANDLERS` in `commandMocks.ts`) so any screen mounts. Override per-test with `mockCommands({ get_store: () => makeStore({ targets }) })` (each handler's return is checked against the registry), then read `callsOf("save_targets")` / `fired(...)` to verify a write happened.
-- **Use REAL timers, not fake ones.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and hang forever polling a frozen clock.
+- **Real timers wherever a test awaits `findBy`/`waitFor`.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and hang forever polling a frozen clock. Fake timers fit only a bare timeout with no DOM wait.
 - After adding a test, run the suite (`bun run test`) — a green `tsc` + build does **not** run your test.
 
 **Full UI journeys** (connect → navigate → edit → save) are covered above Vitest by the dual-mode Playwright e2e harness in `e2e/` (`bun run e2e` offline / `bun run e2e online`) — reach for it when a change spans the click→invoke→device round trip.

@@ -6,11 +6,20 @@
 //    (`DEFAULT_HANDLERS` in ./commandMocks) — enough for a screen to mount + render
 //    its empty state without throwing. Individual tests override commands with
 //    `mockCommands({ … })` from ./commandMocks.
+// 3. A default mock of @tauri-apps/api/event: `listen` records each callback in
+//    `liveListeners` (./commandMocks) and resolves an unlisten. A file that pushes
+//    live events takes the registry with `mockLiveEvents()`.
+// 4. An `SVGElement.getBBox` stub: jsdom has none, and `HalfStackArt` measures its
+//    head and cab with it in a layout effect, so any render of one would throw.
 
 import "@testing-library/jest-dom/vitest";
 import { vi } from "vitest";
 
-import { resolveCommand } from "./commandMocks";
+import {
+  liveListeners,
+  resolveCommand,
+  type LiveListener,
+} from "./commandMocks";
 
 // This jsdom config doesn't provide Web Storage; supply a tiny in-memory shim so
 // the gate helpers (gates.ts) and any localStorage reads don't crash under test.
@@ -49,3 +58,15 @@ vi.mock("@tauri-apps/api/core", () => {
     Channel: MockChannel,
   };
 });
+
+// The factory reads `liveListeners` lazily, at call time, for the same reason.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (name: string, cb: LiveListener) => {
+    liveListeners.set(name, cb);
+    return Promise.resolve(() => liveListeners.delete(name));
+  },
+}));
+
+// A fixed 72×100 box: enough for HalfStackArt to lay head over cab.
+(SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox = () =>
+  ({ x: 0, y: 0, width: 72, height: 100 }) as DOMRect;

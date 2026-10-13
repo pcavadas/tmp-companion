@@ -7,17 +7,10 @@
 
 import { useState } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import {
-  renderHook,
-  act,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { renderHook, act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import {
   FlatLevelPick,
   type BlockLevelHandle,
@@ -35,10 +28,7 @@ import {
   makeBackupRead,
   mockCommands,
 } from "./commandMocks";
-
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => undefined),
-}));
+import { renderWithTheme } from "./testKit";
 
 function backupRow(
   slot: number,
@@ -208,12 +198,10 @@ describe("useSceneHandles — instant-first with device fallback", () => {
     }
 
     const user = userEvent.setup();
-    render(
-      <ThemeProvider>
-        <WithCard>
-          <Harness />
-        </WithCard>
-      </ThemeProvider>,
+    renderWithTheme(
+      <WithCard>
+        <Harness />
+      </WithCard>,
     );
 
     await user.click(screen.getByText("Amp output level"));

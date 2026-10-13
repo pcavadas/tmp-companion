@@ -32,24 +32,19 @@ import {
   subscribeLibraryScanPercent,
 } from "../device/libraryScan";
 import { useCopyLibrary } from "../views/copy/useCopyLibrary";
+import {
+  fired,
+  makeBackupRead,
+  mockCommands,
+  rejectWith,
+  type Handler,
+} from "./commandMocks";
 
-const EMPTY_BACKUP: BackupReadResult = {
-  members: [],
-  db_bytes: 0,
-  total_rows: 0,
-  scene_mode: "test",
-  presets: [],
-  song_presets: [],
-  songs: [],
-  setlists: [],
-  setlist_songs: [],
-};
+const EMPTY_BACKUP: BackupReadResult = makeBackupRead();
 
-/** Route `read_library_via_backup` through `impl`; every other command → undefined. */
-function mockBackup(impl: () => Promise<unknown>) {
-  vi.mocked(invoke).mockImplementation((cmd: string) =>
-    cmd === "read_library_via_backup" ? impl() : Promise.resolve(undefined),
-  );
+/** Route `read_library_via_backup` through `impl`; every other command → its default. */
+function mockBackup(impl: Handler<"read_library_via_backup">) {
+  mockCommands({ read_library_via_backup: impl });
 }
 
 describe("libraryScan — failure paths (#310)", () => {
@@ -70,11 +65,7 @@ describe("libraryScan — failure paths (#310)", () => {
     expect(s.scanning).toBe(false);
     expect(s.ready).toBe(true);
     expect(s.error).toBeNull();
-    expect(
-      vi
-        .mocked(invoke)
-        .mock.calls.some(([c]) => c === "read_library_via_backup"),
-    ).toBe(true);
+    expect(fired("read_library_via_backup")).toBe(true);
   });
 
   it("a failed backup read sets `error` (not a silent empty library) and a retry runs it again", async () => {
@@ -127,11 +118,8 @@ describe("libraryScan — failure paths (#310)", () => {
   });
 
   it("Copy surfaces a failed scan as its error (it can't place blocks from empty graphs)", async () => {
-    vi.mocked(invoke).mockImplementation((cmd: string) => {
-      if (cmd === "read_library_via_backup")
-        return Promise.reject(new Error("backup timed out"));
-      if (cmd === "list_presets") return Promise.resolve([]);
-      return Promise.resolve(undefined);
+    mockCommands({
+      read_library_via_backup: () => rejectWith(new Error("backup timed out")),
     });
     const { result } = renderHook(() => useCopyLibrary(true, null));
     await ensureLibraryScan();
@@ -140,12 +128,7 @@ describe("libraryScan — failure paths (#310)", () => {
     });
 
     // Its Retry re-runs the failed scan, and the error clears once it succeeds.
-    vi.mocked(invoke).mockImplementation((cmd: string) => {
-      if (cmd === "read_library_via_backup")
-        return Promise.resolve(EMPTY_BACKUP);
-      if (cmd === "list_presets") return Promise.resolve([]);
-      return Promise.resolve(undefined);
-    });
+    mockCommands({ read_library_via_backup: () => EMPTY_BACKUP });
     await result.current.refresh();
     await vi.waitFor(() => {
       expect(result.current.error).toBeNull();

@@ -4,14 +4,14 @@
 // Real timers (repo-wide RTL fake-timer hang gotcha); SetupPage renders synchronously.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SetupPage } from "../views/level/SetupPage";
 import { instCalState } from "../views/level/leveling";
 import type { SetupOption } from "../views/level/leveling";
 import type { PickOption } from "../views/overlays/Pick";
+import { renderWithTheme } from "./testKit";
 
 const baseOpt: SetupOption = {
   key: "p0",
@@ -33,20 +33,18 @@ const instrumentOptions: PickOption[] = [
 const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
 
 function renderSetup(defaultInst: string, onCalibrate?: () => void) {
-  return render(
-    <ThemeProvider>
-      <SetupPage
-        options={[baseOpt]}
-        isRelevel={false}
-        instrumentOptions={instrumentOptions}
-        targetOptions={targetOptions}
-        defaultInst={defaultInst}
-        defaultTarget="Rhythm"
-        onCancel={vi.fn()}
-        onStart={vi.fn()}
-        onCalibrate={onCalibrate}
-      />
-    </ThemeProvider>,
+  return renderWithTheme(
+    <SetupPage
+      options={[baseOpt]}
+      isRelevel={false}
+      instrumentOptions={instrumentOptions}
+      targetOptions={targetOptions}
+      defaultInst={defaultInst}
+      defaultTarget="Rhythm"
+      onCancel={vi.fn()}
+      onStart={vi.fn()}
+      onCalibrate={onCalibrate}
+    />,
   );
 }
 

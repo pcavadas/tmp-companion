@@ -1,11 +1,9 @@
-// src/__tests__/summaryTestUtils.tsx — shared fixtures for the Summary* suites: a
-// saved-Base-row factory and a themed `SummaryPage` render helper.
+// src/__tests__/summaryTestUtils.tsx — shared fixtures for the five Summary*.test.tsx
+// suites: a saved-Base-row factory and a themed `SummaryPage` render helper.
 
-import { render } from "@testing-library/react";
-
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SummaryPage } from "../views/level/SummaryPage";
 import type { RunItem } from "../views/level/leveling";
+import { renderWithTheme } from "./testKit";
 
 /** Shared saved-Base-row factory for the Summary* suites. */
 export const base = (over: Partial<RunItem>): RunItem => ({
@@ -25,15 +23,13 @@ export const base = (over: Partial<RunItem>): RunItem => ({
   ...over,
 });
 
-/** Shared SummaryPage mount for the Summary* suites (one copy, three consumers). */
+/** Mount `SummaryPage` over `items`, not stopped, with no-op callbacks. */
 export const renderSummary = (items: RunItem[]) =>
-  render(
-    <ThemeProvider>
-      <SummaryPage
-        items={items}
-        stopped={false}
-        onAccept={() => undefined}
-        onRelevel={() => undefined}
-      />
-    </ThemeProvider>,
+  renderWithTheme(
+    <SummaryPage
+      items={items}
+      stopped={false}
+      onAccept={() => undefined}
+      onRelevel={() => undefined}
+    />,
   );

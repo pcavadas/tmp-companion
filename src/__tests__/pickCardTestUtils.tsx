@@ -1,9 +1,8 @@
-// src/__tests__/pickCardTestUtils.tsx — shared DialogCardCtx test harness for the
-// suites that render `FlatLevelPick` (directly, or inside `SetupPage`). Imports
-// `DialogCardCtx` from `../views/overlays/wizardContext` — the SAME path the pickers
-// themselves import it from (they re-export the DS Dialog's context,
-// `../ui/dialogContext`, so both paths resolve to one object; this just keeps tests
-// and components pointed at the one the components use).
+// src/__tests__/pickCardTestUtils.tsx — the dialog-card harness for suites that render
+// `FlatLevelPick`, directly or inside `SetupPage`. Its menu portals into the card that
+// `DialogCardCtx` names (`usePickAnchor`), so a test must supply one. The context is
+// imported from `../views/overlays/wizardContext`, the path the pickers use; that module
+// re-exports the DS Dialog's own context (`../ui/dialogContext`), so both are one object.
 
 import { useRef, type ReactNode } from "react";
 

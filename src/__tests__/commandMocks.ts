@@ -12,9 +12,18 @@
 // typed args each call of a command was sent.
 //
 // Factories (`makeStore()`, `makeLevelResult()`, …) build a complete, typed return
-// shape with per-test overrides.
+// shape with per-test overrides; `makeSetupOption()` / `makeLevelingFlowDeps()` build the
+// Level wizard's own inputs the same way.
+//
+// The other half of the Tauri IPC is events: `setup.ts` mocks `@tauri-apps/api/event`'s
+// `listen` globally into `liveListeners` below, and `mockLiveEvents()` hands a file that
+// registry. `forceTauri()` makes `isTauri()` true so the live bridges actually subscribe.
+//
+// This module is imported by `setup.ts`, before any test file's `vi.mock` registers — so
+// it imports app code for TYPES only. A runtime import of a view or store here would be
+// evaluated un-mocked and cached for the whole file.
 
-import { vi } from "vitest";
+import { beforeEach, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
@@ -32,6 +41,8 @@ import type {
   LevelResult,
   Store,
 } from "../lib/types";
+import type { SetupChoice, SetupOption } from "../views/level/leveling";
+import type { UseLevelingFlowDeps } from "../views/level/useLevelingFlow";
 
 /** A mock of command `K`: its typed args in, its typed return (or a promise of it) out. */
 export type Handler<K extends CommandName> = (
@@ -154,6 +165,14 @@ export const makeBackupPresetRow = (
   ...over,
 });
 
+/** `row` without its `amp_candidates` key, as a backend that predates the field sent it.
+ * A scene of such a preset has no backup candidates, so the run falls back to the live
+ * `list_level_blocks` read; an EMPTY array would instead skip the scene as amp-less. */
+export function withoutAmpCandidates(row: BackupPresetRow): BackupPresetRow {
+  const { amp_candidates: _absent, ...rest } = row;
+  return rest as BackupPresetRow;
+}
+
 /** A whole-library backup read with nothing in it. */
 export const makeBackupRead = (
   over: Partial<BackupReadResult> = {},
@@ -169,6 +188,107 @@ export const makeBackupRead = (
   setlist_songs: [],
   ...over,
 });
+
+/** A Level wizard row: by default the Base row (key `p<slot>`) of list index 0, a preset
+ * that has scenes. `makeSceneOption` builds a scene row. */
+export const makeSetupOption = (
+  over: Partial<SetupOption> = {},
+): SetupOption => ({
+  key: `p${String(over.slot ?? 0)}`,
+  slot: 0,
+  presetName: "Preset",
+  isBase: true,
+  sceneSlot: null,
+  sceneName: "Base Preset",
+  tag: "BASE",
+  hasScenes: true,
+  ...over,
+});
+
+/** Scene row `sceneSlot` of list index `slot` (key `s<slot>:<scene>`, tag `FS<n>`). */
+export const makeSceneOption = (
+  sceneSlot: number,
+  over: Partial<SetupOption> = {},
+): SetupOption =>
+  makeSetupOption({
+    key: `s${String(over.slot ?? 0)}:${String(sceneSlot)}`,
+    isBase: false,
+    sceneSlot,
+    sceneName: `Scene ${String(sceneSlot + 1)}`,
+    tag: `FS${String(sceneSlot + 1)}`,
+    ...over,
+  });
+
+/** Footswitch row `switchIndex` of list index 0 (key `f0:<n>`), leveling the `drive`
+ * block's `level` in the base sound. */
+export const makeFootswitchOption = (
+  switchIndex: number,
+  over: Partial<SetupOption> = {},
+): SetupOption =>
+  makeSetupOption({
+    key: `f0:${String(switchIndex)}`,
+    isBase: false,
+    sceneName: `Switch ${String(switchIndex + 1)}`,
+    tag: null,
+    footswitch: {
+      switchIndex,
+      levGroupId: "G1",
+      levNodeId: "drive",
+      levParameterId: "level",
+      sceneContext: null,
+    },
+    ...over,
+  });
+
+/** One `SetupChoice` per option: no instrument, the "Default" target. */
+export const makeChoices = (
+  options: SetupOption[],
+  over: Partial<Omit<SetupChoice, "option">> = {},
+): SetupChoice[] =>
+  options.map((option) => ({
+    option,
+    instId: "",
+    targetName: "Default",
+    ...over,
+  }));
+
+/** `useLevelingFlow`'s inputs for ONE preset ("Plexi", list index 0) whose backup scan
+ * found an amp `outputLevel` candidate — so a scene row needs no live block read — and
+ * every target at −20 LUFS. */
+export const makeLevelingFlowDeps = (
+  over: Partial<UseLevelingFlowDeps> = {},
+): UseLevelingFlowDeps => ({
+  rows: [{ slot: 0, name: "Plexi", empty: false }],
+  store: null,
+  sceneInfo: new Map(),
+  footswitchInfo: new Map(),
+  ampCandidates: new Map([
+    [
+      0,
+      [
+        {
+          groupId: "G1",
+          nodeId: "amp",
+          parameterId: "outputLevel",
+          value: 0.5,
+        },
+      ],
+    ],
+  ]),
+  blocksByIndex: new Map(),
+  silenceHintByIndex: new Map(),
+  targetLufsByName: () => -20,
+  deselectKeys: () => {
+    /* The wizard is never closed by these tests. */
+  },
+  refresh: () => Promise.resolve(),
+  ...over,
+});
+
+/** A handler result that rejects with `reason` exactly as given — a real backend `Err`
+ * arrives as a bare STRING, which a hand-written `Promise.reject` would have to cast. */
+export const rejectWith = (reason: unknown): Promise<never> =>
+  vi.fn<() => Promise<never>>().mockRejectedValue(reason)();
 
 // ─── Defaults: the EMPTY / no-data variant of every command ─────────────────────
 
@@ -281,3 +401,35 @@ export function callsOf<K extends CommandName>(command: K): CommandArgs<K>[] {
 /** Has `command` been invoked at all? */
 export const fired = (command: keyof Commands): boolean =>
   vi.mocked(invoke).mock.calls.some(([c]) => c === command);
+
+// ─── Events and the Tauri flag ─────────────────────────────────────────────────
+
+/** A `listen` callback, as the app registers it. */
+export type LiveListener = (event: { payload: unknown }) => void;
+
+/** Every `listen(name, cb)` the app made since the last clear, by event name. `setup.ts`'s
+ * global `@tauri-apps/api/event` mock writes it; its unlisten deletes the name. */
+export const liveListeners = new Map<string, LiveListener>();
+
+/** The captured event listeners, cleared before each test of the calling file. Push a
+ * live event with `act(() => { live.get("tmp://live-preset")?.({ payload }) })`. Pair it
+ * with `forceTauri()`: off-Tauri the live bridges never subscribe. */
+export function mockLiveEvents(): Map<string, LiveListener> {
+  beforeEach(() => {
+    liveListeners.clear();
+  });
+  return liveListeners;
+}
+
+/** Make `isTauri()` true (it reads `window.__TAURI_INTERNALS__`), so the live bridges and
+ * the library scan take their in-app paths. Returns the undo, so `beforeEach(forceTauri)`
+ * scopes it to one `describe`; called at a file's top level it lasts the file. */
+export function forceTauri(): () => void {
+  Object.defineProperty(window, "__TAURI_INTERNALS__", {
+    value: {},
+    configurable: true,
+  });
+  return () => {
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  };
+}

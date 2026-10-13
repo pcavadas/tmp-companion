@@ -5,10 +5,10 @@
 // fallback").
 
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { Pick } from "../views/overlays/Pick";
+import { renderWithTheme } from "./testKit";
 
 const options = [
   { id: "rhythm", label: "Rhythm" },
@@ -17,10 +17,8 @@ const options = [
 
 describe("Pick — stored value not in the current options", () => {
   it("shows the raw stored value in a warning state, never options[0]'s label", () => {
-    render(
-      <ThemeProvider>
-        <Pick value="crunch" options={options} onChange={() => undefined} />
-      </ThemeProvider>,
+    renderWithTheme(
+      <Pick value="crunch" options={options} onChange={() => undefined} />,
     );
     // The old bug: this would have silently rendered "Rhythm" (options[0]).
     expect(screen.queryByText("Rhythm")).toBeNull();
@@ -31,20 +29,16 @@ describe("Pick — stored value not in the current options", () => {
   });
 
   it("renders the matched option normally when the value IS present", () => {
-    render(
-      <ThemeProvider>
-        <Pick value="lead" options={options} onChange={() => undefined} />
-      </ThemeProvider>,
+    renderWithTheme(
+      <Pick value="lead" options={options} onChange={() => undefined} />,
     );
     expect(screen.getByText("Lead")).toBeInTheDocument();
     expect(screen.queryByTitle(/no longer offered/)).toBeNull();
   });
 
   it("an empty value falls back to the first option quietly (not a stale pick)", () => {
-    render(
-      <ThemeProvider>
-        <Pick value="" options={options} onChange={() => undefined} />
-      </ThemeProvider>,
+    renderWithTheme(
+      <Pick value="" options={options} onChange={() => undefined} />,
     );
     expect(screen.getByText("Rhythm")).toBeInTheDocument();
     expect(screen.queryByTitle(/no longer offered/)).toBeNull();

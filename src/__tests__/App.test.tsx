@@ -7,10 +7,9 @@
 // whole device-connect → list → wizard chain.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { DISCLAIMER_PERM_KEY } from "../lib/gates";
 import type { LevelViewProps } from "../views/level/LevelView";
 import type { SettingsViewProps } from "../views/settings/SettingsView";
@@ -27,9 +26,9 @@ vi.mock("../views/settings", () => ({
   ),
 }));
 
-// Imported AFTER the mocks so App picks up the stand-ins above.
 import App from "../App";
 import { resetLevelFlow } from "../views/level/levelRunStore";
+import { renderWithTheme } from "./testKit";
 
 // The leveling wizard lives in a module store that outlives a mount; start each case clean.
 beforeEach(() => {
@@ -38,11 +37,7 @@ beforeEach(() => {
 
 function renderApp() {
   localStorage.setItem(DISCLAIMER_PERM_KEY, "1"); // skip the startup disclaimer
-  return render(
-    <ThemeProvider>
-      <App />
-    </ThemeProvider>,
-  );
+  return renderWithTheme(<App />);
 }
 
 describe("App — calibrate-nav wiring", () => {

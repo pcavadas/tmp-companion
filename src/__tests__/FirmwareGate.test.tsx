@@ -3,18 +3,14 @@
 // connected it could only re-serve the cached version, so it could change nothing).
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { FirmwareGate } from "../views/FirmwareGate";
+import { renderWithTheme } from "./testKit";
 
 function renderGate(onProceed = vi.fn()) {
-  render(
-    <ThemeProvider>
-      <FirmwareGate detected="1.6.3" onProceed={onProceed} />
-    </ThemeProvider>,
-  );
+  renderWithTheme(<FirmwareGate detected="1.6.3" onProceed={onProceed} />);
   return { onProceed };
 }
 

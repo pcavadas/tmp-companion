@@ -6,7 +6,6 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { light, microLabel } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { ICONS } from "../ui/iconNames";
@@ -16,11 +15,7 @@ import { Tag } from "../ui/Tag";
 import { PaneEmpty } from "../ui/PaneEmpty";
 import { Spinner } from "../ui/Spinner";
 import { Dot } from "../ui/Dot";
-import type { ReactNode } from "react";
-
-function under(node: ReactNode) {
-  return render(<ThemeProvider>{node}</ThemeProvider>);
-}
+import { renderWithTheme, toRgb } from "./testKit";
 
 beforeEach(() => {
   try {
@@ -84,7 +79,7 @@ describe("icons — fuller catalogs", () => {
   });
 
   it("BlockArt (shared illustration engine) renders an svg, no baked label text", () => {
-    const { container } = under(
+    const { container } = renderWithTheme(
       <BlockArt icon="combo" tone="tweed" size={58} label={false} />,
     );
     expect(container.querySelector("svg")).not.toBeNull();
@@ -93,46 +88,46 @@ describe("icons — fuller catalogs", () => {
 
 describe("primitives — a11y roles (VoiceOver)", () => {
   it("Checkbox exposes role=checkbox with aria-checked", () => {
-    under(<Checkbox checked />);
+    renderWithTheme(<Checkbox checked />);
     expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe(
       "true",
     );
   });
 
   it("Checkbox indeterminate → aria-checked=mixed", () => {
-    under(<Checkbox indeterminate />);
+    renderWithTheme(<Checkbox indeterminate />);
     expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe(
       "mixed",
     );
   });
 
   it("Toggle exposes role=switch with aria-checked", () => {
-    under(<Toggle on onClick={() => undefined} />);
+    renderWithTheme(<Toggle on onClick={() => undefined} />);
     expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe(
       "true",
     );
   });
 
   it("MenuItem exposes role=menuitem", () => {
-    under(<MenuItem label="Delete" onClick={() => undefined} />);
+    renderWithTheme(<MenuItem label="Delete" onClick={() => undefined} />);
     expect(screen.getByRole("menuitem")).toBeTruthy();
   });
 });
 
 describe("Toast — update-lifecycle statuses", () => {
   it("resolves the label per explicit status (available/success/error)", () => {
-    under(<Toast status="available" title="Version 1.4 is ready" />);
+    renderWithTheme(<Toast status="available" title="Version 1.4 is ready" />);
     expect(screen.getByText("UPDATE AVAILABLE")).toBeTruthy();
 
-    under(<Toast status="success" title="Done" />);
+    renderWithTheme(<Toast status="success" title="Done" />);
     expect(screen.getByText("READY")).toBeTruthy();
 
-    under(<Toast status="error" title="Failed" />);
+    renderWithTheme(<Toast status="error" title="Failed" />);
     expect(screen.getByText("FAILED")).toBeTruthy();
   });
 
   it("downloading has no label row and shows the live percent", () => {
-    under(
+    renderWithTheme(
       <Toast status="downloading" title="Downloading update…" percent={42} />,
     );
     expect(screen.queryByText("UPDATE AVAILABLE")).toBeNull();
@@ -140,13 +135,15 @@ describe("Toast — update-lifecycle statuses", () => {
   });
 
   it("legacy warn maps to an amber NOTICE, not the red FAILED tone", () => {
-    under(<Toast kind="warn" message="Saved, but BPM didn't stick: x" />);
+    renderWithTheme(
+      <Toast kind="warn" message="Saved, but BPM didn't stick: x" />,
+    );
     expect(screen.getByText("NOTICE")).toBeTruthy();
     expect(screen.queryByText("FAILED")).toBeNull();
   });
 
   it("legacy err maps to FAILED, with message falling back into the title slot", () => {
-    under(<Toast kind="err" message="rename refused" />);
+    renderWithTheme(<Toast kind="err" message="rename refused" />);
     expect(screen.getByText("FAILED")).toBeTruthy();
     expect(screen.getByText("rename refused")).toBeTruthy();
   });
@@ -154,7 +151,7 @@ describe("Toast — update-lifecycle statuses", () => {
   it("renders actions and dismisses via the aria-label", () => {
     const onAction = vi.fn();
     const onDismiss = vi.fn();
-    under(
+    renderWithTheme(
       <Toast
         status="success"
         title="Update downloaded"
@@ -169,7 +166,7 @@ describe("Toast — update-lifecycle statuses", () => {
   });
 
   it("suppresses the dismiss button while downloading", () => {
-    under(
+    renderWithTheme(
       <Toast
         status="downloading"
         title="Downloading update…"
@@ -183,12 +180,12 @@ describe("Toast — update-lifecycle statuses", () => {
 
 describe("Tag — the DS chip", () => {
   it("renders its children text verbatim", () => {
-    under(<Tag>FS1</Tag>);
+    renderWithTheme(<Tag>FS1</Tag>);
     expect(screen.getByText("FS1")).toBeTruthy();
   });
 
   it("tone='accent' paints the accentSoft fill + accentDeep text", () => {
-    under(<Tag tone="accent">Rhythm</Tag>);
+    renderWithTheme(<Tag tone="accent">Rhythm</Tag>);
     const el = screen.getByText("Rhythm");
     // jsdom normalizes the hex token to rgb(); rgba(217,119,87,0.10) → contains 217, 119, 87.
     expect(el.style.color).toBe(toRgb(light.accentDeep));
@@ -196,7 +193,7 @@ describe("Tag — the DS chip", () => {
   });
 
   it("size='md' bumps the fontSize off the sm default", () => {
-    under(
+    renderWithTheme(
       <>
         <Tag size="sm">a</Tag>
         <Tag size="md">b</Tag>
@@ -211,7 +208,7 @@ describe("Tag — the DS chip", () => {
   });
 
   it("uppercase sets textTransform in STYLE while textContent keeps its casing", () => {
-    under(<Tag uppercase>Rhythm</Tag>);
+    renderWithTheme(<Tag uppercase>Rhythm</Tag>);
     const el = screen.getByText("Rhythm");
     expect(el.style.textTransform).toBe("uppercase");
     // load-bearing: the child string is never edited.
@@ -219,15 +216,16 @@ describe("Tag — the DS chip", () => {
   });
 
   it("fg overrides tone — custom color + matching translucent border", () => {
-    under(
-      <Tag tone="accent" fg="#123456">
+    renderWithTheme(
+      <Tag tone="accent" fg={light.warn}>
         x
       </Tag>,
     );
     const el = screen.getByText("x");
-    // #123456 → rgb(18, 52, 86); border alpha 0x66 → rgba(18, 52, 86, 0.4).
-    expect(el.style.color).toBe("rgb(18, 52, 86)");
-    expect(el.style.border).toContain("18, 52, 86");
+    // The fg colour, and the same channels at alpha 0x66 on the border.
+    const rgb = toRgb(light.warn);
+    expect(el.style.color).toBe(rgb);
+    expect(el.style.border).toContain(rgb.slice("rgb(".length, -1));
     // tone lost: no accentSoft fill.
     expect(el.style.background).toBe("transparent");
   });
@@ -235,21 +233,21 @@ describe("Tag — the DS chip", () => {
 
 describe("Spinner", () => {
   it("wraps a spinner Icon in the .tmp-spin sweep", () => {
-    const { container } = under(<Spinner />);
+    const { container } = renderWithTheme(<Spinner />);
     const span = container.querySelector("span.tmp-spin");
     expect(span).not.toBeNull();
     expect(span?.querySelector("svg")).not.toBeNull();
   });
 
   it("renders a custom icon name", () => {
-    const { container } = under(<Spinner name="refresh" />);
+    const { container } = renderWithTheme(<Spinner name="refresh" />);
     expect(container.querySelector("span.tmp-spin svg")).not.toBeNull();
   });
 });
 
 describe("PaneEmpty", () => {
   it("renders the icon medallion, title, and body", () => {
-    const { container } = under(
+    const { container } = renderWithTheme(
       <PaneEmpty icon="music" title="Nothing here" body="Add some things." />,
     );
     expect(screen.getByText("Nothing here")).not.toBeNull();
@@ -258,7 +256,7 @@ describe("PaneEmpty", () => {
   });
 
   it("renders a CTA when passed, and none otherwise", () => {
-    under(
+    renderWithTheme(
       <PaneEmpty
         icon="music"
         title="t"
@@ -268,30 +266,24 @@ describe("PaneEmpty", () => {
     );
     expect(screen.getByText("Add songs")).not.toBeNull();
 
-    const { container } = under(<PaneEmpty icon="wave" title="t2" body="b2" />);
+    const { container } = renderWithTheme(
+      <PaneEmpty icon="wave" title="t2" body="b2" />,
+    );
     expect(container.querySelector("button")).toBeNull();
   });
 });
 
 describe("Dot", () => {
   it("renders a 7px pip by default with the given color", () => {
-    const { container } = under(<Dot color="#3f7d4e" />);
+    const { container } = renderWithTheme(<Dot color={light.good} />);
     const el = container.querySelector("span");
     expect(el?.style.width).toBe("7px");
     expect(el?.style.height).toBe("7px");
-    expect(el?.style.background).toBe("rgb(63, 125, 78)");
+    expect(el?.style.background).toBe(toRgb(light.good));
   });
 
   it("honors a size override", () => {
-    const { container } = under(<Dot color="#000" size={12} />);
+    const { container } = renderWithTheme(<Dot color={light.ink} size={12} />);
     expect(container.querySelector("span")?.style.width).toBe("12px");
   });
 });
-
-function toRgb(hex: string): string {
-  const n = parseInt(hex.slice(1), 16);
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
-  return `rgb(${String(r)}, ${String(g)}, ${String(b)})`;
-}

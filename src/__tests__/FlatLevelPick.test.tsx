@@ -12,16 +12,16 @@
 // gone").
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { FlatLevelPick } from "../views/level/FlatLevelPick";
 import { WithCard } from "./pickCardTestUtils";
 import type {
   BlockLevelCandidate,
   BlockLevelHandle,
 } from "../views/level/FlatLevelPick";
+import { renderWithTheme } from "./testKit";
 
 const TRIGGER_TITLE = "Choose this sound's leveling control";
 
@@ -56,18 +56,16 @@ function renderPick(
   > & { onHandleChange?: (h: BlockLevelHandle | null) => void } = {},
 ) {
   const onHandleChange = props.onHandleChange ?? vi.fn();
-  render(
-    <ThemeProvider>
-      <WithCard>
-        <FlatLevelPick
-          pseudoLabel={props.pseudoLabel}
-          handle={props.handle ?? null}
-          onHandleChange={onHandleChange}
-          candidates={props.candidates ?? { status: "unfetched" }}
-          onOpen={props.onOpen ?? (() => undefined)}
-        />
-      </WithCard>
-    </ThemeProvider>,
+  renderWithTheme(
+    <WithCard>
+      <FlatLevelPick
+        pseudoLabel={props.pseudoLabel}
+        handle={props.handle ?? null}
+        onHandleChange={onHandleChange}
+        candidates={props.candidates ?? { status: "unfetched" }}
+        onOpen={props.onOpen ?? (() => undefined)}
+      />
+    </WithCard>,
   );
   return onHandleChange;
 }

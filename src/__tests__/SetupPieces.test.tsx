@@ -3,21 +3,16 @@
 // timers (RTL fake-timer hang caveat).
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { ThemeProvider } from "../theme/ThemeProvider";
+import { screen, fireEvent } from "@testing-library/react";
 import { SetupGroupHeader } from "../ui/SetupGroupHeader";
 import { PresetOptionRow } from "../ui/PresetOptionRow";
 import { ApplyToBar } from "../ui/ApplyToBar";
 import { usePickedRows } from "../lib/usePickedRows";
-import type { ReactNode } from "react";
-
-function under(node: ReactNode) {
-  return render(<ThemeProvider>{node}</ThemeProvider>);
-}
+import { renderWithTheme } from "./testKit";
 
 describe("SetupGroupHeader", () => {
   it("renders the 1-based slot label + preset name", () => {
-    under(<SetupGroupHeader slot={4} name="Clean Twin" />);
+    renderWithTheme(<SetupGroupHeader slot={4} name="Clean Twin" />);
     expect(screen.getByText("005")).toBeTruthy(); // slotLabel(4) === "005"
     expect(screen.getByText("Clean Twin")).toBeTruthy();
   });
@@ -25,7 +20,7 @@ describe("SetupGroupHeader", () => {
 
 describe("PresetOptionRow", () => {
   it("renders name, tag, sub, and the trailing children", () => {
-    under(
+    renderWithTheme(
       <PresetOptionRow
         name="Rhythm"
         tag="FS1"
@@ -48,7 +43,7 @@ describe("PresetOptionRow", () => {
   });
 
   it("omits the tag chip and sub when not provided", () => {
-    under(
+    renderWithTheme(
       <PresetOptionRow
         name="Whole preset"
         isPicked={false}
@@ -64,7 +59,7 @@ describe("PresetOptionRow", () => {
 
   it("fires onTogglePick when the checkbox cell is clicked", () => {
     const onTogglePick = vi.fn();
-    under(
+    renderWithTheme(
       <PresetOptionRow
         name="Base"
         isPicked={false}
@@ -79,7 +74,7 @@ describe("PresetOptionRow", () => {
   });
 
   it("reflects isPicked on the checkbox", () => {
-    under(
+    renderWithTheme(
       <PresetOptionRow
         name="Base"
         isPicked
@@ -97,7 +92,7 @@ describe("PresetOptionRow", () => {
 
 describe("ApplyToBar", () => {
   it("renders the label and hides the Clear affordance when nothing is picked", () => {
-    under(
+    renderWithTheme(
       <ApplyToBar label="Apply to all 3 sounds" onClear={() => undefined}>
         <div>pickers</div>
       </ApplyToBar>,
@@ -109,7 +104,7 @@ describe("ApplyToBar", () => {
 
   it("shows Clear ticks when somePicked and fires onClear", () => {
     const onClear = vi.fn();
-    under(
+    renderWithTheme(
       <ApplyToBar
         label="Instrument for the 2 ticked"
         somePicked
@@ -161,14 +156,14 @@ describe("usePickedRows", () => {
   }
 
   it("defaults to none-picked: all rows are bulk targets, scope = all", () => {
-    under(<Harness keys={["a", "b", "c"]} />);
+    renderWithTheme(<Harness keys={["a", "b", "c"]} />);
     expect(screen.getByTestId("some").textContent).toBe("false");
     expect(screen.getByTestId("scope").textContent).toBe("all 3 sounds");
     expect(screen.getByTestId("bulk").textContent).toBe("a,b,c");
   });
 
   it("toggling narrows bulk targets to the ticked rows and updates the scope", () => {
-    under(<Harness keys={["a", "b", "c"]} />);
+    renderWithTheme(<Harness keys={["a", "b", "c"]} />);
     fireEvent.click(screen.getByRole("button", { name: "a" }));
     fireEvent.click(screen.getByRole("button", { name: "c" }));
     expect(screen.getByTestId("some").textContent).toBe("true");
@@ -178,7 +173,7 @@ describe("usePickedRows", () => {
   });
 
   it("toggling the same key twice removes it; clearPicked resets to all", () => {
-    under(<Harness keys={["a", "b"]} />);
+    renderWithTheme(<Harness keys={["a", "b"]} />);
     fireEvent.click(screen.getByRole("button", { name: "a" }));
     fireEvent.click(screen.getByRole("button", { name: "a" }));
     expect(screen.getByTestId("some").textContent).toBe("false");
@@ -192,7 +187,7 @@ describe("usePickedRows", () => {
   });
 
   it("uses the singular 'sound' when exactly one row", () => {
-    under(<Harness keys={["only"]} />);
+    renderWithTheme(<Harness keys={["only"]} />);
     expect(screen.getByTestId("scope").textContent).toBe("all 1 sound");
   });
 });

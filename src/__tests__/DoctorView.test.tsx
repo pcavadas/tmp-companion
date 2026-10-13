@@ -9,44 +9,28 @@
 //   • The list never recalls a preset and the whole flow never saves.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
-
-// Capture the backup-progress / live-sync listeners so usePresetData takes the real
-// listen() path under the forced isTauri().
-const listeners = new Map<string, (e: { payload: unknown }) => void>();
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (name: string, cb: (e: { payload: unknown }) => void) => {
-    listeners.set(name, cb);
-    return Promise.resolve(() => listeners.delete(name));
-  },
-}));
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return { ...actual, isTauri: () => true };
-});
-
-// Imported AFTER the mocks so the view picks up the forced isTauri().
 import { DoctorView } from "../views/doctor";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type { CommandArgs } from "../lib/commands";
 import type { DoctorCheckResult, FootswitchInfo } from "../lib/types";
 import {
+  forceTauri,
   makeBackupPresetRow,
   makeBackupRead,
   makeStore,
   mockCommands,
 } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
+
+// In-app: the live bridges and the library scan subscribe.
+forceTauri();
 
 function renderView(connected: boolean) {
-  const r = render(
-    <ThemeProvider>
-      <DoctorView connected={connected} />
-    </ThemeProvider>,
-  );
+  const r = renderWithTheme(<DoctorView connected={connected} />);
   // The backup scan is App-owned in production; seed it here when connected so the
   // view's scene/graph data populates (the view no longer triggers the scan).
   if (connected) void ensureLibraryScan();
@@ -177,7 +161,6 @@ const fired = (command: string) =>
 describe("DoctorView — connection gating", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
-    listeners.clear();
     resetLibraryScan();
     localStorage.clear();
   });
@@ -193,7 +176,6 @@ describe("DoctorView — connection gating", () => {
 describe("DoctorView — select → setup → run → results", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
-    listeners.clear();
     resetLibraryScan();
     localStorage.clear();
     mockOnePreset();

@@ -1,4 +1,4 @@
-// src/__tests__/SetupPageRerunAndContext.test.tsx — BUG→GATE for two Set-up defaults.
+// src/__tests__/SetupPage.rerunAndContext.test.tsx — BUG→GATE for two Set-up defaults.
 //
 // #284: "Run again" / "Re-run off target…" reopened Set up with every row reset to the
 // FIRST target and FIRST instrument, so one Start re-leveled a Lead sound at Rhythm. A
@@ -11,11 +11,10 @@
 // backup scan for every footswitch row up front, and Start waits for it.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SetupPage, type SetupChoice } from "../views/level/SetupPage";
 import { WithCard } from "./pickCardTestUtils";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
@@ -24,12 +23,17 @@ import {
   runItemToOption,
   type SetupOption,
 } from "../views/level/leveling";
-import type { BackupReadResult, FsSceneContext } from "../lib/types";
+import type { FsSceneContext } from "../lib/types";
 import type { PickOption } from "../views/overlays/Pick";
-
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => undefined),
-}));
+import {
+  fired,
+  makeBackupPresetRow,
+  makeBackupRead,
+  makeSetupOption,
+  mockCommands,
+  rejectWith,
+} from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 const instrumentOptions: PickOption[] = [
   { id: "none", label: "None" },
@@ -41,18 +45,7 @@ const targetOptions: PickOption[] = [
   { id: "Lead", label: "Lead −23" },
 ];
 
-function baseOption(): SetupOption {
-  return {
-    key: "p0",
-    slot: 0,
-    presetName: "Plexi",
-    isBase: true,
-    sceneSlot: null,
-    sceneName: "Base Preset",
-    tag: "BASE",
-    hasScenes: true,
-  };
-}
+const baseOption = (): SetupOption => makeSetupOption({ presetName: "Plexi" });
 
 function fsOption(): SetupOption {
   return {
@@ -77,78 +70,46 @@ function fsOption(): SetupOption {
 
 function renderSetup(options: SetupOption[], isRelevel: boolean) {
   const onStart = vi.fn<(c: SetupChoice[]) => void>();
-  render(
-    <ThemeProvider>
-      <WithCard>
-        <SetupPage
-          options={options}
-          isRelevel={isRelevel}
-          instrumentOptions={instrumentOptions}
-          targetOptions={targetOptions}
-          defaultInst="strat"
-          defaultTarget="Rhythm"
-          onCancel={vi.fn()}
-          onStart={onStart}
-        />
-      </WithCard>
-    </ThemeProvider>,
+  renderWithTheme(
+    <WithCard>
+      <SetupPage
+        options={options}
+        isRelevel={isRelevel}
+        instrumentOptions={instrumentOptions}
+        targetOptions={targetOptions}
+        defaultInst="strat"
+        defaultTarget="Rhythm"
+        onCancel={vi.fn()}
+        onStart={onStart}
+      />
+    </WithCard>,
   );
   return onStart;
 }
 
 /** Seed the startup backup scan with slot 0 carrying `contexts`. */
 async function seedScan(contexts: FsSceneContext[]) {
-  vi.mocked(invoke).mockImplementation((cmd: string) => {
-    if (cmd === "read_library_via_backup") {
-      const result: BackupReadResult = {
-        members: [],
-        db_bytes: 0,
+  mockCommands({
+    read_library_via_backup: () =>
+      makeBackupRead({
         total_rows: 1,
-        scene_mode: "test",
         presets: [
-          {
+          makeBackupPresetRow({
             slot: 1,
             name: "Plexi",
-            preset_id: null,
             scene_count: 3,
-            scenes: [],
-            amp_candidates: [],
-            base_active_amp_count: 0,
-            blocks: [],
-            graph: {
-              name: null,
-              slot: null,
-              template: null,
-              split_mix: null,
-              nodes: [],
-              stages: [],
-            },
-            footswitches: [],
-            silence_hint: null,
-            scene_handles: [],
-            base_handles: [],
-            scene_overrides: [],
             fs_scene_contexts: contexts,
-          },
+          }),
         ],
-        song_presets: [],
-        songs: [],
-        setlists: [],
-        setlist_songs: [],
-      };
-      return Promise.resolve(result);
-    }
-    return Promise.resolve([]);
+      }),
   });
   await ensureLibraryScan();
 }
 
-const commandsSent = () => vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
-
 beforeEach(() => {
   resetLibraryScan();
   vi.mocked(invoke).mockReset();
-  vi.mocked(invoke).mockImplementation(() => Promise.resolve([]));
+  mockCommands();
 });
 
 describe("a re-run keeps each sound's instrument and target (#284)", () => {
@@ -225,19 +186,18 @@ describe("a footswitch row's scene context comes from data (#286)", () => {
       sceneContext: 1,
     });
     // Answered off the backup scan: no device read.
-    expect(commandsSent()).not.toContain("list_footswitch_scene_contexts");
+    expect(fired("list_footswitch_scene_contexts")).toBe(false);
   });
 
   it("holds Start until a device-read context lands, then submits it", async () => {
     // No backup entry for the slot: the context comes from the device read.
     let answer: (rows: FsSceneContext[]) => void = () => undefined;
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "list_footswitch_scene_contexts"
-        ? new Promise((res) => {
-            answer = res;
-          })
-        : Promise.resolve([]),
-    );
+    mockCommands({
+      list_footswitch_scene_contexts: () =>
+        new Promise<FsSceneContext[]>((res) => {
+          answer = res;
+        }),
+    });
     const onStart = renderSetup([fsOption()], false);
     const user = userEvent.setup();
     await user.click(screen.getByText(/I.ve backed up with Pro Control/i));
@@ -245,7 +205,7 @@ describe("a footswitch row's scene context comes from data (#286)", () => {
       name: /reading footswitches/i,
     });
     expect(pending).toBeDisabled();
-    expect(commandsSent()).toContain("list_footswitch_scene_contexts");
+    expect(fired("list_footswitch_scene_contexts")).toBe(true);
 
     answer([{ switch: 2, enablingScenes: [2], suggested: 2 }]);
     const start = await screen.findByRole("button", {
@@ -258,11 +218,10 @@ describe("a footswitch row's scene context comes from data (#286)", () => {
   });
 
   it("holds Start on a failed read until a scene is chosen", async () => {
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "list_footswitch_scene_contexts"
-        ? Promise.reject(new Error("Device not connected"))
-        : Promise.resolve([]),
-    );
+    mockCommands({
+      list_footswitch_scene_contexts: () =>
+        rejectWith(new Error("Device not connected")),
+    });
     const withPicker: SetupOption = {
       ...fsOption(),
       levelParams: [

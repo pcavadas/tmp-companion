@@ -7,9 +7,7 @@
 // after splitting the engine into per-form modules) surfaces here instead of only
 // at runtime when that form first appears on screen.
 
-import { describe, it, expect, beforeAll } from "vitest";
-import { render } from "@testing-library/react";
-import { ThemeProvider } from "../theme/ThemeProvider";
+import { describe, it, expect } from "vitest";
 import {
   BlockArt,
   HalfStackArt,
@@ -18,16 +16,10 @@ import {
 } from "../ui/BlockArt";
 import { ampCabHalfStack, nodeTileArt, blockArtTile } from "../models/blockArt";
 import { clothFor } from "../ui/blockart/shared";
-
-// jsdom has no SVGGraphicsElement.getBBox (HalfStackArt measures real geometry in
-// a layout effect to fit head-over-cab); stub it so the component can render here.
-beforeAll(() => {
-  (SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox =
-    () => ({ x: 0, y: 0, width: 72, height: 100 }) as DOMRect;
-});
+import { renderWithTheme } from "./testKit";
 
 function svgOf(node: React.ReactNode): SVGSVGElement {
-  const { container } = render(<ThemeProvider>{node}</ThemeProvider>);
+  const { container } = renderWithTheme(node);
   const svg = container.querySelector("svg");
   if (!svg) throw new Error("expected the component to render an <svg>");
   return svg;

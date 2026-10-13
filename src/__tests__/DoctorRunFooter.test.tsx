@@ -9,13 +9,13 @@
 // may keep its "listening…" spinner (#290).
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { DoctorRun } from "../views/doctor/DoctorRun";
 import type { DoctorInputArg } from "../lib/types";
+import { renderWithTheme } from "./testKit";
 
 const item: DoctorInputArg = {
   key: "k0",
@@ -34,34 +34,32 @@ const item: DoctorInputArg = {
 
 function doctorRun(overrides: Partial<Parameters<typeof DoctorRun>[0]> = {}) {
   const el: ReactElement = (
-    <ThemeProvider>
-      <DoctorRun
-        status="running"
-        items={[item]}
-        statusByKey={{ k0: "active" }}
-        error={null}
-        instName={() => null}
-        onStop={vi.fn()}
-        onComplete={vi.fn()}
-        onRetry={vi.fn()}
-        onBack={vi.fn()}
-        {...overrides}
-      />
-    </ThemeProvider>
+    <DoctorRun
+      status="running"
+      items={[item]}
+      statusByKey={{ k0: "active" }}
+      error={null}
+      instName={() => null}
+      onStop={vi.fn()}
+      onComplete={vi.fn()}
+      onRetry={vi.fn()}
+      onBack={vi.fn()}
+      {...overrides}
+    />
   );
   return el;
 }
 
 describe("DoctorRun footer/header — stop + done states", () => {
   it("stopping: shows immediate acknowledgment, no Stop button", () => {
-    render(doctorRun({ status: "stopping" }));
+    renderWithTheme(doctorRun({ status: "stopping" }));
     expect(screen.getByText("Stopping…")).toBeInTheDocument();
     expect(screen.getByText("finishing current item…")).toBeInTheDocument();
     expect(screen.queryByText("Stop")).not.toBeInTheDocument();
   });
 
   it("stopped (terminal): header reads 'Check stopped', not stuck on 'Stopping…'", () => {
-    render(
+    renderWithTheme(
       doctorRun({
         status: "stopped",
         statusByKey: { k0: "done" },
@@ -73,7 +71,7 @@ describe("DoctorRun footer/header — stop + done states", () => {
   });
 
   it("natural finish: no clickable CTA competing with the auto-advance", () => {
-    render(
+    renderWithTheme(
       doctorRun({
         status: "done",
         statusByKey: { k0: "done" },
@@ -93,7 +91,7 @@ describe("DoctorRun footer/header — stop + done states", () => {
   it("failed: says the check failed (not 'Check stopped'), shows why, and offers Try again", async () => {
     const onRetry = vi.fn();
     const onBack = vi.fn();
-    render(
+    renderWithTheme(
       doctorRun({
         status: "failed",
         // The stream left the row active when the command rejected.

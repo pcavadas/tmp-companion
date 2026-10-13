@@ -3,11 +3,10 @@
 // LevelView is shallow-mocked to expose its onScan prop.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { DISCLAIMER_PERM_KEY } from "../lib/gates";
 import type { ConnectResult } from "../lib/types";
 import { mockCommands } from "./commandMocks";
@@ -21,6 +20,7 @@ vi.mock("../views/level", () => ({
 
 // Imported AFTER the mock so App picks up the stand-in.
 import App from "../App";
+import { renderWithTheme } from "./testKit";
 
 describe("App — manual retry shares the single-flight guard (#305)", () => {
   beforeEach(() => {
@@ -38,11 +38,7 @@ describe("App — manual retry shares the single-flight guard (#305)", () => {
         }),
     });
     localStorage.setItem(DISCLAIMER_PERM_KEY, "1");
-    render(
-      <ThemeProvider>
-        <App />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<App />);
     const connects = () =>
       vi.mocked(invoke).mock.calls.filter(([c]) => c === "connect_device")
         .length;

@@ -2,17 +2,12 @@
 // static CPU-meter bar (ui/Meter). Real timers (RTL default).
 
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
-import { ThemeProvider } from "../theme/ThemeProvider";
+import { screen } from "@testing-library/react";
 import { ListHeader } from "../views/songs/ListHeader";
 import { SongRow } from "../views/songs/SongRow";
 import { Meter } from "../ui/Meter";
 import type { SongRecord } from "../lib/types";
-
-function under(node: ReactNode) {
-  return render(<ThemeProvider>{node}</ThemeProvider>);
-}
+import { renderWithTheme } from "./testKit";
 
 const song = (over: Partial<SongRecord> = {}): SongRecord => ({
   slot: 1,
@@ -25,7 +20,7 @@ const song = (over: Partial<SongRecord> = {}): SongRecord => ({
 
 describe("ListHeader — the shared uppercase column-header row", () => {
   it("renders each cell label and right-aligns the flagged one", () => {
-    under(
+    renderWithTheme(
       <ListHeader
         cols="34px 1fr 78px"
         cells={[
@@ -46,13 +41,13 @@ describe("ListHeader — the shared uppercase column-header row", () => {
 
 describe("SongRow — one song row", () => {
   it("renders the name and bpm (bare number by default)", () => {
-    under(<SongRow song={song()} idx={0} gridCols="34px 1fr 78px" />);
+    renderWithTheme(<SongRow song={song()} idx={0} gridCols="34px 1fr 78px" />);
     expect(screen.getByText("Song A")).toBeTruthy();
     expect(screen.getByText("120")).toBeTruthy();
   });
 
   it("renders '<n> bpm' + right-aligns when bpmAlign + bpmSuffix are set", () => {
-    under(
+    renderWithTheme(
       <SongRow
         song={song()}
         idx={0}
@@ -66,7 +61,7 @@ describe("SongRow — one song row", () => {
   });
 
   it("spreads rootProps onto the row root", () => {
-    under(
+    renderWithTheme(
       <SongRow
         song={song()}
         idx={0}
@@ -81,7 +76,7 @@ describe("SongRow — one song row", () => {
   });
 
   it("renders leading + trailing slots", () => {
-    under(
+    renderWithTheme(
       <SongRow
         song={song()}
         idx={0}
@@ -97,19 +92,25 @@ describe("SongRow — one song row", () => {
 
 describe("Meter — static track+fill bar", () => {
   it("clamps pct to 0–100", () => {
-    const { container: high } = under(
+    const { container: high } = renderWithTheme(
       <Meter pct={150} width={96} height={6} />,
     );
-    const { container: low } = under(<Meter pct={-10} width={96} height={6} />);
-    const { container: mid } = under(<Meter pct={42} width={96} height={6} />);
+    const { container: low } = renderWithTheme(
+      <Meter pct={-10} width={96} height={6} />,
+    );
+    const { container: mid } = renderWithTheme(
+      <Meter pct={42} width={96} height={6} />,
+    );
     expect(fill(high).style.width).toBe("100%");
     expect(fill(low).style.width).toBe("0%");
     expect(fill(mid).style.width).toBe("42%");
   });
 
   it("renders the marker only when given", () => {
-    const { container: none } = under(<Meter pct={50} width={96} height={6} />);
-    const { container: withM } = under(
+    const { container: none } = renderWithTheme(
+      <Meter pct={50} width={96} height={6} />,
+    );
+    const { container: withM } = renderWithTheme(
       <Meter pct={50} width={96} height={6} marker={76.5} />,
     );
     expect(track(none).childElementCount).toBe(1);
@@ -120,7 +121,9 @@ describe("Meter — static track+fill bar", () => {
   });
 
   it("has no transition (paints instantly)", () => {
-    const { container } = under(<Meter pct={50} width={96} height={6} />);
+    const { container } = renderWithTheme(
+      <Meter pct={50} width={96} height={6} />,
+    );
     expect(track(container).style.transition).toBe("");
     expect(fill(container).style.transition).toBe("");
   });

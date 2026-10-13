@@ -4,20 +4,18 @@
 // sit alongside.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { screen, fireEvent } from "@testing-library/react";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { Dialog } from "../ui/Dialog";
+import { renderWithTheme } from "./testKit";
 
 describe("Dialog — no Escape shortcut (click-only app)", () => {
   it("Escape does not call onClose", () => {
     const onClose = vi.fn();
-    render(
-      <ThemeProvider>
-        <Dialog onClose={onClose} label="Test dialog">
-          <div>content</div>
-        </Dialog>
-      </ThemeProvider>,
+    renderWithTheme(
+      <Dialog onClose={onClose} label="Test dialog">
+        <div>content</div>
+      </Dialog>,
     );
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
@@ -25,12 +23,10 @@ describe("Dialog — no Escape shortcut (click-only app)", () => {
 
   it("a backdrop click still calls onClose", () => {
     const onClose = vi.fn();
-    render(
-      <ThemeProvider>
-        <Dialog onClose={onClose} label="Test dialog">
-          <div>content</div>
-        </Dialog>
-      </ThemeProvider>,
+    renderWithTheme(
+      <Dialog onClose={onClose} label="Test dialog">
+        <div>content</div>
+      </Dialog>,
     );
     const dialog = screen.getByRole("dialog");
     const backdrop = dialog.previousElementSibling;
