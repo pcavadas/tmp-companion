@@ -14,6 +14,7 @@ import { useMemo, useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
 import { ConfirmBar } from "../../ui/ConfirmBar";
+import { RunFooterStatus } from "../../ui/RunFooterStatus";
 import { Icon } from "../../ui/Icon";
 import { Spinner } from "../../ui/Spinner";
 import { Dot } from "../../ui/Dot";
@@ -21,16 +22,19 @@ import { ProgressBar } from "../../ui/ProgressBar";
 import { LiveVU } from "../../ui/LiveVU";
 import { LiveReadout } from "../../ui/LiveReadout";
 import { LevelPage } from "./LevelPage";
-import { PresetGroupList, PresetGroupRow } from "./PresetGroupRow";
+import { PresetGroupList } from "./PresetGroupList";
+import { PresetGroupRow } from "./PresetGroupRow";
 import { useGroupOpen } from "./useGroupOpen";
 import { fmtLufs } from "../../lib/format";
 import { useAutoAdvance } from "../../lib/useAutoAdvance";
 import { useLiveMeter } from "./liveMeterStore";
 import { isRunOver, type RunPhase } from "./levelRunStore";
+import { SoundRowShell } from "./SoundRowShell";
 import {
   groupItemsBySlot,
   hasInstrument,
   offbranchStatus,
+  OUTCOME_TONE,
   type RunItem,
 } from "./leveling";
 
@@ -84,13 +88,7 @@ export function RunPage({
     return `${fmtLufs(it.value)} LUFS`;
   };
   const resultColor = (it: RunItem): string =>
-    it.outcome === "clamped" || it.outcome === "unconverged"
-      ? t.sevWarn
-      : it.outcome === "offbranch"
-        ? t.warn
-        : it.outcome === "skipped"
-          ? t.mutedInk
-          : t.good;
+    it.outcome ? t[OUTCOME_TONE[it.outcome]] : t.good;
   const rowStatus = (it: RunItem): string => {
     if (it.status === "active")
       return stopping
@@ -155,35 +153,19 @@ export function RunPage({
         </Button>
       }
       footerRight={
-        stopped ? (
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={onComplete}
-            style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
-          >
-            Continue
-          </Button>
-        ) : done ? (
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: t.space4,
-              fontFamily: t.mono,
-              fontSize: 10.5,
-              letterSpacing: "0.04em",
-              color: t.mutedInk,
-            }}
-          >
-            <Icon name="check" size={13} stroke={t.good} strokeWidth={2} />
-            done
-          </span>
-        ) : (
-          <span style={{ fontFamily: t.mono, fontSize: 11, color: t.mutedInk }}>
-            Each sound is saved as soon as it matches
-          </span>
-        )
+        <RunFooterStatus
+          stopped={stopped}
+          done={done}
+          ctaLabel="Continue"
+          onCta={onComplete}
+          running={
+            <span
+              style={{ fontFamily: t.mono, fontSize: 11, color: t.mutedInk }}
+            >
+              Each sound is saved as soon as it matches
+            </span>
+          }
+        />
       }
       footerOverride={
         confirm ? (
@@ -278,85 +260,62 @@ export function RunPage({
                 const active = it.status === "active";
                 const result = it.status === "result";
                 return (
-                  <div
+                  <SoundRowShell
                     key={it.key}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: t.space6,
-                      minHeight: 30,
-                    }}
+                    name={it.sceneName}
+                    nameColor={it.status === "queued" ? t.faint : t.ink2}
+                    glyph={
+                      <>
+                        {active && (
+                          <Spinner
+                            size={14}
+                            stroke={t.sevWarn}
+                            strokeWidth={1.8}
+                          />
+                        )}
+                        {it.status === "queued" && (
+                          <Dot color={t.faint} hollow={stopped} />
+                        )}
+                        {result &&
+                          (it.outcome === "clamped" ? (
+                            <Icon
+                              name="warn-tri"
+                              size={13}
+                              stroke={t.sevWarn}
+                              strokeWidth={1.7}
+                            />
+                          ) : it.outcome === "unconverged" ? (
+                            <Icon
+                              name="refresh"
+                              size={13}
+                              stroke={t.sevWarn}
+                              strokeWidth={1.7}
+                            />
+                          ) : it.outcome === "offbranch" ? (
+                            <Icon
+                              name="x"
+                              size={13}
+                              stroke={t.warn}
+                              strokeWidth={2}
+                            />
+                          ) : it.outcome === "skipped" ? (
+                            <Icon
+                              name="x"
+                              size={12}
+                              stroke={t.mutedInk}
+                              strokeWidth={2}
+                            />
+                          ) : (
+                            <Icon
+                              name="check"
+                              size={13}
+                              stroke={t.good}
+                              strokeWidth={2}
+                            />
+                          ))}
+                      </>
+                    }
                   >
-                    <span
-                      style={{
-                        width: 14,
-                        flexShrink: 0,
-                        display: "inline-flex",
-                        justifyContent: "center",
-                      }}
-                    >
-                      {active && (
-                        <Spinner
-                          size={14}
-                          stroke={t.sevWarn}
-                          strokeWidth={1.8}
-                        />
-                      )}
-                      {it.status === "queued" && (
-                        <Dot color={t.faint} hollow={stopped} />
-                      )}
-                      {result &&
-                        (it.outcome === "clamped" ? (
-                          <Icon
-                            name="warn-tri"
-                            size={13}
-                            stroke={t.sevWarn}
-                            strokeWidth={1.7}
-                          />
-                        ) : it.outcome === "unconverged" ? (
-                          <Icon
-                            name="refresh"
-                            size={13}
-                            stroke={t.sevWarn}
-                            strokeWidth={1.7}
-                          />
-                        ) : it.outcome === "offbranch" ? (
-                          <Icon
-                            name="x"
-                            size={13}
-                            stroke={t.warn}
-                            strokeWidth={2}
-                          />
-                        ) : it.outcome === "skipped" ? (
-                          <Icon
-                            name="x"
-                            size={12}
-                            stroke={t.mutedInk}
-                            strokeWidth={2}
-                          />
-                        ) : (
-                          <Icon
-                            name="check"
-                            size={13}
-                            stroke={t.good}
-                            strokeWidth={2}
-                          />
-                        ))}
-                    </span>
-                    <span
-                      style={{
-                        fontFamily: t.sans,
-                        fontSize: 13,
-                        color: it.status === "queued" ? t.faint : t.ink2,
-                        width: 138,
-                        flexShrink: 0,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {it.sceneName}
-                    </span>
                     <span
                       style={{
                         flex: 1,
@@ -390,7 +349,7 @@ export function RunPage({
                     >
                       {rowStatus(it)}
                     </span>
-                  </div>
+                  </SoundRowShell>
                 );
               })}
             </PresetGroupRow>

@@ -13,7 +13,8 @@
 import { useCallback, useMemo, useState } from "react";
 
 import { LoadErrorPane } from "../LoadErrorPane";
-import { EmptyState, UsbC } from "../EmptyState";
+import { EmptyState } from "../EmptyState";
+import { UsbC } from "../UsbC";
 import { usePresetData } from "../level/usePresetData";
 import { useLiveDevice } from "../../device/useLiveDevice";
 import {

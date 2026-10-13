@@ -5,18 +5,17 @@
 // fixed-height frame — so a picker on a bottom row never clips past the card (the
 // behaviour the design prototype specs). Falls back to a trigger-anchored inline menu
 // when rendered outside a wizard card. The two menu deliveries are dedicated components
-// (PickPortalMenu / PickInlineMenu); Pick owns the trigger, state, and the option rows.
+// (PickPortalMenu / PickInlineMenu); the trigger and the rows are the Pick family's
+// shared `PickTrigger` / `PickListRow`. Pick owns the state and the stale-value rule.
 
 import { useContext } from "react";
 
-import { useTheme } from "../../theme/ThemeContext";
-import { plainButton } from "../../theme/tokens";
-import { Icon } from "../../ui/Icon";
 import { DialogCardCtx } from "./wizardContext";
 import { PickPortalMenu } from "./PickPortalMenu";
 import { PickInlineMenu } from "./PickInlineMenu";
 import { usePickAnchor } from "./usePickAnchor";
-import { pickTriggerBorder } from "./pickTriggerChrome";
+import { PickTrigger } from "./PickTrigger";
+import { PickListRow } from "./PickListRow";
 
 export interface PickOption {
   id: string;
@@ -54,13 +53,12 @@ export function Pick({
   value,
   options,
   onChange,
-  grow,
+  grow = false,
   title,
   muted,
   tid,
   onOpen,
 }: PickProps) {
-  const { t } = useTheme();
   const cardRef = useContext(DialogCardCtx);
   const { open, anchor, pos, cardEl, menuRef, triggerRef, openMenu, close } =
     usePickAnchor(cardRef, { onOpen });
@@ -84,119 +82,31 @@ export function Pick({
     onChange(id);
   };
 
-  const optionRows = options.map((o) => {
-    const on = o.id === value;
-    return (
-      <button
-        type="button"
-        role="option"
-        aria-selected={on}
-        key={o.id}
-        data-pick-option={tid ? `${tid}:${o.id}` : undefined}
-        onClick={(e) => {
-          e.stopPropagation();
-          pick(o.id);
-        }}
-        style={{
-          ...plainButton(),
-          width: "100%",
-          textAlign: "left",
-          display: "flex",
-          alignItems: "center",
-          gap: t.space5,
-          padding: `${String(t.space3)}px ${String(t.space4)}px`,
-          borderRadius: 5,
-          background: on ? t.accentSoft : "transparent",
-        }}
-        onMouseEnter={(e) => {
-          if (!on) e.currentTarget.style.background = t.hover;
-        }}
-        onMouseLeave={(e) => {
-          if (!on) e.currentTarget.style.background = "transparent";
-        }}
-      >
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: 11,
-            color: on ? t.accentDeep : t.ink2,
-          }}
-        >
-          {o.label}
-        </span>
-        {o.sub && (
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: 9.5,
-              color: t.faint,
-              marginLeft: "auto",
-            }}
-          >
-            {o.sub}
-          </span>
-        )}
-      </button>
-    );
-  });
+  const optionRows = options.map((o) => (
+    <PickListRow
+      key={o.id}
+      label={o.label}
+      sub={o.sub}
+      selected={o.id === value}
+      optionHook={tid ? `${tid}:${o.id}` : undefined}
+      onPick={() => {
+        pick(o.id);
+      }}
+    />
+  ));
 
   return (
-    <div
-      ref={triggerRef}
-      style={{
-        position: "relative",
-        width: grow ? "100%" : undefined,
-        minWidth: grow ? 0 : undefined,
-      }}
+    <PickTrigger
+      triggerRef={triggerRef}
+      open={open}
+      warn={stale}
+      label={stale ? value : cur ? cur.label : "—"}
+      title={stale ? `"${value}" is no longer offered` : title}
+      onClick={openMenu}
+      muted={muted}
+      grow={grow}
+      tid={tid}
     >
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={openMenu}
-        title={stale ? `"${value}" is no longer offered` : title}
-        data-pick={tid}
-        style={{
-          ...plainButton(),
-          width: "100%",
-          display: "flex",
-          alignItems: "center",
-          gap: t.space3,
-          height: 26,
-          padding: `0 ${String(t.space3)}px 0 ${String(t.space4)}px`,
-          border: pickTriggerBorder(t, { open, warn: stale }),
-          borderRadius: 6,
-          background: t.bg,
-          whiteSpace: "nowrap",
-        }}
-      >
-        {stale && (
-          <Icon
-            name="warn-tri"
-            size={11}
-            stroke={t.sevWarn}
-            strokeWidth={1.7}
-          />
-        )}
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: 10.5,
-            color: stale ? t.sevWarn : muted ? t.faint : t.ink,
-            flex: 1,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {stale ? value : cur ? cur.label : "—"}
-        </span>
-        <Icon
-          name="chev-down"
-          size={11}
-          stroke={open ? t.accentDeep : t.faint}
-        />
-      </button>
-
       {open && anchor && cardEl && (
         <PickPortalMenu
           cardEl={cardEl}
@@ -213,6 +123,6 @@ export function Pick({
       {open && !anchor && (
         <PickInlineMenu onClose={close}>{optionRows}</PickInlineMenu>
       )}
-    </div>
+    </PickTrigger>
   );
 }

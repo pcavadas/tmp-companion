@@ -18,7 +18,7 @@ Applies while editing anything under `src/`. Component-level how-to lives in the
 - `optionalArr?.length > 0` does NOT compile (`number | undefined > 0` is a type error) — write `arr && arr.length > 0`.
 - `Array.prototype.at()` is absent from the ES2020 lib target (`tsc`: `Property 'at' does not exist`) — use a bounds-guarded `[i]` index.
 - `react-hooks/refs` errors on reading/writing `ref.current` during render — sync such refs in an EFFECT. `set-state-in-effect` errors on a synchronous `setState` in an effect — use the "adjust state during render when an input changes" pattern (a `prev*` compare) or a render-phase derivation.
-- **Legit exception — DOM measurement.** A `useLayoutEffect` that measures the COMMITTED DOM (`getBoundingClientRect`/`getBBox`) then `setState`s the measurement is the one case the `setState` must stay in the effect (the node isn't laid out yet). Guard it with a prev-value compare so it converges. Instances: `SignalChainView`'s `useLaneBracket` (the split/join brackets of `SplitGroup`/`ForkTail`/`JoinHead` — ONE effect), `ui/BlockArt.tsx` `HalfStackArt`, `overlays/usePickAnchor.ts` (the shared hook behind `Pick`/`FlatLevelPick` — ONE effect, not one per picker).
+- **Legit exception — DOM measurement.** A `useLayoutEffect` that measures the COMMITTED DOM (`getBoundingClientRect`/`getBBox`) then `setState`s the measurement is the one case the `setState` must stay in the effect (the node isn't laid out yet). Guard it with a prev-value compare so it converges. Instances: `views/signalChain/useLaneBracket.ts` (the split/join brackets of `SplitGroup`/`ForkTail`/`JoinHead` — ONE effect, re-run every commit and on a ResizeObserver tick, since a lane's height moves with more than its block count), `ui/BlockArt.tsx` `HalfStackArt`, `overlays/usePickAnchor.ts` (the shared hook behind `Pick`/`FlatLevelPick` — ONE effect, not one per picker).
 
 ## Contract mirrors — these fail SILENTLY
 
@@ -26,7 +26,7 @@ Serialized Rust structs have hand-written TS mirrors in `src/lib/types.ts`, and 
 
 - Adding/removing a command = its `Commands` entry + its wrapper + its `DEFAULT_HANDLERS` default (typed total, so `tsc` demands it) + an `expectCall` in `invoke.test.ts`. That file's last test checks the commands its wrappers reached equal the registry's keys.
 - New tests mock commands with `mockCommands({ … })` and the `make*()` factories, not a raw `vi.mocked(invoke).mockImplementation(...)` — that untyped override is the drift this layout removes.
-- `liveEvents.test.ts` asserts the WHOLE `LIVE_EVENT` registry via an exact `toEqual` — adding a `tmp://` event (registry entry + `onXxx` wrapper + `types.ts` payload mirror) must extend that `toEqual` too.
+- `liveEvents.test.ts` asserts the WHOLE `LIVE_EVENT` registry via an exact `toEqual` — adding a `tmp://` event (`LIVE_EVENT` entry + `LiveEventMap` payload entry — `satisfies` keeps the two keyed alike — + `types.ts` payload mirror; callers subscribe with `onLive(key, cb)`) must extend that `toEqual` too.
 
 ## Platform and framework traps
 

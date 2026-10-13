@@ -21,9 +21,9 @@ import {
   blockArrays,
   cpuOfGraph,
   type EditGraph,
+  type EditMode,
   type PresetEdit,
 } from "./copyModel";
-import type { EditMode } from "./BlockEditor";
 
 const CONV_SET = new Set<string>(blockClassification.convolutionSet);
 const CABINET_SET = new Set<string>(blockClassification.cabinetSet);
@@ -66,7 +66,7 @@ export function classify(model: string): {
 }
 
 /** The graph's current standing against each cap, walked once from `blockArrays`
- *  (pure — no `applyEditOp`, so no `newUid()` side effect). A `cabSim2Enabled`
+ *  (no `applyEditOp` clone per check). A `cabSim2Enabled`
  *  block occupies two cabinet slots (a dual-cab node). `fxLoopPresent` is the set of
  *  FX-loop ids (stereo `ACD_FxLoop3_4` / mono `ACD_FxLoop3`/`ACD_FxLoop4`) currently
  *  present anywhere in the graph — loops 1/2 are non-placeable rear-panel fixtures

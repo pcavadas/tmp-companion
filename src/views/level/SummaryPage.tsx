@@ -27,16 +27,24 @@
 
 import { useMemo, type ReactNode } from "react";
 
-import { useTheme, useStyles } from "../../theme/ThemeContext";
+import { useTheme } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
-import { Icon, type IconName } from "../../ui/Icon";
+import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { LevelPage } from "./LevelPage";
-import { PresetGroupList, PresetGroupRow } from "./PresetGroupRow";
+import { PresetGroupList } from "./PresetGroupList";
+import { PresetGroupRow } from "./PresetGroupRow";
 import { useGroupOpen } from "./useGroupOpen";
 import { ByEarChip } from "../overlays/ByEarChip";
 import { fmtLufs } from "../../lib/format";
-import { groupItemsBySlot, offbranchStatus, type RunItem } from "./leveling";
+import { GuidanceBanner } from "./GuidanceBanner";
+import { SoundRowShell } from "./SoundRowShell";
+import {
+  groupItemsBySlot,
+  offbranchStatus,
+  OUTCOME_TONE,
+  type RunItem,
+} from "./leveling";
 import type { BaseBoostSummary } from "../../lib/types";
 
 const TRUE_PEAK_WARN_DBTP = -1;
@@ -180,14 +188,8 @@ export function SummaryPage({
   onRelevel,
 }: SummaryPageProps) {
   const { t } = useTheme();
-  const s = useStyles();
 
-  const colorOf = (key: keyof typeof PROBLEM): string =>
-    key === "offbranch"
-      ? t.warn
-      : key === "clamped" || key === "unconverged"
-        ? t.sevWarn
-        : t.mutedInk;
+  const colorOf = (key: ProblemKey): string => t[OUTCOME_TONE[key]];
 
   const offbr = items.filter((it) => it.outcome === "offbranch");
   const offbrAmpZero = offbr.filter((it) => it.silenceHint === "amp_zero");
@@ -240,46 +242,6 @@ export function SummaryPage({
   const sub = allGood
     ? "Every sound sits at the same loudness, and each one is saved."
     : "Each one below says why and what to try.";
-
-  const guidanceBanner = (
-    icon: IconName,
-    color: string,
-    bg: string,
-    border: string,
-    heading: string,
-    body: ReactNode,
-  ) => (
-    <div
-      style={{
-        display: "flex",
-        gap: t.space5,
-        padding: `${String(t.space5)}px ${String(t.space6)}px`,
-        borderRadius: 9,
-        background: bg,
-        border: `0.5px solid ${border}`,
-      }}
-    >
-      <span style={{ flexShrink: 0, paddingTop: t.space1 }}>
-        <Icon name={icon} size={15} stroke={color} strokeWidth={1.8} />
-      </span>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ ...s.kickerWide(color), marginBottom: t.space2 }}>
-          {heading}
-        </div>
-        <div
-          style={{
-            fontFamily: t.sans,
-            fontSize: 12.5,
-            lineHeight: 1.5,
-            color: t.ink2,
-            textWrap: "pretty",
-          }}
-        >
-          {body}
-        </div>
-      </div>
-    </div>
-  );
 
   return (
     <LevelPage
@@ -339,66 +301,54 @@ export function SummaryPage({
             gap: t.space4,
           }}
         >
-          {reampWarning !== null &&
-            guidanceBanner(
-              "warn-tri",
-              t.warn,
-              t.warnSoft,
-              t.warnBorder,
-              "Re-amp may still be on",
-              reampWarning,
-            )}
-          {offbrAmpZero.length > 0 &&
-            guidanceBanner(
-              "x",
-              t.warn,
-              t.warnSoft,
-              t.warnBorder,
-              "Amp output at zero",
-              <>
-                The amp’s output level is saved at{" "}
-                <strong style={{ color: t.ink }}>0</strong>. Raise it on the
-                unit, then re-level.
-              </>,
-            )}
-          {offbrExpMute.length > 0 &&
-            guidanceBanner(
-              "x",
-              t.warn,
-              t.warnSoft,
-              t.warnBorder,
-              "Expression pedal may be muting",
-              <>
-                A pedal controls the amp’s output, with zero at one end. Park it
-                at the <strong style={{ color: t.ink }}>other end</strong>, then
-                re-level.
-              </>,
-            )}
-          {offbrRouting.length > 0 &&
-            guidanceBanner(
-              "x",
-              t.warn,
-              t.warnSoft,
-              t.warnBorder,
-              "Needs routing on the unit",
-              <>
-                Route {offbrRouting.length === 1 ? "it" : "them"} to{" "}
-                <strong style={{ color: t.ink }}>USB 1/2</strong> on the unit,
-                or set the level by ear. Re-leveling won’t help.
-              </>,
-            )}
-          {clamped.length > 0 &&
-            guidanceBanner(
-              "warn-tri",
-              t.sevWarn,
-              t.sevWarnSoft,
-              t.sevWarnBorder,
-              "Clamped — already maxed",
-              <>
-                The knob is already all the way up. A quieter target would let
-                these match.
-              </>,
-            )}
+          {reampWarning !== null && (
+            <GuidanceBanner
+              icon="warn-tri"
+              tone="warn"
+              heading="Re-amp may still be on"
+            >
+              {reampWarning}
+            </GuidanceBanner>
+          )}
+          {offbrAmpZero.length > 0 && (
+            <GuidanceBanner icon="x" tone="warn" heading="Amp output at zero">
+              The amp’s output level is saved at{" "}
+              <strong style={{ color: t.ink }}>0</strong>. Raise it on the unit,
+              then re-level.
+            </GuidanceBanner>
+          )}
+          {offbrExpMute.length > 0 && (
+            <GuidanceBanner
+              icon="x"
+              tone="warn"
+              heading="Expression pedal may be muting"
+            >
+              A pedal controls the amp’s output, with zero at one end. Park it
+              at the <strong style={{ color: t.ink }}>other end</strong>, then
+              re-level.
+            </GuidanceBanner>
+          )}
+          {offbrRouting.length > 0 && (
+            <GuidanceBanner
+              icon="x"
+              tone="warn"
+              heading="Needs routing on the unit"
+            >
+              Route {offbrRouting.length === 1 ? "it" : "them"} to{" "}
+              <strong style={{ color: t.ink }}>USB 1/2</strong> on the unit, or
+              set the level by ear. Re-leveling won’t help.
+            </GuidanceBanner>
+          )}
+          {clamped.length > 0 && (
+            <GuidanceBanner
+              icon="warn-tri"
+              tone="sevWarn"
+              heading="Clamped — already maxed"
+            >
+              The knob is already all the way up. A quieter target would let
+              these match.
+            </GuidanceBanner>
+          )}
         </div>
       )}
 
@@ -472,23 +422,10 @@ export function SummaryPage({
                       padding: `${String(t.space2)}px 0`,
                     }}
                   >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: t.space6,
-                        minHeight: 30,
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 14,
-                          flexShrink: 0,
-                          display: "inline-flex",
-                          justifyContent: "center",
-                        }}
-                      >
-                        {q ? (
+                    <SoundRowShell
+                      name={it.sceneName}
+                      glyph={
+                        q ? (
                           <Icon
                             name="warn-tri"
                             size={13}
@@ -502,22 +439,9 @@ export function SummaryPage({
                             stroke={t.good}
                             strokeWidth={2}
                           />
-                        )}
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: t.sans,
-                          fontSize: 13,
-                          color: t.ink2,
-                          width: 138,
-                          flexShrink: 0,
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {it.sceneName}
-                      </span>
+                        )
+                      }
+                    >
                       {byEarOf(it) && <ByEarChip />}
                       {truePeakWarn(it) && (
                         <span
@@ -552,7 +476,7 @@ export function SummaryPage({
                       >
                         {fmtLufs(it.value)}
                       </span>
-                    </div>
+                    </SoundRowShell>
                     {q && (
                       <DisclosureRow>
                         <span

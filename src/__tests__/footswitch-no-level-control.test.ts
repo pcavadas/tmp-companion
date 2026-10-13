@@ -17,8 +17,8 @@ import {
   chosenFrom,
   footswitchLevelable,
   fswKey,
+  type PresetRow,
 } from "../views/level/leveling";
-import type { PresetRow } from "../views/PresetList";
 import type { FootswitchInfo } from "../lib/types";
 
 const LEVELABLE: FootswitchInfo = {

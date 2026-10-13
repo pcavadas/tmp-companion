@@ -13,10 +13,10 @@ import { useRef, useState } from "react";
 import type React from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { plainInput } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
 import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
+import { InlineEdit } from "../../ui/InlineEdit";
 
 // Slider domain (handoff): v ∈ [−29 .. −13]. No upper clamp — any value in range
 // is valid (the old ≈ −20.7 ceiling warning was removed). PR2 re-baseline:
@@ -72,32 +72,11 @@ export function TargetRow({
   const { t } = useTheme();
 
   const [editing, setEditing] = useState(defaultEditing);
-  const [draft, setDraft] = useState(name);
   const [menu, setMenu] = useState(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
   // The in-progress slider drag: which pointer owns it and the value it started
   // from (restored on a cancel). null = no drag.
   const dragRef = useRef<{ pointerId: number; start: number } | null>(null);
-
-  // Keep the draft in sync with the row's name while not editing (e.g. after a
-  // reorder reuses this row for a different target). Done via React's "adjust
-  // state during render when a prop changes" pattern rather than an effect.
-  const [prevName, setPrevName] = useState(name);
-  if (name !== prevName) {
-    setPrevName(name);
-    if (!editing) setDraft(name);
-  }
-
-  function commit() {
-    const n = draft.trim();
-    if (n) onRename(n);
-    else setDraft(name); // empty → revert
-    setEditing(false);
-  }
-  function cancelEdit() {
-    setDraft(name);
-    setEditing(false);
-  }
 
   function valueAtClientX(clientX: number): number {
     const el = trackRef.current;
@@ -174,21 +153,19 @@ export function TargetRow({
 
       <div style={{ width: 100, flexShrink: 0 }}>
         {editing ? (
-          <input
-            autoFocus
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
+          <InlineEdit
+            initial={name}
+            selectOnFocus
+            ariaLabel="Target name"
+            onCommit={(n) => {
+              // empty → revert (the editor closes on the stored name)
+              if (n) onRename(n);
+              setEditing(false);
             }}
-            onBlur={commit}
-            onFocus={(e) => {
-              e.currentTarget.select();
+            onCancel={() => {
+              setEditing(false);
             }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commit();
-              if (e.key === "Escape") cancelEdit();
-            }}
-            style={plainInput(t, {
+            style={{
               width: "100%",
               boxSizing: "border-box",
               border: `0.5px solid ${t.accent}`,
@@ -196,7 +173,7 @@ export function TargetRow({
               padding: `${String(t.space2)}px ${String(t.space3)}px`,
               fontFamily: t.serif,
               fontSize: 15,
-            })}
+            }}
           />
         ) : (
           <span

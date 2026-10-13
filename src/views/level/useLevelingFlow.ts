@@ -32,8 +32,8 @@ import {
   runItemToOption,
   type RunItem,
   type SetupChoice,
+  type PresetRow,
 } from "./leveling";
-import type { PresetRow } from "../PresetList";
 import type {
   SceneInfo,
   FootswitchInfo,

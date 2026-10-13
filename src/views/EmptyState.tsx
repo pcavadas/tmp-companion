@@ -83,13 +83,3 @@ export function EmptyState({
     </>
   );
 }
-
-/** Inline mono USB-C token, for use inside EmptyState bodies. */
-export function UsbC() {
-  const { t } = useTheme();
-  return (
-    <span style={{ fontFamily: t.mono, fontSize: t.fsControl, color: t.ink2 }}>
-      USB-C
-    </span>
-  );
-}

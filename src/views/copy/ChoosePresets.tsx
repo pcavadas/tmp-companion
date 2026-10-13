@@ -13,7 +13,9 @@ import { ActionBar } from "../../ui/ActionBar";
 import { ReadingPill } from "../../ui/ReadingPill";
 import { SlotLabel } from "../../ui/SlotLabel";
 import { slotLabel } from "../../lib/format";
-import { OnUnitChip, StepBadge, MiniLink } from "./copyBits";
+import { OnUnitChip } from "./OnUnitChip";
+import { StepBadge } from "./StepBadge";
+import { MiniLink } from "./MiniLink";
 import type { CopyPreset } from "./useCopyLibrary";
 import { useLibraryScanPercent } from "../../device/libraryScan";
 

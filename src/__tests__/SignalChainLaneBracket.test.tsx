@@ -1,4 +1,4 @@
-// `measureLaneBracket`/`LaneBracketCap` (SignalChainView.tsx) draw the bracket
+// `useLaneBracket`/`LaneBracketCap` (views/signalChain/) draw the bracket
 // connecting a split/join point's two lanes from DOM-measured rects rather than
 // fixed constants — this is the exact mechanism this session's fix touched
 // (ForkTail/JoinHead adopted SplitGroup's pre-existing measured-bracket
@@ -27,7 +27,7 @@ function mockLaneRects(rects: Partial<DOMRect>[]) {
 function bracketCapOf(container: HTMLElement): HTMLElement {
   // DiamondNode's SPLIT/MIX/JOIN caption is ALSO an absolutely-positioned div,
   // so also match LaneBracketCap's distinctive `width: 9` (its `[side]: -9`
-  // sibling border-box cap — see SignalChainView.tsx) to avoid picking that one.
+  // sibling border-box cap — see views/signalChain/LaneBracketCap.tsx) to avoid picking that one.
   const cap = [...container.querySelectorAll("div")].find(
     (el) => el.style.position === "absolute" && el.style.width === "9px",
   );
@@ -84,5 +84,37 @@ describe("SignalChainView — lane bracket geometry", () => {
     expect(cap.style.height).toBe("82px");
     expect(cap.style.right).toBe("-9px"); // JoinHead mirrors ForkTail onto the join side.
     expect(cap.style.left).toBe("");
+  });
+});
+
+describe("regression: #313 same-count bracket re-measure", () => {
+  it("re-measures on a same-count change, not only a count change", () => {
+    const graph = (name: string) => ({
+      stages: [{ kind: "series" as const, blocks: [b("G1")] }],
+      outputs: {
+        a: { type: "out1" as const, blocks: [b(name), b("G3")] },
+        b: { type: "out2" as const, blocks: [b("G5")] },
+      },
+    });
+    mockLaneRects([
+      { top: 100, height: 0 },
+      { top: 110, height: 76 },
+      { top: 210, height: 40 },
+    ]);
+    const { container, rerender } = renderWithTheme(
+      <SignalChainView graph={graph("G2")} />,
+    );
+    expect(bracketCapOf(container).style.height).toBe("82px");
+    // Same block counts, but the lanes now lay out differently (e.g. a longer label
+    // or the skeleton→real swap) — the old count-keyed signature never re-measured.
+    vi.restoreAllMocks();
+    mockLaneRects([
+      { top: 100, height: 0 },
+      { top: 110, height: 76 },
+      { top: 250, height: 40 },
+    ]);
+    rerender(<SignalChainView graph={graph("Renamed")} />);
+    // bC = (250-100) + (40-18)/2 = 161 ; height = 161 - 39 = 122.
+    expect(bracketCapOf(container).style.height).toBe("122px");
   });
 });

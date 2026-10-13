@@ -24,375 +24,33 @@
 // per-row "Restore original" features are gone from the wizard entirely (design 1a) —
 // the backup-acknowledgment checkbox below is the one revert path: restore from your
 // Pro Control backup.
+//
+// Split: the row state + the commit live in ./useSetupRows (over the pure
+// `buildSetupChoices` in ./leveling); the candidate adapters in ./setupCandidates; the
+// pieces in ./FsRowControls, ./InstrumentNudge, ./CalibrationOnboardingBanner and
+// ./RebalanceToggle.
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useState } from "react";
 
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
-import { Icon } from "../../ui/Icon";
-import { Button, Toggle } from "../../ui/primitives";
+import { Button } from "../../ui/primitives";
 import { LevelPage } from "./LevelPage";
-import { PresetGroupList, PresetGroupRow } from "./PresetGroupRow";
+import { PresetGroupList } from "./PresetGroupList";
+import { PresetGroupRow } from "./PresetGroupRow";
 import { useGroupOpen } from "./useGroupOpen";
-import { ByEarChip } from "../overlays/ByEarChip";
 import { Pick, type PickOption } from "../overlays/Pick";
-import { FlatLevelPick, type FlatLevelFetch } from "./FlatLevelPick";
-import { PickWarnNote } from "../overlays/PickWarnNote";
-import type { BlockLevelHandle } from "./blockLevelGroups";
-import { useSceneHandles, type HandleFetchState } from "./useSceneHandles";
-import { useLevelBlocks, type BaseBlockFetchState } from "./useLevelBlocks";
-import {
-  useFootswitchSceneContexts,
-  type FsContextFetchState,
-} from "./useFootswitchSceneContexts";
-import {
-  bestEnabled,
-  blockKeyOf,
-  groupByBlock,
-  groupHead,
-} from "./blockLevelGroups";
-import {
-  footswitchNameForCandidate,
-  instCalState,
-  setupRowHookKey,
-  targetFromCandidate,
-} from "./leveling";
-import type {
-  SetupOption,
-  SetupChoice,
-  BaseHandlePick,
-  FootswitchTarget,
-} from "./leveling";
-import type { LevelParamCandidate } from "../../lib/types";
+import { FlatLevelPick } from "./FlatLevelPick";
+import { CalibrationOnboardingBanner } from "./CalibrationOnboardingBanner";
+import { FsRowControls } from "./FsRowControls";
+import { InstrumentNudge } from "./InstrumentNudge";
+import { RebalanceToggle } from "./RebalanceToggle";
+import { baseCandidatesFetch, sceneCandidatesFetch } from "./setupCandidates";
+import { useSetupRows, type SetupGroup } from "./useSetupRows";
+import { instCalState, setupRowHookKey } from "./leveling";
+import type { SetupOption, SetupChoice } from "./leveling";
 
 export type { SetupChoice };
-
-/** The "calibrate" word — an inviting next-step cue. Dotted terracotta underline
- *  that solidifies on hover; clicking jumps to Settings → Instruments. Click-only
- *  app, so no keyboard handler — the click IS the affordance. */
-function CalibrateCue({
-  children,
-  onCalibrate,
-}: {
-  children: ReactNode;
-  onCalibrate?: () => void;
-}) {
-  const { t } = useTheme();
-  const [hover, setHover] = useState(false);
-  return (
-    <Button
-      variant="bare"
-      title="Calibrate instruments in Settings"
-      onClick={onCalibrate}
-      onMouseEnter={() => {
-        setHover(true);
-      }}
-      onMouseLeave={() => {
-        setHover(false);
-      }}
-      style={{
-        color: t.accentDeep,
-        fontWeight: 500,
-        textDecoration: "underline",
-        textDecorationStyle: "dotted",
-        textDecorationColor: hover ? t.accentDeep : t.warnBorder,
-        textUnderlineOffset: "2.5px",
-      }}
-    >
-      {children}
-    </Button>
-  );
-}
-
-/** Quiet good → better → best caption beneath the bulk instrument picker. `cal`
- *  removes the element entirely so the list below reclaims the space. */
-function InstrumentNudge({
-  state,
-  onCalibrate,
-}: {
-  state: "none" | "uncal" | "cal";
-  onCalibrate?: () => void;
-}) {
-  const { t } = useTheme();
-  if (state === "cal") return null;
-  return (
-    <div
-      aria-live="polite"
-      style={{
-        marginTop: t.space3,
-        fontFamily: t.sans,
-        fontSize: 11.5,
-        lineHeight: 1.45,
-        color: t.mutedInk,
-        textWrap: "pretty",
-      }}
-    >
-      {state === "none" ? (
-        <span>
-          Set an instrument for better results.{" "}
-          <CalibrateCue onCalibrate={onCalibrate}>Calibrate</CalibrateCue> it to
-          get more accurate levels.
-        </span>
-      ) : (
-        <span>
-          <CalibrateCue onCalibrate={onCalibrate}>Calibrate</CalibrateCue> this
-          instrument for more accurate levels.
-        </span>
-      )}
-    </div>
-  );
-}
-
-/** Onboarding nudge toward Tier-2 calibration — shown once per wizard open, only
- *  while the bulk instrument is a real, uncalibrated profile. */
-function CalibrationOnboardingBanner({ show }: { show: boolean }) {
-  const { t } = useTheme();
-  const [dismissed, setDismissed] = useState(false);
-  if (!show || dismissed) return null;
-  return (
-    <div
-      role="status"
-      style={{
-        flexShrink: 0,
-        display: "flex",
-        alignItems: "flex-start",
-        gap: t.space4,
-        padding: `${String(t.space4)}px ${String(t.space5)}px`,
-        borderRadius: t.rCard,
-        border: `0.5px solid ${t.hairlineStrong}`,
-        background: t.bgAlt,
-      }}
-    >
-      <span style={{ display: "flex", flexShrink: 0, marginTop: t.space1 }}>
-        <Icon name="info" size={14} stroke={t.accentDeep} strokeWidth={1.5} />
-      </span>
-      <span
-        style={{
-          flex: 1,
-          fontFamily: t.sans,
-          fontSize: 12,
-          lineHeight: 1.45,
-          color: t.ink2,
-        }}
-      >
-        Level with your own guitar. A 2-minute calibration makes leveling match
-        your instrument. Find it in Settings → Instruments → Calibrate.
-      </span>
-      <button
-        type="button"
-        aria-label="Dismiss"
-        title="Dismiss"
-        onClick={() => {
-          setDismissed(true);
-        }}
-        style={{
-          cursor: "pointer",
-          display: "flex",
-          flexShrink: 0,
-          background: "transparent",
-          border: 0,
-          padding: 0,
-        }}
-      >
-        <Icon name="x" size={12} stroke={t.mutedInk} />
-      </button>
-    </div>
-  );
-}
-
-/** A footswitch row's leveling controls (D2 + D3): `FlatLevelPick` (no pseudo-option
- *  — every FS row must carry a real handle) over the scene-context picker (which
- *  scene, if any, this switch's sound is measured and solved in). Picking a scene
- *  that doesn't actually turn the switch on is ALLOWED — flagged, never blocked. */
-function FsRowControls({
-  switchIndex,
-  levelParams,
-  fsSceneNames,
-  handle,
-  onHandleChange,
-  sceneContext,
-  ctxState,
-  needsChoice,
-  onOpenSceneContext,
-  onSceneContextChange,
-}: {
-  switchIndex: number;
-  levelParams: LevelParamCandidate[];
-  fsSceneNames: string[];
-  handle: BlockLevelHandle | null;
-  onHandleChange: (h: BlockLevelHandle | null) => void;
-  sceneContext: number | null;
-  ctxState: FsContextFetchState;
-  /** The suggested scene could not be read and none was chosen: Start waits on a pick. */
-  needsChoice: boolean;
-  onOpenSceneContext: () => void;
-  onSceneContextChange: (v: number | null) => void;
-}) {
-  const candidates: FlatLevelFetch = {
-    status: "resolved",
-    list: levelParams.map((c) => ({
-      groupId: c.group_id,
-      nodeId: c.node_id,
-      fenderId: c.fender_id,
-      parameterId: c.parameter_id,
-      paramClass: c.class,
-    })),
-  };
-  const sceneOptions: PickOption[] = [
-    { id: "base", label: "Base" },
-    ...fsSceneNames.map((name, i) => ({
-      id: String(i),
-      label: name || `Scene ${String(i + 1)}`,
-    })),
-  ];
-  const enabling =
-    ctxState.status === "resolved"
-      ? (ctxState.row?.enablingScenes ?? null)
-      : null;
-  const nonEnabling =
-    sceneContext != null &&
-    enabling != null &&
-    !enabling.includes(sceneContext);
-  return (
-    <div
-      style={{
-        width: 200,
-        flexShrink: 0,
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-      }}
-    >
-      <FlatLevelPick
-        handle={handle}
-        onHandleChange={onHandleChange}
-        candidates={candidates}
-        onOpen={() => undefined}
-      />
-      <Pick
-        grow
-        value={sceneContext == null ? "base" : String(sceneContext)}
-        options={sceneOptions}
-        onChange={(id) => {
-          onSceneContextChange(id === "base" ? null : Number(id));
-        }}
-        onOpen={onOpenSceneContext}
-        muted={sceneContext == null}
-        tid={`fsctx:${String(switchIndex)}`}
-      />
-      {needsChoice && (
-        <PickWarnNote>
-          {`Couldn’t read FS${String(switchIndex + 1)}’s scenes — choose one`}
-        </PickWarnNote>
-      )}
-      {nonEnabling && (
-        <PickWarnNote>
-          FS{String(switchIndex + 1)} doesn’t turn on in that scene
-        </PickWarnNote>
-      )}
-    </div>
-  );
-}
-
-/** `useLevelBlocks` (Base rows) → the picker's candidate list. */
-function baseCandidatesFetch(state: BaseBlockFetchState): FlatLevelFetch {
-  if (state.status !== "resolved") return { status: state.status };
-  return {
-    status: "resolved",
-    list: state.blocks.map((b) => ({
-      groupId: b.group_id,
-      nodeId: b.node_id,
-      fenderId: b.model_id,
-      parameterId: b.parameter_id,
-      paramClass: b.paramClass,
-      lowersOnly: b.headroom === "lowers_only",
-    })),
-  };
-}
-
-function sceneDisabledTitle(
-  scope: "isolated" | "shared_with_base" | "unknown",
-): string | undefined {
-  if (scope === "shared_with_base")
-    return "shared with the base preset — changes every scene sharing it";
-  if (scope === "unknown") return "could not be confirmed for this scene";
-  return undefined;
-}
-
-function sceneDisabledFields(
-  scope: "isolated" | "shared_with_base" | "unknown",
-): { disabled: true; disabledTitle: string } | { disabled?: false } {
-  const title = sceneDisabledTitle(scope);
-  return title != null ? { disabled: true, disabledTitle: title } : {};
-}
-
-/** `list_scene_level_handles`'s `allCandidates` (Scene rows) → the picker's
- *  candidate list — the full class-annotated superset, level-class first. */
-function sceneCandidatesFetch(state: HandleFetchState): FlatLevelFetch {
-  if (state.status !== "resolved") return { status: state.status };
-  return {
-    status: "resolved",
-    list: state.allCandidates.map((c) => ({
-      groupId: c.groupId,
-      nodeId: c.nodeId,
-      fenderId: c.fenderId,
-      parameterId: c.parameterId,
-      paramClass: c.class,
-      lowersOnly: c.headroom === "lowers_only",
-      ...sceneDisabledFields(c.scope),
-    })),
-  };
-}
-
-/** Issue 5 (Boost preselect): a scene whose overlay un-bypasses a block the base
- *  graph keeps bypassed should default its leveling handle to THAT block's own
- *  control, not "Amp output level". */
-function enablingBlockHandle(
-  st: HandleFetchState,
-  fetch: FlatLevelFetch,
-): BlockLevelHandle | undefined {
-  if (st.status !== "resolved") return undefined;
-  const enablingSource = st.allCandidates.find((c) => c.enablesBlock === true);
-  if (!enablingSource) return undefined;
-  const key = blockKeyOf(enablingSource);
-  if (fetch.status !== "resolved") return undefined;
-  const group = groupByBlock(fetch.list).find((g) => {
-    const first = groupHead(g);
-    return first != null && blockKeyOf(first) === key;
-  });
-  const best = group ? bestEnabled(group) : undefined;
-  return best
-    ? {
-        groupId: best.groupId,
-        nodeId: best.nodeId,
-        parameterId: best.parameterId,
-      }
-    : undefined;
-}
-
-interface RowChoice {
-  inst: string;
-  target: string;
-  handle: BlockLevelHandle | null | undefined;
-  sceneContext: number | null | undefined;
-}
-
-/** `id` when the picker still offers it, else `fallback`. */
-function seedFrom(
-  id: string | undefined,
-  options: PickOption[],
-  fallback: string,
-): string {
-  return id !== undefined && options.some((x) => x.id === id) ? id : fallback;
-}
-
-/** The one value every entry shares, else `fallback`. */
-function sharedOr(values: string[], fallback: string): string {
-  const distinct = new Set(values);
-  if (distinct.size !== 1) return fallback;
-  const [only] = distinct;
-  return only;
-}
 
 export interface SetupPageProps {
   options: SetupOption[];
@@ -429,223 +87,39 @@ export function SetupPage({
     setRebalance(!rebalance);
   };
 
-  const groups = useMemo(() => {
-    const by = new Map<
-      number,
-      { slot: number; name: string; opts: SetupOption[] }
-    >();
-    options.forEach((o) => {
-      let group = by.get(o.slot);
-      if (!group) {
-        group = { slot: o.slot, name: o.presetName, opts: [] };
-        by.set(o.slot, group);
-      }
-      group.opts.push(o);
-    });
-    return [...by.values()].sort((a, b) => a.slot - b.slot);
-  }, [options]);
-
-  // A re-run row carries the instrument and target it was leveled with; seed from them so
-  // "Run again" repeats the same settings instead of resetting to the first profile and
-  // target. Only ids the pickers still offer are kept: a `Pick` whose value is missing from
-  // its options DISPLAYS `options[0]` while submitting the stale id (danger.md).
-  const seedInst = (o: SetupOption): string =>
-    seedFrom(o.instId, instrumentOptions, defaultInst);
-  const seedTarget = (o: SetupOption): string =>
-    seedFrom(o.targetName, targetOptions, defaultTarget);
-
-  const [rows, setRows] = useState<Partial<Record<string, RowChoice>>>(() => {
-    const m: Partial<Record<string, RowChoice>> = {};
-    options.forEach((o) => {
-      m[o.key] = {
-        inst: seedInst(o),
-        target: seedTarget(o),
-        handle:
-          o.footswitch != null
-            ? {
-                groupId: o.footswitch.levGroupId,
-                nodeId: o.footswitch.levNodeId,
-                parameterId: o.footswitch.levParameterId,
-              }
-            : o.isBase
-              ? (o.baseHandle ?? null)
-              : (o.sceneHandle ?? undefined),
-        // A re-run footswitch keeps the scene it was measured in. A fresh row stays
-        // undefined and resolves to the preset's suggested scene (`fsSuggestedFor`).
-        sceneContext:
-          isRelevel && o.footswitch != null
-            ? o.footswitch.sceneContext
-            : undefined,
-      };
-    });
-    return m;
-  });
-  const patchRow = (k: string, partial: Partial<RowChoice>) => {
-    setRows((p) => {
-      const cur = p[k];
-      if (!cur) return p;
-      return { ...p, [k]: { ...cur, ...partial } };
-    });
-  };
-
   const {
-    prefetch: fetchHandlesFor,
+    groups,
+    rows,
+    patchRow,
+    bulkInst,
+    bulkTarget,
+    applyBulkInst,
+    applyBulkTarget,
+    effectiveHandle,
+    fsSuggestedFor,
+    fsContextState,
+    fsContextPending,
+    fsContextMissing,
     candidatesFor,
-    hasBackupData: sceneHasBackup,
-  } = useSceneHandles();
-  const {
-    prefetch: fetchBlocksFor,
     blocksFor,
-    hasBackupData: baseHasBackup,
-  } = useLevelBlocks();
-  const { prefetch: fetchFsContextFor, contextFor } =
-    useFootswitchSceneContexts();
-
-  useEffect(() => {
-    groups.forEach((g) => {
-      if (baseHasBackup(g.slot)) fetchBlocksFor(g.slot);
-      if (sceneHasBackup(g.slot)) fetchHandlesFor(g.slot);
-    });
-  }, [groups, fetchBlocksFor, fetchHandlesFor, baseHasBackup, sceneHasBackup]);
-
-  // A footswitch row's default scene context is the preset's suggested scene, so resolve
-  // it for every footswitch row up front rather than on first picker open — otherwise the
-  // same selection could measure a switch in different scenes depending on whether a
-  // picker was opened. Answered off the backup scan; a device read only for a preset the
-  // scan has no entry for. Rows that already carry a context (a re-run) need no fetch.
-  useEffect(() => {
-    if (isRelevel) return;
-    options.forEach((o) => {
-      if (o.footswitch != null) fetchFsContextFor(o.slot);
-    });
-  }, [options, isRelevel, fetchFsContextFor]);
-
-  const effectiveHandle = (
-    o: SetupOption,
-    row: RowChoice | undefined,
-    // Pass this when the caller already built the row's `FlatLevelFetch` (e.g. for
-    // the `candidates` prop) — skips re-deriving it from raw fetch state.
-    fetch?: FlatLevelFetch,
-  ): BlockLevelHandle | null => {
-    if (row?.handle !== undefined) return row.handle;
-    if (o.footswitch == null && o.sceneSlot != null) {
-      const st = candidatesFor(o.slot, o.sceneSlot);
-      const preselect = enablingBlockHandle(
-        st,
-        fetch ?? sceneCandidatesFetch(st),
-      );
-      if (preselect) return preselect;
-    }
-    return null;
-  };
-
-  const fsSuggestedFor = (o: SetupOption): number | null => {
-    if (o.footswitch == null) return null;
-    const st = contextFor(o.slot, o.footswitch.switchIndex);
-    return st.status === "resolved" ? (st.row?.suggested ?? null) : null;
-  };
-
-  // A footswitch row with no scene context the user chose, and whose suggested one is
-  // still being read or could not be read. Start waits for the read, so the run never
-  // measures a switch in base just because it hadn't landed yet; a FAILED read (no
-  // retry within this mount, see `useLazySlotCache`) needs an explicit pick instead.
-  const fsContextState = (
-    o: SetupOption,
-  ): FsContextFetchState["status"] | null =>
-    o.footswitch == null || rows[o.key]?.sceneContext !== undefined
-      ? null
-      : contextFor(o.slot, o.footswitch.switchIndex).status;
-  const fsContextPending = options.some((o) => {
-    const st = fsContextState(o);
-    return st === "unfetched" || st === "loading";
+    contextFor,
+    fetchBlocksFor,
+    fetchHandlesFor,
+    fetchFsContextFor,
+    buildChoices,
+  } = useSetupRows({
+    options,
+    isRelevel,
+    instrumentOptions,
+    targetOptions,
+    defaultInst,
+    defaultTarget,
   });
-  // Only a row that renders the scene picker can take that pick.
-  const fsContextMissing = options.some(
-    (o) => fsContextState(o) === "error" && (o.levelParams ?? []).length > 0,
-  );
-
-  // The bulk row's current value — always written to EVERY row (no ticking; what
-  // gets leveled was already chosen on the preset list). Seeded with the rows' shared
-  // value when they all agree (a re-run of sounds leveled alike), else the default.
-  const [bulkInst, setBulkInst] = useState(() =>
-    sharedOr(options.map(seedInst), defaultInst),
-  );
-  const [bulkTarget, setBulkTarget] = useState(() =>
-    sharedOr(options.map(seedTarget), defaultTarget),
-  );
-  const applyBulkField = (field: "inst" | "target", v: string) => {
-    setRows((p) => {
-      const n = { ...p };
-      options.forEach((o) => {
-        const cur = n[o.key];
-        if (cur) n[o.key] = { ...cur, [field]: v };
-      });
-      return n;
-    });
-  };
-  const applyBulkInst = (v: string) => {
-    setBulkInst(v);
-    applyBulkField("inst", v);
-  };
-  const applyBulkTarget = (v: string) => {
-    setBulkTarget(v);
-    applyBulkField("target", v);
-  };
 
   const total = options.length;
 
   const start = () => {
-    const choices: SetupChoice[] = options.map((o) => {
-      const row = rows[o.key];
-      let option = o;
-      if (o.footswitch != null) {
-        const chosenHandle = effectiveHandle(o, row);
-        const candidate = chosenHandle
-          ? (o.levelParams ?? []).find(
-              (c) =>
-                c.group_id === chosenHandle.groupId &&
-                c.node_id === chosenHandle.nodeId &&
-                c.parameter_id === chosenHandle.parameterId,
-            )
-          : undefined;
-        const suggested = fsSuggestedFor(o);
-        const sceneContext =
-          row?.sceneContext !== undefined
-            ? row.sceneContext
-            : (suggested ?? o.footswitch.sceneContext);
-        const target: FootswitchTarget = candidate
-          ? targetFromCandidate(
-              o.footswitch.switchIndex,
-              sceneContext,
-              candidate,
-            )
-          : { ...o.footswitch, sceneContext };
-        option = {
-          ...o,
-          footswitch: target,
-          ...(o.fsUnlabeled === true && candidate
-            ? { sceneName: footswitchNameForCandidate(candidate) }
-            : {}),
-        };
-      } else if (o.isBase) {
-        const chosen = effectiveHandle(o, row);
-        const baseHandle: BaseHandlePick | null = chosen
-          ? {
-              groupId: chosen.groupId,
-              nodeId: chosen.nodeId,
-              parameterId: chosen.parameterId,
-            }
-          : null;
-        option = { ...o, baseHandle };
-      } else if (o.sceneSlot != null) {
-        option = { ...o, sceneHandle: effectiveHandle(o, row) };
-      }
-      return {
-        option,
-        instId: row?.inst ?? defaultInst,
-        targetName: row?.target ?? defaultTarget,
-      };
-    });
+    const choices = buildChoices();
     if (choices.length) onStart(choices, rebalance);
   };
 
@@ -661,7 +135,7 @@ export function SetupPage({
     return fieldOptions.find((x) => x.id === only)?.label ?? only;
   };
 
-  const groupNote = (g: { opts: SetupOption[] }): string => {
+  const groupNote = (g: SetupGroup): string => {
     const insts = new Set(g.opts.map((o) => rows[o.key]?.inst ?? defaultInst));
     const targets = new Set(
       g.opts.map((o) => rows[o.key]?.target ?? defaultTarget),
@@ -936,86 +410,7 @@ export function SetupPage({
       </PresetGroupList>
 
       {/* run option — advanced, opt-in, applies to the whole run */}
-      <div
-        style={{
-          flexShrink: 0,
-          padding: `${String(t.space5)}px ${String(t.space7)}px`,
-          background: t.bgAlt,
-          borderTop: `0.5px solid ${t.hairline}`,
-          borderRadius: t.rCard,
-        }}
-      >
-        <button
-          type="button"
-          role="switch"
-          aria-checked={rebalance}
-          onClick={toggleRebalance}
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: t.space6,
-            cursor: "pointer",
-            userSelect: "none",
-            width: "100%",
-            textAlign: "left",
-            background: "none",
-            border: "none",
-            padding: 0,
-            font: "inherit",
-            color: "inherit",
-          }}
-        >
-          <span aria-hidden style={{ paddingTop: t.space1, flexShrink: 0 }}>
-            <Toggle on={rebalance} />
-          </span>
-          <div style={{ minWidth: 0 }}>
-            <div
-              style={{
-                fontFamily: t.sans,
-                fontSize: 13,
-                fontWeight: 500,
-                color: t.ink,
-              }}
-            >
-              Even out parallel amps
-            </div>
-            <div
-              style={{
-                fontFamily: t.sans,
-                fontSize: 11,
-                lineHeight: 1.5,
-                color: t.mutedInk,
-                marginTop: t.space1,
-                textWrap: "pretty",
-              }}
-            >
-              When a sound blends two amps into one, match their levels before
-              leveling. No effect on single-amp sounds.
-            </div>
-            {rebalance && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: t.space4,
-                  marginTop: t.space4,
-                }}
-              >
-                <ByEarChip />
-                <span
-                  style={{
-                    fontFamily: t.sans,
-                    fontSize: 11,
-                    color: t.mutedInk,
-                  }}
-                >
-                  Rebalanced sounds come back flagged for a listen.
-                </span>
-              </div>
-            )}
-          </div>
-        </button>
-      </div>
+      <RebalanceToggle on={rebalance} onToggle={toggleRebalance} />
     </LevelPage>
   );
 }

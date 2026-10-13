@@ -12,7 +12,7 @@ import { Menu } from "../../ui/Menu";
 import { PaneEmpty } from "../../ui/PaneEmpty";
 import type { SetlistRecord, SongRecord } from "../../lib/types";
 import { LIST_COLS, IconBtn } from "./shared";
-import { plainInput } from "../../theme/tokens";
+import { InlineEdit } from "../../ui/InlineEdit";
 import type { SongDraft } from "./shared";
 import type { SetlistEntry } from "./songUtil";
 import { AddSongs } from "./AddSongs";
@@ -189,30 +189,23 @@ export function SetlistDetail({
   const s = useStyles();
   const [picker, setPicker] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [name, setName] = useState(setlist.name);
   const [menu, setMenu] = useState(false);
   const dragFrom = useRef<SetlistEntry | null>(null);
 
-  // Reset the rename draft when a different setlist (or a renamed one) is shown —
-  // via React's "adjust state during render when a prop changes" pattern.
+  // Close the rename editor when a different setlist (or a renamed one) is shown —
+  // via React's "adjust state during render when a prop changes" pattern. The
+  // editor owns its draft, so the next rename starts from the new name.
   const [prevId, setPrevId] = useState({
     slot: setlist.slot,
     name: setlist.name,
   });
   if (prevId.slot !== setlist.slot || prevId.name !== setlist.name) {
     setPrevId({ slot: setlist.slot, name: setlist.name });
-    setName(setlist.name);
     setRenaming(false);
   }
 
   const rows = entries ?? [];
   const count = entries?.length ?? 0;
-  const saveName = () => {
-    const n = name.trim();
-    if (n && n !== setlist.name) onRename(n);
-    else setName(setlist.name);
-    setRenaming(false);
-  };
 
   const picker_el = (
     <AddSongs
@@ -244,21 +237,17 @@ export function SetlistDetail({
               : ""}
           </div>
           {renaming ? (
-            <input
-              autoFocus
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
+            <InlineEdit
+              initial={setlist.name}
+              ariaLabel="Setlist name"
+              onCommit={(n) => {
+                if (n && n !== setlist.name) onRename(n);
+                setRenaming(false);
               }}
-              onBlur={saveName}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveName();
-                if (e.key === "Escape") {
-                  setName(setlist.name);
-                  setRenaming(false);
-                }
+              onCancel={() => {
+                setRenaming(false);
               }}
-              style={plainInput(t, {
+              style={{
                 marginTop: t.space2,
                 width: "100%",
                 maxWidth: 360,
@@ -266,7 +255,7 @@ export function SetlistDetail({
                 fontFamily: t.serif,
                 fontSize: t.fsTitle,
                 padding: `0 0 ${String(t.space1)}px`,
-              })}
+              }}
             />
           ) : (
             <Button

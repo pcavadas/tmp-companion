@@ -10,14 +10,13 @@
 // when a preset carries more than one leveling-relevant block, so a many-block
 // preset's list stays scannable without a second click-through.
 //
-// Built on the portaled-menu machinery (`usePickAnchor`, `PickTrigger`,
-// `PickPortalMenu`, `PickWarnNote`) and the `BlockParamRow` row chrome.
+// Built on the Pick family's shared machinery: `usePickAnchor`, `PickPortalMenu`,
+// `PickWarnNote`, and the ONE trigger (`PickTrigger`) and ONE row (`PickListRow` —
+// "rich" for the candidates, "compact" for the pseudo default row) `Pick` uses too.
 
 import { useContext } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { plainButton } from "../../theme/tokens";
-import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { blockArtTile } from "../../models/blockArt";
 import { paramLabel } from "./leveling";
@@ -33,7 +32,7 @@ import { PickPortalMenu } from "../overlays/PickPortalMenu";
 import { PickTrigger } from "../overlays/PickTrigger";
 import { PickWarnNote } from "../overlays/PickWarnNote";
 import { usePickAnchor } from "../overlays/usePickAnchor";
-import { BlockParamRow } from "../overlays/BlockParamRow";
+import { PickListRow } from "../overlays/PickListRow";
 
 export type { BlockLevelCandidate, BlockLevelHandle };
 
@@ -117,10 +116,11 @@ export function FlatLevelPick({
     const loud = c.paramClass !== "wet_mix";
     const art = blockArtTile(c.fenderId);
     return (
-      <BlockParamRow
+      <PickListRow
         key={key}
+        density="rich"
         pickKey={key}
-        paramLabel={`${art.fullName ?? art.name} — ${paramLabel(c.parameterId)}`}
+        label={`${art.fullName ?? art.name} — ${paramLabel(c.parameterId)}`}
         selected={on}
         disabled={c.disabled}
         disabledTitle={c.disabled ? c.disabledTitle : undefined}
@@ -149,16 +149,15 @@ export function FlatLevelPick({
   };
 
   return (
-    <div style={{ width: "100%", minWidth: 0 }}>
-      <PickTrigger
-        triggerRef={triggerRef}
-        open={open}
-        warn={stale}
-        label={triggerLabel}
-        title="Choose this sound's leveling control"
-        onClick={openMenu}
-      />
-
+    <PickTrigger
+      triggerRef={triggerRef}
+      open={open}
+      warn={stale}
+      label={triggerLabel}
+      title="Choose this sound's leveling control"
+      onClick={openMenu}
+      face="sans"
+    >
       {open && anchor && cardEl && (
         <PickPortalMenu
           cardEl={cardEl}
@@ -170,54 +169,15 @@ export function FlatLevelPick({
           onClose={close}
         >
           {pseudoLabel != null && (
-            <button
-              type="button"
-              role="option"
-              aria-selected={handle == null}
-              onClick={(e) => {
-                e.stopPropagation();
+            <PickListRow
+              label={`${pseudoLabel} (default)`}
+              selected={handle == null}
+              check
+              onPick={() => {
                 onHandleChange(null);
                 close();
               }}
-              style={{
-                ...plainButton(),
-                width: "100%",
-                textAlign: "left",
-                display: "flex",
-                alignItems: "center",
-                gap: t.space5,
-                padding: `${String(t.space3)}px ${String(t.space4)}px`,
-                borderRadius: 5,
-                background: handle == null ? t.accentSoft : "transparent",
-              }}
-              onMouseEnter={(e) => {
-                if (handle != null) e.currentTarget.style.background = t.hover;
-              }}
-              onMouseLeave={(e) => {
-                if (handle != null)
-                  e.currentTarget.style.background = "transparent";
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: t.mono,
-                  fontSize: 11,
-                  color: handle == null ? t.accentDeep : t.ink2,
-                }}
-              >
-                {pseudoLabel} (default)
-              </span>
-              {handle == null && (
-                <span style={{ marginLeft: "auto" }}>
-                  <Icon
-                    name="check"
-                    size={13}
-                    stroke={t.accentDeep}
-                    strokeWidth={2}
-                  />
-                </span>
-              )}
-            </button>
+            />
           )}
 
           {candidates.status === "loading" && (
@@ -282,6 +242,6 @@ export function FlatLevelPick({
           )}
         </PickPortalMenu>
       )}
-    </div>
+    </PickTrigger>
   );
 }

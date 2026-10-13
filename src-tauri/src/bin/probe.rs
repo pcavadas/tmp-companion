@@ -2918,6 +2918,56 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--doctor-loo") {
+        // --doctor-loo <factory_report.json> [--kind synthetic|capture] [--out <loo.json>]
+        // OFFLINE: re-diagnoses a --doctor-calib-factory report's rows leave-one-out.
+        let Some(report) = args.get(i + 1).filter(|a| !a.starts_with("--")).cloned() else {
+            eprintln!(
+                "usage: probe --doctor-loo <factory_report.json> [--kind synthetic|capture] [--out <loo.json>]"
+            );
+            std::process::exit(2);
+        };
+        let kind = flag_arg(&args, "--kind").unwrap_or_else(|| "synthetic".to_string());
+        let out = flag_arg(&args, "--out");
+        match tmp_companion_lib::probe_doctor_loo(&report, &kind, out.as_deref()) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--benchmark") {
+        // --benchmark <corpus.json> [--thresholds <thresholds.json>] --out <result.json>
+        // OFFLINE: scores a labeled held-out corpus; exits 1 on a threshold violation.
+        let corpus = args.get(i + 1).filter(|a| !a.starts_with("--")).cloned();
+        let out = flag_arg(&args, "--out");
+        let (Some(corpus), Some(out)) = (corpus, out) else {
+            eprintln!(
+                "usage: probe --benchmark <corpus.json> [--thresholds <thresholds.json>] --out <result.json>"
+            );
+            std::process::exit(2);
+        };
+        let thresholds = flag_arg(&args, "--thresholds");
+        match tmp_companion_lib::probe_benchmark(&corpus, thresholds.as_deref(), &out) {
+            Ok((r, pass)) => {
+                print!("{r}");
+                if !pass {
+                    std::process::exit(1);
+                }
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--doctor-calib-factory") {
         // --doctor-calib-factory <factory_slots_csv> --stim <wav> --family <..> --out <report.json>
         // Loads each FACTORY preset (tabEnum=4) + captures AS-LOADED for reference derivation.

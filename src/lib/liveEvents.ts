@@ -8,11 +8,12 @@
 // command's duration; the resulting device state then returns through the SAME event
 // stream — so app-initiated and device-pushed updates are one unified stream.
 //
-// Each wrapper is a thin typed `listen<T>(name, cb)` over @tauri-apps/api/event,
-// mirroring App.tsx's existing `listen("tmp://device-detached", …)` pattern. They
-// return the `Promise<UnlistenFn>` Tauri gives back; callers store it and call the
-// resolved fn on cleanup. Inert (no-op unlisten) outside Tauri so Vitest/jsdom and a
-// plain `vite` browser session don't touch the (absent) event bridge.
+// ONE typed subscriber, `onLive(key, cb)`, over `LiveEventMap` (registry key →
+// payload type): the compiler checks every name↔payload pairing, and `LIVE_EVENT`
+// must name exactly the map's keys (`satisfies`). It returns the
+// `Promise<UnlistenFn>` Tauri gives back; callers store it and call the resolved fn
+// on cleanup. Inert (no-op unlisten) outside Tauri so Vitest/jsdom and a plain
+// `vite` browser session don't touch the (absent) event bridge.
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -27,6 +28,30 @@ import type {
   SyncEvent,
 } from "./types";
 
+/** Registry key → the payload each event carries (mirrors in `types.ts`). */
+export interface LiveEventMap {
+  /** `tmp://live-preset` — active preset identity (coalesced name + list index + flags). */
+  livePreset: LivePresetEvent;
+  /** `tmp://live-scene` — the scene the unit just recalled (base vs FS classified). */
+  liveScene: LiveSceneEvent;
+  /** `tmp://scene-list` — the active preset's live scene names (pushed on preset load). */
+  sceneList: SceneListEvent;
+  /** `tmp://signal-chain` — the active preset's signal graph (same shape as ActiveGraph). */
+  signalChain: SignalChainEvent;
+  /** `tmp://sync` — a device-push / (re)connect is in flight (neutral catching-up state). */
+  sync: SyncEvent;
+  /** `tmp://backup-progress` — emitted by `read_library_via_backup` as the device
+   * streams its library backup; drives the Presets-tab two-phase scan strip. (Not a
+   * monitor event, but the same typed-listen plumbing applies.) */
+  backupProgress: BackupProgress;
+  /** `tmp://leveling-lufs` — advisory live measured loudness streamed (~5×/sec) while a
+   * leveling capture runs; drives the run row's "measuring…" readout. Reference-level,
+   * NOT the final value — the result row is the confirm. (Not a monitor event.) */
+  levelingLufs: LiveLufsEvent;
+}
+
+export type LiveEventKey = keyof LiveEventMap;
+
 /** Event names the monitor emits (must match `monitor::EVT_*` in the backend). */
 export const LIVE_EVENT = {
   livePreset: "tmp://live-preset",
@@ -36,91 +61,21 @@ export const LIVE_EVENT = {
   sync: "tmp://sync",
   backupProgress: "tmp://backup-progress",
   levelingLufs: "tmp://leveling-lufs",
-} as const;
+} as const satisfies Record<LiveEventKey, `tmp://${string}`>;
 
 /** Async no-op unlisten for the off-Tauri path (browser / Vitest). */
 const NOOP_UNLISTEN: Promise<UnlistenFn> = Promise.resolve(() => {
   /* no-op */
 });
 
-/** Subscribe via `listen` only inside Tauri; off-Tauri (browser / Vitest) return
- * the inert no-op unlisten so the absent event bridge is never touched. The
- * `subscribe` thunk carries the payload type through `listen`'s own generic. */
-function guardedListen(
-  subscribe: () => Promise<UnlistenFn>,
+/** Subscribe to one live event by its registry key; `cb` gets that event's typed
+ * payload. Off-Tauri it returns the inert no-op unlisten. */
+export function onLive<K extends LiveEventKey>(
+  key: K,
+  cb: (payload: LiveEventMap[K]) => void,
 ): Promise<UnlistenFn> {
-  return isTauri() ? subscribe() : NOOP_UNLISTEN;
+  if (!isTauri()) return NOOP_UNLISTEN;
+  return listen<LiveEventMap[K]>(LIVE_EVENT[key], (e) => {
+    cb(e.payload);
+  });
 }
-
-/** `tmp://live-preset` — active preset identity (coalesced name + list index + flags). */
-export const onLivePreset = (
-  cb: (e: LivePresetEvent) => void,
-): Promise<UnlistenFn> =>
-  guardedListen(() =>
-    listen<LivePresetEvent>(LIVE_EVENT.livePreset, (e) => {
-      cb(e.payload);
-    }),
-  );
-
-/** `tmp://live-scene` — the scene the unit just recalled (base vs FS classified). */
-export const onLiveScene = (
-  cb: (e: LiveSceneEvent) => void,
-): Promise<UnlistenFn> =>
-  guardedListen(() =>
-    listen<LiveSceneEvent>(LIVE_EVENT.liveScene, (e) => {
-      cb(e.payload);
-    }),
-  );
-
-/** `tmp://scene-list` — the active preset's live scene names (pushed on preset load). */
-export const onSceneList = (
-  cb: (e: SceneListEvent) => void,
-): Promise<UnlistenFn> =>
-  guardedListen(() =>
-    listen<SceneListEvent>(LIVE_EVENT.sceneList, (e) => {
-      cb(e.payload);
-    }),
-  );
-
-/** `tmp://signal-chain` — the active preset's signal graph (same shape as ActiveGraph). */
-export const onSignalChain = (
-  cb: (e: SignalChainEvent) => void,
-): Promise<UnlistenFn> =>
-  guardedListen(() =>
-    listen<SignalChainEvent>(LIVE_EVENT.signalChain, (e) => {
-      cb(e.payload);
-    }),
-  );
-
-/** `tmp://sync` — a device-push / (re)connect is in flight (neutral catching-up state). */
-export const onSync = (cb: (e: SyncEvent) => void): Promise<UnlistenFn> =>
-  guardedListen(() =>
-    listen<SyncEvent>(LIVE_EVENT.sync, (e) => {
-      cb(e.payload);
-    }),
-  );
-
-/** `tmp://backup-progress` — emitted by `read_library_via_backup` as the device
- * streams its library backup; drives the Presets-tab two-phase scan strip. (Not a
- * monitor event, but the same typed-listen plumbing applies.) */
-export const onBackupProgress = (
-  cb: (e: BackupProgress) => void,
-): Promise<UnlistenFn> =>
-  guardedListen(() =>
-    listen<BackupProgress>(LIVE_EVENT.backupProgress, (e) => {
-      cb(e.payload);
-    }),
-  );
-
-/** `tmp://leveling-lufs` — advisory live measured loudness streamed (~5×/sec) while a
- * leveling capture runs; drives the run row's "measuring…" readout. Reference-level,
- * NOT the final value — the result row is the confirm. (Not a monitor event, but the
- * same typed-listen plumbing applies.) */
-export const onLevelingLufs = (
-  cb: (e: LiveLufsEvent) => void,
-): Promise<UnlistenFn> =>
-  guardedListen(() =>
-    listen<LiveLufsEvent>(LIVE_EVENT.levelingLufs, (e) => {
-      cb(e.payload);
-    }),
-  );

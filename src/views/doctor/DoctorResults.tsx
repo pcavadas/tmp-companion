@@ -13,7 +13,7 @@ import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { Button, SegmentedControl } from "../../ui/primitives";
 import { slotLabel } from "../../lib/format";
-import { StepRail } from "../overlays/WizardShell";
+import { WizardPage } from "../overlays/WizardPage";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
 import { PresetResultCard } from "./PresetResultCard";
 import {
@@ -227,29 +227,7 @@ export function DoctorResults({
 
   return (
     <ApplyLockContext.Provider value={lock}>
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          zIndex: 40,
-          display: "flex",
-          flexDirection: "column",
-          background: t.bg,
-          color: t.ink,
-          fontFamily: t.sans,
-        }}
-      >
-        <div
-          style={{
-            flexShrink: 0,
-            padding: `${String(t.space8)}px ${String(t.space10)}px`,
-            borderBottom: `0.5px solid ${t.hairline}`,
-            background: t.bgAlt,
-          }}
-        >
-          <StepRail current={2} steps={DOCTOR_STEPS} />
-        </div>
-
+      <WizardPage steps={DOCTOR_STEPS} current={2}>
         <div
           style={{
             flexShrink: 0,
@@ -441,7 +419,7 @@ export function DoctorResults({
             Check other sounds
           </Button>
         </div>
-      </div>
+      </WizardPage>
     </ApplyLockContext.Provider>
   );
 }

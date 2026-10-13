@@ -43,6 +43,7 @@ mod audiograph;
 mod audition;
 mod backup;
 mod backup_read;
+mod benchmark;
 mod blockcaps;
 mod blocklib;
 mod bulk_cmd;
