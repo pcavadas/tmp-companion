@@ -27,20 +27,44 @@ pub fn e2e_online() -> bool {
 
 /// The OFFLINE fake transport is installed in THIS process: every device "op" is an
 /// in-process `SimDevice` call, so the hardware settle sleeps and the monitor pause-ack
-/// wait have nothing to wait for. Armed ONLY by the two installers below.
+/// wait have nothing to wait for. Armed by the two installers below — and, in the lib unit
+/// tests, by [`TEST_SERIAL`]'s holder (`e2e_server_tests.rs`'s `serial()`) for exactly the
+/// span it holds the lock.
 ///
 /// Deliberately NOT `!e2e_online()` (what picks `rig`'s offline default rig). That predicate is
 /// true in ANY `--features e2e` build with `TMP_E2E_ONLINE` unset — including
 /// `cargo test --lib --features e2e`, where it would zero the settles for the whole test
-/// binary. The unit tests install their fake through raw `set_factory`/`set_live`, never
-/// through `e2e_install_offline_fake`, so this flag stays FALSE there.
+/// binary, the timing-contract tests included.
+///
+/// THE UNIT TESTS' REGIME IS SCOPED, NOT STICKY (#198). The in-process IPC tests drive the
+/// same SimDevice the offline browser tier does, so their settles are the same dead time; they
+/// used to keep them only until the first test that called an installer, after which the flag
+/// stayed armed for the rest of the binary — so a test's settle regime depended on test ORDER,
+/// and the timing-contract gate below could read an armed flag from a test it never ran with.
+/// Now `serial()` arms the flag under [`TEST_SERIAL`] and its guard disarms it on the way
+/// out, and every reader that asserts the DEFAULT regime takes the same lock first, so both
+/// regimes are deterministic.
 ///
 /// `device_gate`'s `settles_are_full_length_unless_the_offline_fake_is_installed` is the
-/// gate on exactly that, and `gates.sh` + `ci.yml` run `cargo test --lib` BOTH with and
+/// gate on the default regime, and `gates.sh` + `ci.yml` run `cargo test --lib` BOTH with and
 /// without `--features e2e` so the guarded branch is actually executed somewhere — without
 /// the e2e lane the guard compiles but never runs.
 #[cfg(feature = "e2e")]
 static OFFLINE_FAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The lock every lib unit test holds that installs a process-global fake (the transport
+/// factory, the startup snapshot, the live SimDevice) or reads the settle regime those tests
+/// switch. See [`OFFLINE_FAKE`] for the regime it scopes.
+#[cfg(all(test, feature = "e2e"))]
+pub(crate) static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Test-only: set the offline settle regime ([`OFFLINE_FAKE`]). Called only with
+/// [`TEST_SERIAL`] held — by `serial()` on the way in (`true`) and its guard on the way out
+/// (`false`).
+#[cfg(all(test, feature = "e2e"))]
+pub(crate) fn set_offline_fake_for_test(on: bool) {
+    OFFLINE_FAKE.store(on, std::sync::atomic::Ordering::SeqCst);
+}
 
 /// Is the offline SimDevice fake installed in this process? See [`OFFLINE_FAKE`].
 #[cfg(feature = "e2e")]
@@ -260,13 +284,14 @@ pub fn run_e2e_server() {
 
 /// Served off the serial queue, through the same [`e2e_route`]: every `cancel_*` invoke
 /// (each only flips its run's cancel atomic + `request_op_abort`), the `/reamp/counters`
-/// read and the `/ui/events` poll (memory reads only). Queued, a Stop would land only AFTER
+/// and `/timing` reads and the `/ui/events` poll (memory reads only). Queued, a Stop would land only AFTER
 /// the run it targets returned, and a run's streamed rows only after it finished. Nothing
 /// that opens the device belongs here.
 #[cfg(feature = "e2e")]
 fn e2e_is_side_lane(req: &E2eRequest) -> bool {
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/reamp/counters") => true,
+        ("GET", "/timing") => true,
         ("GET", p) if p == "/ui/events" || p.starts_with("/ui/events?") => true,
         ("POST", "/invoke") => serde_json::from_slice::<serde_json::Value>(&req.body)
             .ok()
@@ -937,6 +962,13 @@ fn e2e_route(
                 serde_json::to_vec(&json!({ "on": on, "off": off })).unwrap_or_default(),
             )
         }
+        // The process's hardware-wait totals (`rig::WAITS`, #198): settles requested and
+        // applied, and wall time inside re-amp captures. Monotonic — the online lane reads it
+        // around each spec and records the difference beside the spec's wall time.
+        ("GET", "/timing") => (
+            "200 OK",
+            serde_json::to_vec(&crate::rig::WAITS.totals()).unwrap_or_default(),
+        ),
         ("GET", "/sim/events") => (
             "200 OK",
             serde_json::to_vec(&crate::sim_device::live_events()).unwrap_or_default(),

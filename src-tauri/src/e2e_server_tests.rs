@@ -7,12 +7,17 @@ use tauri::WebviewWindow;
 
 /// The transport factory + startup snapshot are process-GLOBAL; cargo runs tests in
 /// parallel, so the factory-installing tests must hold this for their whole body or
-/// they stomp each other's fake (a hard-to-spot cross-contamination).
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// they stomp each other's fake (a hard-to-spot cross-contamination). Shared with the
+/// timing-contract tests that read the settle regime it switches (`super::TEST_SERIAL`).
+use super::TEST_SERIAL as SERIAL;
 
+/// Take [`SERIAL`] for one test and put the process in the OFFLINE settle regime for exactly
+/// that span (#198): every test here drives an in-process SimDevice, whose settles are dead
+/// time, exactly as in the offline browser tier. [`Serial`]'s drop restores the default.
 fn serial() -> Serial {
     // The lock first, so the mark cannot include another test's requests.
     let lock = lock_ok(&SERIAL);
+    super::set_offline_fake_for_test(true);
     Serial {
         mark: crate::sim_device::unmodeled_mark(),
         allowed: Vec::new(),
@@ -20,7 +25,8 @@ fn serial() -> Serial {
     }
 }
 
-/// [`SERIAL`] held for one test, plus the #279 gate: when the test ends (without already
+/// [`SERIAL`] held for one test (with the offline settle regime armed — see [`serial`]), plus
+/// the #279 gate: when the test ends (without already
 /// panicking), every request an installed fake answered with nothing during the test, if
 /// its kind is outside `UNHANDLED_CENSUS`, must be opted in with
 /// [`Serial::allow_unmodeled`]. Otherwise the test fails, naming the kinds. Requests are
@@ -40,6 +46,9 @@ impl Serial {
 
 impl Drop for Serial {
     fn drop(&mut self) {
+        // Still under the lock (the guard field drops after this body), and before the
+        // panicking early return: a failed test must not leak the offline regime either.
+        super::set_offline_fake_for_test(false);
         if std::thread::panicking() {
             return;
         }
@@ -4885,7 +4894,7 @@ fn online_from_is_strict() {
     }
 }
 
-/// The side lane: every `cancel_*` invoke and the counter read skip the serial queue, and
+/// The side lane: every `cancel_*` invoke and the counter and timing reads skip the serial queue, and
 /// a run command does not. Queued, a Stop only lands after the run it targets returned.
 #[test]
 fn side_lane_takes_cancels_and_counters_only() {
@@ -4906,6 +4915,7 @@ fn side_lane_takes_cancels_and_counters_only() {
         );
     }
     assert!(super::e2e_is_side_lane(&req("GET", "/reamp/counters", "")));
+    assert!(super::e2e_is_side_lane(&req("GET", "/timing", "")));
     assert!(super::e2e_is_side_lane(&req(
         "GET",
         "/ui/events?after=3",

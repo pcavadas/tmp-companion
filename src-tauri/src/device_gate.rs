@@ -67,10 +67,12 @@ pub(crate) fn op_abort_requested() -> bool {
 /// with it, a real product race; green with it, the yield mattered and this function is the
 /// single place to reintroduce a small non-zero floor.
 ///
-/// Each call is a trace `settle` event (requested and applied ms) when the recorder is on.
+/// Each call is a trace `settle` event (requested and applied ms) when the recorder is on,
+/// and joins the process's hardware-wait totals (`rig::WAITS`, #198) in every tier.
 pub(crate) fn settle_ms(ms: u64) -> u64 {
     let applied = applied_settle_ms(ms);
     crate::trace::settle(ms, applied);
+    crate::rig::WAITS.note_settle(ms, applied);
     applied
 }
 
@@ -396,14 +398,18 @@ mod tests {
     /// idle-gap cliff), so it surfaces as corrupt levels on a real unit, not a red test.
     ///
     /// Asserted for the DEFAULT process state, which is what makes it meaningful in both
-    /// build modes. Under `--features e2e` nothing has called `e2e_install_offline_fake`
-    /// (the unit tests install their fake via raw `set_factory`/`set_live`), so the flag is
-    /// false and this is a live check on the guard; without the feature the branch does not
+    /// build modes. Under `--features e2e` it holds `e2e_server::TEST_SERIAL`, outside which
+    /// no unit test leaves the flag armed, so the flag is false and this is a live check on
+    /// the guard; without the feature the branch does not
     /// compile at all and this pins the identity path. It is deliberately OUTSIDE any
     /// `#[cfg(feature = "e2e")]` gating, mirroring `lib.rs`'s `fixture_gates`: a gate that
     /// only compiles under a feature CI does not build is not a gate.
     #[test]
     fn settles_are_full_length_unless_the_offline_fake_is_installed() {
+        // The in-process IPC tests switch the regime for exactly the span they hold this lock
+        // (`e2e_server::OFFLINE_FAKE`'s doc), so the default is only observable under it.
+        #[cfg(feature = "e2e")]
+        let _regime = crate::lock_ok(&crate::e2e_server::TEST_SERIAL);
         #[cfg(feature = "e2e")]
         assert!(
             !crate::e2e_offline_fake(),

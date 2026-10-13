@@ -38,9 +38,11 @@
 # Preconditions for ONLINE: the unit plugged in, and Pro Control CLOSED (it holds the exclusive
 # HID seize). A handshake failure is reported with that hint.
 #
-# Per-spec wall times are appended to $LOG_DIR/online-timings.tsv. OFFLINE per-test timings
-# are Playwright's JSON report at e2e/test-results/e2e-timings.json (gitignored), checked
-# against scripts/e2e-budgets.tsv by scripts/e2e-budgets.mjs — advisory, never a failure.
+# Per-spec wall times are appended to $LOG_DIR/online-timings.tsv (date, spec, wall s, verdict,
+# tree key, settle s, capture s — the last two are the spec's hardware waits). OFFLINE per-test
+# timings are Playwright's JSON report at e2e/test-results/e2e-timings.json (gitignored),
+# checked against scripts/e2e-budgets.tsv by scripts/e2e-budgets.mjs — advisory, never a
+# failure — which also prints and persists the build / run / test-time phase split.
 #
 # Written to run under macOS system /bin/bash (3.2) — note the empty-array `set -u` guards.
 set -euo pipefail
@@ -317,6 +319,17 @@ kill_port_range() {
   done
 }
 
+# The server's hardware-wait totals (`GET /timing`, `rig::WAITS`): echoes
+# "<settle_applied_ms> <capture_ms>", or "0 0" when the server cannot answer. Monotonic, so a
+# caller reads it around the work it times and subtracts.
+wait_totals() {
+  local body settle capture
+  body="$(curl -fsS -m 5 "http://127.0.0.1:$PORT/timing" 2>/dev/null || true)"
+  settle="$(printf '%s' "$body" | sed -n 's/.*"settle_applied_ms":\([0-9]*\).*/\1/p')"
+  capture="$(printf '%s' "$body" | sed -n 's/.*"capture_ms":\([0-9]*\).*/\1/p')"
+  printf '%s %s\n' "${settle:-0}" "${capture:-0}"
+}
+
 bridge_post() { # $1 = JSON body, $2 = timeout (s, default 60); echoes the response body
   curl -fsS -m "${2:-60}" -X POST "http://127.0.0.1:$PORT/invoke" \
     -H 'content-type: application/json' -d "$1" 2>/dev/null
@@ -436,7 +449,12 @@ wait_server_ready() {
 #    rest of its range is harmless (nothing of its own is listening there). ──
 kill_port_range
 ensure_dist
+# The build is its own phase (#198): cold or incremental compile time, never part of a
+# spec's or a test's timing. Logged here and handed to the offline budget report.
+build_start=$(date +%s)
 prebuild
+BUILD_SECS=$(( $(date +%s) - build_start ))
+log "build phase: ${BUILD_SECS}s (compile, outside every timed test)"
 
 # ── OFFLINE: fast path — let Playwright own the (SimDevice) server + vite lifecycle ──
 if [ "$MODE" = offline ]; then
@@ -452,8 +470,14 @@ if [ "$MODE" = offline ]; then
   export TMP_E2E_TIMINGS_JSON="${TMP_E2E_TIMINGS_JSON:-$REPO/e2e/test-results/e2e-timings.json}"
   rm -f "$TMP_E2E_TIMINGS_JSON"
   rc=0
+  run_start=$(date +%s)
   bun x playwright test --config "$OFFLINE_CFG" "$@" || rc=$?
+  RUN_SECS=$(( $(date +%s) - run_start ))
+  # The phase split (#198) rides the same advisory report and is persisted beside the JSON
+  # report: build vs the Playwright run's wall time vs the summed test time (hardware waits
+  # are collapsed offline — `device_gate::settle_ms` — so the run is warm runtime only).
   bun "$REPO/scripts/e2e-budgets.mjs" "$TMP_E2E_TIMINGS_JSON" "$REPO/scripts/e2e-budgets.tsv" \
+    --build-secs "$BUILD_SECS" --run-secs "$RUN_SECS" \
     || err "e2e timing budget check could not run (advisory)"
   exit "$rc"
 fi
@@ -806,6 +830,7 @@ for s in "${SPECS[@]}"; do
   # runtime condition) exits 0 having exercised nothing; that used to log PASSED and
   # could certify a stamp for a run that proved nothing about the spec it named.
   spec_log="$RUN_DIR/online-spec-$s.log"
+  read -r waits_settle_start waits_capture_start <<< "$(wait_totals)"
   spec_start=$(date +%s)
   spec_verdict=fail
   if bun x playwright test --config "$ONLINE_CFG" "specs/$s.spec.ts" | tee "$spec_log"; then
@@ -819,11 +844,20 @@ for s in "${SPECS[@]}"; do
   else
     err "specs/$s.spec.ts FAILED"; fail=1
   fi
-  # Per-spec wall time, so per-diff spec selection's saving is measured, not guessed.
+  # Per-spec wall time, so per-diff spec selection's saving is measured, not guessed — and
+  # its HARDWARE WAITS beside it (#198): the settles the server applied and the wall time it
+  # spent inside re-amp captures during this spec (`GET /timing`, read around the spec). What
+  # is left of the wall time is runtime: UI, IPC and device round trips.
   spec_secs=$(( $(date +%s) - spec_start ))
-  log "specs/$s.spec.ts wall time: ${spec_secs}s"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$s" "$spec_secs" "$spec_verdict" \
-    "$KEY_START" >> "$LOG_DIR/online-timings.tsv"
+  read -r waits_settle_end waits_capture_end <<< "$(wait_totals)"
+  settle_secs=$(( (waits_settle_end - waits_settle_start) / 1000 ))
+  capture_secs=$(( (waits_capture_end - waits_capture_start) / 1000 ))
+  # A server that went away mid-spec answers "0 0": record nothing rather than a negative.
+  [ "$settle_secs" -ge 0 ] || settle_secs=0
+  [ "$capture_secs" -ge 0 ] || capture_secs=0
+  log "specs/$s.spec.ts wall time: ${spec_secs}s (settles ${settle_secs}s, captures ${capture_secs}s)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$s" "$spec_secs" \
+    "$spec_verdict" "$KEY_START" "$settle_secs" "$capture_secs" >> "$LOG_DIR/online-timings.tsv"
 done
 
 # ── host-silence headroom ──────────────────────────────────────────────────────────
