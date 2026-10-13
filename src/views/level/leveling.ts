@@ -18,24 +18,25 @@
 import type {
   BaseBoostSummary,
   FootswitchInfo,
+  FootswitchLevelJobWire,
   LevelJob,
   LevelParamCandidate,
   ParamClass,
   Profile,
+  SceneHandlePick,
   SceneInfo,
   SilenceHint,
 } from "../../lib/types";
 import type { PresetRow } from "../PresetList";
 import type { PickOption } from "../overlays/Pick";
 import type { PresetGroup } from "./PresetGroupRow";
-// `SceneHandlePick` is declared ONCE, as the `levelScenesApplyBatched` wire type in
-// invoke.ts (its `SceneLevelJobWire.handle` field) — re-exported below so
-// `SetupOption`/`RunItem` and the scene-handle-picker wiring can import it from
-// either module without a second, driftable copy.
-import type { SceneHandlePick } from "../../lib/invoke";
 import { blockArtTile, shortFallback } from "../../models/blockArt";
 import { stripNameFor } from "../../models/catalog";
 
+// `SceneHandlePick` is declared ONCE, as the `levelScenesApplyBatched` wire type in
+// lib/types.ts (its `SceneLevelJobWire.handle` field) — re-exported so
+// `SetupOption`/`RunItem` and the scene-handle-picker wiring can import it from
+// either module without a second, driftable copy.
 export type { SceneHandlePick };
 
 // ── selection scene-key helpers (shared by the list + the flow) ─────────────
@@ -180,6 +181,24 @@ export function targetFromCandidate(
     levNodeId: c.node_id,
     levParameterId: c.parameter_id,
     sceneContext,
+  };
+}
+
+/** Build one `levelFootswitchesApply` job from a `FootswitchTarget` — the ONE place
+ * that turns the frontend's row shape into the wire's field names. The backend never
+ * creates a footswitch function any more (the assign gate only ever edits an EXISTING
+ * `param` fn or refuses), so no display name rides the wire shape. */
+export function toFootswitchJobWire(
+  target: FootswitchTarget,
+  targetLufs: number,
+): FootswitchLevelJobWire {
+  return {
+    switch: target.switchIndex,
+    levGroupId: target.levGroupId,
+    levNodeId: target.levNodeId,
+    levParameterId: target.levParameterId,
+    targetLufs,
+    sceneContext: target.sceneContext,
   };
 }
 

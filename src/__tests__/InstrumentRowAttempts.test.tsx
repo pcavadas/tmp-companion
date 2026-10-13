@@ -12,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { InstrumentRow } from "../views/settings/InstrumentRow";
 import type { CalibrateResult, Profile } from "../lib/types";
+import { mockCommands } from "./commandMocks";
 
 const profile: Profile = {
   id: "tele",
@@ -39,13 +40,12 @@ describe("InstrumentRow — a cancelled capture can't hijack the next attempt (#
     { timeout: 15000 },
     async () => {
       const resolvers: ((r: CalibrateResult) => void)[] = [];
-      vi.mocked(invoke).mockImplementation((command: string) =>
-        command === "calibrate_profile"
-          ? new Promise<CalibrateResult>((res) => {
-              resolvers.push(res);
-            })
-          : Promise.resolve(null),
-      );
+      mockCommands({
+        calibrate_profile: () =>
+          new Promise<CalibrateResult>((res) => {
+            resolvers.push(res);
+          }),
+      });
       const onCalibrated = vi.fn();
       render(
         <ThemeProvider>

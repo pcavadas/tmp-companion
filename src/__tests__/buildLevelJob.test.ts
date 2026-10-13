@@ -3,7 +3,12 @@
 
 import { describe, expect, it } from "vitest";
 
-import { buildLevelJob, offbranchStatus } from "../views/level/leveling";
+import {
+  buildLevelJob,
+  offbranchStatus,
+  toFootswitchJobWire,
+  type FootswitchTarget,
+} from "../views/level/leveling";
 import type { Profile } from "../lib/types";
 
 const profile: Profile = {
@@ -33,5 +38,49 @@ describe("offbranchStatus", () => {
     expect(offbranchStatus(undefined)).toBe("not on USB 1/2");
     expect(offbranchStatus("amp_zero")).toBe("amp output at zero");
     expect(offbranchStatus("exp_mute")).toBe("exp pedal may mute");
+  });
+});
+
+describe("toFootswitchJobWire", () => {
+  // `toFootswitchJobWire` — the ONE place `FootswitchTarget` becomes the wire's job
+  // shape. Every row levels now (D2 — the backend removed the verify-only mode
+  // entirely), so a target always carries a real handle; `sceneContext` (D3) is the
+  // only field that varies (null = base, else a 0-based scenes[] slot).
+  it("toFootswitchJobWire carries the full handle + a null (base) sceneContext", () => {
+    const target: FootswitchTarget = {
+      switchIndex: 5,
+      levGroupId: "G1",
+      levNodeId: "amp",
+      levParameterId: "outputLevel",
+      sceneContext: null,
+    };
+    const wire = toFootswitchJobWire(target, -23);
+    expect(wire).toEqual({
+      switch: 5,
+      levGroupId: "G1",
+      levNodeId: "amp",
+      levParameterId: "outputLevel",
+      targetLufs: -23,
+      sceneContext: null,
+    });
+  });
+
+  it("toFootswitchJobWire carries a non-null sceneContext (D3)", () => {
+    const target: FootswitchTarget = {
+      switchIndex: 2,
+      levGroupId: "G1",
+      levNodeId: "pedal",
+      levParameterId: "gain",
+      sceneContext: 3,
+    };
+    const wire = toFootswitchJobWire(target, -20);
+    expect(wire).toEqual({
+      switch: 2,
+      levGroupId: "G1",
+      levNodeId: "pedal",
+      levParameterId: "gain",
+      targetLufs: -20,
+      sceneContext: 3,
+    });
   });
 });

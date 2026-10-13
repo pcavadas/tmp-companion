@@ -1,5 +1,6 @@
-// Contract-layer tests: assert a representative sample of typed wrappers call
-// `invoke` with the EXACT command name + top-level arg KEYS the backend expects.
+// Contract-layer tests: assert every typed wrapper calls `invoke` with the EXACT
+// command name + top-level arg KEYS the backend expects, and (last test) that every
+// command in the registry (`lib/commands.ts`) is reached by a wrapper exercised here.
 //
 // The wire contract is sacred — these tests guard against an accidental rename or
 // a camelCase→snake_case slip in the arg keys (Tauri auto-converts camelCase, so
@@ -14,8 +15,14 @@ import { error as pluginError } from "@tauri-apps/plugin-log";
 const invokeMock = vi.fn<
   (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
 >(() => Promise.resolve(undefined));
+// Every command name any test below invoked — never cleared, so the file's LAST test
+// can check the wrappers exercised here cover the whole registry.
+const invokedNames = new Set<string>();
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (...args: [string, Record<string, unknown>?]) => invokeMock(...args),
+  invoke: (...args: [string, Record<string, unknown>?]) => {
+    invokedNames.add(args[0]);
+    return invokeMock(...args);
+  },
   Channel: class MockChannel {
     onmessage: ((message: unknown) => void) | null = null;
   },
@@ -31,6 +38,20 @@ vi.mock("@tauri-apps/plugin-log", () => ({
 import {
   appInfo,
   setAutoInstallUpdates,
+  listLevelBlocks,
+  getStore,
+  saveProfiles,
+  saveTargets,
+  setPlaybackLevel,
+  listPickupTopologies,
+  readActivePreset,
+  currentGraph,
+  readLibraryViaBackup,
+  copyApply,
+  listSongs,
+  createSongFull,
+  updateSongFull,
+  addSetlistSongs,
   connectDevice,
   listPresets,
   CommandError,
@@ -58,15 +79,14 @@ import {
   doctorApply,
   doctorSave,
   doctorDiscard,
-  toFootswitchJobWire,
-  cmd,
 } from "../lib/invoke";
+import { DEFAULT_HANDLERS } from "./commandMocks";
 import type {
-  SceneLevelProgressItem,
+  CopyApplyItem,
   FootswitchLevelProgressItem,
-} from "../lib/invoke";
-import type { LevelJob } from "../lib/types";
-import type { FootswitchTarget } from "../views/level/leveling";
+  LevelJob,
+  SceneLevelProgressItem,
+} from "../lib/types";
 
 const pluginErrorMock = vi.mocked(pluginError);
 
@@ -384,48 +404,6 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
     await cancelFootswitchLeveling();
     expectCall("cancel_footswitch_leveling", undefined);
   });
-
-  // `toFootswitchJobWire` — the ONE place `FootswitchTarget` becomes the wire's job
-  // shape. Every row levels now (D2 — the backend removed the verify-only mode
-  // entirely), so a target always carries a real handle; `sceneContext` (D3) is the
-  // only field that varies (null = base, else a 0-based scenes[] slot).
-  it("toFootswitchJobWire carries the full handle + a null (base) sceneContext", () => {
-    const target: FootswitchTarget = {
-      switchIndex: 5,
-      levGroupId: "G1",
-      levNodeId: "amp",
-      levParameterId: "outputLevel",
-      sceneContext: null,
-    };
-    const wire = toFootswitchJobWire(target, -23);
-    expect(wire).toEqual({
-      switch: 5,
-      levGroupId: "G1",
-      levNodeId: "amp",
-      levParameterId: "outputLevel",
-      targetLufs: -23,
-      sceneContext: null,
-    });
-  });
-
-  it("toFootswitchJobWire carries a non-null sceneContext (D3)", () => {
-    const target: FootswitchTarget = {
-      switchIndex: 2,
-      levGroupId: "G1",
-      levNodeId: "pedal",
-      levParameterId: "gain",
-      sceneContext: 3,
-    };
-    const wire = toFootswitchJobWire(target, -20);
-    expect(wire).toEqual({
-      switch: 2,
-      levGroupId: "G1",
-      levNodeId: "pedal",
-      levParameterId: "gain",
-      targetLufs: -20,
-      sceneContext: 3,
-    });
-  });
 });
 
 describe("single-struct / nested-payload args (snake_case inside the payload)", () => {
@@ -510,14 +488,129 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
   });
 });
 
-describe("cmd namespace mirrors the named exports", () => {
-  it("cmd exposes exactly the 35 contract commands", () => {
-    // Pins the wire-contract surface: bump this when a command is added or removed
-    // (the count guards against an accidental export slip in the cmd registry).
-    // 35 = the prior 39 minus the removed revert/redistribution/common-target
-    // wrappers (restorePresetLevel, redistributeHeadroom, restoreRedistribution,
-    // commonReachableTarget — design 1a dropped all in-app revert capability).
-    expect(Object.keys(cmd).length).toBe(35);
+describe("the remaining wrappers", () => {
+  it("get_store / list_pickup_topologies / list_songs — no args", async () => {
+    await getStore();
+    expectCall("get_store");
+    invokeMock.mockClear();
+    await listPickupTopologies();
+    expectCall("list_pickup_topologies");
+    invokeMock.mockClear();
+    await listSongs();
+    expectCall("list_songs");
+  });
+
+  it("read_active_preset / current_graph / read_library_via_backup — no args", async () => {
+    await readActivePreset();
+    expectCall("read_active_preset");
+    invokeMock.mockClear();
+    await currentGraph();
+    expectCall("current_graph");
+    invokeMock.mockClear();
+    await readLibraryViaBackup();
+    expectCall("read_library_via_backup");
+  });
+
+  it("list_level_blocks uses slot", async () => {
+    await listLevelBlocks(7);
+    expectCall("list_level_blocks", { slot: 7 });
+  });
+
+  it("save_profiles / save_targets / set_playback_level wrap their payload", async () => {
+    const profiles = [
+      { id: "p1", name: "Strat", topology_id: "sc", calibration_lufs: null },
+    ];
+    await saveProfiles(profiles);
+    expectCall("save_profiles", { profiles });
+    invokeMock.mockClear();
+    const targets = [{ name: "Rhythm", lufs: -26 }];
+    await saveTargets(targets);
+    expectCall("save_targets", { targets });
+    invokeMock.mockClear();
+    await setPlaybackLevel("quiet");
+    expectCall("set_playback_level", { level: "quiet" });
+  });
+
+  it("copy_apply passes jobs + save with a progress channel", async () => {
+    const jobs = [
+      {
+        listIndex: 2,
+        name: "Lead",
+        ops: [{ kind: "remove" as const, group: "G1", nodeId: "n1" }],
+      },
+    ];
+    const onResult = vi.fn<(item: CopyApplyItem) => void>(() => {
+      /* no-op */
+    });
+    await copyApply(jobs, true, onResult);
+    const [calledName, calledArgs] = invokeMock.mock.calls[0];
+    expect(calledName).toBe("copy_apply");
+    if (calledArgs === undefined) {
+      throw new Error("expected copy_apply args but got none");
+    }
+    expect(Object.keys(calledArgs).sort()).toEqual([
+      "jobs",
+      "onResult",
+      "save",
+    ]);
+    expect(calledArgs).toMatchObject({ jobs, save: true });
+    const channel = calledArgs.onResult;
+    if (!(channel instanceof Object) || !("onmessage" in channel)) {
+      throw new Error("expected an onResult channel with an onmessage handler");
+    }
+    expect((channel as { onmessage: unknown }).onmessage).toBe(onResult);
+  });
+
+  const SETLISTS = [{ slot: 1, name: "Gig" }];
+  const SONGS = [
+    { slot: 3, name: "Intro", notes: "", bpm: 120 },
+    { slot: 5, name: "Outro", notes: "", bpm: 90 },
+  ];
+
+  it("create_song_full sends the setlist guard only with a setlist", async () => {
+    await createSongFull("New", "n", 100, SETLISTS[0], SETLISTS);
+    expectCall("create_song_full", {
+      name: "New",
+      notes: "n",
+      bpm: 100,
+      addToSetlist: 1,
+      expectSetlistName: "Gig",
+      expectSetlistList: ["Gig"],
+    });
+    invokeMock.mockClear();
+    await createSongFull("Solo", null, null, null, SETLISTS);
+    expectCall("create_song_full", {
+      name: "Solo",
+      notes: null,
+      bpm: null,
+      addToSetlist: null,
+      expectSetlistName: null,
+      expectSetlistList: null,
+    });
+  });
+
+  it("update_song_full uses slot/expectName/expectList + the changed fields", async () => {
+    await updateSongFull(3, "Intro", SONGS, "Intro 2", null, 128);
+    expectCall("update_song_full", {
+      slot: 3,
+      expectName: "Intro",
+      expectList: ["Intro", "Outro"],
+      name: "Intro 2",
+      notes: null,
+      bpm: 128,
+    });
+  });
+
+  it("add_setlist_songs guards the setlist and every song by name", async () => {
+    await addSetlistSongs(SETLISTS[0], SETLISTS, SONGS, SONGS);
+    expectCall("add_setlist_songs", {
+      setlistSlot: 1,
+      expectName: "Gig",
+      expectList: ["Gig"],
+      songSlots: [3, 5],
+      expectSongNames: ["Intro", "Outro"],
+      expectSongList: ["Intro", "Outro"],
+    });
   });
 });
 
@@ -585,5 +678,17 @@ describe("invoke-failure logging", () => {
     } finally {
       delete win.__TAURI_INTERNALS__;
     }
+  });
+});
+
+// Runs LAST (Vitest runs a file's tests in order): the registry is `Commands`, and
+// `DEFAULT_HANDLERS` is typed total over it, so its keys are every command. A
+// registry entry no wrapper above reaches — or a wrapper calling a name outside the
+// registry — fails here.
+describe("registry coverage", () => {
+  it("the wrappers exercised above reach exactly the registry's commands", () => {
+    expect([...invokedNames].sort()).toEqual(
+      Object.keys(DEFAULT_HANDLERS).sort(),
+    );
   });
 });

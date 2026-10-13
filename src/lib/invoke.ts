@@ -1,7 +1,9 @@
 // TMP Companion — typed Tauri command wrappers.
 //
 // Typed wrappers, one per backend command; arg keys are camelCase, Tauri converts
-// to snake_case.
+// to snake_case. Every wrapper goes through `invokeCommand<K>`, whose args and return
+// are checked against the ONE command registry (`./commands`), so a wrapper can't
+// send a key or promise a return its registry entry doesn't declare.
 //
 // CASING (load-bearing): top-level arg keys are camelCase — Tauri 2 auto-converts
 // them to the Rust snake_case params. Keys nested inside a JSON payload object
@@ -9,18 +11,24 @@
 // in ./types. Do NOT "fix" either casing.
 
 import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
-import type { InvokeArgs } from "@tauri-apps/api/core";
 
+import type {
+  CommandArgList,
+  CommandName,
+  CommandRet,
+  FootswitchLevelApplyArgs,
+  SceneLevelApplyArgs,
+} from "./commands";
 import { actionableError } from "./connectError";
 import { errMsg } from "./format";
 import { logError } from "./log";
-import type { FootswitchTarget } from "../views/level/leveling";
 import type {
   AppInfo,
   PresetEntry,
   LevelJob,
   LevelResult,
   FootswitchLevelResult,
+  FootswitchLevelProgressItem,
   LevelBlock,
   Profile,
   CalibrateResult,
@@ -34,6 +42,7 @@ import type {
   SetlistRecord,
   SongSaveOutcome,
   SceneHandleRow,
+  SceneLevelProgressItem,
   FsSceneContext,
   BackupReadResult,
   CopyJob,
@@ -45,7 +54,6 @@ import type {
   DoctorApplyResult,
   DoctorOp,
   SupportBundleResult,
-  BaseAnchor,
 } from "./types";
 
 // isTauri lives in ./log (the dependency-free end of the invoke→log edge — a
@@ -78,8 +86,11 @@ export class CommandError extends Error {
  * in-memory stack trace. Rejects with a {@link CommandError} carrying the
  * backend's own text (see there).
  */
-function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
-  return tauriInvoke<T>(cmd, args).catch((e: unknown) => {
+function invokeCommand<K extends CommandName>(
+  cmd: K,
+  ...args: CommandArgList<K>
+): Promise<CommandRet<K>> {
+  return tauriInvoke<CommandRet<K>>(cmd, args[0]).catch((e: unknown) => {
     const message = errMsg(e);
     // The 3 s auto-connect poll rejects BY DESIGN while no unit is present —
     // error-logging that class (~1 line/3 s, forever, while unplugged) would
@@ -94,105 +105,53 @@ function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
 // ─── Connection + app ─────────────────────────────────────────────────────────
 
 /** App identity — name + the running build's version (Tauri config). */
-export const appInfo = (): Promise<AppInfo> => invoke("app_info");
+export const appInfo = (): Promise<AppInfo> => invokeCommand("app_info");
 
 /** Seize the TMP + combined handshake (firmware + discovery in one
  * burst, mirroring Pro Control). Returns both firmware version and the active
  * preset's signal graph, so the preset list and signal chain can render
  * simultaneously with no second handshake. */
 export const connectDevice = (): Promise<ConnectResult> =>
-  invoke("connect_device");
+  invokeCommand("connect_device");
 
 /** Device "My Presets"; each `{ slot, name }` (slot = 0-based list index). */
-export const listPresets = (): Promise<PresetEntry[]> => invoke("list_presets");
+export const listPresets = (): Promise<PresetEntry[]> =>
+  invokeCommand("list_presets");
 
 // ─── Loudness leveling ──────────────────────────────────────────────────────
 
 /** Enumerate a preset's level-type block controls (load → discovery). */
 export const listLevelBlocks = (slot: number): Promise<LevelBlock[]> =>
-  invoke("list_level_blocks", { slot });
+  invokeCommand("list_level_blocks", { slot });
 
 /** One-shot open-loop on `presetLevel` (or closed-loop on a block knob
  * when all three `block_*` coords are set). DEVICE WRITE when `job.save` is true. */
 export const levelPreset = (job: LevelJob): Promise<LevelResult> =>
-  invoke("level_preset", { job });
+  invokeCommand("level_preset", { job });
 
 /** Cooperatively cancel an in-flight {@link levelPreset} run — sets a backend flag the
- *  leveller checks at its seams, so the current item bails before its apply+save. Like the
- *  scene/footswitch cancels it's a named export (deliberately not in `cmd`). */
+ *  leveller checks at its seams, so the current item bails before its apply+save. */
 export const cancelPresetLeveling = (): Promise<void> =>
-  invoke("cancel_preset_leveling");
+  invokeCommand("cancel_preset_leveling");
 
-/** A candidate leveling knob for `levelScenesApply` — pass EVERY amp-level candidate;
- * the backend picks per scene the one whose block is ON in that scene (scenes can
- * swap which amp is live, and a bypassed amp's knob measures flat). */
-export interface LevelBlockCandidate {
-  groupId: string;
-  nodeId: string;
-  parameterId: string;
-  value: number;
-}
-
-export interface SceneLevelProgressItem {
-  sceneSlot: number;
-  status: "active" | "done" | "error" | "cancelled";
-  result: LevelResult | null;
-  message: string | null;
-  /** A batch-wide caption ("Saving…" / "Verifying…") emitted at the deferred-save and
-   *  persist-verify starts, AFTER every scene in the group already resolved — this item
-   *  carries no valid `sceneSlot`/row identity of its own (never key against it), only
-   *  the caption. Omitted/null outside those two windows. */
-  tail?: string | null;
-}
-
-/** A user-chosen scene leveling control (mirrors the backend's `SceneHandleArg`) — the
- * block param to sweep INSTEAD of the active amp's `outputLevel`. The ONE declaration
- * (this wire type); `leveling.ts` imports it rather than re-declaring its own copy. */
-export interface SceneHandlePick {
-  groupId: string;
-  nodeId: string;
-  parameterId: string;
-}
-
-/** Batched APPLY path. One backend command levels all selected scenes
- * and streams row progress over a Tauri channel. Each `job` carries its OWN
- * per-scene target (camelCase nested keys, like `levelFootswitchesApply`), so a
+/** Batched APPLY path. One backend command levels all selected scenes and streams row
+ * progress over a Tauri channel. Each job carries its OWN per-scene target, so a
  * mixed-target preset still levels in ONE batch. */
-export interface SceneLevelJobWire {
-  sceneSlot: number;
-  targetLufs: number;
-  /** The user's OWN control for this scene, INSTEAD of the active amp's outputLevel.
-   *  Omitted/null = the amp path (every existing caller). */
-  handle?: SceneHandlePick | null;
-}
-
 export const levelScenesApplyBatched = (
-  args: {
-    slot: number;
-    jobs: SceneLevelJobWire[];
-    candidates: LevelBlockCandidate[];
-    save: boolean;
-    /** Opt-in: equalize a path-MERGE scene's two lanes before joint-k (no effect on
-     * series / single-amp / split-output scenes). */
-    rebalance: boolean;
-    topologyId: string | null;
-    calibrationLufs: number | null;
-    profileId: string | null;
-    /** Keeps the wizard's force-appended BASE job alive through the batch's prepass +
-     *  headroom-trade phases (see `BaseAnchor`). Omitted/undefined = today's behavior
-     *  (no base job in the batch; base still levels via the separate `levelPreset` lane). */
-    baseAnchor?: BaseAnchor | null;
-  },
+  args: SceneLevelApplyArgs,
   onResult: (item: SceneLevelProgressItem) => void,
 ): Promise<LevelResult[]> => {
   const channel = new Channel<SceneLevelProgressItem>();
   channel.onmessage = onResult;
-  return invoke("level_scenes_apply_batched", { ...args, onResult: channel });
+  return invokeCommand("level_scenes_apply_batched", {
+    ...args,
+    onResult: channel,
+  });
 };
 
 /** Cooperatively stop an in-flight batched scene-leveling run. */
 export const cancelSceneLeveling = (): Promise<void> =>
-  invoke("cancel_scene_leveling");
+  invokeCommand("cancel_scene_leveling");
 
 /** Per-scene handle candidates for the Set-up step's scene control picker — every
  * FS scene's controls in ONE call, so a scene row's picker fetches lazily (on first
@@ -202,7 +161,8 @@ export const cancelSceneLeveling = (): Promise<void> =>
  * whole-library device-backup transfer (multi-second) before it can answer. */
 export const listSceneLevelHandles = (
   slot: number,
-): Promise<SceneHandleRow[]> => invoke("list_scene_level_handles", { slot });
+): Promise<SceneHandleRow[]> =>
+  invokeCommand("list_scene_level_handles", { slot });
 
 /** Which scenes enable each footswitch of `slot` (D3) — the Set-up step's per-footswitch
  * scene-context picker source. No scene is recalled on the unit and nothing is measured —
@@ -212,72 +172,26 @@ export const listSceneLevelHandles = (
 export const listFootswitchSceneContexts = (
   slot: number,
 ): Promise<FsSceneContext[]> =>
-  invoke("list_footswitch_scene_contexts", { slot });
-
-/** One streamed footswitch-leveling row (`lib::FootswitchLevelProgressItem`). */
-export interface FootswitchLevelProgressItem {
-  switch: number;
-  status: "active" | "done" | "error" | "cancelled";
-  result: FootswitchLevelResult | null;
-  message: string | null;
-}
+  invokeCommand("list_footswitch_scene_contexts", { slot });
 
 /** Level one or more block-acting footswitches' engaged states for preset `slot`,
- * streaming a progress row per switch. Each `job` picks a switch + the block param to
+ * streaming a progress row per switch. Each job picks a switch + the block param to
  * solve. Mirrors `levelScenesApplyBatched`. */
-export interface FootswitchLevelJobWire {
-  switch: number;
-  /** The leveling handle — every row levels now (the old verify-only "no handle" row is
-   *  gone backend-side; an empty/missing handle is a per-row error, not a measure-only
-   *  mode). */
-  levGroupId: string;
-  levNodeId: string;
-  levParameterId: string;
-  targetLufs: number;
-  /** THE SCENE CONTEXT this switch's sound is measured and solved in (D3): a 0-based
-   *  `scenes[]` wire slot, or omitted/null = the preset's BASE sound. Mirrors
-   *  `FootswitchLevelJob::scene_context`. */
-  sceneContext?: number | null;
-}
-
-/** Build one `levelFootswitchesApply` job from a `FootswitchTarget` — the ONE place
- * that turns the frontend's row shape into the wire's field names. The backend never
- * creates a footswitch function any more (the assign gate only ever edits an EXISTING
- * `param` fn or refuses), so there is no more "MULTI"-avoidance write to carry a row's
- * display name over — `displayLabel` is gone from the wire shape. */
-export function toFootswitchJobWire(
-  target: FootswitchTarget,
-  targetLufs: number,
-): FootswitchLevelJobWire {
-  return {
-    switch: target.switchIndex,
-    levGroupId: target.levGroupId,
-    levNodeId: target.levNodeId,
-    levParameterId: target.levParameterId,
-    targetLufs,
-    sceneContext: target.sceneContext,
-  };
-}
-
 export const levelFootswitchesApply = (
-  args: {
-    slot: number;
-    jobs: FootswitchLevelJobWire[];
-    save: boolean;
-    topologyId: string | null;
-    calibrationLufs: number | null;
-    profileId: string | null;
-  },
+  args: FootswitchLevelApplyArgs,
   onResult: (item: FootswitchLevelProgressItem) => void,
 ): Promise<FootswitchLevelResult[]> => {
   const channel = new Channel<FootswitchLevelProgressItem>();
   channel.onmessage = onResult;
-  return invoke("level_footswitches_apply", { ...args, onResult: channel });
+  return invokeCommand("level_footswitches_apply", {
+    ...args,
+    onResult: channel,
+  });
 };
 
 /** Cooperatively stop an in-flight footswitch-leveling run. */
 export const cancelFootswitchLeveling = (): Promise<void> =>
-  invoke("cancel_footswitch_leveling");
+  invokeCommand("cancel_footswitch_leveling");
 
 // ─── Doctor (tone diagnosis) ─────────────────────────────────────────────────
 
@@ -294,20 +208,24 @@ export const doctorCheck = (
 ): Promise<DoctorCheckResult> => {
   const channel = new Channel<DoctorProgressItem>();
   channel.onmessage = onResult;
-  return invoke("doctor_check", { items, restoreListIndex, onResult: channel });
+  return invokeCommand("doctor_check", {
+    items,
+    restoreListIndex,
+    onResult: channel,
+  });
 };
 
 /** Cooperatively stop an in-flight Doctor check — already-measured sounds keep
  * their results. */
 export const cancelDoctorCheck = (): Promise<void> =>
-  invoke("cancel_doctor_check");
+  invokeCommand("cancel_doctor_check");
 
 /** Apply one prescription's ops LIVE (no save): captures the stored state
  * (before clip), applies the edits to the device's edit buffer, captures again
  * without reloading (after clip). Revert with `doctorDiscard`; persist with
  * `doctorSave`. On a failed structural edit the preset is auto-restored. */
 export const doctorApply = (job: DoctorApplyJob): Promise<DoctorApplyResult> =>
-  invoke("doctor_apply", { job });
+  invokeCommand("doctor_apply", { job });
 
 /** Persist an applied prescription. Structurally safe: the backend rebuilds
  * SAVED+`ops` from scratch (reload the stored preset, recall `scene`, re-apply
@@ -321,33 +239,33 @@ export const doctorSave = (
   scene: number | null,
   ops: DoctorOp[],
 ): Promise<void> =>
-  invoke("doctor_save", { listIndex, expectName, scene, ops });
+  invokeCommand("doctor_save", { listIndex, expectName, scene, ops });
 
 /** Discard an applied-but-unsaved prescription by reloading the stored preset
  * (the device's edit buffer is dropped on load — the established revert). */
 export const doctorDiscard = (listIndex: number): Promise<void> =>
-  invoke("doctor_discard", { listIndex });
+  invokeCommand("doctor_discard", { listIndex });
 
 // ─── Instrument profiles + persisted store (Settings window) ──────────────────
 
 /** Settings — profiles + per-slot assignment + named loudness targets. */
-export const getStore = (): Promise<Store> => invoke("get_store");
+export const getStore = (): Promise<Store> => invokeCommand("get_store");
 
 /** Settings — persist the profile list. */
 export const saveProfiles = (profiles: Profile[]): Promise<void> =>
-  invoke("save_profiles", { profiles });
+  invokeCommand("save_profiles", { profiles });
 
 /** Settings — persist the editable LUFS targets. */
 export const saveTargets = (targets: Target[]): Promise<void> =>
-  invoke("save_targets", { targets });
+  invokeCommand("save_targets", { targets });
 
 /** Settings — persist the playback level leveling compensates for. */
 export const setPlaybackLevel = (level: PlaybackLevel): Promise<void> =>
-  invoke("set_playback_level", { level });
+  invokeCommand("set_playback_level", { level });
 
 /** Settings — persist the auto-install-updates preference. */
 export const setAutoInstallUpdates = (on: boolean): Promise<void> =>
-  invoke("set_auto_install_updates", { on });
+  invokeCommand("set_auto_install_updates", { on });
 
 /** Settings — Tier-2 calibration: capture dry instrument for `secs` (clamped
  * 2..30), store K-weighted LUFS, return it + clip/stimulus-ceiling caveats.
@@ -355,11 +273,12 @@ export const setAutoInstallUpdates = (on: boolean): Promise<void> =>
 export const calibrateProfile = (
   profileId: string,
   secs: number,
-): Promise<CalibrateResult> => invoke("calibrate_profile", { profileId, secs });
+): Promise<CalibrateResult> =>
+  invokeCommand("calibrate_profile", { profileId, secs });
 
 /** Settings — shipped pickup-topology catalog. */
 export const listPickupTopologies = (): Promise<TopologyInfo[]> =>
-  invoke("list_pickup_topologies");
+  invokeCommand("list_pickup_topologies");
 
 /** Settings — write a diagnostics bundle (recent logs, device settings, app info,
  * + the opt-in preset) to a .tar in ~/Downloads; returns its path. All args
@@ -369,7 +288,7 @@ export const saveSupportBundle = (
   presetJson: string | null,
   presetName: string | null,
 ): Promise<SupportBundleResult> =>
-  invoke("save_support_bundle", { firmware, presetJson, presetName });
+  invokeCommand("save_support_bundle", { firmware, presetJson, presetName });
 
 /** Settings — same bundle as `saveSupportBundle`, returned as raw bytes (no
  * Downloads write) for an in-app "send report" attach. */
@@ -378,27 +297,27 @@ export const buildSupportBundle = (
   presetJson: string | null,
   presetName: string | null,
 ): Promise<ArrayBuffer> =>
-  invoke("build_support_bundle", { firmware, presetJson, presetName });
+  invokeCommand("build_support_bundle", { firmware, presetJson, presetName });
 
 // ─── LevelView — active preset + songs + slot ops ──────────────────────────────
 
 /** LevelView — the active (currently-loaded) preset's signal graph (live read). */
 export const readActivePreset = (): Promise<ActiveGraph> =>
-  invoke("read_active_preset");
+  invokeCommand("read_active_preset");
 
 /** LevelView — the monitor's CURRENT cached graph (the snapshot kept current by
  * every field-3 push). A cheap, no-device-I/O read used to seed the hero when a
  * fresh mount has no graph (e.g. a graphless connect + an idle device). Returns
  * null when the cache itself has no graph. */
 export const currentGraph = (): Promise<ActiveGraph | null> =>
-  invoke("current_graph");
+  invokeCommand("current_graph");
 
 /** Presets two-phase load — read the WHOLE user library (every preset + its scenes)
  * from one device backup (~22 s). DEVICE READ, non-destructive, persists nothing
  * (archive in RAM, temp DB dropped). Emits `tmp://backup-progress` as it streams
  * (subscribe via `onBackupProgress` to drive the scan strip). */
 export const readLibraryViaBackup = (): Promise<BackupReadResult> =>
-  invoke("read_library_via_backup");
+  invokeCommand("read_library_via_backup");
 
 /** Copy feature — apply each target preset's staged structural ops (replace / insert /
  * remove) LIVE on a held session, saving a preset only when all its ops confirmed.
@@ -411,11 +330,12 @@ export const copyApply = (
 ): Promise<CopyApplyItem[]> => {
   const channel = new Channel<CopyApplyItem>();
   channel.onmessage = onResult;
-  return invoke("copy_apply", { jobs, save, onResult: channel });
+  return invokeCommand("copy_apply", { jobs, save, onResult: channel });
 };
 
 /** LevelView — songs as read live from the device (read-only overview). */
-export const listSongs = (): Promise<SongRecord[]> => invoke("list_songs");
+export const listSongs = (): Promise<SongRecord[]> =>
+  invokeCommand("list_songs");
 
 // ─── Songs & setlists — device-backed CRUD (Songs view) ───────────────────────
 // The device is the single source of truth. Every WRITE follows a read-back-after-
@@ -426,13 +346,13 @@ export const listSongs = (): Promise<SongRecord[]> => invoke("list_songs");
 
 /** Songs page — read every setlist's name live from the device. */
 export const readSetlists = (): Promise<SetlistRecord[]> =>
-  invoke("read_setlists");
+  invokeCommand("read_setlists");
 
 /** Songs page — read a setlist's songs (ordered GLOBAL song slots; trailing empties
  * dropped, a `0` between members kept as an unknown entry). The 1-based index of a
  * slot in THIS list is the position the membership ops address. */
 export const listSetlistSongs = (setlistSlot: number): Promise<number[]> =>
-  invoke("list_setlist_songs", { setlistSlot });
+  invokeCommand("list_setlist_songs", { setlistSlot });
 
 /** The names of a song or setlist list, in order: what every slot-keyed write sends as
  * `expectList`. Names can repeat, so only the whole list the UI saw confirms a slot. */
@@ -449,11 +369,11 @@ export const removeSong = (
   expectName: string,
   seen: readonly Named[],
 ): Promise<SongRecord[]> =>
-  invoke("remove_song", { slot, expectName, expectList: names(seen) });
+  invokeCommand("remove_song", { slot, expectName, expectList: names(seen) });
 
 /** Create a setlist → fresh setlist list. DEVICE WRITE (addSetlist). */
 export const addSetlist = (name: string): Promise<SetlistRecord[]> =>
-  invoke("add_setlist", { name });
+  invokeCommand("add_setlist", { name });
 
 /** Rename a setlist by slot → fresh setlist list. DEVICE WRITE (renameSetlist).
  * `expectName` (the current name) and `seen` (the setlist list the UI saw) guard the
@@ -464,7 +384,7 @@ export const renameSetlist = (
   seen: readonly Named[],
   name: string,
 ): Promise<SetlistRecord[]> =>
-  invoke("rename_setlist", {
+  invokeCommand("rename_setlist", {
     slot,
     expectName,
     expectList: names(seen),
@@ -479,7 +399,11 @@ export const removeSetlist = (
   expectName: string,
   seen: readonly Named[],
 ): Promise<SetlistRecord[]> =>
-  invoke("remove_setlist", { slot, expectName, expectList: names(seen) });
+  invokeCommand("remove_setlist", {
+    slot,
+    expectName,
+    expectList: names(seen),
+  });
 
 /** Remove a song from a setlist by its 1-based POSITION within the setlist (NOT the
  * global song slot) → fresh ordered member slots. DEVICE WRITE (removeSetlistSong).
@@ -492,7 +416,7 @@ export const removeSetlistSong = (
   setlistSongSlot: number,
   expectSongSlot: number,
 ): Promise<number[]> =>
-  invoke("remove_setlist_song", {
+  invokeCommand("remove_setlist_song", {
     setlistSlot,
     expectName,
     expectList: names(seen),
@@ -512,7 +436,7 @@ export const moveSetlistSong = (
   newPos: number,
   expectSongSlot: number,
 ): Promise<number[]> =>
-  invoke("move_setlist_song", {
+  invokeCommand("move_setlist_song", {
     setlistSlot,
     expectName,
     expectList: names(seen),
@@ -533,7 +457,7 @@ export const createSongFull = (
   addToSetlist: SetlistRecord | null,
   setlists: readonly Named[],
 ): Promise<SongSaveOutcome> =>
-  invoke("create_song_full", {
+  invokeCommand("create_song_full", {
     name,
     notes,
     bpm,
@@ -554,7 +478,7 @@ export const updateSongFull = (
   notes: string | null,
   bpm: number | null,
 ): Promise<SongSaveOutcome> =>
-  invoke("update_song_full", {
+  invokeCommand("update_song_full", {
     slot,
     expectName,
     expectList: names(seen),
@@ -574,7 +498,7 @@ export const addSetlistSongs = (
   songs: SongRecord[],
   allSongs: readonly Named[],
 ): Promise<number[]> =>
-  invoke("add_setlist_songs", {
+  invokeCommand("add_setlist_songs", {
     setlistSlot: setlist.slot,
     expectName: setlist.name,
     expectList: names(setlists),
@@ -582,52 +506,3 @@ export const addSetlistSongs = (
     expectSongNames: songs.map((s) => s.name),
     expectSongList: names(allSongs),
   });
-
-/**
- * Namespaced handle for screens that prefer `cmd.importLibrary(...)` over named
- * imports. Every wrapper above is also exported individually.
- */
-export const cmd = {
-  // Connection + app
-  appInfo,
-  connectDevice,
-  listPresets,
-  // Leveling
-  listLevelBlocks,
-  levelPreset,
-  listSceneLevelHandles,
-  listFootswitchSceneContexts,
-  // Profiles + store
-  getStore,
-  saveProfiles,
-  saveTargets,
-  setPlaybackLevel,
-  setAutoInstallUpdates,
-  calibrateProfile,
-  listPickupTopologies,
-  saveSupportBundle,
-  buildSupportBundle,
-  // LevelView — active preset + songs
-  readActivePreset,
-  currentGraph,
-  listSongs,
-  // Songs & setlists — device-backed CRUD
-  readSetlists,
-  listSetlistSongs,
-  removeSong,
-  addSetlist,
-  renameSetlist,
-  removeSetlist,
-  removeSetlistSong,
-  moveSetlistSong,
-  createSongFull,
-  updateSongFull,
-  addSetlistSongs,
-  // Copy blocks between presets
-  copyApply,
-  // Doctor (tone diagnosis)
-  doctorCheck,
-  doctorApply,
-  doctorSave,
-  doctorDiscard,
-} as const;

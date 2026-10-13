@@ -9,6 +9,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { DISCLAIMER_PERM_KEY } from "../lib/gates";
+import type { ConnectResult } from "../lib/types";
+import { mockCommands } from "./commandMocks";
 import type { LevelViewProps } from "../views/level/LevelView";
 
 vi.mock("../views/level", () => ({
@@ -29,13 +31,12 @@ describe("App — manual retry shares the single-flight guard (#305)", () => {
 
   it("a Scan while the mount attempt is still in flight starts no second connect", async () => {
     let fail: (e: Error) => void = () => undefined;
-    vi.mocked(invoke).mockImplementation((command: string) =>
-      command === "connect_device"
-        ? new Promise((_res, rej) => {
-            fail = rej;
-          })
-        : Promise.resolve(null),
-    );
+    mockCommands({
+      connect_device: () =>
+        new Promise<ConnectResult>((_res, rej) => {
+          fail = rej;
+        }),
+    });
     localStorage.setItem(DISCLAIMER_PERM_KEY, "1");
     render(
       <ThemeProvider>

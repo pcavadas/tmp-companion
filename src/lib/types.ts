@@ -77,13 +77,6 @@ export interface FootswitchInfo {
   level_params: LevelParamCandidate[];
 }
 
-export interface PresetScenes {
-  scenes: string[];
-  fs: (number | null)[];
-  /** Block-acting footswitches (empty when the preset has none). */
-  footswitches: FootswitchInfo[];
-}
-
 // ─── Loudness leveling ──────────────────────────────────────────────────────
 
 /** A level-job sent to `level_preset` inside `{ job: ... }`. Keys are snake_case
@@ -122,12 +115,72 @@ export interface BaseAnchor {
   targetLufs: number;
 }
 
-/** One entry in a setlist common-target job (mirrors lib::SetlistJobEntry).
- * Keys snake_case (nested inside `{ entries: [...] }`). */
-export interface SetlistJobEntry {
-  slot: number;
-  topology_id: string | null;
-  calibration_lufs: number | null;
+/** A candidate leveling knob for `level_scenes_apply_batched` — pass EVERY amp-level
+ * candidate; the backend picks per scene the one whose block is ON in that scene (scenes
+ * can swap which amp is live, and a bypassed amp's knob measures flat). camelCase wire
+ * form, like every arg struct of that command. */
+export interface LevelBlockCandidate {
+  groupId: string;
+  nodeId: string;
+  parameterId: string;
+  value: number;
+}
+
+/** One streamed scene-leveling row (`level_scenes_apply_batched`'s progress channel). */
+export interface SceneLevelProgressItem {
+  sceneSlot: number;
+  status: "active" | "done" | "error" | "cancelled";
+  result: LevelResult | null;
+  message: string | null;
+  /** A batch-wide caption ("Saving…" / "Verifying…") emitted at the deferred-save and
+   *  persist-verify starts, AFTER every scene in the group already resolved — this item
+   *  carries no valid `sceneSlot`/row identity of its own (never key against it), only
+   *  the caption. Omitted/null outside those two windows. */
+  tail?: string | null;
+}
+
+/** A user-chosen scene leveling control (mirrors the backend's `SceneHandleArg`) — the
+ * block param to sweep INSTEAD of the active amp's `outputLevel`. The ONE declaration
+ * (this wire type); `leveling.ts` re-exports it rather than re-declaring its own copy. */
+export interface SceneHandlePick {
+  groupId: string;
+  nodeId: string;
+  parameterId: string;
+}
+
+/** One scene job of the batched scene-leveling APPLY path. Each job carries its OWN
+ * per-scene target (camelCase nested keys, like `FootswitchLevelJobWire`), so a
+ * mixed-target preset still levels in ONE batch. */
+export interface SceneLevelJobWire {
+  sceneSlot: number;
+  targetLufs: number;
+  /** The user's OWN control for this scene, INSTEAD of the active amp's outputLevel.
+   *  Omitted/null = the amp path (every existing caller). */
+  handle?: SceneHandlePick | null;
+}
+
+/** One streamed footswitch-leveling row (`lib::FootswitchLevelProgressItem`). */
+export interface FootswitchLevelProgressItem {
+  switch: number;
+  status: "active" | "done" | "error" | "cancelled";
+  result: FootswitchLevelResult | null;
+  message: string | null;
+}
+
+/** One `level_footswitches_apply` job: a switch + the block param to solve. */
+export interface FootswitchLevelJobWire {
+  switch: number;
+  /** The leveling handle — every row levels now (the old verify-only "no handle" row is
+   *  gone backend-side; an empty/missing handle is a per-row error, not a measure-only
+   *  mode). */
+  levGroupId: string;
+  levNodeId: string;
+  levParameterId: string;
+  targetLufs: number;
+  /** THE SCENE CONTEXT this switch's sound is measured and solved in (D3): a 0-based
+   *  `scenes[]` wire slot, or omitted/null = the preset's BASE sound. Mirrors
+   *  `FootswitchLevelJob::scene_context`. */
+  sceneContext?: number | null;
 }
 
 /** Result of leveling one preset (mirrors leveller::LevelResult). */
@@ -338,13 +391,6 @@ export interface FootswitchLevelResult {
   reamp_warning?: string | null;
 }
 
-/** Result of leveling a whole setlist to one common target
- * (mirrors leveller::SetlistResult). */
-export interface SetlistResult {
-  target_lufs: number;
-  results: LevelResult[];
-}
-
 /** One control a scene row could be leveled on (mirrors `commands::SceneHandleCandidate`,
  * camelCase wire form — the struct's own `#[serde(rename_all = "camelCase")]`). Block
  * DISPLAY info is groupId/nodeId/fenderId only — the frontend resolves the friendly name
@@ -481,108 +527,6 @@ export interface TopologyInfo {
   id: string;
   label: string;
   instrument: string;
-}
-
-/** A bundled stimulus WAV (mirrors lib::SampleInfo). */
-export interface SampleInfo {
-  name: string;
-  path: string;
-}
-
-// ─── Library ───────────────────────────────────────────────────────────────
-
-/** Folder↔device reconciliation summary (mirrors library::ReconcileReport). */
-export interface ReconcileReport {
-  matched: number;
-  unmatched_files: string[];
-  unmatched_slots: string[];
-  ambiguous: string[];
-}
-
-/** Filter args for `library_filter`, sent inside `{ filter: ... }`. All
- * optional, snake_case (mirrors lib::FilterArgs). */
-export interface FilterArgs {
-  name_substr?: string;
-  amp?: string;
-  block?: string;
-  ir?: string;
-  sic?: string;
-  level_lt?: number;
-  level_gt?: number;
-}
-
-// ─── Bulk run engine ──────────────────────────────────────────────────────────
-
-/** Revert result for one preset (mirrors bulkrun::RevertEntry). */
-export interface RevertEntry {
-  list_index: number;
-  restored: boolean;
-  error: string | null;
-}
-
-/** One rename apply result (mirrors lib::RenameApplyRow). */
-export interface RenameApplyRow {
-  list_index: number;
-  new_name: string;
-  applied: boolean;
-  error: string | null;
-}
-
-// ─── Block templates ──────────────────────────────────────────────────────────
-
-/** A saved block template (mirrors blocklib::BlockTemplate). */
-export interface BlockTemplate {
-  name: string;
-  model: string;
-  params: Record<string, unknown>;
-}
-
-// ─── Spectral analysis + audition ─────────────────────────────────────────────
-
-/** Per-band energies + tonal flags for one preset (mirrors lib::SpectrumResult). */
-export interface SpectrumResult {
-  bands: number[];
-  flags: string[];
-}
-
-/** EQ-match result: source vs reference spectra + match deltas
- * (mirrors lib::EqMatchResult). */
-export interface EqMatchResult {
-  source_bands: number[];
-  reference_bands: number[];
-  distance: number;
-  deltas: number[];
-  matched_bands: number[];
-}
-
-/** A candidate ranked by spectral distance to a target (mirrors spectrum::SicRank). */
-export interface SicRank {
-  sicid: string;
-  distance: number;
-}
-
-// ─── Loudness audit + migration ───────────────────────────────────────────────
-
-/** One loudness-audit finding (mirrors lint::Finding). */
-export interface Finding {
-  list_index: number;
-  rule: string;
-  message: string;
-}
-
-/** One preset affected by a firmware migration (mirrors lib::MigrationRow). */
-export interface MigrationRow {
-  list_index: number | null;
-  name: string;
-  affected_blocks: string[];
-}
-
-/** One preset's migration-apply outcome (mirrors lib::MigrationApplyRow). */
-export interface MigrationApplyRow {
-  list_index: number;
-  swaps: number;
-  applied: boolean;
-  error: string | null;
 }
 
 // ─── Songs ────────────────────────────────────────────────────────────────────
@@ -884,34 +828,6 @@ export interface BackupBlock {
   fender_id: string;
 }
 
-/** One saved block ("block preset") from the device store (`lib::SavedBlock`).
- * Identity + cab config only — the saved `dspUnitParameters` live on the device and
- * are applied live by `index` via `ReplaceNodeWithBlock`. */
-export interface SavedBlock {
-  fender_id: string;
-  /** Position in this model's saved list = the `ReplaceNodeWithBlock` index. */
-  index: number;
-  name: string;
-  favorite: boolean;
-  dual_cabs_enabled: boolean;
-  cab1_id: string;
-  cab2_id: string;
-}
-
-/** One user impulse-response slot on the device (`lib::UserIr`). */
-export interface UserIr {
-  name: string;
-  exists: boolean;
-}
-
-/** One preset's outcome from a live bulk-replace run (`lib::BulkReplaceItem`). */
-export interface BulkReplaceItem {
-  slot: number;
-  name: string;
-  outcome: "updated" | "skipped" | "error";
-  detail: string;
-}
-
 // ─── Copy blocks between presets (`copy_apply`) ───────────────────────────────
 // The save path of the Copy feature: per target preset, an ordered list of structural
 // ops applied LIVE on a held session (`session::{replace_node, insert_node,
@@ -957,8 +873,8 @@ export interface CopyJob {
   ops: CopyOp[];
 }
 
-/** One preset's outcome from a `copy_apply` run (`lib::CopyApplyItem`). Like
- * `BulkReplaceItem` plus the signal graph the device's WORKING COPY showed in a re-prompt
+/** One preset's outcome from a `copy_apply` run (`lib::CopyApplyItem`): its slot, name,
+ * outcome and detail, plus the signal graph the device's WORKING COPY showed in a re-prompt
  * taken after the last confirmed op and BEFORE the save (the save itself is
  * unacknowledged), so the Copy view can patch its cached library in place (no re-scan)
  * after a write — `graph` is omitted when the preset wasn't saved, the edit left the block

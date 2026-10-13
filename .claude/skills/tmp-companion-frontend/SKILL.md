@@ -59,7 +59,7 @@ export const listLevelBlocks = (slot: number): Promise<LevelBlock[]> =>
 Two load-bearing rules:
 
 - **Casing:** top-level arg keys passed to `invoke` are **camelCase** (Tauri converts them to the Rust handler's snake_case params), but keys _inside_ a JSON payload struct stay **snake_case** to match `serde` (e.g. `target_lufs`, `topology_id`). Get this wrong and the command silently receives `undefined`.
-- **The type mirror:** `src/lib/types.ts` mirrors the Rust `serde` structs by hand — adding a Rust field without updating it **fails silently** (test mocks are untyped). `invoke.test.ts` asserts the exact wrapper count (`Object.keys(cmd).length`, hardcoded) — update it when you add **or remove** a wrapper IN the `cmd` namespace. Named-export-only wrappers outside `cmd` (the fire-and-forget leveling cancel lane `cancel{Preset,Scene,Footswitch}Leveling`) don't move the count — assert those with their own `expectCall`.
+- **The type mirror + command registry:** `src/lib/types.ts` mirrors the Rust `serde` structs by hand — adding a Rust field without updating it **fails silently**. `src/lib/commands.ts`'s `Commands` interface names every command's `{ args; ret }`; wrappers call the private `invokeCommand<K>`, so a wrong arg key or return type is a `tsc` error. A new command needs its `Commands` entry, its wrapper, its default in `DEFAULT_HANDLERS` (`src/__tests__/commandMocks.ts` — typed total, so `tsc` asks for it) and an `expectCall` in `invoke.test.ts`, whose last test checks the wrappers reach exactly the registry's commands.
 
 If a command doesn't exist yet, that's a backend change — coordinate it, don't fake data. Grep the existing seams before assuming one's missing. Detail: `references/gotchas.md`.
 
@@ -81,7 +81,7 @@ Tests are **Vitest + React Testing Library**, jsdom environment, rendered throug
     </ThemeProvider>,
   );
   ```
-- **`invoke` is globally mocked** in `src/__tests__/setup.ts` — `emptyResultFor(command)` returns a sensible empty shape per command so any screen mounts. Override per-test with `vi.mocked(invoke).mockImplementation(...)`, then assert against `vi.mocked(invoke).mock.calls` to verify a write happened.
+- **`invoke` is globally mocked** in `src/__tests__/setup.ts` — every command resolves its typed empty default (`DEFAULT_HANDLERS` in `commandMocks.ts`) so any screen mounts. Override per-test with `mockCommands({ get_store: () => makeStore({ targets }) })` (each handler's return is checked against the registry), then read `callsOf("save_targets")` / `fired(...)` to verify a write happened.
 - **Use REAL timers, not fake ones.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and hang forever polling a frozen clock.
 - After adding a test, run the suite (`bun run test`) — a green `tsc` + build does **not** run your test.
 

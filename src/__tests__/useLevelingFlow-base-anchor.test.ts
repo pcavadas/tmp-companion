@@ -13,7 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
-import type { SceneLevelProgressItem } from "../lib/invoke";
+import type { SceneLevelProgressItem } from "../lib/types";
 
 const h = vi.hoisted(() => ({
   levelPreset: vi.fn(),

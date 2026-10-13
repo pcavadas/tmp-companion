@@ -29,7 +29,7 @@ A macOS-first Tauri 2 desktop app (Rust backend + React/TypeScript frontend) tha
 ## Where things live
 
 - Backend: `src-tauri/src/` — `hid.rs` (seize), `session/` (handshake + commands; `mod.rs` maps its modules, and only the transport set `link`/`timing`/`handshake`/`backup_stream`/`diag` touches the wire clock), `proto.rs` (wire codec), `monitor.rs` (live session + startup snapshot), `leveller.rs` / `lufs.rs` / `audio.rs` (measurement), `audiograph.rs` (node ops), `commands/*.rs` (the `#[tauri::command]`s, one module per feature area), `bootstrap.rs` (builder/registration), `probe_api/*.rs` (probe entry points), `device_gate.rs` (device-op serialization), `lib.rs` (module wiring + a few e2e-feature-gated commands).
-- Frontend: `src/` — `views/` (one folder per tab), `device/` (the app-wide device stores: the one-per-connection library scan + live device state), `lib/invoke.ts` (typed command wrappers) + `lib/types.ts` (wire types), `ui/` (primitives + block art), `models/` (catalog data).
+- Frontend: `src/` — `views/` (one folder per tab), `device/` (the app-wide device stores: the one-per-connection library scan + live device state), `lib/invoke.ts` (typed command wrappers) + `lib/commands.ts` (the command registry: each command's args and return) + `lib/types.ts` (wire types), `ui/` (primitives + block art), `models/` (catalog data).
 - The `probe` and `gen_samples` binaries (`src-tauri/src/bin/`) are the headless hardware-revalidation and stimulus-generation tools.
 
 ### Module docs are the authority

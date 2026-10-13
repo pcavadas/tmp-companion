@@ -26,43 +26,32 @@ import { WithCard } from "./pickCardTestUtils";
 import { useSceneHandles } from "../views/level/useSceneHandles";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type {
-  ActiveGraph,
-  BackupReadResult,
+  BackupPresetRow,
   SceneHandleCandidate,
   SceneHandleRow,
 } from "../lib/types";
+import {
+  makeBackupPresetRow,
+  makeBackupRead,
+  mockCommands,
+} from "./commandMocks";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: () => Promise.resolve(() => undefined),
 }));
 
-const emptyGraph: ActiveGraph = {
-  name: null,
-  slot: null,
-  template: null,
-  split_mix: null,
-  nodes: [],
-  stages: [],
-};
-
-function backupRow(slot: number, name: string, sceneHandles: SceneHandleRow[]) {
-  return {
+function backupRow(
+  slot: number,
+  name: string,
+  sceneHandles: SceneHandleRow[],
+): BackupPresetRow {
+  return makeBackupPresetRow({
     slot,
     name,
-    preset_id: null,
     scene_count: sceneHandles.length,
     scenes: sceneHandles.map(() => ({ name: "Scene", fs: null })),
-    amp_candidates: [],
-    base_active_amp_count: 0,
-    blocks: [],
-    graph: emptyGraph,
-    footswitches: [],
-    silence_hint: null,
     scene_handles: sceneHandles,
-    base_handles: [],
-    scene_overrides: [],
-    fs_scene_contexts: [],
-  };
+  });
 }
 
 const BOOST_CANDIDATE: SceneHandleCandidate = {
@@ -78,26 +67,13 @@ const BOOST_CANDIDATE: SceneHandleCandidate = {
 };
 
 async function seedScan(
-  presets: ReturnType<typeof backupRow>[],
-  deviceRows: unknown[] = [],
+  presets: BackupPresetRow[],
+  deviceRows: SceneHandleRow[] = [],
 ) {
-  vi.mocked(invoke).mockImplementation((cmd: string) => {
-    if (cmd === "read_library_via_backup") {
-      const result: BackupReadResult = {
-        members: [],
-        db_bytes: 0,
-        total_rows: presets.length,
-        scene_mode: "test",
-        presets,
-        song_presets: [],
-        songs: [],
-        setlists: [],
-        setlist_songs: [],
-      };
-      return Promise.resolve(result);
-    }
-    if (cmd === "list_scene_level_handles") return Promise.resolve(deviceRows);
-    return Promise.resolve(null);
+  mockCommands({
+    read_library_via_backup: () =>
+      makeBackupRead({ total_rows: presets.length, presets }),
+    list_scene_level_handles: () => deviceRows,
   });
   await ensureLibraryScan();
 }

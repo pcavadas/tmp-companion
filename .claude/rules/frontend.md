@@ -22,9 +22,10 @@ Applies while editing anything under `src/`. Component-level how-to lives in the
 
 ## Contract mirrors — these fail SILENTLY
 
-Serialized Rust structs have hand-written TS mirrors in `src/lib/types.ts`. Adding a Rust field without updating the mirror fails with no error, because test mocks are untyped.
+Serialized Rust structs have hand-written TS mirrors in `src/lib/types.ts`, and `src/lib/commands.ts`'s `Commands` registry maps every command to its args and return. Both still mirror Rust by hand: adding a Rust field or param without updating them fails with no error. The registry does make the two FRONTEND sides agree — every `invoke.ts` wrapper goes through `invokeCommand<K>`, and the test mocks (`setup.ts` defaults via `DEFAULT_HANDLERS`, per-test `mockCommands({...})` in `src/__tests__/commandMocks.ts`) return `Commands[K]["ret"]`, so a wrong key or mock shape is a `tsc` error.
 
-- `invoke.test.ts` asserts the EXACT `cmd` wrapper count (`Object.keys(cmd).length`, hardcoded) — extend it when you add/remove a wrapper **in the `cmd` namespace**. Some wrappers are deliberately named-export-only and OUTSIDE `cmd` (the fire-and-forget `cancel{Preset,Scene,Footswitch}Leveling` lane), so adding those does NOT move the count — cover them with their own `expectCall`.
+- Adding/removing a command = its `Commands` entry + its wrapper + its `DEFAULT_HANDLERS` default (typed total, so `tsc` demands it) + an `expectCall` in `invoke.test.ts`. That file's last test checks the commands its wrappers reached equal the registry's keys.
+- New tests mock commands with `mockCommands({ … })` and the `make*()` factories, not a raw `vi.mocked(invoke).mockImplementation(...)` — that untyped override is the drift this layout removes.
 - `liveEvents.test.ts` asserts the WHOLE `LIVE_EVENT` registry via an exact `toEqual` — adding a `tmp://` event (registry entry + `onXxx` wrapper + `types.ts` payload mirror) must extend that `toEqual` too.
 
 ## Platform and framework traps

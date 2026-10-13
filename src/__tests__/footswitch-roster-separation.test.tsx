@@ -40,8 +40,15 @@ import { LevelView } from "../views/level";
 import { DoctorView } from "../views/doctor";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import { resetLiveDevice } from "../device/useLiveDevice";
+import type { FootswitchInfo } from "../lib/types";
+import {
+  makeBackupPresetRow,
+  makeBackupRead,
+  makeStore,
+  mockCommands,
+} from "./commandMocks";
 
-const SOLO_FOOTSWITCH = {
+const SOLO_FOOTSWITCH: FootswitchInfo = {
   switch: 4, // → tag FS5
   label: "Solo",
   link_group: null,
@@ -60,7 +67,7 @@ const SOLO_FOOTSWITCH = {
 
 // No level_params at all — the real incident's "PHASER" shape, standing in as
 // "Tuner" here (mirrors DoctorView.test.tsx's BARE_FOOTSWITCH fixture).
-const BARE_FOOTSWITCH = {
+const BARE_FOOTSWITCH: FootswitchInfo = {
   switch: 5, // → tag FS6
   label: "Tuner",
   link_group: null,
@@ -69,40 +76,20 @@ const BARE_FOOTSWITCH = {
 };
 
 function mockPresetWithBothFootswitches() {
-  vi.mocked(invoke).mockImplementation((command: string) => {
-    switch (command) {
-      case "list_presets":
-        return Promise.resolve([{ slot: 0, name: "Studio Clean" }]);
-      case "get_store":
-        return Promise.resolve({
-          profiles: [],
-          profile_by_slot: {},
-          targets: [{ name: "Rhythm", lufs: -26 }],
-        });
-      case "read_library_via_backup":
-        return Promise.resolve({
-          members: [],
-          db_bytes: 0,
-          total_rows: 1,
-          scene_mode: "test",
-          presets: [
-            {
-              slot: 1, // device slot 1 = list index 0
-              name: "Studio Clean",
-              scene_count: 0,
-              scenes: [],
-              blocks: [],
-              footswitches: [SOLO_FOOTSWITCH, BARE_FOOTSWITCH],
-            },
-          ],
-          song_presets: [],
-          songs: [],
-          setlists: [],
-          setlist_songs: [],
-        });
-      default:
-        return Promise.resolve(null);
-    }
+  mockCommands({
+    list_presets: () => [{ slot: 0, name: "Studio Clean" }],
+    get_store: () => makeStore({ targets: [{ name: "Rhythm", lufs: -26 }] }),
+    read_library_via_backup: () =>
+      makeBackupRead({
+        total_rows: 1,
+        presets: [
+          makeBackupPresetRow({
+            slot: 1, // device slot 1 = list index 0
+            name: "Studio Clean",
+            footswitches: [SOLO_FOOTSWITCH, BARE_FOOTSWITCH],
+          }),
+        ],
+      }),
   });
 }
 

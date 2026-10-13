@@ -32,7 +32,6 @@ import {
   cancelSceneLeveling,
   levelFootswitchesApply,
   cancelFootswitchLeveling,
-  toFootswitchJobWire,
 } from "../../lib/invoke";
 import { onLevelingLufs } from "../../lib/liveEvents";
 import { errMsg } from "../../lib/format";
@@ -41,6 +40,7 @@ import { resolveDeviceId } from "../../models/deviceId";
 import {
   buildLevelJob,
   sortRunItems,
+  toFootswitchJobWire,
   type RunItem,
   type SetupOption,
 } from "./leveling";

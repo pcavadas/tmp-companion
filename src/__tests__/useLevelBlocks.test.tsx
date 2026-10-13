@@ -26,46 +26,26 @@ import { WithCard } from "./pickCardTestUtils";
 import { useLevelBlocks } from "../views/level/useLevelBlocks";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type {
-  ActiveGraph,
-  BackupReadResult,
+  BackupPresetRow,
+  LevelBlock,
   SceneHandleCandidate,
 } from "../lib/types";
+import {
+  makeBackupPresetRow,
+  makeBackupRead,
+  mockCommands,
+} from "./commandMocks";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: () => Promise.resolve(() => undefined),
 }));
 
-const emptyGraph: ActiveGraph = {
-  name: null,
-  slot: null,
-  template: null,
-  split_mix: null,
-  nodes: [],
-  stages: [],
-};
-
 function backupRow(
   slot: number,
   name: string,
   baseHandles: SceneHandleCandidate[],
-) {
-  return {
-    slot,
-    name,
-    preset_id: null,
-    scene_count: 0,
-    scenes: [],
-    amp_candidates: [],
-    base_active_amp_count: 0,
-    blocks: [],
-    graph: emptyGraph,
-    footswitches: [],
-    silence_hint: null,
-    scene_handles: [],
-    base_handles: baseHandles,
-    scene_overrides: [],
-    fs_scene_contexts: [],
-  };
+): BackupPresetRow {
+  return makeBackupPresetRow({ slot, name, base_handles: baseHandles });
 }
 
 const AMP_CANDIDATE: SceneHandleCandidate = {
@@ -81,26 +61,13 @@ const AMP_CANDIDATE: SceneHandleCandidate = {
 };
 
 async function seedScan(
-  presets: ReturnType<typeof backupRow>[],
-  deviceBlocks: unknown[] = [],
+  presets: BackupPresetRow[],
+  deviceBlocks: LevelBlock[] = [],
 ) {
-  vi.mocked(invoke).mockImplementation((cmd: string) => {
-    if (cmd === "read_library_via_backup") {
-      const result: BackupReadResult = {
-        members: [],
-        db_bytes: 0,
-        total_rows: presets.length,
-        scene_mode: "test",
-        presets,
-        song_presets: [],
-        songs: [],
-        setlists: [],
-        setlist_songs: [],
-      };
-      return Promise.resolve(result);
-    }
-    if (cmd === "list_level_blocks") return Promise.resolve(deviceBlocks);
-    return Promise.resolve(null);
+  mockCommands({
+    read_library_via_backup: () =>
+      makeBackupRead({ total_rows: presets.length, presets }),
+    list_level_blocks: () => deviceBlocks,
   });
   await ensureLibraryScan();
 }

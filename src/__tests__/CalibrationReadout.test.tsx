@@ -6,11 +6,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { invoke } from "@tauri-apps/api/core";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { InstrumentRow } from "../views/settings/InstrumentRow";
 import type { Profile } from "../lib/types";
+import { mockCommands } from "./commandMocks";
 
 const profile: Profile = {
   id: "tele",
@@ -21,18 +21,16 @@ const profile: Profile = {
 
 describe("InstrumentRow — capture quality readout", () => {
   it("renders spread + covered/uncovered band dots + the sparse-take hint", async () => {
-    vi.mocked(invoke).mockImplementation((command: string) =>
-      command === "calibrate_profile"
-        ? Promise.resolve({
-            lufs: -18.2,
-            clipped: false,
-            stimulus_shortfall_lu: null,
-            spread_lu: 4.7,
-            band_coverage: [true, true, false, false, true, true],
-            band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
-          })
-        : Promise.resolve(null),
-    );
+    mockCommands({
+      calibrate_profile: () => ({
+        lufs: -18.2,
+        clipped: false,
+        stimulus_shortfall_lu: null,
+        spread_lu: 4.7,
+        band_coverage: [true, true, false, false, true, true],
+        band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
+      }),
+    });
     render(
       <ThemeProvider>
         <InstrumentRow
@@ -61,18 +59,16 @@ describe("InstrumentRow — capture quality readout", () => {
   });
 
   it("no sparse-take hint when every band was covered", async () => {
-    vi.mocked(invoke).mockImplementation((command: string) =>
-      command === "calibrate_profile"
-        ? Promise.resolve({
-            lufs: -18.2,
-            clipped: false,
-            stimulus_shortfall_lu: null,
-            spread_lu: 2.1,
-            band_coverage: [true, true, true, true, true, true],
-            band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
-          })
-        : Promise.resolve(null),
-    );
+    mockCommands({
+      calibrate_profile: () => ({
+        lufs: -18.2,
+        clipped: false,
+        stimulus_shortfall_lu: null,
+        spread_lu: 2.1,
+        band_coverage: [true, true, true, true, true, true],
+        band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
+      }),
+    });
     render(
       <ThemeProvider>
         <InstrumentRow
@@ -93,18 +89,16 @@ describe("InstrumentRow — capture quality readout", () => {
   });
 
   it("no sparse-take hint when ONLY Air is uncovered (a passive DI never covers 6–12 kHz)", async () => {
-    vi.mocked(invoke).mockImplementation((command: string) =>
-      command === "calibrate_profile"
-        ? Promise.resolve({
-            lufs: -21.4,
-            clipped: false,
-            stimulus_shortfall_lu: null,
-            spread_lu: 5.2,
-            band_coverage: [true, true, true, true, true, false],
-            band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
-          })
-        : Promise.resolve(null),
-    );
+    mockCommands({
+      calibrate_profile: () => ({
+        lufs: -21.4,
+        clipped: false,
+        stimulus_shortfall_lu: null,
+        spread_lu: 5.2,
+        band_coverage: [true, true, true, true, true, false],
+        band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
+      }),
+    });
     render(
       <ThemeProvider>
         <InstrumentRow

@@ -20,15 +20,20 @@ Run with `bun run test` (`vitest run`). Tests match `src/**/*.{test,spec}.{ts,ts
 Every screen calls Tauri commands on mount, so `setup.ts` mocks `@tauri-apps/api/core` once, globally:
 
 ```ts
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn((command: string) => Promise.resolve(emptyResultFor(command))),
-  Channel: MockChannel,
-}));
+vi.mock("@tauri-apps/api/core", () => {
+  class MockChannel {
+    onmessage: ((message: unknown) => void) | null = null;
+  }
+  return {
+    invoke: vi.fn((command: string, args?: unknown) =>
+      resolveCommand({}, command, args),
+    ),
+    Channel: MockChannel,
+  };
+});
 ```
 
-`emptyResultFor(command)` is a big `switch` returning a sensible **empty** shape per command (e.g. `list_presets → []`, `get_store → { profiles: [], profile_by_slot: {}, targets: [] }`). This lets any view mount and render its empty state without a real backend. setup.ts also shims `localStorage` (jsdom lacks it) and a `MockChannel` (for streamed commands).
-
-**When you add a new command** that a view calls on mount, add its empty shape to `emptyResultFor` — otherwise it resolves `null` and the view may throw.
+`resolveCommand` (`src/__tests__/commandMocks.ts`) answers each command from `DEFAULT_HANDLERS`, its **empty** shape (e.g. `list_presets → []`, `get_store → makeStore()`). `DEFAULT_HANDLERS` is typed `Handlers` — one handler per `Commands` key, each returning `Commands[K]["ret"]` — so a wrong default is a `tsc` error and a new command can't be left without one. A command outside the registry (a plugin's own IPC) resolves `null`. setup.ts also shims `localStorage` (jsdom lacks it).
 
 ## Rendering a view
 
@@ -48,22 +53,14 @@ function renderView() {
 
 ## Feeding real data + asserting a write
 
-Override the global mock per-test with `mockImplementation`, returning real shapes for the commands under test and falling through for the rest:
+Override the global mock per-test with `mockCommands`, returning real shapes for the commands under test; every other command falls through to its default. Handlers get the command's typed args and must return its typed result (or a promise of it; a `throw` rejects like a backend `Err`), and the `make*()` factories build complete shapes:
 
 ```ts
-import { invoke } from "@tauri-apps/api/core";
+import { mockCommands, makeStore } from "./commandMocks";
 
-function mockStore(targets = SEED_TARGETS, playback = "stage") {
-  vi.mocked(invoke).mockImplementation((command: string) => {
-    if (command === "get_store")
-      return Promise.resolve({
-        profiles: [],
-        profile_by_slot: {},
-        targets,
-        playback_level: playback,
-      });
-    if (command === "list_pickup_topologies") return Promise.resolve([]);
-    return Promise.resolve(null);
+function mockStore(targets = SEED_TARGETS, playback: PlaybackLevel = "stage") {
+  mockCommands({
+    get_store: () => makeStore({ targets, playback_level: playback }),
   });
 }
 
@@ -73,12 +70,12 @@ beforeEach(() => {
 });
 ```
 
-Assert that a command fired with the right payload by reading the recorded calls:
+Assert that a command fired with the right payload by reading the recorded calls — `callsOf(command)` returns each call's args, typed:
 
 ```ts
-const lastArgs = (command: string) => {
-  const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === command);
-  return calls.length ? calls[calls.length - 1][1] : undefined;
+const lastArgs = <K extends CommandName>(command: K) => {
+  const calls = callsOf(command);
+  return calls.length ? calls[calls.length - 1] : undefined;
 };
 
 it("persists the picked level via set_playback_level", async () => {
@@ -99,10 +96,10 @@ This is how you verify the camelCase-top-level / snake_case-nested arg contract 
 - **Use REAL timers, never `vi.useFakeTimers()`.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and then run their own poll interval **and** their own timeout on the frozen clock — so they hang forever. Let async resolve naturally; short mock delays are fine to wait out with `findBy*`/`waitFor` on real timers.
 - **Prefer async `findBy*`** for anything that appears after a mount fetch (`await screen.findByText("Rhythm")`), then synchronous `getBy*` for siblings already present.
 - **`.at(-1)` may not typecheck** depending on the lib target — index with `calls[calls.length - 1]` instead.
-- A passing test is NOT implied by a green `tsc`/build — `bun run test` is its own step. `invoke.test.ts`'s exact `cmd` wrapper-count assertion is covered in `SKILL.md`'s "Wiring a Tauri command into the UI" section — bump it on add/remove, and mind the named-export-only exception there.
+- A passing test is NOT implied by a green `tsc`/build — `bun run test` is its own step. `invoke.test.ts` pins every wrapper's call shape, and its last test checks the wrappers reach exactly the `Commands` registry — see `SKILL.md`'s "Wiring a Tauri command into the UI" section.
 - Tests render under jsdom — no real layout, so geometry-driven code (e.g. a slider reading `getBoundingClientRect()`) returns zeros; assert on values/roles/text, not pixel positions. **Sharper case: jsdom has no `SVGGraphicsElement.getBBox`, so a component that MEASURES SVG geometry in a layout effect — notably `HalfStackArt` (it sizes head-over-cab via `getBBox`) — THROWS on `render()` (not zeros).** Stub it in a `beforeAll` (`(SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox = () => ({ x: 0, y: 0, width: 72, height: 100 }) as DOMRect`), as `BlockArt.test.tsx` / `models-catalog.test.tsx` already do — or assert on `resolveBlockArt`-resolved data (glyph/tone/pairing) instead of rendering the half-stack.
 - **Full-wizard (Level/Copy) test traps** (driving disclaimer→setup→run→summary, or choose→place→save, end to end): **(a)** a `level_preset` call's `job`/`LevelJob` payload has **snake_case** nested keys (`target_lufs`, `ref_level`) — assert `job.target_lufs`, not `targetLufs` (the camelCase-top / snake_case-nested contract; `buildLevelJob` in `leveling.ts` is the source). **(b)** `CopyView` and the **Songs** Presets axis both reuse **`device/libraryScan`** — there is NO per-view `libraryScan`; mocking/resetting the wrong module path leaves the consuming view rendering empty (no error). **(c)** Block-tile captions run through `normalizeShort` (`models/blockArt.ts`), so a tile renders e.g. `"65 TWN"`, not `"65TWN"` — query the normalized caption; and preset names appear in BOTH the Copy-from and Copy-to lists, so use `findAllByText` + positional select, not `findByText`.
-- **The `libraryScan` scan is App-owned, so an isolated view test must SEED it.** Because `App.tsx` (not the view) fires `ensureLibraryScan()` on the connect edge, a view rendered ALONE in a test (`<LevelView/>` / `<CopyView/>` / `<SongsView/>`, no `<App>`) never starts the scan — any `findBy*`/`waitFor` on scan-derived data (scenes, blocks, the Songs Presets axis) HANGS with no error. The render helper must do App's job: `void ensureLibraryScan()` AFTER `render()` (when `connected`), with `read_library_via_backup` mocked to a COMPLETE `BackupReadResult` (every field — an untyped mock that omits a field, e.g. a new `footswitches: []` per preset row (the case that broke 5+ mocks this last add) or `song_presets`, throws inside the store and is swallowed → empty render), plus `resetLibraryScan()` in `beforeEach` for module-state hygiene. `LevelView.test.tsx` / `SongsView.test.tsx` are the worked examples. **`useLiveDevice` is the SAME story** — it's a module store too, so `beforeEach` must ALSO call its test-only `resetLiveDevice()` (state reset + event-bridge teardown). The `@tauri-apps/api/event` mock clears its listener registry per case, so the live bridge must be re-armable; without the reset the store leaks live state across cases and the re-mounted bridge has no listeners. Emit a live push in a test via the captured listener (`listeners.get("tmp://signal-chain")?.({ payload: graph })`) inside `act(...)`.
+- **The `libraryScan` scan is App-owned, so an isolated view test must SEED it.** Because `App.tsx` (not the view) fires `ensureLibraryScan()` on the connect edge, a view rendered ALONE in a test (`<LevelView/>` / `<CopyView/>` / `<SongsView/>`, no `<App>`) never starts the scan — any `findBy*`/`waitFor` on scan-derived data (scenes, blocks, the Songs Presets axis) HANGS with no error. The render helper must do App's job: `void ensureLibraryScan()` AFTER `render()` (when `connected`), with `read_library_via_backup` mocked to a COMPLETE `BackupReadResult` (build it with `makeBackupRead({ presets: [makeBackupPresetRow({...})] })` through `mockCommands`, so `tsc` catches a missing field — an untyped mock that omits one, e.g. a new `footswitches: []` per preset row (the case that broke 5+ mocks this last add) or `song_presets`, throws inside the store and is swallowed → empty render), plus `resetLibraryScan()` in `beforeEach` for module-state hygiene. `LevelView.test.tsx` / `SongsView.test.tsx` are the worked examples. **`useLiveDevice` is the SAME story** — it's a module store too, so `beforeEach` must ALSO call its test-only `resetLiveDevice()` (state reset + event-bridge teardown). The `@tauri-apps/api/event` mock clears its listener registry per case, so the live bridge must be re-armable; without the reset the store leaks live state across cases and the re-mounted bridge has no listeners. Emit a live push in a test via the captured listener (`listeners.get("tmp://signal-chain")?.({ payload: graph })`) inside `act(...)`.
 - **Asserting "the parent passed prop X to a child component" — mock the child and capture props.** When the bug is a dropped/wrong prop (not visible text or geometry), `vi.mock("../ui/BlockArt", () => ({ BlockArt: (p) => { captured.push(p); return null; }, HalfStackArt: () => null }))`, render the parent, then assert `captured.some(p => p.footswitch === "plate")`. This covers the whole adapter→child path with NO brittle SVG-geometry assertion and NO production test-seam, and the red is HONEST — the captured props genuinely lack the field before the fix (vs asserting a `data-*` attribute that doesn't exist yet, which fails on absence not on the real defect). `src/__tests__/SignalChainArtFields.test.tsx` is the worked example (it proved the signal-chain strip feeds `BlockArt` the full art prop set). Mocking `BlockArt` also sidesteps the `getBBox` stub — no real SVG renders.
 
 ## Worked reference
