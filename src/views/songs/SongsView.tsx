@@ -850,3 +850,5 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
     </div>
   );
 }
+
+export default SongsView;

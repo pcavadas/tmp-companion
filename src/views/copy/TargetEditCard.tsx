@@ -124,3 +124,5 @@ export function TargetEditCard({
     </div>
   );
 }
+
+export default TargetEditCard;

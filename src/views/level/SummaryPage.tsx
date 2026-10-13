@@ -675,3 +675,5 @@ export function SummaryPage({
     </LevelPage>
   );
 }
+
+export default SummaryPage;

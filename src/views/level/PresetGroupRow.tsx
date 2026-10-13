@@ -194,3 +194,5 @@ export function PresetGroupRow({
     </div>
   );
 }
+
+export default PresetGroupRow;

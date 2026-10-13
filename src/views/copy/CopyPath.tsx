@@ -66,3 +66,5 @@ export function CopyPath({ graph, onTap, selectedUid }: CopyPathProps) {
     </div>
   );
 }
+
+export default CopyPath;

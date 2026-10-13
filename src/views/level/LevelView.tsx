@@ -388,3 +388,5 @@ export function LevelView({
     </div>
   );
 }
+
+export default LevelView;

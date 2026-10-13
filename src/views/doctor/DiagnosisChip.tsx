@@ -43,3 +43,5 @@ export function DiagnosisChip({
     </span>
   );
 }
+
+export default DiagnosisChip;

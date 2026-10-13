@@ -172,3 +172,5 @@ export function MatchCard({
     </div>
   );
 }
+
+export default MatchCard;

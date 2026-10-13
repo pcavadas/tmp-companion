@@ -1136,3 +1136,5 @@ function SignalChainViewImpl({
 }
 
 export const SignalChainView = React.memo(SignalChainViewImpl);
+
+export default SignalChainView;

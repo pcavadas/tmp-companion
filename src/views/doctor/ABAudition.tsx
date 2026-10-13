@@ -155,3 +155,5 @@ export function ABAudition({ beforeClip, afterClip }: ABAuditionProps) {
     </div>
   );
 }
+
+export default ABAudition;

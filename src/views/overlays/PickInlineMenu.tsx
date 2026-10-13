@@ -37,3 +37,5 @@ export function PickInlineMenu({ onClose, children }: PickInlineMenuProps) {
     </>
   );
 }
+
+export default PickInlineMenu;

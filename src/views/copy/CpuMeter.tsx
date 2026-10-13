@@ -59,3 +59,5 @@ export function CpuMeter({ value }: CpuMeterProps) {
     </div>
   );
 }
+
+export default CpuMeter;

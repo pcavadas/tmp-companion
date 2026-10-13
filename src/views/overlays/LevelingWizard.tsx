@@ -128,3 +128,5 @@ export function LevelingWizard({
     />
   );
 }
+
+export default LevelingWizard;

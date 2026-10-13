@@ -374,3 +374,5 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
     </div>
   );
 }
+
+export default CopyView;

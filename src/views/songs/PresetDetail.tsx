@@ -159,3 +159,5 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
     </div>
   );
 }
+
+export default PresetDetail;

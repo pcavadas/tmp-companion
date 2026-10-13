@@ -116,3 +116,5 @@ export function ContextFooter({
     />
   );
 }
+
+export default ContextFooter;

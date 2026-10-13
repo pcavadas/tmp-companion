@@ -397,3 +397,5 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
     </div>
   );
 }
+
+export default ActiveSignalChainView;

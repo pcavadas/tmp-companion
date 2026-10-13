@@ -15,3 +15,5 @@ export type BlockParamRowProps = Omit<PickListRowProps, "label"> & {
 export function BlockParamRow({ paramLabel, ...rowProps }: BlockParamRowProps) {
   return <PickListRow {...rowProps} label={paramLabel} />;
 }
+
+export default BlockParamRow;

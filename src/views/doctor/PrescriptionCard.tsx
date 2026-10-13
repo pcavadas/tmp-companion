@@ -477,3 +477,5 @@ export function PrescriptionCard({
     </div>
   );
 }
+
+export default PrescriptionCard;

@@ -65,3 +65,5 @@ export function BandSpark({
     </span>
   );
 }
+
+export default BandSpark;

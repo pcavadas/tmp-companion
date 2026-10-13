@@ -107,3 +107,5 @@ export function PresetFindingRow({
     </div>
   );
 }
+
+export default PresetFindingRow;

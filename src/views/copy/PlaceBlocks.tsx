@@ -341,3 +341,5 @@ export function PlaceBlocks({
     </div>
   );
 }
+
+export default PlaceBlocks;

@@ -59,3 +59,5 @@ export function LiveReadout({
     </div>
   );
 }
+
+export default LiveReadout;

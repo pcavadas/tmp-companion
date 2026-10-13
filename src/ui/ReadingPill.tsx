@@ -40,3 +40,5 @@ export function ReadingPill({ label = "Reading presets…" }: ReadingPillProps) 
     </span>
   );
 }
+
+export default ReadingPill;

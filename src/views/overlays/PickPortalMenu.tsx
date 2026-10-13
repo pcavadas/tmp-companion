@@ -67,3 +67,5 @@ export function PickPortalMenu({
     cardEl,
   );
 }
+
+export default PickPortalMenu;

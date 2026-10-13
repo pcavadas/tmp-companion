@@ -50,3 +50,5 @@ export function BackupAckLabel({
     </label>
   );
 }
+
+export default BackupAckLabel;

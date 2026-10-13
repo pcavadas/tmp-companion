@@ -27,3 +27,5 @@ export function PickWarnNote({ children }: { children: ReactNode }) {
     </span>
   );
 }
+
+export default PickWarnNote;

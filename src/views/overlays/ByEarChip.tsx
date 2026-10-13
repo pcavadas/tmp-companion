@@ -9,3 +9,5 @@ import { Tag } from "../../ui/Tag";
 export function ByEarChip() {
   return <Tag tone="accent">by ear</Tag>;
 }
+
+export default ByEarChip;

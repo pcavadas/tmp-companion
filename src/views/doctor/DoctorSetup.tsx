@@ -304,3 +304,5 @@ export function DoctorSetup({
     </div>
   );
 }
+
+export default DoctorSetup;

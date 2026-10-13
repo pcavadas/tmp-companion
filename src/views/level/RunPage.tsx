@@ -401,3 +401,5 @@ export function RunPage({
     </LevelPage>
   );
 }
+
+export default RunPage;

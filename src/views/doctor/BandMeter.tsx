@@ -91,3 +91,5 @@ export function BandMeter({
     </div>
   );
 }
+
+export default BandMeter;
