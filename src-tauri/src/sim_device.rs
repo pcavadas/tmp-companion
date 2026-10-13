@@ -2646,8 +2646,10 @@ impl crate::rig::Rig for LiveSimRig {
 
     /// Offline: drive the physics-faithful capture model (the real loudness law + a
     /// scene-relative outputLevel term), reading the installed SimDevice's DSP state, so the
-    /// offline suite is a genuine loudness oracle. `tail_ms` unused (the model is
-    /// deterministic, no decay tail to integrate).
+    /// offline suite is a genuine loudness oracle. The model has no decay, but the capture
+    /// still runs `tail_ms` past the stimulus as a real one does (silence there): the Doctor
+    /// refuses a capture that stops before the sound finished. The model scales the PADDED
+    /// signal, so its measured loudness stays exactly the modeled one.
     fn capture(
         &self,
         stimulus: &[f32],
@@ -2655,7 +2657,11 @@ impl crate::rig::Rig for LiveSimRig {
         tail_ms: u64,
     ) -> Result<crate::audio::Capture, crate::error::LevelError> {
         crate::trace::capture(crate::trace::Backend::Sim, stimulus, rate, tail_ms, || {
-            e2e_capture(stimulus, rate)
+            let tail = (tail_ms as usize).saturating_mul(rate as usize) / 1000;
+            let mut padded = Vec::with_capacity(stimulus.len() + tail);
+            padded.extend_from_slice(stimulus);
+            padded.resize(stimulus.len() + tail, 0.0);
+            e2e_capture(&padded, rate)
         })
     }
 

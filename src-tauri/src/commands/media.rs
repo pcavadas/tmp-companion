@@ -36,8 +36,18 @@ pub(crate) fn base64_encode(data: &[u8]) -> String {
 
 /// Encode mono f32 samples as a 32-bit-float WAV (in memory).
 pub(crate) fn wav_bytes(samples: &[f32], rate: u32) -> Result<Vec<u8>, String> {
+    wav_bytes_channels(samples, 1, rate)
+}
+
+/// Encode `channels`-interleaved f32 samples as a 32-bit-float WAV (in memory).
+pub(crate) fn wav_bytes_channels(
+    interleaved: &[f32],
+    channels: u16,
+    rate: u32,
+) -> Result<Vec<u8>, String> {
+    let samples = interleaved;
     let spec = hound::WavSpec {
-        channels: 1,
+        channels,
         sample_rate: rate,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,

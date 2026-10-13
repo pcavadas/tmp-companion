@@ -207,7 +207,7 @@ pub fn doctor_capture(
     tail_ms: u64,
     skip_load: bool,
 ) -> Result<(Vec<f32>, u32), LevelError> {
-    Ok(to_stereo(capture_full_at_params(
+    Ok(to_stereo(doctor_capture_raw(
         slot,
         scene,
         force_bypass,
@@ -217,6 +217,32 @@ pub fn doctor_capture(
         tail_ms,
         skip_load,
     )?))
+}
+
+/// [`doctor_capture`] without the mixdown: the raw capture, for the apply A/B, which
+/// plays the processed stereo pair back and measures both its loudness and its
+/// profile (`commands/doctor.rs`'s `ab_side`).
+#[allow(clippy::too_many_arguments)]
+pub fn doctor_capture_raw(
+    slot: ListIndex,
+    scene: Option<u32>,
+    force_bypass: &[(String, String, bool)],
+    fs_params: &[(String, String, String, f32)],
+    stimulus: &[f32],
+    ref_level: Option<f32>,
+    tail_ms: u64,
+    skip_load: bool,
+) -> Result<audio::Capture, LevelError> {
+    capture_full_at_params(
+        slot,
+        scene,
+        force_bypass,
+        fs_params,
+        stimulus,
+        ref_level,
+        tail_ms,
+        skip_load,
+    )
 }
 
 /// Like [`doctor_capture`], but ALSO returns the capture's stereo-measured
@@ -326,26 +352,20 @@ pub fn doctor_capture_current(
 /// footswitch's `param`-function `valueA` writes on THIS session (the BEFORE
 /// capture wrote them on its own throwaway connection, so without the re-play
 /// the A/B would audition a different param state than the diagnosis) — written
-/// before the isolation bypasses, `measure_fs_state`'s order. Stereo mixdown:
-/// see `to_stereo`.
-pub fn doctor_capture_on_session(
+/// before the isolation bypasses, `measure_fs_state`'s order. Returns the raw capture
+/// (see [`doctor_capture_raw`]).
+pub fn doctor_capture_on_session_raw(
     s: &mut Session,
     force_bypass: &[(String, String, bool)],
     fs_params: &[(String, String, String, f32)],
     stimulus: &[f32],
     ref_level: Option<f32>,
     tail_ms: u64,
-) -> Result<(Vec<f32>, u32), LevelError> {
+) -> Result<audio::Capture, LevelError> {
     for (g, n, p, v) in fs_params {
         s.change_parameter(g, n, p, *v)?;
     }
-    Ok(to_stereo(capture_on_session(
-        s,
-        force_bypass,
-        stimulus,
-        ref_level,
-        tail_ms,
-    )?))
+    capture_on_session(s, force_bypass, stimulus, ref_level, tail_ms)
 }
 
 /// The Doctor onset seam — see `doctor_onset`'s doc and the fixture's header

@@ -24,10 +24,12 @@ import {
   type StripGraph,
 } from "../SignalChainView";
 import { ABAudition } from "./ABAudition";
+import { findingCheckLine } from "./abReport";
 import { useApplyLock } from "./applyLock";
 import type {
   DoctorChainPreview,
   DoctorInputArg,
+  DoctorDiagRef,
   DoctorRx,
   DoctorRxKind,
   FootswitchInfo,
@@ -90,6 +92,10 @@ export interface PrescriptionCardProps {
    *  setup) — the A/B must replay the SAME stimulus the diagnosis used.
    *  Omitted (→ default stimulus) only by scene-consistency cards. */
   stimulus?: DoctorStimulus;
+  /** The finding this card treats and its display label — the A/B re-measures
+   *  it on both clips and says what the fix did. Omitted by the Match-reference
+   *  and scene-consistency cards. */
+  diag?: DoctorDiagRef & { label: string };
 }
 
 /** The stimulus identity a diagnosed sound was measured with — the run's own
@@ -118,6 +124,7 @@ export function PrescriptionCard({
   nodes = [],
   footswitches = [],
   stimulus = DEFAULT_STIMULUS,
+  diag,
 }: PrescriptionCardProps) {
   const { t } = useTheme();
   // The lifecycle (applying → applied → saving → saved) lives on the results
@@ -201,6 +208,7 @@ export function PrescriptionCard({
         nodes,
         footswitches,
         sceneOverrides: soundSceneOverrides,
+        diag: diag == null ? null : { key: diag.key, level: diag.level },
       });
       // `finishApply` refuses when an unmount already discarded this card
       // mid-flight (it found the card applying and dropped it) — the edit is
@@ -306,6 +314,8 @@ export function PrescriptionCard({
     state?.phase === "discarding"
   ) {
     const clips = state.clips;
+    const findingLine =
+      diag == null ? null : findingCheckLine(diag.label, clips.finding);
     return (
       <div style={card}>
         <span
@@ -326,7 +336,22 @@ export function PrescriptionCard({
           <ABAudition
             beforeClip={clips.beforeClip}
             afterClip={clips.afterClip}
+            levels={clips.levels}
           />
+          {findingLine != null && (
+            <div
+              data-testid="doctor-finding-check"
+              style={{
+                fontFamily: t.sans,
+                fontSize: t.fsLabel,
+                color: t.ink2,
+                marginTop: t.space4,
+                lineHeight: 1.5,
+              }}
+            >
+              {findingLine}
+            </div>
+          )}
         </div>
         <div
           style={{

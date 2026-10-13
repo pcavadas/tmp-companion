@@ -1162,13 +1162,18 @@ pub fn output_coverage_with_body(
     if signal_start < MIN_FLOOR_SAMPLES || signal_start >= samples.len() {
         return vec![true; bands.len()];
     }
-    let floor = crate::psd::welch_psd(&samples[..signal_start], rate as f32).band_powers(bands);
-    let body = body_psd.band_powers(bands);
+    // The floor window (~11,100 samples behind the 200 ms pad) fits only one
+    // full-length Welch segment, whose single periodogram scattered the narrow low
+    // bands' floor by 1.5–2.5 dB run to run (#258); the floor estimator averages
+    // short segments instead. The two PSDs then sit on different grids, so the
+    // bands compare by mean density (equal to the band-power ratio on one grid).
+    let floor = crate::psd::welch_psd_floor(&samples[..signal_start], rate as f32);
     let margin = 10f64.powf(OUTPUT_SNR_MARGIN_DB / 10.0);
-    floor
+    bands
         .iter()
-        .zip(&body)
-        .map(|(&f, &b)| b > f * margin)
+        .map(|&(lo, hi)| {
+            body_psd.band_mean_density(lo, hi) > floor.band_mean_density(lo, hi) * margin
+        })
         .collect()
 }
 
@@ -1834,10 +1839,10 @@ fn eq_move(
             // Unknown current values → the write is absolute, say so honestly.
             let bands: Vec<String> = gains.iter().map(|(p, _)| eq_band_label(p)).collect();
             format!(
-                "Set the {} band{} to {:.0} dB",
+                "Set the {} band{} to {} dB",
                 bands.join(" and "),
                 if bands.len() > 1 { "s" } else { "" },
-                gains[0].1
+                db_amount(gains[0].1)
             )
         };
         return Some(Rx {
@@ -2092,24 +2097,67 @@ fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
     })
 }
 
+/// The EQ cut (dB, positive) a band rule prescribes for a finding `margin_db`
+/// past its gate: `base_db` (the fixed cut the rule shipped with, which the
+/// hardware defect suite cleared) plus the margin, rounded to 0.5 dB and capped
+/// at `max_db`. A finding just past its gate keeps the shipped cut, and a larger
+/// excess gets a proportionally deeper one (#256) — never a shallower cut than
+/// before. A non-finite or negative margin reads as 0.
+fn sized_cut_db(base_db: f64, margin_db: f64, max_db: f64) -> f64 {
+    let margin = if margin_db.is_finite() {
+        margin_db.max(0.0)
+    } else {
+        0.0
+    };
+    (((base_db + margin) * 2.0).round() / 2.0).clamp(base_db, max_db)
+}
+
+/// Shipped (minimum) muddy cut at 250 Hz, dB.
+const MUDDY_CUT_DB: f64 = 3.0;
+/// Shipped (minimum) harsh cut at 1 kHz + 2 kHz, dB.
+const HARSH_CUT_DB: f64 = 2.0;
+/// Deepest cut a sized band-rule prescription writes, dB — half the EQ-10's
+/// ±12 dB range, and the Match-reference card's move ceiling.
+const MAX_SIZED_CUT_DB: f64 = 6.0;
+
+/// A dB amount for copy: "3" or "4.5".
+fn db_amount(db: f64) -> String {
+    if db.fract() == 0.0 {
+        format!("{db:.0}")
+    } else {
+        format!("{db:.1}")
+    }
+}
+
 /// Generate the prescriptions for one diagnosis against the ACTUAL preset
-/// graph. Prescriptions whose insert fails the firmware caps are dropped.
+/// graph, at each rule's shipped cut size ([`generate_rx_sized`] with no margin).
+/// Prescriptions whose insert fails the firmware caps are dropped.
+#[cfg(test)] // production sizes every prescription from its finding's margin
 pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode]) -> Vec<Rx> {
+    generate_rx_sized(diag_key, nodes, 0.0)
+}
+
+/// [`generate_rx`] for a finding `margin_db` past its gate (its severity): the
+/// muddy and harsh EQ cuts grow with the measured excess ([`sized_cut_db`]); every
+/// other prescription ignores it.
+pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -> Vec<Rx> {
     let facts = graph_facts(nodes);
     match diag_key {
         "muddy" => {
+            let cut = sized_cut_db(MUDDY_CUT_DB, margin_db, MAX_SIZED_CUT_DB);
+            let amount = db_amount(cut);
             let mut rx = Vec::new();
             if let Some(m) = eq_move(
                 nodes,
                 &facts,
                 &EqCopy {
-                    reuse_title: "Cut 3 dB around 300 Hz on your EQ",
+                    reuse_title: &format!("Cut {amount} dB around 300 Hz on your EQ"),
                     reuse_detail: "Dips the muddy low-mids on the EQ you already have — the note stays, the mud goes.",
-                    insert_title: "Add a 10-band EQ and cut 3 dB around 300 Hz",
+                    insert_title: &format!("Add a 10-band EQ and cut {amount} dB around 300 Hz"),
                     insert_detail: "Puts a graphic EQ after the cab and dips the muddy low-mids — the note stays, the mud goes.",
-                    advise_detail: "Your chain already runs a graphic EQ — pull its band nearest 300 Hz down about 3 dB, rather than adding a second EQ.",
+                    advise_detail: &format!("Your chain already runs a graphic EQ — pull its band nearest 300 Hz down about {amount} dB, rather than adding a second EQ."),
                 },
-                &[("gain250hz", -3.0)],
+                &[("gain250hz", -cut)],
             ) {
                 rx.push(m);
             }
@@ -2146,17 +2194,20 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode]) -> Vec<Rx> {
             )];
             // Detection is band 3 (1–3 kHz), so the cut targets the SAME band:
             // the 1 kHz + 2 kHz EQ-10 bands.
+            let cut = sized_cut_db(HARSH_CUT_DB, margin_db, MAX_SIZED_CUT_DB);
+            let amount = db_amount(cut);
+            let title = format!("Cut {amount} dB around 1–3 kHz");
             if let Some(m) = eq_move(
                 nodes,
                 &facts,
                 &EqCopy {
-                    reuse_title: "Cut 2 dB around 1–3 kHz",
+                    reuse_title: &title,
                     reuse_detail: "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
-                    insert_title: "Cut 2 dB around 1–3 kHz",
+                    insert_title: &title,
                     insert_detail: "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
-                    advise_detail: "Your chain already runs a graphic EQ — pull its 1–3 kHz bands down about 2 dB, rather than adding a second EQ.",
+                    advise_detail: &format!("Your chain already runs a graphic EQ — pull its 1–3 kHz bands down about {amount} dB, rather than adding a second EQ."),
                 },
-                &[("gain1khz", -2.0), ("gain2khz", -2.0)],
+                &[("gain1khz", -cut), ("gain2khz", -cut)],
             ) {
                 rx.push(m);
             }
@@ -2469,7 +2520,9 @@ fn apply_thresholds(
                     bands: Vec<usize>,
                     detail: String,
                     explain: &'static str| {
-        let rx = nodes.map(|n| generate_rx(key, n)).unwrap_or_default();
+        let rx = nodes
+            .map(|n| generate_rx_sized(key, n, margin))
+            .unwrap_or_default();
         out.push(Diag {
             key,
             label,
@@ -3315,6 +3368,68 @@ mod cut_through_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Per-band scatter (σ, dB) of a noise-floor estimate over `seeds` independent
+    /// windows of `len` samples of seeded white noise, for `family`'s bands.
+    fn floor_scatter_db(
+        family: Family,
+        len: usize,
+        seeds: u64,
+        estimate: impl Fn(&[f32]) -> crate::psd::Psd,
+    ) -> Vec<f64> {
+        let reads: Vec<Vec<f64>> = (0..seeds)
+            .map(|seed| {
+                let mut x = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
+                let noise: Vec<f32> = (0..len)
+                    .map(|_| {
+                        x = x
+                            .wrapping_mul(6_364_136_223_846_793_005)
+                            .wrapping_add(1_442_695_040_888_963_407);
+                        ((x >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0) as f32
+                    })
+                    .collect();
+                let psd = estimate(&noise);
+                family
+                    .bands()
+                    .iter()
+                    .map(|&(lo, hi)| to_db(psd.band_mean_density(lo, hi)))
+                    .collect()
+            })
+            .collect();
+        (0..family.bands().len())
+            .map(|b| {
+                let xs: Vec<f64> = reads.iter().map(|r| r[b]).collect();
+                let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+                (xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (xs.len() - 1) as f64).sqrt()
+            })
+            .collect()
+    }
+
+    // #258: the coverage gate's floor estimate over the ~11,100-sample pre-onset
+    // window. One 8192-point segment scattered 1.9 dB (Lows) to 0.2 dB (Air) on
+    // guitar and 2.6 dB on Bass VI Sub; the short-segment average reads 1.2 / 1.5 dB
+    // there and ≤ 0.6 dB from Low-mids up. The narrow low bands can't reach 0.5 dB
+    // over 230 ms of floor whatever the segmenting (bandwidth × duration bounds the
+    // degrees of freedom), so the gate pins the ratio and the body-band ceiling.
+    #[test]
+    fn floor_estimate_scatter_drops_with_short_segments() {
+        for family in [Family::Guitar, Family::BassVi] {
+            let one = floor_scatter_db(family, 11_100, 120, |x| crate::psd::welch_psd(x, 48_000.0));
+            let many = floor_scatter_db(family, 11_100, 120, |x| {
+                crate::psd::welch_psd_floor(x, 48_000.0)
+            });
+            for (b, (o, m)) in one.iter().zip(&many).enumerate() {
+                assert!(
+                    m < &(o * 0.8),
+                    "{family:?} band {b}: floor σ {m:.2} vs single {o:.2}"
+                );
+            }
+            let (_, low_mids, ..) = family.semantic_bands();
+            for (b, m) in many.iter().enumerate().skip(low_mids) {
+                assert!(*m <= 0.65, "{family:?} band {b}: floor σ {m:.2} dB");
+            }
+        }
+    }
 
     /// A `SoundProfile` sitting EXACTLY on `family`'s authored target curve,
     /// except band `band` bumped by `local` dB. Since only one of the 5 semantic
@@ -4502,6 +4617,62 @@ mod tests {
             other => panic!("expected InsertNode, got {other:?}"),
         }
         assert!(chain.chain.is_some());
+    }
+
+    #[test]
+    fn sized_cut_grows_with_the_excess_and_never_drops_below_the_shipped_cut() {
+        assert_eq!(sized_cut_db(3.0, 0.0, 6.0), 3.0);
+        assert_eq!(sized_cut_db(3.0, 0.2, 6.0), 3.0);
+        assert_eq!(sized_cut_db(3.0, 1.3, 6.0), 4.5);
+        assert_eq!(sized_cut_db(3.0, 12.0, 6.0), 6.0);
+        assert_eq!(sized_cut_db(2.0, -1.0, 6.0), 2.0);
+        assert_eq!(sized_cut_db(2.0, f64::NAN, 6.0), 2.0);
+    }
+
+    // #256: a muddy or harsh finding far past its gate prescribes a deeper cut
+    // than one just past it, and the copy names the size it writes.
+    #[test]
+    fn band_rule_cuts_scale_with_the_measured_excess() {
+        let mut p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
+        p[1].params.insert("gain250hz".into(), 0.0);
+        p[1].params.insert("gain1khz".into(), 0.0);
+        p[1].params.insert("gain2khz".into(), 0.0);
+        let param_values = |rx: &[Rx]| -> Vec<f64> {
+            rx[0]
+                .ops
+                .iter()
+                .map(|op| match op {
+                    DoctorOp::Param { value, .. } => *value,
+                    other => panic!("expected Param, got {other:?}"),
+                })
+                .collect()
+        };
+        let near = generate_rx_sized("muddy", &p, 0.2);
+        let far = generate_rx_sized("muddy", &p, 2.4);
+        assert_eq!(param_values(&near), vec![-3.0]);
+        assert_eq!(param_values(&far), vec![-5.5]);
+        assert_eq!(far[0].title, "Cut 5.5 dB around 300 Hz on your EQ");
+        let harsh = generate_rx_sized("harsh", &p, 9.0);
+        let eq = harsh
+            .iter()
+            .find(|r| !r.ops.is_empty())
+            .expect("harsh EQ rx");
+        assert_eq!(eq.title, "Cut 6 dB around 1–3 kHz");
+        assert_eq!(param_values(std::slice::from_ref(eq)), vec![-6.0, -6.0]);
+        // The fired card carries the sized prescription.
+        let t = Family::Guitar.thresholds();
+        let prof = resid_profile(Family::Guitar, 1, t.muddy_db.max(t.muddy_centered_db) + 2.0);
+        let diags = diagnose(&prof, Some(&p), Family::Guitar);
+        let muddy = diags
+            .iter()
+            .find(|d| d.key == "muddy")
+            .expect("muddy fires");
+        let cut = param_values(&muddy.rx)[0];
+        assert!(
+            cut < -3.0,
+            "a finding {:.1} dB past its gate cut {cut}",
+            muddy.severity
+        );
     }
 
     #[test]

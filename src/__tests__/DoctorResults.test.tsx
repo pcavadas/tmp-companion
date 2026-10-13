@@ -871,6 +871,39 @@ describe("DoctorResults — prescription lifecycle", () => {
     ]);
   });
 
+  // #256 / #257: the apply names the finding it treats, and the applied card
+  // reports what the A/B measured — the level gap the audition matched, and the
+  // finding before → after.
+  it("sends the treated finding and shows the measured before → after", async () => {
+    vi.mocked(doctorApply).mockResolvedValue({
+      beforeClip: "data:audio/wav;base64,AAAA",
+      afterClip: "data:audio/wav;base64,BBBB",
+      levels: { beforeLufs: -18, afterLufs: -19.5 },
+      finding: { key: "muddy", before: 2.5, after: null },
+    });
+    const user = userEvent.setup();
+    renderResults();
+
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+
+    expect(
+      await screen.findByText("Muddy: +2.5 dB over → cleared by the fix."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "After is 1.5 dB quieter. Levels matched for comparison.",
+      ),
+    ).toBeInTheDocument();
+    expect(doctorApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        diag: { key: "muddy", level: "rehearsal" },
+      }),
+    );
+  });
+
   it("applies a SCENE sound's fix under its own scene, not the base", async () => {
     // "Lead Solo" (p1s1) is scene 0 of preset 1 — the A/B must recall that
     // scene, not diagnose/audition the as-saved base.

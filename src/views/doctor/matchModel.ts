@@ -1,6 +1,7 @@
 // src/views/doctor/matchModel.ts — pure "Match reference" EQ-move math: given
-// two sounds' mean-removed per-band balanceDb (`DoctorSoundResult.balanceDb`,
-// level already cancels by construction), derive the graphic-EQ-10 moves
+// two sounds' per-band balanceDb (`DoctorSoundResult.balanceDb`), centred on
+// the median body-band delta so level and the Air/Sub bands cancel, derive
+// the graphic-EQ-10 moves
 // that bring one toward the other. No device I/O — the UI (MatchCard.tsx)
 // wraps the result in a synthetic `DoctorRx` and reuses PrescriptionCard's
 // existing apply/save/discard flow.
@@ -111,16 +112,39 @@ export function bandLayoutsMatch(
   );
 }
 
-/** Per-band delta (ref − sound) toward the reference. Both inputs are
- *  mean-removed balanceDb, so absolute level cancels by construction — this
- *  is a pure spectral-SHAPE comparison. */
-export function matchDeltas(ref: number[], sound: number[]): number[] {
+/** Bands outside the semantic BODY (`doctor.rs`'s `Family::semantic_bands`
+ *  `lows..=highs`): they vary far more between sounds than the body does. */
+const NON_BODY_LABELS = new Set(["Sub", "Air"]);
+
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/** Per-band delta (ref − sound) toward the reference, centred on the MEDIAN
+ *  body-band delta. `balanceDb` is each band's dB minus the mean of ALL
+ *  bands, Air (and Bass VI's Sub) included, and Air differs by tens of dB
+ *  between a cab'd and an open sound: 30 dB more Air on the reference shifted
+ *  every other band's delta by −5 dB, a cut nobody asked for (#254). The
+ *  per-sound means cancel to one constant offset across bands, and the body
+ *  median removes it without letting Air or Sub move it — the same centring
+ *  `doctor.rs`'s `centered_deviations` uses for the verdicts. A pure
+ *  spectral-SHAPE comparison: absolute level cancels by construction. */
+export function matchDeltas(
+  ref: number[],
+  sound: number[],
+  bandLabels: string[],
+): number[] {
   const n = Math.min(ref.length, sound.length);
-  const out: number[] = [];
+  const raw: number[] = [];
   for (let i = 0; i < n; i++) {
-    out.push(ref[i] - sound[i]);
+    raw.push(ref[i] - sound[i]);
   }
-  return out;
+  const body = raw.filter((_, i) => !NON_BODY_LABELS.has(bandLabels[i] ?? ""));
+  const offset = median(body);
+  return raw.map((d) => d - offset);
 }
 
 /** Log-frequency-nearest EQ-10 band to `hz` — octave-spaced bands need log

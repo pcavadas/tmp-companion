@@ -17,6 +17,11 @@ use realfft::RealFftPlanner;
 /// signals fall back to the largest power of two that fits.
 const SEG: usize = 8192;
 
+/// Half-width (bins) of [`Psd::peak_q`]'s parabola fit — also the envelope apron
+/// [`Psd::find_peaks_in_db`] computes past its scan range, since the fit is the only
+/// reader of the excess outside it.
+const PEAK_FIT_HALF_BINS: usize = 20;
+
 /// A one-sided power spectral density.
 ///
 /// `psd[k]` is the density at frequency `k * bin_hz` for `k` in `0..=seg/2`, in
@@ -50,9 +55,33 @@ fn largest_pow2_le(n: usize) -> usize {
 /// scaling `Σ psd[k]·bin_hz` recovers the signal's mean-square power (Parseval), and the
 /// PSD is independent of the segment length and window.
 pub fn welch_psd(signal: &[f32], rate: f32) -> Psd {
-    // Segment length: SEG, else the largest power of two that fits. Need ≥2 for a real FFT.
-    let seg = if signal.len() >= SEG {
-        SEG
+    welch_psd_seg(signal, rate, SEG)
+}
+
+/// Segment length for a NOISE-FLOOR estimate ([`welch_psd_floor`]).
+const FLOOR_SEG: usize = 2048;
+
+/// [`welch_psd`] with [`FLOOR_SEG`]-point segments, for a short noise-floor window.
+///
+/// The Doctor's pre-onset floor window is ~11,100 samples, which fits ONE 8192-point
+/// segment: a single Hann periodogram (2 degrees of freedom per bin) put the per-band
+/// floor estimate's scatter at roughly 1.5–2.5 dB in the narrow low bands, so a band
+/// near the SNR margin flipped covered/uncovered from run to run. 2048-point segments
+/// average ~9 overlapping periodograms over the same window. The density stays unbiased
+/// (the normalization is segment-length independent); only resolution drops, which a
+/// noise floor doesn't need. Compare its bands against a finer-grid PSD with
+/// [`Psd::band_mean_density`], never [`Psd::band_power`], whose bin-centre rounding
+/// differs between grids.
+pub fn welch_psd_floor(signal: &[f32], rate: f32) -> Psd {
+    welch_psd_seg(signal, rate, FLOOR_SEG)
+}
+
+/// The Welch estimator with segments of at most `max_seg` points.
+fn welch_psd_seg(signal: &[f32], rate: f32, max_seg: usize) -> Psd {
+    // Segment length: max_seg, else the largest power of two that fits. Need ≥2 for a
+    // real FFT.
+    let seg = if signal.len() >= max_seg {
+        max_seg
     } else {
         largest_pow2_le(signal.len())
     };
@@ -146,6 +175,22 @@ impl Psd {
             .sum()
     }
 
+    /// Mean density over the bins whose centre falls in `[lo, hi]` (0 when none do).
+    /// Unlike [`Psd::band_power`] it doesn't depend on how many bin centres the band
+    /// edges happen to catch, so it compares bands across PSDs on DIFFERENT grids.
+    /// On one grid the ratio of two PSDs' mean densities equals the ratio of their
+    /// band powers.
+    pub fn band_mean_density(&self, lo: f32, hi: f32) -> f64 {
+        let (sum, count) = self
+            .bins_in(f64::from(lo), f64::from(hi))
+            .fold((0.0, 0usize), |(s, c), (_, p)| (s + p, c + 1));
+        if count == 0 {
+            0.0
+        } else {
+            sum / count as f64
+        }
+    }
+
     /// [`Psd::band_power`] for each `(lo, hi)` band.
     pub fn band_powers(&self, bands: &[(f32, f32)]) -> Vec<f64> {
         bands
@@ -227,7 +272,7 @@ impl Psd {
 
     /// Quality factor of the peak at `excess[peak_bin]`: center frequency
     /// over an estimated −3 dB width from a least-squares PARABOLA fit of
-    /// `excess` over ±20 bins around the peak (`y ≈ h + c·x²` on the symmetric
+    /// `excess` over ±[`PEAK_FIT_HALF_BINS`] (20) bins around the peak (`y ≈ h + c·x²` on the symmetric
     /// window; width = `2·√(3/−c)` bins). A walk to the first −3 dB crossing
     /// is hopelessly noise-bound: the Welch estimate's per-bin scatter (plus
     /// the capture/stimulus cross-term in transfer space) creates spurious
@@ -242,7 +287,7 @@ impl Psd {
         let n = excess.len();
         // Symmetric window so the odd fit terms vanish; clamp at the edges
         // (an edge-clipped peak just fits the width it can see).
-        let half = 20.min(peak_bin).min(n - 1 - peak_bin);
+        let half = PEAK_FIT_HALF_BINS.min(peak_bin).min(n - 1 - peak_bin);
         if half == 0 {
             return 0.0;
         }
@@ -251,7 +296,7 @@ impl Psd {
         for dx in -(half as i64)..=(half as i64) {
             let y = excess[(peak_bin as i64 + dx) as usize];
             if !y.is_finite() {
-                continue; // apron sentinel — skip, the fit stays symmetric enough
+                continue; // −∞ outside the computed envelope — skip, the fit stays symmetric enough
             }
             let x2 = (dx * dx) as f64;
             sy += y;
@@ -305,11 +350,10 @@ impl Psd {
     /// `series` minus a [`Psd::octave_envelope`] (so the envelope doesn't
     /// follow the peak itself), contiguous bins whose excess clears
     /// `min_height_db` become ONE peak (center = the run's maximum bin,
-    /// height = its excess, Q = the −3 dB width around that bin, walked past
-    /// the run and clamped at a one-octave apron outside `[lo_hz, hi_hz]` —
-    /// the envelope is only computed there, and any peak whose −3 dB width
-    /// exceeds an octave is Q ≲ 1.5, far below any Q gate, so the clamp can't
-    /// change a verdict). Sorted highest-first. Empty on a degenerate PSD, an
+    /// height = its excess, Q = the narrower of [`Psd::peak_q`]'s parabola fit
+    /// over ±[`PEAK_FIT_HALF_BINS`] and the run's own width; the envelope is
+    /// computed only over the scan range plus that fit's reach). Sorted
+    /// highest-first. Empty on a degenerate PSD, an
     /// empty/inverted range, or a `series` that doesn't match the bin grid.
     pub fn find_peaks_in_db(
         &self,
@@ -317,6 +361,20 @@ impl Psd {
         lo_hz: f64,
         hi_hz: f64,
         min_height_db: f64,
+    ) -> Vec<SpectralPeak> {
+        self.find_peaks_with_apron(series, lo_hz, hi_hz, min_height_db, fit_apron)
+    }
+
+    /// [`Psd::find_peaks_in_db`] with the envelope computed over `apron(lo_bin,
+    /// hi_bin, n)`'s inclusive bin range — split out so a test can pin that a wider
+    /// apron changes no output.
+    fn find_peaks_with_apron(
+        &self,
+        series: &[f64],
+        lo_hz: f64,
+        hi_hz: f64,
+        min_height_db: f64,
+        apron: fn(usize, usize, usize) -> (usize, usize),
     ) -> Vec<SpectralPeak> {
         let n = self.psd.len();
         if n == 0 || series.len() != n || self.bin_hz <= 0.0 || lo_hz > hi_hz {
@@ -327,10 +385,7 @@ impl Psd {
         if lo_bin > hi_bin {
             return Vec::new();
         }
-        // One-octave apron each side: `peak_q`'s −3 dB walk may step outside
-        // the scan range; past the apron the sentinel −∞ excess stops it.
-        let walk_lo = lo_bin / 2;
-        let walk_hi = (hi_bin * 2).min(n - 1);
+        let (walk_lo, walk_hi) = apron(lo_bin, hi_bin, n);
         let envelope = self.octave_envelope(series, walk_lo, walk_hi);
         // −∞ outside the apron (a −∞ envelope would make excess +∞ there).
         let excess: Vec<f64> = series
@@ -388,6 +443,20 @@ impl Psd {
     pub fn find_peaks(&self, lo_hz: f64, hi_hz: f64, min_height_db: f64) -> Vec<SpectralPeak> {
         self.find_peaks_in_db(&self.log_psd(), lo_hz, hi_hz, min_height_db)
     }
+}
+
+/// The envelope range [`Psd::find_peaks_in_db`] computes for scan bins
+/// `lo_bin..=hi_bin` of `n`: the scan range plus [`PEAK_FIT_HALF_BINS`] each side.
+/// `peak_q` fits that far around a peak that may sit at the range's edge; nothing
+/// reads the envelope further out, and each bin's envelope depends only on the
+/// input series, so computing more changes no output (#197: the old one-octave
+/// apron, kept from a −3 dB walk that no longer exists, spent ~74% of the median
+/// sorts on bins nobody read).
+fn fit_apron(lo_bin: usize, hi_bin: usize, n: usize) -> (usize, usize) {
+    (
+        lo_bin.saturating_sub(PEAK_FIT_HALF_BINS),
+        (hi_bin + PEAK_FIT_HALF_BINS).min(n - 1),
+    )
 }
 
 /// A localized spectral peak found by [`Psd::find_peaks`]: center frequency,
@@ -628,6 +697,66 @@ mod tests {
         assert!(
             (peaks[1].freq_hz - 1_000.0).abs() <= psd.bin_hz * 2.0,
             "quieter peak should be the 1 kHz tone: {peaks:?}"
+        );
+    }
+
+    // #197: the envelope apron was trimmed from one octave each side to the
+    // parabola fit's reach. Each bin's envelope depends only on the input series,
+    // so the peaks must be bit-identical to the old apron's — including a peak at
+    // each edge of the scan range, where the fit reaches outside it.
+    #[test]
+    fn trimmed_apron_finds_bit_identical_peaks() {
+        fn octave_apron(lo_bin: usize, hi_bin: usize, n: usize) -> (usize, usize) {
+            (lo_bin / 2, (hi_bin * 2).min(n - 1))
+        }
+        let noise = scale(&white_noise(96_000, 61), 0.05);
+        let sig = [210.0, 1_000.0, 2_800.0, 7_900.0]
+            .iter()
+            .fold(noise, |acc, &f| add(&acc, &sine(f, 0.4, 96_000)));
+        let psd = welch_psd(&sig, RATE);
+        let series = psd.log_psd();
+        for (lo, hi) in [(200.0, 8_000.0), (800.0, 1_200.0), (0.0, 24_000.0)] {
+            let trimmed = psd.find_peaks_with_apron(&series, lo, hi, 3.0, fit_apron);
+            let octave = psd.find_peaks_with_apron(&series, lo, hi, 3.0, octave_apron);
+            assert!(!trimmed.is_empty(), "{lo}–{hi} Hz found no peaks");
+            assert_eq!(trimmed, octave, "{lo}–{hi} Hz");
+        }
+    }
+
+    // #258: on one grid the mean-density ratio equals the band-power ratio, so
+    // switching the coverage gate to it changes nothing when the grids match.
+    #[test]
+    fn band_mean_density_ratio_matches_band_power_ratio_on_one_grid() {
+        let a = welch_psd(&white_noise(48_000, 71), RATE);
+        let b = welch_psd(&scale(&white_noise(48_000, 72), 0.3), RATE);
+        for (lo, hi) in [(60.0, 120.0), (250.0, 500.0), (6_000.0, 12_000.0)] {
+            let power = a.band_power(lo, hi) / b.band_power(lo, hi);
+            let density = a.band_mean_density(lo, hi) / b.band_mean_density(lo, hi);
+            assert!(
+                (power / density - 1.0).abs() < 1e-12,
+                "{lo}–{hi}: {power} vs {density}"
+            );
+        }
+        assert_eq!(a.band_mean_density(30_000.0, 40_000.0), 0.0);
+    }
+
+    // #258: the floor estimator averages several short segments, and its density
+    // stays unbiased: white noise reads the same mean density on both grids.
+    #[test]
+    fn floor_psd_is_unbiased_against_the_full_grid() {
+        let x = white_noise(96_000, 81);
+        let full = welch_psd(&x, RATE);
+        let floor = welch_psd_floor(&x, RATE);
+        assert!((floor.bin_hz - f64::from(RATE) / FLOOR_SEG as f64).abs() < 1e-9);
+        let (f, g) = (
+            full.band_mean_density(500.0, 12_000.0),
+            floor.band_mean_density(500.0, 12_000.0),
+        );
+        assert!(
+            (db(f) - db(g)).abs() < 0.2,
+            "full {} dB vs floor {} dB",
+            db(f),
+            db(g)
         );
     }
 

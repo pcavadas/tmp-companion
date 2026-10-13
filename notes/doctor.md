@@ -169,9 +169,18 @@ Capture choreography (`notes/perf.md`): consecutive **scene** sounds of the
 same preset skip the per-sound preset reload (`doctor_skip_load` — only when
 the previous sound wrote nothing and succeeded; base/footswitch sounds always
 reload), and the capture connections use the lean handshake
-(`Session::connect_lean`). Every capture is floor-guarded (a silent-inject
-floor read retries once after a quiet gap). A single capture can occasionally
-misread — repeated runs are the arbiter.
+(`Session::connect_lean`). Every capture is checked before it is diagnosed
+(`commands/doctor.rs`'s `capture_suspect`, #246): a floor read (the momentary
+floor guard), an un-aligned onset (neither the energy step nor the correlator
+found the stimulus, the path a silent inject takes) or a capture that ends
+before the body does (no tail window, which `tail_energy_ratio` would read as
+its −80 dB "bone dry" sentinel) retries once after a quiet gap with a fresh
+load, then reports the sound as an error, never a diagnosis. The coverage
+gate's pre-onset floor averages 2048-point Welch segments
+(`psd::welch_psd_floor`, #258) and compares by mean band density, because one
+8192-point segment scattered the narrow low bands' floor by 1.5–2.5 dB run to
+run. The stimulus PSD is computed once per stimulus, not per capture (#197). A
+single capture can occasionally misread — repeated runs are the arbiter.
 
 ## Prescriptions & apply
 
@@ -196,7 +205,15 @@ reloads the stored preset. The frontend serializes applies (`applyLock.ts`)
 and allows ONE unsaved prescription at a time; A/B audition captures
 before/after clips (BEFORE cached per sound — `BEFORE_CACHE`, keyed on
 list index + name + stimulus + calibration + scene + footswitch; a cache hit
-still reloads the slot). `severity.ts` ranks findings per sound and rolls up
+still reloads the slot). Each clip is the processed STEREO pair as captured
+(analysis stays on the mixdown), and the result carries both clips'
+integrated loudness, so `ABAudition` turns the louder one down to match and
+says the real gap (#257; playback gain only, nothing is written). The same
+result re-measures the treated finding on both clips with the diagnosis's own
+pipeline and threshold (`FindingCheck`, #256): cleared, reduced, or no
+measurable change (a fix that may not have landed). The muddy and harsh EQ
+cuts grow with the finding's margin past its gate (`sized_cut_db`: the shipped
+3 dB / 2 dB plus the margin, capped at 6 dB), never below the shipped size. `severity.ts` ranks findings per sound and rolls up
 the preset's worst severity.
 
 **Scene-context safety:** a bare `changeParameter` under a scene recall lands
@@ -246,7 +263,9 @@ advisory still surfaces under "Needs a look".
   made up is not.)
 - **Reference match** (`matchModel.ts` + `MatchCard`, fully CLIENT-side): pick
   any sound of the run as reference; other same-layout sounds get EQ-10 moves
-  from the balanceDb deltas already on the wire (log-nearest band, combined
+  from the balanceDb deltas already on the wire, centred on the MEDIAN body-band
+  delta so Air and Bass VI's Sub can't shift every other move through the
+  all-band mean (#254) (log-nearest band, combined
   when bands collide, clamped ±6 dB, sub-1.5 dB moves dropped) applied through
   the existing PrescriptionCard A/B flow as one EQ-10 insert; when any delta
   exceeds EQ reach the card adds an honest cab/amp-swap advisory. Zero new

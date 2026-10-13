@@ -570,7 +570,7 @@ pub fn probe_stim_ab(
     let stim_b = read_stimulus_48k(wav_b)?;
     // Floor reads are handled INSIDE measure_c now (the production floor guard:
     // stimulus-aware momentary-spread trip → same-ref retry) — a persistent floor read
-    // surfaces as leveller::FLOOR_READ_ERR in the row.
+    // surfaces as error::FLOOR_READ_ERR in the row.
     let mut out = format!(
         "stimulus A/B @ ref {ref_level:.2}\n  A = {wav_a}\n  B = {wav_b}\n\
          \n  slot |      C_A |      C_B |      ΔC | spread_A | spread_B\n"

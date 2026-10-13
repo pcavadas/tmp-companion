@@ -1176,14 +1176,43 @@ export interface DoctorApplyJob {
   footswitches: FootswitchInfo[];
   /** The diagnosed scene's saved overlay (`DoctorSoundResult.sceneOverrides`). */
   sceneOverrides: NodeOverride[];
+  /** The finding this prescription treats (null for the Match-reference card)
+   *  — the A/B re-measures it on both clips. */
+  diag?: DoctorDiagRef | null;
 }
 
 /** Result of a live (unsaved) prescription apply: before/after audition clips
  * as `data:audio/wav;base64,…` URLs, rendered in the same command so the A/B
  * compares the stored state against the applied-but-unsaved edit buffer. */
+/** Both A/B clips' integrated loudness (LUFS) — `doctor_apply`'s `AbLevels`. */
+export interface AbLevels {
+  beforeLufs: number;
+  afterLufs: number;
+}
+
+/** The treated finding re-measured on both A/B clips — `doctor_apply`'s
+ *  `FindingCheck`. `before`/`after` are its severity (dB past its limit) when it
+ *  fires, `null` when it doesn't. */
+export interface FindingCheck {
+  key: string;
+  before: number | null;
+  after: number | null;
+}
+
+/** The finding a prescription treats (`DoctorApplyJob.diag`). */
+export interface DoctorDiagRef {
+  key: string;
+  level: PlaybackLevel;
+}
+
 export interface DoctorApplyResult {
+  /** The processed stereo pair, as captured. */
   beforeClip: string;
   afterClip: string;
+  /** Null when either clip's loudness couldn't be measured. */
+  levels?: AbLevels | null;
+  /** Null without `DoctorApplyJob.diag`, or when a clip couldn't be profiled. */
+  finding?: FindingCheck | null;
   /** The run-end re-amp warning — see `LevelResult.reamp_warning`. */
   reampWarning?: string | null;
 }

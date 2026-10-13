@@ -1,7 +1,9 @@
 // src/views/doctor/ABAudition.tsx — the applied-prescription A/B compare: one
 // round play/pause + a Before | After SegmentedControl you flip while it loops.
 // Both clips loop in lockstep and the inactive side is muted, so a flip is
-// seamless. VU decoration is deliberately skipped (decorative-only).
+// seamless. The louder clip is turned down to the quieter one's loudness
+// (playback gain only, nothing reaches the unit), so the comparison isn't won
+// by level. VU decoration is deliberately skipped (decorative-only).
 
 import { useEffect, useRef, useState } from "react";
 
@@ -9,6 +11,8 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { SegmentedControl } from "../../ui/primitives";
 import { microLabel } from "../../theme/tokens";
+import type { AbLevels } from "../../lib/types";
+import { levelMatch } from "./abReport";
 
 type Side = "before" | "after";
 
@@ -17,20 +21,27 @@ export interface ABAuditionProps {
   beforeClip: string;
   /** `data:audio/wav;base64,…` clip of the applied-but-unsaved edit. */
   afterClip: string;
+  /** Both clips' measured loudness; null/absent plays them as captured. */
+  levels?: AbLevels | null;
 }
 
-export function ABAudition({ beforeClip, afterClip }: ABAuditionProps) {
+export function ABAudition({ beforeClip, afterClip, levels }: ABAuditionProps) {
   const { t } = useTheme();
   const beforeRef = useRef<HTMLAudioElement | null>(null);
   const afterRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [side, setSide] = useState<Side>("before");
+  const match = levelMatch(levels);
+  const beforeVolume = match?.beforeVolume ?? 1;
+  const afterVolume = match?.afterVolume ?? 1;
 
   useEffect(() => {
     const before = new Audio(beforeClip);
     const after = new Audio(afterClip);
     before.loop = true;
     after.loop = true;
+    before.volume = beforeVolume;
+    after.volume = afterVolume;
     beforeRef.current = before;
     afterRef.current = after;
     return () => {
@@ -39,7 +50,7 @@ export function ABAudition({ beforeClip, afterClip }: ABAuditionProps) {
       beforeRef.current = null;
       afterRef.current = null;
     };
-  }, [beforeClip, afterClip]);
+  }, [beforeClip, afterClip, beforeVolume, afterVolume]);
 
   // Mute the inactive side so both keep looping in lockstep and a flip is instant.
   function applyMute(active: Side) {
@@ -141,6 +152,7 @@ export function ABAudition({ beforeClip, afterClip }: ABAuditionProps) {
         but not yet saved.
       </div>
       <div
+        data-testid="doctor-ab-level"
         style={{
           fontFamily: t.sans,
           fontSize: t.fsLabel,
@@ -149,8 +161,8 @@ export function ABAudition({ beforeClip, afterClip }: ABAuditionProps) {
           lineHeight: 1.5,
         }}
       >
-        The fixed version can sound a touch quieter — that&apos;s the cut
-        working, not a worse tone.
+        {match?.line ??
+          "The fixed version can sound a touch quieter — that's the cut working, not a worse tone."}
       </div>
     </div>
   );

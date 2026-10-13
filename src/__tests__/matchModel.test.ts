@@ -9,10 +9,63 @@ import {
   eqMovesFor,
   existingEq10,
   lastGuitarGroup,
+  matchDeltas,
+  matchResidualLarge,
 } from "../views/doctor/matchModel";
 import type { GraphNode } from "../lib/types";
 
 const GUITAR_LABELS = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
+
+/** `balanceDb` as the backend builds it: each band's dB minus the mean of ALL
+ *  bands (`doctor.rs`'s `balance`). */
+function balance(db: number[]): number[] {
+  const mean = db.reduce((a, b) => a + b, 0) / db.length;
+  return db.map((d) => d - mean);
+}
+
+describe("matchDeltas", () => {
+  // BUG→GATE (#254): two sounds identical except the reference has 30 dB more
+  // Air. The all-band mean moved 5 dB, so every other band read a −5 dB delta
+  // and the card prescribed five cuts nobody asked for. Only the Air move (and
+  // the too-big-for-EQ advisory) may remain.
+  it("prescribes only the Air move when only Air differs", () => {
+    const body = [-5, -2, -5, 13, 13.5];
+    const sound = balance([...body, -40]);
+    const reference = balance([...body, -10]);
+    const deltas = matchDeltas(reference, sound, GUITAR_LABELS);
+    expect(deltas.slice(0, 5).every((d) => Math.abs(d) < 1e-9)).toBe(true);
+    expect(deltas[5]).toBeCloseTo(30, 9);
+    expect(eqMovesFor(deltas, GUITAR_LABELS)).toEqual([
+      { controlId: "gain8khz", gainDb: 6 },
+    ]);
+    expect(matchResidualLarge(deltas)).toBe(true);
+  });
+
+  it("keeps a body-band difference intact whatever Air does", () => {
+    const sound = balance([0, 0, 0, 0, 0, -40]);
+    const reference = balance([0, 4, 0, 0, 0, -10]);
+    const deltas = matchDeltas(reference, sound, GUITAR_LABELS);
+    expect(deltas[1]).toBeCloseTo(4, 9);
+    expect(deltas[0]).toBeCloseTo(0, 9);
+  });
+
+  it("keeps Bass VI's Sub band out of the centring", () => {
+    const labels = ["Sub", ...GUITAR_LABELS];
+    const sound = balance([-30, 0, 0, 0, 0, 0, -20]);
+    const reference = balance([0, 0, 0, 0, 0, 0, -20]);
+    const deltas = matchDeltas(reference, sound, labels);
+    expect(deltas[0]).toBeCloseTo(30, 9);
+    expect(deltas.slice(1).every((d) => Math.abs(d) < 1e-9)).toBe(true);
+  });
+
+  it("centres an even body count on the mean of its two middle deltas", () => {
+    // Labels outside the known set count as body; four body bands here.
+    const labels = ["Lows", "Low-mids", "Mids", "High-mids"];
+    expect(matchDeltas([1, 2, 3, 10], [0, 0, 0, 0], labels)).toEqual([
+      -1.5, -0.5, 0.5, 7.5,
+    ]);
+  });
+});
 
 describe("eqMovesFor", () => {
   // Hand-derived: each 6-band guitar center's log-nearest EQ-10 band (see

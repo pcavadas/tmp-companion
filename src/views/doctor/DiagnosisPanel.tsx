@@ -127,6 +127,7 @@ export function DiagnosisPanel({
             nodes={input?.nodes}
             footswitches={input?.footswitches}
             stimulus={input}
+            diag={{ key: diag.key, level: diag.fromLevel, label: diag.label }}
           />
         ))}
       </div>

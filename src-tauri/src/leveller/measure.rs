@@ -53,9 +53,6 @@ pub(crate) const STATIONARY_STIM_LU: f64 = 2.0;
 /// Quiet gap before the guard's retry — 5 s recovered 9/9 flagged rows on HW
 /// (`probe --stim-ab`).
 pub(crate) const FLOOR_RETRY_GAP_MS: u64 = 5_000;
-/// The honest per-item error when a floor read persists through the retry (the text of
-/// [`LevelError::FloorRead`]).
-pub(crate) use crate::error::FLOOR_READ_ERR;
 
 /// Should this capture be suspected as a floor read? Both arguments are MOMENTARY
 /// spreads (`lufs::Loudness::momentary_spread_lu`).
@@ -394,7 +391,7 @@ pub(super) fn capture_full_at_params(
 /// seam exists precisely so a caller that has ALREADY applied unsaved edits on `s`
 /// (Doctor's `ops_session`) can capture them without a further recall silently
 /// discarding them. Shared tail of `capture_full_at` (which recalls the scene,
-/// then calls this) and `doctor_capture_on_session` (used by
+/// then calls this) and `doctor_capture_on_session_raw` (used by
 /// `commands::doctor::doctor_apply`'s step (c), on the session step (b) just
 /// wrote to).
 pub(crate) fn capture_on_session(

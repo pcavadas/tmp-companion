@@ -147,11 +147,25 @@ fn doctor_apply_result_serializes_camel_case() {
     let r = DoctorApplyResult {
         before_clip: "data:audio/wav;base64,AAA".into(),
         after_clip: "data:audio/wav;base64,BBB".into(),
+        levels: Some(AbLevels {
+            before_lufs: -18.0,
+            after_lufs: -19.5,
+        }),
+        finding: Some(FindingCheck {
+            key: "muddy".into(),
+            before: Some(2.5),
+            after: None,
+        }),
         reamp_warning: None,
     };
     let v = serde_json::to_value(&r).unwrap();
     assert_eq!(v["beforeClip"], "data:audio/wav;base64,AAA");
     assert_eq!(v["afterClip"], "data:audio/wav;base64,BBB");
+    assert_eq!(v["levels"]["beforeLufs"], -18.0);
+    assert_eq!(v["levels"]["afterLufs"], -19.5);
+    assert_eq!(v["finding"]["key"], "muddy");
+    assert_eq!(v["finding"]["before"], 2.5);
+    assert!(v["finding"]["after"].is_null());
     assert!(
         v.get("reampWarning").is_none(),
         "omitted when the OFF read back: {v}"
@@ -408,23 +422,96 @@ fn skip_load_only_for_a_clean_ok_same_preset_scene_chain() {
     ));
 }
 
-// --- floor_error_for: silent-inject guard on the Doctor's capture spread ---
+// --- capture_suspect: what a Doctor capture must pass before it is diagnosed (#246) ---
 
 #[test]
-fn floor_error_for_flags_a_flat_capture_against_a_lively_stimulus() {
-    assert_eq!(floor_error_for(0.01, 6.0), Some(leveller::FLOOR_READ_ERR));
+fn capture_suspect_flags_a_flat_capture_against_a_lively_stimulus() {
+    assert_eq!(
+        capture_suspect(true, true, 0.01, 6.0),
+        Some(CaptureSuspect::Floor)
+    );
+    // A floor read usually has no onset either; the floor is the named cause.
+    assert_eq!(
+        capture_suspect(false, false, 0.01, 6.0),
+        Some(CaptureSuspect::Floor)
+    );
 }
 
 #[test]
-fn floor_error_for_clears_a_live_capture() {
-    assert_eq!(floor_error_for(4.0, 6.0), None);
+fn capture_suspect_clears_a_live_complete_capture() {
+    assert_eq!(capture_suspect(true, true, 4.0, 6.0), None);
 }
 
 #[test]
-fn floor_error_for_disarms_on_a_near_stationary_stimulus() {
+fn capture_suspect_floor_check_disarms_on_a_near_stationary_stimulus() {
     // stimulus momentary spread ≤ STATIONARY_STIM_LU (2.0) can't discriminate —
-    // the guard must not fire even though the capture itself reads flat.
-    assert_eq!(floor_error_for(0.01, 0.2), None);
+    // the floor check must not fire even though the capture itself reads flat.
+    assert_eq!(capture_suspect(true, true, 0.01, 0.2), None);
+}
+
+// BUG→GATE (#246): an un-aligned onset used to only WARN, then every rule ran on the
+// whole buffer with every band covered. It must never reach the diagnosis, even when
+// the floor check is disarmed.
+#[test]
+fn capture_suspect_refuses_an_unaligned_onset() {
+    assert_eq!(
+        capture_suspect(false, true, 4.0, 6.0),
+        Some(CaptureSuspect::NoOnset)
+    );
+    assert_eq!(
+        capture_suspect(false, true, 0.01, 0.2),
+        Some(CaptureSuspect::NoOnset)
+    );
+    assert_eq!(CaptureSuspect::NoOnset.into_error(), LevelError::FloorRead);
+}
+
+// BUG→GATE (#246): a capture that ends before the body did read the −80 dB "bone
+// dry" tail sentinel and silently dropped a wet preset's `washed` verdict.
+#[test]
+fn capture_suspect_refuses_a_capture_with_no_tail() {
+    assert_eq!(
+        capture_suspect(true, false, 4.0, 6.0),
+        Some(CaptureSuspect::NoTail)
+    );
+    assert_eq!(
+        CaptureSuspect::NoTail.into_error(),
+        LevelError::Device(TRUNCATED_CAPTURE_ERR.to_string())
+    );
+}
+
+// #246 end to end on real stimulus data: a stationary floor captured where the
+// shipped stimulus should be has no energy step, so the onset seam reports it
+// un-aligned, and the capture is refused rather than diagnosed.
+#[test]
+fn a_stationary_floor_capture_is_refused_not_diagnosed() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/samples/guitar-humbucker.wav");
+    let stim = leveller::doctor_stim_slice(
+        crate::stimulus::read_wav_mono(path.to_str().unwrap())
+            .expect("shipped stimulus")
+            .0,
+    );
+    let stim_spread = leveller::stimulus_momentary_spread(&stim);
+    // A deterministic low-level stationary hiss, as long as a real capture.
+    let mut x: u64 = 7;
+    let floor: Vec<f32> = (0..stim.len() + 48_000)
+        .map(|_| {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((x >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 1e-3
+        })
+        .collect();
+    let onset = leveller::doctor_onset(&stim, &floor, leveller::RATE);
+    let loud = crate::lufs::measure_mono(&floor, leveller::RATE).expect("finite floor");
+    let suspect = capture_suspect(
+        onset.confident(),
+        floor.len() > onset.body_end(),
+        loud.momentary_spread_lu,
+        stim_spread,
+    );
+    assert!(
+        suspect.is_some(),
+        "a stationary floor must be refused, onset {onset:?}"
+    );
 }
 
 // --- skipped_band_count: fix P3-4, SNR-gate transparency ---
@@ -632,11 +719,11 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
         None,
         None,
     );
-    before_cache_put(key.clone(), "clip-a".into());
-    assert_eq!(before_cache_get(&key), Some("clip-a".into()));
+    before_cache_put(key.clone(), ab_side_of(None, None).with_clip("clip-a"));
+    assert_eq!(cached_clip(&key), Some("clip-a".to_string()));
     // Any identity change misses: renamed preset, different stimulus, different cal.
     assert_eq!(
-        before_cache_get(&(
+        cached_clip(&(
             ListIndex(7),
             "Lead 2".into(),
             "/stim/tele.wav".into(),
@@ -647,7 +734,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
         None
     );
     assert_eq!(
-        before_cache_get(&(
+        cached_clip(&(
             ListIndex(7),
             "Lead".into(),
             "/stim/strat.wav".into(),
@@ -658,7 +745,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
         None
     );
     assert_eq!(
-        before_cache_get(&(
+        cached_clip(&(
             ListIndex(7),
             "Lead".into(),
             "/stim/tele.wav".into(),
@@ -670,7 +757,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     );
     // ...or a different scene/footswitch of the SAME preset.
     assert_eq!(
-        before_cache_get(&(
+        cached_clip(&(
             ListIndex(7),
             "Lead".into(),
             "/stim/tele.wav".into(),
@@ -681,7 +768,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
         None
     );
     assert_eq!(
-        before_cache_get(&(
+        cached_clip(&(
             ListIndex(7),
             "Lead".into(),
             "/stim/tele.wav".into(),
@@ -693,7 +780,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     );
     // A save invalidates (clear_doctor_before_cache is what doctor_save calls).
     clear_doctor_before_cache();
-    assert_eq!(before_cache_get(&key), None);
+    assert_eq!(cached_clip(&key), None);
 }
 
 /// One `hpf` param op — the fixture both `apply_ops_under_scene` tests apply.
@@ -1210,4 +1297,164 @@ fn a_doctor_scene_the_stored_preset_cannot_back_is_refused() {
         doctor_scene_refusal(&two, 2, false).is_none(),
         "a cut list proves nothing about a high index"
     );
+}
+
+// --- the apply A/B's level match and before → after finding check (#256, #257) ---
+
+/// A guitar profile on the shipped target with Low-mids raised `bump` dB.
+fn low_mid_profile(bump: f64) -> doctor::SoundProfile {
+    let mut bdb = doctor::target_curve(doctor::Instrument::Guitar).to_vec();
+    bdb[1] += bump;
+    doctor::SoundProfile {
+        bands: bdb.iter().map(|d| 10f64.powf(d / 10.0)).collect(),
+        integrated_lufs: -20.0,
+        spread_lu: 0.0,
+        momentary_spread_lu: 6.0,
+        tail_ratio_db: -40.0,
+        air_flatness: 0.5,
+        peaks: Vec::new(),
+        stim_bands: None,
+    }
+}
+
+fn ab_side_of(lufs: Option<f64>, profile: Option<doctor::SoundProfile>) -> AbSide {
+    AbSide {
+        clip: String::new(),
+        lufs,
+        measured: profile.map(|p| (p, vec![true; 6])),
+    }
+}
+
+fn apply_job(diag: Option<(&str, &str)>) -> DoctorApplyJob {
+    let mut v = serde_json::json!({
+        "listIndex": 0, "name": "P", "ops": [], "topologyId": null, "calibrationLufs": null,
+    });
+    if let Some((key, level)) = diag {
+        v["diag"] = serde_json::json!({ "key": key, "level": level });
+    }
+    serde_json::from_value(v).expect("apply job")
+}
+
+#[test]
+fn ab_report_carries_both_clip_loudnesses() {
+    let (levels, finding) = ab_report(
+        &apply_job(None),
+        doctor::Instrument::Guitar,
+        doctor::StimulusKind::Synthetic,
+        &ab_side_of(Some(-18.0), None),
+        &ab_side_of(Some(-21.0), None),
+    );
+    let levels = levels.expect("both measured");
+    assert_eq!((levels.before_lufs, levels.after_lufs), (-18.0, -21.0));
+    assert!(finding.is_none(), "no diag on the job → no finding check");
+    // A silent side has no loudness → no level match, never a bogus number.
+    let (levels, _) = ab_report(
+        &apply_job(None),
+        doctor::Instrument::Guitar,
+        doctor::StimulusKind::Synthetic,
+        &ab_side_of(Some(-18.0), None),
+        &ab_side_of(None, None),
+    );
+    assert!(levels.is_none());
+}
+
+#[test]
+fn ab_report_measures_the_treated_finding_before_and_after() {
+    let t = doctor::Instrument::Guitar.thresholds();
+    let gate = t.muddy_db.max(t.muddy_centered_db);
+    let job = apply_job(Some(("muddy", "rehearsal")));
+    // The fix cleared it.
+    let (_, finding) = ab_report(
+        &job,
+        doctor::Instrument::Guitar,
+        doctor::StimulusKind::Synthetic,
+        &ab_side_of(Some(-18.0), Some(low_mid_profile(gate + 3.0))),
+        &ab_side_of(Some(-19.0), Some(low_mid_profile(0.0))),
+    );
+    let finding = finding.expect("both sides profiled");
+    assert_eq!(finding.key, "muddy");
+    assert!(finding.before.expect("fires before") > 2.0);
+    assert_eq!(finding.after, None, "cleared after the fix");
+    // An op that didn't land: the finding reads the same on both clips.
+    let (_, finding) = ab_report(
+        &job,
+        doctor::Instrument::Guitar,
+        doctor::StimulusKind::Synthetic,
+        &ab_side_of(Some(-18.0), Some(low_mid_profile(gate + 3.0))),
+        &ab_side_of(Some(-18.0), Some(low_mid_profile(gate + 3.0))),
+    );
+    let finding = finding.expect("both sides profiled");
+    assert_eq!(finding.before, finding.after);
+    // An unprofiled side (no onset, no tail) → no check rather than a guess.
+    let (_, finding) = ab_report(
+        &job,
+        doctor::Instrument::Guitar,
+        doctor::StimulusKind::Synthetic,
+        &ab_side_of(Some(-18.0), Some(low_mid_profile(gate + 3.0))),
+        &ab_side_of(Some(-18.0), None),
+    );
+    assert!(finding.is_none());
+}
+
+#[test]
+fn ab_side_plays_the_processed_stereo_pair() {
+    // A 4-channel TMP-shaped capture: wide L/R content plus a loud dry channel.
+    let n = 48_000;
+    let mut interleaved = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        let t = i as f32 / 48_000.0;
+        let l = 0.3 * (2.0 * std::f32::consts::PI * 440.0 * t).sin();
+        interleaved.extend_from_slice(&[l, -l, 0.9, 0.0]);
+    }
+    let cap = crate::audio::Capture {
+        interleaved,
+        channels: 4,
+        sample_rate: 48_000,
+    };
+    let stim = DoctorStim::new(vec![0.0; 48_000]);
+    let side = ab_side(&cap, &stim, doctor::Instrument::Guitar, 800).expect("side");
+    let b64 = side
+        .clip
+        .strip_prefix("data:audio/wav;base64,")
+        .expect("data url");
+    let wav = base64_decode_for_test(b64);
+    let reader = hound::WavReader::new(std::io::Cursor::new(wav)).expect("wav");
+    assert_eq!(
+        reader.spec().channels,
+        2,
+        "the audition keeps the stereo pair"
+    );
+    // L and R cancel in the analysis mixdown; the audition must not.
+    let samples: Vec<f32> = reader.into_samples::<f32>().map(Result::unwrap).collect();
+    assert!(samples.iter().any(|x| x.abs() > 0.2));
+    assert!(side.lufs.is_some());
+}
+
+fn base64_decode_for_test(s: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.bytes().filter(|&c| c != b'=') {
+        let v = ALPHABET.iter().position(|&a| a == c).expect("base64") as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    out
+}
+
+impl AbSide {
+    fn with_clip(mut self, clip: &str) -> Self {
+        self.clip = clip.to_string();
+        self
+    }
+}
+
+/// The cached BEFORE side's clip for `key`, if any.
+fn cached_clip(key: &BeforeKey) -> Option<String> {
+    before_cache_get(key).map(|side| side.clip)
 }

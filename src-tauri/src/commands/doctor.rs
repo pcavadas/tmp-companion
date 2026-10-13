@@ -311,15 +311,64 @@ fn doctor_skip_load(prev: Option<&PrevSound>, list_index: ListIndex, is_scene: b
             .unwrap_or(false)
 }
 
-/// Should a just-captured sound be treated as a silent-inject floor read (mirrors
-/// the leveller's `leveller::floor_suspect` guard, applied to the Doctor's capture
-/// instead of a leveling measurement)? Both arguments are MOMENTARY spreads: the Doctor's
-/// 3 s stimulus is exactly one short-term window, so its short-term spread reads ≈ 0 on a
-/// live capture and a floor alike. `Some` carries the honest error to surface; `None`
-/// means the capture looks live.
-fn floor_error_for(profile_momentary_lu: f64, stimulus_momentary_lu: f64) -> Option<&'static str> {
-    leveller::floor_suspect(profile_momentary_lu, stimulus_momentary_lu)
-        .then_some(leveller::FLOOR_READ_ERR)
+/// Why a just-captured Doctor sound can't be diagnosed as captured (#246). Each one
+/// is retried once with a fresh preset recall, then surfaced as an error — never a
+/// diagnosis of something that isn't the preset's sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureSuspect {
+    /// The capture reads as the device's stationary output floor — the leveller's
+    /// `leveller::floor_suspect` guard on MOMENTARY spreads.
+    Floor,
+    /// Neither the energy step nor the correlator found the stimulus
+    /// (`leveller::OnsetSource::UnAligned`). A stationary floor has no energy step,
+    /// so this is the path a silent inject takes; diagnosing it would judge the
+    /// device's idle noise over an un-aligned split.
+    NoOnset,
+    /// The capture ends at or before the stimulus body does, so there is no tail
+    /// window — `doctor::tail_energy_ratio` would read its −80 dB "bone dry"
+    /// sentinel and silently drop a wet preset's `washed` verdict.
+    NoTail,
+}
+
+impl CaptureSuspect {
+    /// The per-sound error a suspect that survives the retry becomes.
+    fn into_error(self) -> LevelError {
+        match self {
+            // A missing onset is a silent inject seen from the other side: the
+            // stimulus never showed up in the capture.
+            CaptureSuspect::Floor | CaptureSuspect::NoOnset => LevelError::FloorRead,
+            CaptureSuspect::NoTail => LevelError::Device(TRUNCATED_CAPTURE_ERR.to_string()),
+        }
+    }
+}
+
+/// The per-sound error when a capture still ends before the stimulus does after the
+/// retry ([`CaptureSuspect::NoTail`]).
+const TRUNCATED_CAPTURE_ERR: &str = "the capture stopped before the sound finished, so \
+    its tail can't be judged — check the USB audio connection and try again";
+
+/// Should a just-captured sound be refused rather than diagnosed? `onset_confident` is
+/// `leveller::DoctorOnset::confident`, `has_tail` whether the capture runs past the
+/// body's end, and both spreads are MOMENTARY spreads (the Doctor's 3 s stimulus is
+/// exactly one short-term window, so its short-term spread reads ≈ 0 on a live capture
+/// and a floor alike). `None` means the capture looks live and complete. The floor
+/// check runs first: a floor read usually also has no onset, and its error names the
+/// cause.
+fn capture_suspect(
+    onset_confident: bool,
+    has_tail: bool,
+    profile_momentary_lu: f64,
+    stimulus_momentary_lu: f64,
+) -> Option<CaptureSuspect> {
+    if leveller::floor_suspect(profile_momentary_lu, stimulus_momentary_lu) {
+        Some(CaptureSuspect::Floor)
+    } else if !onset_confident {
+        Some(CaptureSuspect::NoOnset)
+    } else if !has_tail {
+        Some(CaptureSuspect::NoTail)
+    } else {
+        None
+    }
 }
 
 /// How many bands a coverage vector (`doctor::output_coverage_with_body`'s
@@ -328,7 +377,7 @@ fn floor_error_for(profile_momentary_lu: f64, stimulus_momentary_lu: f64) -> Opt
 /// "gated", no separate bool). `None` (no coverage computed at all — an
 /// errored or showcase sound) reads as 0, same as an all-covered vector: this
 /// can under-report "gated" in that case, never over-report. Split out for a
-/// unit test with no capture data (mirrors [`floor_error_for`]'s split).
+/// unit test with no capture data (mirrors [`capture_suspect`]'s split).
 fn skipped_band_count(coverage: Option<&[bool]>) -> u32 {
     coverage
         .map(|c| u32::try_from(c.iter().filter(|covered| !**covered).count()).unwrap_or(0))
@@ -337,9 +386,13 @@ fn skipped_band_count(coverage: Option<&[bool]>) -> u32 {
 
 /// The instrument a sound is judged as — from its topology, guitar by default.
 fn instrument_of(item: &DoctorInput) -> doctor::Instrument {
+    instrument_of_topology(item.topology_id.as_deref())
+}
+
+/// The instrument a topology id is judged as — guitar when unknown or absent.
+fn instrument_of_topology(topology_id: Option<&str>) -> doctor::Instrument {
     doctor::Instrument::from_topology(
-        item.topology_id
-            .as_deref()
+        topology_id
             .and_then(topologies::by_id)
             .map(|t| t.instrument)
             .unwrap_or("guitar"),
@@ -708,8 +761,42 @@ fn run_doctor_check(
     Ok(DoctorCheckResult { presets, stopped })
 }
 
-/// A decoded Doctor stimulus and its own momentary spread (the floor guard's reference).
-type DoctorStim = (Vec<f32>, f64);
+/// A decoded Doctor stimulus, sliced to the Doctor window, with what every capture of
+/// it reads: its own momentary spread (the floor guard's reference) and its Welch PSD
+/// at the device clock (the transfer reference for the localized rules and the
+/// stimulus-transfer anchor). Both are pure functions of the samples, so one
+/// computation per (path, calibration) cache entry serves every sound and every
+/// floor-guard retry (#197).
+struct DoctorStim {
+    samples: Vec<f32>,
+    spread: f64,
+    /// `psd::welch_psd` at [`leveller::RATE`]; a capture at another rate recomputes
+    /// its own (see [`DoctorStim::psd_at`]).
+    psd: crate::psd::Psd,
+}
+
+impl DoctorStim {
+    fn new(samples: Vec<f32>) -> Self {
+        let spread = leveller::stimulus_momentary_spread(&samples);
+        let psd = crate::psd::welch_psd(&samples, leveller::RATE as f32);
+        DoctorStim {
+            samples,
+            spread,
+            psd,
+        }
+    }
+
+    /// The stimulus PSD on `rate`'s frequency grid: the cached one at the device
+    /// clock, else a fresh computation (the cache key carries no rate, so a
+    /// differently clocked capture must never be handed the 48 kHz grid).
+    fn psd_at(&self, rate: u32) -> std::borrow::Cow<'_, crate::psd::Psd> {
+        if rate == leveller::RATE {
+            std::borrow::Cow::Borrowed(&self.psd)
+        } else {
+            std::borrow::Cow::Owned(crate::psd::welch_psd(&self.samples, rate as f32))
+        }
+    }
+}
 
 /// The state one [`doctor_check`] run carries from sound to sound.
 struct DoctorRun {
@@ -768,11 +855,8 @@ impl DoctorRun {
                 // Sliced to the Doctor window ONCE at cache fill so the
                 // capture, onset alignment, floor-guard spread, and
                 // `stimulus_samples` all see the same 3 s stimulus.
-                read_stimulus_calibrated(path, cal).map(|s| {
-                    let s = leveller::doctor_stim_slice(s);
-                    let spread = leveller::stimulus_momentary_spread(&s);
-                    &*e.insert((s, spread))
-                })
+                read_stimulus_calibrated(path, cal)
+                    .map(|s| &*e.insert(DoctorStim::new(leveller::doctor_stim_slice(s))))
             }
         }
     }
@@ -817,9 +901,7 @@ impl DoctorRun {
         });
         let result = result
             .map_err(LevelError::from)
-            .and_then(|(stim, stim_spread)| {
-                capture_profile_with_floor_retry(item, &iso, stim, *stim_spread, skip_load)
-            });
+            .and_then(|stim| capture_profile_with_floor_retry(item, &iso, stim, skip_load));
         match result {
             Ok((profile, cov)) => {
                 self.prev = Some(PrevSound {
@@ -843,34 +925,56 @@ impl DoctorRun {
     }
 }
 
-/// One sound's capture + profile, retried ONCE on a floor-suspect read.
+/// One sound's capture + profile, retried ONCE on a suspect read ([`capture_suspect`]).
 fn capture_profile_with_floor_retry(
     item: &DoctorInput,
     iso: &SoundIsolation,
-    stim: &[f32],
-    stim_spread: f64,
+    stim: &DoctorStim,
     skip_load: bool,
 ) -> Result<(doctor::SoundProfile, Vec<bool>), LevelError> {
-    let (profile, cov) = doctor_capture_profile(item, iso, stim, skip_load)?;
-    match floor_error_for(profile.momentary_spread_lu, stim_spread) {
-        None => Ok((profile, cov)),
-        Some(_) => {
-            // A silent-inject floor read (the leveller's guard, applied
-            // here to the Doctor's capture): the reading is finite but
-            // stationary. Wait out the quiet gap and force a fresh
-            // preset recall (skip_load=false) — a floor read means the
-            // inject failed, not that the cached working copy is dirty.
+    let stim_spread = stim.spread;
+    let first = doctor_capture_profile(item, iso, stim, skip_load)?;
+    let Some(suspect) = first.suspect(stim_spread) else {
+        return Ok((first.profile, first.coverage));
+    };
+    // A floor read, a missing onset or a truncated capture: the reading can't be
+    // diagnosed as captured. Wait out the quiet gap and force a fresh preset recall
+    // (skip_load=false) — a bad capture means the inject failed, not that the cached
+    // working copy is dirty.
+    log::warn!(
+        "doctor_check: {suspect:?} capture for {} (momentary spread {:.2} LU, stimulus {:.2} LU, onset {:?}) — retrying once",
+        item.key, first.profile.momentary_spread_lu, stim_spread, first.onset.source
+    );
+    crate::settle_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
+    let second = doctor_capture_profile(item, iso, stim, false)?;
+    match second.suspect(stim_spread) {
+        None => Ok((second.profile, second.coverage)),
+        Some(suspect) => {
             log::warn!(
-                "doctor_check: floor-suspect capture for {} (momentary spread {:.2} LU, stimulus {:.2} LU) — retrying once",
-                item.key, profile.momentary_spread_lu, stim_spread
+                "doctor_check: still {suspect:?} after the retry for {} — reporting an error",
+                item.key
             );
-            crate::settle_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
-            let (profile, cov) = doctor_capture_profile(item, iso, stim, false)?;
-            match floor_error_for(profile.momentary_spread_lu, stim_spread) {
-                None => Ok((profile, cov)),
-                Some(_) => Err(LevelError::FloorRead),
-            }
+            Err(suspect.into_error())
         }
+    }
+}
+
+/// One capture attempt's profile, coverage and the facts [`capture_suspect`] judges.
+struct DoctorCaptureProfile {
+    profile: doctor::SoundProfile,
+    coverage: Vec<bool>,
+    onset: leveller::DoctorOnset,
+    has_tail: bool,
+}
+
+impl DoctorCaptureProfile {
+    fn suspect(&self, stim_spread: f64) -> Option<CaptureSuspect> {
+        capture_suspect(
+            self.onset.confident(),
+            self.has_tail,
+            self.profile.momentary_spread_lu,
+            stim_spread,
+        )
     }
 }
 
@@ -881,9 +985,10 @@ fn capture_profile_with_floor_retry(
 fn doctor_capture_profile(
     item: &DoctorInput,
     iso: &SoundIsolation,
-    stim: &[f32],
+    stim_cache: &DoctorStim,
     skip_load: bool,
-) -> Result<(doctor::SoundProfile, Vec<bool>), LevelError> {
+) -> Result<DoctorCaptureProfile, LevelError> {
+    let stim = stim_cache.samples.as_slice();
     let family = instrument_of(item);
     let tail_ms_u32 = doctor::doctor_tail_ms(&iso.graph);
     let tail_ms = u64::from(tail_ms_u32);
@@ -910,38 +1015,59 @@ fn doctor_capture_profile(
         skip_load,
         validate.as_ref(),
     )?;
+    Ok(profile_capture(
+        &samples,
+        rate,
+        stereo_loudness,
+        stim_cache,
+        family,
+        tail_ms_u32,
+    )?)
+}
+
+/// Profile one Doctor capture's mixdown `samples`: onset split, body PSD, the
+/// [`doctor::SoundProfile`] (with `stereo_loudness` as its loudness and the
+/// stimulus-transfer anchor set), the output coverage, and the facts
+/// [`capture_suspect`] judges. Shared by the diagnosis captures and both A/B clips
+/// of an apply ([`ab_side`]), so the before → after check measures in exactly the
+/// diagnosis's space.
+fn profile_capture(
+    samples: &[f32],
+    rate: u32,
+    stereo_loudness: crate::lufs::Loudness,
+    stim_cache: &DoctorStim,
+    family: doctor::Instrument,
+    tail_ms_u32: u32,
+) -> Result<DoctorCaptureProfile, String> {
+    let stim = stim_cache.samples.as_slice();
     // Align the body/tail split to where the stimulus actually starts
     // (I/O latency); the energy step is primary, falling back to the
     // correlator and then the legacy un-aligned split — see
     // `leveller::doctor_onset`'s doc for why the correlator alone
     // can't be trusted here (a peakless correlation curve on a
     // washed/reverb chain).
-    let onset = leveller::doctor_onset(stim, &samples, rate);
-    if !onset.confident() {
-        log::warn!(
-            "doctor: onset not confidently found for {} ({:?}) — un-aligned tail split",
-            item.key,
-            onset.source
-        );
-    }
+    // An un-aligned onset is refused by the caller ([`capture_suspect`]), never
+    // diagnosed — `doctor_onset` already WARNs naming the fallback.
+    let onset = leveller::doctor_onset(stim, samples, rate);
+    let has_tail = samples.len() > onset.body_end();
     // ONE shared post-onset body PSD for this capture — read by both the
     // profile's band powers/air-flatness and the output-coverage SNR
     // gate below, instead of each computing its own (disagreeing) space.
-    let body_psd = doctor::body_psd(&samples, rate, onset.signal_start);
+    let body_psd = doctor::body_psd(samples, rate, onset.signal_start);
     // The STIMULUS's own PSD — the reference the localized
     // resonant/boxy rules diff against (`Psd::transfer_db`), so
     // the stimulus's spectral ridges can't read as chain
-    // resonances. Cheap (~ms) next to the ~5 s capture.
-    let stim_psd = crate::psd::welch_psd(stim, rate as f32);
+    // resonances. Cached per stimulus (`DoctorStim`), not per capture.
+    let stim_psd = stim_cache.psd_at(rate);
     let mut profile = doctor::SoundProfile::from_capture_with_psd_loudness(
-        &samples,
+        samples,
         rate,
         onset.body_len,
         onset.body_start,
         tail_ms_u32,
         family,
         &body_psd,
-        Some(&stim_psd),
+        Some(&*stim_psd),
         Some(stereo_loudness),
     )?;
     // The re-amp stimulus's own band powers — the stimulus-transfer
@@ -954,8 +1080,13 @@ fn doctor_capture_profile(
     // carried, so amp-created HF (fizz/harsh distortion) isn't gated out
     // just because the DI input never had it.
     let cov =
-        doctor::output_coverage_with_body(&samples, rate, onset.signal_start, family, &body_psd);
-    Ok((profile, cov))
+        doctor::output_coverage_with_body(samples, rate, onset.signal_start, family, &body_psd);
+    Ok(DoctorCaptureProfile {
+        profile,
+        coverage: cov,
+        onset,
+        has_tail,
+    })
 }
 
 /// One prescription's apply job (camelCase wire — the frontend echoes the ops it
@@ -1000,6 +1131,44 @@ pub struct DoctorApplyJob {
     /// captures with the same tail the diagnosis used.
     #[serde(default)]
     pub scene_overrides: Vec<doctor::NodeOverride>,
+    /// The finding this prescription treats, when it came from a diagnosis card
+    /// (`None` for the Match-reference card) — the A/B re-measures it on both
+    /// clips ([`FindingCheck`]).
+    #[serde(default)]
+    pub diag: Option<DiagRef>,
+}
+
+/// The diagnosed finding an apply job treats: its rule key and the playback level
+/// it was reported at (`LeveledDiag::from_level`), so both clips are judged
+/// against the same threshold the card showed.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagRef {
+    pub key: String,
+    pub level: crate::profiles::PlaybackLevel,
+}
+
+/// Both A/B clips' integrated loudness (LUFS, 2-ch BS.1770 over the processed
+/// pair). The audition plays them level-matched, and says how far apart they
+/// really are (#257). Playback gain only: nothing is written to the device.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbLevels {
+    pub before_lufs: f64,
+    pub after_lufs: f64,
+}
+
+/// The treated finding, measured on the BEFORE and AFTER clips with the
+/// diagnosis's own pipeline and threshold (#256): `before`/`after` are its
+/// severity (dB past the gate) when it fires, `None` when it doesn't. An `after`
+/// close to `before` means the fix made no measurable difference — for example a
+/// write that didn't land.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingCheck {
+    pub key: String,
+    pub before: Option<f64>,
+    pub after: Option<f64>,
 }
 
 /// Result of a live (unsaved) prescription apply: the before/after audition clips
@@ -1008,8 +1177,15 @@ pub struct DoctorApplyJob {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoctorApplyResult {
+    /// The processed stereo pair as captured (mono only on a 1-channel capture),
+    /// so a wide preset auditions as it plays, not as the analysis mixdown (#257).
     pub before_clip: String,
     pub after_clip: String,
+    /// `None` when either clip's loudness couldn't be measured (a silent clip).
+    pub levels: Option<AbLevels>,
+    /// `None` without a [`DoctorApplyJob::diag`], or when either clip couldn't be
+    /// profiled (no confident onset, no tail, silence).
+    pub finding: Option<FindingCheck>,
     /// The run-end re-amp warning (`leveller::REAMP_STILL_ON_WARNING`) when the backstop
     /// could not read re-amp back OFF. Omitted when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1040,7 +1216,7 @@ type BeforeKey = (
 /// filled at another generation is a miss; device detach (`watcher.rs`, an offline unit
 /// can be edited elsewhere) calls [`clear_doctor_before_cache`]. Single-entry bounds
 /// memory (one WAV).
-static BEFORE_CACHE: std::sync::Mutex<Option<(u64, BeforeKey, String)>> =
+static BEFORE_CACHE: std::sync::Mutex<Option<(u64, BeforeKey, AbSide)>> =
     std::sync::Mutex::new(None);
 
 /// Drop the cached `doctor_apply` BEFORE clip — call after anything that changes a
@@ -1049,16 +1225,116 @@ pub(crate) fn clear_doctor_before_cache() {
     *crate::lock_ok(&BEFORE_CACHE) = None;
 }
 
-fn before_cache_get(key: &BeforeKey) -> Option<String> {
+fn before_cache_get(key: &BeforeKey) -> Option<AbSide> {
     let generation = crate::session::stored_preset_generation();
     crate::lock_ok(&BEFORE_CACHE)
         .as_ref()
         .filter(|(g, k, _)| *g == generation && k == key)
-        .map(|(_, _, clip)| clip.clone())
+        .map(|(_, _, side)| side.clone())
 }
 
-fn before_cache_put(key: BeforeKey, clip: String) {
-    *crate::lock_ok(&BEFORE_CACHE) = Some((crate::session::stored_preset_generation(), key, clip));
+fn before_cache_put(key: BeforeKey, side: AbSide) {
+    *crate::lock_ok(&BEFORE_CACHE) = Some((crate::session::stored_preset_generation(), key, side));
+}
+
+/// One side of the apply A/B: the clip the player hears, and what the capture
+/// measures — its loudness for the level match, and its profile and coverage for
+/// the before → after finding check. Cached whole for the BEFORE side.
+#[derive(Debug, Clone)]
+struct AbSide {
+    clip: String,
+    lufs: Option<f64>,
+    measured: Option<(doctor::SoundProfile, Vec<bool>)>,
+}
+
+/// Build an [`AbSide`] from one raw A/B capture. The clip is the processed stereo
+/// pair (#257; analysis stays on the mixdown). A side whose loudness or profile
+/// can't be measured still auditions: the audition is the deliverable, the
+/// numbers are a bonus, so those fields go `None` instead of failing the apply.
+fn ab_side(
+    cap: &crate::audio::Capture,
+    stim: &DoctorStim,
+    family: doctor::Instrument,
+    tail_ms: u32,
+) -> Result<AbSide, String> {
+    let rate = cap.sample_rate;
+    let wav = match cap.processed_stereo() {
+        Some(pair) => crate::wav_bytes_channels(&pair, 2, rate)?,
+        None => wav_bytes(&cap.channel(0), rate)?,
+    };
+    let clip = format!("data:audio/wav;base64,{}", base64_encode(&wav));
+    let loudness =
+        leveller::measure_processed_as(cap, crate::profiles::PlaybackChannels::Stereo).ok();
+    let lufs = loudness
+        .as_ref()
+        .map(|l| l.integrated_lufs)
+        .filter(|l| l.is_finite());
+    let measured = loudness.and_then(|l| {
+        match profile_capture(&cap.stereo_mix(), rate, l, stim, family, tail_ms) {
+            Ok(p) if p.onset.confident() && p.has_tail => Some((p.profile, p.coverage)),
+            Ok(_) => None,
+            Err(e) => {
+                log::warn!("doctor_apply: A/B clip not profiled ({e})");
+                None
+            }
+        }
+    });
+    Ok(AbSide {
+        clip,
+        lufs,
+        measured,
+    })
+}
+
+/// The treated finding's severity on one profiled clip: `Some(margin)` when it
+/// fires at `level`'s threshold, `None` when it doesn't.
+fn finding_severity(
+    measured: &(doctor::SoundProfile, Vec<bool>),
+    nodes: Option<&[doctor::DoctorNode]>,
+    family: doctor::Instrument,
+    kind: doctor::StimulusKind,
+    diag: &DiagRef,
+) -> Option<f64> {
+    let (profile, coverage) = measured;
+    doctor::diagnose_kind(
+        profile,
+        nodes,
+        family,
+        kind,
+        Some(coverage),
+        doctor::playback_offsets(diag.level),
+    )
+    .into_iter()
+    .find(|d| d.key == diag.key)
+    .map(|d| d.severity)
+}
+
+/// The A/B's level match and finding check from its two sides (see
+/// [`AbLevels`] / [`FindingCheck`]).
+fn ab_report(
+    job: &DoctorApplyJob,
+    family: doctor::Instrument,
+    kind: doctor::StimulusKind,
+    before: &AbSide,
+    after: &AbSide,
+) -> (Option<AbLevels>, Option<FindingCheck>) {
+    let levels = before
+        .lufs
+        .zip(after.lufs)
+        .map(|(before_lufs, after_lufs)| AbLevels {
+            before_lufs,
+            after_lufs,
+        });
+    let nodes = (!job.nodes.is_empty()).then_some(job.nodes.as_slice());
+    let finding = job.diag.as_ref().and_then(|diag| {
+        let (b, a) = (before.measured.as_ref()?, after.measured.as_ref()?);
+        Some(FindingCheck {
+            key: diag.key.clone(),
+            before: finding_severity(b, nodes, family, kind, diag),
+            after: finding_severity(a, nodes, family, kind, diag),
+        })
+    });
+    (levels, finding)
 }
 
 /// Apply every op in `ops` on `s`'s live edit buffer (the caller must already
@@ -1176,7 +1452,7 @@ fn check_doctor_inserts(
 /// `begin_live_edit` → `load_scene` → `apply_doctor_ops` sequence shared by
 /// `doctor_apply` step (b) (unsaved A/B) and `doctor_save` (rebuild-from-scratch
 /// persist). On success returns the still-open session — `doctor_apply` keeps it
-/// open to capture the AFTER clip on it (`leveller::doctor_capture_on_session`),
+/// open to capture the AFTER clip on it (`leveller::doctor_capture_on_session_raw`),
 /// `doctor_save` calls `save_current_preset` on it (save must stay the LAST op on
 /// that connection). On ANY op failure the live session is dropped (freeing the
 /// seize) BEFORE `restore_saved_preset` reconnects to discard the partial edit,
@@ -1309,7 +1585,7 @@ fn apply_ops_under_scene(
 /// confirms is audible ONLY in this scene — Doctor sends the SAME enable-dropped
 /// `changeParameter` in both cases, so there is nothing scene-specific to repair.
 /// Pure — takes the already-read preset JSON, so it's unit-testable without a live
-/// session (mirrors [`floor_error_for`]'s split, same reason: `ops_session` itself
+/// session (mirrors [`capture_suspect`]'s split, same reason: `ops_session` itself
 /// needs `Session::connect`). Returns the first conflicting op's user-facing
 /// refusal reason; `None` = safe to proceed.
 ///
@@ -1394,8 +1670,16 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         // no device state, so it must not pay the run-end backstop connection.
         // Same 3 s Doctor window as the diagnosis captures — the A/B clips must
         // be measured (and heard) over the space the verdicts were made in.
-        let stim = leveller::doctor_stim_slice(read_stimulus_calibrated(&stim_path, calibration)?);
-        let result = doctor_apply_run(&job, &stim_path, calibration, &stim);
+        let stim = DoctorStim::new(leveller::doctor_stim_slice(read_stimulus_calibrated(
+            &stim_path,
+            calibration,
+        )?));
+        let kind = if from_capture {
+            doctor::StimulusKind::Capture
+        } else {
+            doctor::StimulusKind::Synthetic
+        };
+        let result = doctor_apply_run(&job, &stim_path, calibration, &stim, kind);
         // Run-end backstop, success or failure (see `reamp_off_guaranteed`). ONLY
         // the reamp toggle — never a load_preset here, which would discard the
         // just-applied unsaved edit buffer on the success path.
@@ -1410,8 +1694,10 @@ fn doctor_apply_run(
     job: &DoctorApplyJob,
     stim_path: &str,
     calibration: Option<f32>,
-    stim: &[f32],
+    stim: &DoctorStim,
+    kind: doctor::StimulusKind,
 ) -> Result<DoctorApplyResult, String> {
+    let family = instrument_of_topology(job.topology_id.as_deref());
     // Pre-engage writes for the diagnosed sound — the SAME
     // `resolve_sound_isolation` policy `doctor_check` uses (one policy so the
     // A/B can never observe a different bypass OR param state than the
@@ -1435,7 +1721,7 @@ fn doctor_apply_run(
     // The Doctor capture tail for the graph the diagnosis was captured in — the
     // ONE home of the policy (`doctor::doctor_tail_ms`); empty `nodes`
     // conservatively keeps the full wash-analysis tail.
-    let tail_ms = u64::from(doctor::doctor_tail_ms(&iso.graph));
+    let tail_ms = doctor::doctor_tail_ms(&iso.graph);
 
     // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
     //     the slot, so (b) below confirms the already-current preset — no reload.
@@ -1453,7 +1739,7 @@ fn doctor_apply_run(
         job.scene,
         job.footswitch,
     );
-    let before_clip = doctor_before_clip(job, key, &iso, stim, tail_ms)?;
+    let before = doctor_before_side(job, key, &iso, stim, family, tail_ms)?;
 
     // (b) APPLY live onto the edit buffer, recalling the diagnosed scene FIRST
     //     (`ops_session`) so the ops land in it, not wherever the connection
@@ -1474,8 +1760,8 @@ fn doctor_apply_run(
     //     auto-restore (`PrescriptionCard.tsx`'s "a failed apply
     //     auto-restores"), and a stranded mutated buffer would let a
     //     sibling card Apply on top of it.
-    let after_clip = match doctor_after_clip(&mut s, &iso, stim, tail_ms) {
-        Ok(clip) => clip,
+    let after = match doctor_after_side(&mut s, &iso, stim, family, tail_ms) {
+        Ok(side) => side,
         Err(after_err) => {
             // Free the seize before the restore opens its own connection.
             drop(s);
@@ -1488,61 +1774,66 @@ fn doctor_apply_run(
         }
     };
 
+    let (levels, finding) = ab_report(job, family, kind, &before, &after);
     Ok(DoctorApplyResult {
-        before_clip,
-        after_clip,
+        before_clip: before.clip,
+        after_clip: after.clip,
+        levels,
+        finding,
         reamp_warning: None,
     })
 }
 
-/// (a) The BEFORE clip: the stored preset's capture, from `BEFORE_CACHE` when the same
-/// sound was captured last (still loading the slot — see the caller's step (a)).
-fn doctor_before_clip(
+/// (a) The BEFORE side: the stored preset's capture, from `BEFORE_CACHE` when the
+/// same sound was captured last (still loading the slot — see the caller's step (a)).
+fn doctor_before_side(
     job: &DoctorApplyJob,
     key: BeforeKey,
     iso: &SoundIsolation,
-    stim: &[f32],
-    tail_ms: u64,
-) -> Result<String, String> {
+    stim: &DoctorStim,
+    family: doctor::Instrument,
+    tail_ms: u32,
+) -> Result<AbSide, String> {
     Ok(match before_cache_get(&key) {
-        Some(clip) => {
+        Some(side) => {
             leveller::restore_saved_preset(job.list_index)?;
-            clip
+            side
         }
         None => {
-            let (before, rate) = leveller::doctor_capture(
+            let cap = leveller::doctor_capture_raw(
                 job.list_index,
                 job.scene,
                 &iso.bypass,
                 &iso.params,
-                stim,
+                &stim.samples,
                 None,
-                tail_ms,
+                u64::from(tail_ms),
                 false,
             )?;
-            let clip = format!(
-                "data:audio/wav;base64,{}",
-                base64_encode(&wav_bytes(&before, rate)?)
-            );
-            before_cache_put(key, clip.clone());
-            clip
+            let side = ab_side(&cap, stim, family, tail_ms)?;
+            before_cache_put(key, side.clone());
+            side
         }
     })
 }
 
-/// (c) The AFTER clip, captured on the session (b) applied the ops on.
-fn doctor_after_clip(
+/// (c) The AFTER side, captured on the session (b) applied the ops on.
+fn doctor_after_side(
     s: &mut Session,
     iso: &SoundIsolation,
-    stim: &[f32],
-    tail_ms: u64,
-) -> Result<String, String> {
-    let (after, rate) =
-        leveller::doctor_capture_on_session(s, &iso.bypass, &iso.params, stim, None, tail_ms)?;
-    Ok(format!(
-        "data:audio/wav;base64,{}",
-        base64_encode(&wav_bytes(&after, rate)?)
-    ))
+    stim: &DoctorStim,
+    family: doctor::Instrument,
+    tail_ms: u32,
+) -> Result<AbSide, String> {
+    let cap = leveller::doctor_capture_on_session_raw(
+        s,
+        &iso.bypass,
+        &iso.params,
+        &stim.samples,
+        None,
+        u64::from(tail_ms),
+    )?;
+    ab_side(&cap, stim, family, tail_ms)
 }
 
 /// Persist the applied (still-live) edit buffer to `list_index` — SAFELY: the

@@ -62,7 +62,11 @@ export function MatchCard({
   // predicate): index-paired moves on mismatched layouts would be wrong.
   if (!bandLayoutsMatch(reference, sound)) return null;
 
-  const deltas = matchDeltas(reference.balanceDb, sound.balanceDb);
+  const deltas = matchDeltas(
+    reference.balanceDb,
+    sound.balanceDb,
+    sound.bandLabels,
+  );
   const moves = eqMovesFor(deltas, sound.bandLabels);
   const residualLarge = matchResidualLarge(deltas);
 
