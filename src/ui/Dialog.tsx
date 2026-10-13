@@ -126,6 +126,7 @@ export function Dialog({
       }}
     >
       <div
+        data-backdrop=""
         onClick={onClose}
         style={{
           position: "absolute",

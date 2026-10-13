@@ -45,6 +45,7 @@ export function PickPortalMenu({
     <>
       <div
         onClick={onClose}
+        data-backdrop=""
         data-pick-backdrop=""
         style={{ position: "absolute", inset: 0, zIndex: 60 }}
       />

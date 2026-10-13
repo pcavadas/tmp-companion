@@ -16,6 +16,7 @@ export function PickInlineMenu({ onClose, children }: PickInlineMenuProps) {
   return (
     <>
       <div
+        data-backdrop=""
         onClick={(e) => {
           e.stopPropagation();
           onClose();
