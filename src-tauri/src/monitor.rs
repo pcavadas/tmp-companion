@@ -852,7 +852,7 @@ fn pump_loop(
     // Pushes are decoded as their stream CLOSES and their reports dropped (#262): `raw` is
     // drained every pass, so it never grows with uptime. `skip` = the streams the handshake
     // decode already emitted (`seen`), which arrive first out of the reassembler.
-    let mut pushes = crate::proto::FinalReassembler::default();
+    let mut pushes = crate::proto::Reassembler::new(crate::proto::SingleFrame::ClosesStream);
     let mut skip = seen;
     let mut decode_closed = |session: &mut Session, skip: &mut usize| {
         let closed = session.drain_closed_pushes(&mut pushes);

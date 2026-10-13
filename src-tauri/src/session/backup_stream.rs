@@ -105,9 +105,10 @@ impl Session {
         let _ = self.hid.send(&proto::heartbeat());
         let start = Instant::now();
         self.send_and_collect(&proto::backup_request(), BACKUP_REQUEST_MS)?;
-        // Inline reassembler (mirrors proto::reassemble_streams_final, but decodes
-        // each completed stream as it closes so we never hold the whole frame set).
-        let mut current: Option<Vec<u8>> = None;
+        // The final-frame reassembler, fed one report at a time, so each completed
+        // stream decodes as it closes and we never hold the whole frame set.
+        let mut reassembler = proto::Reassembler::new(proto::SingleFrame::ClosesStream);
+        let mut completed: Vec<proto::Stream> = Vec::new();
         let mut chunks: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
         let mut num_chunks: u32 = 0;
         let mut num_bytes: u32 = 0;
@@ -142,38 +143,12 @@ impl Session {
             } else {
                 std::mem::take(&mut pending)
             };
+            completed.clear();
             for data in &reports {
-                if data.len() < 4 || data[0] != 0x00 {
-                    continue;
-                }
-                let magic = data[1];
-                let body_len = data[3] as usize;
-                let end = (4 + body_len).min(data.len());
-                let body = &data[4..end];
-                // 0x33 start · 0x34 continue · 0x35 final (proto framing).
-                let completed: Option<Vec<u8>> = match magic {
-                    0x33 => {
-                        let prev = current.take();
-                        current = Some(body.to_vec());
-                        prev
-                    }
-                    0x34 => {
-                        match current {
-                            Some(ref mut c) => c.extend_from_slice(body),
-                            None => current = Some(body.to_vec()),
-                        }
-                        None
-                    }
-                    0x35 => match current.take() {
-                        Some(mut c) => {
-                            c.extend_from_slice(body);
-                            Some(c)
-                        }
-                        None => Some(body.to_vec()),
-                    },
-                    _ => None,
-                };
-                let Some(stream) = completed else { continue };
+                reassembler.push(data, &mut completed);
+            }
+            for stream in completed.drain(..) {
+                let stream = stream.body;
                 // TMS → backupMessage(8) → { backupRestoreData(2), backupRestoreState(3) }
                 let top = proto::parse(&stream);
                 let Some(bm) = proto::first_bytes(&top, 8) else {

@@ -1543,49 +1543,41 @@ pub struct Stream {
     pub body: Vec<u8>,
 }
 
+/// One inbound HID report split into its framing: `(magic, body)`. macOS prepends a
+/// report-id `0x00`; byte 1 is the magic (`0x35` single/final frame, `0x33` stream start,
+/// `0x34` continuation); byte 3 is the body length, clamped to the report. `None` for a
+/// report too short to frame or without the `0x00` lead. THE one frame-layout parse every
+/// reader shares ([`Reassembler`], `hid::fold_frame_open`).
+pub fn parse_frame(data: &[u8]) -> Option<(u8, &[u8])> {
+    if data.len() < 4 || data[0] != 0x00 {
+        return None;
+    }
+    let body_len = data[3] as usize;
+    let end = (4 + body_len).min(data.len());
+    Some((data[1], &data[4..end]))
+}
+
+/// What an inbound `0x35` frame means to a [`Reassembler`] while a stream is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingleFrame {
+    /// A standalone message interleaved mid-stream: it is emitted on its own and the open
+    /// stream stays open ([`reassemble_streams`]).
+    Standalone,
+    /// The FINAL frame of the open stream: append and close ([`reassemble_streams_final`]).
+    ClosesStream,
+}
+
 /// Group raw 64-byte input reports into message bodies. macOS prepends a
 /// report-id `0x00`; byte 1 is the magic: `0x35` single-frame, `0x33` stream
 /// start, `0x34` continuation. Port of `reassemble_streams`.
+///
+/// A single-frame (0x35) response interleaved mid-stream — e.g. a heartbeat reply or
+/// small event arriving during a large 0x33/0x34 stream — must NOT close the open
+/// stream. It is pushed as its own stream and the open one keeps appending the
+/// continuation 0x34 frames (interleaved single-frames were truncating large
+/// flow-controlled streams like the preset-data JSON).
 pub fn reassemble_streams(reports: &[Vec<u8>]) -> Vec<Stream> {
-    let mut streams = Vec::new();
-    let mut current: Option<Vec<u8>> = None;
-    for data in reports {
-        if data.len() < 4 || data[0] != 0x00 {
-            continue;
-        }
-        let magic = data[1];
-        let body_len = data[3] as usize;
-        let end = (4 + body_len).min(data.len());
-        let body = &data[4..end];
-        match magic {
-            MAGIC_OUT => {
-                // A single-frame (0x35) response interleaved mid-stream — e.g. a
-                // heartbeat reply or small event arriving during a large 0x33/0x34
-                // stream — must NOT close the open stream. Push it as its own
-                // stream but keep `current` open so the continuation 0x34 frames
-                // still append (interleaved single-frames were truncating large
-                // flow-controlled streams like the preset-data JSON).
-                streams.push(Stream {
-                    body: body.to_vec(),
-                });
-            }
-            MAGIC_IN_START => {
-                if let Some(c) = current.take() {
-                    streams.push(Stream { body: c });
-                }
-                current = Some(body.to_vec());
-            }
-            MAGIC_IN_FRAME => match current {
-                Some(ref mut c) => c.extend_from_slice(body),
-                None => current = Some(body.to_vec()),
-            },
-            _ => {}
-        }
-    }
-    if let Some(c) = current {
-        streams.push(Stream { body: c });
-    }
-    streams
+    Reassembler::new(SingleFrame::Standalone).reassemble(reports)
 }
 
 /// Like [`reassemble_streams`], but treats an inbound `0x35` as the **final frame**
@@ -1598,37 +1590,46 @@ pub fn reassemble_streams(reports: &[Vec<u8>]) -> Vec<Stream> {
 /// list responses → systematic tail truncation. The strict list harvests use this
 /// variant; a standalone `0x35` with no open stream is still kept as its own message.
 pub fn reassemble_streams_final(reports: &[Vec<u8>]) -> Vec<Stream> {
-    let mut r = FinalReassembler::default();
-    let mut streams = Vec::new();
-    for data in reports {
-        r.push(data, &mut streams);
-    }
-    if let Some(c) = r.current {
-        streams.push(Stream { body: c });
-    }
-    streams
+    Reassembler::new(SingleFrame::ClosesStream).reassemble(reports)
 }
 
-/// [`reassemble_streams_final`], one report at a time: [`Self::push`] hands back each stream
-/// as it CLOSES (its `0x35` final frame, or the next `0x33` start), and keeps only the one
-/// still open. A long-lived reader (the live-sync monitor) feeds it every report once and
-/// drops them, so its buffer is one open stream instead of the session's whole history,
-/// re-parsed on every pump (#262).
-#[derive(Debug, Default)]
-pub struct FinalReassembler {
+/// The ONE stream reassembler, one report at a time: [`Self::push`] hands back each stream
+/// as it CLOSES and keeps only the one still open. Both batch rules
+/// ([`reassemble_streams`], [`reassemble_streams_final`]) are this type over a whole report
+/// set, differing only in their [`SingleFrame`] policy. A long-lived reader (the live-sync
+/// monitor, the device backup) feeds it every report once and drops them, so its buffer is
+/// one open stream instead of the session's whole history, re-parsed on every pump (#262).
+#[derive(Debug)]
+pub struct Reassembler {
+    single_frame: SingleFrame,
     current: Option<Vec<u8>>,
 }
 
-impl FinalReassembler {
+impl Reassembler {
+    pub fn new(single_frame: SingleFrame) -> Self {
+        Self {
+            single_frame,
+            current: None,
+        }
+    }
+
+    /// Feed every report, then close the stream still open: the batch form.
+    fn reassemble(mut self, reports: &[Vec<u8>]) -> Vec<Stream> {
+        let mut streams = Vec::new();
+        for data in reports {
+            self.push(data, &mut streams);
+        }
+        if let Some(c) = self.current {
+            streams.push(Stream { body: c });
+        }
+        streams
+    }
+
     /// Feed one raw report; any stream it closes is appended to `closed`.
     pub fn push(&mut self, data: &[u8], closed: &mut Vec<Stream>) {
-        if data.len() < 4 || data[0] != 0x00 {
+        let Some((magic, body)) = parse_frame(data) else {
             return;
-        }
-        let magic = data[1];
-        let body_len = data[3] as usize;
-        let end = (4 + body_len).min(data.len());
-        let body = &data[4..end];
+        };
         match magic {
             MAGIC_IN_START => {
                 if let Some(c) = self.current.take() {
@@ -1640,12 +1641,18 @@ impl FinalReassembler {
                 Some(ref mut c) => c.extend_from_slice(body),
                 None => self.current = Some(body.to_vec()),
             },
-            MAGIC_OUT => match self.current.take() {
-                Some(mut c) => {
+            MAGIC_OUT => match (self.single_frame, self.current.take()) {
+                (SingleFrame::ClosesStream, Some(mut c)) => {
                     c.extend_from_slice(body);
                     closed.push(Stream { body: c });
                 }
-                None => closed.push(Stream {
+                (SingleFrame::Standalone, open) => {
+                    self.current = open;
+                    closed.push(Stream {
+                        body: body.to_vec(),
+                    });
+                }
+                (SingleFrame::ClosesStream, None) => closed.push(Stream {
                     body: body.to_vec(),
                 }),
             },
@@ -2776,7 +2783,7 @@ mod tests {
             prop_assert_eq!(streams.len(), 1);
             prop_assert_eq!(&streams[0].body, &body);
 
-            let mut r = FinalReassembler::default();
+            let mut r = Reassembler::new(SingleFrame::ClosesStream);
             let mut closed = Vec::new();
             for rep in &reports {
                 r.push(rep, &mut closed);

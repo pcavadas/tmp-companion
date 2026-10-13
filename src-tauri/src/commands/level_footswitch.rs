@@ -295,13 +295,7 @@ pub(crate) fn run_footswitch_batch(
     // self-correcting: each job's force list explicitly sets every sibling
     // block's bypass, and swept params live on blocks the next job forces off);
     // the ONE write session's reload discards it all at the end.
-    {
-        let mut s = Session::connect_lean()?;
-        s.load_preset(slot)?;
-        crate::settle(std::time::Duration::from_millis(
-            leveller::settle_after_load_ms(),
-        ));
-    }
+    leveller::load_preset_isolated(slot, leveller::CancelMode::Cleanup)?;
 
     let mut results: Vec<Option<leveller::FootswitchLevelResult>> = vec![None; jobs.len()];
     // The solved writes pending the batch's single write+save session, each

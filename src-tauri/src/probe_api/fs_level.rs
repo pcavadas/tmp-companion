@@ -4,6 +4,8 @@ use super::ftsw::read_slot_ftsw;
 use super::stimulus::read_stimulus_48k;
 use super::stimulus::read_stimulus_calibrated;
 use crate::audio;
+use crate::commands::level_footswitch::run_footswitch_batch;
+use crate::commands::ProgressStatus;
 use crate::footswitch;
 use crate::leveller;
 use crate::session::Session;
@@ -128,6 +130,11 @@ pub fn probe_clear_footswitch(slot: ListIndex, switch: u32, index: u32) -> Resul
 /// Probe (self-restoring): commit a BAKE on `(switch, group, node, param)`, verify the value
 /// landed on the block (bypass unchanged, no param fn added), then RESTORE the original value.
 /// Mirrors `--ftsw-validate --commit`'s commit-then-restore. Stimulus via `TMP_LEVELLER_STIMULUS`.
+///
+/// The commit runs the SHIPPED batch (`run_footswitch_batch`) on this one switch, so it
+/// validates the app's own path. It therefore refuses a switch the planner does not bake, and
+/// one whose bake would mirror into scene overlays: the restore below puts back the BASE value
+/// only.
 pub fn probe_bake_validate(
     slot: ListIndex,
     switch: u32,
@@ -139,16 +146,8 @@ pub fn probe_bake_validate(
     let stim_path = std::env::var("TMP_LEVELLER_STIMULUS")
         .map_err(|_| "set TMP_LEVELLER_STIMULUS to the stimulus WAV".to_string())?;
     let stim = read_stimulus_calibrated(&stim_path, None)?;
-    // One read → the node's value, base bypass, switch fn count, engaged force-list, and
-    // the saved `lastLoadedScene` (the commit's save must re-stamp it).
-    type Snap = (
-        f64,
-        bool,
-        usize,
-        Vec<(String, String, bool)>,
-        Option<u32>,
-        leveller::FsParamTarget,
-    );
+    // One read → the node's value, base bypass, switch fn count, and the planner's verdict.
+    type Snap = (f64, bool, usize, footswitch::FsLevelPlan);
     let snapshot = || -> Result<Snap, String> {
         let (p, _, _) = read_slot_preset_parsed(slot)?;
         let ftsw = p.get("ftsw").cloned().unwrap_or(serde_json::Value::Null);
@@ -157,44 +156,49 @@ pub fn probe_bake_validate(
             .as_array()
             .and_then(|a| a.get(switch as usize)?.as_array().map(Vec::len))
             .unwrap_or(usize::MAX);
-        let engaged = footswitch::engaged_bypass_for_switch(&ftsw, &p, switch);
-        let restore = crate::last_loaded_scene(&p);
-        // The classified solve target, off this SAME read — no extra field-8 round trip.
-        let lev_param = leveller::FsParamTarget::from_preset(&p, node, param);
-        Ok((
-            v,
-            footswitch::block_bypassed_in_base(&p, node),
-            fns,
-            engaged,
-            restore,
-            lev_param,
-        ))
+        let plan = footswitch::plan_footswitch_jobs(
+            &ftsw,
+            &p,
+            &[footswitch::FsJobKey {
+                switch,
+                lev_node: node,
+                lev_param: param,
+                target_bits: target_lufs.to_bits(),
+            }],
+        )
+        .into_iter()
+        .next()
+        .ok_or("planner returned no plan")?;
+        Ok((v, footswitch::block_bypassed_in_base(&p, node), fns, plan))
     };
 
-    let (orig, byp0, fns0, engaged, restore, lev_param) = snapshot()?;
+    let (orig, byp0, fns0, plan) = snapshot()?;
+    match &plan {
+        footswitch::FsLevelPlan::Bake { mirror_scenes, .. } if mirror_scenes.is_empty() => {}
+        footswitch::FsLevelPlan::Bake { mirror_scenes, .. } => {
+            return Err(format!(
+                "FS{switch} bakes into scenes {mirror_scenes:?} too; this probe restores the \
+                 base value only, so it refuses a scene-mirrored bake"
+            ))
+        }
+        other => return Err(format!("FS{switch} does not plan as a bake: {other:?}")),
+    }
     let mut out = format!(
         "[probe --bake-validate] slot {} · FS{switch} · {group}/{node}.{param}\n  before: value={orig:.4} bypass={byp0} switch_fns={fns0}\n",
         slot.device_slot()
     );
 
-    // Commit the bake (engaged-measured, value written onto the block).
-    let r = leveller::level_footswitch(
-        slot,
+    // Commit the bake (engaged-measured, value written onto the block) through the shipped
+    // batch: one job, saved.
+    let job = FootswitchLevelJob {
         switch,
-        (group, node, param),
-        &engaged,
-        &leveller::FsWrite::Bake {
-            clear_stale: None,
-            // Diagnostic arm: validate the raw base bake — no scene mirroring.
-            mirror_scenes: vec![],
-        },
-        &stim,
+        lev_group_id: group.to_string(),
+        lev_node_id: node.to_string(),
+        lev_parameter_id: param.to_string(),
         target_lufs,
-        true,
-        false,
-        restore,
-        &lev_param,
-    )?;
+        scene_context: None,
+    };
+    let r = run_one_footswitch_job(slot, job, true, &stim)?;
     out += &format!(
         "  baked: method={} value={:.4}{}\n",
         r.method,
@@ -203,7 +207,7 @@ pub fn probe_bake_validate(
     );
 
     // Verify field-8: the value landed, bypass unchanged, NO param fn added.
-    let (after, byp1, fns1, _, _, _) = snapshot()?;
+    let (after, byp1, fns1, _) = snapshot()?;
     let landed = (after - r.final_value as f64).abs() < 1e-3;
     out += &format!(
         "  after : value={after:.4} bypass={byp1} switch_fns={fns1}  ⇒  {}\n",
@@ -227,7 +231,7 @@ pub fn probe_bake_validate(
         s.save_current_preset(slot)?;
     }
     let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
-    let (restored, _, _, _, _, _) = snapshot()?;
+    let (restored, _, _, _) = snapshot()?;
     out += &format!(
         "  restore: value={restored:.4}  ⇒  {}\n",
         if (restored - orig).abs() < 1e-3 {
@@ -301,13 +305,7 @@ pub fn probe_fs_sweep(
         }
     };
 
-    {
-        let mut s = Session::connect_lean()?;
-        s.load_preset(list_index)?;
-        std::thread::sleep(std::time::Duration::from_millis(
-            leveller::settle_after_load_ms(),
-        ));
-    }
+    leveller::load_preset_isolated(list_index, leveller::CancelMode::Cleanup)?;
 
     let mut out = format!(
         "[probe --fs-sweep] list_index={list_index} FS{switch} {group}/{node}.{param}\n  isolation: {engaged:?}\n"
@@ -370,13 +368,7 @@ pub fn probe_amp_recipe(
     // uses: "all footswitches off", NOT as-saved).
     let base_off = crate::commands::doctor::doctor_force_bypass(&ftsw, &preset, None);
 
-    {
-        let mut s = Session::connect_lean()?;
-        s.load_preset(list_index)?;
-        std::thread::sleep(std::time::Duration::from_millis(
-            leveller::settle_after_load_ms(),
-        ));
-    }
+    leveller::load_preset_isolated(list_index, leveller::CancelMode::Cleanup)?;
 
     let measure = |engaged: &[(String, String, bool)]| -> Result<f64, String> {
         let mut s = Session::connect_lean()?;
@@ -652,6 +644,7 @@ pub fn probe_level_footswitch(
         // probe: solve-and-write, never the verify-only row.
         scene_context: None,
     };
+    // The plan, for the report only: the batch below plans the same job itself.
     let plan = footswitch::plan_footswitch_jobs(
         &ftsw,
         &preset,
@@ -665,51 +658,23 @@ pub fn probe_level_footswitch(
     .into_iter()
     .next()
     .ok_or("planner returned no plan")?;
-    let lev = (lev_group, lev_node, lev_param);
-    let (write, plan_label) = match &plan {
+    let plan_label = match &plan {
         footswitch::FsLevelPlan::Clamp(msg) => return Err(msg.clone()),
         footswitch::FsLevelPlan::BakeShared { .. } => {
             return Err("single-job probe cannot be a shared bake".into())
         }
-        footswitch::FsLevelPlan::Bake {
-            clear_stale,
-            mirror_scenes,
-            ..
-        } => (
-            leveller::FsWrite::Bake {
-                clear_stale: *clear_stale,
-                mirror_scenes: mirror_scenes.clone(),
-            },
-            format!("BAKE → value written onto the block (mirror scenes {mirror_scenes:?})"),
-        ),
+        footswitch::FsLevelPlan::Bake { mirror_scenes, .. } => {
+            format!("BAKE → value written onto the block (mirror scenes {mirror_scenes:?})")
+        }
         footswitch::FsLevelPlan::Assign { .. } => {
             let (value_b, spec) = resolve_footswitch_job(&ftsw, &preset, &job)?;
-            let label = format!(
+            format!(
                 "ASSIGN → param fn @ index {} (valueB={value_b:.4})",
                 spec.function_index
-            );
-            (leveller::FsWrite::Assign { value_b, spec }, label)
+            )
         }
     };
-    let engaged = match &plan {
-        footswitch::FsLevelPlan::Bake { engaged, .. }
-        | footswitch::FsLevelPlan::Assign { engaged } => engaged.clone(),
-        _ => Vec::new(),
-    };
-    let restore = crate::last_loaded_scene(&preset);
-    let r = leveller::level_footswitch(
-        slot,
-        switch,
-        lev,
-        &engaged,
-        &write,
-        &stim,
-        target_lufs,
-        commit,
-        true,
-        restore,
-        &leveller::FsParamTarget::from_preset(&preset, lev_node, lev_param),
-    )?;
+    let r = run_one_footswitch_job(slot, job, commit, &stim)?;
     let mut out = format!(
         "[probe --level-footswitch] preset slot {} · FS{switch} · {lev_group}/{lev_node}.{lev_param}  ({})\n",
         slot.device_slot(),
@@ -934,4 +899,35 @@ pub fn probe_set_param_save(
         }
     );
     Ok(out)
+}
+
+/// One footswitch job through the SHIPPED batch (`run_footswitch_batch`, the only assembly of
+/// footswitch leveling): no playback offset, no Stop, progress dropped. The batch's own
+/// failure for the row comes back as the error.
+fn run_one_footswitch_job(
+    slot: ListIndex,
+    job: FootswitchLevelJob,
+    save: bool,
+    stim: &[f32],
+) -> Result<leveller::FootswitchLevelResult, String> {
+    let switch = job.switch;
+    let mut row_error = None;
+    let rows = run_footswitch_batch(
+        slot,
+        std::slice::from_ref(&job),
+        save,
+        stim,
+        0.0,
+        &mut |item| {
+            if matches!(item.status, ProgressStatus::Error) {
+                row_error = item.message;
+            }
+        },
+        &|| false,
+    )?;
+    rows.into_iter()
+        .find(|r| r.switch == switch)
+        .ok_or_else(|| {
+            row_error.unwrap_or_else(|| format!("footswitch {switch} produced no result"))
+        })
 }

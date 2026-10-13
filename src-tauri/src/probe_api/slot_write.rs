@@ -1272,7 +1272,7 @@ pub fn probe_set_scene_param(
 ///   node's scene values had not materialised when the enable arrived), not a semantic.
 ///
 /// Always saves, so the caller can diff the persisted preset. Diagnostic only.
-#[allow(clippy::too_many_arguments)] // mirrors leveller::level_footswitch: a diagnostic seam with one arg per session step
+#[allow(clippy::too_many_arguments)] // a diagnostic seam with one arg per session step
 pub fn probe_scene_write_cell(
     slot: ListIndex,
     expect_name: &str,

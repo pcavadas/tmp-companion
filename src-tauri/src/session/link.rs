@@ -304,7 +304,7 @@ impl Session {
     /// live-sync monitor (#262). `raw` is left EMPTY, so a session that pumps for hours holds
     /// one open stream, not its whole push history, and nothing is parsed twice. A closed
     /// newest stream is returned at once; only a still-open one waits in `pushes`.
-    pub fn drain_closed_pushes(&mut self, pushes: &mut proto::FinalReassembler) -> Vec<Vec<u8>> {
+    pub fn drain_closed_pushes(&mut self, pushes: &mut proto::Reassembler) -> Vec<Vec<u8>> {
         let mut closed = Vec::new();
         for report in self.raw.drain(..) {
             pushes.push(&report, &mut closed);

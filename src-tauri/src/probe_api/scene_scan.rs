@@ -124,13 +124,7 @@ pub fn probe_knob_sweep(
     let stim_path = std::env::var("TMP_LEVELLER_STIMULUS")
         .map_err(|_| "set TMP_LEVELLER_STIMULUS to the stimulus WAV".to_string())?;
     let stim = read_stimulus_calibrated(&stim_path, None)?;
-    {
-        let mut s = Session::connect_lean()?;
-        s.load_preset(list_index)?;
-        std::thread::sleep(std::time::Duration::from_millis(
-            leveller::settle_after_load_ms(),
-        ));
-    }
+    leveller::load_preset_isolated(list_index, leveller::CancelMode::Cleanup)?;
     let mut out = format!("[probe --knob-sweep] list_index={list_index} {group}/{node}.{param}\n");
     for v in values {
         // Probe sweep of a saved preset: no run-owned `presetLevel` to assert.
@@ -161,13 +155,7 @@ pub fn probe_measure_pair(
     writes: &[(String, String, String, f32)],
 ) -> Result<String, String> {
     let stim = read_stimulus_calibrated(&super::stimulus::probe_stimulus_path(topology_id)?, None)?;
-    {
-        let mut s = Session::connect_lean()?;
-        s.load_preset(list_index)?;
-        std::thread::sleep(std::time::Duration::from_millis(
-            leveller::settle_after_load_ms(),
-        ));
-    }
+    leveller::load_preset_isolated(list_index, leveller::CancelMode::Cleanup)?;
     let result = leveller::measure_pair_at(scene, preset_level, writes, &stim);
     // Discard the pair pollution, then the guaranteed OFF (bound before the `?`).
     if let Ok(mut s) = Session::connect_lean() {

@@ -121,12 +121,77 @@ fn set_e2e_env(pairs: &[(&str, &str)]) {
     }
 }
 
+/// A footswitch row as the batch reports one it wrote and saved at `value`: the input
+/// `verify_fs_persisted_writes` stamps, for the write-half gates that drive
+/// `write_footswitch_values` with a fixed value.
+fn fs_written_row(switch: u32, value: f32, method: &str) -> crate::leveller::FootswitchLevelResult {
+    crate::leveller::FootswitchLevelResult {
+        switch,
+        measured_lufs: 0.0,
+        final_value: value,
+        target_lufs: 0.0,
+        predicted_lufs: 0.0,
+        clamped: false,
+        unconverged: false,
+        clamp_reason: None,
+        wet_floor: false,
+        clamp_kind: None,
+        saved: true,
+        verify_lufs: None,
+        iterations: 0,
+        dynamic_spread_lu: None,
+        method: method.into(),
+        persist_mismatch: None,
+        reamp_warning: None,
+    }
+}
+
+/// One footswitch job through the SHIPPED batch (`run_footswitch_batch`, the only assembly of
+/// footswitch leveling — #276), the way the app's command runs it: the batch reads the preset,
+/// plans bake-vs-assign, runs the ceiling prepass and the solve, and (on `save`) writes and
+/// saves. No playback offset, no Stop.
+fn fs_batch_one(
+    slot: ListIndex,
+    switch: u32,
+    (group, node, param): (&str, &str, &str),
+    target_lufs: f64,
+    save: bool,
+    stim: &[f32],
+) -> Result<crate::leveller::FootswitchLevelResult, String> {
+    let job = crate::commands::level_footswitch::FootswitchLevelJob {
+        switch,
+        lev_group_id: group.into(),
+        lev_node_id: node.into(),
+        lev_parameter_id: param.into(),
+        target_lufs,
+        scene_context: None,
+    };
+    let mut errors = Vec::new();
+    let rows = crate::commands::level_footswitch::run_footswitch_batch(
+        slot,
+        std::slice::from_ref(&job),
+        save,
+        stim,
+        0.0,
+        &mut |item| {
+            if let Some(m) = item.message.filter(|_| item.result.is_none()) {
+                errors.push(m);
+            }
+        },
+        &|| false,
+    )?;
+    rows.into_iter()
+        .next()
+        .ok_or_else(|| format!("footswitch {switch} produced no result: {errors:?}"))
+}
+
 /// The full OFFLINE Copy journey driven through the real backend exactly as the UI
 /// drives it — connect → list presets → read the library → copy_apply — with the
 /// device replaced by a `SimDevice` (via the transport factory) and the bulk backup
 /// replaced by the built fixture blob. This is "UI to unit" minus the browser: every
 /// command runs for real over the mock IPC; only the USB transport + the snapshot are
 /// faked. The HTTP bridge + Playwright layer reuses this exact wiring.
+
 #[test]
 fn offline_copy_journey_through_real_backend() {
     use std::sync::atomic::Ordering::SeqCst;
@@ -491,22 +556,13 @@ fn level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch() {
 
     // 402's OUT2 switch toggles ACD_KingOfTone on the off-USB lane: engaging it
     // (bypass=false) routes to dead air → off-branch silence → the routing clamp.
-    let fs = crate::leveller::level_footswitch(
+    let fs = fs_batch_one(
         ListIndex(402),
         2,
         ("G3", "ACD_KingOfTone", "volume"),
-        &[("G3".into(), "ACD_KingOfTone".into(), false)],
-        &crate::leveller::FsWrite::Bake {
-            clear_stale: None,
-            mirror_scenes: vec![],
-        },
-        &stim,
         -21.0,
         false,
-        true,
-        None,
-        // `volume` on a (non-amp) pedal is a plain level_linear control over [0,1].
-        &crate::leveller::FsParamTarget::new("ACD_KingOfTone", "volume", 0.5),
+        &stim,
     )
     .expect("level 402 fs");
     assert!(fs.clamped, "the off-branch footswitch clamps");
@@ -813,8 +869,11 @@ fn the_fs_prepass_reads_the_ceiling_at_the_handles_top_bound() {
 /// forbids: a two-entry row is HW-proven to make the firmware silently discard the whole
 /// imported preset). `gain` is the raw-dB `[0, 12]` param the write must carry unclamped.
 ///
-/// Four things are pinned, each of which was silently unprovable offline before:
-/// 1. the run COMPLETES with the write routed through `FsWrite::Bake`, not the now-refused
+/// It drives the batch's own WRITER (`leveller::write_footswitch_values`, the half of
+/// `run_footswitch_batch` after the solve) with the planner's `FsWrite::Bake` and a fixed
+/// solved value, so it needs no loudness model. Four things are pinned, each of which was
+/// silently unprovable offline before:
+/// 1. the write COMPLETES routed through `FsWrite::Bake`, not the now-refused
 ///    append (`resolve_footswitch_job` would `Err` on this exact switch — see
 ///    `resolve_footswitch_job_refuses_rather_than_append_a_new_function`),
 /// 2. the wire op sequence carries a `ChangeParameter` fire-and-forget setter for
@@ -827,10 +886,10 @@ fn the_fs_prepass_reads_the_ceiling_at_the_handles_top_bound() {
 ///    offline Bake row can report an honest `persist_mismatch: Some(false)`.
 ///
 /// NOT pinned here (and deliberately): the loudness RESPONSE. Slot 400 declares no
-/// `leveledParams`, so the sim's capture model is flat in `gain` — the target below is the
-/// fixture's own base C so the solve converges on its first seed instead of chasing a curve
-/// that the offline model doesn't have. See this test's sibling note in the report on the
-/// wet-floor gap.
+/// `leveledParams` for `gain`, so the sim's capture model is flat in it and the batch's
+/// re-run anchor (the block's own 2.5) would always read as already on target — the batch
+/// would rightly write nothing. The solve half is the batch's, gated by the wet-floor and
+/// re-run-skip tests on modeled curves.
 #[test]
 fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     let _serial = serial();
@@ -848,7 +907,6 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
-    let stim = test_stim();
 
     let spec_json = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let rig = spec_json
@@ -882,12 +940,12 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
             target_bits: TARGET.to_bits(),
         }],
     );
-    let (engaged, clear_stale, mirror_scenes) = match &plans[0] {
+    let (clear_stale, mirror_scenes) = match &plans[0] {
         crate::footswitch::FsLevelPlan::Bake {
-            engaged,
             clear_stale,
             mirror_scenes,
-        } => (engaged.clone(), *clear_stale, mirror_scenes.clone()),
+            ..
+        } => (*clear_stale, mirror_scenes.clone()),
         other => panic!("400 switch {SWITCH} must plan as Bake, got {other:?}"),
     };
     assert!(
@@ -905,35 +963,23 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
         "valueB is ACD_Boost's authored base gain: {value_b}"
     );
 
-    let r = crate::leveller::level_footswitch(
+    // A raw-dB value well outside `[0, 1]`: the write must carry it unclamped.
+    const SOLVED: f32 = 7.5;
+    crate::leveller::write_footswitch_values(
         ListIndex(400),
-        SWITCH,
-        ("G1", NODE, PARAM),
-        &engaged,
-        &crate::leveller::FsWrite::Bake {
-            clear_stale,
-            mirror_scenes: mirror_scenes.clone(),
-        },
-        &stim,
-        TARGET,
-        true,  // save
-        false, // no re-measure verify
+        &[crate::leveller::FsPendingWrite {
+            switch: SWITCH,
+            lev: ("G1".into(), NODE.into(), PARAM.into()),
+            write: crate::leveller::FsWrite::Bake {
+                clear_stale,
+                mirror_scenes,
+            },
+            value: SOLVED,
+        }],
         crate::last_loaded_scene(&preset),
-        &crate::leveller::FsParamTarget::new(NODE, PARAM, value_b as f32),
     )
-    .expect("the Bake run must COMPLETE");
-    assert_eq!(r.method, "baked");
-    assert!(r.saved, "save: true must persist the bake: {r:?}");
-    assert!(
-        r.clamp_reason.is_none(),
-        "ACD_Boost is on the trunk — no routing clamp: {r:?}"
-    );
-
-    // A raw-dB param must reach the wire unclamped (the `[0, 12]` range's own 2.5 seed).
-    assert!(
-        r.final_value > 1.0,
-        "a raw-dB gain solve must not be pinned inside [0,1]: {r:?}"
-    );
+    .expect("the Bake write must COMPLETE");
+    let r = fs_written_row(SWITCH, SOLVED, "baked");
 
     // (2) the wire op: a `ChangeParameter` fire-and-forget setter for ACD_Boost.gain with the
     // SOLVED value, and NO `setFootswitchAssignment`(54) at all — a Bake never touches the
@@ -1013,10 +1059,9 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
 /// probe in `solve_param_secant` — so a Bake row re-solved and RE-SAVED an identical value on
 /// EVERY re-run (~6 min of device time, HW-confirmed tonight). This is the Bake-arm sibling of
 /// `assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persists_its_value_a`'s
-/// gate, but drives the actual BATCHED COMMAND (`level_footswitches_apply`) rather than the
-/// single-switch `leveller::level_footswitch` probe seam — that seam's own doc says it "always
-/// solve[s] fresh (no idempotency probe)" BY DESIGN (the batched command owns the re-run skip),
-/// so it cannot exercise the regressed path at all.
+/// gate, but drives the actual BATCHED COMMAND (`level_footswitches_apply`) through its IPC
+/// surface, twice, where the other footswitch gates run one pass of its batch
+/// (`fs_batch_one`).
 ///
 /// Fixture 405's Plumes switch (5) is the shape: `ACD_Plumes` is bypassed in base and switch 5
 /// carries a bare on-off with no `param` fn, so `plan_footswitch_jobs` bakes it (same premise as
@@ -1238,9 +1283,10 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
 /// 4. the assign SURVIVES the save — `leveller::verify_fs_persisted_writes` re-reads field 8
 ///    and finds the solved value as `ftsw`'s `valueA`.
 ///
-/// `TARGET` sits at 407's own base C (`scenario-loudness.json`: "Base C=-14 solves at every
-/// default"), so the solve converges on its first seed rather than chasing a curve the offline
-/// model doesn't have — same reasoning as the Bake gate's own target pick.
+/// Like the Bake gate, it drives the batch's own WRITER (`leveller::write_footswitch_values`)
+/// with the resolved `FsWrite::Assign` and a fixed solved value: slot 407 models no response
+/// for `wetdrymix`, so the batch's re-run anchor would read as already on target and rightly
+/// write nothing.
 #[test]
 fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persists_its_value_a() {
     let _serial = serial();
@@ -1258,7 +1304,6 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
-    let stim = test_stim();
 
     let spec_json = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let rig = spec_json
@@ -1352,29 +1397,22 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
         crate::param_class::ParamClass::WetMix,
         "plate1.wetdrymix must classify wet_mix"
     );
-    let r = crate::leveller::level_footswitch(
+    const SOLVED: f32 = 0.6;
+    crate::leveller::write_footswitch_values(
         ListIndex(407),
-        SWITCH,
-        ("G1", NODE, PARAM),
-        &engaged,
-        &crate::leveller::FsWrite::Assign {
-            value_b,
-            spec: write_spec,
-        },
-        &stim,
-        TARGET,
-        true,  // save
-        false, // no re-measure verify
+        &[crate::leveller::FsPendingWrite {
+            switch: SWITCH,
+            lev: ("G1".into(), NODE.into(), PARAM.into()),
+            write: crate::leveller::FsWrite::Assign {
+                value_b,
+                spec: write_spec.clone(),
+            },
+            value: SOLVED,
+        }],
         crate::last_loaded_scene(&preset),
-        &param,
     )
-    .expect("the Assign run must COMPLETE — it used to fail its confirm gate offline");
-    assert_eq!(r.method, "assigned");
-    assert!(r.saved, "save: true must persist the assign: {r:?}");
-    assert!(
-        r.clamp_reason.is_none(),
-        "plate1 is on the trunk — no routing clamp: {r:?}"
-    );
+    .expect("the Assign write must COMPLETE — it used to fail its confirm gate offline");
+    let r = fs_written_row(SWITCH, SOLVED, "assigned");
 
     // (2) the field-54 write, at the resolved (OWN, never appended) index, with the solved
     // valueA and the resolved valueB.
@@ -1484,10 +1522,9 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
 /// and never reached the floor at all — which is what row 18 previously mis-attributed to
 /// the Bake path skipping the floor.
 ///
-/// `save: false` on BOTH runs, deliberately: the sim's `preset_level` starts at 1.0 and a
-/// load only restores the fixture's own 0.32 once the slot has been saved this run, so a
-/// saving first run would shift every later capture by -9.9 LU and the second assertion
-/// would fail for a reason that looks nothing like its cause. The Bake save round trip is
+/// `save: false` on BOTH runs, deliberately: a saving first run would change what the second
+/// run's load restores, so the second assertion could fail for a reason that looks nothing
+/// like its cause. The Bake save round trip is
 /// `bake_path_footswitch_writes_the_block_directly_and_persists_its_value`'s job.
 #[test]
 fn wet_mix_footswitch_bakes_and_pins_at_the_wet_floor_on_an_unreachable_target() {
@@ -1521,15 +1558,15 @@ fn wet_mix_footswitch_bakes_and_pins_at_the_wet_floor_on_an_unreachable_target()
 }
 
 /// The companion half of the row-18 gate: the SAME switch at a target the wet-mix curve can
-/// actually reach converges inside `ACCEPT_TOL_LU` with `wet_floor: false`. -16 is the pick
-/// because the curve puts the wet floor at -17.18 and the authored mix at -15, so -16 solves
-/// near mix 0.27 — a 1.18 LU margin over the floor's own reading, ~12x the 0.1 LU tolerance,
-/// so an epsilon in the model can't flip this row into a floor clamp and quietly retire the
-/// discrimination this pair exists to prove.
+/// actually reach converges inside `ACCEPT_TOL_LU` with `wet_floor: false`. The batch renders
+/// every capture at the preset's stored `presetLevel` (0.32, -9.9 LU), so the curve puts the
+/// wet floor at -27.08 and the authored mix at -24.9, and -25.9 solves near mix 0.27 — a
+/// 1.18 LU margin over the floor's own reading, so an epsilon in the model can't flip this row
+/// into a floor clamp and quietly retire the discrimination this pair exists to prove.
 #[test]
 fn wet_mix_footswitch_bakes_and_converges_and_stays_off_the_floor_on_a_reachable_target() {
     let _serial = serial();
-    const TARGET: f64 = -16.0;
+    const TARGET: f64 = -25.9;
     let (r, param) = solve_400_spring(TARGET);
     assert_eq!(r.method, "baked");
     assert!(
@@ -1555,8 +1592,8 @@ fn wet_mix_footswitch_bakes_and_converges_and_stays_off_the_floor_on_a_reachable
 /// (the on-off, switch 3) really plans as `Bake` — it carries no `param` fn on
 /// `(ACD_TMSpring63, mix)`, only the plain on-off (a fixture edit that added such a fn, or
 /// that bypassed `ACD_TMSpring63` in base, would otherwise silently turn both gates into a
-/// different path) — read the authored base mix off the block, and run the single-switch
-/// seam DRY. Returns the result plus the classified target, so each caller can assert against
+/// different path) — read the authored base mix off the block, and run the switch through the
+/// shipped batch (`fs_batch_one`) DRY. Returns the result plus the classified target, so each caller can assert against
 /// the same `bounds()` the solve used.
 fn solve_400_spring(
     target_lufs: f64,
@@ -1606,12 +1643,12 @@ fn solve_400_spring(
             target_bits: target_lufs.to_bits(),
         }],
     );
-    let (engaged, clear_stale, mirror_scenes) = match &plans[0] {
+    let (engaged, clear_stale) = match &plans[0] {
         crate::footswitch::FsLevelPlan::Bake {
             engaged,
             clear_stale,
-            mirror_scenes,
-        } => (engaged.clone(), *clear_stale, mirror_scenes.clone()),
+            ..
+        } => (engaged.clone(), *clear_stale),
         other => panic!("400 switch {SWITCH} must plan as Bake, got {other:?}"),
     };
     // CONTRACT CORRECTED 2026-08-19 (HW, fw 1.8.45). This used to assert the opposite — that
@@ -1654,21 +1691,13 @@ fn solve_400_spring(
         crate::param_class::ParamClass::WetMix,
         "the whole gate rests on `mix` classifying wet_mix"
     );
-    let r = crate::leveller::level_footswitch(
+    let r = fs_batch_one(
         ListIndex(400),
         SWITCH,
         ("G1", NODE, PARAM),
-        &engaged,
-        &crate::leveller::FsWrite::Bake {
-            clear_stale,
-            mirror_scenes,
-        },
-        &stim,
         target_lufs,
-        false, // dry — see the gate's own doc for why a save would poison the capture model
         false,
-        crate::last_loaded_scene(&preset),
-        &param,
+        &stim,
     )
     .expect("the SPRING solve must complete");
     (r, param)

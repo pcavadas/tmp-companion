@@ -69,13 +69,11 @@ const EAGER_QUIET_MS: u64 = 60;
 /// Fold a batch of raw input reports into the stream-open state: `0x33` opens a
 /// multi-packet stream, `0x35` closes it (the 0x35-is-final rule of
 /// `proto::reassemble_streams_final`); `0x34` continues. Returns the new state.
+/// Frames are split by `proto::parse_frame`, the shared frame-layout parse.
 /// Pure so the eager-exit condition is unit-testable without IOKit.
 fn fold_frame_open(reports: &[Vec<u8>], mut open: bool) -> bool {
-    for r in reports {
-        if r.len() < 4 || r[0] != 0x00 {
-            continue;
-        }
-        match r[1] {
+    for (magic, _) in reports.iter().filter_map(|r| proto::parse_frame(r)) {
+        match magic {
             proto::MAGIC_IN_START => open = true,
             0x35 => open = false,
             _ => {}

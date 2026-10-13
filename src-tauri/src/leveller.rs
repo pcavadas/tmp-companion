@@ -487,9 +487,37 @@ fn reload_stored_on(s: &mut Session, slot: ListIndex) -> Result<ListIndex, Strin
 /// every push the harvest can see is the target's. A bare load on purpose: a same-slot
 /// no-op still leaves the target current, and a neighbour load would add its own pushes.
 pub(crate) fn make_current(slot: ListIndex) -> Result<(), String> {
+    load_preset_isolated(slot, CancelMode::Cleanup).map_err(String::from)
+}
+
+/// How [`load_preset_isolated`]'s post-load settle treats a Stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelMode {
+    /// The settle wakes on a Stop and the load returns [`LevelError::Cancelled`]: the
+    /// step ahead of a capture, where nothing is engaged or written yet.
+    Abortable,
+    /// The settle always runs to its end: cleanup, reloads, and the legacy seams that
+    /// never polled for a Stop here.
+    Cleanup,
+}
+
+/// THE latch-rule load: open a lean connection, load `slot`, settle
+/// [`settle_after_load_ms`], and drop the connection. `danger.md`: a `set_preset_level`
+/// after a load on the same connection is overridden by the load's own level-apply, and a
+/// load + engage on one connection captured silence (fw 1.8.45), so every leveling path
+/// loads in its own connection and measures or writes on a fresh one; the device keeps the
+/// loaded preset current across reconnects. One home so the settle length and the
+/// connection shape change in one place.
+pub(crate) fn load_preset_isolated(slot: ListIndex, mode: CancelMode) -> Result<(), LevelError> {
+    // The connection is held through the settle and dropped after it, as every inline
+    // copy of this sequence did.
     let mut s = Session::connect_lean()?;
     s.load_preset(slot)?;
-    crate::settle(Duration::from_millis(settle_after_load_ms()));
+    match mode {
+        CancelMode::Abortable => settle_or_cancel(settle_after_load_ms())?,
+        CancelMode::Cleanup => crate::settle(Duration::from_millis(settle_after_load_ms())),
+    }
+    drop(s);
     Ok(())
 }
 
@@ -753,11 +781,7 @@ pub(crate) fn measure_c_checked(
     cross_check: bool,
 ) -> Result<MeasuredC, LevelError> {
     let mut ref_level = ref_level.clamp(0.05, 1.0);
-    {
-        let mut s = Session::connect_lean()?;
-        s.load_preset(slot)?;
-        settle_or_cancel(settle_after_load_ms())?;
-    }
+    load_preset_isolated(slot, CancelMode::Abortable)?;
     // No load → the set inside measure_at_level sticks on the now-current preset.
     let at =
         |level: f32| require_live(|| measure_at_level(stimulus, level, force_bypass), stimulus);
@@ -880,10 +904,7 @@ fn capture_full_at_params(
     // the next step seam. Safe to leave from any of these points — nothing is engaged or
     // written yet before the re-amp ON below.
     if !skip_load {
-        let mut s = Session::connect_lean()?;
-        s.load_preset(slot)?;
-        settle_or_cancel(settle_after_load_ms())?;
-        drop(s);
+        load_preset_isolated(slot, CancelMode::Abortable)?;
     }
     let mut s = Session::connect_lean()?;
     let recall = if skip_load {
@@ -1276,11 +1297,7 @@ pub fn measure_sound_asis_strict(
     // guard made, so the dumped WAV and the reported number always describe one capture.
     let mut kept: Option<audio::Capture> = None;
     let measured = if let Some(((g, n, p), v)) = fs_value {
-        {
-            let mut s = Session::connect_lean()?;
-            s.load_preset(slot)?;
-            crate::settle(Duration::from_millis(settle_after_load_ms()));
-        }
+        load_preset_isolated(slot, CancelMode::Cleanup)?;
         require_live(
             || {
                 // NO intended-level assert, deliberately: this seam's whole contract is
@@ -1341,11 +1358,7 @@ pub fn capture_scene_ceilings(
     // addressable because `proto::load_scene` now emits the field explicitly even
     // for 0 (the device ignores an empty LoadScene{} — HW-found).
     for scene in 0..scene_count {
-        {
-            let mut s = Session::connect_lean()?;
-            s.load_preset(slot)?;
-            crate::settle(Duration::from_millis(settle_after_load_ms()));
-        }
+        load_preset_isolated(slot, CancelMode::Cleanup)?;
         let mut s = Session::connect_lean()?;
         s.load_scene(scene)?;
         crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
@@ -3430,7 +3443,7 @@ pub struct FootswitchWriteSpec {
     pub switch_type: u32,
 }
 
-/// How `level_footswitch` persists the solved value.
+/// How the footswitch batch (`run_footswitch_batch`) persists the solved value.
 #[derive(Debug, Clone)]
 pub enum FsWrite {
     /// Write a `param`-change footswitch function (`valueA`=solved, `valueB`=`value_b`).
@@ -3723,24 +3736,107 @@ fn improve_best(
     }
 }
 
-/// Pure secant step in solve-COORD-space coordinates: two `(coordinate, loudness)`
-/// points → the next coordinate that should hit `target`. `None` when the local slope is
-/// ~flat (the param doesn't move loudness). UNCLAMPED — caller maps back via
-/// [`FsParamTarget::coord_to_value`] and clamps to [`FsParamTarget::bounds`].
-///
-/// For a `LevelLinear` param the coordinate is log-knob (`|Δcoord| ≤ ~60 dB` on
-/// `[`[`KNOB_LOG_FLOOR`]`, 1]`, so any pair with ≥ 0.3 LU separation has
-/// `|slope| ≥ 0.005 > 1e-3`, the guard below); for `LevelDb`/`WetMix` (identity map)
-/// nothing changes from before. Two probed values that both fall below
-/// [`KNOB_LOG_FLOOR`] collapse to the SAME coordinate `-60` — a degenerate pair with a
-/// non-finite slope, which this guard turns into a graceful `unconverged` rather than a
-/// divide-by-zero.
-fn fs_secant_next(p0: (f64, f64), p1: (f64, f64), target: f64) -> Option<f64> {
-    let slope = (p1.1 - p0.1) / (p1.0 - p0.0);
-    if !slope.is_finite() || slope.abs() < 1e-3 {
+/// What a FLAT local response is — "this move did not change the loudness, stop" — in
+/// each secant solve's own x unit. One named rule per unit, so no solve carries a bare
+/// cutoff of its own. Every rule also rejects a non-finite slope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flatness {
+    /// The footswitch/handle solve's COORD space ([`FsParamTarget::to_coord`]): flat below
+    /// `|slope| < 1e-3`. For a `LevelLinear` param the coordinate is log-knob
+    /// (`|Δcoord| ≤ ~60 dB` on `[`[`KNOB_LOG_FLOOR`]`, 1]`, so any pair with ≥ 0.3 LU
+    /// separation has `|slope| ≥ 0.005`); `LevelDb`/`WetMix` map identically. Two probed
+    /// values that both fall below [`KNOB_LOG_FLOOR`] collapse to the SAME coordinate `-60`
+    /// — a degenerate pair with a non-finite slope, which turns into a graceful
+    /// `unconverged` rather than a divide-by-zero.
+    SolveCoord,
+    /// A knob-search coordinate ([`knob_search_space`]), LUFS per knob unit: a pair less
+    /// than `1e-9` apart has no slope, and `|slope| < 1e-4` is flat.
+    Knob,
+    /// The scene lane's applied gain in dB: the response must RISE, by more than 0.05 LU per
+    /// dB — a falling or ~zero slope is no usable response.
+    AppliedDb,
+}
+
+impl Flatness {
+    /// Whether a pair `dx` apart is too close to have a slope at all.
+    fn degenerate_dx(self, dx: f64) -> bool {
+        match self {
+            Flatness::Knob => dx.abs() < 1e-9,
+            Flatness::SolveCoord | Flatness::AppliedDb => false,
+        }
+    }
+
+    /// Whether a finite `slope` is flat.
+    fn is_flat(self, slope: f64) -> bool {
+        match self {
+            Flatness::SolveCoord => slope.abs() < 1e-3,
+            Flatness::Knob => slope.abs() < 1e-4,
+            Flatness::AppliedDb => slope <= 0.05,
+        }
+    }
+}
+
+/// A secant x coordinate: `f64` for the solve and applied-dB spaces, `f32` for the knob
+/// search, whose difference and step are taken exactly as its knob values are stored.
+pub(crate) trait SecantCoord: Copy {
+    /// `b - a`, as the slope's denominator.
+    fn diff(a: Self, b: Self) -> f64;
+    fn to_f64(self) -> f64;
+    /// The next coordinate, or `None` when it is not representable.
+    fn from_f64(x: f64) -> Option<Self>;
+}
+
+impl SecantCoord for f64 {
+    fn diff(a: f64, b: f64) -> f64 {
+        b - a
+    }
+    fn to_f64(self) -> f64 {
+        self
+    }
+    fn from_f64(x: f64) -> Option<f64> {
+        Some(x)
+    }
+}
+
+impl SecantCoord for f32 {
+    fn diff(a: f32, b: f32) -> f64 {
+        (b - a) as f64
+    }
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+    fn from_f64(x: f64) -> Option<f32> {
+        x.is_finite().then_some(x as f32)
+    }
+}
+
+/// THE secant step every leveling solve takes: from two `(x, loudness)` points, the `x`
+/// that should hit `target` on the line through them. `None` when the local response is
+/// flat by `flat`'s rule for that unit (the control doesn't move loudness here, so the
+/// caller stops). With `trust`, the step is clamped to `p1.x ± trust` so a noisy near-zero
+/// slope can't explode the jump; without it the result is UNCLAMPED and the caller clamps
+/// to its own bounds.
+pub(crate) fn secant_step<X: SecantCoord>(
+    p0: (X, f64),
+    p1: (X, f64),
+    target: f64,
+    flat: Flatness,
+    trust: Option<f64>,
+) -> Option<X> {
+    let dx = X::diff(p0.0, p1.0);
+    if flat.degenerate_dx(dx) {
         return None;
     }
-    Some(p1.0 + (target - p1.1) / slope)
+    let slope = (p1.1 - p0.1) / dx;
+    if !slope.is_finite() || flat.is_flat(slope) {
+        return None;
+    }
+    let x1 = p1.0.to_f64();
+    let next = x1 + (target - p1.1) / slope;
+    X::from_f64(match trust {
+        Some(t) => next.clamp(x1 - t, x1 + t),
+        None => next,
+    })
 }
 
 /// Fraction of the param's whole coordinate span an EXTRAPOLATING secant step may always
@@ -4552,8 +4648,8 @@ fn solve_param_secant(
         }
         // Bracket-aware secant, gated on the pair having authority (still flat → the
         // knob truly can't move loudness here — an honest, reason-less clamp). Each
-        // iterate interpolates the SAME `fs_secant_next` step; only the endpoint-update
-        // rule differs by pair shape:
+        // iterate interpolates the SAME `secant_step` (`Flatness::SolveCoord`); only the
+        // endpoint-update rule differs by pair shape:
         //   * pair STRADDLES the target → keep the bracket (replace the same-side
         //     endpoint) with Illinois damping — a repeat on one side halves the retained
         //     endpoint's offset so a stale far end can't pin the interpolation. This is
@@ -4580,7 +4676,8 @@ fn solve_param_secant(
                     (param.to_coord(bound_hi as f64) - param.to_coord(bound_lo as f64)).abs();
                 for _ in 0..correct_max {
                     let straddles = (p0.1 - target_lufs) * (p1.1 - target_lufs) < 0.0;
-                    let Some(raw) = fs_secant_next(p0, p1, target_lufs) else {
+                    let Some(raw) = secant_step(p0, p1, target_lufs, Flatness::SolveCoord, None)
+                    else {
                         // NOT a no-authority verdict: this loop is only entered after
                         // the seeds proved ≥ KNOB_TOL_LU of authority, so a mid-loop
                         // flat/degenerate pair (e.g. both endpoints clamped onto the
@@ -4690,123 +4787,6 @@ pub struct FsPendingWrite {
     pub write: FsWrite,
     /// The solved value (`valueA` for Assign; the baked block value for Bake).
     pub value: f32,
-}
-
-/// Level a footswitch's engaged state by solving a parameter-change assignment.
-/// `lev` = the `(group, node, param)` solved; `value_b` = the switch-OFF value written. On
-/// `save`, writes the `param` function (gated on the field-54 echo / read-back, never on
-/// `presetError`) and persists; otherwise reverts the working copy. The measurement param
-/// sweep is NEVER saved — the write path reloads the preset first.
-///
-/// SINGLE-SWITCH seam, used by the `probe` HW-verify arms: composes the same
-/// `measure_footswitch` + `write_footswitch_values` the app's batched command
-/// (`level_footswitches_apply`) assembles itself — keep the three in lockstep.
-#[allow(clippy::too_many_arguments)]
-pub fn level_footswitch(
-    slot: ListIndex,
-    switch: u32,
-    lev: (&str, &str, &str),
-    engaged_bypass: &[(String, String, bool)],
-    write: &FsWrite,
-    stimulus: &[f32],
-    target_lufs: f64,
-    save: bool,
-    verify: bool,
-    restore_scene: Option<u32>,
-    param: &FsParamTarget,
-) -> Result<FootswitchLevelResult, LevelError> {
-    let body = || -> Result<FootswitchLevelResult, LevelError> {
-        // Load the preset in its own connection (re-amp latch workaround), then measure on
-        // fresh connections (the preset stays current across reconnects).
-        {
-            let mut s = Session::connect_lean()?;
-            s.load_preset(slot)?;
-            crate::settle(Duration::from_millis(settle_after_load_ms()));
-        }
-
-        let method = match write {
-            FsWrite::Bake { .. } => "baked",
-            FsWrite::Assign { .. } => "assigned",
-        };
-        // Single-switch probe seam: always solve fresh (no idempotency probe) — the batched
-        // command owns the re-run skip. No intended `presetLevel` either: this seam levels
-        // ONE switch of an already-saved preset and holds no unsaved level of its own, so the
-        // preset's own stored level is the right one to render at.
-        let result = measure_footswitch(
-            switch,
-            None,
-            lev,
-            engaged_bypass,
-            stimulus,
-            target_lufs,
-            method,
-            None,
-            param,
-            None,
-        )?;
-        if result.clamp_reason.is_some() {
-            // No-signal routing clamp: nothing to write — discard the sweep pollution.
-            if let Ok(mut s) = Session::connect_lean() {
-                if let Err(e) = s.load_preset(slot) {
-                    log::warn!("footswitch no-signal reload failed (slot {slot}): {e}");
-                }
-            }
-            return Ok(result);
-        }
-        let mut result = result;
-
-        // ── Write (save only): the batch writer reloads (discarding the sweep pollution),
-        //    writes, and persists with ONE save; the dry path just reloads ──
-        if save {
-            let pending = [FsPendingWrite {
-                switch,
-                lev: (lev.0.into(), lev.1.into(), lev.2.into()),
-                write: write.clone(),
-                value: result.final_value,
-            }];
-            write_footswitch_values(slot, &pending, restore_scene)?;
-            result.saved = true;
-            if verify {
-                // The verify runs AFTER the save, so the preset's own stored level IS the
-                // intended one — nothing to re-assert.
-                result.verify_lufs = measure_fs_at(
-                    None,
-                    lev,
-                    engaged_bypass,
-                    stimulus,
-                    result.final_value,
-                    None,
-                )
-                .ok()
-                .map(|l| l.integrated_lufs);
-                // Cleanup reload only — a failure must not fail the already-saved result.
-                match Session::connect_lean() {
-                    Ok(mut s) => {
-                        if let Err(e) = s.load_preset(slot) {
-                            log::warn!("footswitch verify reload failed (slot {slot}): {e}");
-                        }
-                    }
-                    Err(e) => log::warn!("footswitch verify reload skipped (slot {slot}): {e}"),
-                }
-            }
-        } else {
-            // Dry: discard the measurement pollution (cleanup only, same rule as above).
-            match Session::connect_lean() {
-                Ok(mut s) => {
-                    if let Err(e) = s.load_preset(slot) {
-                        log::warn!("footswitch dry-run reload failed (slot {slot}): {e}");
-                    }
-                }
-                Err(e) => log::warn!("footswitch dry-run reload skipped (slot {slot}): {e}"),
-            }
-        }
-        Ok(result)
-    };
-    let out = body();
-    // Final guarantee on EVERY exit — measure errors and the no-signal clamp return
-    // included (verify re-amps; never leave the unit input-muted).
-    reamp_off_guaranteed("level_footswitch");
-    out
 }
 
 /// Write every pending footswitch value on ONE live-edit session and persist with ONE
@@ -4985,28 +4965,6 @@ fn write_fs_values_on_session(
     Ok(())
 }
 
-/// Pure secant step for the closed loop: given two measured points
-/// `(xa, ya)`/`(xb, yb)` of knob-value → captured LUFS and a `target`, return the
-/// next knob value that should hit it (UNCLAMPED — caller clamps to bounds).
-/// `None` if the local response is flat (slope ≈ 0 → the knob doesn't move
-/// loudness here, so the caller should stop).
-fn secant_next(xa: f32, ya: f64, xb: f32, yb: f64, target: f64) -> Option<f32> {
-    let dx = (xb - xa) as f64;
-    if dx.abs() < 1e-9 {
-        return None;
-    }
-    let slope = (yb - ya) / dx; // LUFS per knob unit
-    if !slope.is_finite() || slope.abs() < 1e-4 {
-        return None;
-    }
-    let next = xb as f64 + (target - yb) / slope;
-    if next.is_finite() {
-        Some(next as f32)
-    } else {
-        None
-    }
-}
-
 /// `(log_space, c_lo, c_hi)` for a knob-search coordinate map — the SAME log-vs-identity
 /// shape as [`FsParamTarget::to_coord`]/[`FsParamTarget::coord_to_value`], but a DIFFERENT
 /// discriminator: this seam has no `ParamClass` to consult, so it infers log-space from the
@@ -5083,7 +5041,8 @@ fn next_live_coord(
     let stepped = match strategy {
         SceneLevelStrategy::LiveHybrid | SceneLevelStrategy::LiveSecant => match prev {
             Some((pa, py)) if iter > 0 => {
-                secant_next(pa, py, coord, measured, target).unwrap_or(full)
+                secant_step((pa, py), (coord, measured), target, Flatness::Knob, None)
+                    .unwrap_or(full)
             }
             _ if strategy == SceneLevelStrategy::LiveSecant => coord + 0.5 * err,
             _ => full,
@@ -5270,11 +5229,7 @@ pub fn level_scenes_live_batched(
 ) -> Result<Vec<BatchedSceneOutcome>, LevelError> {
     let result = (|| {
         // Load in its own connection (set-after-load override + engage latch).
-        {
-            let mut s = Session::connect_lean()?;
-            s.load_preset(slot)?;
-            crate::settle(Duration::from_millis(settle_after_load_ms()));
-        }
+        load_preset_isolated(slot, CancelMode::Cleanup)?;
 
         // ONE pair of CoreAudio streams for the whole preset (between engages
         // they just carry silence). Rebuilding streams per scene both wasted
@@ -7820,7 +7775,13 @@ fn correct_iter_core(
             break;
         }
         // Trust-region-clamped secant step (None ⇒ slope too flat / non-finite → stop).
-        let Some(next_db) = secant_next_db(prev, last, target) else {
+        let Some(next_db) = secant_step(
+            prev,
+            last,
+            target,
+            Flatness::AppliedDb,
+            Some(BATCH_TRUST_DB as f64),
+        ) else {
             break;
         };
         let next_levels = levels_for(next_db);
@@ -7861,22 +7822,6 @@ fn no_authority_reason(downward: bool) -> String {
         "changing this amp's outputLevel did not move the USB 1/2 capture — {cause}; \
          route it to USB 1/2 or level it manually"
     )
-}
-
-/// Pure: trust-region-clamped secant step toward `target` from two real points
-/// `prev`/`last` = `(applied_db, lufs)`. Returns the next `applied_db`, clamped to
-/// `last.applied_db ± BATCH_TRUST_DB` so a noisy near-zero slope can't explode the jump.
-/// `None` when the local slope is non-finite or ≤ 0.05 (no usable response → stop).
-fn secant_next_db(prev: (f64, f64), last: (f64, f64), target: f64) -> Option<f64> {
-    let slope = (last.1 - prev.1) / (last.0 - prev.0);
-    if !slope.is_finite() || slope <= 0.05 {
-        return None;
-    }
-    let raw = last.0 + (target - last.1) / slope;
-    Some(raw.clamp(
-        last.0 - BATCH_TRUST_DB as f64,
-        last.0 + BATCH_TRUST_DB as f64,
-    ))
 }
 
 /// Pure: a no-authority verdict — a large applied gain (`|applied_db| ≥ NO_AUTHORITY_MIN_DB`)
@@ -7948,11 +7893,7 @@ pub fn mute_floor_report(
     // session that follows still gets a spaced boundary.
     let saved = saved_for_scene_knobs(slot, [a, b]);
     let saved = saved.as_ref();
-    {
-        let mut s = Session::connect_lean()?;
-        s.load_preset(slot)?;
-        crate::settle(Duration::from_millis(settle_after_load_ms()));
-    }
+    load_preset_isolated(slot, CancelMode::Cleanup)?;
     let combined = measure_knobs_at(stimulus, &[(a, cur_a), (b, cur_b)], saved, None)?;
     let floor_lufs = measure_mute_floor(stimulus, a, b, saved, None)?;
     let a_solo = measure_knobs_at(stimulus, &[(a, cur_a), (b, 0.0)], saved, None)?;
@@ -8346,11 +8287,7 @@ pub fn level_preset_block(
         let overlays = overlays.as_ref();
         // Load the preset in its own connection (the set-after-load-in-same-conn
         // override applies to any setter, so isolate the load).
-        {
-            let mut s = Session::connect_lean()?;
-            s.load_preset(slot)?;
-            crate::settle(Duration::from_millis(settle_after_load_ms()));
-        }
+        load_preset_isolated(slot, CancelMode::Cleanup)?;
 
         // Search in a coordinate where the knob is ~linear in LUFS so the secant
         // converges in 1–2 steps. Amplitude knobs (range within [0,1]) are linear in
@@ -8414,7 +8351,8 @@ pub fn level_preset_block(
         };
 
         while iterations < KNOB_MAX_ITERS && (best.1 - target_lufs).abs() > KNOB_TOL_LU {
-            let Some(raw_next) = secant_next(ca, ya, cb, yb, target_lufs) else {
+            let Some(raw_next) = secant_step((ca, ya), (cb, yb), target_lufs, Flatness::Knob, None)
+            else {
                 break; // flat response — knob can't move loudness here
             };
             let cnext = raw_next.clamp(c_lo, c_hi);
@@ -9324,10 +9262,24 @@ mod tests {
     fn fs_secant_converges_and_detects_flat() {
         // loudness(v) = 10·v − 30 → target −23 ⇒ v = 0.7.
         let f = |v: f64| 10.0 * v - 30.0;
-        let next = fs_secant_next((0.25, f(0.25)), (0.75, f(0.75)), -23.0).unwrap();
+        let next = secant_step(
+            (0.25f64, f(0.25)),
+            (0.75, f(0.75)),
+            -23.0,
+            Flatness::SolveCoord,
+            None,
+        )
+        .unwrap();
         assert!((next - 0.70).abs() < 1e-9, "got {next}");
         // Flat response → None (no authority).
-        assert!(fs_secant_next((0.25, -9.0), (0.75, -9.0), -23.0).is_none());
+        assert!(secant_step(
+            (0.25, -9.0),
+            (0.75, -9.0),
+            -23.0,
+            Flatness::SolveCoord,
+            None
+        )
+        .is_none());
     }
 
     // See `fs_bracket_expansion`'s doc for the bug this covers.
@@ -9428,7 +9380,7 @@ mod tests {
                 if err(best.1) <= KNOB_TOL_LU {
                     break;
                 }
-                let Some(raw) = fs_secant_next(p0, p1, target) else {
+                let Some(raw) = secant_step(p0, p1, target, Flatness::SolveCoord, None) else {
                     break;
                 };
                 let v2 = raw.clamp(0.0, 1.0);
@@ -9781,14 +9733,28 @@ mod tests {
     fn secant_next_solves_linear_response() {
         // A perfectly linear knob: lufs = 10*x - 25. Target -20 ⇒ x = 0.5.
         let f = |x: f32| 10.0 * x as f64 - 25.0;
-        let x = super::secant_next(0.2, f(0.2), 0.8, f(0.8), -20.0).unwrap();
+        let x = secant_step(
+            (0.2f32, f(0.2)),
+            (0.8f32, f(0.8)),
+            -20.0,
+            Flatness::Knob,
+            None,
+        )
+        .unwrap();
         assert!((x - 0.5).abs() < 1e-4, "x={x}");
     }
 
     #[test]
     fn secant_next_none_on_flat_response() {
         // A knob that doesn't move loudness → no solution.
-        assert!(super::secant_next(0.2, -20.0, 0.8, -20.0, -18.0).is_none());
+        assert!(secant_step(
+            (0.2f32, -20.0),
+            (0.8f32, -20.0),
+            -18.0,
+            Flatness::Knob,
+            None
+        )
+        .is_none());
     }
 
     // Item 3 — no-authority verdict: a LARGE applied gain that barely moves loudness means
@@ -9824,7 +9790,14 @@ mod tests {
     fn secant_next_db_trust_region_caps_jump() {
         let prev = (0.0, -30.0);
         let last = (1.0, -29.7); // slope 0.3 over 1 dB; raw jump ≈ +32 dB
-        let next = super::secant_next_db(prev, last, -20.0).unwrap();
+        let next = secant_step(
+            prev,
+            last,
+            -20.0,
+            Flatness::AppliedDb,
+            Some(BATCH_TRUST_DB as f64),
+        )
+        .unwrap();
         assert!(
             (next - (last.0 + super::BATCH_TRUST_DB as f64)).abs() < 1e-9,
             "step clamped to +{} dB, got {next}",
@@ -9835,7 +9808,14 @@ mod tests {
     #[test]
     fn secant_next_db_none_on_flat_slope() {
         // slope ≈ 0.0017 ≤ 0.05 → no usable response (→ the loop stops / no-authority path).
-        assert!(super::secant_next_db((0.0, -30.0), (6.0, -29.99), -20.0).is_none());
+        assert!(secant_step(
+            (0.0, -30.0),
+            (6.0, -29.99),
+            -20.0,
+            Flatness::AppliedDb,
+            Some(BATCH_TRUST_DB as f64)
+        )
+        .is_none());
     }
 
     // `correct_iter_core` harness: `model` answers each VERIFIED write (None = capture
@@ -10016,7 +9996,7 @@ mod tests {
         };
         let mut iters = 2;
         while iters < super::KNOB_MAX_ITERS && (best.1 - target).abs() > super::KNOB_TOL_LU {
-            let Some(nc) = super::secant_next(ca, ya, cb, yb, target) else {
+            let Some(nc) = secant_step((ca, ya), (cb, yb), target, Flatness::Knob, None) else {
                 break;
             };
             let nc = nc.clamp(c_lo, c_hi);

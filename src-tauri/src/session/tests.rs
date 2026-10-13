@@ -1981,7 +1981,7 @@ fn drained_pushes_stay_bounded_and_decode_as_they_close() {
     }
     let t = crate::test_support::ScriptedTransport::default().with_pending(batches);
     let mut s = crate::test_support::session_over(&t, Vec::new());
-    let mut pushes = proto::FinalReassembler::default();
+    let mut pushes = proto::Reassembler::new(proto::SingleFrame::ClosesStream);
     let mut decoded = Vec::new();
     for tick in 0..2 * N {
         s.pump_silent(1).unwrap();
@@ -2028,7 +2028,7 @@ fn final_reassembler_matches_the_batch_reassembly() {
     reports.push(vec![0x00, 0x33, 0x00, 1, 3]);
     reports.push(vec![0x00, 0x34, 0x00, 1, 4]);
     let batch = proto::reassemble_streams_final(&reports);
-    let mut r = proto::FinalReassembler::default();
+    let mut r = proto::Reassembler::new(proto::SingleFrame::ClosesStream);
     let mut closed = Vec::new();
     for rep in &reports {
         r.push(rep, &mut closed);
