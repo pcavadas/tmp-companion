@@ -232,5 +232,3 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
     </>
   );
 }
-
-export default DoctorView;

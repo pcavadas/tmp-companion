@@ -9,7 +9,7 @@
 //
 // NO SELF-HEAL: an "error" result for a slot is cached for the rest of THIS mount
 // (`fetchedSlotsRef` marks the slot fetched even on failure) — re-opening the wizard (a
-// fresh SetupBody mount) is the only retry path. Documented here because it's easy to
+// fresh SetupPage mount) is the only retry path. Documented here because it's easy to
 // assume a picker retry re-fetches.
 
 import { useRef, useState } from "react";

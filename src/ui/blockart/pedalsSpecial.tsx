@@ -2,7 +2,7 @@
 // (GearPedalBody / LabBoostBody / GruntBoostBody), split from ./pedals so each file
 // stays ≤500 lines. These carry their own LED + footswitch (they do NOT use the
 // shared enclosure returns). Shared data/helpers live in ./shared.
-import { lum, type PedalTone } from "./shared";
+import { lum, type ArtVariant, type PedalTone } from "./shared";
 import { FONT_SANS } from "../../theme/tokens";
 
 // ===========================================================================
@@ -10,16 +10,24 @@ import { FONT_SANS } from "../../theme/tokens";
 // Lightyear. 3 knobs in a row, a 3-way mini toggle, an amber LED, and a footswitch
 // well + chrome nut. The control inset colour flips per unit (see `inset`). No text.
 // ===========================================================================
-export function GearPedalBody({ c, lab }: { c: PedalTone; lab: string }) {
+export function GearPedalBody({
+  c,
+  variant,
+}: {
+  c: PedalTone;
+  variant: ArtVariant | undefined;
+}) {
   const edge = "rgba(0,0,0,0.4)";
   // pointer contrasts with the knob; body stays the gear-pedal colour. The control
-  // inset colour flips per unit so the trio reads distinct: Pinions/Blumes = green
-  // inset on a yellow body, Lightyear = blue, Plumes (green body) + Runes = yellow.
-  const inset = /BLUMES|PINIONS/i.test(lab)
-    ? "#3f6f37"
-    : /LSPEED|LIGHTYEAR|LIGHTSPEED/i.test(lab)
-      ? "#3f78c0"
-      : "#e3c23e";
+  // inset colour flips per unit (the art variant) so the trio reads distinct:
+  // Blumes = green inset on a yellow body, Lightspeed = blue, Plumes (green body) +
+  // Runes = yellow.
+  const inset =
+    variant === "gear-green-inset"
+      ? "#3f6f37"
+      : variant === "gear-blue-inset"
+        ? "#3f78c0"
+        : "#e3c23e";
   const ptr = lum(c.knob) > 0.6 ? "#3a3f28" : "#e8e8e8";
   const fanned = [
     { x2: 0, y2: -3.6 },

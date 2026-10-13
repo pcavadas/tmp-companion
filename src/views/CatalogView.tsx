@@ -48,6 +48,9 @@ import {
 // Off-state chip fill: white (light-only), matching the prototype's chipBg.
 const chipBgFor = (t: ThemeTokens) => t.bg;
 
+/** Vertical padding of the "No models match" empty wall — off the spacing ramp
+ *  (48 + 6), kept exact so the empty state sits where canon puts it. */
+const EMPTY_WALL_PAD_Y = 54;
 const ICON_SHADOW = "drop-shadow(0 2px 4px rgba(15,17,21,0.2))";
 
 // Relative luminance (Rec. 709) of a #hex color, 0 (black) … 1 (white). Drives
@@ -100,11 +103,8 @@ function artFor(r: ModelRecord) {
 
 function ModelTile({ r, size }: ModelTileProps) {
   const art = artFor(r);
-  // The art's terse caption doubles as the engine's label-keyed dispatch token:
-  // some 1.8 treatments select by `lab` (EVH 5150 III channel accent green/blue/
-  // red, the '65 Twin 15 single 15" speaker, the gear-pedal on-device name print,
-  // the Seventy Sixer compressor face), so the caption — which carries that token
-  // (GREEN/BLUE/RED · 15 · PINIONS · SEVENTY SIXER) — must flow into `lab`.
+  // Per-model art treatments (EVH channel colour, the Seventy Sixer face, …) ride
+  // the explicit `variant`; the caption is display text only.
   const lab = art?.short ?? "";
   if (r.form === "half_stack") {
     const cabBid = r.bid ? HALF_STACK_PAIR[r.bid] : undefined;
@@ -113,7 +113,7 @@ function ModelTile({ r, size }: ModelTileProps) {
       <HalfStackArt
         topIcon={art?.icon}
         topTone={art?.tone}
-        topLab={lab}
+        topVariant={art?.variant}
         cabIcon={cabArt?.icon ?? "cab4"}
         // an unpaired head's cab inherits the HEAD's tone so its grille matches the
         // head/combo (Fender bass/blackface cabs must share the head grille),
@@ -124,7 +124,6 @@ function ModelTile({ r, size }: ModelTileProps) {
           art?.tone ??
           "marshall"
         }
-        cabLab=""
         cabW={size}
       />
     );
@@ -135,6 +134,7 @@ function ModelTile({ r, size }: ModelTileProps) {
         icon={art?.icon}
         tone={art?.tone}
         lab={lab}
+        variant={art?.variant}
         footswitch={art?.footswitch}
         bodyColor={art?.body}
         accentColor={art?.accent}
@@ -701,7 +701,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
         fontFamily: t.mono,
         fontSize: t.fsData2,
         letterSpacing: "0.03em",
-        color: disabled ? t.faint : on ? "#fff" : t.ink2,
+        color: disabled ? t.faint : on ? t.onAccent : t.ink2,
         background: on ? t.accent : chipBgFor(t),
         border: `0.5px solid ${on ? t.accent : t.hairlineStrong}`,
         borderRadius: t.rPill,
@@ -918,7 +918,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
           {shown.length === 0 ? (
             <div
               style={{
-                padding: `54px ${String(t.space10)}px`,
+                padding: `${String(EMPTY_WALL_PAD_Y)}px ${String(t.space10)}px`,
                 textAlign: "center",
                 fontFamily: t.sans,
                 fontSize: t.fsBody2,
@@ -939,7 +939,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
                     alignItems: "baseline",
                     gap: t.space5,
                     padding: `${String(t.space4)}px ${String(t.space8)}px ${String(t.space4)}px`,
-                    background: "rgba(255,255,255,0.92)",
+                    background: t.bgFrost,
                     backdropFilter: "blur(6px)",
                     borderBottom: `0.5px solid ${t.hairline}`,
                   }}

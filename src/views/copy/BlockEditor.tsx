@@ -72,6 +72,7 @@ export function BlockEditor({
           icon={headArt?.icon}
           tone={headArt?.tone}
           lab={headArt?.short}
+          variant={headArt?.variant}
           footswitch={headArt?.footswitch}
           bodyColor={headArt?.body}
           accentColor={headArt?.accent}
@@ -186,6 +187,7 @@ export function BlockEditor({
                   icon={o.icon}
                   tone={o.tone}
                   lab={o.lab}
+                  variant={o.variant}
                   footswitch={o.footswitch}
                   bodyColor={o.body}
                   accentColor={o.accent}
@@ -220,5 +222,3 @@ export function BlockEditor({
     </div>
   );
 }
-
-export default BlockEditor;

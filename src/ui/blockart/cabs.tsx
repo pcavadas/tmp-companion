@@ -5,6 +5,7 @@ import {
   CAB_GRID,
   CLOTH,
   clothFor,
+  type ArtVariant,
   type PedalTone,
 } from "./shared";
 import {
@@ -19,13 +20,13 @@ export function CabBody({
   c,
   t,
   g,
-  lab,
+  variant,
   uid,
 }: {
   c: PedalTone;
   t: string;
   g: string;
-  lab: string;
+  variant?: ArtVariant;
   uid: string;
 }) {
   const edge = "rgba(0,0,0,0.42)";
@@ -34,15 +35,14 @@ export function CabBody({
   // tone, so it can't live in TONE_CLOTH. Override the cloth here in CabBody.
   const metalCab = t === "mesa" || t === "boutique";
   let cl = metalCab ? CLOTH.metaldiamond : clothFor(t);
-  // Per-block grille overrides the lineage tone can't express (matched on the
-  // normalized short label):
-  if (lab.includes("BOG"))
+  // Per-block grille overrides the lineage tone can't express (the art variant):
+  if (variant === "cab-bogner")
     cl = CLOTH.saltpep; // Bogner — Marshall-style salt&pepper grille (not the Mesa diamond)
-  else if (lab.includes("MES V30"))
+  else if (variant === "cab-recto-trad")
     cl = CLOTH.blackjute; // Rectifier Trad — plain black grille (≠ HBBSClosed's diamond)
-  else if (lab.includes("SWR 210"))
+  else if (variant === "cab-swr-210")
     cl = CLOTH.whitegrid; // SWR Redhead — white grid lines on a dark baffle
-  else if (lab.includes("M4 JV30")) cl = CLOTH.silver; // Marshall 1960A V30 — silver grille
+  else if (variant === "cab-silver-grille") cl = CLOTH.silver; // Marshall 1960A V30 — silver grille
   const grids: Partial<Record<string, [number, number, number]>> = CAB_GRID;
   const [cols, rows] = grids[g] ?? CAB_GRID.cab1;
   // ALL cabs share ONE outer box, head-matching width (x5..59 = the AmpBody head),
@@ -70,7 +70,7 @@ export function CabBody({
   if (t === "evhmodern" || t === "evhblack") {
     // the 5150 1x12 ships in IVORY tolex (white cabinet, same dark grille + mark);
     // the 4x12 stays black.
-    const evhBody = lab.includes("5150 112") ? "#e7e2d6" : c.body;
+    const evhBody = variant === "cab-evh-112" ? "#e7e2d6" : c.body;
     return (
       <g>
         <rect
@@ -138,7 +138,7 @@ export function CabBody({
   }
 
   const speakers = [];
-  if (lab.includes("VK 3")) {
+  if (variant === "cab-vibroking") {
     // Vibro-King 3x10 — triangular baffle: two 10" at the bottom, one centred up top.
     const cxm = baffleX + baffleW / 2;
     const rr = Math.min(baffleW, baffleH) * 0.24;
@@ -294,7 +294,7 @@ export function IRBody({ uid, label = "IR" }: { uid: string; label?: string }) {
   const cy = 32;
   return (
     <g>
-      <CabBody c={c} t="ink" g="cab1" lab="" uid={uid} />
+      <CabBody c={c} t="ink" g="cab1" uid={uid} />
       <rect
         x={32 - boxW / 2}
         y={cy - boxH / 2}

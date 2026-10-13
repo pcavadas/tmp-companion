@@ -1,11 +1,10 @@
-// src/views/overlays/PickTrigger.tsx — the bordered-pill trigger chrome shared,
-// byte-for-byte, by `BlockLevelPick`'s BLOCK and CONTROL triggers (D2/Part C): a
-// ref'd anchor wrapper, a warn icon (when `warn`), a truncating label, and a
-// chevron that reflects open state. Only the MARKUP is unified here — each
-// dropdown's own warn PREDICATE (`blockStale` / `paramStale`) stays with its
-// owner and is passed in, same as `pickTriggerChrome.ts`'s shared border-color
-// rule leaves every `Pick`-family warn predicate local. `BlockLevelPick` is this
-// component's sole caller.
+// src/views/overlays/PickTrigger.tsx — the bordered-pill trigger chrome of
+// `FlatLevelPick`: a ref'd anchor wrapper, a warn icon (when `warn`), a truncating
+// label, and a chevron that reflects open state. Only the MARKUP lives here — the
+// warn PREDICATE (FlatLevelPick's stale-handle check) stays with its owner and is
+// passed in, same as `pickTriggerChrome.ts`'s shared border-color rule leaves every
+// `Pick`-family warn predicate local. `FlatLevelPick` is this component's sole
+// caller.
 
 import type { MouseEvent, RefObject } from "react";
 
@@ -86,5 +85,3 @@ export function PickTrigger({
     </div>
   );
 }
-
-export default PickTrigger;

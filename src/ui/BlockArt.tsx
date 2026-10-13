@@ -1,10 +1,11 @@
 // src/ui/BlockArt.tsx — the public block-art engine: BlockArt (single icon)
-// + HalfStackArt (head-over-cab) + the legacy short-code map. Dispatches a
-// icon to its form-factor renderer (formFor → amps/cabs/mics/forms/pedals).
-// The procedural-SVG bodies + shared helpers live under ./blockart/.
+// + HalfStackArt (head-over-cab). Dispatches an icon to its form-factor renderer
+// (formFor → amps/cabs/mics/forms/pedals). The procedural-SVG bodies + shared
+// helpers live under ./blockart/.
 import React from "react";
 import { useTheme } from "../theme/ThemeContext";
 import { formFor, toneOf } from "./blockart/shared";
+import type { ArtVariant, IconId, ToneId } from "./blockart/shared";
 import { AmpBody } from "./blockart/amps";
 import { CabBody, IRBody, BluesbreakerBody } from "./blockart/cabs";
 import { MicBody } from "./blockart/mics";
@@ -19,12 +20,14 @@ import {
 import { PedalBody } from "./blockart/pedals";
 
 export interface BlockArtProps {
-  code?: string;
   size?: number;
   label?: boolean;
-  icon?: string;
-  tone?: string;
+  icon?: IconId;
+  tone?: ToneId;
+  /** caption text (display only — art never keys on it; see `variant`). */
   lab?: string;
+  /** explicit per-model art treatment — from the catalog BlockArtSpec. */
+  variant?: ArtVariant;
   dim?: boolean;
   /** Stompbox footswitch style (pedal form only) — from the catalog BlockArtSpec. */
   footswitch?: "plate" | "metal" | "round";
@@ -39,86 +42,25 @@ export interface BlockArtProps {
   form?: "combo" | "head" | "half_stack";
 }
 export interface HalfStackArtProps {
-  topIcon?: string;
-  topTone?: string;
-  topLab?: string;
-  cabIcon?: string;
-  cabTone?: string;
-  cabLab?: string;
+  topIcon?: IconId;
+  topTone?: ToneId;
+  /** the head's explicit art treatment (the cab carries none). */
+  topVariant?: ArtVariant;
+  cabIcon?: IconId;
+  cabTone?: ToneId;
   cabW?: number;
-  size?: number;
 }
 
-interface BlockDef {
-  t: string;
-  g: string;
-  lab: string;
-  fam: string;
+// Per-instance id prefix for the bodies' gradient/clip/pattern ids, from React's
+// useId so ids are unique per render tree (and stable across SSR/hydration). useId
+// can contain characters (`:`, `«»`) that break an unescaped `url(#…)` reference,
+// so keep only the id-safe ones.
+function useArtUid(): string {
+  return "u" + React.useId().replace(/[^A-Za-z0-9_-]/g, "");
 }
-
-// Unique-id counter for per-instance gradient/clip ids (mutated here only — the
-// bodies receive `uid` as a prop).
-let __gcUid = 0;
-const nextUid = (): string => `u${String(++__gcUid)}`;
 
 // Side margin so a body's drop-shadow isn't clipped by the half-stack viewBox.
 const MX = 4;
-
-const BLOCK_MAP: Record<string, BlockDef> = {
-  COMP: { t: "slate", g: "comp", lab: "COMP", fam: "Dynamics" },
-  GATE: { t: "slate", g: "gate", lab: "GATE", fam: "Dynamics" },
-  "TS-OD": { t: "green", g: "od", lab: "TS", fam: "Drive" },
-  "OD-K": { t: "gold", g: "od", lab: "KLON", fam: "Drive" },
-  "OD-T": { t: "amber", g: "od", lab: "OD", fam: "Drive" },
-  FUZZ: { t: "muff", g: "fuzz", lab: "FUZZ", fam: "Drive" },
-  OCT: { t: "teal", g: "octave", lab: "OCT", fam: "Pitch" },
-  CHO: { t: "blue", g: "chorus", lab: "CHO", fam: "Modulation" },
-  PHA: { t: "yellow", g: "phaser", lab: "PHA", fam: "Modulation" },
-  FLT: { t: "plum", g: "envf", lab: "FLT", fam: "Modulation" },
-  TREM: { t: "blackface", g: "tremolo", lab: "TREM", fam: "Modulation" },
-  WAH: { t: "ink", g: "wah", lab: "WAH", fam: "Filter" },
-  VOL: { t: "ink", g: "vol", lab: "VOL", fam: "Utility" },
-  "EQ-7": { t: "slate", g: "eq", lab: "EQ", fam: "EQ" },
-  "AMP-T": { t: "tweed", g: "amp", lab: "TWEED", fam: "Amp" },
-  "AMP-F": { t: "blackface", g: "amp", lab: "BLACK", fam: "Amp" },
-  "AMP-V": { t: "vox", g: "amp", lab: "VOX", fam: "Amp" },
-  "AMP-P": { t: "marshall", g: "amp", lab: "PLEXI", fam: "Amp" },
-  "AMP-B": { t: "vox", g: "amp", lab: "BOUT", fam: "Amp" },
-  "AMP-M": { t: "boutique", g: "amp", lab: "MODRN", fam: "Amp" },
-  "AMP-BS": { t: "bass", g: "amp", lab: "BASS", fam: "Amp" },
-  "CAB-T": { t: "blackface", g: "cab1", lab: "1x12", fam: "Cab" },
-  "CAB-G": { t: "marshall", g: "cab2", lab: "2x12", fam: "Cab" },
-  "CAB-M": { t: "marshall", g: "cab4", lab: "4x12", fam: "Cab" },
-  "CAB-BS": { t: "ampeg", g: "cab8", lab: "8x10", fam: "Cab" },
-  "DLY-D": { t: "mint", g: "delay", lab: "DLY", fam: "Delay" },
-  "DLY-T": { t: "gold", g: "delay", lab: "TAPE", fam: "Delay" },
-  "REV-PLT": { t: "lake", g: "plate", lab: "PLATE", fam: "Reverb" },
-  "REV-SPR": { t: "blackface", g: "spring", lab: "SPR", fam: "Reverb" },
-  "REV-HL": { t: "lake", g: "hall", lab: "HALL", fam: "Reverb" },
-  "REV-SHM": { t: "mint", g: "shimmer", lab: "SHIM", fam: "Reverb" },
-};
-
-// ---- resolve a block descriptor from props/code ----------------------------
-function resolveBlock({
-  code,
-  icon,
-  tone,
-  lab,
-}: Pick<BlockArtProps, "code" | "icon" | "tone" | "lab">): {
-  t: string;
-  g: string;
-  lab: string;
-} {
-  const base: BlockDef | undefined =
-    code != null
-      ? (BLOCK_MAP as Partial<Record<string, BlockDef>>)[code]
-      : undefined;
-  return {
-    t: tone ?? base?.t ?? "slate",
-    g: icon ?? base?.g ?? "knobs2",
-    lab: lab ?? base?.lab ?? code ?? "",
-  };
-}
 
 // ============================================================================
 // <BlockArt /> — one block icon (+ optional caption)
@@ -144,16 +86,15 @@ interface HalfStackDims {
 function HalfStackArt({
   topIcon,
   topTone,
-  topLab,
+  topVariant,
   cabIcon,
   cabTone,
-  cabLab,
   cabW = 72,
 }: HalfStackArtProps) {
   const topRef = React.useRef<SVGGElement>(null);
   const cabRef = React.useRef<SVGGElement>(null);
   const [dims, setDims] = React.useState<HalfStackDims | null>(null);
-  const uid = React.useMemo(() => nextUid(), []);
+  const uid = useArtUid();
   const cTop = toneOf(topTone);
   const cCab = toneOf(cabTone);
 
@@ -175,7 +116,7 @@ function HalfStackArt({
     const topTf = `translate(${String(topX)}, 0) scale(${String(s)}) translate(${String(-tb.x)}, ${String(-tb.y)})`;
     const cabTf = `translate(${String(MX)}, ${String(topHpx + GAP)}) scale(${String(s)}) translate(${String(-cb.x)}, ${String(-cb.y)})`;
     setDims({ cabTf, topTf, W: cabWpx + MX * 2, H: topHpx + GAP + cabHpx });
-  }, [topIcon, topTone, topLab, cabIcon, cabTone, cabW]);
+  }, [topIcon, topTone, topVariant, cabIcon, cabTone, cabW]);
 
   const W = dims ? dims.W : cabW + MX * 2;
   const H = dims ? dims.H : cabW * 1.4;
@@ -195,18 +136,12 @@ function HalfStackArt({
           c={cTop}
           t={topTone ?? ""}
           g="head"
-          lab={topLab ?? ""}
+          variant={topVariant}
           uid={`${uid}t`}
         />
       </g>
       <g ref={cabRef} transform={dims ? dims.cabTf : undefined}>
-        <CabBody
-          c={cCab}
-          t={cabTone ?? ""}
-          g={cabIcon ?? ""}
-          lab={cabLab ?? ""}
-          uid={`${uid}c`}
-        />
+        <CabBody c={cCab} t={cabTone ?? ""} g={cabIcon ?? ""} uid={`${uid}c`} />
       </g>
     </svg>
   );
@@ -215,19 +150,19 @@ function HalfStackArt({
 // Catalog form-factor → amp chassis icon. The SAME amp block_id is catalogued as
 // both a combo and a head (different `form`, identical icon), so the icon alone
 // can't pick the chassis — when a caller passes the catalog `form` we honor it.
-const AMP_FORM_ICON: Record<"combo" | "head" | "half_stack", string> = {
+const AMP_FORM_ICON: Record<"combo" | "head" | "half_stack", IconId> = {
   combo: "combo",
   head: "amp",
   half_stack: "stack",
 };
 
 function BlockArt({
-  code,
   size = 56,
   label = true,
   icon,
   tone,
   lab,
+  variant,
   dim,
   footswitch,
   bodyColor,
@@ -236,14 +171,14 @@ function BlockArt({
   form,
 }: BlockArtProps) {
   const { t } = useTheme();
-  const def = resolveBlock({ code, icon, tone, lab });
+  const def = { t: tone ?? "slate", g: icon ?? "knobs2", lab: lab ?? "" };
   const base = toneOf(def.t);
   const c = bodyColor ? { ...base, body: bodyColor } : base;
   const ff = formFor(def.g);
   // For amps, the catalog form selects the chassis (combo vs head vs half-stack)
   // that the per-id icon can't distinguish; non-amp forms ignore it.
   const ampG = ff === "amp" && form != null ? AMP_FORM_ICON[form] : def.g;
-  const uid = React.useMemo(() => nextUid(), []);
+  const uid = useArtUid();
   return (
     <div
       style={{
@@ -271,20 +206,20 @@ function BlockArt({
           (def.t === "bluesbreaker" ? (
             <BluesbreakerBody c={c} uid={uid} />
           ) : (
-            <AmpBody c={c} t={def.t} g={ampG} lab={def.lab} uid={uid} />
+            <AmpBody c={c} t={def.t} g={ampG} variant={variant} uid={uid} />
           ))}
         {ff === "cab" &&
           (def.t === "bluesbreaker" ? (
             <BluesbreakerBody c={c} uid={uid} />
           ) : (
-            <CabBody c={c} t={def.t} g={def.g} lab={def.lab} uid={uid} />
+            <CabBody c={c} t={def.t} g={def.g} variant={variant} uid={uid} />
           ))}
         {ff === "ir" && <IRBody uid={uid} />}
         {ff === "extcab" && <IRBody uid={uid} label="EXT" />}
         {ff === "mic" && <MicBody c={c} g={def.g} lab={def.lab} uid={uid} />}
         {ff === "treadle" && <TreadleBody c={c} g={def.g} lab={def.lab} />}
         {ff === "round" && <RoundBody c={c} lab={def.lab} uid={uid} />}
-        {ff === "rack" && <RackBody c={c} g={def.g} lab={def.lab} />}
+        {ff === "rack" && <RackBody c={c} g={def.g} variant={variant} />}
         {ff === "desk" && <DeskBody c={c} lab={def.lab} />}
         {ff === "screen" && <ScreenBody lab={def.lab} />}
         {ff === "rockbox" && <RockboxBody c={c} lab={def.lab} />}
@@ -293,7 +228,9 @@ function BlockArt({
             c={c}
             g={def.g}
             lab={def.lab}
+            variant={variant}
             footswitch={footswitch ?? "round"}
+            uid={uid}
             accent={accentColor}
             panel={panelColor}
           />
@@ -318,4 +255,4 @@ function BlockArt({
 
 export { BlockArt, HalfStackArt };
 
-export type { IconId, ToneId } from "./blockart/shared";
+export type { ArtVariant, IconId, ToneId } from "./blockart/shared";

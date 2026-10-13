@@ -68,7 +68,7 @@ export function TargetEditCard({
       style={{
         padding: `${String(t.space5)}px ${String(t.space7)}px`,
         borderRadius: t.rPopover,
-        border: `0.5px solid ${over ? "rgba(176,125,28,0.5)" : t.hairlineStrong}`,
+        border: `0.5px solid ${over ? t.sevWarnBorder : t.hairlineStrong}`,
         background: t.bg,
       }}
     >
@@ -124,5 +124,3 @@ export function TargetEditCard({
     </div>
   );
 }
-
-export default TargetEditCard;

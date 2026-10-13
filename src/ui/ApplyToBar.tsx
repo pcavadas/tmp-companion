@@ -2,7 +2,7 @@
 //
 // The tinted header band above a setup list: a mono kicker label (kickerWide), a
 // "Clear ticks" affordance shown only while some rows are ticked, and the bulk
-// pickers as children. Shared by the Leveling SetupBody and the Doctor DoctorSetup.
+// pickers as children. Used by the Doctor DoctorSetup.
 //
 // The kicker color and the Clear affordance both key off `somePicked` (the frozen
 // {label,onClear,children} shape can't carry the conditional color/visibility, so

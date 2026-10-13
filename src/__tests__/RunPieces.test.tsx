@@ -1,6 +1,6 @@
-// src/__tests__/RunPieces.test.tsx — the run-wizard DS extractions shared by the
-// Doctor "Check" run and the Leveling run: ConfirmBar (the inline stop prompt),
-// RunRow (one progress row), and useAutoAdvance (the natural-finish → summary jump).
+// src/__tests__/RunPieces.test.tsx — the run-wizard DS pieces: ConfirmBar (the inline
+// stop prompt, shared by the Doctor "Check" run and the Leveling run), RunRow (the
+// Doctor run's progress row), and useAutoAdvance (the natural-finish → summary jump).
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
@@ -120,48 +120,6 @@ describe("RunRow", () => {
     );
     // #123456 → rgb(18, 52, 86).
     expect(screen.getByText("BASE").style.color).toBe("rgb(18, 52, 86)");
-  });
-
-  // ── columned mode (the Leveling run table) ────────────────────────────────
-  // The flex cases above are the Doctor-run regression guard; these cover the opt-in
-  // grid layout the Level run passes.
-
-  it("lays out on the caller's grid template and renders subLabel + target", () => {
-    under(
-      <RunRow
-        columns="18px minmax(0, 1fr) 124px 112px 158px"
-        name="Rhythm Crunch"
-        subLabel="028 · E2E Hiwatt 3S"
-        target="Stage · −26.0"
-        icon={<span>ic</span>}
-        status={<span>queued</span>}
-      />,
-    );
-    expect(screen.getByText("Rhythm Crunch")).toBeTruthy();
-    expect(screen.getByText("028 · E2E Hiwatt 3S")).toBeTruthy();
-    expect(screen.getByText("Stage · −26.0")).toBeTruthy();
-    const row = screen.getByText("Rhythm Crunch").closest("div");
-    expect(row?.style.display).toBe("grid");
-    expect(row?.style.gridTemplateColumns).toBe(
-      "18px minmax(0, 1fr) 124px 112px 158px",
-    );
-  });
-
-  it("renders the instrument as a plain column cell, not a Tag chip", () => {
-    under(
-      <RunRow
-        columns="18px minmax(0, 1fr) 124px 112px 158px"
-        name="n"
-        instrument="Telecaster"
-        target="t"
-        icon={<span>ic</span>}
-        status={<span>queued</span>}
-      />,
-    );
-    const cell = screen.getByText("Telecaster");
-    expect(cell).toBeTruthy();
-    // The flex-mode Tag chip has a border; the column cell must not.
-    expect(cell.style.border).toBe("");
   });
 });
 

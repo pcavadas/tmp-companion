@@ -2,7 +2,7 @@
 // (knob1/boost/knobs2-6/od/dist/fuzz/bigmuff), split from ./pedals so each file
 // stays ≤500 lines. Returns the control-zone motif for a given `g`, or null if the
 // icon isn't in this family. Byte-identical to the original PedalBody switch cases.
-import { lum, type PedalTone } from "./shared";
+import { lum, type ArtVariant, type PedalTone } from "./shared";
 import { knobs } from "./pedalKnobs";
 
 export function driveMotif(
@@ -10,7 +10,7 @@ export function driveMotif(
   c: PedalTone,
   edge: string,
   jewel: string,
-  lab: string,
+  variant: ArtVariant | undefined,
 ) {
   switch (g) {
     case "knob1":
@@ -57,8 +57,8 @@ export function driveMotif(
       // from body luminance, NOT c.text (the tone's text can mismatch an overridden
       // body, e.g. BigFuzz's chrome tone has dark text on a dark sampled body).
       const ink = lum(c.body) > 0.55 ? "#1a1a1c" : "#eef0f2";
-      const isRams = /\bRAM|HORN/i.test(lab);
-      const isRuss = /RUSS/i.test(lab);
+      const isRams = variant === "muff-rams";
+      const isRuss = variant === "muff-russian";
       // π colour: RED for the NYC + Ram's Head muffs, BLACK for the Green Russian.
       const piColor = isRuss ? "#1a1a1c" : "#c0241c";
       // Ram's Head + Green Russian get BLACK knobs.

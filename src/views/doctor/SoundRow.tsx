@@ -244,7 +244,7 @@ export function SoundRow({
           <span
             style={{
               fontFamily: t.serif,
-              fontSize: 14,
+              fontSize: t.fsName2,
               color: hasDiags ? t.ink : t.ink2,
               whiteSpace: "nowrap",
               overflow: "hidden",
@@ -348,7 +348,7 @@ export function SoundRow({
             <span
               style={{
                 fontFamily: t.mono,
-                fontSize: 10.5,
+                fontSize: t.fsMeta,
                 color: hasDiags ? t.ink2 : t.faint,
                 fontVariantNumeric: "tabular-nums",
                 width: 62,
@@ -431,8 +431,8 @@ export function SoundRow({
                 lineHeight: 1.4,
                 color: t.accentDeep,
                 background: t.accentSoft,
-                border: `0.5px solid rgba(217,119,87,0.3)`,
-                borderRadius: 8,
+                border: `0.5px solid ${t.accentBorderSoft}`,
+                borderRadius: t.rCard,
                 padding: `${String(t.space3)}px ${String(t.space5)}px`,
               }}
             >
@@ -462,7 +462,7 @@ export function SoundRow({
                   <span
                     style={{
                       fontFamily: t.sans,
-                      fontSize: 13,
+                      fontSize: t.fsBody,
                       fontWeight: 600,
                       color: possible ? t.mutedInk : dTone.fg,
                     }}
@@ -472,7 +472,7 @@ export function SoundRow({
                   <span
                     style={{
                       fontFamily: t.mono,
-                      fontSize: 8.5,
+                      fontSize: t.fsTag,
                       letterSpacing: "0.08em",
                       textTransform: "uppercase",
                       color: possible ? t.mutedInk : dTone.fg,
@@ -483,7 +483,7 @@ export function SoundRow({
                   <span
                     style={{
                       fontFamily: t.mono,
-                      fontSize: 10,
+                      fontSize: t.fsData2,
                       color: t.mutedInk,
                     }}
                   >
@@ -499,7 +499,7 @@ export function SoundRow({
                 <div
                   style={{
                     fontFamily: t.sans,
-                    fontSize: 12.5,
+                    fontSize: t.fsControl,
                     lineHeight: 1.5,
                     color: t.ink2,
                     marginTop: t.space2,
@@ -560,5 +560,3 @@ export function SoundRow({
     </div>
   );
 }
-
-export default SoundRow;

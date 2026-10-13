@@ -2,7 +2,12 @@
 // 5150 III, Bassbreaker, Mesa Mark IIC, Roland JC, tweed/Blues Jr clean-front, and
 // the Fender/British default combo), split from ./amps so each file stays ≤500
 // lines. Dispatched by AmpBody's `g === "combo"` case. Shared helpers in ./shared.
-import { comboLivery, evhAccentColor, type PedalTone } from "./shared";
+import {
+  comboLivery,
+  evhAccentColor,
+  type ArtVariant,
+  type PedalTone,
+} from "./shared";
 import {
   GrilleCloth,
   ChassisBody,
@@ -15,13 +20,13 @@ import { AmpComboMesa, AmpComboRoland } from "./ampsComboMesaRoland";
 export function AmpComboBody({
   c,
   t,
-  lab,
+  variant,
   uid,
   edge,
 }: {
   c: PedalTone;
   t: string;
-  lab: string;
+  variant?: ArtVariant;
   uid: string;
   edge: string;
 }) {
@@ -84,13 +89,11 @@ export function AmpComboBody({
   }
   // EVH 5150 III combo (evhmodern): near-black boxy cabinet, EVH dark grille,
   // a white chicken-head knob strip, and a channel jewel coloured by the voicing
-  // (green/blue/red). A
-  // '65 Twin-15-style combo (lab contains 15 / TWIN15) gets ONE big 15"
-  // speaker hint behind the cloth instead of the default 1×12.
+  // (green/blue/red, from the art variant), with a 1×12 speaker hint behind the
+  // cloth.
   if (t === "evhmodern") {
-    const acc = evhAccentColor(lab);
-    const big15 = /(^|[^0-9])15([^0-9]|$)|TWIN ?15/i.test(lab || "");
-    const spkR = big15 ? 15 : 12;
+    const acc = evhAccentColor(variant);
+    const spkR = 12;
     return (
       <g>
         {/* near-black cabinet */}
@@ -176,7 +179,7 @@ export function AmpComboBody({
   // Bassbreaker combo: charcoal grey-tweed tolex, a black grille, and a single
   // brushed-aluminium trim strip across the top of the grille. Controls live on
   // top, so the front carries no knobs (and no Fender badge — kept simple).
-  if (/^BBRK/i.test(lab || "")) {
+  if (variant === "bassbreaker") {
     return (
       <g>
         {/* charcoal grey tolex cabinet (near-solid — kept simple) */}
@@ -239,7 +242,7 @@ export function AmpComboBody({
   // controls live on a top panel, so the front is just a framed grille. Render
   // it with the tweed layout but in black-panel colours (black tolex + silver
   // cloth, both driven by its blackface tone).
-  const cleanFront = isTweed || /^BJR$/i.test(lab || "");
+  const cleanFront = isTweed || variant === "bluesjr";
   if (cleanFront) {
     // Tweed combo (57 Deluxe, Blues Junior LTD, '59 Bassman …): lacquered
     // mustard-twill cabinet with a large oxblood grille inset behind a tweed
@@ -248,7 +251,6 @@ export function AmpComboBody({
     //   • default (57 Deluxe, BJR LTD): tall — thick top/bottom, thin sides.
     //   • '59 Bassman (4×10): thin top/bottom to match the sides.
     //   • Bassman TV (1×15): thick sides to match top/bottom (square-ish).
-    const L_ = lab || "";
     // chassis is 7..57; the grille sits inside a tweed frame. Margins (mx side,
     // mt top, mb bottom) vary by cabinet aspect:
     //   • default (57 Deluxe, BJR LTD): THIN left/right, THICK top/bottom.
@@ -257,11 +259,11 @@ export function AmpComboBody({
     let mx = 4,
       mt = 6,
       mb = 6;
-    if (/BASSTV|BASSMAN TV/i.test(L_)) {
+    if (variant === "bassman-tv") {
       mx = 8;
       mt = 8;
       mb = 8;
-    } else if (/59B|59 BASSMAN/i.test(L_)) {
+    } else if (variant === "bassman-59") {
       mx = 4;
       mt = 4;
       mb = 4;

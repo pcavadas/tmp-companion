@@ -136,9 +136,8 @@ describe("libraryScan — failure paths (#310)", () => {
     const { result } = renderHook(() => useCopyLibrary(true, null));
     await ensureLibraryScan();
     await vi.waitFor(() => {
-      expect(result.current.loaded).toBe(true);
+      expect(result.current.error).toBe("backup timed out");
     });
-    expect(result.current.error).toBe("backup timed out");
 
     // Its Retry re-runs the failed scan, and the error clears once it succeeds.
     vi.mocked(invoke).mockImplementation((cmd: string) => {

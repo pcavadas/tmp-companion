@@ -33,7 +33,6 @@ import type {
   SongRecord,
   SetlistRecord,
   SongSaveOutcome,
-  PresetScenes,
   SceneHandleRow,
   FsSceneContext,
   BackupReadResult,
@@ -393,13 +392,6 @@ export const readActivePreset = (): Promise<ActiveGraph> =>
  * null when the cache itself has no graph. */
 export const currentGraph = (): Promise<ActiveGraph | null> =>
   invoke("current_graph");
-
-/** One streamed row of the Level dialog's batch scene scan. `result` is null
- * when the slot read went unanswered (the row renders scanned-with-no-scenes). */
-export interface SceneScanItem {
-  list_index: number;
-  result: PresetScenes | null;
-}
 
 /** Presets two-phase load — read the WHOLE user library (every preset + its scenes)
  * from one device backup (~22 s). DEVICE READ, non-destructive, persists nothing

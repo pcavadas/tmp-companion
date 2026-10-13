@@ -51,8 +51,6 @@ describe("tokens — light-only set (README Part 1.1)", () => {
   it("preserves the repo's existing field names + severity model", () => {
     expect(light.mutedInk).toBe("#6b7280");
     expect(light.sevWarn).toBe("#b07d1c"); // amber
-    expect(light.err).toBe("#a7461f");
-    expect(light.err).toBe(light.warn); // Toast kind='err' === sevColor(t,'err')
   });
 
   it("microLabel is an uppercase mono style with the 0.14em kicker tracking", () => {
@@ -192,8 +190,8 @@ describe("Tag — the DS chip", () => {
   it("tone='accent' paints the accentSoft fill + accentDeep text", () => {
     under(<Tag tone="accent">Rhythm</Tag>);
     const el = screen.getByText("Rhythm");
-    // #a7461f → rgb(167, 70, 31); rgba(217,119,87,0.10) → contains 217, 119, 87.
-    expect(el.style.color).toBe("rgb(167, 70, 31)");
+    // jsdom normalizes the hex token to rgb(); rgba(217,119,87,0.10) → contains 217, 119, 87.
+    expect(el.style.color).toBe(toRgb(light.accentDeep));
     expect(el.style.background).toContain("217, 119, 87");
   });
 
@@ -289,3 +287,11 @@ describe("Dot", () => {
     expect(container.querySelector("span")?.style.width).toBe("12px");
   });
 });
+
+function toRgb(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return `rgb(${String(r)}, ${String(g)}, ${String(b)})`;
+}

@@ -174,8 +174,6 @@ export function InstrumentRow({
             ? t.sevWarn
             : t.good
           : t.sevWarn;
-  const dot = statusColor;
-  const subColor = statusColor;
 
   const sub =
     phase === "countdown"
@@ -212,7 +210,7 @@ export function InstrumentRow({
         gap: t.space7,
         padding: `${String(t.space5)}px ${String(t.space6)}px ${String(t.space5)}px ${String(t.space4)}px`,
         borderRadius: t.rCard,
-        border: `0.5px solid ${phase === "error" ? "rgba(167,70,31,0.4)" : t.hairline}`,
+        border: `0.5px solid ${phase === "error" ? t.warnBorderSoft : t.hairline}`,
         background: t.bg,
         marginBottom: t.space4,
         minHeight: 60,
@@ -233,7 +231,7 @@ export function InstrumentRow({
             width: 7,
             height: 7,
             borderRadius: t.rPill,
-            background: dot,
+            background: statusColor,
             flexShrink: 0,
           }}
         />
@@ -278,7 +276,7 @@ export function InstrumentRow({
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
-              color: subColor,
+              color: statusColor,
             }}
           >
             {sub}

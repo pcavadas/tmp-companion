@@ -169,8 +169,8 @@ export function PlaceBlocks({
               fontFamily: t.sans,
               fontSize: t.fsLabel,
               color: t.sevWarn,
-              border: "0.5px solid rgba(176,125,28,0.4)",
-              background: "rgba(176,125,28,0.10)",
+              border: `0.5px solid ${t.sevWarnChipBorder}`,
+              background: t.sevWarnChipSoft,
               borderRadius: t.rPill,
               padding: `${String(t.space2)}px ${String(t.space5)}px`,
               cursor: "pointer",
@@ -341,5 +341,3 @@ export function PlaceBlocks({
     </div>
   );
 }
-
-export default PlaceBlocks;

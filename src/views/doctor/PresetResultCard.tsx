@@ -257,5 +257,3 @@ export function PresetResultCard({
     </div>
   );
 }
-
-export default PresetResultCard;

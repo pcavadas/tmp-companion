@@ -56,7 +56,7 @@ export function buildStyles(t: ThemeTokens) {
       background: t.bg,
       border: `0.5px solid ${t.hairlineStrong}`,
       borderRadius: t.rCard,
-      boxShadow: "0 16px 38px -14px rgba(15,17,21,0.28)",
+      boxShadow: t.shadowMenu,
       padding: t.space2,
       maxHeight: 280,
       overflowY: "auto",

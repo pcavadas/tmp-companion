@@ -1,7 +1,12 @@
 // src/ui/blockart/ampsHeadModern.tsx — Vox/Bassbreaker, Friedman, and the standard
 // Fender/Marshall/boutique amp-HEAD bodies, split from ./ampsHeadBoutique so each
 // file stays ≤500 lines. Dispatched by AmpBody. Shared data/helpers in ./shared/./parts.
-import { ptrColor, evhAccentColor, type PedalTone } from "./shared";
+import {
+  ptrColor,
+  evhAccentColor,
+  type ArtVariant,
+  type PedalTone,
+} from "./shared";
 import { GrilleCloth, ChassisBody, AluGradient } from "./parts";
 
 // Vox AC30 head + Fender Bassbreaker head: NO front control panel — the head is
@@ -13,15 +18,15 @@ export function AmpHeadVoxBbrk({
   t,
   edge,
   uid,
-  lab,
+  variant,
 }: {
   c: PedalTone;
   t: string;
   edge: string;
   uid: string;
-  lab: string;
+  variant?: ArtVariant;
 }) {
-  const bbrk = /^BBRK/i.test(lab);
+  const bbrk = variant === "bassbreaker";
   return (
     <g>
       <ChassisBody
@@ -199,13 +204,13 @@ export function AmpHeadDefault({
   t,
   edge,
   uid,
-  lab,
+  variant,
 }: {
   c: PedalTone;
   t: string;
   edge: string;
   uid: string;
-  lab: string;
+  variant?: ArtVariant;
 }) {
   const fenderFace = t === "blackface" || t === "brownface" || t === "blonde";
   // Marshall-lineage heads (incl. the Silver Jubilee) carry a full-width grille on
@@ -219,7 +224,7 @@ export function AmpHeadDefault({
   // Diezel "Petrol" carries a brushed-aluminium control fascia (ref) — give it a
   // metal faceplate + dark knobs for contrast, vs the dark fascia the other
   // bottom-face boutique heads (Bogner Uber) wear.
-  const petrolFace = bottomFace && /PETROL|VH4/i.test(lab);
+  const petrolFace = bottomFace && variant === "diezel-petrol";
   const gid = "ph" + uid;
   const faceFill =
     c.panel ?? (petrolFace ? `url(#${gid})` : "rgba(0,0,0,0.32)");
@@ -266,9 +271,7 @@ export function AmpHeadDefault({
           cx="11.5"
           cy={knobY}
           r="1.4"
-          fill={
-            lab.toUpperCase().includes("5150") ? evhAccentColor(lab) : c.jewel
-          }
+          fill={variant?.startsWith("evh-") ? evhAccentColor(variant) : c.jewel}
         />
       )}
       {[0, 1, 2, 3, 4, 5].map((i) => (

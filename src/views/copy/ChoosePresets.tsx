@@ -407,5 +407,3 @@ function ScanReadingPill({ scanning }: ScanReadingPillProps) {
     />
   );
 }
-
-export default ChoosePresets;

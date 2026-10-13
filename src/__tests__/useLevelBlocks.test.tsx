@@ -131,7 +131,6 @@ describe("useLevelBlocks — instant-first with device fallback", () => {
           node_id: "amp",
           model_id: "ACD_TwinReverb65NoFx",
           parameter_id: "outputLevel",
-          value: 0.42,
           paramClass: "level_linear",
           headroom: "full",
         },
@@ -197,7 +196,6 @@ describe("useLevelBlocks — instant-first with device fallback", () => {
           node_id: "amp0",
           model_id: "ACD_TweedDeluxe",
           parameter_id: "outputLevel",
-          value: 0.7,
         },
       ]);
     }

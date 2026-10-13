@@ -1,11 +1,10 @@
 // src/ui/PresetOptionRow.tsx — one selectable option row in a setup list.
 //
-// Shared by the Leveling SetupBody and the Doctor DoctorSetup. Layout is a grid:
-// a 26px tick cell + a 1fr name/tag/sub cell + a caller-supplied TAIL of trailing
-// cells (`columns` = the grid-template-columns tail; `children` = the cells that
-// fill it — the Pick dropdowns). The tail column count and the children count must
-// stay in lockstep: Doctor passes 1 (one instrument Pick); SetupBody passes 3
-// (a footswitch-param cell + instrument + target Picks).
+// Used by the Doctor DoctorSetup (the Level wizard's SetupPage renders its own rows).
+// Layout is a grid: a 26px tick cell + a 1fr name/tag/sub cell + a caller-supplied
+// TAIL of trailing cells (`columns` = the grid-template-columns tail; `children` = the
+// cells that fill it — the Pick dropdowns). The tail column count and the children
+// count must stay in lockstep: Doctor passes 1 (one instrument Pick).
 //
 // The whole tick cell and name cell toggle bulk-pick (onTogglePick). Tag chips
 // route through the DS <Tag> (accent for FS/scene, neutral for BASE).
@@ -22,7 +21,7 @@ export interface PresetOptionRowProps {
   tag?: string;
   /** BASE row → neutral chip; otherwise accent. */
   isBase?: boolean;
-  /** Optional sub-line under the name (leveling only; Doctor omits it). */
+  /** Optional sub-line under the name (Doctor omits it). */
   sub?: string;
   isPicked: boolean;
   onTogglePick: () => void;
@@ -32,16 +31,6 @@ export interface PresetOptionRowProps {
   columns: string;
   /** The trailing cells — one grid item per `columns` track. */
   children: ReactNode;
-  /** e2e hook: the row's own IDENTITY key (`leveling.ts`'s `setupRowHookKey` —
-   *  `p<slot>` / `s<slot>:<sceneSlot>` / `f<slot>:sw<switch>`), so a spec can scope a
-   *  query to THIS row instead of colliding with every other row of the same preset
-   *  (`data-pick="target:<name>"` is shared across every selected row of one preset —
-   *  see SetupBody.tsx). DISTINCT from the row's React `key`/selection key
-   *  (`SetupOption.key`), which is positional within the levelable-filtered
-   *  footswitch list and must stay that way for `sel`/`rows` Map lookups — see
-   *  `setupRowHookKey`'s doc for why the hook can't share it. Optional: Doctor's
-   *  DoctorSetup call site has no leveling row keys and omits it. */
-  setupRowKey?: string;
 }
 
 export function PresetOptionRow({
@@ -54,12 +43,10 @@ export function PresetOptionRow({
   title,
   columns,
   children,
-  setupRowKey,
 }: PresetOptionRowProps) {
   const { t } = useTheme();
   return (
     <div
-      data-setup-row={setupRowKey}
       style={{
         display: "grid",
         gridTemplateColumns: `26px 1fr ${columns}`,
@@ -85,7 +72,7 @@ export function PresetOptionRow({
           <span
             style={{
               fontFamily: t.serif,
-              fontSize: 14,
+              fontSize: t.fsName2,
               color: t.ink,
               whiteSpace: "nowrap",
             }}
@@ -98,7 +85,7 @@ export function PresetOptionRow({
           <div
             style={{
               fontFamily: t.sans,
-              fontSize: 10.5,
+              fontSize: t.fsMeta,
               color: t.faint,
               marginTop: t.space1,
             }}

@@ -4,7 +4,7 @@
 // ./pedalsMotif{Drive,DynEq,Mod,Time,Pitch,Concept} (split to keep each file ≤500
 // lines); the full-custom enclosures live in ./pedalsSpecial. Shared data/helpers
 // (tones, cloth, chassis, speakers) live in ./shared.
-import type { PedalTone } from "./shared";
+import type { ArtVariant, PedalTone } from "./shared";
 import { GearPedalBody, LabBoostBody, GruntBoostBody } from "./pedalsSpecial";
 import { driveMotif } from "./pedalsMotifDrive";
 import { dynEqMotif } from "./pedalsMotifDynEq";
@@ -21,11 +21,11 @@ function pedalMotif(
   c: PedalTone,
   edge: string,
   jewel: string,
-  lab: string,
+  variant: ArtVariant | undefined,
   loopNum: string,
 ) {
   return (
-    driveMotif(g, c, edge, jewel, lab) ??
+    driveMotif(g, c, edge, jewel, variant) ??
     dynEqMotif(g, c, edge, jewel) ??
     modMotif(g, c, edge, jewel) ??
     timeMotif(g, c, edge, jewel) ??
@@ -38,13 +38,19 @@ export function PedalBody({
   c: cIn,
   g,
   lab,
+  variant,
   footswitch = "round",
   accent,
   panel,
+  uid,
 }: {
   c: PedalTone;
   g: string;
+  /** caption — read only for the FX-loop number an fxloop block prints. */
   lab: string;
+  variant?: ArtVariant;
+  /** per-instance id prefix for the clip-path ids this body defines. */
+  uid: string;
   footswitch?: "plate" | "metal" | "round";
   /** Fender reverb-chassis accent (footswitch colour). When present the pedal
    *  renders the cream chassis and the screen icon is drawn in this colour. */
@@ -61,25 +67,22 @@ export function PedalBody({
   const jewel = "#f5a986";
   // Glooper (EHX-style glitch looper) wears a holographic/iridescent finish — a
   // wash of shifting greens/blues/purples over its dark body.
-  const isGloop = /GLOOP/i.test(lab);
+  const isGloop = variant === "glooper";
   // Footswitch well — a recessed darker rounded rect behind the round footswitch.
   // EVERY round-footswitch pedal gets one (for consistency); it is SOLID BLACK on
   // the few whose ref has a black footswitch panel (Big Muff, Electric Mistress,
   // Small Stone, Memory Man / Memory Man Stereo), else a translucent recess. The
   // treadle (plate) and TS808 (metal) footswitches and the round-form (roundfuzz)
   // fuzz faces never reach the round branch, so they get no well.
-  // `lab` is the normalized short (normalizeShort turns "BMP-NYC" into "BMP NYC"),
-  // so match the de-hyphenated forms. "BMP NYC" is Big Fuzz only — the other Big
-  // Muff variants (BMP RUSS / BMP RH) are not in the black-well list.
-  const wellFill = /BMP NYC|MISTRESS|SMSTONE|DMM/i.test(lab)
-    ? "#1a1a1c"
-    : "rgba(0,0,0,0.22)";
+  // The black-well pedals carry the "black-well" art variant (Big Fuzz is the only
+  // Big Muff among them — the Green Russian / Ram's Head are not).
+  const wellFill = variant === "black-well" ? "#1a1a1c" : "rgba(0,0,0,0.22)";
   // 1.8 gear pedals + boosts → full-custom enclosures (own LED + footswitch).
-  if (g === "od3") return <GearPedalBody c={c} lab={lab} />;
+  if (g === "od3") return <GearPedalBody c={c} variant={variant} />;
   if (g === "labboost") return <LabBoostBody c={c} />;
   if (g === "gruntboost") return <GruntBoostBody c={c} />;
   // motif drawn in the top control zone (~y 8..30)
-  const motif = pedalMotif(g, c, edge, jewel, lab, loopNum);
+  const motif = pedalMotif(g, c, edge, jewel, variant, loopNum);
   if (accent) {
     // Fender reverb chassis (8 models): cream body, a recessed screen holding the
     // reverb-type icon (the motif, in the accent colour), and a coloured footswitch
@@ -148,11 +151,11 @@ export function PedalBody({
       {isGloop && (
         <>
           <defs>
-            <clipPath id="gloopclip">
+            <clipPath id={`${uid}gloop`}>
               <rect x="11" y="4" width="42" height="56" rx="6" />
             </clipPath>
           </defs>
-          <g clipPath="url(#gloopclip)">
+          <g clipPath={`url(#${uid}gloop)`}>
             <ellipse
               cx="20"
               cy="16"

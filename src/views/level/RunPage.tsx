@@ -1,5 +1,5 @@
 // src/views/level/RunPage.tsx — the leveling wizard's "Level" (run) stage (design
-// handoff 1a: full window, one row per preset). Replaces `overlays/RunBody.tsx`.
+// handoff 1a: full window, one row per preset).
 //
 // Presentational: `levelRunStore` drives the sequence. The list groups by PRESET
 // (`PresetGroupRow`) — the preset currently being worked on opens itself
@@ -28,7 +28,6 @@ import {
   groupItemsBySlot,
   hasInstrument,
   offbranchStatus,
-  resolvedTargetLufs,
   type RunItem,
 } from "./leveling";
 
@@ -104,7 +103,7 @@ export function RunPage({
     return stopped ? "—" : "waiting";
   };
   const targetText = (it: RunItem): string =>
-    `${it.targetName} · ${fmtLufs(resolvedTargetLufs(it, targetLufsByName))}`;
+    `${it.targetName} · ${fmtLufs(targetLufsByName(it.targetName))}`;
 
   const headerTitle = stopping
     ? "Stopping…"
@@ -269,7 +268,7 @@ export function RunPage({
               note=""
               value={
                 allDone
-                  ? `${fmtLufs(resolvedTargetLufs(g.items[0], targetLufsByName))} LUFS`
+                  ? `${fmtLufs(targetLufsByName(g.items[0].targetName))} LUFS`
                   : running
                     ? ""
                     : "waiting"
@@ -402,5 +401,3 @@ export function RunPage({
     </LevelPage>
   );
 }
-
-export default RunPage;

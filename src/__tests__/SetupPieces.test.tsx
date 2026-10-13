@@ -1,6 +1,6 @@
-// Behavior tests for the shared setup-list pieces (DS extraction from the Level
-// SetupBody + Doctor DoctorSetup): SetupGroupHeader, PresetOptionRow, ApplyToBar,
-// and the usePickedRows hook. Real timers (RTL fake-timer hang caveat).
+// Behavior tests for the setup-list DS pieces behind the Doctor DoctorSetup:
+// SetupGroupHeader, PresetOptionRow, ApplyToBar, and the usePickedRows hook. Real
+// timers (RTL fake-timer hang caveat).
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";

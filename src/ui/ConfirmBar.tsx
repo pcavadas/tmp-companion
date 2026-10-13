@@ -41,7 +41,9 @@ export function ConfirmBar({
         gap: t.space7,
       }}
     >
-      <span style={{ fontFamily: t.sans, fontSize: 12.5, color: t.ink2 }}>
+      <span
+        style={{ fontFamily: t.sans, fontSize: t.fsControl, color: t.ink2 }}
+      >
         {message}
       </span>
       <div style={{ display: "flex", gap: t.space4 }}>

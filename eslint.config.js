@@ -172,20 +172,43 @@ export default tseslint.config(
   },
 
   {
-    // blockArt.ts must NOT import catalog.ts: that closes a module-init cycle
-    // blockArt → catalog → cpu → blockArt (a TDZ "cannot access before
-    // initialization" crash). Cross-cutting form+art decisions resolve at the
-    // view call site (which may import both), never inside a core model module.
-    files: ["src/models/blockArt.ts"],
+    // The block-art modules must NOT import catalog.ts or cpu.ts (catalog imports
+    // cpu). That edge once closed the module-init cycle blockArt → catalog → cpu →
+    // blockArt (a TDZ "cannot access before initialization" crash), and it would
+    // pull the catalog into every art lookup. The id-suffix rule all three need
+    // lives in the zero-import `./deviceId` leaf instead. Cross-cutting form+art
+    // decisions resolve at the view call site (which may import both), never
+    // inside a core model module. (No import plugin is a dependency, so this is an
+    // explicit pattern rather than `import/no-cycle`.)
+    files: ["src/models/blockArt.ts", "src/models/blockArtCatalog/**/*.ts"],
     rules: {
       "@typescript-eslint/no-restricted-imports": [
         "error",
         {
-          paths: [
+          patterns: [
             {
-              name: "./catalog",
+              regex: "(^|/)(catalog|cpu)(\\.ts)?$",
               message:
-                "blockArt.ts must not import catalog.ts — it closes the blockArt→catalog→cpu→blockArt module-init cycle (a TDZ crash). Resolve form+art at the view call site.",
+                "block-art modules must not import catalog or cpu — that closes the blockArt→catalog→cpu→blockArt module-init cycle (a TDZ crash). Import the id rule from ./deviceId; resolve form+art at the view call site.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // deviceId.ts is the zero-import leaf cpu, catalog and blockArt all share — any
+    // import here can reintroduce the cycle it exists to break.
+    files: ["src/models/deviceId.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex: ".",
+              message:
+                "deviceId.ts must stay a zero-import leaf (cpu, catalog and blockArt all import it).",
             },
           ],
         },

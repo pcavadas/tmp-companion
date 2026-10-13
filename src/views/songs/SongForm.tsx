@@ -43,7 +43,7 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
         borderRadius: t.rLg,
         padding: `${String(t.space4)}px ${String(t.space4)}px ${String(t.space4)}px ${String(t.space6)}px`,
         background: t.bg,
-        boxShadow: "0 1px 0 rgba(217,119,87,0.08)",
+        boxShadow: t.shadowAccentEdge,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: t.space3 }}>

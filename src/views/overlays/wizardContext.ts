@@ -6,7 +6,7 @@
 export type Stage = "closed" | "setup" | "run" | "summary";
 
 // DialogCardCtx now lives in the DS Dialog (every <Dialog> provides it); re-exported here
-// so existing importers (Pick, FsParamPick, LevelSetupPage) keep their import path.
+// so existing importers (Pick, FlatLevelPick, LevelPage, DoctorSetup) keep their import path.
 export { DialogCardCtx } from "../../ui/dialogContext";
 
 /** One node on the header step rail. */

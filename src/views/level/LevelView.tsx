@@ -218,8 +218,7 @@ export function LevelView({
     }
   }, []);
 
-  // Stable identity so the sheet's Escape-key effect (deps [onClose]) subscribes
-  // once, not on every LevelView render (live-device pushes re-render frequently).
+  // The help sheet's close handler (the sheet closes only by click — no key handling).
   const closeHelp = useCallback(() => {
     setHelpOpen(false);
   }, []);
@@ -389,5 +388,3 @@ export function LevelView({
     </div>
   );
 }
-
-export default LevelView;

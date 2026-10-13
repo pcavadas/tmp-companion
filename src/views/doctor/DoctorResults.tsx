@@ -444,5 +444,3 @@ export function DoctorResults({
     </ApplyLockContext.Provider>
   );
 }
-
-export default DoctorResults;

@@ -1,7 +1,7 @@
 // src/views/level/blockLevelGroups.ts — the pure candidate-grouping/derivation logic
-// behind `BlockLevelPick`'s two-dropdown leveling-handle picker (D2/Part C). Split out
-// of `BlockLevelPick.tsx` so the component stays JSX-only: everything here operates on
-// plain data (no React, no DOM) and is unit-testable without rendering anything.
+// behind `FlatLevelPick`'s leveling-handle picker and `SetupPage`'s auto-pick. Kept out
+// of the components so they stay JSX-only: everything here operates on plain data (no
+// React, no DOM) and is unit-testable without rendering anything.
 //
 //   • `groupByBlock` — the flat candidate list (`list_level_blocks` /
 //     `list_scene_level_handles`'s `allCandidates` / a footswitch's own `level_params`)
@@ -16,10 +16,6 @@
 //     every candidate is disabled (Scene's `shared_with_base`/`unknown` scope) must not
 //     blank the "Recommended" tag for the whole list — it falls through to the next
 //     block that actually has something pickable.
-//   • `resolveHandle` — the DANGER-rule guard (`Pick`/`BlockPick` trap): resolves a
-//     stored handle against the (resolved) candidate grouping into `blockStale` (the
-//     stored BLOCK isn't offered at all) / `paramStale` (the block is present, the
-//     stored PARAM isn't). Never falls back to the pseudo-option or `blocks[0]`.
 
 import type { ParamClass } from "../../lib/types";
 
@@ -51,8 +47,8 @@ export interface BlockLevelHandle {
   parameterId: string;
 }
 
-/** `groupId:nodeId` — the block-identity key threaded through grouping, the stale
- *  guard, and the block dropdown's `selected`/`Recommended` checks. */
+/** `groupId:nodeId` — the block-identity key threaded through grouping and the
+ *  picker's `selected`/`Recommended` checks. */
 export function blockKeyOf(c: { groupId: string; nodeId: string }): string {
   return `${c.groupId}:${c.nodeId}`;
 }
@@ -66,21 +62,10 @@ function rank(c: BlockLevelCandidate): number {
   return 2;
 }
 
-/** Narrows to the `disabled: true` arm — `Array.prototype.every` on the plain
- *  `c.disabled === true` predicate returns a `boolean`, not a narrowed element type,
- *  so reading `.disabledTitle` off a block's first candidate needs a `find` with this
- *  type-predicate instead (a block's disabled reason IS defined whenever it's
- *  disabled — the producer never emits one without the other). */
-export function isDisabledCandidate(
-  c: BlockLevelCandidate,
-): c is BlockLevelCandidate & { disabled: true; disabledTitle: string } {
-  return c.disabled === true;
-}
-
 /** A block's first (best-ranked) candidate — defensive because this tsconfig lacks
  *  `noUncheckedIndexedAccess`, even though `groupByBlock` never emits an empty group.
  *  Shared by every caller that would otherwise re-spell the same `length > 0 ? …`
- *  guard (the auto-pick and the block-row render, both in `BlockLevelPick.tsx`). */
+ *  guard (`SetupPage`'s auto-pick). */
 export function groupHead(
   group: BlockLevelCandidate[],
 ): BlockLevelCandidate | undefined {
@@ -132,47 +117,4 @@ export function recommendedBlock(
     if (best) return best;
   }
   return null;
-}
-
-export interface ResolvedHandle {
-  /** The stored handle's block-key (`null` for the pseudo pick / a not-yet-seeded
-   *  footswitch row). */
-  handleBlockKey: string | null;
-  /** The block group holding the stored handle, or `undefined` when that block isn't
-   *  offered by the (resolved) candidate list at all. */
-  blockGroup: BlockLevelCandidate[] | undefined;
-  /** The stored handle's own candidate within `blockGroup`, or `undefined` when the
-   *  block is present but the stored param isn't among its candidates any more. */
-  matched: BlockLevelCandidate | undefined;
-  /** DANGER-rule guard, block arm: the stored handle's BLOCK isn't in the (resolved)
-   *  candidate list at all — never silently fall back to the pseudo-option or
-   *  `blocks[0]`. Gated on `resolved` so a not-yet-fetched list doesn't flag a
-   *  perfectly valid carried-forward handle as stale. */
-  blockStale: boolean;
-  /** DANGER-rule guard, param arm: the block IS present but the stored param isn't
-   *  among its candidates any more. */
-  paramStale: boolean;
-}
-
-/** Resolves a stored `handle` against the block grouping — the DANGER-rule guard
- *  (`Pick`/`BlockPick` trap) that a stale stored value must render verbatim + a
- *  warning, never silently fall back. */
-export function resolveHandle(
-  blocks: BlockLevelCandidate[][],
-  handle: BlockLevelHandle | null,
-  resolved: boolean,
-): ResolvedHandle {
-  const handleBlockKey = handle ? blockKeyOf(handle) : null;
-  const blockGroup = handleBlockKey
-    ? blocks.find((g) => {
-        const first = groupHead(g);
-        return first != null && blockKeyOf(first) === handleBlockKey;
-      })
-    : undefined;
-  const matched = blockGroup?.find(
-    (c) => c.parameterId === handle?.parameterId,
-  );
-  const blockStale = handle != null && resolved && blockGroup == null;
-  const paramStale = blockGroup != null && matched == null;
-  return { handleBlockKey, blockGroup, matched, blockStale, paramStale };
 }

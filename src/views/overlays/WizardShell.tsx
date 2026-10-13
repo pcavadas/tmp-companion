@@ -25,7 +25,7 @@ import { WIZ_STEPS, type Stage, type RailStep } from "./wizardContext";
 export type { Stage, RailStep };
 
 // ---- step rail (header) ----------------------------------------------------
-// Exported so the full-page LevelSetupPage reuses the identical rail. `steps`
+// Exported so the full-page Level wizard (`LevelPage`) reuses the identical rail. `steps`
 // defaults to the leveling rail.
 export function StepRail({
   current,
@@ -106,7 +106,7 @@ export function StepRail({
 }
 
 // ---- rail header (the bgAlt bar that frames the StepRail) -------------------
-// Shared by the modal WizardShell and the full-page LevelSetupPage so the header
+// Shared by the modal WizardShell and the full-page `LevelPage` so the header
 // styling lives in ONE place; only the outer container (centered modal vs opaque
 // inset:0 page) differs between the two.
 export function WizardHeader({

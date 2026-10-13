@@ -154,14 +154,6 @@ describe("RunPage grouped rows", () => {
     expect(screen.getByText("Stage · −26.0")).toBeInTheDocument();
   });
 
-  it("prefers a row's targetOverrideLufs over the named target's value", () => {
-    // The reachable-common-target fallback overrides a row; the cell must state what the
-    // row is ACTUALLY aiming at, not the store's value for the target's name.
-    const overridden: RunItem = { ...activeItem, targetOverrideLufs: -29.4 };
-    render(runPage(null, [overridden]));
-    expect(screen.getByText("Stage · −29.4")).toBeInTheDocument();
-  });
-
   // The Result cell is an if-chain whose fallthrough is "done", so a miss state with no
   // branch of its own reports as LEVELED — the reason unconverged needs one here too.
   it("states an unconverged row as off target, not done and not clamped", async () => {

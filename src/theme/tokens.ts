@@ -14,9 +14,9 @@ import type { CSSProperties } from "react";
 // ---------------------------------------------------------------------------
 // Font families. Three Google-Fonts families.
 // ---------------------------------------------------------------------------
-export const FONT_SERIF = "'Source Serif 4', Georgia, serif";
+const FONT_SERIF = "'Source Serif 4', Georgia, serif";
 export const FONT_SANS = "'Inter', system-ui, sans-serif";
-export const FONT_MONO = "'JetBrains Mono', ui-monospace, monospace";
+const FONT_MONO = "'JetBrains Mono', ui-monospace, monospace";
 
 // ---------------------------------------------------------------------------
 // Spacing scale — the Tailwind ramp (2px steps to 16, 4px to 32, then 48). The
@@ -40,15 +40,13 @@ export const spacing = {
   space11: 28,
   space12: 32,
   space13: 48,
-} as const;
+};
 
 // ---------------------------------------------------------------------------
 // Type scale (README Part 1.2). Theme-invariant px sizes.
 // ---------------------------------------------------------------------------
 export const typeScale = {
-  fsDisplay: 28, // hero numbers
   fsTitle: 24, // page header (serif)
-  fsSheetLg: 22, // overlay-sheet icon icon (large)
   fsSheet: 21, // overlay-sheet icon icon
   fsSubhead: 19, // hero name (ActiveSignalChainView)
   fsCard: 16, // models-card / medium heading
@@ -65,7 +63,7 @@ export const typeScale = {
   fsMicro: 9.5, // uppercase mono kickers
   fsMicro2: 9, // compact micro kicker
   fsTag: 8.5, // tiny badge text
-} as const;
+};
 
 // ---------------------------------------------------------------------------
 // Corner radii (README Part 1.3). Theme-invariant px.
@@ -77,11 +75,10 @@ export const radii = {
   rMd: 7, // buttons, inputs, fields
   rCard: 8, // some cards / popovers (distinct from rLg — do not fold)
   rLg: 9, // cards, rows, popovers, modals (8–9)
-  rWin: 11, // window chrome
   rPopover: 12, // large popovers / pickers
   rDialog: 14, // the DS Dialog card (every modal/overlay)
   rPill: 999, // pill toggles, switches
-} as const;
+};
 
 // ---------------------------------------------------------------------------
 // Letter-spacing scale (uppercase mono kickers + tracked labels). Unitful
@@ -90,191 +87,114 @@ export const radii = {
 export const letterSpacing = {
   lsTight: "-0.01em", // page titles (negative tracking)
   lsMeta: "0.02em", // secondary metadata / counts
-  lsCaption: "0.05em", // scene-drawer capacity caption
   lsTag: "0.08em", // badges / tags
   lsLabel: "0.1em", // standard uppercase mono label
   lsWide: "0.12em", // popover headers / setlist labels
   lsKicker: "0.14em", // section kicker (microLabel)
-} as const;
+};
 
-/** The full set of keys carried by the (single, light) token object. */
-export interface ThemeTokens {
+// ---------------------------------------------------------------------------
+// The single light token set — README Part 1.1 / prototype `APP`. `ThemeTokens`
+// is DERIVED from this object (below), so a key is declared exactly once: add it
+// here with its doc comment and every `t.<key>` reader types itself.
+// ---------------------------------------------------------------------------
+export const light = {
   // core palette
-  bg: string;
-  bgAlt: string; // README `alt`
-  ink: string;
+  bg: "#ffffff",
+  /** README `alt`. */
+  bgAlt: "#f6f7f9",
+  ink: "#0f1115",
   /** secondary text — between `ink` and `mutedInk`. */
-  ink2: string;
-  mutedInk: string; // README `muted`
+  ink2: "#33373f",
+  /** README `muted`. */
+  mutedInk: "#6b7280",
   /** quaternary text / icon strokes — fainter than `mutedInk`. */
-  faint: string;
+  faint: "#9aa0a9",
   /** recessed surface (rare inset wells). */
-  inset: string;
+  inset: "#eef0f3",
   /** text/icon color on an ink fill (== bg, so primary buttons invert). */
-  onInk: string;
-  hairline: string; // README `hair`
-  hairlineStrong: string; // README `hairStrong`
-  accent: string;
+  onInk: "#ffffff",
+  /** white glyph/text/ring on an `accent` (terracotta) fill — checkbox tick,
+   *  active facet chip, the Copy edit badge. */
+  onAccent: "#ffffff",
+  /** sticky section header over a scrolling wall — a near-opaque white wash
+   *  (paired with a backdrop blur at the call site). */
+  bgFrost: "rgba(255,255,255,0.92)",
+  /** README `hair`. */
+  hairline: "rgba(15,17,21,0.09)",
+  /** README `hairStrong`. */
+  hairlineStrong: "rgba(15,17,21,0.18)",
+  /** terracotta. */
+  accent: "#d97757",
   /** deeper accent for accent-colored text / counts (vs `accent` for fills). */
-  accentDeep: string;
-  accentSoft: string;
+  accentDeep: "#a7461f",
+  accentSoft: "rgba(217,119,87,0.10)",
   /** terracotta SCENE-badge fill — a touch stronger than `accentSoft` so the live
    *  scene's ACTIVE badge reads distinctly (its border is `accentBorder`). */
-  accentBadgeSoft: string;
-  warn: string;
+  accentBadgeSoft: "rgba(217,119,87,0.14)",
+  warn: "#a7461f",
   /** destructive/error chip background. */
-  warnSoft: string;
+  warnSoft: "rgba(167,70,31,0.08)",
   /** connected / healthy / ACTIVE / measured / calibrated (green). */
-  good: string;
+  good: "#3f7d4e",
   /** green chip background (ACTIVE badge / measured pill). README `okSoft`. */
-  goodSoft: string;
-  titlebar: string;
+  goodSoft: "rgba(63,125,78,0.10)",
+  titlebar: "#ffffff",
   /** selected-row tint (non-active). */
-  rowSel: string;
+  rowSel: "rgba(15,17,21,0.035)",
   /** menu-item / row hover tint. */
-  hover: string;
+  hover: "rgba(15,17,21,0.05)",
   /** slider track. */
-  track: string;
-  /** slider knob fill. */
-  knob: string;
+  track: "rgba(15,17,21,0.07)",
+  /** slider knob fill (also the `Toggle` switch knob). */
+  knob: "#ffffff",
   /** slider knob ring. */
-  knobRing: string;
+  knobRing: "rgba(15,17,21,0.25)",
+  /** `Toggle` switch track in the OFF state (ON fills with `accent`). */
+  toggleTrack: "rgba(15,17,21,0.14)",
   /** menu/popover drop-shadow base color. */
-  shadow: string;
+  shadow: "rgba(15,17,21,0.28)",
+
   // chip/pill borders (soft tints of the status colors, mirroring canon rgba)
   /** green badge border (ACTIVE / measured). */
-  goodBorder: string;
+  goodBorder: "rgba(63,125,78,0.4)",
   /** terracotta error/danger badge border. */
-  warnBorder: string;
+  warnBorder: "rgba(167,70,31,0.45)",
+  /** lighter terracotta error border (an instrument row in its error phase). */
+  warnBorderSoft: "rgba(167,70,31,0.4)",
   /** accent (terracotta) border for accent-tinted pills. */
-  accentBorder: string;
+  accentBorder: "rgba(217,119,87,0.45)",
+  /** lighter accent border (the Doctor shared-block caption). */
+  accentBorderSoft: "rgba(217,119,87,0.3)",
   /** amber "measuring" pill border + soft background. */
-  sevWarnBorder: string;
-  sevWarnSoft: string;
-  /** destructive-confirm red (distinct from `warn` terracotta) — border + soft bg. */
-  dangerBorder: string;
-  /** stronger danger border (modal panel edge). */
-  dangerBorderStrong: string;
-  dangerSoft: string;
+  sevWarnBorder: "rgba(176,125,28,0.5)",
+  sevWarnSoft: "rgba(176,125,28,0.08)",
+  /** amber filter-chip border + fill (Copy's "only over budget" toggle). */
+  sevWarnChipBorder: "rgba(176,125,28,0.4)",
+  sevWarnChipSoft: "rgba(176,125,28,0.10)",
   /** recording indicator red (off-palette, audio-feedback semantics) + soft bg —
    *  also the Toast "error" status color (same true-failure red, no need for a
    *  second token). */
-  record: string;
-  recordSoft: string;
-  /** model badge foregrounds (stereo / convolution). */
-  badgeStereo: string;
-  badgeConv: string;
-  // font families
-  serif: string;
-  sans: string;
-  mono: string;
-  // type scale (px)
-  fsDisplay: number;
-  fsTitle: number;
-  fsSheetLg: number;
-  fsSheet: number;
-  fsSubhead: number;
-  fsCard: number;
-  fsName: number;
-  fsName2: number;
-  fsBody2: number;
-  fsBody: number;
-  fsUi: number;
-  fsControl: number;
-  fsLabel: number;
-  fsData: number;
-  fsMeta: number;
-  fsData2: number;
-  fsMicro: number;
-  fsMicro2: number;
-  fsTag: number;
-  // spacing scale (Tailwind ramp; px in the `spacing` const comments)
-  space1: number;
-  space2: number;
-  space3: number;
-  space4: number;
-  space5: number;
-  space6: number;
-  space7: number;
-  space8: number;
-  space9: number;
-  space10: number;
-  space11: number;
-  space12: number;
-  space13: number;
-  // corner radii (px)
-  rSm: number;
-  rMenuItem: number;
-  rBtn: number;
-  rMd: number;
-  rCard: number;
-  rLg: number;
-  rWin: number;
-  rPopover: number;
-  rDialog: number;
-  rPill: number;
-  // letter-spacing scale
-  lsTight: string;
-  lsMeta: string;
-  lsCaption: string;
-  lsTag: string;
-  lsLabel: string;
-  lsWide: string;
-  lsKicker: string;
-  // elevation
-  shadowWin: string;
-  shadowModal: string;
-  scrim: string;
-  // severity colors
-  err: string; // == warn terracotta
-  sevWarn: string; // amber, distinct from err
-  info: string; // == mutedInk
-  ok: string; // == accent (severity "ok"); green status uses `good`/`goodSoft`
-}
-
-// ---------------------------------------------------------------------------
-// The single light token set — README Part 1.1 / prototype `APP`.
-// ---------------------------------------------------------------------------
-export const light: ThemeTokens = {
-  bg: "#ffffff",
-  bgAlt: "#f6f7f9", // alt
-  ink: "#0f1115",
-  ink2: "#33373f",
-  mutedInk: "#6b7280", // muted
-  faint: "#9aa0a9",
-  inset: "#eef0f3",
-  onInk: "#ffffff", // == bg
-  hairline: "rgba(15,17,21,0.09)", // hair
-  hairlineStrong: "rgba(15,17,21,0.18)", // hairStrong
-  accent: "#d97757", // terracotta
-  accentDeep: "#a7461f",
-  accentSoft: "rgba(217,119,87,0.10)",
-  accentBadgeSoft: "rgba(217,119,87,0.14)",
-  warn: "#a7461f",
-  warnSoft: "rgba(167,70,31,0.08)",
-  good: "#3f7d4e", // green
-  goodSoft: "rgba(63,125,78,0.10)", // okSoft
-  titlebar: "#ffffff",
-  rowSel: "rgba(15,17,21,0.035)",
-  hover: "rgba(15,17,21,0.05)",
-  track: "rgba(15,17,21,0.07)",
-  knob: "#ffffff",
-  knobRing: "rgba(15,17,21,0.25)",
-  shadow: "rgba(15,17,21,0.28)",
-
-  goodBorder: "rgba(63,125,78,0.4)",
-  warnBorder: "rgba(167,70,31,0.45)",
-  accentBorder: "rgba(217,119,87,0.45)",
-  sevWarnBorder: "rgba(176,125,28,0.5)",
-  sevWarnSoft: "rgba(176,125,28,0.08)",
-  dangerBorder: "rgba(180,40,40,0.4)",
-  dangerBorderStrong: "rgba(180,40,40,0.55)",
-  dangerSoft: "rgba(180,40,40,0.07)",
   record: "#c0392b",
   recordSoft: "rgba(192,57,43,0.16)",
+  /** model badge foregrounds (stereo / convolution). */
   badgeStereo: "#2f6c98",
   badgeConv: "#6a4ba0",
 
+  // signal-chain strip (SignalChainView)
+  /** strip wire / bracket / endpoint ink. */
+  stripWire: "rgba(15,17,21,0.34)",
+  /** skeleton strip ink + an interactive (Copy) tile's idle border. */
+  stripGhost: "rgba(15,17,21,0.12)",
+  /** strip caption ink (block / endpoint / diamond labels). */
+  stripInk: "#5b554a",
+  /** a SELECTED Copy tile's caption ink. */
+  stripInkSel: "#a5421b",
+  /** a CHANGED (added/replaced) Copy tile's border + fill. */
+  stripChangedBorder: "rgba(217,119,87,0.55)",
+  stripChangedSoft: "rgba(217,119,87,0.06)",
+
+  // font families
   serif: FONT_SERIF,
   sans: FONT_SANS,
   mono: FONT_MONO,
@@ -284,19 +204,29 @@ export const light: ThemeTokens = {
   ...radii,
   ...letterSpacing,
 
-  shadowWin:
-    "0 0 0 0.5px rgba(15,17,21,0.16), 0 28px 70px -24px rgba(15,17,21,0.32)",
+  // elevation
   shadowModal: "0 40px 80px -16px rgba(15,17,21,0.28)",
+  /** the scrollable dropdown-menu card (`styles.menuCard`) — lighter and closer
+   *  than `shadowModal`. */
+  shadowMenu: "0 16px 38px -14px rgba(15,17,21,0.28)",
+  /** the `Toggle` switch knob. */
+  shadowKnob: "0 1px 3px rgba(0,0,0,0.25)",
+  /** a small floating badge (the Copy tile's edit badge). */
+  shadowBadge: "0 1px 2px rgba(15,17,21,0.2)",
+  /** the accent-bordered edit card's 1px terracotta under-edge (SongForm). */
+  shadowAccentEdge: "0 1px 0 rgba(217,119,87,0.08)",
+  /** block-art drop shadow on a signal-chain strip tile (a CSS `filter`). */
+  dropShadowStripArt: "drop-shadow(0 2px 3px rgba(15,17,21,0.18))",
   scrim: "rgba(15,17,21,0.32)",
 
-  err: "#a7461f", // == warn
-  sevWarn: "#b07d1c", // amber
-  info: "#6b7280", // == mutedInk
-  ok: "#d97757", // == accent (severity)
-};
+  // severity colors
+  /** amber, distinct from `warn` terracotta. */
+  sevWarn: "#b07d1c",
+} satisfies Record<string, string | number>;
 
-/** Back-compat alias — some imports use `lightTokens`. */
-export const lightTokens = light;
+/** The full set of keys carried by the (single, light) token object — derived
+ *  from `light`, so the type never re-lists a key by hand. */
+export type ThemeTokens = typeof light;
 
 /** Reusable uppercase mono micro-label (kicker) style. */
 export function microLabel(t: ThemeTokens): CSSProperties {

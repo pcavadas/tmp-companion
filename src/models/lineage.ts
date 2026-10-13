@@ -1,12 +1,14 @@
-// Maps a block FenderId (ACD_*) to its brand-lineage label for the Models
-// detail-bar `lineage` meta cell. The 1.7 block is AUTO-GENERATED — do not
+// Maps a block FenderId (ACD_*) to its brand-lineage label. Its one consumer is
+// the Catalog SEARCH haystack (`catalog.ts` folds it into each ModelRecord's
+// `search` string, so "vox" or "boss" finds those models); no view displays it —
+// the Models detail-bar lineage cell it once fed is gone. The 1.7 block is AUTO-GENERATED — do not
 // hand-edit it: the design prototype's per-block tone map (catalog-data2.jsx)
 // joined to TONE_LINEAGE (pedals.jsx), with 9 tones the prototype left unlabeled
 // resolved to their intended brand (from PEDAL_TONES comments + each block's real
 // unit). The source Model Guide JSON carries no lineage; this is the curated label
 // set. The firmware-1.8 block at the END is hand-added (one entry per 1.8 addition
 // id, derived from each model's real unit). Mics (bid===null) have no entry and
-// fall back to "—" at the call site (see catalog.ts).
+// fall back to "—" in catalog.ts.
 export const LINEAGE_BY_BID: Record<string, string> = {
   ACD_AC30Brilliant: "Vox",
   ACD_AC30Normal: "Vox",

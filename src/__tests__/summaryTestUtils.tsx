@@ -1,10 +1,13 @@
+// src/__tests__/summaryTestUtils.tsx — shared fixtures for the Summary* suites: a
+// saved-Base-row factory and a themed `SummaryPage` render helper.
+
 import { render } from "@testing-library/react";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { SummaryPage } from "../views/level/SummaryPage";
 import type { RunItem } from "../views/level/leveling";
 
-/** Shared saved-Base-row factory for the Summary* suites (one copy, two consumers). */
+/** Shared saved-Base-row factory for the Summary* suites. */
 export const base = (over: Partial<RunItem>): RunItem => ({
   key: "p3",
   slot: 3,

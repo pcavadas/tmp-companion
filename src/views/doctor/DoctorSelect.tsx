@@ -221,5 +221,3 @@ function DoctorSelectFooter({
     />
   );
 }
-
-export default DoctorSelect;

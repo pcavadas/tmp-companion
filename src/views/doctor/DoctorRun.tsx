@@ -8,7 +8,7 @@
 // (no CTA competing with the auto-advance) — a manual Stop is confirm-gated, flips
 // the footer to "finishing current item…" immediately (the in-flight ~9s capture
 // still finishes), and shows a clickable "See results" once it lands. Mirrors
-// RunBody.tsx's stopping/done footer states. A check that FAILS (the command
+// the Level wizard's RunPage stopping/done footer states. A check that FAILS (the command
 // rejected) says so here, with Try again / Back — it never reads as a Stop.
 
 import { useEffect, useState } from "react";
@@ -356,5 +356,3 @@ export function DoctorRun({
     </WizardShell>
   );
 }
-
-export default DoctorRun;

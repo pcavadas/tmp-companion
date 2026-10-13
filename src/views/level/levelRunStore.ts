@@ -37,10 +37,9 @@ import {
 import { onLevelingLufs } from "../../lib/liveEvents";
 import { errMsg } from "../../lib/format";
 import { MODELS } from "../../models/catalog";
-import { resolveDeviceId } from "../../models/blockArt";
+import { resolveDeviceId } from "../../models/deviceId";
 import {
   buildLevelJob,
-  resolvedTargetLufs,
   sortRunItems,
   type RunItem,
   type SetupOption,
@@ -571,23 +570,12 @@ export async function runLeveling(
       }
     };
 
-    // A row's effective target: the reachable-common-target override when set, else its
-    // named target. Used at every dispatch site so the fallback re-levels everything to
-    // one target while a normal run keeps each row's named pick. Shared with the run
-    // table's Target cell so the two can't drift.
-    const targetOf = (x: RunItem) => resolvedTargetLufs(x, targetLufsByName);
+    // A row's target: its named pick, resolved the same way the run table's Target cell does.
+    const targetOf = (x: RunItem) => targetLufsByName(x.targetName);
 
     for (let i = 0; i < total;) {
       if (isCancelled()) break;
       const it = work[i];
-      // The common-target fallback marks signal-less rows `skipRelevel` — leave their
-      // existing outcome as-is (no wasted re-capture) but keep them visible/counted.
-      if (it.skipRelevel) {
-        it.status = "result";
-        publish(i + 1, false, false);
-        i += 1;
-        continue;
-      }
       const profile = profileById(it.instId);
       const targetLufs = targetOf(it);
       const causeOf = causeFor(it.slot);
@@ -603,7 +591,6 @@ export async function runLeveling(
             it.outcome = outcomeOf(res);
             it.unverified = unverifiedOf(res);
             it.value = valueOf(res);
-            it.ceilingLufs = res.constant_c;
             it.truePeakDbtp = res.true_peak_dbtp;
             it.verifyByEar = causeOf(res);
             it.baseBoost = res.base_boost;
@@ -632,7 +619,6 @@ export async function runLeveling(
         let end = i + 1;
         while (
           end < total &&
-          !work[end].skipRelevel &&
           work[end].footswitch != null &&
           work[end].slot === it.slot &&
           work[end].instId === it.instId
@@ -691,7 +677,6 @@ export async function runLeveling(
       let end = i + 1;
       while (
         end < total &&
-        !work[end].skipRelevel &&
         isSceneItem(work[end]) &&
         work[end].slot === it.slot &&
         work[end].instId === it.instId

@@ -93,7 +93,6 @@ function toStripGraph(graph: ActiveGraph): StripGraph | null {
     route.lanes != null;
   return hasRoute
     ? {
-        template: graph.template,
         inputType: graph.input_type ?? undefined,
         outputType: graph.output_type ?? undefined,
         ...route,
@@ -398,5 +397,3 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
     </div>
   );
 }
-
-export default ActiveSignalChainView;

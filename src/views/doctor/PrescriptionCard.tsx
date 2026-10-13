@@ -62,7 +62,7 @@ function chainGraph(chain: DoctorChainPreview): StripGraph {
     model: b.model,
     change: b.added === true ? "added" : undefined,
   }));
-  return { template: chain.template, stages: [{ kind: "series", blocks }] };
+  return { stages: [{ kind: "series", blocks }] };
 }
 
 export interface PrescriptionCardProps {
@@ -477,5 +477,3 @@ export function PrescriptionCard({
     </div>
   );
 }
-
-export default PrescriptionCard;

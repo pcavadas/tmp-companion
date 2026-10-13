@@ -47,7 +47,6 @@ describe("SignalChainView — lane bracket geometry", () => {
       <ThemeProvider>
         <SignalChainView
           graph={{
-            template: "gtrSplit",
             stages: [{ kind: "series", blocks: [b("G1")] }],
             outputs: {
               a: { type: "out1", blocks: [b("G2"), b("G3")] },
@@ -76,7 +75,6 @@ describe("SignalChainView — lane bracket geometry", () => {
       <ThemeProvider>
         <SignalChainView
           graph={{
-            template: "gtrMicSeries",
             inputs: {
               a: { type: "guitar", blocks: [b("G1"), b("G2")] },
               b: { type: "mic", blocks: [b("M1")] },

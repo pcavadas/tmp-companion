@@ -173,5 +173,3 @@ export function SceneConsistency({
     </PresetFindingRow>
   );
 }
-
-export default SceneConsistency;

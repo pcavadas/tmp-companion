@@ -21,19 +21,11 @@ export interface PresetGroup<T> {
 
 export interface PresetGroupListProps {
   label: string;
-  action?: string;
-  onAction?: () => void;
   children: ReactNode;
 }
 
-/** The list frame: a mono kicker + optional accent action link, over a scrollable
- *  body of `PresetGroupRow`s. */
-export function PresetGroupList({
-  label,
-  action,
-  onAction,
-  children,
-}: PresetGroupListProps) {
+/** The list frame: a mono kicker over a scrollable body of `PresetGroupRow`s. */
+export function PresetGroupList({ label, children }: PresetGroupListProps) {
   const { t } = useTheme();
   return (
     <div
@@ -64,19 +56,6 @@ export function PresetGroupList({
         >
           {label}
         </span>
-        {action && (
-          <span
-            onClick={onAction}
-            style={{
-              fontFamily: t.sans,
-              fontSize: 12.5,
-              color: t.accentDeep,
-              cursor: "pointer",
-            }}
-          >
-            {action}
-          </span>
-        )}
       </div>
       <div
         style={{
@@ -215,5 +194,3 @@ export function PresetGroupRow({
     </div>
   );
 }
-
-export default PresetGroupRow;

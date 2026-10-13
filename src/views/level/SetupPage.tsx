@@ -1,6 +1,5 @@
 // src/views/level/SetupPage.tsx — the leveling wizard's "Set up" stage (design
-// handoff 1a: full window, one row per preset). Replaces `overlays/SetupBody.tsx` +
-// `overlays/LevelSetupPage.tsx`.
+// handoff 1a: full window, one row per preset).
 //
 // A bulk row (Guitar / How loud) writes every sound at once — no ticking; what gets
 // leveled was already chosen on the preset list, so a second selection model here
@@ -13,9 +12,8 @@
 // The leveling HANDLE (D2 — every row levels against one user-chosen block+param
 // control) keeps its full any-block/any-param capability via `FlatLevelPick`
 // (Base rows default to "Preset level", Scene rows to "Amp output level", Footswitch
-// rows always carry a real pick) — this is the one piece of Set up that ISN'T a
-// simplification of the pre-redesign `BlockLevelPick`, just a single-dropdown
-// re-render of the same candidate data.
+// rows always carry a real pick), over the candidate data `blockLevelGroups.ts`
+// groups and ranks.
 //
 // History (do not reintroduce): an earlier build put inclusion checkboxes here,
 // forcing users to pick sounds twice (list + dialog) — the list is the single place
@@ -1028,5 +1026,3 @@ export function SetupPage({
     </LevelPage>
   );
 }
-
-export default SetupPage;

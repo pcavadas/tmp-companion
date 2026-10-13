@@ -21,7 +21,7 @@ A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prot
 
 1. **Read the whole handoff first**, and enumerate every deliverable it lists.
 2. **Reconcile the design against the codebase before coding.** A handoff may **refine an already-shipped feature**, not add a new one.
-3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/green means GREEN, but this DS's `t.ok`/`t.okSoft` are the terracotta ACCENT — map green→`good`/`goodSoft`/`goodBorder`, amber→`sevWarn` (see Theme tokens below). A literal `t.ok` renders terracotta where green was intended — a silent visual bug.
+3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/`okSoft`/green means GREEN — map it to `good`/`goodSoft`/`goodBorder`, amber→`sevWarn`, error→`warn` (see Theme tokens below). There is no `t.ok`/`t.err`/`t.info` (the old terracotta/grey severity aliases were deleted as unused); never reintroduce an `ok` alias, which read terracotta where green was intended.
 4. **One component per file.** Split a multi-component prototype into focused files under the right feature folder, each re-exported from the folder's `index.ts`.
 5. **A Catalog-tab handoff that changes catalog DATA must keep the test oracles in sync.**
 

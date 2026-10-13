@@ -21,7 +21,6 @@ import type { PresetRow } from "../PresetList";
 import type {
   PresetEntry,
   Store,
-  Profile,
   SceneInfo,
   FootswitchInfo,
 } from "../../lib/types";
@@ -79,7 +78,7 @@ export function usePresetData(
   opts: UsePresetDataOptions = {},
 ) {
   const { footswitchRoster = "levelable" } = opts;
-  const { phase, setPhase, runLoad } = useDeviceLoad();
+  const { phase, runLoad } = useDeviceLoad();
   const [rows, setRows] = useState<PresetRow[]>([]);
   const [store, setStore] = useState<Store | null>(null);
   // SELECTION is a flat set of scene KEYS (Base = `p${slot}`, FS = `s${slot}:${i}`).
@@ -121,12 +120,6 @@ export function usePresetData(
     sceneInfoRef.current = sceneInfo;
     footswitchInfoRef.current = footswitchInfo;
   });
-
-  const profileByName = useCallback(
-    (name: string | null): Profile | null =>
-      name ? (store?.profiles.find((p) => p.name === name) ?? null) : null,
-    [store],
-  );
 
   // Case-insensitive lookup by target NAME (the leveling flow carries the display
   // name, e.g. "Crunch"); −27 is the conservative fallback when a name is unknown
@@ -250,11 +243,6 @@ export function usePresetData(
     });
   }, []);
 
-  const clearSelection = useCallback(() => {
-    setSel(new Set());
-    setPendingWhole(new Set());
-  }, []);
-
   // Drop just the given scene keys from the selection (BUG-4: the leveling flow prunes
   // exactly what a run leveled, leaving un-run sounds ticked).
   const deselectKeys = useCallback((keys: string[]) => {
@@ -295,7 +283,6 @@ export function usePresetData(
 
   return {
     phase,
-    setPhase,
     rows,
     store,
     sel,
@@ -321,10 +308,8 @@ export function usePresetData(
     togglePreset,
     toggleKey,
     toggleExpand,
-    clearSelection,
     deselectKeys,
     toggleAll,
-    profileByName,
     targetLufsByName,
     refresh,
   };

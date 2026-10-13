@@ -1,5 +1,5 @@
 // src/views/level/SummaryPage.tsx — the leveling wizard's "Summary" stage (design
-// handoff 1a: full window, one row per preset). Replaces `overlays/SummaryBody.tsx`.
+// handoff 1a: full window, one row per preset).
 //
 // Reports a run's outcome, grouped by PRESET (`PresetGroupRow`) — any preset that came
 // back with a problem opens itself (`useGroupOpen`); the user can override any row on
@@ -675,5 +675,3 @@ export function SummaryPage({
     </LevelPage>
   );
 }
-
-export default SummaryPage;

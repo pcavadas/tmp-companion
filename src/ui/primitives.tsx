@@ -538,10 +538,15 @@ export function Checkbox({ checked, indeterminate, disabled }: CheckboxProps) {
     >
       {disabled ? null : indeterminate ? (
         <span
-          style={{ width: 7, height: 2, borderRadius: 1, background: "#fff" }}
+          style={{
+            width: 7,
+            height: 2,
+            borderRadius: 1,
+            background: t.onAccent,
+          }}
         />
       ) : checked ? (
-        <Icon name="check" size={10} stroke="#fff" />
+        <Icon name="check" size={10} stroke={t.onAccent} />
       ) : null}
     </span>
   );
@@ -569,7 +574,7 @@ export function Toggle({ on, onClick }: ToggleProps) {
         height: 22,
         borderRadius: t.rPill,
         flexShrink: 0,
-        background: on ? t.accent : "rgba(15,17,21,0.14)",
+        background: on ? t.accent : t.toggleTrack,
         border: `0.5px solid ${on ? t.accent : t.hairlineStrong}`,
         position: "relative",
         cursor: "pointer",
@@ -584,8 +589,8 @@ export function Toggle({ on, onClick }: ToggleProps) {
           width: 17,
           height: 17,
           borderRadius: t.rPill,
-          background: "#fff",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+          background: t.knob,
+          boxShadow: t.shadowKnob,
           transition: "left 0.16s",
         }}
       />

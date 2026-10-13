@@ -10,9 +10,9 @@ import catalog from "./tmp-model-guide.json";
 import { DASH } from "../lib/format";
 import { LINEAGE_BY_BID } from "./lineage";
 import { cpuForBid } from "./cpu";
-// catalog→blockArt is the SAFE import direction (blockArt is a leaf importing nothing
-// back). The FORBIDDEN cycle is blockArt→catalog→cpu→blockArt — we never add that.
-import { resolveDeviceId } from "./blockArt";
+// The id-suffix rule lives in the zero-import `deviceId` leaf (shared with cpu and
+// blockArt), so catalog no longer reaches the block-art tables at all.
+import { resolveDeviceId } from "./deviceId";
 
 export type Channels = "mono" | "stereo";
 export type Form =

@@ -1,12 +1,8 @@
 // src/views/overlays/PickWarnNote.tsx — a shared sub-line shape: warn-tri icon +
-// message. Moved out of `BlockParamRow.tsx` (D2/Part C) into its own neutral module
-// once it grew a THIRD caller outside the param-row context — `BlockLevelPick`'s
-// own hand-rolled warn-tri + `sevWarn` footers (the stale-block and stale-param
-// notes inside its two dropdown menus) duplicated this exact shape rather than
-// reusing it, and `SetupBody`'s "doesn't turn on in that scene" footswitch note
-// already did. Current callers: `BlockPickRow`'s shared disabled-block reason,
-// `BlockParamRow`'s disabled/tone-risk notes, `BlockLevelPick`'s two stale-pick
-// menu footers, and `SetupBody`'s non-enabling-footswitch note.
+// message. Lives in its own neutral module because its callers span the picker and
+// the setup rows: `FlatLevelPick`'s disabled/tone-risk candidate notes and its
+// stale-pick menu footer, and `SetupPage`'s footswitch scene-context notes ("choose
+// one" / "doesn't turn on in that scene").
 
 import type { ReactNode } from "react";
 
@@ -31,5 +27,3 @@ export function PickWarnNote({ children }: { children: ReactNode }) {
     </span>
   );
 }
-
-export default PickWarnNote;

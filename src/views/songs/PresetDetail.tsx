@@ -34,7 +34,7 @@ export function UnitBadge({ note = "on unit" }: { note?: string }) {
         alignItems: "center",
         gap: t.space2,
         fontFamily: t.mono,
-        fontSize: 8.5,
+        fontSize: t.fsTag,
         letterSpacing: "0.08em",
         textTransform: "uppercase",
         color: t.faint,
@@ -83,7 +83,7 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
           style={{
             marginTop: t.space2,
             fontFamily: t.serif,
-            fontSize: 24,
+            fontSize: t.fsTitle,
             color: t.ink,
             ...truncate,
           }}
@@ -94,7 +94,7 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
           style={{
             marginTop: t.space3,
             fontFamily: t.mono,
-            fontSize: 10.5,
+            fontSize: t.fsMeta,
             color: t.mutedInk,
           }}
         >
@@ -148,7 +148,7 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
               borderTop: `0.5px solid ${t.hairline}`,
               background: t.bgAlt,
               fontFamily: t.mono,
-              fontSize: 10,
+              fontSize: t.fsData2,
               color: t.faint,
             }}
           >
@@ -159,5 +159,3 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
     </div>
   );
 }
-
-export default PresetDetail;
