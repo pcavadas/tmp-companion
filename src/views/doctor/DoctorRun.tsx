@@ -356,5 +356,3 @@ export function DoctorRun({
     </WizardShell>
   );
 }
-
-export default DoctorRun;

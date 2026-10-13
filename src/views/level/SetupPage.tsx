@@ -1026,5 +1026,3 @@ export function SetupPage({
     </LevelPage>
   );
 }
-
-export default SetupPage;

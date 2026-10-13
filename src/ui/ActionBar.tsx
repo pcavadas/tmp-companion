@@ -37,5 +37,3 @@ export function ActionBar({ left, right }: ActionBarProps) {
     </div>
   );
 }
-
-export default ActionBar;

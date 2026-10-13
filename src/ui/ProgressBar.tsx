@@ -36,5 +36,3 @@ export function ProgressBar({ percent, height = 4 }: ProgressBarProps) {
     </div>
   );
 }
-
-export default ProgressBar;

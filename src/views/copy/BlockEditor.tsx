@@ -222,5 +222,3 @@ export function BlockEditor({
     </div>
   );
 }
-
-export default BlockEditor;

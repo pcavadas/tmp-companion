@@ -333,5 +333,3 @@ export function SaveOverlay({
     </Dialog>
   );
 }
-
-export default SaveOverlay;

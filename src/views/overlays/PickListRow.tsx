@@ -85,5 +85,3 @@ export function PickListRow({
     </div>
   );
 }
-
-export default PickListRow;

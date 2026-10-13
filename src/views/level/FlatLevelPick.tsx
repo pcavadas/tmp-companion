@@ -275,5 +275,3 @@ export function FlatLevelPick({
     </div>
   );
 }
-
-export default FlatLevelPick;

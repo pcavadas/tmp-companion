@@ -85,5 +85,3 @@ export function PickTrigger({
     </div>
   );
 }
-
-export default PickTrigger;

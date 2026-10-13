@@ -363,8 +363,6 @@ export function PresetList(props: PresetListProps) {
   );
 }
 
-export default PresetList;
-
 // The scan strip's two percent readouts. Only these subscribe to the progress store,
 // so a tick repaints them and nothing else.
 function ScanPercentText() {

@@ -114,5 +114,3 @@ export function LevelPage({
     </div>
   );
 }
-
-export default LevelPage;

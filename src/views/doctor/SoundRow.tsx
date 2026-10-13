@@ -560,5 +560,3 @@ export function SoundRow({
     </div>
   );
 }
-
-export default SoundRow;

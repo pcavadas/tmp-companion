@@ -95,5 +95,3 @@ export function SceneRow({
     </div>
   );
 }
-
-export default SceneRow;

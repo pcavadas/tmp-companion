@@ -54,5 +54,3 @@ export function LiveVU({ values }: LiveVUProps) {
     </div>
   );
 }
-
-export default LiveVU;
