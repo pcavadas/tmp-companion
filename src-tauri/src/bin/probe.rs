@@ -998,6 +998,7 @@ const OPTION_FLAGS: &[&str] = &[
     "--family",
     "--group",
     "--insert",
+    "--kind",
     "--labels",
     "--lev",
     "--no-scene-edit",
@@ -1009,6 +1010,7 @@ const OPTION_FLAGS: &[&str] = &[
     "--slots",
     "--stim",
     "--target",
+    "--thresholds",
     "--value",
 ];
 
