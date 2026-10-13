@@ -1,5 +1,9 @@
 //! Firmware-migration scan/plan/apply + loudness audit + snapshot listing.
-use crate::*;
+use crate::{
+    backup, blocking, bulkrun, leveller, library, lint, lock_ok, migration,
+    read_stimulus_calibrated, replace_inplace_core, resolve_stimulus, with_released_seize,
+    AppState, ListIndex, Mutex, State,
+};
 
 // ─── Firmware-migration analysis over the imported library (no device) ────────────
 

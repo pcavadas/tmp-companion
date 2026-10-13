@@ -85,6 +85,9 @@ mod rig;
 #[cfg(test)]
 mod rig_tests;
 mod saved_blocks;
+// Scene-leveling job planning (amp + knob classification, job build), shared by the
+// scene-leveling commands, the leveller and the probe.
+mod scene_jobs;
 mod scenes;
 mod search;
 mod session;
@@ -94,6 +97,8 @@ mod sim_device;
 pub mod slot;
 mod slot_read;
 mod spectrum;
+// Stimulus + WAV I/O and the dry-DI capture, shared by leveling, Doctor and calibration.
+mod stimulus;
 // Shared test-only fixtures/generators (`audio` onset tests, `leveller`
 // onset-gate tests) — see the module doc.
 #[cfg(test)]
@@ -114,40 +119,31 @@ pub use backup_read::*;
 pub(crate) use device_gate::*;
 // The `probe_*` entry points (reachable as `<libcrate>::probe_xxx` for `bin/probe.rs`).
 pub use probe_api::*;
-// Interim seam: helpers that stayed-in-lib commands still call after the probe_api
-// extraction (Phase 2). Explicit list documents the boundary until a later phase.
-pub(crate) use probe_api::level::filter_amp_candidates;
-pub(crate) use probe_api::scene_bench::knob_bounds;
-// `scene_overlay_for`/`RefusedScope` are NOT re-exported here (unlike their siblings): every
-// call site that used to reach them through this crate-root seam (`scene_handle_rows`'s old
-// home in `commands::level_scenes`) moved INTO `probe_api::scene_jobs` itself as part of the
-// same extraction, so the only remaining callers resolve them directly, module-internally —
-// re-exporting an unused name here is a dead `pub(crate) use`, caught by `-D warnings`.
-pub(crate) use probe_api::scene_jobs::{
+// The scene-leveling seam the commands address at the crate root. `scene_overlay_for`/
+// `RefusedScope` are NOT re-exported (their callers live inside `scene_jobs`; an unused
+// `pub(crate) use` is a `-D warnings` failure).
+pub(crate) use scene_jobs::{
     base_handle_candidates_scanned, build_scene_jobs_with_handles, is_amp_model_id,
     is_amp_output_level_param, last_loaded_scene, prepass_scene_docs_via, read_saved_preset,
     read_saved_preset_complete, scan_node_graph, scene_handle_rows, scene_handle_rows_scanned,
     scene_overlay, scene_write_verdict_for_param, scenes_restating_base,
     warn_missing_restore_scene, SceneHandleSpec, SceneOverlay, SceneWriteVerdict,
 };
+pub(crate) use scene_jobs::{filter_amp_candidates, knob_bounds};
 // `pub`, not `pub(crate)`: `backup_read::BackupPresetRow.scene_handles`/`.base_handles` (both
-// `pub` fields) embed these — see the types' own doc for why a less-visible type inside a
-// more-visible field is a hard warning (`private_interfaces`). Same reachability the two
-// types had when they lived in `commands::level_scenes` (reached via `pub use
-// commands::level_scenes::*` below); moving them into `probe_api::scene_jobs` must not
-// narrow that.
-pub use probe_api::scene_jobs::{SceneHandleCandidate, SceneHandleRow};
+// `pub` fields) embed these — a less-visible type inside a more-visible field is a hard
+// warning (`private_interfaces`).
+pub use scene_jobs::{SceneHandleCandidate, SceneHandleRow};
+// Interim seam (#272): shipped read helpers that still live in `probe_api`.
 pub(crate) use probe_api::setlists::{read_setlist_list, read_setlist_songs};
 pub(crate) use probe_api::slot_write::{discover_active_graph, load_then_discover_blocks};
 pub(crate) use probe_api::songs::{
     bpm_landed, converge_song_bpm, find_song_slot, read_song_list, read_song_presets,
     set_song_bpm_on,
 };
-pub(crate) use probe_api::stimulus::{
-    read_stimulus_calibrated, read_stimulus_calibrated_with_shortfall,
-};
 pub use replace_inplace::*;
 pub use saved_blocks::*;
+pub(crate) use stimulus::{read_stimulus_calibrated, read_stimulus_calibrated_with_shortfall};
 
 pub use session::PresetEntry;
 use session::Session;
@@ -320,9 +316,7 @@ mod fixture_gates {
     /// through the same category collector `scene_jobs::amp_model_ids` uses, so
     /// amp-ness and cab-ness can never disagree about what the catalog says.
     fn cab_model_ids() -> std::collections::HashSet<String> {
-        let ids = crate::probe_api::scene_jobs::model_ids_by_category(|cat| {
-            matches!(cat, "Cabinets" | "IR")
-        });
+        let ids = crate::scene_jobs::model_ids_by_category(|cat| matches!(cat, "Cabinets" | "IR"));
         assert!(
             ids.len() > 50,
             "expected the catalog's cabinet rows ({} found) — a category rename would \
@@ -336,7 +330,7 @@ mod fixture_gates {
     /// `scene_jobs::bakes_in_a_cab` so the cab-merged suffix rule can't drift between
     /// the production classifier and this gate.
     fn is_cab_merged_amp(model_id: &str) -> bool {
-        crate::probe_api::scene_jobs::bakes_in_a_cab(model_id)
+        crate::scene_jobs::bakes_in_a_cab(model_id)
     }
 
     /// Every complete signal path through a preset, as ordered block lists — built
@@ -821,13 +815,8 @@ mod fixture_gates {
         );
         assert!(
             matches!(
-                crate::probe_api::scene_jobs::scene_write_verdict_for_param(
-                    &p,
-                    3,
-                    "ACD_Boost",
-                    "gain",
-                ),
-                crate::probe_api::scene_jobs::SceneWriteVerdict::WriteDirect {
+                crate::scene_jobs::scene_write_verdict_for_param(&p, 3, "ACD_Boost", "gain",),
+                crate::scene_jobs::SceneWriteVerdict::WriteDirect {
                     lands_on_base: true
                 }
             ),
@@ -844,13 +833,8 @@ mod fixture_gates {
         // WriteDirect. Pin the Refuse to catch that regression.
         assert!(
             matches!(
-                crate::probe_api::scene_jobs::scene_write_verdict_for_param(
-                    &p,
-                    2,
-                    "ACD_JC120",
-                    "outputLevel",
-                ),
-                crate::probe_api::scene_jobs::SceneWriteVerdict::Refuse { .. }
+                crate::scene_jobs::scene_write_verdict_for_param(&p, 2, "ACD_JC120", "outputLevel",),
+                crate::scene_jobs::SceneWriteVerdict::Refuse { .. }
             ),
             "scene 2: ACD_JC120's bypass-only overlay must still be refused as \
              shared_with_base — JC120 is already audible in base, so the write can never be \

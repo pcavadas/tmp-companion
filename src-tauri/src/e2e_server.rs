@@ -12,7 +12,12 @@
 //! offline fake. Read by `run_e2e_server`, the `/sim/reset` guard, and `rig`'s default-rig pick
 //! (`sim_device::LiveSimRig` offline, the real device online).
 
-use crate::*;
+#[cfg(feature = "e2e")]
+use crate::{
+    footswitch, leveller, monitor, probe_api, read_backup_archive, read_saved_preset,
+    read_stimulus_calibrated, resolve_stimulus, session, with_released_seize, AppState, ListIndex,
+    SeqCst, Session, State, MONITOR_ENABLED,
+};
 
 /// Strict parse of `TMP_E2E_ONLINE`: only the exact value `1` is online (#193).
 pub(crate) fn online_from(v: Option<&str>) -> bool {

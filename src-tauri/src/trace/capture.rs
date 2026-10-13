@@ -139,8 +139,8 @@ pub(crate) fn stats(cap: &Capture) -> CaptureStats {
 /// Write the processed pair (or the single channel of a mono capture) as a float WAV.
 pub(crate) fn write_pair_wav(path: &str, cap: &Capture) -> Result<(), String> {
     match cap.processed_stereo() {
-        Some(pair) => crate::probe_api::stimulus::write_wav_stereo(path, &pair, cap.sample_rate),
-        None => crate::probe_api::stimulus::write_wav_mono(path, &cap.channel(0), cap.sample_rate),
+        Some(pair) => crate::stimulus::write_wav_stereo(path, &pair, cap.sample_rate),
+        None => crate::stimulus::write_wav_mono(path, &cap.channel(0), cap.sample_rate),
     }
 }
 

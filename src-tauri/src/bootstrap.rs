@@ -1,7 +1,7 @@
 //! Tauri app bootstrap — builder, logger, menu, setup, `run()` entry point.
 // Commands are registered by path through `app_invoke_handler!` (`lib.rs`), from the
 // one list in `app_commands.rs`.
-use crate::*;
+use crate::{monitor, watcher, AppState};
 
 /// Mirrors `scripts/tauri-dev-env.sh`'s Wayland workaround (see its header for the
 /// hardware evidence: WebKitGTK's native-Wayland window sometimes maps but never

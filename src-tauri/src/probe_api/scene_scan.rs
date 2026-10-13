@@ -1,17 +1,17 @@
 //! Probe entry points: scene enumeration (passive / load / full-live) + scene classify + one-shot level.
 
 use super::level::load_and_filter_amp_candidates;
-use super::scene_jobs::prepass_scene_docs;
-use super::scene_jobs::structure_graph;
-use super::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use super::slot_write::probe_connect_and_list;
 use super::stimulus::probe_stimulus_path;
-use super::stimulus::read_stimulus_calibrated;
 use crate::leveller;
 use crate::proto;
+use crate::scene_jobs::prepass_scene_docs;
+use crate::scene_jobs::structure_graph;
+use crate::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use crate::session;
 use crate::session::Session;
 use crate::slot::ListIndex;
+use crate::stimulus::read_stimulus_calibrated;
 
 /// NO-SAVE joint-k leveling run (`probe --level-scenes <listIdx> <target> <topology> [scene…]`):
 /// the REAL `build_scene_jobs` → `level_scenes_oneshot` path with `save=false`, so it
@@ -41,7 +41,7 @@ pub fn probe_level_scenes_oneshot(
     let (docs, restore_scene) = prepass_scene_docs(list_index, &scene_slots)?;
     // THE field-8 read for this run: the routing-structure fallback AND the raw scene
     // overlays `set_knobs` needs for its Scene Edit decision.
-    let saved = super::scene_jobs::read_saved_preset(list_index);
+    let saved = crate::scene_jobs::read_saved_preset(list_index);
     let jobs = build_scene_jobs(
         &scene_slots,
         &candidates,

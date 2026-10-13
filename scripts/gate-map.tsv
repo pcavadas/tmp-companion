@@ -139,8 +139,9 @@ src-tauri/src/commands/level_scenes.rs	level
 src-tauri/src/commands/level_footswitch.rs	level
 src-tauri/src/probe_api/level.rs	level
 src-tauri/src/probe_api/stimulus.rs	level
+src-tauri/src/stimulus.rs	level
 src-tauri/src/probe_api/scene_bench.rs	level
-src-tauri/src/probe_api/scene_jobs.rs	level
+src-tauri/src/scene_jobs.rs	level
 src-tauri/resources/samples/*	level
 e2e/specs/doctor.online.spec.ts	level
 e2e/specs/level.online.spec.ts	level

@@ -1,19 +1,17 @@
 //! Probe entry points: preset leveling + amp-candidate filtering + channel/capture/AGC diagnostics.
 
-use super::scene_bench::knob_bounds;
-use super::scene_jobs::is_amp_model_id;
-use super::scene_jobs::is_amp_output_level_param;
 use super::slot_write::load_then_discover_blocks;
-use super::stimulus::dump_processed_capture;
 use super::stimulus::probe_stimulus_path;
-use super::stimulus::read_stimulus_48k;
-use super::stimulus::read_stimulus_calibrated;
 use crate::audio;
 use crate::leveller;
 use crate::lufs;
+use crate::scene_jobs::{filter_amp_candidates, knob_bounds};
 use crate::session;
 use crate::session::Session;
 use crate::slot::ListIndex;
+use crate::stimulus::dump_processed_capture;
+use crate::stimulus::read_stimulus_48k;
+use crate::stimulus::read_stimulus_calibrated;
 use crate::LevelBlockArg;
 
 /// The engaged/floor criterion the diagnostic arms share, delegating to the ONE
@@ -527,24 +525,6 @@ pub fn probe_live_lufs(
     let r = probe_level_preset(slot, target_lufs, save, verify);
     audio::clear_live_lufs_sink();
     r
-}
-
-/// Filter already-discovered blocks to amp `outputLevel` leveling candidates — amp
-/// blocks' `outputLevel` controls, the only tone-safe per-scene leveling knob. The
-/// single definition of "what counts as a leveling candidate", shared by every caller
-/// (the scene-leveling driver, the diagnostics, and the bench's intel session — which
-/// brings its own pre-discovered blocks).
-pub(crate) fn filter_amp_candidates(blocks: Vec<session::LevelBlock>) -> Vec<LevelBlockArg> {
-    blocks
-        .into_iter()
-        .filter(|b| is_amp_model_id(&b.model_id) && is_amp_output_level_param(&b.parameter_id))
-        .map(|b| LevelBlockArg {
-            group_id: b.group_id,
-            node_id: b.node_id,
-            parameter_id: b.parameter_id,
-            value: b.value,
-        })
-        .collect()
 }
 
 /// Run the 1.8.45-safe block discovery (`load_then_discover_blocks`) and filter it to

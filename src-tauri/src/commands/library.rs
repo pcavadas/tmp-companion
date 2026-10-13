@@ -1,5 +1,8 @@
 //! OFFLINE library import + bulk-run apply/revert Tauri commands.
-use crate::*;
+use crate::{
+    backup, blocking, bulk_cmd, bulkrun, library, lock_ok, preset_io, search, with_released_seize,
+    AppState, ListIndex, PresetEntry, Session, State,
+};
 
 // ─── OFFLINE library + bulk-run commands ─────────────────────────────────────────
 

@@ -1,7 +1,16 @@
 //! Per-scene leveling commands + setlist common-target leveling.
 use super::ProgressStatus;
 use crate::error::LevelError;
-use crate::*;
+use crate::{
+    audio, audiograph, build_scene_jobs_with_handles, is_amp_output_level_param, knob_bounds,
+    leveller, playback_offset_for, prepass_scene_docs_via, profiles, proto,
+    read_slot_preset_complete, read_stimulus_calibrated, resolve_stimulus,
+    resolve_stimulus_for_leveling, scene_handle_rows, scene_overlay, scenes, session,
+    stimulus_instrument, with_released_seize, AppState, ListIndex, SceneHandleRow, SceneHandleSpec,
+    SceneOverlay, SeqCst, Session, State,
+};
+#[cfg(test)]
+use crate::{base_handle_candidates_scanned, param_class, scan_node_graph, SceneHandleCandidate};
 
 /// One resolved amp knob: `(group_id, node_id, current_outputLevel)`.
 pub(crate) type AmpKnobSpec = (String, String, f32);
@@ -698,10 +707,7 @@ fn run_scene_batch(
     // base isolation derivation below, and a PARTIAL `ftsw` silently under-isolates (some
     // footswitch-owned blocks never forced off), so it must be required, not optional.
     let saved = Some(if base_in_plan {
-        crate::probe_api::scene_jobs::read_saved_preset_complete_sections(
-            slot,
-            &["scenes", "ftsw"],
-        )?
+        crate::scene_jobs::read_saved_preset_complete_sections(slot, &["scenes", "ftsw"])?
     } else {
         crate::read_saved_preset_complete(slot)?
     });
@@ -1704,7 +1710,7 @@ fn outcome_to_level_result(
 // ───────────────────── Scene handle picker (enumeration) ─────────────────────
 // The wire DTOs (`SceneHandleCandidate`/`SceneHandleRow`) and the whole pure derivation this
 // command wraps (`scene_handle_rows`, `base_handle_candidates_scanned`, `scan_node_graph`,
-// `finish_handle_candidate`) live in `probe_api::scene_jobs` — their entire dependency mass
+// `finish_handle_candidate`) live in `scene_jobs` — their entire dependency mass
 // (`scene_overlay`, `scene_write_verdict_for_param`, `SceneOverlay`) already lived there, and
 // `backup_read` (which calls the shared-walk `*_scanned` cores straight off the backup scan,
 // with no command layer involved) has no business importing an algorithm from the IPC

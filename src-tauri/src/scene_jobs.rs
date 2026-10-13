@@ -1,6 +1,7 @@
-//! Scene-leveling job planning: amp classification, knob classification, and job build (shared with the scene-leveling commands).
+//! Scene-leveling job planning: amp classification, knob classification and bounds, job build,
+//! and the saved-preset scene-overlay reads. Shared by the scene-leveling commands, the
+//! leveller and the probe (it moved out of `probe_api`, which holds probe entry points).
 
-use super::scene_bench::knob_bounds;
 use crate::footswitch::{self, max_referenced_scene};
 use crate::leveller;
 use crate::proto;
@@ -25,7 +26,7 @@ pub(crate) fn model_ids_by_category(
     is_match: impl Fn(&str) -> bool,
 ) -> std::collections::HashSet<String> {
     let Ok(catalog) = serde_json::from_str::<serde_json::Value>(include_str!(
-        "../../../src/models/tmp-model-guide.json"
+        "../../src/models/tmp-model-guide.json"
     )) else {
         return std::collections::HashSet::new();
     };
@@ -634,9 +635,8 @@ fn handle_scene_job(
     doc: &serde_json::Value,
     saved: Option<&serde_json::Value>,
 ) -> leveller::SceneJob {
-    let node_param = |v: &serde_json::Value| {
-        crate::commands::level_footswitch::node_param_f64(v, h.node_id, h.parameter_id)
-    };
+    let node_param =
+        |v: &serde_json::Value| crate::audiograph::node_param_f64(v, h.node_id, h.parameter_id);
     let Some(preset) = saved else {
         return skip_scene_job(
             scene,
@@ -2066,6 +2066,36 @@ pub(crate) fn scene_handle_rows_scanned(
 // `pub(crate)` so sibling test modules can reuse this module's fixture builders
 // (`commands::doctor_tests` shares `with_scene0_overlay` — the shape `scene_overlay`
 // itself is pinned against) instead of re-typing the preset JSON.
+/// Closed-loop search bounds for a block knob, from its current value: amplitude
+/// params (0..1) search the full [0,1]; dB-unit params (current outside [0,1],
+/// e.g. an IR `outputlevel`) search a ±window around the current value, capped at
+/// 0 dB on top.
+pub(crate) fn knob_bounds(current: f32) -> (f32, f32) {
+    if (0.0..=1.0).contains(&current) {
+        (0.0, 1.0)
+    } else {
+        (current - 18.0, (current + 6.0).min(0.0))
+    }
+}
+
+/// Filter already-discovered blocks to amp `outputLevel` leveling candidates — amp
+/// blocks' `outputLevel` controls, the only tone-safe per-scene leveling knob. The
+/// single definition of "what counts as a leveling candidate", shared by every caller
+/// (the scene-leveling driver, the diagnostics, and the bench's intel session — which
+/// brings its own pre-discovered blocks).
+pub(crate) fn filter_amp_candidates(blocks: Vec<session::LevelBlock>) -> Vec<LevelBlockArg> {
+    blocks
+        .into_iter()
+        .filter(|b| is_amp_model_id(&b.model_id) && is_amp_output_level_param(&b.parameter_id))
+        .map(|b| LevelBlockArg {
+            group_id: b.group_id,
+            node_id: b.node_id,
+            parameter_id: b.parameter_id,
+            value: b.value,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[path = "scene_jobs_tests.rs"]
 pub(crate) mod scene_jobs_tests;

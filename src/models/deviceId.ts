@@ -3,7 +3,7 @@
 // strip-group lookups, amp detection) shares. A zero-import LEAF on purpose: `cpu`,
 // `catalog` and `blockArt` all import it, so it can never close a module-init cycle
 // and a CPU-cost check never pulls in the block-art tables. Mirrored in the Rust
-// `is_amp_model_id` (`src-tauri/src/probe_api/scene_jobs.rs`) — a change to the
+// `is_amp_model_id` (`src-tauri/src/scene_jobs.rs`) — a change to the
 // suffix set or the NoFx bridge must edit both.
 
 // Device FenderIds carry cab/IR/convolution suffixes the catalog id omits

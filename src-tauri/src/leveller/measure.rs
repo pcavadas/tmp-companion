@@ -1001,7 +1001,7 @@ mod floor_guard_tests {
         paths
             .into_iter()
             .map(|p| {
-                let s = crate::probe_api::stimulus::read_stimulus_48k(p.to_str().expect("utf8"))
+                let s = crate::stimulus::read_stimulus_48k(p.to_str().expect("utf8"))
                     .expect("read stimulus");
                 (p.display().to_string(), s)
             })

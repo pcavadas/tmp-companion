@@ -3,7 +3,7 @@
 //! truth is the checked-in `src/models/param-class.json` (repo-root, frontend
 //! `src/`), parsed once here — Rust is now the ONLY classifier. There used to be
 //! a hand-mirrored TS copy (`src/views/level/paramClass.ts`); it was deleted once
-//! `footswitch::LevelParamCandidate`/`probe_api::scene_jobs::SceneHandleCandidate` started
+//! `footswitch::LevelParamCandidate`/`scene_jobs::SceneHandleCandidate` started
 //! shipping [`ParamClass`] itself on the wire, so drift is no longer possible —
 //! the frontend reads the verdict off the candidate, it never re-derives one.
 //!
@@ -61,7 +61,7 @@
 //!
 //! `blockOverrides` and amp-ness both key on the BASE FenderId after collapsing
 //! device suffixes (cab/IR/convolution) via
-//! [`crate::probe_api::scene_jobs::resolve_base_id`] — the same
+//! [`crate::scene_jobs::resolve_base_id`] — the same
 //! check-first-then-strip helper `is_amp_model_id` uses, shared rather than
 //! duplicated so the one suffix-collapse rule can't drift between amp
 //! classification and parameter classification.
@@ -78,7 +78,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 use crate::is_amp_model_id;
-use crate::probe_api::scene_jobs::resolve_base_id;
+use crate::scene_jobs::resolve_base_id;
 
 /// How a block parameter may be used by the leveling picker. Serializes to the JSON
 /// table's own spelling (`level_linear` / `level_db` / `wet_mix` / `other`), so a wire

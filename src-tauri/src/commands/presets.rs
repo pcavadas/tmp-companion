@@ -1,5 +1,12 @@
 //! Active-preset reads, scene scans, and preset load/move/rename/delete commands.
-use crate::*;
+#[cfg(test)]
+use crate::SceneInfo;
+use crate::{
+    blocking, discover_active_graph, find_block_presets_blob, find_user_irs, footswitch,
+    guarded_clear, guarded_move, monitor, parse_block_presets_map, profiles, proto,
+    read_backup_archive, session, with_released_seize, with_released_seize_blocking, AppState,
+    BackupPresetRow, BackupReadResult, ListIndex, SavedBlock, Serialize, Session, State, UserIr,
+};
 
 // ── Active-preset signal chain: live reads + deliberate writes ──────────────────
 // The connected device is the single source of truth.

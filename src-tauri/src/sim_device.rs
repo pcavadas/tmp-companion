@@ -591,7 +591,7 @@ struct SimState {
     /// (`current_preset_data_changed`), never `scene_render_json_source`'s own raw scenario
     /// read. `current_scene` does NOT invalidate it either — the cache is the un-recalled
     /// document; scene selection is applied fresh on every read via
-    /// [`crate::probe_api::scene_jobs::scene_overlay`]. A test that pokes `current_slot`
+    /// [`crate::scene_jobs::scene_overlay`]. A test that pokes `current_slot`
     /// directly on a live `SimState` (bypassing `F_LOAD_PRESET`) — e.g. `physics_tests` —
     /// must clear this itself if it exercises the cache; today none of those tests do
     /// (they only reach `model_lufs`, which never reads this field).
@@ -886,9 +886,9 @@ impl SimState {
         node: &str,
         param: &str,
     ) -> Option<serde_json::Value> {
-        use crate::probe_api::scene_jobs::SceneOverlay;
+        use crate::scene_jobs::SceneOverlay;
         let doc = self.parsed_preset()?;
-        match crate::probe_api::scene_jobs::scene_overlay(doc, scene, node) {
+        match crate::scene_jobs::scene_overlay(doc, scene, node) {
             SceneOverlay::Full(params) | SceneOverlay::BypassOnly(params) => {
                 params.get(param).cloned()
             }
@@ -1093,7 +1093,7 @@ impl SimState {
     }
 
     /// True when scene `scene`'s overlay for `node` is FULL-shaped — routed straight
-    /// through the production classifier ([`crate::probe_api::scene_jobs::scene_overlay`])
+    /// through the production classifier ([`crate::scene_jobs::scene_overlay`])
     /// off the cached parsed doc, so this sim's landing rule tracks the real classifier BY
     /// CONSTRUCTION (micNodes overlays, FenderId-keyed overlay entries, and `Unknown`
     /// handling all included — the old hand-rolled walk here covered only
@@ -1117,8 +1117,8 @@ impl SimState {
             return false;
         };
         matches!(
-            crate::probe_api::scene_jobs::scene_overlay(doc, scene, node),
-            crate::probe_api::scene_jobs::SceneOverlay::Full(_)
+            crate::scene_jobs::scene_overlay(doc, scene, node),
+            crate::scene_jobs::SceneOverlay::Full(_)
         )
     }
 }
@@ -1243,7 +1243,7 @@ fn with_patched_doc(json: &str, doc: &SavedDoc) -> String {
 /// sibling. Resolves the node's own `(node_id, fender_id)` off ONE `audiograph::roster(v)` walk
 /// hoisted before the loop (the per-entry `roster_entry` call this used to make was a fresh
 /// whole-graph rebuild EVERY entry — the hot-path cost this hoist resolves), then locates and
-/// writes the overlay entry through [`crate::probe_api::scene_jobs::scene_overlay_entry_mut`] —
+/// writes the overlay entry through [`crate::scene_jobs::scene_overlay_entry_mut`] —
 /// the write-side counterpart of `scene_jobs::scene_overlay_for`'s read, so the two can never key
 /// a node differently. A node no longer in the base graph, or a scene/group the doc doesn't
 /// carry, is silently skipped — nothing to patch onto.
@@ -1262,11 +1262,9 @@ fn patch_scene_overlays(
         else {
             continue;
         };
-        let Some(entry) = crate::probe_api::scene_jobs::scene_overlay_entry_mut(
-            v,
-            *scene,
-            (group, node_id, fender_id),
-        ) else {
+        let Some(entry) =
+            crate::scene_jobs::scene_overlay_entry_mut(v, *scene, (group, node_id, fender_id))
+        else {
             continue;
         };
         // Coerce a non-object `dspUnitParameters` (or none yet) to `{}` ONCE, then write —

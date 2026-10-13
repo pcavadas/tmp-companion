@@ -205,7 +205,7 @@ genuine per-param overlay, Scene-Edit ON). Two OTHER overlay states leak the
 write to BASE instead — silently changing every scene that shares the knob.
 `BypassOnly` (Scene-Edit OFF) is guarded: `doctor_apply` reads the slot's
 saved field-8 JSON once, classifies the target node via `scene_overlay`
-(`probe_api::scene_jobs`), and REFUSES the apply before any device write with
+(`scene_jobs`), and REFUSES the apply before any device write with
 an actionable message, when it would land there. `Absent` (no overlay at
 all yet) stays an unguarded, pre-existing limitation — `set_node_scene_edit`
 would materialize the overlay but also reseeds it from base, wiping any

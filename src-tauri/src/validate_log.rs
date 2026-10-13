@@ -349,8 +349,7 @@ fn unique_wav_stem(dir: &str, stem: &str) -> String {
 
 fn emit_to(log: &str, dir: &str, row: &ValidationRow, cap: &audio::Capture, loud: &lufs::Loudness) {
     let stem = unique_wav_stem(dir, &sanitize(&row.label));
-    let (wav, wav_error) = match crate::probe_api::stimulus::dump_processed_capture(cap, dir, &stem)
-    {
+    let (wav, wav_error) = match crate::stimulus::dump_processed_capture(cap, dir, &stem) {
         Ok(path) => (json_str(&path), "null".to_string()),
         // A dump failure must still produce a ROW: a swallowed row is an empty log, and
         // an empty log reads to the consumer as "nothing was leveled", i.e. a pass.

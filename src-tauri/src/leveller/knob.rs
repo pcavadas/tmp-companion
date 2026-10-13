@@ -183,7 +183,7 @@ pub(crate) fn set_knob_value_only(
 ///   LEAKS TO BASE) and actively destructive where the overlay exists (the write
 ///   lands on the overlay anyway, and the enable wipes the scene's other stored
 ///   params). `saved` — the slot's field-8 preset JSON, read ONCE per run and
-///   threaded (`probe_api::scene_jobs::read_saved_preset`) — is the only source
+///   threaded (`scene_jobs::read_saved_preset`) — is the only source
 ///   that can tell the two apart: after `overlay_scene_onto_graph` a base value is
 ///   indistinguishable from an overlaid one, so the live docs can't answer it.
 ///   The decision itself is NOT taken here: it is

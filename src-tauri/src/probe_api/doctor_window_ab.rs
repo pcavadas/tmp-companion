@@ -40,7 +40,7 @@ use crate::leveller;
 use crate::slot::ListIndex;
 
 use super::analyze::analyze_capture;
-use super::stimulus::read_stimulus_calibrated;
+use crate::stimulus::read_stimulus_calibrated;
 
 /// The ORIGINAL full-window tail the oracle captures with (see module doc).
 const ORACLE_TAIL_MS: u64 = 2_500;

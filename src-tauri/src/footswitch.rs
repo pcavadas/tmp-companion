@@ -569,7 +569,7 @@ fn exp_jack_entries<'a>(exp: &'a Value, jack: &str) -> Vec<&'a Value> {
 
 /// Does ANY footswitch (`"on-off"` node list or `"param"`-function `nodeId`) or EXP/MIDI-EXP
 /// jack binding target `node`? Those are separate wire paths a knob-overlay scan (e.g.
-/// `probe_api::scene_jobs::shared_write_is_scene_local`) does not model, so a node either one
+/// `scene_jobs::shared_write_is_scene_local`) does not model, so a node either one
 /// touches must refuse an audibility guard outright rather than risk missing an audible path.
 ///
 /// On-off rows and param-func assigns reuse the module's own enumeration seams

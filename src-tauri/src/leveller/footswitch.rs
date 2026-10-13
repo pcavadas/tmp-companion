@@ -203,8 +203,8 @@ impl FsParamTarget {
     /// constructor every production call site uses — each already holds the preset that the
     /// batch's single field-8 read produced.
     pub fn from_preset(preset: &serde_json::Value, node_id: &str, param: &str) -> Self {
-        let authored = crate::commands::level_footswitch::node_param_f64(preset, node_id, param)
-            .unwrap_or(0.0) as f32;
+        let authored =
+            crate::audiograph::node_param_f64(preset, node_id, param).unwrap_or(0.0) as f32;
         Self::new(&Self::fender_id_of(preset, node_id), param, authored)
     }
 

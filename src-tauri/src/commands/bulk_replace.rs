@@ -1,5 +1,8 @@
 //! Bulk Block Edit — live per-node replace across a selection + discovery.
-use crate::*;
+use crate::{
+    audiograph, blockcaps, read_backup_archive, replace_many_held, session, with_released_seize,
+    AppState, BackupPresetRow, DeviceSlot, ListIndex, Serialize, Session, State,
+};
 
 /// The per-node edit Bulk Block Edit applies on the held session (matches the TS union
 /// on the `kind` tag; nested keys arrive camelCase, so `fenderId` is renamed).

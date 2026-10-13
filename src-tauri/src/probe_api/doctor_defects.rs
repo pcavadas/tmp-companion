@@ -29,7 +29,8 @@ use crate::slot::ListIndex;
 
 use super::analyze::DoctorRead;
 use super::doctor_inject::{last_guitar_group_anchor, measure, tail_ms_for_doc};
-use super::stimulus::{probe_stimulus_path, read_stimulus_48k};
+use super::stimulus::probe_stimulus_path;
+use crate::stimulus::read_stimulus_48k;
 
 /// One versioned defect recipe: inject `ops` into a clean preset's live edit
 /// buffer, capture, diagnose — `must_fire` verdicts must ALL appear in the

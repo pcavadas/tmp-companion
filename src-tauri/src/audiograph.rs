@@ -172,6 +172,21 @@ pub fn for_each_node<'a>(preset: &'a Value, mut f: impl FnMut(Node<'a>)) {
     walk_nodes(preset, |_, _, node| f(node));
 }
 
+/// A numeric `dspUnitParameter` of `node_id` (e.g. a footswitch lev param's current value =
+/// `valueB`). The last matching node wins, as the walk visits them.
+pub(crate) fn node_param_f64(preset: &Value, node_id: &str, param: &str) -> Option<f64> {
+    let mut found = None;
+    for_each_node(preset, |node| {
+        if node.matches_instance(node_id) {
+            found = node
+                .params()
+                .and_then(|p| p.get(param))
+                .and_then(|v| v.as_f64());
+        }
+    });
+    found
+}
+
 /// Flat block roster for the backup library read: `(group, node_id, fender_id)` for
 /// every real (FenderId-bearing) node, in the same stable sorted-group order as
 /// [`for_each_node`]. The frontend derives the Step-1 "blocks present" list, per-preset

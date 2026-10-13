@@ -58,6 +58,7 @@ pub use handshake::*;
 #[cfg(feature = "e2e")]
 pub use link::e2e_transport;
 use link::*;
+pub(crate) use preset::stored_preset_generation;
 pub(crate) use reads::*;
 #[allow(unused_imports)] // the counters and the state type are read by tests and the e2e build
 pub use reamp::*;

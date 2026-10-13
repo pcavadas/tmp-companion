@@ -4,7 +4,7 @@
 //!
 //! Every TEXT member is scrubbed of the user's home-directory path (→ `~`) before
 //! it's written, so a shared bundle never leaks the account name.
-use crate::*;
+use crate::{app_info, profiles, Serialize};
 
 /// Keep only the last 200 KB of each log file — enough for a recent trace without
 /// shipping a multi-megabyte rotated log.

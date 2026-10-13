@@ -347,7 +347,7 @@ pub(crate) fn store_capture(
     std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     let tmp = path.with_extension("wav.part");
     let tmp_str = tmp.to_str().ok_or("capture temp path not UTF-8")?;
-    crate::probe_api::stimulus::write_wav_mono(tmp_str, samples, 48_000)?;
+    crate::stimulus::write_wav_mono(tmp_str, samples, 48_000)?;
     // Synced before the rename, so a crash can't leave a renamed but empty WAV (#280).
     crate::fsutil::commit(&tmp, &path).map_err(|e| format!("store capture: {e}"))?;
     Ok(true)

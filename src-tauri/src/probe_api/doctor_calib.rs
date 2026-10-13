@@ -31,7 +31,7 @@ use crate::read_slot_preset_parsed;
 use crate::session;
 use crate::slot::ListIndex;
 
-use super::stimulus::read_stimulus_48k;
+use crate::stimulus::read_stimulus_48k;
 
 /// Margin (in the rule's own metric units) added above `p95(clean)` when a rule
 /// has NO labelled positives — a conservative "fire only well past the cleanest

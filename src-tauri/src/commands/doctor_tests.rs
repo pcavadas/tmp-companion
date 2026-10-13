@@ -517,8 +517,8 @@ fn resolve_sound_isolation_carries_param_writes_for_a_param_only_switch() {
 /// A minimal preset carrying one node (`ampA`/`ACD_TwinReverb`, group G1) with
 /// scene 0's overlay set to `overlay_params` — the ONE fixture shape
 /// `scene_overlay` itself is pinned against, shared from its own test module.
-use crate::probe_api::scene_jobs::scene_jobs_tests::with_scene0_overlay as preset_with_scene0_overlay;
-use crate::probe_api::scene_jobs::scene_jobs_tests::{hbe_boost_preset, HBE_NODE, HBE_PARAM};
+use crate::scene_jobs::scene_jobs_tests::with_scene0_overlay as preset_with_scene0_overlay;
+use crate::scene_jobs::scene_jobs_tests::{hbe_boost_preset, HBE_NODE, HBE_PARAM};
 
 fn param_op(node_id: &str) -> doctor::DoctorOp {
     doctor::DoctorOp::Param {
@@ -1024,7 +1024,7 @@ fn fixture_sound(
         .collect();
     let infos = footswitch::enumerate_block_footswitches(&preset["ftsw"], &preset);
     let scene_overrides = scene
-        .map(|s| crate::probe_api::scene_jobs::scene_node_overrides(&preset)[s as usize].clone())
+        .map(|s| crate::scene_jobs::scene_node_overrides(&preset)[s as usize].clone())
         .unwrap_or_default();
     let (mut input, _, _) = item("fx", scene, footswitch);
     input.nodes = nodes;

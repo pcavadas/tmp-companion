@@ -1,5 +1,11 @@
 //! Held-session single/many replace helpers shared by the block-edit writers.
-use crate::*;
+use crate::{
+    blockcaps_advance, blockcaps_check, blockcaps_pre_edit_roster, blockcaps_replaced,
+    confirm_plan_identity, error_item, proto, repl_arg_fender_id, BulkReplaceItem, ItemOutcome,
+    ReplArg, ReplacePlan, Session, BULK_REPLACE_CANCEL,
+};
+#[cfg(test)]
+use crate::{plan_identity_verdict, ListIndex};
 
 /// Edit ONE preset on a HELD session (the validated fast path, E1): load it, re-arm so
 /// the session re-attaches to it, confirm attachment, replace every pre-discovered

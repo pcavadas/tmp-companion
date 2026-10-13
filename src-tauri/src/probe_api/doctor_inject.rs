@@ -24,7 +24,8 @@ use crate::leveller;
 use crate::slot::ListIndex;
 
 use super::analyze::{analyze_capture, DoctorRead};
-use super::stimulus::{probe_stimulus_path, read_stimulus_48k};
+use super::stimulus::probe_stimulus_path;
+use crate::stimulus::read_stimulus_48k;
 
 /// One capture's Doctor read (verdicts + the metric internals per band) AND
 /// its standard debug line — `pub(crate)` so `--doctor-defects`

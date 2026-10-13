@@ -44,7 +44,6 @@ pub(crate) mod overlay_ab;
 pub(crate) mod replace;
 pub(crate) mod restore_check;
 pub(crate) mod scene_bench;
-pub(crate) mod scene_jobs;
 pub(crate) mod scene_level;
 pub(crate) mod scene_scan;
 pub(crate) mod seed_scenario;

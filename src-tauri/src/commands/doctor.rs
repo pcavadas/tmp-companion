@@ -1,7 +1,12 @@
 //! Doctor (tone diagnosis) commands — capture · diagnose · live apply/save/discard.
 use super::ProgressStatus;
 use crate::error::LevelError;
-use crate::*;
+use crate::{
+    base64_encode, blockcaps, doctor, footswitch, leveller, read_slot_preset_complete,
+    read_slot_preset_parsed, read_stimulus_calibrated, resolve_stimulus_with_capture,
+    scene_write_verdict_for_param, session, topologies, wav_bytes, with_released_seize, AppState,
+    AtomicBool, ListIndex, SceneWriteVerdict, SeqCst, Serialize, Session, State,
+};
 
 // ───────────────────────── Doctor (tone diagnosis) ─────────────────────────
 
@@ -1030,10 +1035,12 @@ type BeforeKey = (
 /// and `doctor_discard` reloads the stored preset. Invalidation is
 /// correct-by-construction: `Session::{save_current_preset, clear_user_preset,
 /// move_user_preset, import_preset}` — the choke points every stored-preset
-/// mutation routes through — call [`clear_doctor_before_cache`], as does device
-/// detach (`watcher.rs`, an offline unit can be edited elsewhere). Single-entry
-/// bounds memory (one WAV).
-static BEFORE_CACHE: std::sync::Mutex<Option<(BeforeKey, String)>> = std::sync::Mutex::new(None);
+/// mutation routes through — bump `session::stored_preset_generation`, and an entry
+/// filled at another generation is a miss; device detach (`watcher.rs`, an offline unit
+/// can be edited elsewhere) calls [`clear_doctor_before_cache`]. Single-entry bounds
+/// memory (one WAV).
+static BEFORE_CACHE: std::sync::Mutex<Option<(u64, BeforeKey, String)>> =
+    std::sync::Mutex::new(None);
 
 /// Drop the cached `doctor_apply` BEFORE clip — call after anything that changes a
 /// stored preset (a save-bearing command) or on device detach.
@@ -1042,14 +1049,15 @@ pub(crate) fn clear_doctor_before_cache() {
 }
 
 fn before_cache_get(key: &BeforeKey) -> Option<String> {
+    let generation = crate::session::stored_preset_generation();
     crate::lock_ok(&BEFORE_CACHE)
         .as_ref()
-        .filter(|(k, _)| k == key)
-        .map(|(_, clip)| clip.clone())
+        .filter(|(g, k, _)| *g == generation && k == key)
+        .map(|(_, _, clip)| clip.clone())
 }
 
 fn before_cache_put(key: BeforeKey, clip: String) {
-    *crate::lock_ok(&BEFORE_CACHE) = Some((key, clip));
+    *crate::lock_ok(&BEFORE_CACHE) = Some((crate::session::stored_preset_generation(), key, clip));
 }
 
 /// Apply every op in `ops` on `s`'s live edit buffer (the caller must already

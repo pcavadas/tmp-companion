@@ -8,6 +8,23 @@ use super::*;
 pub(crate) const TEMPLATE_SAVE_REFUSED: &str =
     "The unit replaced this preset with an empty one (presetError 6). Nothing was saved.";
 
+/// Bumped on every stored-preset mutation (`save_current_preset`, `clear_user_preset`,
+/// `import_preset`, `move_user_preset` — the choke points every such mutation routes
+/// through). Caches of stored-preset state (the Doctor's BEFORE clip) remember the value
+/// they were filled at and treat any other value as a miss, so the session layer never
+/// calls up into the code that owns them.
+static STORED_PRESET_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The current [`STORED_PRESET_GENERATION`].
+pub(crate) fn stored_preset_generation() -> u64 {
+    STORED_PRESET_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn bump_stored_preset_generation() {
+    STORED_PRESET_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
 impl Session {
     /// The active preset's 0-based My Presets list index, from the most recent
     /// `PresetLoaded` echo in this session's accumulated pushes (handshake +
@@ -282,11 +299,10 @@ impl Session {
             PRESET_WRITE_ECHO_MS,
         )?;
         // Stored-preset mutation choke point: EVERY save routes through here, so this
-        // one call keeps the Doctor's cached BEFORE clip correct-by-construction
-        // (per-command clears were forgotten on ~7 mutating paths). Over-clearing is
-        // harmless (the cache is a pure optimization). Same-crate call up into
-        // commands/ — accepted for a static reset with no real coupling.
-        crate::commands::doctor::clear_doctor_before_cache();
+        // one bump keeps the Doctor's cached BEFORE clip correct-by-construction
+        // (per-command clears were forgotten on ~7 mutating paths). Over-invalidating is
+        // harmless (the cache is a pure optimization).
+        bump_stored_preset_generation();
         Ok(())
     }
 
@@ -298,7 +314,7 @@ impl Session {
             PRESET_WRITE_ECHO_MS,
         )?;
         // Stored-preset mutation — see save_current_preset's choke-point note.
-        crate::commands::doctor::clear_doctor_before_cache();
+        bump_stored_preset_generation();
         Ok(())
     }
 
@@ -412,7 +428,7 @@ impl Session {
             echo = self.import_echo();
         }
         // Stored-preset mutation — see save_current_preset's choke-point note.
-        crate::commands::doctor::clear_doctor_before_cache();
+        bump_stored_preset_generation();
         Ok(echo)
     }
 
@@ -435,7 +451,7 @@ impl Session {
             PRESET_WRITE_ECHO_MS,
         )?;
         // Stored-preset mutation — see save_current_preset's choke-point note.
-        crate::commands::doctor::clear_doctor_before_cache();
+        bump_stored_preset_generation();
         Ok(())
     }
 

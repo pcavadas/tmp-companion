@@ -956,7 +956,7 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
 
     // The authored base gain — the `FsWrite::Bake` command path never calls
     // `resolve_footswitch_job` (that seam is Assign-only); it reads the block directly.
-    let value_b = crate::commands::level_footswitch::node_param_f64(&preset, NODE, PARAM)
+    let value_b = crate::audiograph::node_param_f64(&preset, NODE, PARAM)
         .expect("ACD_Boost.gain must be a numeric dspUnitParameter");
     assert!(
         (value_b - 2.5).abs() < 1e-6,
@@ -1150,7 +1150,7 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
         "premise: switch 5 must plan Bake, got {:?}",
         plans[0]
     );
-    let authored = crate::commands::level_footswitch::node_param_f64(&preset, NODE, PARAM)
+    let authored = crate::audiograph::node_param_f64(&preset, NODE, PARAM)
         .expect("ACD_Plumes.level must be numeric");
     assert!(
         (authored - 0.5).abs() < 1e-6,
@@ -1678,7 +1678,7 @@ fn solve_400_spring(
 
     // The `FsWrite::Bake` command path never calls `resolve_footswitch_job` (Assign-only); it
     // reads the block directly.
-    let value_b = crate::commands::level_footswitch::node_param_f64(&preset, NODE, PARAM)
+    let value_b = crate::audiograph::node_param_f64(&preset, NODE, PARAM)
         .expect("ACD_TMSpring63.mix must be a numeric dspUnitParameter");
     assert!(
         (value_b - 0.42).abs() < 1e-6,
@@ -2925,7 +2925,7 @@ fn saved_event_count(events: &[crate::sim_device::SimEvent]) -> usize {
 fn saved_pl_and_output_level(slot: u32, node: &str) -> (f64, f64) {
     let doc = crate::read_saved_preset(ListIndex(slot)).expect("post-run field-8 read");
     let pl = crate::audiograph::preset_level(&doc).expect("presetLevel");
-    let fader = crate::commands::level_footswitch::node_param_f64(&doc, node, "outputLevel")
+    let fader = crate::audiograph::node_param_f64(&doc, node, "outputLevel")
         .unwrap_or_else(|| panic!("{node} outputLevel must be present in the saved doc: {doc}"));
     (pl, fader)
 }
@@ -3517,7 +3517,7 @@ fn hiwatt_footswitch_plan_bakes_and_mirrors_only_the_scenes_restating_base() {
         // Per-scene ground truth from the fixture: which overlays restate base's value and
         // which authored their own (this preset varies each pedal's level param in exactly
         // one scene — e.g. its trem is MUTED in one scene with `level: 0.0`).
-        let base = crate::commands::level_footswitch::node_param_f64(&preset, node, param)
+        let base = crate::audiograph::node_param_f64(&preset, node, param)
             .unwrap_or_else(|| panic!("{node}.{param} exists at base"));
         let scenes = preset["scenes"].as_array().expect("scenes");
         let overlay_value = |scene: u32| match crate::scene_overlay(&preset, scene, node) {
@@ -3614,8 +3614,8 @@ fn a_capture_renders_at_the_run_level_not_the_recall_reverted_one() {
     }
 
     let states = crate::footswitch::switch_states(&ftsw, &preset, SWITCH);
-    let authored = crate::commands::level_footswitch::node_param_f64(&preset, NODE, PARAM)
-        .expect("ACD_Boost.gain") as f32;
+    let authored =
+        crate::audiograph::node_param_f64(&preset, NODE, PARAM).expect("ACD_Boost.gain") as f32;
     let probe = crate::leveller::FsCeilingProbe {
         scene: None,
         states: &states,
@@ -4213,7 +4213,7 @@ fn a_shared_base_scene_save_is_not_reported_lost() {
     let solved = row["final_level"].as_f64().expect("final_level");
     // PREMISE: the write really landed on base and the save kept it there.
     let saved = crate::read_saved_preset(ListIndex(SLOT)).expect("re-read 402");
-    let base = crate::commands::level_footswitch::node_param_f64(&saved, "ACD_Boost", "gain")
+    let base = crate::audiograph::node_param_f64(&saved, "ACD_Boost", "gain")
         .expect("base ACD_Boost.gain");
     assert!(
         (base - solved).abs() < 1e-3,
@@ -4380,9 +4380,8 @@ fn a_batched_scene_run_persists_both_halves_of_a_landed_headroom_trade() {
         (saved_pl - raised_pl).abs() < 1e-3,
         "the SAVED document carries the raised presetLevel, got {saved_pl}"
     );
-    let saved_fader =
-        crate::commands::level_footswitch::node_param_f64(&saved, TRADE_AMP, "outputLevel")
-            .expect("saved base outputLevel") as f32;
+    let saved_fader = crate::audiograph::node_param_f64(&saved, TRADE_AMP, "outputLevel")
+        .expect("saved base outputLevel") as f32;
     assert!(
         (saved_fader - fader).abs() < 1e-3,
         "…and the solved base fader alongside it, got {saved_fader} vs the reported {fader}"
@@ -4653,9 +4652,8 @@ fn a_wizard_shaped_run_trades_headroom_when_base_arrives_as_an_anchor() {
         "the SAVED document carries the raised presetLevel from an anchor-only trade, got \
          {saved_pl}"
     );
-    let saved_fader =
-        crate::commands::level_footswitch::node_param_f64(&saved, TRADE_AMP, "outputLevel")
-            .expect("saved base outputLevel") as f32;
+    let saved_fader = crate::audiograph::node_param_f64(&saved, TRADE_AMP, "outputLevel")
+        .expect("saved base outputLevel") as f32;
     assert!(
         (saved_fader - fader).abs() < 1e-3,
         "…and the lowered base fader alongside it, got {saved_fader} vs the reported {fader}"

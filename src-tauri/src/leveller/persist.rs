@@ -66,11 +66,7 @@ pub(super) fn persisted_value(saved: &serde_json::Value, w: &PersistedWrite) -> 
         if !saved.get("audioGraph").is_some_and(|g| g.is_object()) {
             return PersistedRead::Unverifiable;
         }
-        return match crate::commands::level_footswitch::node_param_f64(
-            saved,
-            &w.node_id,
-            &w.parameter_id,
-        ) {
+        return match crate::audiograph::node_param_f64(saved, &w.node_id, &w.parameter_id) {
             Some(v) => PersistedRead::Value(v),
             None => PersistedRead::Absent,
         };
@@ -337,7 +333,7 @@ pub(super) fn fs_persist_verdicts(
             let got = if *is_assign {
                 ftsw.and_then(|f| ftsw_value_a(f, node, param))
             } else {
-                crate::commands::level_footswitch::node_param_f64(saved, node, param)
+                crate::audiograph::node_param_f64(saved, node, param)
             };
             let mismatch = base_reverted
                 || match got {

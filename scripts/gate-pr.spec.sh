@@ -69,7 +69,7 @@ ALL4="doctor.online level.online songs copy"
 
 diff_of src-tauri/src/commands/songs.rs
 check "songs.rs → songs" "songs" "$(required)"
-for f in src-tauri/src/leveller/mod.rs src-tauri/src/leveller/scene.rs src-tauri/src/commands/doctor.rs src-tauri/src/probe_api/scene_jobs.rs; do
+for f in src-tauri/src/leveller/mod.rs src-tauri/src/leveller/scene.rs src-tauri/src/commands/doctor.rs src-tauri/src/scene_jobs.rs; do
   diff_of "$f"
   check "$f → doctor.online level.online" "doctor.online level.online" "$(required)"
 done

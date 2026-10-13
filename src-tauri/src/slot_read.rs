@@ -2,7 +2,7 @@
 //! name-guarded device-backup transport when a caller's REQUIRED tail sections are cut off
 //! the field-8 read. Shared by the footswitch/scene leveling commands and ~20 `probe_api`
 //! call sites via the crate-root re-export.
-use crate::*;
+use crate::{backup_read, session, ListIndex, Session};
 
 /// Read a slot's field-8 preset JSON on a fresh quiet session and return the parsed preset, a
 /// DIAGNOSTIC "has FS scenes" flag (`Some(empty)` = definitely no FS scenes; truncated/unknown or

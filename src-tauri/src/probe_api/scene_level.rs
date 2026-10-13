@@ -1,13 +1,13 @@
 //! Probe entry points: per-scene amp-knob leveling measurement + one-shot level + diagnostics.
 
 use super::level::load_and_filter_amp_candidates;
-use super::scene_jobs::prepass_scene_docs;
-use super::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use super::stimulus::probe_stimulus_path;
-use super::stimulus::read_stimulus_calibrated;
 use crate::audio;
 use crate::leveller;
+use crate::scene_jobs::prepass_scene_docs;
+use crate::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use crate::slot::ListIndex;
+use crate::stimulus::read_stimulus_calibrated;
 // Every scene-leveling entry point below ENUMERATES scenes via the complete-JSON
 // fallback (`read_preset_scenes_complete`), not the raw field-8 partial: the scene-tail
 // cut is per-slot-deterministic (notes/gotchas.md's field-8 entry) and a probe run that
@@ -208,7 +208,7 @@ pub fn probe_level_preset_scenes(
     // it as `build_scene_jobs`' fallback template source.
     let all_slots: Vec<u32> = (0..scenes.scenes.len() as u32).collect();
     let (docs, _) = prepass_scene_docs(list_index, &all_slots)?;
-    let saved = super::scene_jobs::read_saved_preset_complete(list_index)?;
+    let saved = crate::scene_jobs::read_saved_preset_complete(list_index)?;
 
     // 3c) ONE-SHOT open-loop per scene on the active amp `outputLevel`. HW-verified:
     //     captured_LUFS = 20*log10(outputLevel) + C is LINEAR with ~25 LU authority, so
@@ -625,7 +625,7 @@ pub fn probe_jointk_scenes(
     }
     for (target, slots) in groups {
         let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
-        let saved = super::scene_jobs::read_saved_preset(list_index);
+        let saved = crate::scene_jobs::read_saved_preset(list_index);
         let jobs = match build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref()) {
             Ok(j) => j,
             Err(e) => {
@@ -696,7 +696,7 @@ pub fn probe_redistribute(
     let mut slots: Vec<u32> = vec![session::BASE_SCENE_SLOT];
     slots.extend(0..scenes.scenes.len() as u32);
     let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
-    let saved = super::scene_jobs::read_saved_preset(list_index);
+    let saved = crate::scene_jobs::read_saved_preset(list_index);
     let jobs = build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref())?;
     let pl = docs
         .iter()

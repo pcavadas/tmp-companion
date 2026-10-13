@@ -48,7 +48,7 @@ use serde::Serialize;
 use crate::audio;
 use crate::error::LevelError;
 use crate::lufs;
-use crate::probe_api::scene_jobs::{overlay_param, SceneParamRead};
+use crate::scene_jobs::{overlay_param, SceneParamRead};
 use crate::session::Session;
 use crate::{
     read_saved_preset, read_saved_preset_complete, scene_write_verdict_for_param, settle_abortable,

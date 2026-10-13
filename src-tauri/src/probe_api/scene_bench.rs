@@ -6,10 +6,7 @@
 //! production `leveller` module. The app levels scenes with
 //! `leveller::level_scenes_oneshot`.
 
-use super::level::filter_amp_candidates;
-use super::scene_jobs::build_scene_jobs;
 use super::stimulus::probe_stimulus_path;
-use super::stimulus::read_stimulus_calibrated;
 use crate::audio;
 use crate::error::LevelError;
 use crate::leveller::{
@@ -19,9 +16,12 @@ use crate::leveller::{
     Verification, BATCH_TRUST_DB, KNOB_TOL_LU, RATE, SETTLE_AFTER_REAMP_MS, SETTLE_AFTER_SET_MS,
 };
 use crate::proto;
+use crate::scene_jobs::build_scene_jobs;
+use crate::scene_jobs::filter_amp_candidates;
 use crate::session;
 use crate::session::Session;
 use crate::slot::ListIndex;
+use crate::stimulus::read_stimulus_calibrated;
 use crate::SCENE_LEVEL_CANCEL;
 use serde::Serialize;
 use std::sync::atomic::Ordering::SeqCst;
@@ -271,7 +271,7 @@ pub fn probe_bench_scene_leveling(
         let wire_slots: Vec<u32> = scene_rows.iter().map(|(s, _)| *s).collect();
         // THE field-8 read for this bench run — the routing-structure fallback AND the raw
         // scene overlays `set_knobs` needs for its Scene Edit decision.
-        let saved = super::scene_jobs::read_saved_preset(slot);
+        let saved = crate::scene_jobs::read_saved_preset(slot);
         let jobs =
             match build_scene_jobs(&wire_slots, &candidates, &docs, target_lufs, saved.as_ref()) {
                 Ok(jobs) => jobs,
@@ -394,18 +394,6 @@ pub fn probe_bench_scene_leveling(
         "wrote {} benchmark rows to {out_path} (target {target_lufs:.1} LUFS, topology {topology_id})\n",
         rows.len()
     ))
-}
-
-/// Closed-loop search bounds for a block knob, from its current value: amplitude
-/// params (0..1) search the full [0,1]; dB-unit params (current outside [0,1],
-/// e.g. an IR `outputlevel`) search a ±window around the current value, capped at
-/// 0 dB on top.
-pub(crate) fn knob_bounds(current: f32) -> (f32, f32) {
-    if (0.0..=1.0).contains(&current) {
-        (0.0, 1.0)
-    } else {
-        (current - 18.0, (current + 6.0).min(0.0))
-    }
 }
 
 // ───────────────── The retired live-batched runner (bench only) ─────────────────

@@ -1,5 +1,8 @@
 //! Audition render + spectrum/EQ-match measurement Tauri commands.
-use crate::*;
+use crate::{
+    audition, leveller, lock_ok, read_stimulus_calibrated, resolve_stimulus, spectrum,
+    with_released_seize, AppState, ListIndex, State,
+};
 
 // ─── Audition (MEASURE — re-amp render → WAV data URL for playback) ──────────────
 

@@ -753,10 +753,9 @@ pub(super) fn apply_base_boost(
     // already landed there, so a miss only WARNS), a boost's two-control save is new and
     // untested on real hardware, so a mismatch here fails loudly instead of reporting a
     // persisted value that may not actually be on the device.
-    let doc = crate::probe_api::scene_jobs::read_saved_preset_complete(slot)?;
+    let doc = crate::scene_jobs::read_saved_preset_complete(slot)?;
     let pl_doc = crate::audiograph::preset_level(&doc);
-    let fader_doc =
-        crate::commands::level_footswitch::node_param_f64(&doc, &node_id, &parameter_id);
+    let fader_doc = crate::audiograph::node_param_f64(&doc, &node_id, &parameter_id);
     let pl_ok = pl_doc.is_some_and(|v| (v - plan.preset_level as f64).abs() <= PERSIST_TOL);
     let fader_ok = fader_doc.is_some_and(|v| (v - fader_value as f64).abs() <= PERSIST_TOL);
     if !(pl_ok && fader_ok) {

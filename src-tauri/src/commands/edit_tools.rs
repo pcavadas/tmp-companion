@@ -1,5 +1,8 @@
 //! Block-template capture, variant creation, and bulk-rename commands.
-use crate::*;
+use crate::{
+    backup, blocklib, library, lock_ok, proto, rename, variants, with_released_seize, AppState,
+    ListIndex, Session, State,
+};
 
 // ─── Block templates (persisted in the app config dir, applied via OpSpec::ApplyBlock) ─
 

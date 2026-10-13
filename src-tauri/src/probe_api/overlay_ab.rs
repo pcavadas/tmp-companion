@@ -13,8 +13,8 @@
 //! Probe-only, NON-DESTRUCTIVE: zero writes/saves, NO re-amp. Recalls (load_preset/load_scene
 //! via the prepass) are the only live-state changes.
 
-use super::scene_jobs::{is_amp_model_id, prepass_scene_docs, scene_docs_from_saved};
 use crate::read_slot_preset_parsed;
+use crate::scene_jobs::{is_amp_model_id, prepass_scene_docs, scene_docs_from_saved};
 use crate::scenes;
 use crate::session;
 use crate::session::Session;

@@ -1,7 +1,12 @@
 //! Footswitch (engaged-state) leveling command + job resolution.
 use super::ProgressStatus;
+use crate::audiograph::node_param_f64;
 use crate::error::LevelError;
-use crate::*;
+use crate::{
+    footswitch, leveller, playback_offset_for, read_slot_preset_complete, read_stimulus_calibrated,
+    resolve_stimulus_for_leveling, scene_discard_guard, with_released_seize, AppState, AtomicBool,
+    ListIndex, LiveLufsGuard, SeqCst, Session, State,
+};
 
 // ───────────────────────── Footswitch (engaged-state) leveling ─────────────────────────
 
@@ -54,24 +59,6 @@ pub(crate) fn cancel_footswitch_leveling() {
     FOOTSWITCH_LEVEL_CANCEL.store(true, SeqCst);
     // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
     crate::request_op_abort();
-}
-
-/// A numeric `dspUnitParameter` of `node_id` (e.g. the lev param's current value = `valueB`).
-pub(crate) fn node_param_f64(
-    preset: &serde_json::Value,
-    node_id: &str,
-    param: &str,
-) -> Option<f64> {
-    let mut found = None;
-    audiograph::for_each_node(preset, |node| {
-        if node.matches_instance(node_id) {
-            found = node
-                .params()
-                .and_then(|p| p.get(param))
-                .and_then(|v| v.as_f64());
-        }
-    });
-    found
 }
 
 /// Resolved inputs to `leveller::level_footswitch`: the switch-OFF value (`valueB` = the

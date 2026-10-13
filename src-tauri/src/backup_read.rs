@@ -75,13 +75,13 @@ pub struct BackupPresetRow {
     /// JSON-visible cause of a silent leveling capture ([`silence_hint`]), refining the
     /// generic "not on USB 1/2" verdict in the Level flow. `None` = no static cause.
     pub silence_hint: Option<&'static str>,
-    /// Per-scene leveling-handle candidates ([`crate::probe_api::scene_jobs::scene_handle_rows`]),
+    /// Per-scene leveling-handle candidates ([`crate::scene_jobs::scene_handle_rows`]),
     /// extracted from the SAME `presetJson` — so the Set-up step's scene control picker
     /// resolves INSTANTLY off the backup row instead of firing `list_scene_level_handles`'s
     /// live field-8 read on first open. Empty for a scene-less/unparseable row.
     pub scene_handles: Vec<SceneHandleRow>,
     /// Base-row leveling-handle candidates
-    /// ([`crate::probe_api::scene_jobs::base_handle_candidates_scanned`], GUITAR-ONLY — same
+    /// ([`crate::scene_jobs::base_handle_candidates_scanned`], GUITAR-ONLY — same
     /// restriction as `session::extract_level_candidates`), same sourcing as `scene_handles`
     /// — the Set-up step's Base control picker's instant-first source. Empty for an
     /// unparseable row OR a genuinely blockless preset — the frontend discriminates the two
@@ -90,7 +90,7 @@ pub struct BackupPresetRow {
     /// live device read (mirroring `scene_handles`'s own discriminator).
     pub base_handles: Vec<SceneHandleCandidate>,
     /// Per FS scene (wire index), that scene's saved overlay as Doctor node overrides
-    /// ([`crate::probe_api::scene_jobs::scene_node_overrides`]) — what a Doctor scene sound
+    /// ([`crate::scene_jobs::scene_node_overrides`]) — what a Doctor scene sound
     /// is diagnosed on top of the base graph. Empty for a scene-less/unparseable row.
     pub scene_overrides: Vec<Vec<crate::doctor::NodeOverride>>,
     /// Per footswitch, the scenes that enable it and the one the Set-up step preselects as
@@ -893,7 +893,7 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
                 (
                     scene_handle_rows_scanned(g, &scan),
                     base_handle_candidates_scanned(&scan),
-                    crate::probe_api::scene_jobs::scene_node_overrides_scanned(g, &scan),
+                    crate::scene_jobs::scene_node_overrides_scanned(g, &scan),
                 )
             }
             None => (Vec::new(), Vec::new(), Vec::new()),

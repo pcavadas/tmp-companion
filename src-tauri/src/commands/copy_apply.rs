@@ -1,6 +1,10 @@
 //! "Copy blocks between presets" — ordered replace/insert/remove op apply.
 use crate::blockcaps::{group_roster, Roster};
-use crate::*;
+use crate::{
+    blockcaps, blockcaps_advance, blockcaps_check, blockcaps_pre_edit_roster, blockcaps_replaced,
+    proto, session, with_released_seize, AppState, ItemOutcome, ListIndex, Serialize, Session,
+    State,
+};
 
 /// The block content a copy [`CopyOp`] applies — the SAME three "with a block"
 /// variants [`ReplArg`] supports (no `Remove`; that is a [`CopyOp::Remove`] op).

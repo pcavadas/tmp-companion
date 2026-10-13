@@ -1,6 +1,12 @@
 //! Preset-level (`presetLevel`) leveling command + stimulus resolution + calibration.
+use crate::audiograph::node_param_f64;
 use crate::error::LevelError;
-use crate::*;
+use crate::{
+    audiograph, build_scene_jobs_with_handles, doctor, filter_amp_candidates, leveller,
+    load_then_discover_blocks, lufs, profiles, read_stimulus_calibrated,
+    read_stimulus_calibrated_with_shortfall, session, topologies, topology_wav_path,
+    with_released_seize, AppState, AtomicBool, ListIndex, LiveLufsGuard, SeqCst, Serialize, State,
+};
 
 /// One leveling job from the UI: a preset slot + the LUFS target to hit.
 ///
@@ -656,11 +662,8 @@ pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
         //   `usb3_fader_fault` carries the full reasoning and the replug recovery.
         let strip = crate::backup_read::read_settings_snapshot(settings_path.as_deref())
             .and_then(|json| crate::backup_read::usb3_strip(&json));
-        let (mono, _peak) = crate::probe_api::stimulus::capture_dry_di(secs, strip.as_ref())?;
-        if let Some(f) = strip
-            .as_ref()
-            .and_then(crate::probe_api::stimulus::usb3_fader_fault)
-        {
+        let (mono, _peak) = crate::stimulus::capture_dry_di(secs, strip.as_ref())?;
+        if let Some(f) = strip.as_ref().and_then(crate::stimulus::usb3_fader_fault) {
             return Err(f);
         }
         // Reject a capture that's mostly silence (a valid capture becomes the stimulus,
@@ -681,7 +684,7 @@ pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
         // Flat-top clip check, not a bare sample-peak: a lone hot pick transient is
         // not clipping (see is_clipped_capture) — the old `peak >= 0.99` gate
         // rejected good takes whose only "clip" was a sub-ms attack apex.
-        let clipped = crate::probe_api::stimulus::is_clipped_capture(&mono);
+        let clipped = crate::stimulus::is_clipped_capture(&mono);
 
         // Store the capture (or clear a stale one on a clipped run) BEFORE persisting the
         // scalar — a WAV write failure fails the whole command so the scalar never lands
