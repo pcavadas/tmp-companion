@@ -260,6 +260,90 @@ fn the_scene_batch_levels_each_scene_and_saves_once_on_a_private_rig() {
     assert_run_ended_clean(&dev);
 }
 
+/// A scene stopped after it wrote a probe value is put back before the batch save: Stop is
+/// pressed during scene 1's verify capture (the first at a fader other than the Twin's authored
+/// 0.45), which reads off target, so the correction capture is cancelled. The cancel path's ONE
+/// save must persist scene 0's solve and scene 1 as the
+/// player left it, not the probe.
+#[test]
+fn a_stopped_scene_is_rolled_back_before_the_batch_save() {
+    let dev = SimDevice::new().with_saved_preset_json(&rig_preset_json());
+    let me: Rc<std::cell::OnceCell<std::rc::Weak<SimRig>>> = Rc::default();
+    let me2 = me.clone();
+    let rig = Rc::new(SimRig::new(dev.clone(), move |r| {
+        let twin_on =
+            r.bypassed("G1", AMPS[1]) == Some(false) && r.bypassed("G1", AMPS[0]) != Some(false);
+        if twin_on && (r.param("G1", AMPS[1], "outputLevel")? - 0.45).abs() > 1e-3 {
+            if let Some(rig) = me2.get().and_then(std::rc::Weak::upgrade) {
+                rig.request_abort();
+            }
+            // 2 LU off the open-loop solve, so the verify asks for a correction capture,
+            // which the Stop then cancels.
+            return model(r).map(|l| l + 2.0);
+        }
+        model(r)
+    }));
+    me.set(Rc::downgrade(&rig)).expect("set once");
+    let preset: serde_json::Value = serde_json::from_str(&rig_preset_json()).expect("json");
+    let job = |scene: u32, amp: &str, current: f32| SceneJob {
+        scene_slot: scene,
+        target_lufs: -26.0,
+        knobs: vec![KnobTarget {
+            knob: LevelKnob::Block {
+                group_id: "G1".into(),
+                node_id: amp.into(),
+                parameter_id: "outputLevel".into(),
+                scene_slot: Some(scene),
+            },
+            lo: 0.0,
+            hi: 1.0,
+            current,
+        }],
+        skip: None,
+        rebalanceable: false,
+        handle: None,
+        prepass: None,
+        force_bypass: Vec::new(),
+    };
+    let jobs = [job(0, AMPS[0], 0.35), job(1, AMPS[1], 0.45)];
+    let stim = stim();
+    let r = rig::scoped(rig.clone(), || {
+        leveller::make_current(SLOT)?;
+        leveller::level_scenes_oneshot(
+            SLOT,
+            &jobs,
+            &stim,
+            true,
+            None,
+            Some(&preset),
+            None,
+            &[],
+            |_, _| {},
+            |_| {},
+            || false,
+        )
+        .map_err(|e| e.to_string())
+    });
+    assert!(r.is_err(), "a Stop ends the batch as a cancel: {r:?}");
+    let twin = dev
+        .param_write(1, "G1", AMPS[1], "outputLevel")
+        .expect("scene 1's Twin was written");
+    assert!(
+        (twin - 0.45).abs() < 1e-4,
+        "scene 1's Twin must be back at its authored 0.45, not a probe value: {twin}"
+    );
+    let jc = dev
+        .param_write(0, "G1", AMPS[0], "outputLevel")
+        .expect("scene 0's JC120 was written");
+    assert!((jc - 0.35).abs() > 0.01, "scene 0 keeps its solve: {jc}");
+    assert_eq!(
+        saves(&dev),
+        1,
+        "the stopped batch still persists with ONE save"
+    );
+    assert_run_ended_clean(&dev);
+}
+
 /// The footswitch batch reads the saved document, reads the row's ceiling, solves the Boost's
 /// gain onto the target, and — on a dry run — writes nothing and reloads.
 #[test]

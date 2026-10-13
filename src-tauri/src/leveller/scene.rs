@@ -382,6 +382,24 @@ pub fn level_scenes_oneshot(
     )
 }
 
+/// Write every knob of `job` back to its pre-run value (`KnobTarget::current`), unsaved and
+/// unverified — the deferred batch save then persists the scene as the player left it. Used
+/// when a scene's solve fails or is stopped part-way, since its measure helpers write a
+/// probe value before each capture.
+fn rollback_scene_knobs(
+    slot: ListIndex,
+    job: &SceneJob,
+    saved: Option<&serde_json::Value>,
+) -> Result<(), LevelError> {
+    let targets: Vec<(&LevelKnob, f32)> = job.knobs.iter().map(|k| (&k.knob, k.current)).collect();
+    let opts = LevelOptions {
+        verify: false,
+        defer: true,
+        ..Default::default()
+    };
+    apply_levels(slot, &[], &targets, opts, false, saved, &[]).map(|_| ())
+}
+
 /// The ONE scene-batch scaffold shared by [`level_scenes_oneshot`] and
 /// [`level_scenes_rebalance`] — only the per-job `solve` differs. Owning the loop in
 /// one place matters beyond dedup: the loop has a SINGLE EXIT so the deferred-save
@@ -475,6 +493,37 @@ pub(super) fn run_scene_jobs(
 
         attempted = true;
         let result = solve(job);
+
+        // A failed or stopped solve can leave a probe value (or a rebalance solo mute) in
+        // this scene's knobs: the measure helpers write before they capture, and the batch
+        // save below persists the whole working copy. Put every knob back to its pre-run
+        // value first. If that rollback fails, abandon the batch exactly like a failed
+        // isolation cleanup below: a lost batch beats saving a value the run never chose.
+        if let Err(solve_err) = &result {
+            if save && !job.knobs.is_empty() {
+                if let Err(e) = rollback_scene_knobs(slot, job, saved) {
+                    if let Err(e2) = restore_saved_preset(slot) {
+                        log::warn!(
+                            "restore_saved_preset failed backing the batch out after a failed \
+                             scene {} rollback (slot {slot}): {e2}",
+                            job.scene_slot
+                        );
+                    }
+                    reamp_off_fresh("run_scene_jobs rollback");
+                    let msg = format!(
+                        "scene {} failed ({solve_err}) and its knobs could not be put back \
+                         ({e}) — abandoning this batch's unsaved writes rather than risk \
+                         saving a probe value",
+                        job.scene_slot
+                    );
+                    return Err(if solve_err.is_cancelled() || cancelled() {
+                        LevelError::Cancelled.with_restore(Err(msg))
+                    } else {
+                        LevelError::Device(msg)
+                    });
+                }
+            }
+        }
 
         let outcome = match result {
             Ok(s) => {

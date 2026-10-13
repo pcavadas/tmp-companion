@@ -1477,6 +1477,8 @@ fn doctor_apply_run(
     let after_clip = match doctor_after_clip(&mut s, &iso, stim, tail_ms) {
         Ok(clip) => clip,
         Err(after_err) => {
+            // Free the seize before the restore opens its own connection.
+            drop(s);
             return Err(match leveller::restore_saved_preset(job.list_index) {
                 Ok(()) => after_err,
                 Err(restore_err) => format!(

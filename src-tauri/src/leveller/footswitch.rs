@@ -71,8 +71,9 @@ pub struct FootswitchLevelResult {
     pub reamp_warning: Option<String>,
 }
 
-/// How to write the leveling `param` function — resolved by the caller (edit an existing
-/// matching function, or add at the next free index), preserving its display fields.
+/// How to write the leveling `param` function — resolved by the caller, which only ever EDITS
+/// the switch's existing matching function at its own index (adding one is refused — see
+/// `resolve_footswitch_job`), preserving its display fields.
 #[derive(Debug, Clone)]
 pub struct FootswitchWriteSpec {
     pub function_index: u32,
