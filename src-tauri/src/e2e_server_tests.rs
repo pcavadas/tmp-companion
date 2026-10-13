@@ -4921,6 +4921,25 @@ fn online_from_is_strict() {
     }
 }
 
+/// The twin tier: a blank `TMP_E2E_TWIN` is no twin, a scheme-less one is refused, and a
+/// twin beside `TMP_E2E_ONLINE=1` is refused whatever its value, so neither a stale online
+/// nor a stale twin variable can point a run at the other device.
+#[test]
+fn twin_from_refuses_a_bad_address_and_a_twin_beside_online() {
+    use crate::e2e_server::twin_from;
+    use crate::hid::twin::TwinAddr;
+    assert_eq!(twin_from(None, None), Ok(None));
+    assert_eq!(twin_from(Some("0"), Some("  ")), Ok(None));
+    assert_eq!(
+        twin_from(None, Some("tcp:127.0.0.1:9600")),
+        Ok(Some(TwinAddr::Tcp("127.0.0.1:9600".into())))
+    );
+    assert!(twin_from(None, Some("127.0.0.1:9600")).is_err());
+    assert!(twin_from(Some("1"), Some("tcp:127.0.0.1:9600")).is_err());
+    assert!(twin_from(Some("1"), Some("garbage")).is_err());
+    assert_eq!(twin_from(Some("1"), None), Ok(None));
+}
+
 /// The side lane: every `cancel_*` invoke and the counter and timing reads skip the serial queue, and
 /// a run command does not. Queued, a Stop only lands after the run it targets returned.
 #[test]
@@ -5006,6 +5025,23 @@ fn the_offline_snapshot_reports_fw_1_8_58() {
     super::e2e_install_offline_fake();
     let snap = crate::monitor::startup_snapshot().expect("snapshot installed");
     assert_eq!(snap.firmware.as_deref(), Some("1.8.58"));
+}
+
+/// `/health` carries `twin` beside `online`: it is the only signal `assert-mode.ts` has to
+/// refuse an adopted twin server in the online lane, which would otherwise pass green with
+/// no unit attached. (Lib tests never select a twin, so both read false here.)
+#[test]
+fn health_reports_twin_beside_online() {
+    let _g = serial();
+    let (_app, webview) = reamp_webview();
+    let (status, v) = route_json(&webview, "GET", "/health", serde_json::json!({}));
+    assert_eq!(status, "200 OK");
+    assert_eq!(v["online"], serde_json::json!(false));
+    assert_eq!(
+        v["twin"],
+        serde_json::json!(false),
+        "the key must be present: {v}"
+    );
 }
 
 /// The re-amp oracle reads the latch the way the device answers: with the latch ON, both

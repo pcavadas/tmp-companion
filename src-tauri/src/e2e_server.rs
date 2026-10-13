@@ -8,9 +8,11 @@
 //! return value; their `tmp://` events and `Channel` sends reach the page through the
 //! UI bridge (`e2e_ui_bridge`, polled at `GET /ui/events`), in both tiers.
 //! The one source of truth for the e2e mode: `TMP_E2E_ONLINE=1` ⇒ drive the REAL device
-//! (no SimDevice factory, real re-amp, real device backup); anything else ⇒ the
-//! offline fake. Read by `run_e2e_server`, the `/sim/reset` guard, and `rig`'s default-rig pick
-//! (`sim_device::LiveSimRig` offline, the real device online).
+//! (no SimDevice factory, real re-amp, real device backup); `TMP_E2E_TWIN=<addr>` ⇒ the
+//! same real-firmware paths against an offline twin of the unit (`hid::twin`; control
+//! plane only, no re-amp audio); anything else ⇒ the offline fake. Setting both is refused.
+//! Read by `run_e2e_server`, the `/sim/reset` guard, and `rig`'s default-rig pick
+//! (`sim_device::LiveSimRig` offline, `rig::TwinRig` on a twin, the real device online).
 
 #[cfg(feature = "e2e")]
 use crate::{
@@ -24,10 +26,60 @@ pub(crate) fn online_from(v: Option<&str>) -> bool {
     v == Some("1")
 }
 
+/// Parse of `TMP_E2E_TWIN` beside `TMP_E2E_ONLINE`: unset or blank is no twin; anything
+/// else must be a twin address, and never together with online, so a stale variable in
+/// either direction fails the run instead of pointing it at the wrong device.
+pub(crate) fn twin_from(
+    online: Option<&str>,
+    twin: Option<&str>,
+) -> Result<Option<crate::hid::twin::TwinAddr>, String> {
+    match twin.map(str::trim).filter(|t| !t.is_empty()) {
+        None => Ok(None),
+        Some(_) if online_from(online) => {
+            Err("TMP_E2E_ONLINE=1 and TMP_E2E_TWIN are both set: pick the unit or the twin".into())
+        }
+        Some(t) => crate::hid::twin::TwinAddr::parse(t).map(Some),
+    }
+}
+
+/// The twin tier's address, or why the env is refused. See [`twin_from`].
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_twin_mode() -> Result<Option<crate::hid::twin::TwinAddr>, String> {
+    if cfg!(test) {
+        return Ok(None);
+    }
+    twin_from(
+        std::env::var("TMP_E2E_ONLINE").ok().as_deref(),
+        std::env::var("TMP_E2E_TWIN").ok().as_deref(),
+    )
+}
+
+/// The twin this process drives, if any. A refused env reads as none here; the server and
+/// `probe` check [`e2e_twin_mode`] at startup and exit on it.
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_twin() -> Option<crate::hid::twin::TwinAddr> {
+    e2e_twin_mode().ok().flatten()
+}
+
+/// Why this process's e2e env is refused, if it is (see [`twin_from`]), for `probe`.
+#[cfg(feature = "e2e")]
+pub fn e2e_mode_refusal() -> Option<String> {
+    e2e_twin_mode().err()
+}
+
+/// The twin's address as text, for `probe`'s banner.
+#[cfg(feature = "e2e")]
+pub fn e2e_twin_label() -> Option<String> {
+    e2e_twin().map(|a| a.to_string())
+}
+
+/// The device is real firmware, the unit or its twin: its state is the device's own, so
+/// seeding, teardown and resets take the online paths.
 #[cfg(feature = "e2e")]
 pub fn e2e_online() -> bool {
     // Lib unit tests never drive hardware, whatever the ambient env says.
-    !cfg!(test) && online_from(std::env::var("TMP_E2E_ONLINE").ok().as_deref())
+    !cfg!(test)
+        && (online_from(std::env::var("TMP_E2E_ONLINE").ok().as_deref()) || e2e_twin().is_some())
 }
 
 /// The OFFLINE fake transport is installed in THIS process: every device "op" is an
@@ -177,6 +229,13 @@ pub fn run_e2e_server() {
         log::set_max_level(log::LevelFilter::Info);
     }
 
+    let twin = match e2e_twin_mode() {
+        Ok(twin) => twin,
+        Err(e) => {
+            eprintln!("e2e_server: REFUSING TO START: {e}");
+            std::process::exit(2);
+        }
+    };
     let online = e2e_online();
     // OFFLINE only: default the backup fixture so `read_library_via_backup` decodes it
     // through the real backup path. ONLINE must stream the REAL device backup, so the var
@@ -209,7 +268,17 @@ pub fn run_e2e_server() {
     // connect/list serve it (no Wry-typed monitor on the MockRuntime). The default OFFLINE
     // path installs the `SimDevice` factory + fixture snapshot instead. The server keeps
     // serving either way (a device-absent online run surfaces the error to the spec).
-    if online {
+    // A twin seeds the same way over its own transport, under its OWN phrase: the online
+    // ready gate must never accept a twin's server as the unit's.
+    if let Some(addr) = &twin {
+        match e2e_seed_online_snapshot() {
+            Ok(fw) => eprintln!(
+                "e2e_server: TWIN — seeded snapshot from the twin at {addr} fw={}",
+                fw.as_deref().unwrap_or("unknown")
+            ),
+            Err(e) => eprintln!("e2e_server: TWIN — twin handshake failed at {addr}: {e}"),
+        }
+    } else if online {
         match e2e_seed_online_snapshot() {
             // `scripts/e2e.sh` greps the phrase (ready gate) and reads `fw=` (stamp run line).
             Ok(fw) => eprintln!(
@@ -252,10 +321,10 @@ pub fn run_e2e_server() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(7600);
     let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind e2e port");
-    let mode = if online {
-        "ONLINE / real device"
-    } else {
-        "offline / SimDevice"
+    let mode = match (&twin, online) {
+        (Some(addr), _) => format!("TWIN / offline twin at {addr}"),
+        (None, true) => "ONLINE / real device".into(),
+        (None, false) => "offline / SimDevice".into(),
     };
     eprintln!("e2e_server: listening on http://127.0.0.1:{port} ({mode})");
     // Requests RUN serially on this thread, in arrival order. Offline runs N of these
@@ -953,10 +1022,15 @@ fn e2e_route(
     }
     match (method, path) {
         // `online` is AUTHORITATIVE for mode-split specs — they read it here, never from
-        // process.env. (e2e.sh's readiness curl only checks the 200, not the body.)
+        // process.env. (e2e.sh's readiness curl only checks the 200, not the body.) A twin
+        // is `online` (real firmware) AND `twin`, so a spec that needs re-amp audio can
+        // tell it from the unit.
         ("GET", "/health") => (
             "200 OK",
-            serde_json::to_vec(&json!({ "ok": true, "online": e2e_online() })).unwrap_or_default(),
+            serde_json::to_vec(
+                &json!({ "ok": true, "online": e2e_online(), "twin": e2e_twin().is_some() }),
+            )
+            .unwrap_or_default(),
         ),
         ("GET", "/reamp/counters") => {
             use std::sync::atomic::Ordering;

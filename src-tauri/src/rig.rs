@@ -9,8 +9,11 @@
 //! `session::reamp`'s `REAMP_UNSETTLED`: [`scoped`] installs one for a closure and every
 //! `Session::connect*`, `audio::reamp_capture`, settle and abort check inside it — however
 //! deep — goes to that rig. A thread with nothing installed gets the build's default:
-//! - production and the ONLINE e2e tier: [`DeviceRig`], the real seized HID and Core Audio
-//!   / ALSA / WASAPI streams;
+//! - production and the ONLINE e2e tier (`TMP_E2E_ONLINE=1`): [`DeviceRig`], the real
+//!   seized HID and Core Audio / ALSA / WASAPI streams;
+//! - an e2e build with `TMP_E2E_TWIN`: [`TwinRig`], the twin over `hid::twin::TwinHid`
+//!   (captures refused, settles at full length). The twin counts as online everywhere
+//!   else (`e2e_online`), since its state is real firmware state;
 //! - an e2e build OFFLINE: `sim_device::LiveSimRig`, the e2e server's shared SimDevice
 //!   (the transport factory, the physics capture model, collapsed settles).
 //!
@@ -97,8 +100,43 @@ pub(crate) fn scoped<T>(rig: Rc<dyn Rig>, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// The `twin` e2e tier (`TMP_E2E_TWIN`): the unit's firmware off the device, reached over
+/// `hid::twin::TwinHid`. Control plane only: it has no re-amp audio yet, so a capture is
+/// refused rather than faked, and settles run at the unit's real length.
+#[cfg(feature = "e2e")]
+pub(crate) struct TwinRig;
+
+#[cfg(feature = "e2e")]
+impl Rig for TwinRig {
+    fn open_transport(&self) -> Result<Box<dyn HidTransport>, DeviceError> {
+        let addr = crate::e2e_twin()
+            .ok_or_else(|| DeviceError::Other("TMP_E2E_TWIN is not a twin address".into()))?;
+        crate::trace::open(crate::trace::Backend::Twin, || {
+            Ok(Box::new(crate::hid::twin::TwinHid::open(&addr)?))
+        })
+    }
+
+    fn capture(&self, _: &[f32], _: u32, _: u64) -> Result<Capture, LevelError> {
+        Err(LevelError::Device(
+            "the twin has no re-amp audio: captures need the unit".into(),
+        ))
+    }
+
+    fn settle_ms(&self, ms: u64) -> u64 {
+        ms
+    }
+
+    fn aborted(&self) -> bool {
+        crate::device_gate::op_abort_requested()
+    }
+}
+
 /// The build's rig for a thread with none installed. See the module doc.
 fn default_rig() -> &'static dyn Rig {
+    #[cfg(feature = "e2e")]
+    if crate::e2e_twin().is_some() {
+        return &TwinRig;
+    }
     #[cfg(feature = "e2e")]
     if !crate::e2e_online() {
         return &crate::sim_device::LiveSimRig;

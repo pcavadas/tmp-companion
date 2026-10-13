@@ -252,7 +252,11 @@ pub use e2e_server::e2e_online;
 #[cfg(feature = "e2e")]
 pub(crate) use e2e_server::e2e_showcase;
 #[cfg(feature = "e2e")]
+pub(crate) use e2e_server::e2e_twin;
+#[cfg(feature = "e2e")]
 pub use e2e_server::run_e2e_server;
+#[cfg(feature = "e2e")]
+pub use e2e_server::{e2e_mode_refusal, e2e_twin_label};
 
 /// Fixture invariants that must hold regardless of build features.
 ///
