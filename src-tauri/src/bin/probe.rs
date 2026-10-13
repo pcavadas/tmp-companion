@@ -474,6 +474,11 @@ const ARMS: &[Arm] = &[
         run: arm_ftsw_validate,
     },
     Arm {
+        flags: &["--import-reload-check"],
+        usage: r#"--import-reload-check <file.preset>"#,
+        run: arm_import_reload_check,
+    },
+    Arm {
         flags: &["--restore-check"],
         usage: r#"--restore-check <deviceSlot> [trials]"#,
         run: arm_restore_check,
@@ -1853,6 +1858,28 @@ fn arm_ftsw_validate(args: &[String]) -> bool {
             switch_override,
             commit,
         ));
+    }
+
+    false
+}
+
+fn arm_import_reload_check(args: &[String]) -> bool {
+    if let Some(i) = args.iter().position(|a| a == "--import-reload-check") {
+        // --import-reload-check <file.preset>
+        let Some(path) = args.get(i + 1).filter(|a| !a.starts_with("--")).cloned() else {
+            eprintln!("usage: probe --import-reload-check <file.preset>");
+            std::process::exit(2);
+        };
+        match tmp_companion_lib::probe_import_reload_check(&path) {
+            Ok(report) => {
+                print!("{report}");
+                return true;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 
     false

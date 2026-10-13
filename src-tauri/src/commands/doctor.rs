@@ -639,7 +639,8 @@ fn run_doctor_check(
             break;
         }
         // Marketing-screenshot showcase: the offline fake re-amp is a stimulus
-        // passthrough (every sound measures identically → "All clear"), so inject
+        // passthrough (every sound measures identically, the same flat-chain cards
+        // on each, #247), so inject
         // curated profiles instead and let the real `diagnose` engine render cards.
         // Skips the device reads + reconnect sleeps for this item entirely.
         #[cfg(feature = "e2e")]

@@ -133,7 +133,10 @@ pub(crate) fn replace_inplace_with(
         Vec::new()
     };
 
-    // 1) Import — appends a scratch copy of the edited preset into an empty slot.
+    // 1) Import — appends a scratch copy of the edited preset into an empty slot. The
+    // stored-row proof reads the predicted landing slot (the lowest empty one) first and
+    // refuses unless it holds the empty template, so nothing is imported on a wrong guess.
+    let stored = StoredProof::before(&file, empty_before.iter().copied())?;
     Session::connect()?.import_preset(bytes)?;
 
     // 2) Observe where it landed: a slot that was EMPTY before and is now occupied.
@@ -152,6 +155,10 @@ pub(crate) fn replace_inplace_with(
         .find(|p| empty_before.contains(&p.slot) && !session::is_empty_slot_name(&p.name))
         .map(|p| (p.slot, p.name.clone()))
         .ok_or_else(|| "could not locate the imported scratch preset (no previously-empty slot became occupied)".to_string())?;
+    // The list saw a previously-empty slot fill; the stored row must agree that it is the
+    // predicted one and that it holds this file. A disagreement aborts before any load,
+    // save or clear, leaving the scratch for manual recovery.
+    stored.after(scratch_slot)?;
 
     // The outcome when no report reads run (lean mode, or an import already in place).
     let unverified = |orig_name_after: Option<String>| ReplaceOutcome {
@@ -250,6 +257,137 @@ pub(crate) fn replace_inplace_with(
         songs_before,
         songs_after,
     })
+}
+
+/// Stored-row proof of where an import landed — the proof for every
+/// `Session::import_preset` caller. The firmware files an import in the LOWEST empty slot
+/// (fw 1.8.58) and its `importPresetResponse` echo is usually absent, so the landing is
+/// predicted, the predicted slot's field-8 row is read BEFORE the import (it must be the
+/// empty template) and AFTER it (it must carry the file's `preset_id` and name).
+///
+/// It cannot see a body the firmware rejects at LOAD (the stored row keeps the imported
+/// body), so it never licenses a save: a caller that saves after the import also runs
+/// [`load_and_prove`]. One rule: a load proof when a save follows, a stored-row proof
+/// otherwise.
+pub(crate) struct StoredProof {
+    slot: ListIndex,
+    id: Option<String>,
+    name: String,
+}
+
+impl StoredProof {
+    /// Predict the landing slot (the lowest of `empties`, the slots the caller's list read
+    /// as empty) and prove it holds the empty template. Call it before the import.
+    pub(crate) fn before(
+        file: &serde_json::Value,
+        empties: impl IntoIterator<Item = ListIndex>,
+    ) -> Result<Self, String> {
+        let slot = empties
+            .into_iter()
+            .min()
+            .ok_or("no empty My Presets slot for the import to land in")?;
+        let name = file_name(file)?;
+        let id = crate::library::preset_id_of(file).map(str::to_string);
+        crate::library::refuse_template_id(id.as_deref(), "the preset file")?;
+        let (row, _, _) = crate::read_slot_preset_parsed(slot)
+            .map_err(|e| format!("predicted landing slot {slot}: field-8 read failed: {e}"))?;
+        check_template_row(slot, &row)?;
+        Ok(Self { slot, id, name })
+    }
+
+    /// Prove the import landed: `landed` (the caller's own observation, when it has one)
+    /// is the predicted slot, and that slot's stored row now carries the file.
+    pub(crate) fn after(&self, landed: ListIndex) -> Result<ListIndex, String> {
+        if landed != self.slot {
+            return Err(format!(
+                "the import landed at list index {landed}, not the predicted lowest empty \
+                 slot {}; refusing to act on an unproven landing",
+                self.slot
+            ));
+        }
+        let (row, _, _) = crate::read_slot_preset_parsed(self.slot)
+            .map_err(|e| format!("list index {}: field-8 read failed: {e}", self.slot))?;
+        check_imported_row(self.slot, &row, self.id.as_deref(), &self.name)?;
+        Ok(self.slot)
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The predicted landing slot.
+    pub(crate) fn slot(&self) -> ListIndex {
+        self.slot
+    }
+}
+
+/// `info.displayName` of a preset body — the name its stored row must carry.
+fn file_name(file: &serde_json::Value) -> Result<String, String> {
+    file.pointer("/info/displayName")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "the preset file has no info.displayName".to_string())
+}
+
+/// Pure: the predicted landing slot's stored row must be the empty template.
+fn check_template_row(slot: ListIndex, row: &serde_json::Value) -> Result<(), String> {
+    let id = crate::library::preset_id_of(row);
+    if id == Some(crate::library::TEMPLATE_PRESET_ID) {
+        return Ok(());
+    }
+    Err(format!(
+        "predicted landing slot {slot} does not hold the empty template (its stored \
+         preset_id is {id:?}); refusing to import"
+    ))
+}
+
+/// Pure: after the import, the stored row must carry the file's `preset_id` (when the
+/// file has one) and its name — and never the template's id.
+fn check_imported_row(
+    slot: ListIndex,
+    row: &serde_json::Value,
+    want_id: Option<&str>,
+    want_name: &str,
+) -> Result<(), String> {
+    let id = crate::library::preset_id_of(row);
+    crate::library::refuse_template_id(id, &format!("list index {slot}'s stored row"))?;
+    if let Some(want) = want_id {
+        if id != Some(want) {
+            return Err(format!(
+                "list index {slot}'s stored row carries preset_id {id:?}, not the imported \
+                 file's {want:?}"
+            ));
+        }
+    }
+    let name = row
+        .pointer("/info/displayName")
+        .and_then(serde_json::Value::as_str);
+    if name != Some(want_name) {
+        return Err(format!(
+            "list index {slot}'s stored row is named {name:?}, not the imported file's \
+             {want_name:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Import `bytes` with a stored-row proof of where it landed — the path for an import
+/// that nothing saves over. Returns the landing list index and the imported name.
+pub(crate) fn import_with_stored_proof(bytes: &[u8]) -> Result<(ListIndex, String), String> {
+    let file: serde_json::Value = crate::library::decode_preset_bytes(bytes)
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| format!("preset JSON: {e}")))?;
+    // Retried until the read shows an empty slot: a high empty slot past a short read's
+    // cut would otherwise look like a full bank.
+    let list = read_list_until(|l| l.iter().any(|p| session::is_empty_slot_name(&p.name)))?;
+    let stored = StoredProof::before(
+        &file,
+        list.iter()
+            .filter(|p| session::is_empty_slot_name(&p.name))
+            .map(|p| p.slot),
+    )?;
+    Session::connect()?.import_preset(bytes)?;
+    let slot = stored.after(stored.slot())?;
+    Ok((slot, stored.name().to_string()))
 }
 
 /// What a loaded import must show to prove it loaded intact: the file's per-group blocks
@@ -486,6 +624,49 @@ mod tests {
     use crate::blockcaps::Roster;
     use crate::library::TEMPLATE_PRESET_ID;
     use serde_json::json;
+
+    const ID: &str = "aaaaaaaa-0000-0000-0000-000000000001";
+
+    fn row(id: &str, name: &str) -> serde_json::Value {
+        json!({"info": {"displayName": name, "preset_id": id}})
+    }
+
+    #[test]
+    fn stored_proof_requires_the_template_before_the_import() {
+        let tpl = TEMPLATE_PRESET_ID;
+        assert!(check_template_row(ListIndex(9), &row(tpl, "Empty")).is_ok());
+        let e = check_template_row(ListIndex(9), &row(ID, "Real Preset")).unwrap_err();
+        assert!(e.contains("does not hold the empty template"), "{e}");
+        // A row cut before `info` proves nothing: refuse.
+        assert!(check_template_row(ListIndex(9), &json!({"ftsw": []})).is_err());
+    }
+
+    #[test]
+    fn stored_proof_requires_the_file_after_the_import() {
+        let slot = ListIndex(9);
+        assert!(check_imported_row(slot, &row(ID, "Mine"), Some(ID), "Mine").is_ok());
+        // An id-less file is proven by its name alone.
+        assert!(check_imported_row(slot, &row(ID, "Mine"), None, "Mine").is_ok());
+        let tpl = TEMPLATE_PRESET_ID;
+        for (r, want) in [
+            (row(tpl, "Mine"), "template"),
+            (
+                row("bbbbbbbb-0000-0000-0000-000000000002", "Mine"),
+                "not the imported file's",
+            ),
+            (row(ID, "Other"), "named"),
+            (json!({"ftsw": []}), "preset_id None"),
+        ] {
+            let e = check_imported_row(slot, &r, Some(ID), "Mine").unwrap_err();
+            assert!(e.contains(want), "{want}: {e}");
+        }
+    }
+
+    #[test]
+    fn file_name_reads_the_display_name() {
+        assert_eq!(file_name(&row(ID, "Mine")).unwrap(), "Mine");
+        assert!(file_name(&json!({"info": {}})).is_err());
+    }
 
     #[test]
     fn a_move_is_refused_unless_both_indices_hold_the_expected_presets() {

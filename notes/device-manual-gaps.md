@@ -70,7 +70,7 @@ Worth stating the `PRE` assumption explicitly in `notes/leveling.md`, and worth 
 
 Retuning the constant would have been the wrong fix, and these same two numbers say why. A floor chosen to clear this unit's −74.6 dBFS is a guess about the next unit's; worse, ch0/ch1's −71.5 dBFS ALSO clears −80, so simply moving the peak test to a later gate would have left the lane hint reading an idle processed pair as signal and telling a user on this spotless unit that USB 3 was MUTED. The guard therefore keys on integrated loudness per lane (`DryLane::measurable`, `probe_api/stimulus.rs`) — BS.1770's own −70 LUFS ABSOLUTE gate — which needs no tunable and no per-unit floor survey: any floor under that gate is `-inf` LUFS, and both measured floors sit well under it (a floor loud enough to integrate above −70 LUFS is signal to any silence gate, and the downstream active-window and spread checks own that case). The lane READOUT still prints peaks, and prints an unmeasurable lane as `silent` rather than as its floor's dBFS. Gate: `an_idle_lane_above_the_old_peak_floor_still_faults_and_blames_no_one`, fixtured on the two peaks above.
 
-Still open: a confirmed live mixer WRITE (none exists — see `open-questions.md` A1) would let the app unmute the strip itself.
+Still open: an app-side unmute, tracked in [#157](https://github.com/pcavadas/tmp-companion/issues/157). The mixer write messages are known statically, but none has been sent on the unit yet, so an opt-in "Unmute USB 3/4" button waits for that hardware check.
 
 _(Note: the manual's "at 0dBfs (maximum level)" describes the send's full-scale reference for an unattenuated, fader-bypassed signal. It does not document the absence of a limiter — that remains our own HW observation, not a manual-derived fact.)_
 

@@ -55,7 +55,9 @@ pub enum PlaybackLevel {
     Quiet,
     /// Rehearsal volume — partway up the contour family.
     Rehearsal,
-    /// Stage volume — the K-weighting design point; no compensation.
+    /// Stage volume — the anchor the offsets are measured from; no compensation. (No
+    /// source makes it K-weighting's design point: K-weighting came from listening tests
+    /// at broadcast and home levels. The offsets are re-based in #242.)
     #[default]
     Stage,
 }
@@ -781,7 +783,7 @@ mod tests {
             assert_eq!(playback_offset_lu(lvl, "guitar"), 0.0);
         }
         // Bass compensation grows as playback gets quieter; Stage is the
-        // K-weighting design point (always 0, the legacy baseline).
+        // anchor (always 0, the legacy baseline).
         assert_eq!(playback_offset_lu(PlaybackLevel::Stage, "bass"), 0.0);
         assert_eq!(playback_offset_lu(PlaybackLevel::Rehearsal, "bass"), 0.5);
         assert_eq!(playback_offset_lu(PlaybackLevel::Quiet, "bass"), 1.5);
