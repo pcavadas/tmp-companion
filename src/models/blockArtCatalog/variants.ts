@@ -3,7 +3,7 @@ import type { ArtVariant } from "../../ui/BlockArt";
 // Per-model art variant, keyed by FenderId: the explicit token the BlockArt bodies
 // branch on for a treatment the row's icon + tone can't express. Art is selected by
 // this token, NEVER by matching the display caption (`short`) — a caption is copy and
-// can change; a variant is the art contract. `models-catalog.test.tsx` pins this
+// can change; a variant is the art contract. `blockArtVariants.test.tsx` pins this
 // table against the caption rules it replaced, row by row.
 //
 // `bassman-59` and `muff-rams` have art but no model here: the old caption match for
