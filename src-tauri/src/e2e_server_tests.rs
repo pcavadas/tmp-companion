@@ -3727,9 +3727,12 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
         "the solve had to come DOWN from the authored {AUTHORED} and stay in range, got {solved}"
     );
     // The seam actually ran: joint-k is ONE write (its solve is closed-form), the param
-    // secant needs several real captures to find the same point.
+    // secant needs at least one written capture plus the final apply. Its first seed is the
+    // prologue's as-is reading at the authored value (#196 — the knob sits at its stored
+    // effective value in the same scene, nothing isolated, no trade), so it pays one capture
+    // fewer than it did before the seed reuse.
     assert!(
-        o.writes > 2,
+        o.writes >= 2,
         "a searched solve writes once per capture plus the final apply: {o:?}"
     );
 }
