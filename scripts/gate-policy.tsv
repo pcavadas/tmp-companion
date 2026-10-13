@@ -11,11 +11,12 @@ scan	ALL
 write	ALL
 lane	ALL
 probe-entry	ANY
+doctor-persist	doctor.online level.online doctor-apply.online
 level	doctor.online level.online
 copy	copy
 songs	songs
 unexercised	ANY	no online spec reaches this file; exercise it by hand on the unit (scripts/hw-e2e.sh covers the replace path)
-on-demand	-	not in the default online set; run it explicitly (e.g. scripts/e2e.sh online doctor-apply.online)
+on-demand	-	attended, not in the online lane; run it by hand on the unit (e.g. scripts/hw-e2e.sh)
 probe-only	-	reached only by the probe CLI; re-run the probe arm it serves on the unit
 offline-oracle	-
 none	-

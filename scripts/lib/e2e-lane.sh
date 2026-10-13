@@ -99,3 +99,79 @@ lane_stamp_verdict() {
 lane_fw_from_log() {
   sed -n 's/.*seeded snapshot from the real device fw=\([^ ]*\).*/\1/p' | tail -1 | grep . || printf 'unknown\n'
 }
+
+# The ONLINE lane's external-validation verdict: judges the expectation log the e2e server
+# wrote with scripts/level-validate.sh and decides whether this run counts as VALIDATED.
+# The judge's own report goes to stderr; stdout is ONE verdict line:
+#   none                nothing was emitted and nothing was required
+#   validated           every row was judged (none dropped by the cap), the judge passed,
+#                       and every required sound was MEASURED and PASSed, by identity
+#   unverified: <why>   the judge failed nothing, but the run cannot certify: the cap
+#                       dropped rows, every row was skipped, or a required sound was
+#                       skipped (clamped) rather than measured
+#   skipped: <why>      ffmpeg vanished mid-run (judge exit 3); nothing was checked
+#   fail: <why>         a required sound was never emitted, the row count is wrong, or the
+#                       judge failed a row (a target miss, a failed inject, a failed save)
+# A passing PREFIX never certifies: the identities are checked against what the judge
+# actually MEASURED (its --summary), after the cap, not against the emitted line count.
+# Args:
+#   $1 judge       path to level-validate.sh
+#   $2 log         the expectation jsonl (may be absent or empty)
+#   $3 work        a scratch dir for the capped feed and the judge's summary
+#   $4 max_rows    the row cap (TMP_E2E_VALIDATE_MAX_ROWS)
+#   $5 want_rows   the exact row count required, or '' when no strict spec ran
+#   $6 labels      the space-separated identities that must be measured, or ''
+lane_external_validation() {
+  local judge="$1" log="$2" work="$3" max="$4" want_rows="$5" labels="$6"
+  local rows=0 feed="$2" summary="$3/level-validate-summary.tsv" vrc=0 tab
+  local fail="" unverified="" l
+  tab="$(printf '\t')"
+  if [ -s "$log" ]; then
+    rows="$(grep -c . "$log" 2>/dev/null || true)"
+  fi
+  rows="${rows:-0}"
+  if [ -n "$want_rows" ] && [ "$rows" -ne "$want_rows" ]; then
+    fail="$rows expectation row(s) were emitted, expected exactly $want_rows"
+  fi
+  for l in $labels; do
+    if ! grep -qF "\"label\":\"$l\"" "$log" 2>/dev/null; then
+      fail="${fail:+$fail; }no expectation row for $l (its re-measure emitted nothing)"
+    fi
+  done
+  if [ "$rows" -eq 0 ]; then
+    if [ -n "$fail" ]; then printf 'fail: %s\n' "$fail"; else printf 'none\n'; fi
+    return 0
+  fi
+  mkdir -p "$work"
+  : > "$summary"
+  if [ "$rows" -gt "$max" ]; then
+    feed="$work/level-validate-expectations.capped.jsonl"
+    head -n "$max" "$log" > "$feed"
+    unverified="the row cap ($max) dropped $((rows - max)) of $rows row(s), never judged"
+  fi
+  bash "$judge" --expectations "$feed" --summary "$summary" >&2 || vrc=$?
+  case "$vrc" in
+    0) ;;
+    3)
+      if [ -z "$fail" ]; then
+        printf 'skipped: ffmpeg vanished mid-run (judge exit 3); nothing was checked\n'
+        return 0
+      fi ;;
+    4) unverified="${unverified:+$unverified; }every judged row was skipped (0 measured)" ;;
+    *) fail="${fail:+$fail; }the judge failed a row (exit $vrc)" ;;
+  esac
+  if [ -n "$fail" ]; then
+    printf 'fail: %s\n' "$fail"
+    return 0
+  fi
+  for l in $labels; do
+    if ! grep -q "^PASS$tab$l\$" "$summary"; then
+      unverified="${unverified:+$unverified; }$l was not measured and passed"
+    fi
+  done
+  if [ -n "$unverified" ]; then
+    printf 'unverified: %s\n' "$unverified"
+  else
+    printf 'validated\n'
+  fi
+}

@@ -12,6 +12,10 @@ set -euo pipefail
 # A git hook (e.g. pre-push from a linked worktree) exports GIT_DIR and friends; left set,
 # the scratch repo's `git init` / `git config` / `checkout` act on the CALLER's repository.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+# ...and the rest of the repo-local set git itself clears for a subprocess (GIT_CONFIG,
+# GIT_CONFIG_PARAMETERS, GIT_ALTERNATE_OBJECT_DIRECTORIES, ...). Word-split on purpose.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/e2e-evidence.sh disable=SC1091

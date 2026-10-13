@@ -29,6 +29,9 @@ import {
 // Rows this file emits per run: T1′'s 1 base + `SCENES_410.length`, T5's 1 base +
 // `SWITCH_SPECS_405.length` — `scripts/e2e.sh` greps the line below and compares by EQUALITY.
 // STRICT_VALIDATE_ROWS=6
+// The same rows by identity (`validate_log`'s label: list index + scene/switch). Each must be
+// MEASURED and PASS under the ffmpeg judge, or the run does not certify.
+// STRICT_VALIDATE_LABELS=base:slot410 scene:slot410:scene0 scene:slot410:scene1 base:slot405 footswitch:slot405:switch5 footswitch:slot405:switch8
 
 // COVERAGE rows 37, 45
 const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S — the P4 leveling-regression fixture

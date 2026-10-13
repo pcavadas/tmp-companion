@@ -4,7 +4,8 @@
 #
 #   scripts/e2e.sh                  # OFFLINE (SimDevice) — fast, default, no hardware (~1.5 min)
 #   scripts/e2e.sh offline copy     # OFFLINE, only the copy spec
-#   scripts/e2e.sh online           # ONLINE (real device) — doctor, level, songs, copy in turn (~25 min)
+#   scripts/e2e.sh online           # ONLINE (real device) — doctor, level, songs, copy, doctor-apply
+#                                   # in turn (~28 min)
 #   scripts/e2e.sh online auto      # ONLINE, exactly the specs this diff requires
 #                                   # (`scripts/gates.sh --required-online`; nothing → exit 0)
 #   scripts/e2e.sh online release   # ONLINE, the specs everything since the last release tag
@@ -37,7 +38,9 @@
 # Preconditions for ONLINE: the unit plugged in, and Pro Control CLOSED (it holds the exclusive
 # HID seize). A handshake failure is reported with that hint.
 #
-# Per-spec wall times are appended to $LOG_DIR/online-timings.tsv.
+# Per-spec wall times are appended to $LOG_DIR/online-timings.tsv. OFFLINE per-test timings
+# are Playwright's JSON report at e2e/test-results/e2e-timings.json (gitignored), checked
+# against scripts/e2e-budgets.tsv by scripts/e2e-budgets.mjs — advisory, never a failure.
 #
 # Written to run under macOS system /bin/bash (3.2) — note the empty-array `set -u` guards.
 set -euo pipefail
@@ -139,7 +142,8 @@ VALIDATE_LOG="$LOG_DIR/level-validate-expectations.jsonl"
 VALIDATE_WAV_DIR="$LOG_DIR/level-validate-wavs"
 # Budget cap. Each row costs one ffmpeg pass over a ~7 s WAV (fast) plus the disk the
 # server already spent writing it — generous on purpose, but a POLICY rather than an
-# accident: a runaway spec must announce that rows were dropped, not silently truncate.
+# accident: a runaway spec must announce that rows were dropped, not silently truncate, and
+# a capped run never certifies — a passing prefix is not a validated run.
 VALIDATE_MAX_ROWS="${TMP_E2E_VALIDATE_MAX_ROWS:-40}"
 # Exact row count for the strict lane, READ FROM THE SPEC so there is one source of truth and
 # nothing to keep in step by hand. Compared by EQUALITY: short means a re-measure died before
@@ -153,6 +157,17 @@ if [ "$VALIDATE_STRICT_ROWS" != "1" ]; then
   exit 2
 fi
 VALIDATE_STRICT_ROWS="$(sed -n 's|^// STRICT_VALIDATE_ROWS=\([0-9][0-9]*\)$|\1|p' "$VALIDATE_SPEC_FILE")"
+# ...and the IDENTITY of each of those rows (the emitter's `label`), from the same file. A
+# count alone lets a duplicate mask a missing sound, and a capped or skipped row hide behind
+# a passing prefix, so the judge's verdict is checked label by label
+# (`lane_external_validation`). The two markers must agree, or the lane refuses to start.
+VALIDATE_STRICT_LABELS="$(sed -n 's|^// STRICT_VALIDATE_LABELS=\(.*\)$|\1|p' "$VALIDATE_SPEC_FILE")"
+VALIDATE_STRICT_NLABELS="$(printf '%s\n' "$VALIDATE_STRICT_LABELS" | wc -w | tr -d ' ')"
+if [ "$VALIDATE_STRICT_NLABELS" != "$VALIDATE_STRICT_ROWS" ]; then
+  printf '\033[31m✗ %s names %s STRICT_VALIDATE_LABELS but STRICT_VALIDATE_ROWS=%s\033[0m\n' \
+    "$VALIDATE_SPEC_FILE" "$VALIDATE_STRICT_NLABELS" "$VALIDATE_STRICT_ROWS" >&2
+  exit 2
+fi
 # The validation tolerance the JUDGE will use, PINNED for this lane. `level-validate.sh`
 # reads TMP_E2E_LEVEL_TOL_LU as its default tolerance, so an ambient export of, say, 50
 # would make every row pass by arithmetic — a rubber stamp wearing a gate's clothes. The
@@ -190,9 +205,8 @@ Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|doctor.online|le
        scripts/e2e.sh soak <N>
   (no args)             OFFLINE — all specs vs SimDevice (fast, ~1.5 min, no hardware)
   offline copy          OFFLINE — only the copy spec
-  online                ONLINE  — doctor, level, songs, copy vs the real unit (~25 min;
-                        Pro Control closed). doctor-apply.online is on-demand only — pass
-                        it explicitly: `scripts/e2e.sh online doctor-apply.online`
+  online                ONLINE  — doctor, level, songs, copy, doctor-apply vs the real unit
+                        (~28 min; Pro Control closed)
   online auto           ONLINE  — exactly the specs this diff requires
                         (`scripts/gates.sh --required-online`): ANY runs songs, nothing
                         required exits 0 without touching the unit
@@ -257,8 +271,15 @@ err() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; }
 ensure_dist() { [ -f dist/index.html ] || { mkdir -p dist; printf '<!doctype html><title>e2e</title>' > dist/index.html; }; }
 
 # Build the e2e_server up front so the (potentially minutes-long, cold) compile is out of the
-# timed server-start path; its exit code is the build check.
+# timed server-start path; its exit code is the build check. The probe binary is the ONLINE
+# lane's seeder (`seed_scenario`) and nothing offline runs it, so only online builds it.
 prebuild() {
+  if [ "$MODE" = offline ]; then
+    log "building e2e_server (incremental)…"
+    cargo build -q --manifest-path "$MANIFEST" --features e2e --bin e2e_server \
+      || { err "e2e_server build failed"; exit 1; }
+    return 0
+  fi
   log "building e2e_server + probe (incremental)…"
   cargo build -q --manifest-path "$MANIFEST" --features e2e --bin e2e_server --bin probe \
     || { err "e2e_server/probe build failed"; exit 1; }
@@ -424,7 +445,17 @@ if [ "$MODE" = offline ]; then
   # unlike an empty array — avoids a two-arm exec).
   set --
   for s in "${SPECS[@]:-}"; do [ -n "$s" ] && [ "$s" != all ] && set -- "$@" "specs/$s.spec.ts"; done
-  exec bun x playwright test --config "$OFFLINE_CFG" "$@"
+  # Per-test timings land in Playwright's own (gitignored) output dir as its JSON report;
+  # the config reads the same variable. The budget check is ADVISORY: it warns about a spec
+  # file over its committed budget (scripts/e2e-budgets.tsv) and never changes the exit code
+  # — wall times swing 2-4x between machines, so a hard gate here would be a flaky one.
+  export TMP_E2E_TIMINGS_JSON="${TMP_E2E_TIMINGS_JSON:-$REPO/e2e/test-results/e2e-timings.json}"
+  rm -f "$TMP_E2E_TIMINGS_JSON"
+  rc=0
+  bun x playwright test --config "$OFFLINE_CFG" "$@" || rc=$?
+  bun "$REPO/scripts/e2e-budgets.mjs" "$TMP_E2E_TIMINGS_JSON" "$REPO/scripts/e2e-budgets.tsv" \
+    || err "e2e timing budget check could not run (advisory)"
+  exit "$rc"
 fi
 
 # ── ONLINE: managed — seed-first, handshake-verified start, per-spec runs, recovery ──
@@ -491,16 +522,18 @@ fi
 # doctor.spec.ts's online half + doctor-oracle.online.spec.ts (both deleted/retired);
 # level.online absorbs level.spec.ts's online half + level-strict.spec.ts (deleted) +
 # level-rerun.spec.ts's online half (retired; level-rerun.spec.ts is now DELETED entirely
-# — its offline half merged into level.spec.ts, offline suite consolidation). doctor-apply.
-# online is DEMOTED to on-demand-only (trade T1) — no longer in this default set; run it
-# explicitly with `scripts/e2e.sh online doctor-apply.online`.
+# — its offline half merged into level.spec.ts, offline suite consolidation).
+# doctor-apply.online is back in this set: it is the only spec that reads a Doctor save and
+# discard back from the device, and Doctor-persistence changes require it
+# (scripts/gate-map.tsv's `doctor-persist` class).
 #
 # ORDER: doctor.online BEFORE level.online (the ordering guard below still enforces this
-# for the leveling-equalizes-loudness reason it always has), then songs, then the
-# STRUCTURAL MUTATOR copy LAST — a structural save (copy_apply) is the one thing that
-# clears the server's SCENARIO_VERIFIED flag (`note_structural_save`, e2e_server.rs), so
-# putting it last means nothing AFTER it in this run pays a mid-run re-verify/re-import;
-# the cost lands once, on the NEXT run's very first (pristine-checking) seed instead.
+# for the leveling-equalizes-loudness reason it always has), then songs, then the two
+# STRUCTURAL MUTATORS copy and doctor-apply.online LAST — a structural save (copy_apply,
+# doctor_save) is the one thing that clears the server's SCENARIO_VERIFIED flag
+# (`note_structural_save`, e2e_server.rs), so putting them last means nothing AFTER them in
+# this run pays a mid-run re-verify/re-import; the cost lands once, on the NEXT run's very
+# first (pristine-checking) seed instead.
 #
 # KNOWN TRADE-OFF (flag, don't silently drop): copy no longer runs BEFORE doctor in the
 # default order, reversing the sequence notes/user-journeys.md's bug→gate registry (the
@@ -509,7 +542,7 @@ fi
 # process. That specific real-hardware sequence now needs a manual
 # `scripts/e2e.sh online copy doctor.online`; the underlying fix stays gated by that
 # entry's two Rust-level tests either way. See that registry row for the full context.
-case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(doctor.online level.online songs copy); FULL_SET=1 ;; esac
+case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(doctor.online level.online songs copy doctor-apply.online); FULL_SET=1 ;; esac
 
 # RETIRED-FROM-ONLINE GUARD: these spec basenames either still exist as files whose online
 # tier now `test.skip`s every test (level, doctor), or have been deleted outright
@@ -536,8 +569,8 @@ done
 # leveling equalizes the relative scene loudness the doctor's consistency check keys on,
 # so the reverse order silently weakens the doctor oracle. `level*` matches both the
 # dash-named legacy specs and the new `level.online` (dot, not dash). `doctor`/
-# `doctor.online` are the only order-sensitive doctor specs — doctor-apply.online (now
-# on-demand) and the retired doctor-oracle.online work presets the level* specs never
+# `doctor.online` are the only order-sensitive doctor specs — doctor-apply.online and the
+# retired doctor-oracle.online work presets the level* specs never
 # save to, and the run-start seed self-repairs, so they need no guard.
 seen_leveling=0
 for s in "${SPECS[@]:-}"; do
@@ -746,9 +779,10 @@ fi
 KEY_START="$(bash "$REPO/scripts/gates.sh" --key)"
 
 fail=0
-# Set only inside the vrc==0 arm of the external-validation case below — a real PASS
-# under the independent ffmpeg meter, never the exit-3 "ffmpeg vanished" skip or the
-# no-ffmpeg-at-all path (both leave a leveled sound unchecked, not confirmed correct).
+# Set only inside the `validated` arm of the external-validation case below — a real PASS
+# of every row and every required sound under the independent ffmpeg meter, never the
+# "ffmpeg vanished" skip, a capped or all-skipped pass, or the no-ffmpeg-at-all path (each
+# leaves a leveled sound unchecked, not confirmed correct).
 validated=0
 for s in "${SPECS[@]}"; do
   # ONE pristine-checking seed per run serves every spec: teardowns no longer clear the
@@ -826,55 +860,38 @@ if [ "$fail" -eq 0 ]; then
     log "#  ffmpeg to turn this lane into a real gate.               #"
     log "############################################################"
   else
-    # NB a bare `[ -s f ] && rows=…` would ABORT under `set -e` on an empty log (the
-    # compound list's non-zero status is not in a condition context) — hence the `if`.
-    rows=0
-    if [ -s "$VALIDATE_LOG" ]; then
-      rows="$(grep -c . "$VALIDATE_LOG" 2>/dev/null || echo 0)"
-    fi
-    # ROW COUNT — the false-green this branch used to be. "No rows emitted" was logged and
-    # passed over unconditionally, which is only honest when nothing in the run was
-    # SUPPOSED to emit any (see VALIDATE_STRICT_ROWS at the top of this file). Only applies
-    # when that spec ran, so `scripts/e2e.sh online songs` keeps its legitimate skip.
-    ran_strict=0
+    # ROW COUNT and IDENTITY — the false-greens this branch used to be. "No rows emitted"
+    # was passed over unconditionally, and a capped feed or an all-skipped judge could
+    # still read as validated. Both checks apply only when level.online ran (see
+    # VALIDATE_STRICT_ROWS/LABELS at the top of this file), so `scripts/e2e.sh online
+    # songs` keeps its legitimate skip. The decision is `lane_external_validation`
+    # (scripts/lib/e2e-lane.sh), proven offline by scripts/e2e-lane.spec.sh: `validated`
+    # is set ONLY when every row was judged and every required sound was measured and
+    # passed, by identity. An `unverified` run (cap, skips) is not a suite FAILURE — the
+    # specs themselves passed — but it must never certify a stamp, so `validated` stays 0.
+    want_rows=""; want_labels=""
     for s in "${SPECS[@]:-}"; do
-      [ "$s" = "level.online" ] && ran_strict=1
-    done
-    if [ "$ran_strict" -eq 1 ] && [ "$rows" -ne "$VALIDATE_STRICT_ROWS" ]; then
-      err "external validation ROW COUNT: level.online ran but $rows expectation row(s) were emitted, expected exactly $VALIDATE_STRICT_ROWS (level.online.spec.ts's own STRICT_VALIDATE_ROWS)"
-      err "  → too few: a sound was never independently measured. Too many: an unbudgeted row. See $SERVER_LOG"
-      fail=1
-    fi
-    if [ "$rows" -eq 0 ]; then
-      log "external validation — no rows emitted this run (nothing was strict-re-measured); skipping the ffmpeg pass"
-    else
-      VALIDATE_FEED="$VALIDATE_LOG"
-      if [ "$rows" -gt "$VALIDATE_MAX_ROWS" ]; then
-        VALIDATE_FEED="$RUN_DIR/level-validate-expectations.capped.jsonl"
-        head -n "$VALIDATE_MAX_ROWS" "$VALIDATE_LOG" > "$VALIDATE_FEED"
-        err "external validation CAPPED at $VALIDATE_MAX_ROWS rows — $((rows - VALIDATE_MAX_ROWS)) rows DROPPED (raise TMP_E2E_VALIDATE_MAX_ROWS to check them all)"
+      if [ "$s" = "level.online" ]; then
+        want_rows="$VALIDATE_STRICT_ROWS"; want_labels="$VALIDATE_STRICT_LABELS"
       fi
-      log "external validation — judging $rows recorded row(s) with ffmpeg ebur128 (tolerance ${TMP_E2E_LEVEL_TOL_LU} LU)…"
-      set +e
-      bash "$REPO/scripts/level-validate.sh" --expectations "$VALIDATE_FEED"
-      vrc=$?
-      set -e
-      # Branch all four codes explicitly: a mid-run SKIP (3) must never be reported as a
-      # target miss and must never quietly pass either; a VACUOUS pass (4 — every row
-      # clamped/persist-mismatched, exactly the shape a persist regression takes)
-      # must never certify a stamp, but it is also not a suite FAILURE — the specs
-      # themselves passed, only the independent check verified nothing. `validated`
-      # deliberately stays 0 here (its init value) rather than being set explicitly.
-      case "$vrc" in
-        0) log "external validation PASSED"; validated=1 ;;
-        3) log "external validation SKIPPED (exit 3 — ffmpeg vanished mid-run; nothing was checked)" ;;
-        4) log "online lane passed but NOT stamped — external validation was vacuous (0 rows measured)" ;;
-        *)
-          err "external validation FAILED (exit $vrc) — a leveled sound missed its target under an independent ffmpeg read"
-          fail=1
-          ;;
-      esac
-    fi
+    done
+    log "external validation — judging the recorded rows with ffmpeg ebur128 (tolerance ${TMP_E2E_LEVEL_TOL_LU} LU, cap $VALIDATE_MAX_ROWS)…"
+    ext="$(lane_external_validation "$REPO/scripts/level-validate.sh" "$VALIDATE_LOG" \
+      "$RUN_DIR" "$VALIDATE_MAX_ROWS" "$want_rows" "$want_labels")"
+    case "$ext" in
+      validated) log "external validation PASSED"; validated=1 ;;
+      none) log "external validation — no rows emitted this run (nothing was strict-re-measured); skipping the ffmpeg pass" ;;
+      skipped:*) log "external validation SKIPPED (${ext#skipped: })" ;;
+      unverified:*)
+        err "external validation did not verify every sound: ${ext#unverified: }"
+        log "online lane passed but NOT stamped — raise TMP_E2E_VALIDATE_MAX_ROWS or fix the skipped rows"
+        ;;
+      *)
+        err "external validation FAILED — ${ext#fail: }"
+        err "  → a sound was never independently measured, missed its target, or did not persist. See $SERVER_LOG"
+        fail=1
+        ;;
+    esac
   fi
 else
   err "one or more online specs failed"
@@ -890,8 +907,8 @@ fi
 #
 # The decision is `lane_stamp_verdict` (scripts/lib/e2e-lane.sh), a pure function proven
 # offline by scripts/e2e-lane.spec.sh: no failure, not soak, a stock unit, `validated` when
-# level.online ran (only a real vrc==0 PASS under the ffmpeg meter sets it — the exit-3
-# skip, the exit-4 vacuous pass and the no-ffmpeg path all leave it 0), and a STABLE tree
+# level.online ran (only a `validated` verdict under the ffmpeg meter sets it — the exit-3
+# skip, an `unverified` capped or skipped pass and the no-ffmpeg path all leave it 0), and a STABLE tree
 # key (a MID-RUN EDIT means this result no longer describes the tree that would be
 # stamped). The stamp MERGES: specs from separate passing runs on one tree add up.
 ran_level=0
