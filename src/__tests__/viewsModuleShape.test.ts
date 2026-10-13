@@ -8,8 +8,9 @@
 //   lowercase letter (so `ROW_MIN_HEIGHT` and `OUTCOME_META` are constants, not
 //   components) and whose declaration is a function, an arrow/function expression, a
 //   call (`memo(…)`, `forwardRef(…)`), or a class. Type-only exports never count.
-//   Barrels (`index.ts`) re-export and are skipped; a file may keep any number of
-//   private (non-exported) helpers.
+//   A value re-export (`export { Foo } from "./x"`) counts when `Foo` is a component
+//   in `./x`. Barrels (`index.ts`) re-export and are skipped; a file may keep any
+//   number of private (non-exported) helpers.
 // - An IMPORT edge is any relative `import` / `export … from` between two views modules,
 //   type-only ones included: a type-level cycle is still a cycle (the `EditMode` one
 //   between `BlockEditor` and `validateBlockEdit` was exactly that).
@@ -62,8 +63,12 @@ function isComponentInit(init: ts.Expression | undefined): boolean {
   );
 }
 
-/** The component names a module exports (declared exports and local `export { … }`). */
-function componentExports(sf: ts.SourceFile): string[] {
+/** The component names a module exports: declared exports, local `export { … }`, and
+ * value re-exports `export { Foo } from "./x"` of a name that IS a component in `./x`. */
+function componentExports(
+  sf: ts.SourceFile,
+  seen = new Set<string>([sf.fileName]),
+): string[] {
   const out: string[] = [];
   const localComponents = new Set<string>();
   for (const st of sf.statements) {
@@ -97,6 +102,27 @@ function componentExports(sf: ts.SourceFile): string[] {
         if (!el.isTypeOnly && localComponents.has(local))
           out.push(el.name.text);
       }
+    }
+  }
+  // `export { Foo, Bar } from "./x"`: resolve `./x` and count the names that are
+  // components there (cycle-guarded by `seen`).
+  for (const st of sf.statements) {
+    if (
+      !ts.isExportDeclaration(st) ||
+      st.isTypeOnly ||
+      !st.moduleSpecifier ||
+      !ts.isStringLiteral(st.moduleSpecifier) ||
+      !st.exportClause ||
+      !ts.isNamedExports(st.exportClause)
+    )
+      continue;
+    const target = resolveImport(sf.fileName, st.moduleSpecifier.text);
+    if (target === null || seen.has(target)) continue;
+    seen.add(target);
+    const there = new Set(componentExports(parse(target), seen));
+    for (const el of st.exportClause.elements) {
+      if (!el.isTypeOnly && there.has((el.propertyName ?? el.name).text))
+        out.push(el.name.text);
     }
   }
   return out;
@@ -170,6 +196,13 @@ describe("src/views module shape (#313)", () => {
   it("the component detector sees a known component export", () => {
     const sf = parsed.get(join(VIEWS, "PresetList.tsx"));
     expect(sf && componentExports(sf)).toEqual(["PresetList"]);
+  });
+
+  it("the component detector counts a value re-export from another module", () => {
+    // `export { DialogCardCtx } from "../../ui/dialogContext"` — a re-exported
+    // component must count toward the one-per-file cap, not slip past it.
+    const sf = parsed.get(join(VIEWS, "overlays", "wizardContext.ts"));
+    expect(sf && componentExports(sf)).toContain("DialogCardCtx");
   });
 
   it("no views file exports more than one component", () => {

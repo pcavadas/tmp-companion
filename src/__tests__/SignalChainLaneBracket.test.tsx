@@ -27,7 +27,7 @@ function mockLaneRects(rects: Partial<DOMRect>[]) {
 function bracketCapOf(container: HTMLElement): HTMLElement {
   // DiamondNode's SPLIT/MIX/JOIN caption is ALSO an absolutely-positioned div,
   // so also match LaneBracketCap's distinctive `width: 9` (its `[side]: -9`
-  // sibling border-box cap — see SignalChainView.tsx) to avoid picking that one.
+  // sibling border-box cap — see views/signalChain/LaneBracketCap.tsx) to avoid picking that one.
   const cap = [...container.querySelectorAll("div")].find(
     (el) => el.style.position === "absolute" && el.style.width === "9px",
   );
@@ -85,8 +85,10 @@ describe("SignalChainView — lane bracket geometry", () => {
     expect(cap.style.right).toBe("-9px"); // JoinHead mirrors ForkTail onto the join side.
     expect(cap.style.left).toBe("");
   });
+});
 
-  it("regression (#313): re-measures on a same-count change, not only a count change", () => {
+describe("regression: #313 same-count bracket re-measure", () => {
+  it("re-measures on a same-count change, not only a count change", () => {
     const graph = (name: string) => ({
       stages: [{ kind: "series" as const, blocks: [b("G1")] }],
       outputs: {
