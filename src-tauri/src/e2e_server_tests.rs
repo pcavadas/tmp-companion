@@ -11,19 +11,22 @@ use tauri::WebviewWindow;
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial() -> Serial {
+    // The lock first, so the mark cannot include another test's requests.
+    let lock = lock_ok(&SERIAL);
     Serial {
-        before: crate::sim_device::live_unmodeled(),
+        mark: crate::sim_device::unmodeled_mark(),
         allowed: Vec::new(),
-        _lock: lock_ok(&SERIAL),
+        _lock: lock,
     }
 }
 
 /// [`SERIAL`] held for one test, plus the #279 gate: when the test ends (without already
-/// panicking), every request kind the live fake answered with nothing and that is outside
-/// `UNHANDLED_CENSUS` must have been there when the test started or be opted in with
-/// [`Serial::allow_unmodeled`]. Otherwise the test fails, naming the kinds.
+/// panicking), every request an installed fake answered with nothing during the test, if
+/// its kind is outside `UNHANDLED_CENSUS`, must be opted in with
+/// [`Serial::allow_unmodeled`]. Otherwise the test fails, naming the kinds. Requests are
+/// counted per test, across fake replacements, whatever earlier tests sent.
 struct Serial {
-    before: Vec<(u32, u32)>,
+    mark: usize,
     allowed: Vec<(u32, u32)>,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
@@ -40,10 +43,11 @@ impl Drop for Serial {
         if std::thread::panicking() {
             return;
         }
-        let new: Vec<_> = crate::sim_device::live_unmodeled()
+        let mut new: Vec<_> = crate::sim_device::unmodeled_since(self.mark)
             .into_iter()
-            .filter(|k| !self.before.contains(k) && !self.allowed.contains(k))
+            .filter(|k| !self.allowed.contains(k))
             .collect();
+        new.dedup();
         assert!(
             new.is_empty(),
             "the fake answered request kinds it does not model (tms.inner): {new:?}; model \

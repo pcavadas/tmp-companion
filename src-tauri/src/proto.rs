@@ -2741,6 +2741,30 @@ mod tests {
             let _ = reassemble_streams_final(&reports);
         }
 
+        /// Reports with a valid report id and a known frame marker, so every one reaches
+        /// frame handling: any marker order, declared length and payload must not panic.
+        #[test]
+        fn reassembly_never_panics_on_well_headed_reports(
+            reports in proptest::collection::vec(
+                (
+                    proptest::sample::select(vec![MAGIC_OUT, MAGIC_IN_START, MAGIC_IN_FRAME]),
+                    any::<u8>(),
+                    any::<u8>(),
+                    proptest::collection::vec(any::<u8>(), 0..66),
+                ),
+                0..12,
+            ),
+        ) {
+            let reports: Vec<Vec<u8>> = reports
+                .into_iter()
+                .map(|(magic, b2, len, payload)| {
+                    [0x00, magic, b2, len].into_iter().chain(payload).collect()
+                })
+                .collect();
+            let _ = reassemble_streams(&reports);
+            let _ = reassemble_streams_final(&reports);
+        }
+
         /// A body split into frames comes back whole from the final-frame reassembler,
         /// fed all at once or one report at a time.
         #[test]

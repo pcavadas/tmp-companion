@@ -37,8 +37,9 @@ export const test = base.extend({
     // #279: a request the offline fake does not model is answered with nothing, so a new
     // product request would otherwise pass here without ever being exercised. Every kind
     // outside the fake's census fails the test that sent it (online: nothing to check).
-    const res = await fetch(`${SERVER}/sim/state`).catch(() => null);
-    if (res?.ok !== true) return;
+    // The server answers `/sim/state` in both modes, so a failed read fails the test too.
+    const res = await fetch(`${SERVER}/sim/state`);
+    expect(res.ok, `GET /sim/state answered ${String(res.status)}`).toBe(true);
     const state = (await res.json()) as {
       online?: boolean;
       unhandled_new?: string[];

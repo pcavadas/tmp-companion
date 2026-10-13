@@ -6423,10 +6423,16 @@ fn run_scene_jobs(
                      isolation cleanup (slot {slot}): {e2}"
                 );
             }
-            return Err(LevelError::Device(format!(
+            let msg = format!(
                 "the base isolation could not be undone before the save ({e}) — abandoning \
                  this batch's unsaved writes rather than risk saving a pedal forced off"
-            )));
+            );
+            // A stopped run stays a cancel, with the failed cleanup attached.
+            return Err(if stopped {
+                LevelError::Cancelled.with_restore(Err(msg))
+            } else {
+                LevelError::Device(msg)
+            });
         }
     }
     // Did the run PERSIST a headroom trade? Only then is there anything to disclose on a

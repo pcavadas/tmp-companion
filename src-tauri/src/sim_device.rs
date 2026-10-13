@@ -516,6 +516,10 @@ struct SimState {
     events: Vec<SimEvent>,
     /// [`SimEvent::Unhandled`] records, in order — the census log, apart from `events`.
     unhandled: Vec<SimEvent>,
+    /// Whether this fake is the installed [`LIVE`] one, whose out-of-census requests go
+    /// to [`UNMODELED_LOG`] for the e2e tests' #279 gate.
+    #[cfg(all(test, feature = "e2e"))]
+    is_live: bool,
     /// The injections armed on this fake, in arming order (`/sim/state`).
     injections: Vec<Injection>,
     /// Requests sent with `batchStatus` 1/2, waiting for a batch 3 to answer them
@@ -758,6 +762,8 @@ impl Default for SimState {
         SimState {
             events: Vec::new(),
             unhandled: Vec::new(),
+            #[cfg(all(test, feature = "e2e"))]
+            is_live: false,
             injections: Vec::new(),
             batch_queue: Vec::new(),
             structural_seen: 0,
@@ -2435,18 +2441,33 @@ static LIVE: Mutex<Option<SimDevice>> = Mutex::new(None);
 /// Record the installed fake as the live handle for `/sim/events`.
 #[cfg(feature = "e2e")]
 pub fn set_live(dev: &SimDevice) {
-    *LIVE.lock().expect("sim live lock") = Some(dev.clone());
+    let mut live = LIVE.lock().expect("sim live lock");
+    #[cfg(all(test, feature = "e2e"))]
+    {
+        if let Some(old) = live.as_ref() {
+            old.state.lock().expect("sim lock").is_live = false;
+        }
+        dev.state.lock().expect("sim lock").is_live = true;
+    }
+    *live = Some(dev.clone());
 }
 
-/// The kinds the current fake answered with nothing that are outside
-/// [`UNHANDLED_CENSUS`], deduplicated, in first-seen order (empty when no fake is installed).
+/// Every out-of-census request any installed [`LIVE`] fake answered with nothing, in
+/// order and not deduplicated, across fake replacements (`reamp_webview` installs a new
+/// fake mid-test). The e2e tests' #279 gate reads the entries its test added.
 #[cfg(all(test, feature = "e2e"))]
-pub fn live_unmodeled() -> Vec<(u32, u32)> {
-    LIVE.lock()
-        .expect("sim live lock")
-        .as_ref()
-        .map(SimDevice::unmodeled)
-        .unwrap_or_default()
+static UNMODELED_LOG: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+
+/// How many entries [`UNMODELED_LOG`] holds — a test's starting mark.
+#[cfg(all(test, feature = "e2e"))]
+pub fn unmodeled_mark() -> usize {
+    UNMODELED_LOG.lock().expect("unmodeled log lock").len()
+}
+
+/// The [`UNMODELED_LOG`] entries recorded since `mark`.
+#[cfg(all(test, feature = "e2e"))]
+pub fn unmodeled_since(mark: usize) -> Vec<(u32, u32)> {
+    UNMODELED_LOG.lock().expect("unmodeled log lock")[mark..].to_vec()
 }
 
 /// The current fake's ordered event log (empty when no fake is installed).
@@ -3717,6 +3738,13 @@ fn record_unhandled_inner(
     );
     if !seen {
         eprintln!("[sim] UNHANDLED {tms}.{inner}");
+    }
+    #[cfg(all(test, feature = "e2e"))]
+    if st.is_live && !in_census(tms, inner) {
+        UNMODELED_LOG
+            .lock()
+            .expect("unmodeled log lock")
+            .push((tms, inner));
     }
     st.unhandled.push(SimEvent::Unhandled { tms, inner, batch });
 }

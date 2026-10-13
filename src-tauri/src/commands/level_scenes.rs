@@ -848,11 +848,16 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                         .is_some_and(|sj| !sj.force_bypass.is_empty());
                 if base_isolated {
                     if let Err(e) = leveller::restore_saved_preset(slot) {
-                        return Err(LevelError::Device(format!(
+                        let msg = format!(
                             "slot {slot}: could not clear the base isolation prepass write \
                              ({e}) — aborting the run rather than risk a later save persisting \
                              every pedal forced off with an empty verify list"
-                        )));
+                        );
+                        // A failed prepass (a cancel above all) keeps its kind.
+                        return Err(match prepass_result {
+                            Err(primary) => primary.with_restore(Err(msg)),
+                            Ok(_) => LevelError::Device(msg),
+                        });
                     }
                 }
                 prepass_result?;
