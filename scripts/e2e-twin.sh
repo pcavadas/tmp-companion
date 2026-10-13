@@ -3,6 +3,11 @@
 # unit's firmware, reached over `hid::twin::TwinHid`. Never the unit, and never a stamp.
 #
 #   TMP_E2E_TWIN=tcp:127.0.0.1:11600 scripts/e2e-twin.sh [spec …]    (default: songs copy)
+#   TMP_E2E_TWIN=… scripts/e2e-twin.sh --seed-only    stop after step 3, before any spec
+#
+# --seed-only leaves the twin holding the pristine scenario: snapshot it there. A snapshot
+# taken after a run holds what the specs saved (copy.spec saves edits into 401/402), so
+# every later seed would re-import those slots.
 #
 # The twin itself runs outside this repository; this script only needs its address. It:
 #   1. builds e2e_server + probe with `--features e2e` into a SEPARATE target dir (under the
@@ -44,9 +49,11 @@ fi
 export TMP_E2E_ONLINE=0
 
 SPECS=()
+SEED_ONLY=0
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    --seed-only) SEED_ONLY=1 ;;
     *) SPECS+=("$a") ;;
   esac
 done
@@ -122,7 +129,9 @@ cleanup() {
   fi
   if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
   kill_port "$PORT"
-  if [ "$code" -eq 0 ]; then
+  if [ "$code" -eq 0 ] && [ "$SEED_ONLY" = 1 ]; then
+    log "twin seeded (--seed-only): the scenario is pristine on the twin — snapshot it now"
+  elif [ "$code" -eq 0 ]; then
     log "twin lane PASSED (${SPECS[*]}) — control plane only; no stamp written"
   else
     err "twin lane FAILED (exit $code) — server log: $SERVER_LOG, probe log: $PROBE_LOG"
@@ -184,6 +193,7 @@ for attempt in 1 2 3; do
 done
 [ "$seeded" = 1 ] || {
   err "scenario seed failed 3 times: $(grep "FAILED" "$PROBE_LOG" | tail -1)"; exit 1; }
+if [ "$SEED_ONLY" = 1 ]; then exit 0; fi
 
 # ── 4. the server ──
 for i in 0 1 2 3 4 5 6 7; do kill_port $((PORT + i)); done
