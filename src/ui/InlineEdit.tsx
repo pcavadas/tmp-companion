@@ -87,8 +87,15 @@ export function InlineEdit({
       }
       onBlur={commitOnBlur ? commit : undefined}
       onKeyDown={(e) => {
-        if (e.key === "Enter") commit();
-        if (e.key === "Escape") cancel();
+        // An IME's Enter confirms a candidate, not the field.
+        if (e.nativeEvent.isComposing) return;
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancel();
+        }
       }}
       style={plainInput(t, style)}
     />

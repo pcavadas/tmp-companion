@@ -43,6 +43,16 @@ describe("InlineEdit", () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
+  it("an IME's Enter (composing) neither commits nor ends the edit", async () => {
+    const { onCommit, onCancel, input } = setup();
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    await userEvent.type(input, "{Enter}");
+    expect(onCommit).toHaveBeenCalledWith("Old");
+  });
+
   it("blur commits", async () => {
     const { onCommit, input } = setup();
     await userEvent.type(input, "er");
