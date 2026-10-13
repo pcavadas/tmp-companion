@@ -604,282 +604,352 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         })
         .collect::<Result<_, String>>()?;
     with_released_seize(state.session.clone(), move || {
-        // One stimulus decode per (path, calibration) pair — items share them, along
-        // with the decoded stimulus's OWN dynamics spread (arms the floor guard below;
-        // computed once here rather than per capture).
-        let mut stims: std::collections::HashMap<(String, Option<u32>), (Vec<f32>, f64)> =
-            std::collections::HashMap::new();
-        // One outcome per item, `Unrun` until the loop reaches it — a Stop leaves the
-        // rest `Unrun`, never a measured-looking placeholder.
-        let mut outcomes: Vec<SoundOutcome> = vec![SoundOutcome::Unrun; resolved.len()];
-        // One field-8 preset read per list index, reused across that preset's base
-        // + footswitch sounds — the source for each sound's force-bypass isolation.
-        let mut preset_cache: std::collections::HashMap<ListIndex, serde_json::Value> =
-            std::collections::HashMap::new();
-        let mut stopped = false;
-        let mut last_scanned: Option<ListIndex> = None;
-        // The previous sound's outcome — drives the consecutive-scene load skip
-        // (`doctor_skip_load`).
-        let mut prev: Option<PrevSound> = None;
-        for (i, (item, path, kind)) in resolved.iter().enumerate() {
-            if DOCTOR_CANCEL.load(SeqCst) {
-                stopped = true;
-                break;
-            }
-            // Marketing-screenshot showcase: the offline fake re-amp is a stimulus
-            // passthrough (every sound measures identically → "All clear"), so inject
-            // curated profiles instead and let the real `diagnose` engine render cards.
-            // Skips the device reads + reconnect sleeps for this item entirely.
-            #[cfg(feature = "e2e")]
-            if crate::e2e_showcase() {
-                // The captured graph is derived offline when the scan has the preset's
-                // graph; an empty one would need the live fallback read, so it stays empty
-                // (diagnosed as an unknown graph, as production does).
-                let nodes = if item.nodes.is_empty() {
-                    Vec::new()
-                } else {
-                    resolve_sound_isolation(
-                        &item.nodes,
-                        &item.footswitches,
-                        &item.scene_overrides,
-                        item.scene,
-                        item.footswitch,
-                        item.list_index,
-                        &mut preset_cache,
-                    )
-                    .graph
-                };
-                outcomes[i] = SoundOutcome::Measured {
-                    profile: doctor::showcase_profile(item.list_index),
-                    coverage: None,
-                    nodes,
-                };
-                let _ = on_result.send(DoctorProgressItem {
+        run_doctor_check(&resolved, restore_list_index, &mut |item| {
+            let _ = on_result.send(item);
+        })
+    })
+    .await
+}
+
+/// The device-thread body of [`doctor_check`]: every sound in `resolved` order, then the
+/// run-end re-amp OFF and the active-preset restore. `progress` streams each sound's item.
+fn run_doctor_check(
+    resolved: &[(DoctorInput, String, doctor::StimulusKind)],
+    restore_list_index: Option<ListIndex>,
+    progress: &mut dyn FnMut(DoctorProgressItem),
+) -> Result<DoctorCheckResult, String> {
+    let mut run = DoctorRun {
+        stims: std::collections::HashMap::new(),
+        preset_cache: std::collections::HashMap::new(),
+        prev: None,
+    };
+    // One outcome per item, `Unrun` until the loop reaches it — a Stop leaves the
+    // rest `Unrun`, never a measured-looking placeholder.
+    let mut outcomes: Vec<SoundOutcome> = vec![SoundOutcome::Unrun; resolved.len()];
+    let mut stopped = false;
+    let mut last_scanned: Option<ListIndex> = None;
+    for (i, (item, path, kind)) in resolved.iter().enumerate() {
+        if DOCTOR_CANCEL.load(SeqCst) {
+            stopped = true;
+            break;
+        }
+        // Marketing-screenshot showcase: the offline fake re-amp is a stimulus
+        // passthrough (every sound measures identically → "All clear"), so inject
+        // curated profiles instead and let the real `diagnose` engine render cards.
+        // Skips the device reads + reconnect sleeps for this item entirely.
+        #[cfg(feature = "e2e")]
+        if crate::e2e_showcase() {
+            outcomes[i] = run.showcase_sound(item);
+            progress(DoctorProgressItem {
+                key: item.key.clone(),
+                status: ProgressStatus::Done,
+                message: None,
+            });
+            continue;
+        }
+        last_scanned = Some(item.list_index);
+        progress(DoctorProgressItem {
+            key: item.key.clone(),
+            status: ProgressStatus::Active,
+            message: None,
+        });
+        match run.measure_sound(item, path, *kind) {
+            Ok(outcome) => {
+                outcomes[i] = outcome;
+                progress(DoctorProgressItem {
                     key: item.key.clone(),
                     status: ProgressStatus::Done,
                     message: None,
                 });
-                // No device load happened — the skip decision must not chain off this.
-                prev = None;
-                continue;
             }
-            last_scanned = Some(item.list_index);
-            let _ = on_result.send(DoctorProgressItem {
-                key: item.key.clone(),
-                status: ProgressStatus::Active,
-                message: None,
-            });
-            // A CAPTURE stimulus (real DI) is injected VERBATIM — calibration
-            // scaling is None-by-definition (mirrors the leveling seam), so its
-            // amplitude drives the chain as recorded. Synthetic keeps its scalar.
-            let cal = match kind {
-                doctor::StimulusKind::Capture => None,
-                doctor::StimulusKind::Synthetic => item.calibration_lufs,
-            };
-            let stim_key = (path.clone(), cal.map(f32::to_bits));
-            let stim = match stims.entry(stim_key) {
-                std::collections::hash_map::Entry::Occupied(e) => Ok(&*e.into_mut()),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    // Sliced to the Doctor window ONCE at cache fill so the
-                    // capture, onset alignment, floor-guard spread, and
-                    // `stimulus_samples` all see the same 3 s stimulus.
-                    read_stimulus_calibrated(path, cal).map(|s| {
-                        let s = leveller::doctor_stim_slice(s);
-                        let spread = leveller::stimulus_momentary_spread(&s);
-                        &*e.insert((s, spread))
-                    })
-                }
-            };
-            // Pre-engage writes for this sound (isolation bypasses + the footswitch's
-            // param-function valueA jumps) — the shared `resolve_sound_isolation`
-            // policy (see its doc).
-            let iso = resolve_sound_isolation(
+            // A Stop that landed mid-capture surfaces as a cancel, not a failure: end the
+            // run like the top-of-loop check would have, leaving this sound un-run rather
+            // than reporting it as an errored sound.
+            Err(e) if e.is_cancelled() => {
+                stopped = true;
+                break;
+            }
+            Err(e) => {
+                let e = e.to_string();
+                outcomes[i] = SoundOutcome::Failed(e.clone());
+                progress(DoctorProgressItem {
+                    key: item.key.clone(),
+                    status: ProgressStatus::Error,
+                    message: Some(e),
+                });
+            }
+        }
+        // A Stop landing after the last item's own success, with no further loop-header
+        // check ahead of it, would otherwise finish the run silently instead of
+        // reporting it stopped.
+        if crate::op_aborted() {
+            stopped = true;
+            break;
+        }
+    }
+
+    let presets = assemble_results(resolved, &outcomes);
+    // Never leave the unit in re-amp after a run: the verified run-end OFF ladder, on
+    // its own fresh connection (#261). Then put it back on the pre-run active preset
+    // (fallback: the last-scanned slot) — the reload also clears the 0.5 reference
+    // presetLevel from the edit buffer.
+    let _ = leveller::reamp_off_guaranteed("doctor_check");
+    if let Some(slot) = restore_list_index.or(last_scanned) {
+        if let Err(e) = Session::connect_lean().and_then(|mut s| s.load_preset(slot)) {
+            log::warn!("doctor_check: failed to restore active preset after run: {e}");
+        }
+    }
+    Ok(DoctorCheckResult { presets, stopped })
+}
+
+/// A decoded Doctor stimulus and its own momentary spread (the floor guard's reference).
+type DoctorStim = (Vec<f32>, f64);
+
+/// The state one [`doctor_check`] run carries from sound to sound.
+struct DoctorRun {
+    /// One stimulus decode per (path, calibration) pair — items share them, along
+    /// with the decoded stimulus's OWN dynamics spread (arms the floor guard below;
+    /// computed once here rather than per capture).
+    stims: std::collections::HashMap<(String, Option<u32>), DoctorStim>,
+    /// One field-8 preset read per list index, reused across that preset's base
+    /// + footswitch sounds — the source for each sound's force-bypass isolation.
+    preset_cache: std::collections::HashMap<ListIndex, serde_json::Value>,
+    /// The previous sound's outcome — drives the consecutive-scene load skip
+    /// (`doctor_skip_load`).
+    prev: Option<PrevSound>,
+}
+
+impl DoctorRun {
+    /// The showcase stand-in for one sound: a curated profile, no device work.
+    #[cfg(feature = "e2e")]
+    fn showcase_sound(&mut self, item: &DoctorInput) -> SoundOutcome {
+        // The captured graph is derived offline when the scan has the preset's
+        // graph; an empty one would need the live fallback read, so it stays empty
+        // (diagnosed as an unknown graph, as production does).
+        let nodes = if item.nodes.is_empty() {
+            Vec::new()
+        } else {
+            resolve_sound_isolation(
                 &item.nodes,
                 &item.footswitches,
                 &item.scene_overrides,
                 item.scene,
                 item.footswitch,
                 item.list_index,
-                &mut preset_cache,
-            );
+                &mut self.preset_cache,
+            )
+            .graph
+        };
+        // No device load happened — the skip decision must not chain off this.
+        self.prev = None;
+        SoundOutcome::Measured {
+            profile: doctor::showcase_profile(item.list_index),
+            coverage: None,
+            nodes,
+        }
+    }
+
+    /// The decoded stimulus for `path` at calibration `cal`, from the run's cache.
+    fn stimulus<'a>(
+        stims: &'a mut std::collections::HashMap<(String, Option<u32>), DoctorStim>,
+        path: &str,
+        cal: Option<f32>,
+    ) -> Result<&'a DoctorStim, String> {
+        let stim_key = (path.to_string(), cal.map(f32::to_bits));
+        match stims.entry(stim_key) {
+            std::collections::hash_map::Entry::Occupied(e) => Ok(&*e.into_mut()),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                // Sliced to the Doctor window ONCE at cache fill so the
+                // capture, onset alignment, floor-guard spread, and
+                // `stimulus_samples` all see the same 3 s stimulus.
+                read_stimulus_calibrated(path, cal).map(|s| {
+                    let s = leveller::doctor_stim_slice(s);
+                    let spread = leveller::stimulus_momentary_spread(&s);
+                    &*e.insert((s, spread))
+                })
+            }
+        }
+    }
+
+    /// Measure one sound: isolate it, capture + profile it (one floor-suspect retry), and
+    /// record whether the next sound may skip its load.
+    fn measure_sound(
+        &mut self,
+        item: &DoctorInput,
+        path: &str,
+        kind: doctor::StimulusKind,
+    ) -> Result<SoundOutcome, LevelError> {
+        // A CAPTURE stimulus (real DI) is injected VERBATIM — calibration
+        // scaling is None-by-definition (mirrors the leveling seam), so its
+        // amplitude drives the chain as recorded. Synthetic keeps its scalar.
+        let cal = match kind {
+            doctor::StimulusKind::Capture => None,
+            doctor::StimulusKind::Synthetic => item.calibration_lufs,
+        };
+        let stim = Self::stimulus(&mut self.stims, path, cal);
+        // Pre-engage writes for this sound (isolation bypasses + the footswitch's
+        // param-function valueA jumps) — the shared `resolve_sound_isolation`
+        // policy (see its doc).
+        let iso = resolve_sound_isolation(
+            &item.nodes,
+            &item.footswitches,
+            &item.scene_overrides,
+            item.scene,
+            item.footswitch,
+            item.list_index,
+            &mut self.preset_cache,
+        );
+        let skip_load = doctor_skip_load(self.prev.as_ref(), item.list_index, item.scene.is_some());
+        let result = stim.and_then(|stim| {
             // An unresolvable footswitch sound never reaches a capture: folding it into
             // `stim` reports it through the loop's own per-sound error path (a skipped
             // sound, never an aborted run) instead of measuring the wrong sound.
-            let stim = match &iso.unresolved {
+            match &iso.unresolved {
                 Some(e) => Err(e.clone()),
-                None => stim,
-            };
-            let family = instrument_of(item);
-            let skip_load = doctor_skip_load(prev.as_ref(), item.list_index, item.scene.is_some());
-            let tail_ms_u32 = doctor::doctor_tail_ms(&iso.graph);
-            let tail_ms = u64::from(tail_ms_u32);
-            // One capture + profile attempt, `skip_load` threaded through (the retry
-            // below forces a fresh preset recall — a floor read means the inject
-            // failed, not that the working copy is stale).
-            // Typed, so a Stop mid-capture reaches the match below as a cancel.
-            let capture_profile = |skip_load: bool,
-                                    stim: &[f32]|
-             -> Result<(doctor::SoundProfile, Vec<bool>), LevelError> {
-                // `_with_loudness`: the production Doctor path REPORTS `integrated_lufs`
-                // to the user (D4), so it needs the un-mixed capture's stereo-measured
-                // Loudness alongside the average-mixdown `samples` bands/PSD run on —
-                // see `doctor_capture_with_loudness`'s doc.
-                // ⟦P1/P4⟧ PREMISE-CHECK SEAM — see `validate_log::emit_doctor`'s doc.
-                let validate = crate::validate_log::doctor_log_path().map(|_| {
-                    crate::validate_log::ValidationRow::doctor(
-                        item.list_index.get(),
-                        item.scene,
-                        item.footswitch,
-                    )
-                });
-                let (samples, rate, stereo_loudness) = leveller::doctor_capture_with_loudness(
-                    item.list_index,
-                    item.scene,
-                    &iso.bypass,
-                    &iso.params,
-                    stim,
-                    Some(0.5),
-                    tail_ms,
-                    skip_load,
-                    validate.as_ref(),
-                )?;
-                // Align the body/tail split to where the stimulus actually starts
-                // (I/O latency); the energy step is primary, falling back to the
-                // correlator and then the legacy un-aligned split — see
-                // `leveller::doctor_onset`'s doc for why the correlator alone
-                // can't be trusted here (a peakless correlation curve on a
-                // washed/reverb chain).
-                let onset = leveller::doctor_onset(stim, &samples, rate);
-                if !onset.confident() {
-                    log::warn!(
-                        "doctor: onset not confidently found for {} ({:?}) — un-aligned tail split",
-                        item.key,
-                        onset.source
-                    );
-                }
-                // ONE shared post-onset body PSD for this capture — read by both the
-                // profile's band powers/air-flatness and the output-coverage SNR
-                // gate below, instead of each computing its own (disagreeing) space.
-                let body_psd = doctor::body_psd(&samples, rate, onset.signal_start);
-                // The STIMULUS's own PSD — the reference the localized
-                // resonant/boxy rules diff against (`Psd::transfer_db`), so
-                // the stimulus's spectral ridges can't read as chain
-                // resonances. Cheap (~ms) next to the ~5 s capture.
-                let stim_psd = crate::psd::welch_psd(stim, rate as f32);
-                let mut profile = doctor::SoundProfile::from_capture_with_psd_loudness(
-                    &samples,
-                    rate,
-                    onset.body_len,
-                    onset.body_start,
-                    tail_ms_u32,
-                    family,
-                    &body_psd,
-                    Some(&stim_psd),
-                    Some(stereo_loudness),
-                )?;
-                // The re-amp stimulus's own band powers — the stimulus-transfer
-                // anchor `compute_rule_metrics` subtracts so a non-humbucker
-                // stimulus (single-coil, DI capture) can't skew the tilt/band
-                // verdicts. THE ONLY production write of this field.
-                profile.stim_bands = Some(stim_psd.band_powers(family.bands()));
-                // The CAPTURED OUTPUT's own band coverage (family layout) — gates on
-                // what the device actually produced, not what the input stimulus
-                // carried, so amp-created HF (fizz/harsh distortion) isn't gated out
-                // just because the DI input never had it.
-                let cov = doctor::output_coverage_with_body(
-                    &samples,
-                    rate,
-                    onset.signal_start,
-                    family,
-                    &body_psd,
-                );
-                Ok((profile, cov))
-            };
-            let result = stim.map_err(LevelError::from).and_then(|(stim, stim_spread)| {
-                let stim_spread = *stim_spread;
-                capture_profile(skip_load, stim).and_then(|(profile, cov)| {
-                    match floor_error_for(profile.momentary_spread_lu, stim_spread) {
-                        None => Ok((profile, cov)),
-                        Some(_) => {
-                            // A silent-inject floor read (the leveller's guard, applied
-                            // here to the Doctor's capture): the reading is finite but
-                            // stationary. Wait out the quiet gap and force a fresh
-                            // preset recall (skip_load=false) — a floor read means the
-                            // inject failed, not that the cached working copy is dirty.
-                            log::warn!(
-                                "doctor_check: floor-suspect capture for {} (momentary spread {:.2} LU, stimulus {:.2} LU) — retrying once",
-                                item.key, profile.momentary_spread_lu, stim_spread
-                            );
-                            crate::settle_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
-                            let (profile, cov) = capture_profile(false, stim)?;
-                            match floor_error_for(profile.momentary_spread_lu, stim_spread) {
-                                None => Ok((profile, cov)),
-                                Some(_) => Err(LevelError::FloorRead),
-                            }
-                        }
-                    }
-                })
+                None => Ok(stim),
+            }
+        });
+        let result = result
+            .map_err(LevelError::from)
+            .and_then(|(stim, stim_spread)| {
+                capture_profile_with_floor_retry(item, &iso, stim, *stim_spread, skip_load)
             });
-            match result {
-                Ok((profile, cov)) => {
-                    outcomes[i] = SoundOutcome::Measured {
-                        profile,
-                        coverage: Some(cov),
-                        nodes: iso.graph.clone(),
-                    };
-                    prev = Some(PrevSound {
-                        list_index: item.list_index,
-                        wrote: !iso.bypass.is_empty() || !iso.params.is_empty(),
-                    });
-                    let _ = on_result.send(DoctorProgressItem {
-                        key: item.key.clone(),
-                        status: ProgressStatus::Done,
-                        message: None,
-                    });
-                }
-                // A Stop that landed mid-capture surfaces as a cancel, not a failure: end the
-                // run like the top-of-loop check would have, leaving this sound un-run rather
-                // than reporting it as an errored sound.
-                Err(e) if e.is_cancelled() => {
-                    stopped = true;
-                    break;
-                }
-                Err(e) => {
-                    let e = e.to_string();
-                    outcomes[i] = SoundOutcome::Failed(e.clone());
-                    // A failed sound may have left the unit on ANY preset (e.g. its
-                    // load connection never opened) — the next sound must reload.
-                    prev = None;
-                    let _ = on_result.send(DoctorProgressItem {
-                        key: item.key.clone(),
-                        status: ProgressStatus::Error,
-                        message: Some(e),
-                    });
-                }
+        match result {
+            Ok((profile, cov)) => {
+                self.prev = Some(PrevSound {
+                    list_index: item.list_index,
+                    wrote: !iso.bypass.is_empty() || !iso.params.is_empty(),
+                });
+                Ok(SoundOutcome::Measured {
+                    profile,
+                    coverage: Some(cov),
+                    nodes: iso.graph,
+                })
             }
-            // A Stop landing after the last item's own success, with no further loop-header
-            // check ahead of it, would otherwise finish the run silently instead of
-            // reporting it stopped.
-            if crate::op_aborted() {
-                stopped = true;
-                break;
+            Err(e) => {
+                // A failed sound may have left the unit on ANY preset (e.g. its
+                // load connection never opened) — the next sound must reload. (A
+                // cancel ends the run, so the reset is moot there.)
+                self.prev = None;
+                Err(e)
             }
         }
+    }
+}
 
-        let presets = assemble_results(&resolved, &outcomes);
-        // Never leave the unit in re-amp after a run: the verified run-end OFF ladder, on
-        // its own fresh connection (#261). Then put it back on the pre-run active preset
-        // (fallback: the last-scanned slot) — the reload also clears the 0.5 reference
-        // presetLevel from the edit buffer.
-        let _ = leveller::reamp_off_guaranteed("doctor_check");
-        if let Some(slot) = restore_list_index.or(last_scanned) {
-            if let Err(e) = Session::connect_lean().and_then(|mut s| s.load_preset(slot)) {
-                log::warn!("doctor_check: failed to restore active preset after run: {e}");
+/// One sound's capture + profile, retried ONCE on a floor-suspect read.
+fn capture_profile_with_floor_retry(
+    item: &DoctorInput,
+    iso: &SoundIsolation,
+    stim: &[f32],
+    stim_spread: f64,
+    skip_load: bool,
+) -> Result<(doctor::SoundProfile, Vec<bool>), LevelError> {
+    let (profile, cov) = doctor_capture_profile(item, iso, stim, skip_load)?;
+    match floor_error_for(profile.momentary_spread_lu, stim_spread) {
+        None => Ok((profile, cov)),
+        Some(_) => {
+            // A silent-inject floor read (the leveller's guard, applied
+            // here to the Doctor's capture): the reading is finite but
+            // stationary. Wait out the quiet gap and force a fresh
+            // preset recall (skip_load=false) — a floor read means the
+            // inject failed, not that the cached working copy is dirty.
+            log::warn!(
+                "doctor_check: floor-suspect capture for {} (momentary spread {:.2} LU, stimulus {:.2} LU) — retrying once",
+                item.key, profile.momentary_spread_lu, stim_spread
+            );
+            crate::settle_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
+            let (profile, cov) = doctor_capture_profile(item, iso, stim, false)?;
+            match floor_error_for(profile.momentary_spread_lu, stim_spread) {
+                None => Ok((profile, cov)),
+                Some(_) => Err(LevelError::FloorRead),
             }
         }
-        Ok(DoctorCheckResult { presets, stopped })
-    })
-    .await
+    }
+}
+
+/// One capture + profile attempt, `skip_load` threaded through (the retry
+/// forces a fresh preset recall — a floor read means the inject
+/// failed, not that the working copy is stale).
+/// Typed, so a Stop mid-capture reaches the caller as a cancel.
+fn doctor_capture_profile(
+    item: &DoctorInput,
+    iso: &SoundIsolation,
+    stim: &[f32],
+    skip_load: bool,
+) -> Result<(doctor::SoundProfile, Vec<bool>), LevelError> {
+    let family = instrument_of(item);
+    let tail_ms_u32 = doctor::doctor_tail_ms(&iso.graph);
+    let tail_ms = u64::from(tail_ms_u32);
+    // `_with_loudness`: the production Doctor path REPORTS `integrated_lufs`
+    // to the user (D4), so it needs the un-mixed capture's stereo-measured
+    // Loudness alongside the average-mixdown `samples` bands/PSD run on —
+    // see `doctor_capture_with_loudness`'s doc.
+    // ⟦P1/P4⟧ PREMISE-CHECK SEAM — see `validate_log::emit_doctor`'s doc.
+    let validate = crate::validate_log::doctor_log_path().map(|_| {
+        crate::validate_log::ValidationRow::doctor(
+            item.list_index.get(),
+            item.scene,
+            item.footswitch,
+        )
+    });
+    let (samples, rate, stereo_loudness) = leveller::doctor_capture_with_loudness(
+        item.list_index,
+        item.scene,
+        &iso.bypass,
+        &iso.params,
+        stim,
+        Some(0.5),
+        tail_ms,
+        skip_load,
+        validate.as_ref(),
+    )?;
+    // Align the body/tail split to where the stimulus actually starts
+    // (I/O latency); the energy step is primary, falling back to the
+    // correlator and then the legacy un-aligned split — see
+    // `leveller::doctor_onset`'s doc for why the correlator alone
+    // can't be trusted here (a peakless correlation curve on a
+    // washed/reverb chain).
+    let onset = leveller::doctor_onset(stim, &samples, rate);
+    if !onset.confident() {
+        log::warn!(
+            "doctor: onset not confidently found for {} ({:?}) — un-aligned tail split",
+            item.key,
+            onset.source
+        );
+    }
+    // ONE shared post-onset body PSD for this capture — read by both the
+    // profile's band powers/air-flatness and the output-coverage SNR
+    // gate below, instead of each computing its own (disagreeing) space.
+    let body_psd = doctor::body_psd(&samples, rate, onset.signal_start);
+    // The STIMULUS's own PSD — the reference the localized
+    // resonant/boxy rules diff against (`Psd::transfer_db`), so
+    // the stimulus's spectral ridges can't read as chain
+    // resonances. Cheap (~ms) next to the ~5 s capture.
+    let stim_psd = crate::psd::welch_psd(stim, rate as f32);
+    let mut profile = doctor::SoundProfile::from_capture_with_psd_loudness(
+        &samples,
+        rate,
+        onset.body_len,
+        onset.body_start,
+        tail_ms_u32,
+        family,
+        &body_psd,
+        Some(&stim_psd),
+        Some(stereo_loudness),
+    )?;
+    // The re-amp stimulus's own band powers — the stimulus-transfer
+    // anchor `compute_rule_metrics` subtracts so a non-humbucker
+    // stimulus (single-coil, DI capture) can't skew the tilt/band
+    // verdicts. THE ONLY production write of this field.
+    profile.stim_bands = Some(stim_psd.band_powers(family.bands()));
+    // The CAPTURED OUTPUT's own band coverage (family layout) — gates on
+    // what the device actually produced, not what the input stimulus
+    // carried, so amp-created HF (fizz/harsh distortion) isn't gated out
+    // just because the DI input never had it.
+    let cov =
+        doctor::output_coverage_with_body(&samples, rate, onset.signal_start, family, &body_psd);
+    Ok((profile, cov))
 }
 
 /// One prescription's apply job (camelCase wire — the frontend echoes the ops it
@@ -1295,7 +1365,11 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         // elsewhere in this file. A read failure here also refuses (`?`):
         // "can't confirm this is safe" must never authorise the write.
         if let Some(scene) = job.scene {
-            if job.ops.iter().any(|op| matches!(op, doctor::DoctorOp::Param { .. })) {
+            if job
+                .ops
+                .iter()
+                .any(|op| matches!(op, doctor::DoctorOp::Param { .. }))
+            {
                 let (preset, _, _) = read_slot_preset_parsed(job.list_index)?;
                 if let Some(reason) = bypass_only_conflict(&preset, scene, &job.ops) {
                     return Err(reason);
@@ -1312,130 +1386,152 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         // Same 3 s Doctor window as the diagnosis captures — the A/B clips must
         // be measured (and heard) over the space the verdicts were made in.
         let stim = leveller::doctor_stim_slice(read_stimulus_calibrated(&stim_path, calibration)?);
-        let run = || -> Result<DoctorApplyResult, String> {
-            // Pre-engage writes for the diagnosed sound — the SAME
-            // `resolve_sound_isolation` policy `doctor_check` uses (one policy so the
-            // A/B can never observe a different bypass OR param state than the
-            // diagnosis; empty `nodes` falls back to the live field-8 read). Inside
-            // `run` (unlike the stimulus read): its empty-graph fallback is a live
-            // device read the backstop must cover.
-            let iso = resolve_sound_isolation(
-                &job.nodes,
-                &job.footswitches,
-                &job.scene_overrides,
-                job.scene,
-                job.footswitch,
-                job.list_index,
-                &mut std::collections::HashMap::new(),
-            );
-            // Same rule as the diagnosis loop: an unisolatable footswitch sound must not
-            // be auditioned — the A/B would compare two captures of the wrong sound.
-            if let Some(e) = &iso.unresolved {
-                return Err(e.clone());
-            }
-            // The Doctor capture tail for the graph the diagnosis was captured in — the
-            // ONE home of the policy (`doctor::doctor_tail_ms`); empty `nodes`
-            // conservatively keeps the full wash-analysis tail.
-            let tail_ms = u64::from(doctor::doctor_tail_ms(&iso.graph));
-
-            // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
-            //     the slot, so (b) below confirms the already-current preset — no reload.
-            //     ref_level None: capture at the preset's OWN level — never write a
-            //     reference presetLevel a later doctor_save would PERSIST (#1).
-            //     Cached across consecutive applies on the same sound (see BEFORE_CACHE);
-            //     a cache hit MUST still load the slot — the load is what (b) relies on
-            //     AND what discards a stale unsaved edit buffer (a failed earlier apply
-            //     whose restore also failed would otherwise stack Rx on Rx).
-            let key: BeforeKey = (
-                job.list_index,
-                job.name.clone(),
-                stim_path.clone(),
-                calibration.map(f32::to_bits),
-                job.scene,
-                job.footswitch,
-            );
-            let before_clip = match before_cache_get(&key) {
-                Some(clip) => {
-                    leveller::restore_saved_preset(job.list_index)?;
-                    clip
-                }
-                None => {
-                    let (before, rate) = leveller::doctor_capture(
-                        job.list_index,
-                        job.scene,
-                        &iso.bypass,
-                        &iso.params,
-                        &stim,
-                        None,
-                        tail_ms,
-                        false,
-                    )?;
-                    let clip = format!(
-                        "data:audio/wav;base64,{}",
-                        base64_encode(&wav_bytes(&before, rate)?)
-                    );
-                    before_cache_put(key, clip.clone());
-                    clip
-                }
-            };
-
-            // (b) APPLY live onto the edit buffer, recalling the diagnosed scene FIRST
-            //     (`ops_session`) so the ops land in it, not wherever the connection
-            //     defaulted to. NEVER saves. On ANY op failure the stored preset is
-            //     reloaded (the partial edit is discarded). Kept OPEN — (c) captures
-            //     on this SAME session, never reconnecting.
-            let mut s = ops_session(job.list_index, &job.name, job.scene, &job.ops, "apply")?;
-
-            // (c) AFTER: capture the live edit buffer on the SAME session (b) just
-            //     wrote to — NOT a fresh reconnect, which would recall the scene
-            //     again and revert the just-applied ops before ever capturing them
-            //     (`leveller::capture_on_session`'s doc). ref_level None like (a):
-            //     nothing touched the level between the captures, so the A/B is
-            //     inherently level-fair at the preset's own level. Past this point
-            //     the ops already applied (b succeeded), so ANY failure here must
-            //     restore the stored preset before returning — the frontend's
-            //     applyLock releases on any `doctorApply` error assuming an
-            //     auto-restore (`PrescriptionCard.tsx`'s "a failed apply
-            //     auto-restores"), and a stranded mutated buffer would let a
-            //     sibling card Apply on top of it.
-            let after_clip = match (|| -> Result<String, String> {
-                let (after, rate) = leveller::doctor_capture_on_session(
-                    &mut s,
-                    &iso.bypass,
-                    &iso.params,
-                    &stim,
-                    None,
-                    tail_ms,
-                )?;
-                Ok(format!(
-                    "data:audio/wav;base64,{}",
-                    base64_encode(&wav_bytes(&after, rate)?)
-                ))
-            })() {
-                Ok(clip) => clip,
-                Err(after_err) => {
-                    return Err(match leveller::restore_saved_preset(job.list_index) {
-                        Ok(()) => after_err,
-                        Err(restore_err) => format!(
-                            "{after_err} AND the restore also failed ({restore_err}) — verify the preset on the unit"
-                        ),
-                    });
-                }
-            };
-
-            Ok(DoctorApplyResult {
-                before_clip,
-                after_clip,
-                reamp_warning: None,
-            })
-        };
-        let result = run();
+        let result = doctor_apply_run(&job, &stim_path, calibration, &stim);
         // Run-end backstop, success or failure (see `reamp_off_guaranteed`). ONLY
         // the reamp toggle — never a load_preset here, which would discard the
         // just-applied unsaved edit buffer on the success path.
         leveller::reamp_off_guaranteed("doctor_apply").stamp(result, |r, w| r.reamp_warning = w)
     })
     .await
+}
+
+/// [`doctor_apply`]'s device work: isolate the diagnosed sound, then (a) the BEFORE
+/// clip, (b) the live apply, (c) the AFTER clip on the same session.
+fn doctor_apply_run(
+    job: &DoctorApplyJob,
+    stim_path: &str,
+    calibration: Option<f32>,
+    stim: &[f32],
+) -> Result<DoctorApplyResult, String> {
+    // Pre-engage writes for the diagnosed sound — the SAME
+    // `resolve_sound_isolation` policy `doctor_check` uses (one policy so the
+    // A/B can never observe a different bypass OR param state than the
+    // diagnosis; empty `nodes` falls back to the live field-8 read). Inside
+    // the run (unlike the stimulus read): its empty-graph fallback is a live
+    // device read the backstop must cover.
+    let iso = resolve_sound_isolation(
+        &job.nodes,
+        &job.footswitches,
+        &job.scene_overrides,
+        job.scene,
+        job.footswitch,
+        job.list_index,
+        &mut std::collections::HashMap::new(),
+    );
+    // Same rule as the diagnosis loop: an unisolatable footswitch sound must not
+    // be auditioned — the A/B would compare two captures of the wrong sound.
+    if let Some(e) = &iso.unresolved {
+        return Err(e.clone());
+    }
+    // The Doctor capture tail for the graph the diagnosis was captured in — the
+    // ONE home of the policy (`doctor::doctor_tail_ms`); empty `nodes`
+    // conservatively keeps the full wash-analysis tail.
+    let tail_ms = u64::from(doctor::doctor_tail_ms(&iso.graph));
+
+    // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
+    //     the slot, so (b) below confirms the already-current preset — no reload.
+    //     ref_level None: capture at the preset's OWN level — never write a
+    //     reference presetLevel a later doctor_save would PERSIST (#1).
+    //     Cached across consecutive applies on the same sound (see BEFORE_CACHE);
+    //     a cache hit MUST still load the slot — the load is what (b) relies on
+    //     AND what discards a stale unsaved edit buffer (a failed earlier apply
+    //     whose restore also failed would otherwise stack Rx on Rx).
+    let key: BeforeKey = (
+        job.list_index,
+        job.name.clone(),
+        stim_path.to_string(),
+        calibration.map(f32::to_bits),
+        job.scene,
+        job.footswitch,
+    );
+    let before_clip = doctor_before_clip(job, key, &iso, stim, tail_ms)?;
+
+    // (b) APPLY live onto the edit buffer, recalling the diagnosed scene FIRST
+    //     (`ops_session`) so the ops land in it, not wherever the connection
+    //     defaulted to. NEVER saves. On ANY op failure the stored preset is
+    //     reloaded (the partial edit is discarded). Kept OPEN — (c) captures
+    //     on this SAME session, never reconnecting.
+    let mut s = ops_session(job.list_index, &job.name, job.scene, &job.ops, "apply")?;
+
+    // (c) AFTER: capture the live edit buffer on the SAME session (b) just
+    //     wrote to — NOT a fresh reconnect, which would recall the scene
+    //     again and revert the just-applied ops before ever capturing them
+    //     (`leveller::capture_on_session`'s doc). ref_level None like (a):
+    //     nothing touched the level between the captures, so the A/B is
+    //     inherently level-fair at the preset's own level. Past this point
+    //     the ops already applied (b succeeded), so ANY failure here must
+    //     restore the stored preset before returning — the frontend's
+    //     applyLock releases on any `doctorApply` error assuming an
+    //     auto-restore (`PrescriptionCard.tsx`'s "a failed apply
+    //     auto-restores"), and a stranded mutated buffer would let a
+    //     sibling card Apply on top of it.
+    let after_clip = match doctor_after_clip(&mut s, &iso, stim, tail_ms) {
+        Ok(clip) => clip,
+        Err(after_err) => {
+            return Err(match leveller::restore_saved_preset(job.list_index) {
+                Ok(()) => after_err,
+                Err(restore_err) => format!(
+                    "{after_err} AND the restore also failed ({restore_err}) — verify the preset on the unit"
+                ),
+            });
+        }
+    };
+
+    Ok(DoctorApplyResult {
+        before_clip,
+        after_clip,
+        reamp_warning: None,
+    })
+}
+
+/// (a) The BEFORE clip: the stored preset's capture, from `BEFORE_CACHE` when the same
+/// sound was captured last (still loading the slot — see the caller's step (a)).
+fn doctor_before_clip(
+    job: &DoctorApplyJob,
+    key: BeforeKey,
+    iso: &SoundIsolation,
+    stim: &[f32],
+    tail_ms: u64,
+) -> Result<String, String> {
+    Ok(match before_cache_get(&key) {
+        Some(clip) => {
+            leveller::restore_saved_preset(job.list_index)?;
+            clip
+        }
+        None => {
+            let (before, rate) = leveller::doctor_capture(
+                job.list_index,
+                job.scene,
+                &iso.bypass,
+                &iso.params,
+                stim,
+                None,
+                tail_ms,
+                false,
+            )?;
+            let clip = format!(
+                "data:audio/wav;base64,{}",
+                base64_encode(&wav_bytes(&before, rate)?)
+            );
+            before_cache_put(key, clip.clone());
+            clip
+        }
+    })
+}
+
+/// (c) The AFTER clip, captured on the session (b) applied the ops on.
+fn doctor_after_clip(
+    s: &mut Session,
+    iso: &SoundIsolation,
+    stim: &[f32],
+    tail_ms: u64,
+) -> Result<String, String> {
+    let (after, rate) =
+        leveller::doctor_capture_on_session(s, &iso.bypass, &iso.params, stim, None, tail_ms)?;
+    Ok(format!(
+        "data:audio/wav;base64,{}",
+        base64_encode(&wav_bytes(&after, rate)?)
+    ))
 }
 
 /// Persist the applied (still-live) edit buffer to `list_index` — SAFELY: the

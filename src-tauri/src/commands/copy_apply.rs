@@ -300,25 +300,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     for (i, op) in job.ops.iter().enumerate() {
         let first = i == 0;
 
-        // Candidate/mode/target per op kind: Remove has no candidate (only shrinks —
-        // never a cap check); Replace subtracts its target's contribution, Insert
-        // doesn't (mirrors the TS `checkOp` mode-aware formula).
-        let (candidate_id, is_replace, target): (Option<&str>, bool, Option<(&str, &str)>) =
-            match op {
-                CopyOp::Replace {
-                    group,
-                    node_id,
-                    repl,
-                } => (
-                    Some(repl.insert_fender_id()),
-                    true,
-                    Some((group.as_str(), node_id.as_str())),
-                ),
-                CopyOp::Insert { repl, .. } => (Some(repl.insert_fender_id()), false, None),
-                CopyOp::Remove { group, node_id } => {
-                    (None, false, Some((group.as_str(), node_id.as_str())))
-                }
-            };
+        let (candidate_id, is_replace, target) = cap_inputs(op);
         // The group's FenderIds before this op, for an insert's anchor check, its IR/saved
         // address check, and an insert's or replace's read-back. `None` when the ops so far
         // cannot be modelled: the group's contents are then unknown.
@@ -329,58 +311,20 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
             }
             CopyOp::Remove { .. } => None,
         };
-        // fw 1.8.58 answers an insert whose anchor is not in the group with no reply and
-        // aborts its server (static RE), so the anchor must resolve to a block known to be
-        // there now.
-        let mut anchor_id = None;
-        if let CopyOp::Insert {
-            group,
-            before: Some(anchor),
-            ..
-        } = op
-        {
-            match ids.resolve(group, anchor) {
-                Some(id) => anchor_id = Some(id.to_string()),
-                None => {
-                    return Ok(error_item(
-                        list_index,
-                        &name,
-                        format!(
-                            "op {}/{total} ({}) refused: its anchor is not a block {group} is \
-                             known to hold now — NOT sent",
-                            i + 1,
-                            describe_copy_op(op),
-                        ),
-                    ));
-                }
-            }
-        }
-        if let CopyOp::Insert { group, repl, .. } = op {
-            // An IR/saved INSERT addresses the node it adds by FenderId (a node id is its
-            // FenderId only for the first instance of a model in a group: fw 1.8.58 mints
-            // `X`, `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
-            // `notes/write-safety.md`), so a group that ALREADY holds that model would make the
-            // follow-up swap ambiguous (it could re-point an existing block). (A cap-legal
-            // case: two cabinets in one group.) Refuse, never guess.
-            let ambiguous = !matches!(repl, CopyRepl::Model { .. })
-                && before
-                    .as_ref()
-                    .is_none_or(|ids| ids.iter().any(|id| id == repl.insert_fender_id()));
-            if ambiguous {
+        let anchor_id = match insert_precheck(op, &ids, before.as_deref()) {
+            Ok(anchor_id) => anchor_id,
+            Err(why) => {
                 return Ok(error_item(
                     list_index,
                     &name,
                     format!(
-                        "op {}/{total} ({}) refused: {group} already holds a {} block (or the \
-                         ops so far cannot be modelled), so the inserted node's id would be \
-                         ambiguous — NOT saved",
+                        "op {}/{total} ({}) refused: {why}",
                         i + 1,
-                        describe_copy_op(op),
-                        repl.insert_fender_id()
+                        describe_copy_op(op)
                     ),
                 ));
             }
-        }
+        };
         let replaced = target.and_then(|(g, n)| blockcaps_replaced(&roster, g, n));
         if let Err(reason) = blockcaps_check(&counts, candidate_id, is_replace, replaced) {
             return Ok(error_item(
@@ -438,31 +382,8 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         }
     }
 
-    // The working-copy read for the Copy view's in-place cache patch (no ~22 s re-scan):
-    // a field-2 re-prompt of the device's LIVE document, taken after the last confirmed op
-    // and BEFORE the save (the footswitch flow's HW-proven re-prompt-then-save ordering),
-    // never a scrape of whatever the session still had buffered. Only on save (an unsaved
-    // edit must not poison the cache), and only when the read can be verified against the
-    // acked ops (`read_working_copy`).
     let graph = if save {
-        // What the acked ops leave behind — the oracle the read is checked against. An
-        // edit that leaves the roster as it was (a same-model re-stamp: the roster compares
-        // FenderIds, so nothing it can see changes) is unverifiable —
-        // pre-edit and post-edit documents look identical — so no read is spent on it.
-        let pre = group_roster(
-            roster
-                .iter()
-                .map(|e| (e.group.as_str(), e.fender_id.as_str())),
-        );
-        let expected = expected_roster(&roster, &job.ops);
-        let graph = read_working_copy(s, &pre, expected.as_ref(), list_index, &name);
-        // Identity-preserving persist (Pro Control's rename(current name) → save(slot)):
-        // keeps the preset's name and song link.
-        if !name.is_empty() {
-            s.rename_current_preset(&name)?;
-        }
-        s.save_current_preset(list_index)?;
-        graph
+        save_copy_target(s, &roster, job)?
     } else {
         None
     };
@@ -476,6 +397,108 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         detail: format!("{total} op(s)"),
         graph,
     })
+}
+
+/// One op's block-cap inputs: `(candidate, is_replace, target)`. Remove has no candidate
+/// (only shrinks — never a cap check); Replace subtracts its target's contribution, Insert
+/// doesn't (mirrors the TS `checkOp` mode-aware formula).
+fn cap_inputs(op: &CopyOp) -> (Option<&str>, bool, Option<(&str, &str)>) {
+    match op {
+        CopyOp::Replace {
+            group,
+            node_id,
+            repl,
+        } => (
+            Some(repl.insert_fender_id()),
+            true,
+            Some((group.as_str(), node_id.as_str())),
+        ),
+        CopyOp::Insert { repl, .. } => (Some(repl.insert_fender_id()), false, None),
+        CopyOp::Remove { group, node_id } => {
+            (None, false, Some((group.as_str(), node_id.as_str())))
+        }
+    }
+}
+
+/// Persist a target whose every op confirmed: the working-copy read for the Copy view's
+/// in-place cache patch (no ~22 s re-scan), then rename-to-itself + save.
+///
+/// The read is a field-2 re-prompt of the device's LIVE document, taken after the last
+/// confirmed op and BEFORE the save (the footswitch flow's HW-proven re-prompt-then-save
+/// ordering), never a scrape of whatever the session still had buffered. Only on save (an
+/// unsaved edit must not poison the cache), and only when the read can be verified against
+/// the acked ops (`read_working_copy`).
+fn save_copy_target(
+    s: &mut Session,
+    roster: &[blockcaps::RosterEntry],
+    job: &CopyJob,
+) -> Result<Option<session::ActiveGraph>, String> {
+    // What the acked ops leave behind — the oracle the read is checked against. An
+    // edit that leaves the roster as it was (a same-model re-stamp: the roster compares
+    // FenderIds, so nothing it can see changes) is unverifiable —
+    // pre-edit and post-edit documents look identical — so no read is spent on it.
+    let pre = group_roster(
+        roster
+            .iter()
+            .map(|e| (e.group.as_str(), e.fender_id.as_str())),
+    );
+    let expected = expected_roster(roster, &job.ops);
+    let graph = read_working_copy(s, &pre, expected.as_ref(), job.list_index, &job.name);
+    // Identity-preserving persist (Pro Control's rename(current name) → save(slot)):
+    // keeps the preset's name and song link.
+    if !job.name.is_empty() {
+        s.rename_current_preset(&job.name)?;
+    }
+    s.save_current_preset(job.list_index)?;
+    Ok(graph)
+}
+
+/// An insert's pre-send checks, given the group's FenderIds before it (`before`): its
+/// resolved anchor id (`None` = append, or not an insert), or the refusal's reason.
+fn insert_precheck(
+    op: &CopyOp,
+    ids: &DeviceIds,
+    before: Option<&[String]>,
+) -> Result<Option<String>, String> {
+    let CopyOp::Insert {
+        group,
+        repl,
+        before: anchor,
+        ..
+    } = op
+    else {
+        return Ok(None);
+    };
+    // fw 1.8.58 answers an insert whose anchor is not in the group with no reply and
+    // aborts its server (static RE), so the anchor must resolve to a block known to be
+    // there now.
+    let anchor_id = match anchor {
+        Some(anchor) => match ids.resolve(group, anchor) {
+            Some(id) => Some(id.to_string()),
+            None => {
+                return Err(format!(
+                    "its anchor is not a block {group} is known to hold now — NOT sent"
+                ));
+            }
+        },
+        None => None,
+    };
+    // An IR/saved INSERT addresses the node it adds by FenderId (a node id is its
+    // FenderId only for the first instance of a model in a group: fw 1.8.58 mints
+    // `X`, `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
+    // `notes/write-safety.md`), so a group that ALREADY holds that model would make the
+    // follow-up swap ambiguous (it could re-point an existing block). (A cap-legal
+    // case: two cabinets in one group.) Refuse, never guess.
+    let ambiguous = !matches!(repl, CopyRepl::Model { .. })
+        && before.is_none_or(|ids| ids.iter().any(|id| id == repl.insert_fender_id()));
+    if ambiguous {
+        return Err(format!(
+            "{group} already holds a {} block (or the ops so far cannot be modelled), so the \
+             inserted node's id would be ambiguous — NOT saved",
+            repl.insert_fender_id()
+        ));
+    }
+    Ok(anchor_id)
 }
 
 /// One target's `error` row: nothing was saved, and the frontend patches nothing.

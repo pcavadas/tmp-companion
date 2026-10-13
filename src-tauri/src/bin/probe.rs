@@ -140,7 +140,10 @@
 //!   probe --agc-test <slot>        GATE 2: full vs half re-amp inject on a CLEAN
 //!                                  preset → is the inject AGC'd? (TMP_LEVELLER_STIMULUS)
 //!
-//! Exits non-zero on failure so it can gate dev scripts.
+//! Exits non-zero on failure so it can gate dev scripts. `probe --help` lists every command
+//! flag (the `ARMS` dispatch table, in dispatch order) and every modifier flag
+//! (`OPTION_FLAGS`); an unrecognised `--flag` exits 2 instead of falling through to the
+//! default connect-and-list.
 
 /// Look up a `--name value` CLI flag in `args`, by adjacent position (the
 /// value is the arg right after the flag). Shared by the doctor-calib-style
@@ -264,6 +267,772 @@ fn is_unit_knob(v: f32) -> bool {
 
 use tmp_companion_lib::{DeviceSlot, ListIndex};
 
+/// THE one result path every arm ends through: print the report and answer `true`
+/// (handled), or fail the process.
+fn report<T: std::fmt::Display, E: std::fmt::Display>(r: Result<T, E>) -> bool {
+    match r {
+        Ok(out) => {
+            print!("{out}");
+            true
+        }
+        Err(e) => fail(e),
+    }
+}
+
+/// [`report`] with a trailing newline, for the arms whose report has none of its own.
+fn report_ln<T: std::fmt::Display, E: std::fmt::Display>(r: Result<T, E>) -> bool {
+    match r {
+        Ok(out) => {
+            println!("{out}");
+            true
+        }
+        Err(e) => fail(e),
+    }
+}
+
+/// THE one failure exit: `[probe] FAILED: …` on stderr, exit 1 (so the probe can gate dev
+/// scripts).
+fn fail(e: impl std::fmt::Display) -> ! {
+    eprintln!("[probe] FAILED: {e}");
+    std::process::exit(1);
+}
+
+/// One `probe` command: the flag(s) that select it, a one-line usage for `--help`, and the
+/// arm that runs it. An arm answers `true` once it has handled the invocation (an arm that
+/// fails exits the process itself); `false` passes it on to the next arm.
+struct Arm {
+    flags: &'static [&'static str],
+    usage: &'static str,
+    run: fn(&[String]) -> bool,
+}
+
+/// Every command, in dispatch order: `main` runs the FIRST arm whose flag is present.
+const ARMS: &[Arm] = &[
+    Arm {
+        flags: &["--activegraph"],
+        usage: r#"--activegraph"#,
+        run: arm_activegraph,
+    },
+    Arm {
+        flags: &["--audio-devices"],
+        usage: r#"--audio-devices"#,
+        run: arm_audio_devices,
+    },
+    Arm {
+        flags: &["--import-file"],
+        usage: r#"--import-file <path> <listIdx>"#,
+        run: arm_import_file,
+    },
+    Arm {
+        flags: &["--scene-doc"],
+        usage: r#"--scene-doc <listIdx> <scene…>"#,
+        run: arm_scene_doc,
+    },
+    Arm {
+        flags: &["--dump-list"],
+        usage: r#"--dump-list <listEnum> <fromSlot> <toSlot> <outDir>"#,
+        run: arm_dump_list,
+    },
+    Arm {
+        flags: &["--scene-node-doc"],
+        usage: r#"--scene-node-doc <listIdx> <group> <node> <scene…>"#,
+        run: arm_scene_node_doc,
+    },
+    Arm {
+        flags: &["--knob-sweep"],
+        usage: r#"--knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)"#,
+        run: arm_knob_sweep,
+    },
+    Arm {
+        flags: &["--measure-pair"],
+        usage: r#"--measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…"#,
+        run: arm_measure_pair,
+    },
+    Arm {
+        flags: &["--dump-currentpresetdata"],
+        usage: r#"--dump-currentpresetdata [slot]"#,
+        run: arm_dump_currentpresetdata,
+    },
+    Arm {
+        flags: &["--active-slot"],
+        usage: r#"--active-slot"#,
+        run: arm_active_slot,
+    },
+    Arm {
+        flags: &["--fw"],
+        usage: r#"--fw"#,
+        run: arm_fw,
+    },
+    Arm {
+        flags: &["--device-backup"],
+        usage: r#"--device-backup"#,
+        run: arm_device_backup,
+    },
+    Arm {
+        flags: &["--doctor-inject"],
+        usage: r#"--doctor-inject <slot> <gains_csv|none> [--block <fender_id>]"#,
+        run: arm_doctor_inject,
+    },
+    Arm {
+        flags: &["--doctor-fs"],
+        usage: r#"--doctor-fs <listIdx> <switch>"#,
+        run: arm_doctor_fs,
+    },
+    Arm {
+        flags: &["--doctor-defects"],
+        usage: r#"--doctor-defects <slot> [--out <report.json>]"#,
+        run: arm_doctor_defects,
+    },
+    Arm {
+        flags: &["--replace-debug"],
+        usage: r#"--replace-debug"#,
+        run: arm_replace_debug,
+    },
+    Arm {
+        flags: &["--bulk-replace"],
+        usage: r#"--bulk-replace <FROM_ID> <TO_ID> <slot,slot,…> [--commit]"#,
+        run: arm_bulk_replace,
+    },
+    Arm {
+        flags: &["--roster"],
+        usage: r#"--roster <slot,slot,…>"#,
+        run: arm_roster,
+    },
+    Arm {
+        flags: &["--discover-diff"],
+        usage: r#"--discover-diff <FROM_ID> <slot,slot,…>"#,
+        run: arm_discover_diff,
+    },
+    Arm {
+        flags: &["--slot-json"],
+        usage: r#"--slot-json"#,
+        run: arm_slot_json,
+    },
+    Arm {
+        flags: &["--replace-held"],
+        usage: r#"--replace-held <FROM_ID> <TO_ID> <slot,slot,…> [--commit]"#,
+        run: arm_replace_held,
+    },
+    Arm {
+        flags: &["--insert-active"],
+        usage: r#"--insert-active <NEW_MODEL_ID> [--group G1] [--after <NODE_ID>] [--slot <deviceSlot>] [--commit]"#,
+        run: arm_insert_active,
+    },
+    Arm {
+        flags: &["--measure-footswitch"],
+        usage: r#"--measure-footswitch <slot(0-based list index)> <switch> <topology_id> \"#,
+        run: arm_measure_footswitch,
+    },
+    Arm {
+        flags: &["--level-footswitch"],
+        usage: r#"--level-footswitch <slot> <switch> <levGroup> <levNode> <levParam> <target> [--commit]  (TMP_LEVELLER_STIMULUS=<wav>)"#,
+        run: arm_level_footswitch,
+    },
+    Arm {
+        flags: &["--bake-validate"],
+        usage: r#"--bake-validate <slot> <switch> <group> <node> <param> <target>  (TMP_LEVELLER_STIMULUS=<wav>)"#,
+        run: arm_bake_validate,
+    },
+    Arm {
+        flags: &["--amp-recipe"],
+        usage: r#"--amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>  (TMP_LEVELLER_STIMULUS=<wav>)"#,
+        run: arm_amp_recipe,
+    },
+    Arm {
+        flags: &["--fs-sweep"],
+        usage: r#"--fs-sweep <listIdx> <switch> <group> <node> <param> <v1,v2,… each 0..=1>  (TMP_LEVELLER_STIMULUS=<wav>)"#,
+        run: arm_fs_sweep,
+    },
+    Arm {
+        flags: &["--set-param-save"],
+        usage: r#"--set-param-save <listIdx> <expectName> <group> <node> <param> <value> [save]"#,
+        run: arm_set_param_save,
+    },
+    Arm {
+        flags: &["--fs-list"],
+        usage: r#"--fs-list <slot>   (read-only: footswitch blocks + bake/assign classification)"#,
+        run: arm_fs_list,
+    },
+    Arm {
+        flags: &["--measure-forced"],
+        usage: r#"--measure-forced <slot> <group> <node>  (TMP_LEVELLER_STIMULUS=<wav>)"#,
+        run: arm_measure_forced,
+    },
+    Arm {
+        flags: &["--repro-chunked"],
+        usage: r#"--repro-chunked"#,
+        run: arm_repro_chunked,
+    },
+    Arm {
+        flags: &["--clear-ftsw"],
+        usage: r#"--clear-ftsw <slot> <switch> <index>"#,
+        run: arm_clear_ftsw,
+    },
+    Arm {
+        flags: &["--ftsw-validate"],
+        usage: r#"--ftsw-validate [switchIndex] [--commit]"#,
+        run: arm_ftsw_validate,
+    },
+    Arm {
+        flags: &["--restore-check"],
+        usage: r#"--restore-check <deviceSlot> [trials]"#,
+        run: arm_restore_check,
+    },
+    Arm {
+        flags: &["--reprompt-map"],
+        usage: r#"--reprompt-map <slot> <name> <group> (--remove <nodeId> | --insert <fenderId> [--before <id>]) [--commit]"#,
+        run: arm_reprompt_map,
+    },
+    Arm {
+        flags: &["--insert-map"],
+        usage: r#"--insert-map <slot> <group> <fenderId> [--before <id>] [--at-index <n>] [--commit]"#,
+        run: arm_insert_map,
+    },
+    Arm {
+        flags: &["--bulk-replace-saved"],
+        usage: r#"--bulk-replace-saved <FROM_CAB_ID> <slot,slot,…> [--commit]"#,
+        run: arm_bulk_replace_saved,
+    },
+    Arm {
+        flags: &["--saved-blocks"],
+        usage: r#"--saved-blocks"#,
+        run: arm_saved_blocks,
+    },
+    Arm {
+        flags: &["--re-blocks"],
+        usage: r#"--re-blocks"#,
+        run: arm_re_blocks,
+    },
+    Arm {
+        flags: &["--overlay-ab"],
+        usage: r#"--overlay-ab <slot|all> [--contexts N]   (slot 1-based, N default 2)"#,
+        run: arm_overlay_ab,
+    },
+    Arm {
+        flags: &["--scenes-passive"],
+        usage: r#"--scenes-passive"#,
+        run: arm_scenes_passive,
+    },
+    Arm {
+        flags: &["--slotread-x"],
+        usage: r#"--slotread-x"#,
+        run: arm_slotread_x,
+    },
+    Arm {
+        flags: &["--slotread-live"],
+        usage: r#"--slotread-live"#,
+        run: arm_slotread_live,
+    },
+    Arm {
+        flags: &["--scenes-full"],
+        usage: r#"--scenes-full"#,
+        run: arm_scenes_full,
+    },
+    Arm {
+        flags: &["--scenes"],
+        usage: r#"--scenes"#,
+        run: arm_scenes,
+    },
+    Arm {
+        flags: &["--seed-scenario"],
+        usage: r#"--seed-scenario"#,
+        run: arm_seed_scenario,
+    },
+    Arm {
+        flags: &["--clear-strays"],
+        usage: r#"--clear-strays"#,
+        run: arm_clear_strays,
+    },
+    Arm {
+        flags: &["--listall"],
+        usage: r#"--listall"#,
+        run: arm_listall,
+    },
+    Arm {
+        flags: &["--capture-input"],
+        usage: r#"--capture-input"#,
+        run: arm_capture_input,
+    },
+    Arm {
+        flags: &["--agc-test"],
+        usage: r#"--agc-test"#,
+        run: arm_agc_test,
+    },
+    Arm {
+        flags: &["--channels"],
+        usage: r#"--channels"#,
+        run: arm_channels,
+    },
+    Arm {
+        flags: &["--scene-write-cell"],
+        usage: r#"--scene-write-cell <listIdx> <expectName> <sceneSlot> <group> <node> <param> [--value V] [--no-scene-edit] [--recall-settle MS]"#,
+        run: arm_scene_write_cell,
+    },
+    Arm {
+        flags: &["--set-scene-param"],
+        usage: r#"--set-scene-param <listIdx> <expectName> <sceneSlot|base> <group> <node> <param> <value>"#,
+        run: arm_set_scene_param,
+    },
+    Arm {
+        flags: &["--levelblock"],
+        usage: r#"--levelblock <slot> <target_lufs> <groupId> <nodeId> <parameterId>  (TMP_LEVELLER_STIMULUS=<wav>)"#,
+        run: arm_levelblock,
+    },
+    Arm {
+        flags: &["--bench-scene-leveling"],
+        usage: r#"--bench-scene-leveling <slots_csv> <target_lufs> <topology_id> <out.json>"#,
+        run: arm_bench_scene_leveling,
+    },
+    Arm {
+        flags: &["--blocks"],
+        usage: r#"--blocks"#,
+        run: arm_blocks,
+    },
+    Arm {
+        flags: &["--listen"],
+        usage: r#"--listen [seconds] [heartbeatMs] [pollSecs]"#,
+        run: arm_listen,
+    },
+    Arm {
+        flags: &["--classify"],
+        usage: r#"--classify <listIdx> [scene…]"#,
+        run: arm_classify,
+    },
+    Arm {
+        flags: &["--level-scenes", "--rebalance-scenes"],
+        usage: r#"--level-scenes|--rebalance-scenes <listIdx> <targetLUFS> <topology> [scene…]"#,
+        run: arm_level_scenes,
+    },
+    Arm {
+        flags: &["--reamp-state"],
+        usage: r#"--reamp-state"#,
+        run: arm_reamp_state,
+    },
+    Arm {
+        flags: &["--reamp-multi-engage"],
+        usage: r#"--reamp-multi-engage <cycles ≥ 1> [topology]"#,
+        run: arm_reamp_multi_engage,
+    },
+    Arm {
+        flags: &["--reamp-toggle-test"],
+        usage: r#"--reamp-toggle-test"#,
+        run: arm_reamp_toggle_test,
+    },
+    Arm {
+        flags: &["--reamp-off"],
+        usage: r#"--reamp-off"#,
+        run: arm_reamp_off,
+    },
+    Arm {
+        flags: &["--set-param"],
+        usage: r#"--set-param"#,
+        run: arm_set_param,
+    },
+    Arm {
+        flags: &["--settings-read"],
+        usage: r#"--settings-read"#,
+        run: arm_settings_read,
+    },
+    Arm {
+        flags: &["--set-scene-behavior"],
+        usage: r#"--set-scene-behavior"#,
+        run: arm_set_scene_behavior,
+    },
+    Arm {
+        flags: &["--switch-template"],
+        usage: r#"--switch-template"#,
+        run: arm_switch_template,
+    },
+    Arm {
+        flags: &["--set-master"],
+        usage: r#"--set-master"#,
+        run: arm_set_master,
+    },
+    Arm {
+        flags: &["--mixer"],
+        usage: r#"--mixer"#,
+        run: arm_mixer,
+    },
+    Arm {
+        flags: &["--reamp-wav"],
+        usage: r#"--reamp-wav <slot> <stimulus.wav> <out.wav> [ref_level=0.5] [bypass] [bypass-nodes=G1/NODE,...]"#,
+        run: arm_reamp_wav,
+    },
+    Arm {
+        flags: &["--tail-decay"],
+        usage: r#"--tail-decay <slot> <stimulus.wav> <tail_ms> <out.wav> [scene]"#,
+        run: arm_tail_decay,
+    },
+    Arm {
+        flags: &["--move-preset"],
+        usage: r#"--move-preset <from-list-index> <to-list-index>"#,
+        run: arm_move_preset,
+    },
+    Arm {
+        flags: &["--loadscene"],
+        usage: r#"--loadscene <sceneSlot>   (0-based scenes[] index; 8 = base; current preset)"#,
+        run: arm_loadscene,
+    },
+    Arm {
+        flags: &["--measure-current"],
+        usage: r#"--measure-current <topology_id> [sceneSlot] [calibrationLUFS]"#,
+        run: arm_measure_current,
+    },
+    Arm {
+        flags: &["--measure-scene"],
+        usage: r#"--measure-scene <slot(0-based list index)> <sceneSlot> <topology_id> [calibrationLUFS] [--target <lufs>] [--dump-wav <dir>]"#,
+        run: arm_measure_scene,
+    },
+    Arm {
+        flags: &["--held-reengage"],
+        usage: r#"--held-reengage <slot> <topology_id> <sceneA,sceneB,...> [calibrationLUFS]"#,
+        run: arm_held_reengage,
+    },
+    Arm {
+        flags: &["--export"],
+        usage: r#"--export <listEnum> <slot>   (listEnum 1 = My Presets)"#,
+        run: arm_export,
+    },
+    Arm {
+        flags: &["--factory-list"],
+        usage: r#"--factory-list"#,
+        run: arm_factory_list,
+    },
+    Arm {
+        flags: &["--load-probe"],
+        usage: r#"--load-probe <slot> <tabEnum>   (tabEnum 1 = UserPresets; Factory unknown)"#,
+        run: arm_load_probe,
+    },
+    Arm {
+        flags: &["--import"],
+        usage: r#"--import <file.preset>"#,
+        run: arm_import,
+    },
+    Arm {
+        flags: &["--save-load-test"],
+        usage: r#"--save-load-test <slotA> <slotB> <level> --commit <expectedNameOfSlotA>  (slotA/slotB are 0-based list indices; DESTRUCTIVE)"#,
+        run: arm_save_load_test,
+    },
+    Arm {
+        flags: &["--redistribute-persist-check"],
+        usage: r#"--redistribute-persist-check <scratchSlot> <expectedName>  (0-based list index; the scratch preset needs an amp + ≥1 scene)"#,
+        run: arm_redistribute_persist_check,
+    },
+    Arm {
+        flags: &["--clear"],
+        usage: r#"--clear <listIndex(0-based)> <expect-name>"#,
+        run: arm_clear,
+    },
+    Arm {
+        flags: &["--map-slots"],
+        usage: r#"--map-slots"#,
+        run: arm_map_slots,
+    },
+    Arm {
+        flags: &["--songs"],
+        usage: r#"--songs"#,
+        run: arm_songs,
+    },
+    Arm {
+        flags: &["--setlists"],
+        usage: r#"--setlists"#,
+        run: arm_setlists,
+    },
+    Arm {
+        flags: &["--setlist-songs"],
+        usage: r#"--setlist-songs"#,
+        run: arm_setlist_songs,
+    },
+    Arm {
+        flags: &["--diag-frames"],
+        usage: r#"--diag-frames"#,
+        run: arm_diag_frames,
+    },
+    Arm {
+        flags: &["--diag-writes"],
+        usage: r#"--diag-writes"#,
+        run: arm_diag_writes,
+    },
+    Arm {
+        flags: &["--add-song"],
+        usage: r#"--add-song <name>"#,
+        run: arm_add_song,
+    },
+    Arm {
+        flags: &["--add-setlist"],
+        usage: r#"--add-setlist <name>"#,
+        run: arm_add_setlist,
+    },
+    Arm {
+        flags: &["--add-setlist-song"],
+        usage: r#"--add-setlist-song <setlist-name> <song-name>"#,
+        run: arm_add_setlist_song,
+    },
+    Arm {
+        flags: &["--rename-song"],
+        usage: r#"--rename-song <old-name> <new-name>"#,
+        run: arm_rename_song,
+    },
+    Arm {
+        flags: &["--rename-setlist"],
+        usage: r#"--rename-setlist <old-name> <new-name>"#,
+        run: arm_rename_setlist,
+    },
+    Arm {
+        flags: &["--song-notes"],
+        usage: r#"--song-notes <song-name> <notes>"#,
+        run: arm_song_notes,
+    },
+    Arm {
+        flags: &["--song-bpm"],
+        usage: r#"--song-bpm <song-name> <bpm>"#,
+        run: arm_song_bpm,
+    },
+    Arm {
+        flags: &["--assign-song-preset"],
+        usage: r#"--assign-song-preset <song-name> <row> <list-index>"#,
+        run: arm_assign_song_preset,
+    },
+    Arm {
+        flags: &["--remove-song"],
+        usage: r#"--remove-song <name>"#,
+        run: arm_remove_song,
+    },
+    Arm {
+        flags: &["--remove-setlists-named"],
+        usage: r#"--remove-setlists-named <name>"#,
+        run: arm_remove_setlists_named,
+    },
+    Arm {
+        flags: &["--remove-setlist"],
+        usage: r#"--remove-setlist <name>"#,
+        run: arm_remove_setlist,
+    },
+    Arm {
+        flags: &["--remove-setlist-song"],
+        usage: r#"--remove-setlist-song <setlist-name> <position>"#,
+        run: arm_remove_setlist_song,
+    },
+    Arm {
+        flags: &["--move-setlist-song"],
+        usage: r#"--move-setlist-song <setlist-name> <old-pos> <new-pos>"#,
+        run: arm_move_setlist_song,
+    },
+    Arm {
+        flags: &["--songpresets"],
+        usage: r#"--songpresets <songSlot>"#,
+        run: arm_songpresets,
+    },
+    Arm {
+        flags: &["--replace-inplace"],
+        usage: r#"--replace-inplace <orig-list-index> <file.preset>"#,
+        run: arm_replace_inplace,
+    },
+    Arm {
+        flags: &["--restore"],
+        usage: r#"--restore <snapshot.json>"#,
+        run: arm_restore,
+    },
+    Arm {
+        flags: &["--capture-reference"],
+        usage: r#"--capture-reference <slot> <topology> <out.wav>"#,
+        run: arm_capture_reference,
+    },
+    Arm {
+        flags: &["--measure-adaptive"],
+        usage: r#"--measure-adaptive <slot> <topology>"#,
+        run: arm_measure_adaptive,
+    },
+    Arm {
+        flags: &["--doctor"],
+        usage: r#"--doctor <slots_csv[:scene]> <topology>"#,
+        run: arm_doctor,
+    },
+    Arm {
+        flags: &["--doctor-calib"],
+        usage: r#"--doctor-calib <slots_csv> --stim <wav> --family <guitar|bass|bass-vi> [--labels <rules.json>] --out <report.json>"#,
+        run: arm_doctor_calib,
+    },
+    Arm {
+        flags: &["--doctor-loo"],
+        usage: r#"--doctor-loo <factory_report.json> [--kind synthetic|capture] [--out <loo.json>]"#,
+        run: arm_doctor_loo,
+    },
+    Arm {
+        flags: &["--benchmark"],
+        usage: r#"--benchmark <corpus.json> [--thresholds <thresholds.json>] --out <result.json>"#,
+        run: arm_benchmark,
+    },
+    Arm {
+        flags: &["--doctor-calib-factory"],
+        usage: r#"--doctor-calib-factory <factory_slots_csv> --stim <wav> --family <guitar|bass|bass-vi> --out <report.json>"#,
+        run: arm_doctor_calib_factory,
+    },
+    Arm {
+        flags: &["--doctor-window-ab"],
+        usage: r#"--doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]"#,
+        run: arm_doctor_window_ab,
+    },
+    Arm {
+        flags: &["--capture-wav"],
+        usage: r#"--capture-wav <out.wav> [secs=12]"#,
+        run: arm_capture_wav,
+    },
+    Arm {
+        flags: &["--scale-wav"],
+        usage: r#"--scale-wav <in.wav> <out.wav> <target_lufs>"#,
+        run: arm_scale_wav,
+    },
+    Arm {
+        flags: &["--stim-ab"],
+        usage: r#"--stim-ab <slots_csv> <wavA> <wavB> [ref_level=0.5]"#,
+        run: arm_stim_ab,
+    },
+    Arm {
+        flags: &["--measure-prefix-sweep"],
+        usage: r#"--measure-prefix-sweep <wav>"#,
+        run: arm_measure_prefix_sweep,
+    },
+    Arm {
+        flags: &["--measure-converge-replay"],
+        usage: r#"--measure-converge-replay <wav> <eps_lu> <stable_k> <preroll_ms>"#,
+        run: arm_measure_converge_replay,
+    },
+    Arm {
+        flags: &["--lufs"],
+        usage: r#"--lufs <wav>"#,
+        run: arm_lufs,
+    },
+    Arm {
+        flags: &["--measure-wav"],
+        usage: r#"--measure-wav <wav>"#,
+        run: arm_measure_wav,
+    },
+    Arm {
+        flags: &["--levelpreset"],
+        usage: r#"--levelpreset <slot> <target_lufs> [save] [noverify]  (TMP_LEVELLER_STIMULUS=<wav>)"#,
+        run: arm_levelpreset,
+    },
+    Arm {
+        flags: &["--live-lufs"],
+        usage: r#"--live-lufs <slot> <target_lufs> [save] [noverify]  (TMP_LEVELLER_STIMULUS=<wav>)"#,
+        run: arm_live_lufs,
+    },
+    Arm {
+        flags: &["--level-preset-scenes"],
+        usage: r#"--level-preset-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]"#,
+        run: arm_level_preset_scenes,
+    },
+    Arm {
+        flags: &["--bisect-scene"],
+        usage: r#"--bisect-scene <listIndex> <sceneSlot> <groupId> <nodeId> <value> [asis] [save]"#,
+        run: arm_bisect_scene,
+    },
+    Arm {
+        flags: &["--fs-batch"],
+        usage: r#"--fs-batch <listIndex> [v1 v2 …]"#,
+        run: arm_fs_batch,
+    },
+    Arm {
+        flags: &["--defer-scenes"],
+        usage: r#"--defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>"#,
+        run: arm_defer_scenes,
+    },
+    Arm {
+        flags: &["--jointk-scenes"],
+        usage: r#"--jointk-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]"#,
+        run: arm_jointk_scenes,
+    },
+    Arm {
+        flags: &["--redistribute"],
+        usage: r#"--redistribute <listIndex> <target> <topology> <worstDeficitDb>  (SAVES — point at a scratch preset)"#,
+        run: arm_redistribute,
+    },
+    Arm {
+        flags: &["--scene-knob-authority"],
+        usage: r#"--scene-knob-authority <listIndex> <sceneSlot> <topology>"#,
+        run: arm_scene_knob_authority,
+    },
+    Arm {
+        flags: &["--mute-floor"],
+        usage: r#"--mute-floor <listIndex> <sceneSlot> <topology>"#,
+        run: arm_mute_floor,
+    },
+    Arm {
+        flags: &["--measure-scene-levels"],
+        usage: r#"--measure-scene-levels <listIndex> <topology>"#,
+        run: arm_measure_scene_levels,
+    },
+    Arm {
+        flags: &["--scene-amp-diag"],
+        usage: r#"--scene-amp-diag <listIndex> : per-scene amp bypass + level-control dump (read-only)."#,
+        run: arm_scene_amp_diag,
+    },
+    Arm {
+        flags: &["--bulk-dryrun"],
+        usage: r#"--bulk-dryrun <preset-folder> <opspec.json|inline-json>"#,
+        run: arm_bulk_dryrun,
+    },
+    Arm {
+        flags: &["--bulk-apply"],
+        usage: r#"--bulk-apply <preset-folder> <opspec.json|inline-json> [--slots a,b,c] [revert]"#,
+        run: arm_bulk_apply,
+    },
+];
+
+/// Flags that modify a command rather than select one (`--commit`, `--out`, …): known to
+/// the unknown-flag check, listed by `--help`, never dispatched on their own.
+const OPTION_FLAGS: &[&str] = &[
+    "--after",
+    "--at-index",
+    "--before",
+    "--block",
+    "--commit",
+    "--contexts",
+    "--dump-wav",
+    "--family",
+    "--group",
+    "--insert",
+    "--labels",
+    "--lev",
+    "--no-scene-edit",
+    "--out",
+    "--recall-settle",
+    "--remove",
+    "--scene",
+    "--slot",
+    "--slots",
+    "--stim",
+    "--target",
+    "--value",
+];
+
+/// The first `--flag` in `args` that neither selects a command nor modifies one — a typo,
+/// which used to fall through to the default connect-and-list.
+fn unknown_flag(args: &[String]) -> Option<&str> {
+    args.iter().skip(1).map(String::as_str).find(|a| {
+        a.starts_with("--")
+            && !OPTION_FLAGS.contains(a)
+            && !ARMS.iter().any(|arm| arm.flags.contains(a))
+    })
+}
+
+/// `probe --help`: every command flag with its usage, then the modifier flags.
+fn help_text() -> String {
+    let mut out = String::from(
+        "usage: probe [<command> <args…>]   (no command: connect + list My Presets)\n\ncommands:\n",
+    );
+    for arm in ARMS {
+        out += &format!("  {}\n", arm.usage);
+    }
+    out += "\noptions (modify a command):\n";
+    out += &format!("  {}\n", OPTION_FLAGS.join(" "));
+    out
+}
+
+// ─── Song/Setlist WRITE primitives (DEVICE WRITES; name-addressed) ────────
+// Helper macro-free dispatch: each maps to a tmp_companion_lib::probe_* fn.
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if log::set_logger(&StderrLog).is_ok() {
@@ -293,57 +1062,90 @@ fn main() {
         std::process::exit(3);
     }
 
+    if args.iter().skip(1).any(|a| a == "--help" || a == "-h") {
+        print!("{}", help_text());
+        return;
+    }
+    if let Some(bad) = unknown_flag(&args) {
+        eprintln!("[probe] unknown flag {bad:?} — `probe --help` lists every flag");
+        std::process::exit(2);
+    }
+    // First matching arm wins, in table order — the order the arms always ran in.
+    for arm in ARMS {
+        if (arm.run)(&args) {
+            return;
+        }
+    }
+
+    // Default: connect + list My Presets (HID stack sanity check).
+    eprintln!("[probe] connecting to TMP (seizing device)…");
+    match tmp_companion_lib::probe_connect_and_list() {
+        Ok(presets) => {
+            println!("[probe] OK — {} presets in My Presets:", presets.len());
+            // TMP_LIST_ALL=1 prints the whole list (finding a preset's current slot);
+            // default keeps the 20-row sanity-check summary.
+            let shown = if std::env::var_os("TMP_LIST_ALL").is_some() {
+                presets.len()
+            } else {
+                20
+            };
+            for p in presets.iter().take(shown) {
+                println!(
+                    "  idx {:>3} · slot {:>3}  {}",
+                    p.slot,
+                    p.slot.device_slot(),
+                    p.name
+                );
+            }
+            if presets.len() > shown {
+                println!("  … and {} more", presets.len() - shown);
+            }
+            if presets.is_empty() {
+                eprintln!("[probe] WARNING: connected but the list was empty");
+                std::process::exit(2);
+            }
+        }
+        Err(e) => fail(e),
+    }
+}
+
+fn arm_activegraph(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--activegraph") {
-        match tmp_companion_lib::probe_active_graph() {
-            Ok(graph) => {
-                print!("{graph}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_active_graph());
     }
 
+    false
+}
+
+fn arm_audio_devices(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--audio-devices") {
-        match tmp_companion_lib::probe_audio_devices() {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_audio_devices());
     }
 
+    false
+}
+
+fn arm_import_file(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--import-file") {
         // --import-file <path> <listIdx>  — import a .preset FILE into an EMPTY 0-based
         // list index (repro instrumentation; refuses an occupied target).
         let path = args.get(i + 1).cloned().unwrap_or_default();
-        let idx = slot_at(&args, i + 2);
+        let idx = slot_at(args, i + 2);
         if path.is_empty() {
             eprintln!("usage: probe --import-file <path> <listIdx>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_import_file(&path, idx) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_import_file(&path, idx));
     }
 
+    false
+}
+
+fn arm_scene_doc(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--scene-doc") {
         // --scene-doc <listIdx> <scene…>  — rendered field-3 amp params after each
         // recall, in the given order (arrival-order-controlled; non-destructive).
-        let idx = slot_at(&args, i + 1);
+        let idx = slot_at(args, i + 1);
         let scenes: Vec<u32> = args
             .iter()
             .skip(i + 2)
@@ -353,47 +1155,37 @@ fn main() {
             eprintln!("usage: probe --scene-doc <listIdx> <scene…>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_scene_doc(idx, &scenes) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_scene_doc(idx, &scenes));
     }
 
+    false
+}
+
+fn arm_dump_list(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--dump-list") {
         // --dump-list <listEnum> <fromSlot> <toSlot> <outDir> — field-8 sweep over a
         // slot range of any preset list (My=1, Cloud=3, Factory=4), JSON per slot to
         // outDir. Read-only census instrumentation.
         let le: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let from = slot_at(&args, i + 2);
-        let to = slot_at(&args, i + 3);
+        let from = slot_at(args, i + 2);
+        let to = slot_at(args, i + 3);
         let dir = args.get(i + 4).cloned().unwrap_or_default();
         if le == 0 || from == 0 || to < from || dir.is_empty() {
             eprintln!("usage: probe --dump-list <listEnum> <fromSlot> <toSlot> <outDir>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_dump_list(le, from, to, &dir) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_dump_list(le, from, to, &dir));
     }
 
+    false
+}
+
+fn arm_scene_node_doc(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--scene-node-doc") {
         // --scene-node-doc <listIdx> <group> <node> <scene…>  — probe_scene_doc
         // generalized to a caller-chosen node: rendered field-3 params + ftsw active
         // flags after each recall, in the given order (non-destructive).
-        let idx = slot_at(&args, i + 1);
+        let idx = slot_at(args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         let scenes: Vec<u32> = args
@@ -405,21 +1197,18 @@ fn main() {
             eprintln!("usage: probe --scene-node-doc <listIdx> <group> <node> <scene…>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_scene_node_doc(idx, &group, &node, &scenes) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_scene_node_doc(
+            idx, &group, &node, &scenes,
+        ));
     }
 
+    false
+}
+
+fn arm_knob_sweep(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--knob-sweep") {
         // --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)
-        let idx = slot_at(&args, i + 1);
+        let idx = slot_at(args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         let param = args.get(i + 4).cloned().unwrap_or_default();
@@ -439,25 +1228,22 @@ fn main() {
             eprintln!("usage: probe --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_knob_sweep(idx, &group, &node, &param, &values) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_knob_sweep(
+            idx, &group, &node, &param, &values,
+        ));
     }
 
+    false
+}
+
+fn arm_measure_pair(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-pair") {
         // --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…  — P0
         // repro instrumentation: one isolated capture at an explicit presetLevel ×
         // block-param point (headroom-trade physics), optionally in a SCENE context
         // (loadScene before the writes, scene latches at engage). Bundled stimulus;
         // read-only (working copy).
-        let idx = slot_at(&args, i + 1);
+        let idx = slot_at(args, i + 1);
         let topology = args.get(i + 2).cloned().unwrap_or_default();
         let preset_level: f32 = args
             .get(i + 3)
@@ -505,82 +1291,63 @@ fn main() {
             );
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_measure_pair(idx, &topology, preset_level, scene, &writes) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_measure_pair(
+            idx,
+            &topology,
+            preset_level,
+            scene,
+            &writes,
+        ));
     }
 
+    false
+}
+
+fn arm_dump_currentpresetdata(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--dump-currentpresetdata") {
         // --dump-currentpresetdata [slot]  — Tier-4: capture the live field-3
         // currentPresetDataChanged on a dense-heartbeat session, dump the full
         // decompressed JSON, and report whether scenes[] + ftsw are complete.
         // Optional `slot` (0-based list index) loads that preset first to trigger a
         // fresh push (non-destructive). Output: <temp dir>/tmp_currentpresetdata.json.
-        let slot = opt_slot_at(&args, i + 1);
+        let slot = opt_slot_at(args, i + 1);
         let out = std::env::temp_dir().join("tmp_currentpresetdata.json");
         let out = out.to_str().expect("temp dir path is UTF-8");
         eprintln!("[probe] capturing currentPresetDataChanged (slot={slot:?})…");
-        match tmp_companion_lib::probe_dump_preset_data(slot, out) {
-            Ok(report) => {
-                println!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_dump_preset_data(slot, out));
     }
 
+    false
+}
+
+fn arm_active_slot(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--active-slot") {
         // Read-only: the active preset as a plain handshake shows it (song BPM restore).
-        match tmp_companion_lib::probe_active_slot() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_active_slot());
     }
 
+    false
+}
+
+fn arm_fw(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--fw") {
         // Read-only: the firmware version the device pushed in the handshake.
-        match tmp_companion_lib::probe_firmware_version() {
-            Ok(v) => {
-                println!("{v}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_firmware_version());
     }
 
+    false
+}
+
+fn arm_device_backup(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--device-backup") {
         eprintln!("[probe] device backup (BackupRequest → tar.lz4 stream → extract DB)…");
-        match tmp_companion_lib::probe_device_backup() {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_device_backup());
     }
 
+    false
+}
+
+fn arm_doctor_inject(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor-inject") {
         // --doctor-inject <slot> <gains_csv|none> [--block <fender_id>]
         // (R5 defect-injection A/B; --block overrides the EQ-10 insert vehicle —
@@ -616,23 +1383,22 @@ fn main() {
                 .collect(),
             Some(_) => usage(),
         };
-        let block = flag_arg(&args, "--block");
-        match tmp_companion_lib::probe_doctor_inject(slot, &gains, block.as_deref()) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        let block = flag_arg(args, "--block");
+        return report(tmp_companion_lib::probe_doctor_inject(
+            slot,
+            &gains,
+            block.as_deref(),
+        ));
     }
 
+    false
+}
+
+fn arm_doctor_fs(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor-fs") {
         // --doctor-fs <listIdx> <switch>  — one FS sound through the production Doctor
         // seam (isolation + param-func valueA writes), print the diagnosis verdicts.
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -641,18 +1407,13 @@ fn main() {
             eprintln!("usage: probe --doctor-fs <listIdx> <switch>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_doctor_fs(slot, switch) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_doctor_fs(slot, switch));
     }
 
+    false
+}
+
+fn arm_doctor_defects(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor-defects") {
         // --doctor-defects <slot> [--out <report.json>]  (versioned defect-fixture sweep)
         let slot = match args.get(i + 1).and_then(|s| s.parse().ok()) {
@@ -662,133 +1423,105 @@ fn main() {
                 std::process::exit(2);
             }
         };
-        let out = flag_arg(&args, "--out");
+        let out = flag_arg(args, "--out");
         eprintln!("[probe] doctor-defects: slot {slot}…");
-        match tmp_companion_lib::probe_doctor_defects(slot, out.as_deref()) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_doctor_defects(
+            slot,
+            out.as_deref(),
+        ));
     }
 
+    false
+}
+
+fn arm_replace_debug(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--replace-debug") {
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let from = args.get(i + 2).cloned().unwrap_or_default();
         let to = args.get(i + 3).cloned().unwrap_or_default();
-        match tmp_companion_lib::probe_replace_debug(slot, &from, &to) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_replace_debug(slot, &from, &to));
     }
 
+    false
+}
+
+fn arm_bulk_replace(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--bulk-replace") {
         // --bulk-replace FROM TO SLOTS [--commit]   (SLOTS = comma list, 1-based)
         let from = args.get(i + 1).cloned().unwrap_or_default();
         let to = args.get(i + 2).cloned().unwrap_or_default();
-        let slots = slots_at(&args, i + 3);
+        let slots = slots_at(args, i + 3);
         let commit = args.iter().any(|a| a == "--commit");
         if from.is_empty() || to.is_empty() || slots.is_empty() {
             eprintln!("usage: probe --bulk-replace <FROM_ID> <TO_ID> <slot,slot,…> [--commit]");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_bulk_replace(&from, &to, &slots, commit) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_bulk_replace(
+            &from, &to, &slots, commit,
+        ));
     }
 
+    false
+}
+
+fn arm_roster(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--roster") {
         // --roster <slot,slot,…>   (1-based device slots; read-only roster dump)
-        let slots = slots_at(&args, i + 1);
+        let slots = slots_at(args, i + 1);
         if slots.is_empty() {
             eprintln!("usage: probe --roster <slot,slot,…>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_roster(&slots) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_roster(&slots));
     }
 
+    false
+}
+
+fn arm_discover_diff(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--discover-diff") {
         // E5: --discover-diff FROM SLOTS   (field-8 vs backup discovery; read-only)
         let from = args.get(i + 1).cloned().unwrap_or_default();
-        let slots = slots_at(&args, i + 2);
+        let slots = slots_at(args, i + 2);
         if from.is_empty() || slots.is_empty() {
             eprintln!("usage: probe --discover-diff <FROM_ID> <slot,slot,…>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_discover_diff(&from, &slots) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_discover_diff(&from, &slots));
     }
 
+    false
+}
+
+fn arm_slot_json(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--slot-json") {
-        let slot = slot_at(&args, i + 1);
-        match tmp_companion_lib::probe_slot_json(slot) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        let slot = slot_at(args, i + 1);
+        return report(tmp_companion_lib::probe_slot_json(slot));
     }
 
+    false
+}
+
+fn arm_replace_held(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--replace-held") {
         // E1: --replace-held FROM TO SLOTS [--commit]   (held-session decider)
         let from = args.get(i + 1).cloned().unwrap_or_default();
         let to = args.get(i + 2).cloned().unwrap_or_default();
-        let slots = slots_at(&args, i + 3);
+        let slots = slots_at(args, i + 3);
         let commit = args.iter().any(|a| a == "--commit");
         if from.is_empty() || to.is_empty() || slots.is_empty() {
             eprintln!("usage: probe --replace-held <FROM_ID> <TO_ID> <slot,slot,…> [--commit]");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_replace_held(&from, &to, &slots, commit) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_replace_held(
+            &from, &to, &slots, commit,
+        ));
     }
 
+    false
+}
+
+fn arm_insert_active(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--insert-active") {
         // --insert-active <NEW_MODEL_ID> [--group G1] [--after <NODE_ID>] [--slot N] [--commit]
         // ADD a block to the device's CURRENT ACTIVE preset (live insertNode, field 34).
@@ -807,30 +1540,25 @@ fn main() {
         let slot: Option<DeviceSlot> = args
             .iter()
             .position(|a| a == "--slot")
-            .map(|j| slot_at(&args, j + 1));
+            .map(|j| slot_at(args, j + 1));
         let commit = args.iter().any(|a| a == "--commit");
         if fender_id.is_empty() || fender_id.starts_with("--") {
             eprintln!("usage: probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <NODE_ID>] [--slot <deviceSlot>] [--commit]");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_insert_active(
+        return report(tmp_companion_lib::probe_insert_active(
             &fender_id,
             group.as_deref(),
             after.as_deref(),
             slot,
             commit,
-        ) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_measure_footswitch(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-footswitch") {
         // --measure-footswitch <slot> <switch> <topology> [--lev <group>:<node>:<param>]
         //                      [--target <lufs> --dump-wav <dir>]
@@ -849,7 +1577,7 @@ fn main() {
             );
             std::process::exit(2);
         }
-        let lev_raw = flag_arg(&args, "--lev");
+        let lev_raw = flag_arg(args, "--lev");
         let lev_parts: Vec<String> = lev_raw
             .as_deref()
             .map(|s| s.split(':').map(str::to_string).collect())
@@ -865,37 +1593,32 @@ fn main() {
                 lev_parts[2].as_str(),
             )
         });
-        let target = flag_arg(&args, "--target").and_then(|s| s.parse::<f64>().ok());
-        let dump_dir = flag_arg(&args, "--dump-wav");
+        let target = flag_arg(args, "--target").and_then(|s| s.parse::<f64>().ok());
+        let dump_dir = flag_arg(args, "--dump-wav");
         eprintln!(
             "[probe] measuring slot={} switch={} topology={topology} lev={lev:?}…",
             slot.unwrap(),
             switch.unwrap(),
         );
-        match tmp_companion_lib::probe_measure_footswitch(
+        return report(tmp_companion_lib::probe_measure_footswitch(
             slot.unwrap(),
             switch.unwrap(),
             &topology,
             lev,
             target,
             dump_dir.as_deref(),
-        ) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_level_footswitch(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--level-footswitch") {
         // --level-footswitch <slot> <switch> <levGroup> <levNode> <levParam> <target> [--commit]
         // Level a block-acting footswitch's engaged state (stimulus via TMP_LEVELLER_STIMULUS).
         // DRY by default (measure + solve, no write); --commit writes valueA + saves.
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -912,23 +1635,18 @@ fn main() {
             eprintln!("usage: probe --level-footswitch <slot> <switch> <levGroup> <levNode> <levParam> <target> [--commit]  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_level_footswitch(
+        return report(tmp_companion_lib::probe_level_footswitch(
             slot, switch, &lev_group, &lev_node, &lev_param, target, commit,
-        ) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_bake_validate(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--bake-validate") {
         // --bake-validate <slot> <switch> <group> <node> <param> <target>  (commit + restore)
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -944,23 +1662,20 @@ fn main() {
             eprintln!("usage: probe --bake-validate <slot> <switch> <group> <node> <param> <target>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_bake_validate(slot, switch, &group, &node, &param, target) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_bake_validate(
+            slot, switch, &group, &node, &param, target,
+        ));
     }
 
+    false
+}
+
+fn arm_amp_recipe(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--amp-recipe") {
         // --amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>
         // Measure one amp operating point across the whole footswitch set (base + each switch),
         // to read the base↔boost GAP. Read-only (working-copy writes discarded by the reload).
-        let idx = slot_at(&args, i + 1);
+        let idx = slot_at(args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         let gain: Option<f32> = args.get(i + 4).and_then(|s| s.parse().ok());
@@ -973,23 +1688,20 @@ fn main() {
             eprintln!("usage: probe --amp-recipe <listIdx> <group> <ampNode> <gain 0..=1> <outputLevel 0..=1>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_amp_recipe(idx, &group, &node, gain, out_level) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_amp_recipe(
+            idx, &group, &node, gain, out_level,
+        ));
     }
 
+    false
+}
+
+fn arm_fs_sweep(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--fs-sweep") {
         // --fs-sweep <listIdx> <switch> <group> <node> <param> <v1,v2,…>
         // The solver's own response curve: sweep <node>.<param> under <switch>'s engaged
         // isolation. Read-only (working-copy writes discarded by the final reload).
-        let idx = slot_at(&args, i + 1);
+        let idx = slot_at(args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -1018,24 +1730,21 @@ fn main() {
             eprintln!("usage: probe --fs-sweep <listIdx> <switch> <group> <node> <param> <v1,v2,… each 0..=1>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_fs_sweep(idx, switch, &group, &node, &param, &values) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_fs_sweep(
+            idx, switch, &group, &node, &param, &values,
+        ));
     }
 
+    false
+}
+
+fn arm_set_param_save(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--set-param-save") {
         // --set-param-save <listIdx> <expectName> <group> <node> <param> <value> [save]
         // Write ONE numeric block param + persist with `save`; DRY by default. `expectName`
         // is checked against the slot's displayName INSIDE the mutating function (the
         // destructive-op name guard), and `save` is read from its positional slot only.
-        let idx = slot_at(&args, i + 1);
+        let idx = slot_at(args, i + 1);
         let expect_name = args.get(i + 2).cloned().unwrap_or_default();
         let group = args.get(i + 3).cloned().unwrap_or_default();
         let node = args.get(i + 4).cloned().unwrap_or_default();
@@ -1057,7 +1766,7 @@ fn main() {
             );
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_set_param_save(
+        return report(tmp_companion_lib::probe_set_param_save(
             idx,
             &expect_name,
             &group,
@@ -1065,70 +1774,50 @@ fn main() {
             &param,
             value,
             save,
-        ) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_fs_list(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--fs-list") {
         // --fs-list <slot>   (read-only: footswitch blocks + bake/assign classification)
-        let slot = slot_at(&args, i + 1);
-        match tmp_companion_lib::probe_fs_list(slot) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        let slot = slot_at(args, i + 1);
+        return report(tmp_companion_lib::probe_fs_list(slot));
     }
 
+    false
+}
+
+fn arm_measure_forced(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-forced") {
         // --measure-forced <slot> <group> <node>   (GO/NO-GO: does live bypass=false work?)
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         if group.is_empty() || node.is_empty() {
             eprintln!("usage: probe --measure-forced <slot> <group> <node>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_measure_forced(slot, &group, &node) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_measure_forced(slot, &group, &node));
     }
 
+    false
+}
+
+fn arm_repro_chunked(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--repro-chunked") {
-        match tmp_companion_lib::probe_repro_chunked() {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_repro_chunked());
     }
 
+    false
+}
+
+fn arm_clear_ftsw(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--clear-ftsw") {
         // --clear-ftsw <slot> <switch> <index>   (restore/cleanup)
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -1141,18 +1830,15 @@ fn main() {
             eprintln!("usage: probe --clear-ftsw <slot> <switch> <index>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_clear_footswitch(slot, switch, index) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_clear_footswitch(
+            slot, switch, index,
+        ));
     }
 
+    false
+}
+
+fn arm_ftsw_validate(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--ftsw-validate") {
         // --ftsw-validate [switchIndex] [--commit]
         // Validate the footswitch-assignment protocol (set/clear/swap/persist) on the
@@ -1163,36 +1849,29 @@ fn main() {
             .filter(|s| !s.starts_with("--"))
             .and_then(|s| s.parse().ok());
         let commit = args.iter().any(|a| a == "--commit");
-        match tmp_companion_lib::probe_ftsw_validate(switch_override, commit) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_ftsw_validate(
+            switch_override,
+            commit,
+        ));
     }
 
+    false
+}
+
+fn arm_restore_check(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--restore-check") {
         // --restore-check <deviceSlot> [trials]
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let trials: u32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(1);
-        match tmp_companion_lib::probe_restore_check(slot, trials) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_restore_check(slot, trials));
     }
+    false
+}
+
+fn arm_reprompt_map(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--reprompt-map") {
         // --reprompt-map <slot> <name> <group> (--remove <nodeId> | --insert <fenderId> [--before <id>]) [--commit]
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let name = args.get(i + 2).cloned().unwrap_or_default();
         let group = args.get(i + 3).cloned().unwrap_or_default();
         let opt = |flag: &str| {
@@ -1207,7 +1886,7 @@ fn main() {
             eprintln!("usage: probe --reprompt-map <slot> <name> <group> (--remove <nodeId> | --insert <fenderId> [--before <id>]) [--commit]");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_reprompt_map(
+        return report(tmp_companion_lib::probe_reprompt_map(
             slot,
             &name,
             &group,
@@ -1215,23 +1894,18 @@ fn main() {
             insert.as_deref(),
             before.as_deref(),
             commit,
-        ) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_insert_map(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--insert-map") {
         // --insert-map <slot> <group> <fenderId> [--before <id>] [--at-index <n>]
         // EMPIRICAL: load slot, print ordered group roster, insert (field-34 --before OR
         // field-99 --at-index OR bare append), print roster again, then commit/revert.
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let fender_id = args.get(i + 3).cloned().unwrap_or_default();
         let before = args
@@ -1249,74 +1923,56 @@ fn main() {
             eprintln!("usage: probe --insert-map <slot> <group> <fenderId> [--before <id>] [--at-index <n>] [--commit]");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_insert_map(
+        return report(tmp_companion_lib::probe_insert_map(
             slot,
             &group,
             &fender_id,
             before.as_deref(),
             at_index,
             commit,
-        ) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_bulk_replace_saved(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--bulk-replace-saved") {
         // E6: --bulk-replace-saved FROM SLOTS [--commit]   (auto-picks first dual-cab)
         let from = args.get(i + 1).cloned().unwrap_or_default();
-        let slots = slots_at(&args, i + 2);
+        let slots = slots_at(args, i + 2);
         let commit = args.iter().any(|a| a == "--commit");
         if from.is_empty() || slots.is_empty() {
             eprintln!("usage: probe --bulk-replace-saved <FROM_CAB_ID> <slot,slot,…> [--commit]");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_bulk_replace_saved(&from, &slots, commit) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_bulk_replace_saved(
+            &from, &slots, commit,
+        ));
     }
 
+    false
+}
+
+fn arm_saved_blocks(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--saved-blocks") {
         eprintln!("[probe] list saved blocks (production decode path)…");
-        match tmp_companion_lib::probe_saved_blocks() {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_saved_blocks());
     }
 
+    false
+}
+
+fn arm_re_blocks(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--re-blocks") {
         eprintln!("[probe] RE spike: RequestAllBlockPresets + user-IR list (READ-ONLY)…");
-        match tmp_companion_lib::probe_re_blocks() {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_re_blocks());
     }
 
+    false
+}
+
+fn arm_overlay_ab(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--overlay-ab") {
         // --overlay-ab <slot|all> [--contexts N]  — SAVED overlay vs LIVE prepass A/B.
         // NON-DESTRUCTIVE: no writes/saves, no re-amp. slot is 1-based (as --slot-json).
@@ -1333,126 +1989,86 @@ fn main() {
             );
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_overlay_ab(&target, contexts) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_overlay_ab(&target, contexts));
     }
 
+    false
+}
+
+fn arm_scenes_passive(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--scenes-passive") {
-        match tmp_companion_lib::probe_scan_scenes_passive() {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_scan_scenes_passive());
     }
 
+    false
+}
+
+fn arm_slotread_x(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--slotread-x") {
         // Every positional token up to the next `--flag` is a slot; any bad one refuses.
         let count = args[i + 1..]
             .iter()
             .take_while(|a| !a.starts_with("--"))
             .count();
-        let slots: Vec<DeviceSlot> = (0..count).map(|k| slot_at(&args, i + 1 + k)).collect();
-        match tmp_companion_lib::probe_slotread_experiments(slots) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        let slots: Vec<DeviceSlot> = (0..count).map(|k| slot_at(args, i + 1 + k)).collect();
+        return report(tmp_companion_lib::probe_slotread_experiments(slots));
     }
 
+    false
+}
+
+fn arm_slotread_live(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--slotread-live") {
-        let slot: DeviceSlot = slot_at(&args, i + 1);
+        let slot: DeviceSlot = slot_at(args, i + 1);
         let rounds: u32 = args.get(i + 2).and_then(|a| a.parse().ok()).unwrap_or(4);
-        match tmp_companion_lib::probe_slotread_live(slot, rounds) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_slotread_live(slot, rounds));
     }
 
+    false
+}
+
+fn arm_scenes_full(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--scenes-full") {
         eprintln!("[probe] full scene scan via LoadPreset → field-3 (changes active preset)…");
-        match tmp_companion_lib::probe_scan_scenes_full_live() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_scan_scenes_full_live());
     }
 
+    false
+}
+
+fn arm_scenes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--scenes") {
         eprintln!("[probe] scene scan (LoadPreset → sceneList 125)…");
-        match tmp_companion_lib::probe_scan_scenes_load() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_scan_scenes_load());
     }
 
+    false
+}
+
+fn arm_seed_scenario(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--seed-scenario") {
         // Online-e2e seeding in a FRESH process (device work from a long-lived
         // process degrades — truncated list harvests + capricious opens); sweeps
         // stray scenario imports first. The e2e runner calls this per spec.
         eprintln!("[probe] seeding the e2e scenario presets (sweep + import)…");
-        match tmp_companion_lib::probe_seed_scenario() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_seed_scenario());
     }
 
+    false
+}
+
+fn arm_clear_strays(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--clear-strays") {
         // Attended cleanup: sweep stray scenario imports (exact-name, wrong-slot
         // matches only, off a completeness-floored list) without seeding.
         eprintln!("[probe] sweeping stray e2e scenario imports…");
-        match tmp_companion_lib::probe_clear_strays() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_clear_strays());
     }
 
+    false
+}
+
+fn arm_listall(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--listall") {
         // Read-only: print every My Presets slot + name (full list, not just the
         // first 20). For auditing device state after a run.
@@ -1467,59 +2083,45 @@ fn main() {
                         p.name
                     );
                 }
-                return;
+                return true;
             }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
+            Err(e) => fail(e),
         }
     }
 
+    false
+}
+
+fn arm_capture_input(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--capture-input") {
         let secs: f32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
         eprintln!("[probe] GATE 1 — play your guitar continuously for {secs:.0}s NOW…");
-        match tmp_companion_lib::probe_capture_input(secs) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_capture_input(secs));
     }
 
+    false
+}
+
+fn arm_agc_test(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--agc-test") {
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         eprintln!("[probe] GATE 2 — re-amp inject AGC test on slot {slot} (no playing needed)…");
-        match tmp_companion_lib::probe_reamp_agc_test(slot) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_reamp_agc_test(slot));
     }
 
+    false
+}
+
+fn arm_channels(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--channels") {
-        let slot = slot_at(&args, i + 1);
-        match tmp_companion_lib::probe_channels(slot) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        let slot = slot_at(args, i + 1);
+        return report(tmp_companion_lib::probe_channels(slot));
     }
 
+    false
+}
+
+fn arm_scene_write_cell(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--scene-write-cell") {
         // --scene-write-cell <listIdx> <expectName> <sceneSlot> <group> <node> <param>
         //     [--value V] [--no-scene-edit] [--recall-settle MS]
@@ -1527,7 +2129,7 @@ fn main() {
         // setNodeSceneEdit / changeParameter independently so the cause of the
         // overlay reset can be separated. Always saves; diff the slot afterwards.
         // <expectName> is a non-destructive-read guard — refuses if slot doesn't match.
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let expect_name = args.get(i + 2).cloned().unwrap_or_default();
         let scene: Option<u32> = args.get(i + 3).and_then(|s| s.parse().ok());
         let group = args.get(i + 4).cloned().unwrap_or_default();
@@ -1570,7 +2172,7 @@ fn main() {
             eprintln!("usage: probe --scene-write-cell <listIdx> <expectName> <sceneSlot> <group> <node> <param> [--value V] [--no-scene-edit] [--recall-settle MS]");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_scene_write_cell(
+        return report(tmp_companion_lib::probe_scene_write_cell(
             slot,
             &expect_name,
             scene,
@@ -1580,24 +2182,19 @@ fn main() {
             value,
             scene_edit,
             recall_settle,
-        ) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_set_scene_param(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--set-scene-param") {
         // --set-scene-param <listIdx> <expectName> <sceneSlot|base> <group> <node> <param> <value>
         // Pure WRITE (no measurement, no re-amp): set one block param and save. A
         // numeric sceneSlot writes that scene's overlay (recall + Scene Edit); "base"
         // writes the base/global value.
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         // Name of the preset EXPECTED at `slot`, checked against a non-destructive
         // read before this saves — same guard shape as `--scene-write-cell`.
         let expect_name = args.get(i + 2).cloned().unwrap_or_default();
@@ -1629,7 +2226,7 @@ fn main() {
         }
         // Outer Option = "arg present and parseable"; inner = None for base, Some(n) for scene n.
         let scene = scene.flatten();
-        match tmp_companion_lib::probe_set_scene_param(
+        return report(tmp_companion_lib::probe_set_scene_param(
             slot,
             &expect_name,
             scene,
@@ -1637,21 +2234,16 @@ fn main() {
             &node,
             &param,
             value,
-        ) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_levelblock(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--levelblock") {
         // --levelblock <slot> <target_lufs> <groupId> <nodeId> <parameterId>  (stimulus via env)
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -1664,18 +2256,15 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] closed-loop block leveling: slot {slot} {group}/{node}/{param} → {target} LUFS…");
-        match tmp_companion_lib::probe_level_block(slot, target, group, node, param) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_level_block(
+            slot, target, group, node, param,
+        ));
     }
 
+    false
+}
+
+fn arm_bench_scene_leveling(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--bench-scene-leveling") {
         // --bench-scene-leveling <slots_csv> <target_lufs> <topology_id> <out.json>
         // Example: --bench-scene-leveling 0,1,5 -22 guitar-humbucker /tmp/level.json
@@ -1685,7 +2274,7 @@ fn main() {
             .unwrap_or(f64::NAN);
         let topology = args.get(i + 3).cloned().unwrap_or_default();
         let out = args.get(i + 4).cloned().unwrap_or_default();
-        let slots: Vec<ListIndex> = slots_at(&args, i + 1);
+        let slots: Vec<ListIndex> = slots_at(args, i + 1);
         if slots.is_empty() || target.is_nan() || topology.is_empty() || out.is_empty() {
             eprintln!("usage: probe --bench-scene-leveling <slots_csv> <target_lufs> <topology_id> <out.json>");
             std::process::exit(2);
@@ -1693,33 +2282,25 @@ fn main() {
         eprintln!(
             "[probe] benchmarking scene leveling slots={slots:?} target={target} topology={topology} → {out}…"
         );
-        match tmp_companion_lib::probe_bench_scene_leveling(slots, target, topology, out) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_bench_scene_leveling(
+            slots, target, topology, out,
+        ));
     }
 
+    false
+}
+
+fn arm_blocks(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--blocks") {
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         eprintln!("[probe] enumerating level-type block controls for slot {slot}…");
-        match tmp_companion_lib::probe_list_blocks(slot) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_list_blocks(slot));
     }
 
+    false
+}
+
+fn arm_listen(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--listen") {
         // --listen [seconds] [heartbeatMs] [pollSecs]  — push-listener discovery:
         // park on the post-handshake connection and print every inbound push (drive
@@ -1731,14 +2312,15 @@ fn main() {
         let hb: u64 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(250);
         let poll: u64 = args.get(i + 3).and_then(|s| s.parse().ok()).unwrap_or(0);
         match tmp_companion_lib::probe_listen(seconds, hb, poll) {
-            Ok(()) => return,
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
+            Ok(()) => return true,
+            Err(e) => fail(e),
         }
     }
 
+    false
+}
+
+fn arm_classify(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--classify") {
         // --classify <listIdx> [scene…] — NON-DESTRUCTIVE: print how build_scene_jobs
         // classifies each scene's amp-knob set (routing-aware). No re-amp / writes.
@@ -1750,18 +2332,13 @@ fn main() {
             .iter()
             .filter_map(|s| s.parse().ok())
             .collect();
-        match tmp_companion_lib::probe_classify_scenes(list_index, scenes) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_classify_scenes(list_index, scenes));
     }
 
+    false
+}
+
+fn arm_level_scenes(args: &[String]) -> bool {
     if let Some(i) = args
         .iter()
         .position(|a| a == "--level-scenes" || a == "--rebalance-scenes")
@@ -1782,35 +2359,25 @@ fn main() {
             .filter_map(|s| s.parse().ok())
             .collect();
         let commit = args.iter().any(|a| a == "--commit");
-        match tmp_companion_lib::probe_level_scenes_oneshot(
+        return report(tmp_companion_lib::probe_level_scenes_oneshot(
             list_index, target, topology, scenes, rebalance, commit,
-        ) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_reamp_state(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--reamp-state") {
         // DIAGNOSTIC (reamp-stuck investigation): passive re-amp state read — no
         // HID commands; audio-only tell (see probe_api::level::probe_reamp_state).
-        match tmp_companion_lib::probe_reamp_state("guitar-humbucker") {
-            Ok(report) => {
-                println!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_reamp_state("guitar-humbucker"));
     }
 
+    false
+}
+
+fn arm_reamp_multi_engage(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--reamp-multi-engage") {
         // DIAGNOSTIC: --reamp-multi-engage <cycles> [topology]
         // N × engage→capture→disengage on ONE connection, idle-gap-safe pacing;
@@ -1832,48 +2399,41 @@ fn main() {
             .get(i + 2)
             .filter(|s| !s.starts_with("--"))
             .map_or("guitar-humbucker", String::as_str);
-        match tmp_companion_lib::probe_reamp_multi_engage(topology, cycles) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_reamp_multi_engage(
+            topology, cycles,
+        ));
     }
 
+    false
+}
+
+fn arm_reamp_toggle_test(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--reamp-toggle-test") {
         // DIAGNOSTIC (reamp-stuck investigation): --reamp-toggle-test <idle_ms> [hb]
         let idle_ms: u64 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
         let hb = args.iter().any(|a| a == "hb");
-        match tmp_companion_lib::probe_reamp_toggle_test(idle_ms, hb) {
-            Ok(report) => {
-                println!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_reamp_toggle_test(idle_ms, hb));
     }
 
+    false
+}
+
+fn arm_reamp_off(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--reamp-off") {
         // Recovery: force re-amp OFF (a stranded re-amp mutes the guitar input).
         match tmp_companion_lib::probe_reamp_off() {
             Ok(()) => {
                 println!("re-amp OFF sent OK");
-                return;
+                return true;
             }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
+            Err(e) => fail(e),
         }
     }
 
+    false
+}
+
+fn arm_set_param(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--set-param") {
         // C2 step: set ONE block parameter on the working copy. One step per
         // invocation, so each verifying read rides its own fresh handshake.
@@ -1896,18 +2456,13 @@ fn main() {
             std::process::exit(2);
         };
         eprintln!("[probe] set {g}/{n}/{p} = {v} on slot {slot}…");
-        match tmp_companion_lib::probe_set_param(slot, g, n, p, v) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_set_param(slot, g, n, p, v));
     }
 
+    false
+}
+
+fn arm_settings_read(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--settings-read") {
         // READ-ONLY. Live counterpart to the backup, which only shows persisted state.
         let f: u32 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
@@ -1917,18 +2472,13 @@ fn main() {
                 std::process::exit(2);
             }
         };
-        match tmp_companion_lib::probe_settings_read(f) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_settings_read(f));
     }
 
+    false
+}
+
+fn arm_set_scene_behavior(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--set-scene-behavior") {
         // WRITE to a GLOBAL setting on the served TMS-3 branch. Restore it after.
         let v: u64 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
@@ -1939,18 +2489,13 @@ fn main() {
             }
         };
         eprintln!("[probe] setting sceneChangeBehavior to {v}…");
-        match tmp_companion_lib::probe_set_scene_change_behavior(v) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_set_scene_change_behavior(v));
     }
 
+    false
+}
+
+fn arm_switch_template(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--switch-template") {
         // WRITE: repopulates a scratch preset's signal path. Scratch-guarded.
         let slot = match args.get(i + 1).and_then(|v| v.parse().ok()) {
@@ -1965,18 +2510,13 @@ fn main() {
             std::process::exit(2);
         };
         eprintln!("[probe] switching slot {slot} template → {t}…");
-        match tmp_companion_lib::probe_switch_template(slot, t) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_switch_template(slot, t));
     }
 
+    false
+}
+
+fn arm_set_master(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--set-master") {
         // WRITE to a GLOBAL setting. Settles A1 (is the master control in the USB
         // 1/2 path?) without a hand on the physical knob. The caller MUST restore
@@ -1990,35 +2530,25 @@ fn main() {
             }
         };
         eprintln!("[probe] setting master level to {level}…");
-        match tmp_companion_lib::probe_set_master_level(level) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_set_master_level(level));
     }
 
+    false
+}
+
+fn arm_mixer(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--mixer") {
         // READ-ONLY: dump the output-mixer channel strips (fader/mute/solo/master-
         // link/AUX per channel). The leveller's measurement tap IS a mixer channel
         // (USB 1/2), so a non-unity fader biases every solved presetLevel invisibly.
         eprintln!("[probe] reading output-mixer channel state…");
-        match tmp_companion_lib::probe_mixer_state() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_mixer_state());
     }
 
+    false
+}
+
+fn arm_reamp_wav(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--reamp-wav") {
         // --reamp-wav <slot> <stimulus.wav> <out.wav> [ref_level=0.5]
         // Re-amp an ARBITRARY stimulus through a preset and save the captured
@@ -2068,25 +2598,20 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] re-amping {stim} through slot {slot} → {out}…");
-        match tmp_companion_lib::probe_reamp_wav(
+        return report(tmp_companion_lib::probe_reamp_wav(
             slot,
             &stim,
             &out,
             ref_level,
             bypass_all,
             &bypass_nodes,
-        ) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_tail_decay(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--tail-decay") {
         // --tail-decay <slot> <stimulus.wav> <tail_ms> <out.wav> [scene]
         // One-off diagnostic (gap 6, spillover): capture a short burst + a long
@@ -2128,18 +2653,15 @@ fn main() {
         eprintln!(
             "[probe] tail-decay: {stim} + {tail_ms}ms tail through slot {slot} scene {scene:?} → {out}…"
         );
-        match tmp_companion_lib::probe_tail_decay(slot, scene, &stim, tail_ms, &out) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_tail_decay(
+            slot, scene, &stim, tail_ms, &out,
+        ));
     }
 
+    false
+}
+
+fn arm_move_preset(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--move-preset") {
         // --move-preset <from> <to>   (0-based list indices; DEVICE WRITE — reorders)
         // Reordering renumbers presets; whether Song/Setlist bindings follow is the
@@ -2152,18 +2674,13 @@ fn main() {
             std::process::exit(2);
         };
         eprintln!("[probe] WRITE move preset list idx {from} → {to}…");
-        match tmp_companion_lib::probe_move_preset(from, to) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_move_preset(from, to));
     }
 
+    false
+}
+
+fn arm_loadscene(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--loadscene") {
         // --loadscene <sceneSlot>  — recall a scene on the CURRENT preset. The wire
         // slot is the 0-based scenes[] index (0..=7); 8 = the base scene (constant).
@@ -2178,15 +2695,16 @@ fn main() {
         match tmp_companion_lib::probe_load_scene(scene_slot) {
             Ok(()) => {
                 println!("loadScene({scene_slot}) sent OK");
-                return;
+                return true;
             }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
+            Err(e) => fail(e),
         }
     }
 
+    false
+}
+
+fn arm_measure_current(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-current") {
         // --measure-current <topology_id> [sceneSlot] [calibrationLUFS]
         // Read-only loudness check for the current preset/scene. Optional sceneSlot
@@ -2200,31 +2718,26 @@ fn main() {
         let calibration_lufs = args.get(i + 3).and_then(|s| s.parse::<f32>().ok());
         // Optional ADD-ON flag, unrelated to the positional args above: also write
         // the captured processed pair to a WAV in <dir> for `scripts/meter-parity.sh`.
-        let dump_dir = flag_arg(&args, "--dump-wav");
+        let dump_dir = flag_arg(args, "--dump-wav");
         eprintln!(
             "[probe] measuring current live LUFS topology={topology} scene={scene_slot:?} calibration={calibration_lufs:?}…"
         );
         // No `--target` here on purpose: a validation row needs a stable slot identity,
         // and `--measure-current` measures "whatever is loaded". Use `--measure-scene`.
-        match tmp_companion_lib::probe_measure_current_lufs(
+        return report_ln(tmp_companion_lib::probe_measure_current_lufs(
             &topology,
             None,
             scene_slot,
             calibration_lufs,
             dump_dir.as_deref(),
             None,
-        ) {
-            Ok(report) => {
-                println!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_measure_scene(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-scene") {
         // --measure-scene <slot> <sceneSlot> <topology_id> [calibrationLUFS]
         // slot = 0-based list index (same convention as --levelpreset; NOT the
@@ -2242,34 +2755,29 @@ fn main() {
         let calibration_lufs = args.get(i + 4).and_then(|s| s.parse::<f32>().ok());
         // Optional ADD-ON flag, unrelated to the positional args above: also write
         // the captured processed pair to a WAV in <dir> for `scripts/meter-parity.sh`.
-        let dump_dir = flag_arg(&args, "--dump-wav");
+        let dump_dir = flag_arg(args, "--dump-wav");
         // `--target <lufs>` + `--dump-wav <dir>` also append a P5 validation row to
         // TMP_E2E_VALIDATE_LOG for `scripts/level-validate.sh` (see probe_api/level.rs).
-        let target = flag_arg(&args, "--target").and_then(|s| s.parse::<f64>().ok());
+        let target = flag_arg(args, "--target").and_then(|s| s.parse::<f64>().ok());
         eprintln!(
             "[probe] measuring slot={} scene={} topology={topology} calibration={calibration_lufs:?}…",
             slot.unwrap(),
             scene_slot.unwrap(),
         );
-        match tmp_companion_lib::probe_measure_current_lufs(
+        return report_ln(tmp_companion_lib::probe_measure_current_lufs(
             &topology,
             slot,
             scene_slot,
             calibration_lufs,
             dump_dir.as_deref(),
             target,
-        ) {
-            Ok(report) => {
-                println!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_held_reengage(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--held-reengage") {
         // --held-reengage <slot> <topology_id> <sceneA,sceneB,...> [calibrationLUFS]
         // HW probe: can re-amp disengage→re-engage on ONE held connection? Compares
@@ -2295,23 +2803,18 @@ fn main() {
             "[probe] held-reengage slot={} topology={topology} scenes={scenes:?}…",
             slot.unwrap()
         );
-        match tmp_companion_lib::probe_held_reengage(
+        return report_ln(tmp_companion_lib::probe_held_reengage(
             &topology,
             slot.unwrap(),
             &scenes,
             calibration_lufs,
-        ) {
-            Ok(report) => {
-                println!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_export(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--export") {
         // --export <listEnum> <slot>  — AC1 spike. Always no-batch (the
         // device gives no reply to a batched slot-read — the resolved AC1 finding).
@@ -2319,39 +2822,29 @@ fn main() {
             .get(i + 1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
-        let slot = slot_at(&args, i + 2);
+        let slot = slot_at(args, i + 2);
         if list_enum == u32::MAX {
             eprintln!("usage: probe --export <listEnum> <slot>   (listEnum 1 = My Presets)");
             std::process::exit(2);
         }
         eprintln!("[probe] exporting preset listEnum={list_enum} slot={slot}…");
-        match tmp_companion_lib::probe_export_preset(list_enum, slot) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_export_preset(list_enum, slot));
     }
 
+    false
+}
+
+fn arm_factory_list(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--factory-list") {
         // --factory-list — print every Factory preset as `slot<TAB>name`.
         eprintln!("[probe] listing Factory presets…");
-        match tmp_companion_lib::probe_factory_list() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_factory_list());
     }
 
+    false
+}
+
+fn arm_load_probe(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--load-probe") {
         // --load-probe <slot> <tabEnum> — raw loadPreset, SEND-ONLY (the TMP
         // screen is the verification oracle). Both values pass through verbatim
@@ -2372,18 +2865,13 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] loadPreset slot={slot} tabEnum={tab_enum}…");
-        match tmp_companion_lib::probe_load_probe(slot, tab_enum) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_load_probe(slot, tab_enum));
     }
 
+    false
+}
+
+fn arm_import(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--import") {
         // --import <file.preset>  — AC3: re-import a preset over USB (additive).
         let path = match args.get(i + 1) {
@@ -2394,18 +2882,13 @@ fn main() {
             }
         };
         eprintln!("[probe] importing {path}…");
-        match tmp_companion_lib::probe_import_preset(&path) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_import_preset(&path));
     }
 
+    false
+}
+
+fn arm_save_load_test(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--save-load-test") {
         // --save-load-test <slotA> <slotB> <level> --commit <expectedNameOfSlotA>
         // (HW experiment: save + next-load on ONE connection; DESTRUCTIVE — overwrites
@@ -2413,8 +2896,8 @@ fn main() {
         // space as `list_my_presets`). --commit's expected name is checked against a
         // non-destructive read of slotA BEFORE the mutation — required, not optional,
         // since this command has no non-destructive form.
-        let a = slot_at(&args, i + 1);
-        let b = slot_at(&args, i + 2);
+        let a = slot_at(args, i + 1);
+        let b = slot_at(args, i + 2);
         let level: f32 = args
             .get(i + 3)
             .and_then(|s| s.parse().ok())
@@ -2427,18 +2910,18 @@ fn main() {
             );
             std::process::exit(2);
         };
-        match tmp_companion_lib::probe_save_load_test(a, b, level, &expected_name) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_save_load_test(
+            a,
+            b,
+            level,
+            &expected_name,
+        ));
     }
 
+    false
+}
+
+fn arm_redistribute_persist_check(args: &[String]) -> bool {
     if let Some(i) = args
         .iter()
         .position(|a| a == "--redistribute-persist-check")
@@ -2448,7 +2931,7 @@ fn main() {
         // persist through ONE save? Point at a prepared scratch preset with an amp +
         // ≥1 scene (e.g. E2E Rig at 400 after --seed-scenario). 0-based list index;
         // name-guarded; restores the slot afterward.
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let expected_name = args.get(i + 2).cloned();
         let Some(expected_name) = expected_name.filter(|n| !n.starts_with("--")) else {
             eprintln!(
@@ -2456,125 +2939,89 @@ fn main() {
             );
             std::process::exit(2);
         };
-        match tmp_companion_lib::probe_redistribute_persist_check(slot, &expected_name) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_redistribute_persist_check(
+            slot,
+            &expected_name,
+        ));
     }
 
+    false
+}
+
+fn arm_clear(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--clear") {
         // --clear <listIndex> <expect-name>  — clears only if the slot reads
         // expect-name. 0-BASED list index (what `--import`'s diff prints), NOT the
         // 1-based device slot `--export` takes.
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let expect = args.get(i + 2).cloned().unwrap_or_default();
         if expect.is_empty() {
             eprintln!("usage: probe --clear <listIndex(0-based)> <expect-name>");
             std::process::exit(2);
         }
         eprintln!("[probe] clearing user preset slot {slot} (if it reads {expect:?})…");
-        match tmp_companion_lib::probe_clear_preset(slot, &expect) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_clear_preset(slot, &expect));
     }
 
+    false
+}
+
+fn arm_map_slots(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--map-slots") {
         // Resolve the list-index ↔ device-userSlot offset (AC7 prerequisite).
         eprintln!("[probe] resolving list↔device slot mapping…");
-        match tmp_companion_lib::probe_map_slots() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_map_slots());
     }
 
+    false
+}
+
+fn arm_songs(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--songs") {
         // Read-only: list every Song on the device with its notes + BPM.
-        match tmp_companion_lib::probe_list_songs() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_list_songs());
     }
 
+    false
+}
+
+fn arm_setlists(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--setlists") {
         // Read-only: list every Setlist on the device (names only).
-        match tmp_companion_lib::probe_list_setlists() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_list_setlists());
     }
 
+    false
+}
+
+fn arm_setlist_songs(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--setlist-songs") {
         // Read-only: for every Setlist, list the songs it contains (slots → names).
-        match tmp_companion_lib::probe_setlist_songs() {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_setlist_songs());
     }
 
-    // ─── Song/Setlist WRITE primitives (DEVICE WRITES; name-addressed) ────────
-    // Helper macro-free dispatch: each maps to a tmp_companion_lib::probe_* fn.
-    macro_rules! run {
-        ($e:expr) => {
-            match $e {
-                Ok(r) => {
-                    print!("{r}");
-                    return;
-                }
-                Err(e) => {
-                    eprintln!("[probe] FAILED: {e}");
-                    std::process::exit(1);
-                }
-            }
-        };
-    }
+    false
+}
 
+fn arm_diag_frames(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--diag-frames") {
         eprintln!("[probe] DIAG: dumping raw inbound frame magics for a setlist read…");
-        run!(tmp_companion_lib::probe_diag_frames());
+        return report(tmp_companion_lib::probe_diag_frames());
     }
 
+    false
+}
+
+fn arm_diag_writes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--diag-writes") {
         eprintln!("[probe] DIAG: comparing addSong vs addSetlist device replies…");
-        run!(tmp_companion_lib::probe_diag_writes());
+        return report(tmp_companion_lib::probe_diag_writes());
     }
 
+    false
+}
+
+fn arm_add_song(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--add-song") {
         let name = args.get(i + 1).cloned().unwrap_or_default();
         if name.is_empty() {
@@ -2582,8 +3029,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE add-song {name:?}…");
-        run!(tmp_companion_lib::probe_add_song(&name));
+        return report(tmp_companion_lib::probe_add_song(&name));
     }
+    false
+}
+
+fn arm_add_setlist(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--add-setlist") {
         let name = args.get(i + 1).cloned().unwrap_or_default();
         if name.is_empty() {
@@ -2591,8 +3042,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE add-setlist {name:?}…");
-        run!(tmp_companion_lib::probe_add_setlist(&name));
+        return report(tmp_companion_lib::probe_add_setlist(&name));
     }
+    false
+}
+
+fn arm_add_setlist_song(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--add-setlist-song") {
         let setlist = args.get(i + 1).cloned().unwrap_or_default();
         let song = args.get(i + 2).cloned().unwrap_or_default();
@@ -2601,8 +3056,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE add {song:?} → setlist {setlist:?}…");
-        run!(tmp_companion_lib::probe_add_setlist_song(&setlist, &song));
+        return report(tmp_companion_lib::probe_add_setlist_song(&setlist, &song));
     }
+    false
+}
+
+fn arm_rename_song(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--rename-song") {
         let old = args.get(i + 1).cloned().unwrap_or_default();
         let new = args.get(i + 2).cloned().unwrap_or_default();
@@ -2611,8 +3070,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE rename-song {old:?} → {new:?}…");
-        run!(tmp_companion_lib::probe_rename_song(&old, &new));
+        return report(tmp_companion_lib::probe_rename_song(&old, &new));
     }
+    false
+}
+
+fn arm_rename_setlist(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--rename-setlist") {
         let old = args.get(i + 1).cloned().unwrap_or_default();
         let new = args.get(i + 2).cloned().unwrap_or_default();
@@ -2621,8 +3084,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE rename-setlist {old:?} → {new:?}…");
-        run!(tmp_companion_lib::probe_rename_setlist(&old, &new));
+        return report(tmp_companion_lib::probe_rename_setlist(&old, &new));
     }
+    false
+}
+
+fn arm_song_notes(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--song-notes") {
         let name = args.get(i + 1).cloned().unwrap_or_default();
         let notes = args.get(i + 2).cloned().unwrap_or_default();
@@ -2631,8 +3098,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE song-notes {name:?} → {notes:?}…");
-        run!(tmp_companion_lib::probe_set_song_notes(&name, &notes));
+        return report(tmp_companion_lib::probe_set_song_notes(&name, &notes));
     }
+    false
+}
+
+fn arm_song_bpm(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--song-bpm") {
         let name = args.get(i + 1).cloned().unwrap_or_default();
         let bpm: f32 = args
@@ -2644,8 +3115,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE song-bpm {name:?} → {bpm}…");
-        run!(tmp_companion_lib::probe_set_song_bpm(&name, bpm));
+        return report(tmp_companion_lib::probe_set_song_bpm(&name, bpm));
     }
+    false
+}
+
+fn arm_assign_song_preset(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--assign-song-preset") {
         // --assign-song-preset <song-name> <row> <list-index>   (DEVICE WRITE)
         // Bind a scratch preset to a Song row, then read the rows back. Feeds the
@@ -2655,15 +3130,19 @@ fn main() {
             .get(i + 2)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
-        let idx = slot_at(&args, i + 3);
+        let idx = slot_at(args, i + 3);
         if name.is_empty() || row == u32::MAX {
             eprintln!("usage: probe --assign-song-preset <song-name> <row> <list-index>");
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE assign-song-preset {name:?} row {row} → list idx {idx}…");
-        run!(tmp_companion_lib::probe_assign_song_preset(&name, row, idx));
+        return report(tmp_companion_lib::probe_assign_song_preset(&name, row, idx));
     }
 
+    false
+}
+
+fn arm_remove_song(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--remove-song") {
         let name = args.get(i + 1).cloned().unwrap_or_default();
         if name.is_empty() {
@@ -2671,8 +3150,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE remove-song {name:?}…");
-        run!(tmp_companion_lib::probe_remove_song(&name));
+        return report(tmp_companion_lib::probe_remove_song(&name));
     }
+    false
+}
+
+fn arm_remove_setlists_named(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--remove-setlists-named") {
         let name = args.get(i + 1).cloned().unwrap_or_default();
         if name.is_empty() {
@@ -2680,9 +3163,13 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE remove-setlists-named {name:?}…");
-        run!(tmp_companion_lib::probe_remove_setlists_named(&name));
+        return report(tmp_companion_lib::probe_remove_setlists_named(&name));
     }
 
+    false
+}
+
+fn arm_remove_setlist(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--remove-setlist") {
         let name = args.get(i + 1).cloned().unwrap_or_default();
         if name.is_empty() {
@@ -2690,8 +3177,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE remove-setlist {name:?}…");
-        run!(tmp_companion_lib::probe_remove_setlist(&name));
+        return report(tmp_companion_lib::probe_remove_setlist(&name));
     }
+    false
+}
+
+fn arm_remove_setlist_song(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--remove-setlist-song") {
         let setlist = args.get(i + 1).cloned().unwrap_or_default();
         let pos: u32 = args
@@ -2703,8 +3194,12 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE remove-setlist-song {setlist:?} position {pos}…");
-        run!(tmp_companion_lib::probe_remove_setlist_song(&setlist, pos));
+        return report(tmp_companion_lib::probe_remove_setlist_song(&setlist, pos));
     }
+    false
+}
+
+fn arm_move_setlist_song(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--move-setlist-song") {
         let setlist = args.get(i + 1).cloned().unwrap_or_default();
         let old: u32 = args
@@ -2720,11 +3215,15 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE move-setlist-song {setlist:?} {old}→{new}…");
-        run!(tmp_companion_lib::probe_move_setlist_song(
-            &setlist, old, new
+        return report(tmp_companion_lib::probe_move_setlist_song(
+            &setlist, old, new,
         ));
     }
 
+    false
+}
+
+fn arm_songpresets(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--songpresets") {
         // --songpresets <songSlot>  — read a Song's preset rows (userPresetSlot/scene).
         let song: u32 = args
@@ -2736,41 +3235,31 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] reading song {song} preset rows…");
-        match tmp_companion_lib::probe_song_presets(song) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_song_presets(song));
     }
 
+    false
+}
+
+fn arm_replace_inplace(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--replace-inplace") {
         // --replace-inplace <orig-list-index> <file.preset>
         //   Edit a preset IN PLACE (preserve slot + Song link): import → load scratch
         //   → saveCurrentPreset over the original → guarded clear of the scratch.
-        let idx = slot_at(&args, i + 1);
+        let idx = slot_at(args, i + 1);
         let path = args.get(i + 2).cloned().unwrap_or_default();
         if path.is_empty() {
             eprintln!("usage: probe --replace-inplace <orig-list-index> <file.preset>");
             std::process::exit(2);
         }
         eprintln!("[probe] in-place edit of list idx {idx} from {path}…");
-        match tmp_companion_lib::probe_replace_inplace(idx, &path) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_replace_inplace(idx, &path));
     }
 
+    false
+}
+
+fn arm_restore(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--restore") {
         // --restore <snapshot.json>  — AC5: restore a backup in place (orig slot + Song link).
         let path = args.get(i + 1).cloned().unwrap_or_default();
@@ -2779,22 +3268,17 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] restoring snapshot {path} in place…");
-        match tmp_companion_lib::probe_restore(&path) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_restore(&path));
     }
 
+    false
+}
+
+fn arm_capture_reference(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--capture-reference") {
         // --capture-reference <slot> <topology> <out.wav>  (offline-harness corpus)
         // DEVICE OP: load slot + engage + full ~6.8s capture → write the mono clip.
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let topology = args.get(i + 2).cloned().unwrap_or_default();
         let out = args.get(i + 3).cloned().unwrap_or_default();
         if topology.is_empty() || out.is_empty() {
@@ -2802,39 +3286,31 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] capturing reference clip slot {slot} topology={topology} → {out}…");
-        match tmp_companion_lib::probe_capture_reference(slot, &topology, &out) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_capture_reference(
+            slot, &topology, &out,
+        ));
     }
 
+    false
+}
+
+fn arm_measure_adaptive(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-adaptive") {
         // --measure-adaptive <slot> <topology>  (DEVICE A/B: full vs adaptive capture)
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let topology = args.get(i + 2).cloned().unwrap_or_default();
         if topology.is_empty() {
             eprintln!("usage: probe --measure-adaptive <slot> <topology>");
             std::process::exit(2);
         }
         eprintln!("[probe] A/B full vs adaptive capture slot {slot} topology={topology}…");
-        match tmp_companion_lib::probe_measure_adaptive(slot, &topology) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_measure_adaptive(slot, &topology));
     }
 
+    false
+}
+
+fn arm_doctor(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor") {
         // --doctor <slots_csv> <topology>  (Doctor calibration sweep, read-only)
         // A CSV entry is `N` (the slot's BASE sound) or `N:S` (its 0-based wire
@@ -2864,26 +3340,21 @@ fn main() {
             "[probe] doctor sweep over {} slot(s), topology={topology}…",
             slots.len()
         );
-        match tmp_companion_lib::probe_doctor(&slots, &topology) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_doctor(&slots, &topology));
     }
 
+    false
+}
+
+fn arm_doctor_calib(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor-calib") {
         // --doctor-calib <slots_csv> --stim <wav> --family <guitar|bass|bass-vi>
         //                [--labels <rules.json>] --out <report.json>  (read-only sweep)
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
-        let stim = flag_arg(&args, "--stim").unwrap_or_default();
-        let family = flag_arg(&args, "--family").unwrap_or_default();
-        let out = flag_arg(&args, "--out").unwrap_or_default();
-        let labels = flag_arg(&args, "--labels");
+        let stim = flag_arg(args, "--stim").unwrap_or_default();
+        let family = flag_arg(args, "--family").unwrap_or_default();
+        let out = flag_arg(args, "--out").unwrap_or_default();
+        let labels = flag_arg(args, "--labels");
         let slots: Vec<ListIndex> = match slots_csv
             .split(',')
             .map(|x| x.trim())
@@ -2905,19 +3376,19 @@ fn main() {
             "[probe] doctor-calib sweep over {} slot(s), family={family}, stim={stim}…",
             slots.len()
         );
-        match tmp_companion_lib::probe_doctor_calib(&slots, &stim, &family, labels.as_deref(), &out)
-        {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_doctor_calib(
+            &slots,
+            &stim,
+            &family,
+            labels.as_deref(),
+            &out,
+        ));
     }
 
+    false
+}
+
+fn arm_doctor_loo(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor-loo") {
         // --doctor-loo <factory_report.json> [--kind synthetic|capture] [--out <loo.json>]
         // OFFLINE: re-diagnoses a --doctor-calib-factory report's rows leave-one-out.
@@ -2927,12 +3398,12 @@ fn main() {
             );
             std::process::exit(2);
         };
-        let kind = flag_arg(&args, "--kind").unwrap_or_else(|| "synthetic".to_string());
-        let out = flag_arg(&args, "--out");
+        let kind = flag_arg(args, "--kind").unwrap_or_else(|| "synthetic".to_string());
+        let out = flag_arg(args, "--out");
         match tmp_companion_lib::probe_doctor_loo(&report, &kind, out.as_deref()) {
             Ok(r) => {
                 print!("{r}");
-                return;
+                return true;
             }
             Err(e) => {
                 eprintln!("[probe] FAILED: {e}");
@@ -2941,25 +3412,29 @@ fn main() {
         }
     }
 
+    false
+}
+
+fn arm_benchmark(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--benchmark") {
         // --benchmark <corpus.json> [--thresholds <thresholds.json>] --out <result.json>
         // OFFLINE: scores a labeled held-out corpus; exits 1 on a threshold violation.
         let corpus = args.get(i + 1).filter(|a| !a.starts_with("--")).cloned();
-        let out = flag_arg(&args, "--out");
+        let out = flag_arg(args, "--out");
         let (Some(corpus), Some(out)) = (corpus, out) else {
             eprintln!(
                 "usage: probe --benchmark <corpus.json> [--thresholds <thresholds.json>] --out <result.json>"
             );
             std::process::exit(2);
         };
-        let thresholds = flag_arg(&args, "--thresholds");
+        let thresholds = flag_arg(args, "--thresholds");
         match tmp_companion_lib::probe_benchmark(&corpus, thresholds.as_deref(), &out) {
             Ok((r, pass)) => {
                 print!("{r}");
                 if !pass {
                     std::process::exit(1);
                 }
-                return;
+                return true;
             }
             Err(e) => {
                 eprintln!("[probe] FAILED: {e}");
@@ -2968,13 +3443,17 @@ fn main() {
         }
     }
 
+    false
+}
+
+fn arm_doctor_calib_factory(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor-calib-factory") {
         // --doctor-calib-factory <factory_slots_csv> --stim <wav> --family <..> --out <report.json>
         // Loads each FACTORY preset (tabEnum=4) + captures AS-LOADED for reference derivation.
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
-        let stim = flag_arg(&args, "--stim").unwrap_or_default();
-        let family = flag_arg(&args, "--family").unwrap_or_default();
-        let out = flag_arg(&args, "--out").unwrap_or_default();
+        let stim = flag_arg(args, "--stim").unwrap_or_default();
+        let family = flag_arg(args, "--family").unwrap_or_default();
+        let out = flag_arg(args, "--out").unwrap_or_default();
         let slots: Vec<ListIndex> = match slots_csv
             .split(',')
             .map(|x| x.trim())
@@ -2996,25 +3475,22 @@ fn main() {
             "[probe] doctor-calib-factory sweep over {} factory slot(s), family={family}, stim={stim}…",
             slots.len()
         );
-        match tmp_companion_lib::probe_doctor_calib_factory(&slots, &stim, &family, &out) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_doctor_calib_factory(
+            &slots, &stim, &family, &out,
+        ));
     }
 
+    false
+}
+
+fn arm_doctor_window_ab(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor-window-ab") {
         // --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>]
         //                    [--out <report.json>]  (LOADS the probed slots, read-only otherwise)
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
-        let stim = flag_arg(&args, "--stim").unwrap_or_default();
-        let family = flag_arg(&args, "--family").unwrap_or_else(|| "guitar".to_string());
-        let out = flag_arg(&args, "--out");
+        let stim = flag_arg(args, "--stim").unwrap_or_default();
+        let family = flag_arg(args, "--family").unwrap_or_else(|| "guitar".to_string());
+        let out = flag_arg(args, "--out");
         let slots: Vec<ListIndex> = match slots_csv
             .split(',')
             .map(|x| x.trim())
@@ -3034,18 +3510,18 @@ fn main() {
             "[probe] doctor-window-ab sweep over {} slot(s), family={family}, stim={stim}…",
             slots.len()
         );
-        match tmp_companion_lib::probe_doctor_window_ab(&slots, &stim, &family, out.as_deref()) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_doctor_window_ab(
+            &slots,
+            &stim,
+            &family,
+            out.as_deref(),
+        ));
     }
 
+    false
+}
+
+fn arm_capture_wav(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--capture-wav") {
         // --capture-wav <out.wav> [secs=12]  (DEVICE: save the dry DI to a WAV)
         let path = args.get(i + 1).cloned().unwrap_or_default();
@@ -3055,18 +3531,13 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] capturing dry instrument for {secs:.0}s — play continuously NOW…");
-        match tmp_companion_lib::probe_capture_wav(&path, secs) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_capture_wav(&path, secs));
     }
 
+    false
+}
+
+fn arm_scale_wav(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--scale-wav") {
         // --scale-wav <in.wav> <out.wav> <target_lufs>  (NO-DEVICE: Tier-2 LUFS match)
         let src = args.get(i + 1).cloned().unwrap_or_default();
@@ -3076,18 +3547,13 @@ fn main() {
             eprintln!("usage: probe --scale-wav <in.wav> <out.wav> <target_lufs>");
             std::process::exit(2);
         };
-        match tmp_companion_lib::probe_scale_wav(&src, &dst, target) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_scale_wav(&src, &dst, target));
     }
 
+    false
+}
+
+fn arm_stim_ab(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--stim-ab") {
         // --stim-ab <slots_csv> <wavA> <wavB> [ref=0.5]  (DEVICE A/B: two stimuli per preset)
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
@@ -3126,18 +3592,15 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] stimulus A/B on {} preset(s)…", slots.len());
-        match tmp_companion_lib::probe_stim_ab(&slots, &wav_a, &wav_b, ref_level) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_stim_ab(
+            &slots, &wav_a, &wav_b, ref_level,
+        ));
     }
 
+    false
+}
+
+fn arm_measure_prefix_sweep(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-prefix-sweep") {
         // --measure-prefix-sweep <wav>  (NO device — analysis of a reference clip)
         let wav = args.get(i + 1).cloned().unwrap_or_default();
@@ -3145,18 +3608,13 @@ fn main() {
             eprintln!("usage: probe --measure-prefix-sweep <wav>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_measure_prefix_sweep(&wav) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_measure_prefix_sweep(&wav));
     }
 
+    false
+}
+
+fn arm_measure_converge_replay(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-converge-replay") {
         // --measure-converge-replay <wav> <eps_lu> <stable_k> <preroll_ms>  (NO device)
         let wav = args.get(i + 1).cloned().unwrap_or_default();
@@ -3178,18 +3636,15 @@ fn main() {
             );
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_measure_converge_replay(&wav, eps, k, preroll) {
-            Ok(r) => {
-                print!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_measure_converge_replay(
+            &wav, eps, k, preroll,
+        ));
     }
 
+    false
+}
+
+fn arm_lufs(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--lufs") {
         let path = args.get(i + 1).cloned().unwrap_or_default();
         if path.is_empty() {
@@ -3202,15 +3657,16 @@ fn main() {
                     "integrated_lufs={:.3} short_term_max_lufs={:.3}",
                     l.integrated_lufs, l.short_term_max_lufs
                 );
-                return;
+                return true;
             }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
+            Err(e) => fail(e),
         }
     }
 
+    false
+}
+
+fn arm_measure_wav(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-wav") {
         // --measure-wav <wav>   NO-DEVICE: measure a WAV through the PRODUCTION
         // output-side convention (stereo entry point for a ≥2-ch file, mono for
@@ -3233,18 +3689,19 @@ fn main() {
                     "channels={channels} integrated_lufs={:.3} short_term_max_lufs={:.3} true_peak_dbtp={:.3}",
                     l.integrated_lufs, l.short_term_max_lufs, l.true_peak_dbtp
                 );
-                return;
+                return true;
             }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
+            Err(e) => fail(e),
         }
     }
 
+    false
+}
+
+fn arm_levelpreset(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--levelpreset") {
         // --levelpreset <slot> <target_lufs> [save] [noverify]  (stimulus via env)
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3258,24 +3715,21 @@ fn main() {
         eprintln!(
             "[probe] one-shot level slot {slot} → {target} LUFS (save={save}, verify={verify})…"
         );
-        match tmp_companion_lib::probe_level_preset(slot, target, save, verify) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_level_preset(
+            slot, target, save, verify,
+        ));
     }
 
-    // --live-lufs <slot> <target_lufs> [save] [noverify]  (stimulus via env)
-    // Same path as --levelpreset, but installs an advisory live-LUFS sink that PRINTS each
-    // streamed reading. The final summary must match a plain --levelpreset run — A/B on a
-    // REVERB/DELAY preset to catch any capture-length re-baseline.
+    false
+}
+
+// --live-lufs <slot> <target_lufs> [save] [noverify]  (stimulus via env)
+// Same path as --levelpreset, but installs an advisory live-LUFS sink that PRINTS each
+// streamed reading. The final summary must match a plain --levelpreset run — A/B on a
+// REVERB/DELAY preset to catch any capture-length re-baseline.
+fn arm_live_lufs(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--live-lufs") {
-        let slot = slot_at(&args, i + 1);
+        let slot = slot_at(args, i + 1);
         let target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3289,23 +3743,20 @@ fn main() {
         eprintln!(
             "[probe] live-lufs level slot {slot} → {target} LUFS (save={save}, verify={verify}); streaming readings…"
         );
-        match tmp_companion_lib::probe_live_lufs(slot, target, save, verify) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_live_lufs(
+            slot, target, save, verify,
+        ));
     }
 
-    // --level-preset-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]
-    // Levels a preset's Base + every FS scene; per-scene-name overrides hit a different
-    // target. Example: --level-preset-scenes 0 -23 guitar-humbucker 1 Dist=-22 Swell=-22
+    false
+}
+
+// --level-preset-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]
+// Levels a preset's Base + every FS scene; per-scene-name overrides hit a different
+// target. Example: --level-preset-scenes 0 -23 guitar-humbucker 1 Dist=-22 Swell=-22
+fn arm_level_preset_scenes(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--level-preset-scenes") {
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         let default_target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3319,32 +3770,27 @@ fn main() {
             eprintln!("usage: probe --level-preset-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]");
             std::process::exit(2);
         }
-        let overrides = parse_target_overrides(&args, i + 5);
+        let overrides = parse_target_overrides(args, i + 5);
         eprintln!(
             "[probe] level-preset-scenes list_index={list_index} default={default_target} topology={topology} save={save} overrides={overrides:?}…"
         );
-        match tmp_companion_lib::probe_level_preset_scenes(
+        return report_ln(tmp_companion_lib::probe_level_preset_scenes(
             list_index,
             default_target,
             topology,
             save,
             overrides,
-        ) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
-    // --bisect-scene <listIndex> <sceneSlot> <groupId> <nodeId> <value> [asis] [save]
-    // HW bisection: potent isolated write-measure, plus optional jointk elements.
+    false
+}
+
+// --bisect-scene <listIndex> <sceneSlot> <groupId> <nodeId> <value> [asis] [save]
+// HW bisection: potent isolated write-measure, plus optional jointk elements.
+fn arm_bisect_scene(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--bisect-scene") {
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         let scene_slot: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3361,7 +3807,7 @@ fn main() {
         }
         let with_asis = args.iter().any(|a| a == "asis");
         let with_save = args.iter().any(|a| a == "save");
-        match tmp_companion_lib::probe_bisect_scene(
+        return report_ln(tmp_companion_lib::probe_bisect_scene(
             list_index,
             scene_slot,
             group,
@@ -3370,39 +3816,29 @@ fn main() {
             with_asis,
             with_save,
             "guitar-singlecoil".to_string(),
-        ) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_fs_batch(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--fs-batch") {
         // --fs-batch <listIndex> [v1 v2 …]  — batched footswitch WRITE validation:
         // plan bake/assign per block-acting switch, write ALL on one session, ONE save.
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         let values: Vec<f32> = args[i + 2..].iter().map_while(|s| s.parse().ok()).collect();
-        match tmp_companion_lib::probe_fs_batch(list_index, values) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_fs_batch(list_index, values));
     }
 
+    false
+}
+
+fn arm_defer_scenes(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--defer-scenes") {
         // --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>
         // TMP_DEFER_FINAL=asis|return|base picks the final-save shape.
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         // Reject a malformed scene:value pair instead of silently dropping it (which
@@ -3428,24 +3864,21 @@ fn main() {
             eprintln!("usage: probe --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_defer_scenes(list_index, group, node, writes) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_defer_scenes(
+            list_index, group, node, writes,
+        ));
     }
 
-    // --jointk-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]
-    // Faithful UI-path repro: the REAL level_scenes_oneshot per scene (one call per
-    // scene, like the wizard), with per-name target overrides. save=1 persists —
-    // point it at a scratch preset.
+    false
+}
+
+// --jointk-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]
+// Faithful UI-path repro: the REAL level_scenes_oneshot per scene (one call per
+// scene, like the wizard), with per-name target overrides. save=1 persists —
+// point it at a scratch preset.
+fn arm_jointk_scenes(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--jointk-scenes") {
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         let default_target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3459,31 +3892,26 @@ fn main() {
             eprintln!("usage: probe --jointk-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]");
             std::process::exit(2);
         }
-        let overrides = parse_target_overrides(&args, i + 5);
+        let overrides = parse_target_overrides(args, i + 5);
         eprintln!(
             "[probe] jointk-scenes list_index={list_index} default={default_target} topology={topology} save={save} overrides={overrides:?}…"
         );
-        match tmp_companion_lib::probe_jointk_scenes(
+        return report_ln(tmp_companion_lib::probe_jointk_scenes(
             list_index,
             default_target,
             topology,
             save,
             overrides,
-        ) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        ));
     }
 
+    false
+}
+
+fn arm_redistribute(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--redistribute") {
         // --redistribute <listIndex> <target> <topology> <worstDeficitDb>  (PR5; SAVES — scratch)
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         let target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3500,22 +3928,19 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] redistribute idx={list_index} target={target} topology={topology} worstDeficit={worst}…");
-        match tmp_companion_lib::probe_redistribute(list_index, target, topology, worst) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_redistribute(
+            list_index, target, topology, worst,
+        ));
     }
 
-    // --scene-knob-authority <listIndex> <sceneSlot> <topology> : measure whether the
-    // active amp outputLevel moves the scene's loudness (global vs scene-edit). No save.
+    false
+}
+
+// --scene-knob-authority <listIndex> <sceneSlot> <topology> : measure whether the
+// active amp outputLevel moves the scene's loudness (global vs scene-edit). No save.
+fn arm_scene_knob_authority(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--scene-knob-authority") {
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         let scene_slot: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3526,23 +3951,20 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] scene-knob-authority list_index={list_index} scene={scene_slot} topology={topology}…");
-        match tmp_companion_lib::probe_scene_knob_authority(list_index, scene_slot, topology) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_scene_knob_authority(
+            list_index, scene_slot, topology,
+        ));
     }
 
-    // --mute-floor <listIndex> <sceneSlot> <topology> : for a 2-amp merged scene, measure the
-    // combined output, the both-lanes-muted floor, and each lane solo + margin (rebalance
-    // mute-isolation check). No save.
+    false
+}
+
+// --mute-floor <listIndex> <sceneSlot> <topology> : for a 2-amp merged scene, measure the
+// combined output, the both-lanes-muted floor, and each lane solo + margin (rebalance
+// mute-isolation check). No save.
+fn arm_mute_floor(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--mute-floor") {
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         let scene_slot: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3555,21 +3977,18 @@ fn main() {
         eprintln!(
             "[probe] mute-floor list_index={list_index} scene={scene_slot} topology={topology}…"
         );
-        match tmp_companion_lib::probe_mute_floor(list_index, scene_slot, topology) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_mute_floor(
+            list_index, scene_slot, topology,
+        ));
     }
 
-    // --measure-scene-levels <listIndex> <topology> : measure each saved scene's loudness.
+    false
+}
+
+// --measure-scene-levels <listIndex> <topology> : measure each saved scene's loudness.
+fn arm_measure_scene_levels(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-scene-levels") {
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         let topology = args.get(i + 2).cloned().unwrap_or_default();
         if topology.is_empty() {
             eprintln!("usage: probe --measure-scene-levels <listIndex> <topology>");
@@ -3578,35 +3997,27 @@ fn main() {
         eprintln!(
             "[probe] measuring saved scene levels list_index={list_index} topology={topology}…"
         );
-        match tmp_companion_lib::probe_measure_scene_levels(list_index, topology) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_measure_scene_levels(
+            list_index, topology,
+        ));
     }
 
-    // --scene-amp-diag <listIndex> : per-scene amp bypass + level-control dump (read-only).
+    false
+}
+
+// --scene-amp-diag <listIndex> : per-scene amp bypass + level-control dump (read-only).
+fn arm_scene_amp_diag(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--scene-amp-diag") {
-        let list_index = slot_at(&args, i + 1);
+        let list_index = slot_at(args, i + 1);
         eprintln!("[probe] scene amp diagnostic for list_index={list_index}…");
-        match tmp_companion_lib::probe_scene_amp_diag(list_index) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_scene_amp_diag(list_index));
     }
 
-    // --bulk-dryrun <folder> <opspec.json|inline-json> : preview a bulk op, no writes.
+    false
+}
+
+// --bulk-dryrun <folder> <opspec.json|inline-json> : preview a bulk op, no writes.
+fn arm_bulk_dryrun(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--bulk-dryrun") {
         let folder = args.get(i + 1).cloned().unwrap_or_default();
         let opspec = opspec_arg(args.get(i + 2));
@@ -3615,19 +4026,14 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!("[probe] bulk dry-run over {folder}…");
-        match tmp_companion_lib::probe_bulk_dryrun(&folder, &opspec) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_bulk_dryrun(&folder, &opspec));
     }
 
-    // --bulk-apply <folder> <opspec> [--slots a,b,c] [revert] : apply on the device.
+    false
+}
+
+// --bulk-apply <folder> <opspec> [--slots a,b,c] [revert] : apply on the device.
+fn arm_bulk_apply(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--bulk-apply") {
         let folder = args.get(i + 1).cloned().unwrap_or_default();
         let opspec = opspec_arg(args.get(i + 2));
@@ -3638,59 +4044,57 @@ fn main() {
         let slots: Option<Vec<ListIndex>> = args
             .iter()
             .position(|a| a == "--slots")
-            .map(|j| slots_at(&args, j + 1));
+            .map(|j| slots_at(args, j + 1));
         let revert = args.iter().any(|a| a == "revert");
         eprintln!("[probe] bulk apply over {folder} (slots={slots:?}, revert={revert})…");
-        match tmp_companion_lib::probe_bulk_apply(&folder, &opspec, slots, revert) {
-            Ok(r) => {
-                println!("{r}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report_ln(tmp_companion_lib::probe_bulk_apply(
+            &folder, &opspec, slots, revert,
+        ));
     }
 
-    // Default: connect + list My Presets (HID stack sanity check).
-    eprintln!("[probe] connecting to TMP (seizing device)…");
-    match tmp_companion_lib::probe_connect_and_list() {
-        Ok(presets) => {
-            println!("[probe] OK — {} presets in My Presets:", presets.len());
-            // TMP_LIST_ALL=1 prints the whole list (finding a preset's current slot);
-            // default keeps the 20-row sanity-check summary.
-            let shown = if std::env::var_os("TMP_LIST_ALL").is_some() {
-                presets.len()
-            } else {
-                20
-            };
-            for p in presets.iter().take(shown) {
-                println!(
-                    "  idx {:>3} · slot {:>3}  {}",
-                    p.slot,
-                    p.slot.device_slot(),
-                    p.name
-                );
-            }
-            if presets.len() > shown {
-                println!("  … and {} more", presets.len() - shown);
-            }
-            if presets.is_empty() {
-                eprintln!("[probe] WARNING: connected but the list was empty");
-                std::process::exit(2);
-            }
-        }
-        Err(e) => {
-            eprintln!("[probe] FAILED: {e}");
-            std::process::exit(1);
-        }
-    }
+    false
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_target_overrides;
+    use super::{help_text, parse_target_overrides, unknown_flag, ARMS};
+
+    // `--help` lists every flag this file parses: each double-quoted flag literal in the source is
+    // either a command (an `ARMS` row) or a modifier (`OPTION_FLAGS`), and the help text
+    // names it. A new arm or option that skips the table fails here.
+    #[test]
+    fn help_lists_every_flag_in_the_source() {
+        let src = include_str!("probe.rs");
+        let help = help_text();
+        let mut rest = src;
+        while let Some(at) = rest.find("\"--") {
+            let lit = &rest[at + 1..];
+            let end = lit
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .unwrap_or(lit.len());
+            let flag = &lit[..end];
+            rest = &lit[end..];
+            // `--help` is handled before dispatch, and is not itself a table row.
+            if flag.len() <= 2 || flag == "--help" || !lit[end..].starts_with('"') {
+                continue;
+            }
+            assert!(help.contains(flag), "--help is missing {flag}");
+            assert!(
+                unknown_flag(&["probe".to_string(), flag.to_string()]).is_none(),
+                "{flag} is rejected as unknown"
+            );
+        }
+        assert!(ARMS.iter().all(|a| !a.flags.is_empty()));
+    }
+
+    #[test]
+    fn an_unknown_flag_is_named() {
+        let typo = format!("--{}", "levelpreset-typo");
+        let args = vec!["probe".to_string(), typo.clone()];
+        assert_eq!(unknown_flag(&args), Some(typo.as_str()));
+        let args = vec!["probe".to_string(), "--fw".to_string()];
+        assert_eq!(unknown_flag(&args), None);
+    }
 
     // The regression that aborted the probe arm: `from` past the end of `args` must be
     // an empty override list, not a slice panic.

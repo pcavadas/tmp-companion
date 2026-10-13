@@ -308,133 +308,24 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
-        let mut opts = leveller::LevelOptions { save, verify: true, ..Default::default() };
-        let cancelled = || PRESET_LEVEL_CANCEL.load(SeqCst);
-        let mut previous_level: Option<f32> = None;
-        // Typed, so the run-end `stamp` below can tell a cancel from a failure.
-        let result: Result<leveller::LevelResult, LevelError> = match block {
-            Some((group_id, node_id, parameter_id)) => {
-                // CLASS GATE + RANGE, replacing the value-sniffed `knob_bounds(current)`:
-                // the picker can offer ANY block param, and sweeping a non-level control
-                // (a distortion knob, say) changes the sound the player wrote rather than
-                // its loudness — the exact hazard the footswitch lane already refuses.
-                // `param_class::classify` keys on the block's FenderId, so this arm now
-                // ALWAYS pays the one field-8 read the saving path already paid; the same
-                // read still supplies `restore_scene`. An unreadable preset REFUSES rather
-                // than guessing a class — the safe direction, and no offline spec exercises
-                // this arm (every fixture job sends a null block triple).
-                let saved = crate::read_saved_preset(slot);
-                let Some(preset) = saved.as_ref() else {
-                    return Err(format!(
-                        "could not read preset {} to classify {parameter_id} on {node_id} — \
-                         leveling an unclassified parameter could change the sound instead of \
-                         its loudness",
-                        slot.device_slot()
-                    ));
-                };
-                // `block_value` — the value the picker displayed — stays the wet-floor
-                // anchor, falling back to the saved graph. Everything else (FenderId
-                // resolution, classification, the shared refusal) is
-                // `FsParamTarget::classified`, so this lane and the scene HANDLE lane
-                // cannot answer the same control two ways.
-                let authored = block_value
-                    .or_else(|| node_param_f64(preset, &node_id, &parameter_id).map(|v| v as f32))
-                    .unwrap_or(0.0);
-                let target =
-                    leveller::FsParamTarget::classified(preset, &node_id, &parameter_id, authored)?;
-                let (lo, hi) = target.bounds();
-                // A saving block-knob run measures/applies in base context too, so its save
-                // must re-stamp the original `lastLoadedScene` like the whole-preset arm.
-                if save {
-                    opts.restore_scene = crate::last_loaded_scene(preset);
-                    crate::warn_missing_restore_scene(
-                        "level_preset(block)",
-                        slot,
-                        preset,
-                        opts.restore_scene,
-                    );
-                }
-                let knob = leveller::LevelKnob::Block { group_id, node_id, parameter_id, scene_slot: None };
-                // Pre-dispatch cancel: nothing has touched the device yet — early-return
-                // (the leveller bails at its own pre-measure checkpoint) so the run-end
-                // backstop below is skipped, mirroring the None arm's cancel path.
-                if cancelled() {
-                    return leveller::level_preset_block(slot, &stim, &knob, lo, hi, target_lufs, opts, cancelled)
-                        .map_err(String::from);
-                }
-                leveller::level_preset_block(slot, &stim, &knob, lo, hi, target_lufs, opts, cancelled)
-            }
-            None => {
-                // Isolate the Base measurement: force EVERY footswitch on/off block OFF so we
-                // measure the clean base sound, not "base + whatever pedals are saved on".
-                // ponytail: costs one ~1 s preset read per Base run (even presets with no FS
-                // blocks) — and, on a preset whose field-8 tail is CUT, a whole device backup
-                // (`slot_read`'s complete-or-fail re-read, 60 s cap) before the run starts.
-                // Optimization path: thread an all-on/off force-list hint from the frontend
-                // backup scan onto LevelJob (NOT footswitchesPerIndex — that's filtered to
-                // levelable-param switches, while isolation needs ALL on-off blocks). That hint
-                // would remove BOTH costs at once: the startup backup scan is complete by
-                // construction, so it needs no truncation fallback at all.
-                if cancelled() {
-                    // `previous_level` is still None here (the isolation read below hasn't
-                    // run yet) — fine, since `level_preset` bails at the pre-measure cancel
-                    // checkpoint and returns Err, never reaching the field that would use it.
-                    return leveller::level_preset(
-                        slot,
-                        &stim,
-                        target_lufs,
-                        opts,
-                        &[],
-                        previous_level,
-                        cancelled,
-                    )
-                    .map_err(String::from);
-                }
-                // BASE MEANS BASE — every footswitch-owned on-off block is forced OFF, so the
-                // measurement describes the preset with nothing switched on. A preset saved
-                // with a pedal engaged does NOT measure that pedal here; that sound is its own
-                // footswitch row's job (user directive, 2026-08-20; the HW evidence behind it
-                // is in `notes/leveling.md`).
-                //
-                // `ftsw` sits at the field-8 truncation cliff, so a short read yields a short
-                // force list — pedals left on, and the wrong `presetLevel` SAVED. The shared
-                // read REFUSES on a truncated `ftsw` rather than leveling a guess. Refusing
-                // here returns BEFORE the run-end `reamp_off_guaranteed` backstop, safe only
-                // because every step above is a pure read: nothing has engaged re-amp yet.
-                let (preset, has_fs_scenes, force, restore_scene) =
-                    crate::commands::doctor::read_base_isolation(slot)?;
-                // The original `lastLoadedScene` must be re-stamped by the save: the
-                // base-context measurement leaves base active, and saving there would
-                // rewrite the preset's on-load scene to base (HW, Hiwatt slot 31).
-                previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
-                opts.restore_scene = restore_scene;
-                crate::warn_missing_restore_scene("level_preset", slot, &preset, opts.restore_scene);
-                log::info!(
-                    "level_preset slot={slot}: base isolation forces {} footswitch-owned \
-                     block(s) off",
-                    force.len()
-                );
-                // ⟦BOOST⟧ Derive the base amp candidate for the plan-then-apply routing.
-                let base_amp = base_boost_candidate(&preset, target_lufs, &force);
-                log::info!(
-                    "level_preset slot={slot}: base boost candidate {:?}",
-                    base_amp.as_ref().map(|j| j.knobs[0].knob.label())
-                );
-                leveller::level_preset_impl(
-                    slot,
-                    &stim,
-                    target_lufs,
-                    opts,
-                    &force,
-                    previous_level,
-                    leveller::BoostContext {
-                        base_amp,
-                        saved: Some(&preset),
-                        has_fs_scenes,
-                    },
-                    cancelled,
-                )
-            }
+        let opts = leveller::LevelOptions { save, verify: true, ..Default::default() };
+        // Typed, so the run-end `stamp` below can tell a cancel from a failure. A refusal
+        // (`?`) or an `Early` answer returns BEFORE the run-end backstop: nothing has
+        // touched the device on either path.
+        let arm = match block {
+            Some((group_id, node_id, parameter_id)) => level_block_arm(
+                slot,
+                &stim,
+                target_lufs,
+                opts,
+                block_value,
+                leveller::LevelKnob::Block { group_id, node_id, parameter_id, scene_slot: None },
+            )?,
+            None => level_base_arm(slot, &stim, target_lufs, opts)?,
+        };
+        let (result, previous_level) = match arm {
+            PresetArm::Early(r) => return r,
+            PresetArm::Ran(r, previous_level) => (r, previous_level),
         };
         // `previous_level` rides the result for the re-run idempotency skip (see
         // `level_unchanged`) — not a user-facing revert; design 1a has no in-app restore
@@ -466,6 +357,176 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
             .stamp(result, |r, w| r.reamp_warning = w)
     })
     .await
+}
+
+/// What one [`level_preset`] arm answered.
+enum PresetArm {
+    /// A pre-dispatch cancel: nothing touched the device, so the run-end backstop is
+    /// skipped and this is the command's answer as-is.
+    Early(Result<leveller::LevelResult, String>),
+    /// The leveller ran: its typed result, and the stored `presetLevel` read before it
+    /// (`None` when the arm read none).
+    Ran(Result<leveller::LevelResult, LevelError>, Option<f32>),
+}
+
+/// The read side of [`PRESET_LEVEL_CANCEL`], as the leveller's `cancelled` callback.
+fn preset_level_cancelled() -> bool {
+    PRESET_LEVEL_CANCEL.load(SeqCst)
+}
+
+/// [`level_preset`]'s block-knob arm: classify the picked param, then level it. `Err` is a
+/// refusal before any device work.
+fn level_block_arm(
+    slot: ListIndex,
+    stim: &[f32],
+    target_lufs: f64,
+    mut opts: leveller::LevelOptions,
+    block_value: Option<f32>,
+    knob: leveller::LevelKnob,
+) -> Result<PresetArm, String> {
+    let leveller::LevelKnob::Block {
+        node_id,
+        parameter_id,
+        ..
+    } = &knob
+    else {
+        unreachable!("level_block_arm is only handed a Block knob");
+    };
+    // CLASS GATE + RANGE, replacing the value-sniffed `knob_bounds(current)`:
+    // the picker can offer ANY block param, and sweeping a non-level control
+    // (a distortion knob, say) changes the sound the player wrote rather than
+    // its loudness — the exact hazard the footswitch lane already refuses.
+    // `param_class::classify` keys on the block's FenderId, so this arm now
+    // ALWAYS pays the one field-8 read the saving path already paid; the same
+    // read still supplies `restore_scene`. An unreadable preset REFUSES rather
+    // than guessing a class — the safe direction, and no offline spec exercises
+    // this arm (every fixture job sends a null block triple).
+    let saved = crate::read_saved_preset(slot);
+    let Some(preset) = saved.as_ref() else {
+        return Err(format!(
+            "could not read preset {} to classify {parameter_id} on {node_id} — \
+             leveling an unclassified parameter could change the sound instead of \
+             its loudness",
+            slot.device_slot()
+        ));
+    };
+    // `block_value` — the value the picker displayed — stays the wet-floor
+    // anchor, falling back to the saved graph. Everything else (FenderId
+    // resolution, classification, the shared refusal) is
+    // `FsParamTarget::classified`, so this lane and the scene HANDLE lane
+    // cannot answer the same control two ways.
+    let authored = block_value
+        .or_else(|| node_param_f64(preset, node_id, parameter_id).map(|v| v as f32))
+        .unwrap_or(0.0);
+    let target = leveller::FsParamTarget::classified(preset, node_id, parameter_id, authored)?;
+    let (lo, hi) = target.bounds();
+    // A saving block-knob run measures/applies in base context too, so its save
+    // must re-stamp the original `lastLoadedScene` like the whole-preset arm.
+    if opts.save {
+        opts.restore_scene = crate::last_loaded_scene(preset);
+        crate::warn_missing_restore_scene("level_preset(block)", slot, preset, opts.restore_scene);
+    }
+    let run = || {
+        leveller::level_preset_block(
+            slot,
+            stim,
+            &knob,
+            lo,
+            hi,
+            target_lufs,
+            opts,
+            preset_level_cancelled,
+        )
+    };
+    // Pre-dispatch cancel: nothing has touched the device yet — early-return
+    // (the leveller bails at its own pre-measure checkpoint) so the run-end
+    // backstop is skipped, mirroring the base arm's cancel path.
+    if preset_level_cancelled() {
+        return Ok(PresetArm::Early(run().map_err(String::from)));
+    }
+    Ok(PresetArm::Ran(run(), None))
+}
+
+/// [`level_preset`]'s whole-preset (Base) arm: isolate base, then level `presetLevel`.
+/// `Err` is a refusal before any device work.
+fn level_base_arm(
+    slot: ListIndex,
+    stim: &[f32],
+    target_lufs: f64,
+    mut opts: leveller::LevelOptions,
+) -> Result<PresetArm, String> {
+    // Isolate the Base measurement: force EVERY footswitch on/off block OFF so we
+    // measure the clean base sound, not "base + whatever pedals are saved on".
+    // ponytail: costs one ~1 s preset read per Base run (even presets with no FS
+    // blocks) — and, on a preset whose field-8 tail is CUT, a whole device backup
+    // (`slot_read`'s complete-or-fail re-read, 60 s cap) before the run starts.
+    // Optimization path: thread an all-on/off force-list hint from the frontend
+    // backup scan onto LevelJob (NOT footswitchesPerIndex — that's filtered to
+    // levelable-param switches, while isolation needs ALL on-off blocks). That hint
+    // would remove BOTH costs at once: the startup backup scan is complete by
+    // construction, so it needs no truncation fallback at all.
+    if preset_level_cancelled() {
+        // `previous_level` is None here (the isolation read below hasn't run yet) —
+        // fine, since `level_preset` bails at the pre-measure cancel checkpoint and
+        // returns Err, never reaching the field that would use it.
+        return Ok(PresetArm::Early(
+            leveller::level_preset(
+                slot,
+                stim,
+                target_lufs,
+                opts,
+                &[],
+                None,
+                preset_level_cancelled,
+            )
+            .map_err(String::from),
+        ));
+    }
+    // BASE MEANS BASE — every footswitch-owned on-off block is forced OFF, so the
+    // measurement describes the preset with nothing switched on. A preset saved
+    // with a pedal engaged does NOT measure that pedal here; that sound is its own
+    // footswitch row's job (user directive, 2026-08-20; the HW evidence behind it
+    // is in `notes/leveling.md`).
+    //
+    // `ftsw` sits at the field-8 truncation cliff, so a short read yields a short
+    // force list — pedals left on, and the wrong `presetLevel` SAVED. The shared
+    // read REFUSES on a truncated `ftsw` rather than leveling a guess. Refusing
+    // here returns BEFORE the run-end `reamp_off_guaranteed` backstop, safe only
+    // because every step above is a pure read: nothing has engaged re-amp yet.
+    let (preset, has_fs_scenes, force, restore_scene) =
+        crate::commands::doctor::read_base_isolation(slot)?;
+    // The original `lastLoadedScene` must be re-stamped by the save: the
+    // base-context measurement leaves base active, and saving there would
+    // rewrite the preset's on-load scene to base (HW, Hiwatt slot 31).
+    let previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
+    opts.restore_scene = restore_scene;
+    crate::warn_missing_restore_scene("level_preset", slot, &preset, opts.restore_scene);
+    log::info!(
+        "level_preset slot={slot}: base isolation forces {} footswitch-owned \
+         block(s) off",
+        force.len()
+    );
+    // ⟦BOOST⟧ Derive the base amp candidate for the plan-then-apply routing.
+    let base_amp = base_boost_candidate(&preset, target_lufs, &force);
+    log::info!(
+        "level_preset slot={slot}: base boost candidate {:?}",
+        base_amp.as_ref().map(|j| j.knobs[0].knob.label())
+    );
+    let result = leveller::level_preset_impl(
+        slot,
+        stim,
+        target_lufs,
+        opts,
+        &force,
+        previous_level,
+        leveller::BoostContext {
+            base_amp,
+            saved: Some(&preset),
+            has_fs_scenes,
+        },
+        preset_level_cancelled,
+    );
+    Ok(PresetArm::Ran(result, previous_level))
 }
 /// Cooperative cancel for [`level_preset`] (base-preset leveling) — set by
 /// `cancel_preset_leveling`, reset at the command's start, read via a closure passed into
