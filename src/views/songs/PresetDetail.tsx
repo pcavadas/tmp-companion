@@ -7,8 +7,8 @@
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Icon } from "../../ui/Icon";
 import { PaneEmpty } from "../../ui/PaneEmpty";
+import { UnitBadge } from "./UnitBadge";
 import { slotLabel } from "../../lib/format";
 import type { SongRecord } from "../../lib/types";
 import { SongRow } from "./SongRow";
@@ -23,28 +23,6 @@ const truncate: CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
 };
-
-/** "on unit" lock badge — presets (and their song assignments) live on the device. */
-export function UnitBadge({ note = "on unit" }: { note?: string }) {
-  const { t } = useTheme();
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: t.space2,
-        fontFamily: t.mono,
-        fontSize: t.fsTag,
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        color: t.faint,
-      }}
-    >
-      <Icon name="lock" size={10} stroke={t.faint} />
-      {note}
-    </span>
-  );
-}
 
 export interface PresetDetailProps {
   /** `slot` is the 0-based My-Presets list index; `slotLabel` renders it as `058`. */

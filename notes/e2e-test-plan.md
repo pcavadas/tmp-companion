@@ -318,7 +318,7 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 ## 8. CLAUDE.md corrections found during discovery
 
 1. ✅ resolved (2026-07-05): **No "Disclaimer/Backup" wizard stage.** CLAUDE.md and
-   `WizardShell.tsx`'s `StepRail` now both describe the 3-step rail (Set up · Level · Summary) —
+   `overlays/StepRail.tsx` (then in `WizardShell.tsx`) now both describe the 3-step rail (Set up · Level · Summary) —
    the doc/code mismatch is gone.
 2. ✅ resolved (2026-07-05): **Row click does not recall the preset.** `LevelView.tsx` and
    `PresetRow.tsx` comments now agree with the code (click only selects; recall is owned by

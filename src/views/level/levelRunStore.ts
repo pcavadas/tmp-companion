@@ -29,7 +29,7 @@ import { onLive } from "../../lib/liveEvents";
 import { sortRunItems, type RunItem, type SetupOption } from "./leveling";
 import { applyPatches, runEngine, type EngineStep } from "./runEngine";
 import { IDLE_METER, pushLiveMeter, setLiveMeter } from "./liveMeterStore";
-import type { Stage } from "../overlays";
+import type { Stage } from "../overlays/wizardContext";
 import type { AmpCandidate, Profile } from "../../lib/types";
 
 /** Where a run is: none yet, in flight, winding down after a Stop, or finished on its own

@@ -14,64 +14,6 @@ import { Icon } from "../../ui/Icon";
 import { Button } from "../../ui/primitives";
 import { SlotLabel } from "../../ui/SlotLabel";
 
-export interface PresetGroup<T> {
-  slot: number;
-  name: string;
-  items: T[];
-}
-
-export interface PresetGroupListProps {
-  label: string;
-  children: ReactNode;
-}
-
-/** The list frame: a mono kicker over a scrollable body of `PresetGroupRow`s. */
-export function PresetGroupList({ label, children }: PresetGroupListProps) {
-  const { t } = useTheme();
-  return (
-    <div
-      style={{
-        flex: 1,
-        minHeight: 0,
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      <div
-        style={{
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          paddingBottom: t.space3,
-        }}
-      >
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: 10,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            color: t.faint,
-          }}
-        >
-          {label}
-        </span>
-      </div>
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          scrollbarGutter: "stable",
-        }}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
 export interface PresetGroupRowProps {
   slot: number;
   name: string;

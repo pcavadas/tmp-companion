@@ -17,7 +17,7 @@ import { listPresets, getStore } from "../../lib/invoke";
 import { useDeviceLoad } from "../../lib/useDeviceLoad";
 import { baseKey, childKeys } from "./leveling";
 import { subscribeLibraryScan, getLibraryScan } from "../../device/libraryScan";
-import type { PresetRow } from "../PresetList";
+import type { PresetRow } from "./leveling";
 import type {
   PresetEntry,
   Store,

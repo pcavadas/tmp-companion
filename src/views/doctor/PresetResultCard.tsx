@@ -10,7 +10,8 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Button } from "../../ui/primitives";
 import { SlotLabel } from "../../ui/SlotLabel";
-import { SevDot, SoundRow } from "./SoundRow";
+import { SevDot } from "./SevDot";
+import { SoundRow } from "./SoundRow";
 import { SceneConsistency } from "./SceneConsistency";
 import { LevelingDamageRow } from "./LevelingDamageRow";
 import {

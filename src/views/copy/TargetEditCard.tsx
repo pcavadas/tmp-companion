@@ -12,12 +12,13 @@ import { Tag } from "../../ui/Tag";
 import { slotLabel } from "../../lib/format";
 import { CPU_BUDGET } from "../../models/cpu";
 import { CopyPath } from "./CopyPath";
-import { BlockEditor, type EditMode } from "./BlockEditor";
+import { BlockEditor } from "./BlockEditor";
 import { CpuMeter } from "./CpuMeter";
 import {
   cpuOfGraph,
   findBlock,
   isEdited,
+  type EditMode,
   type OriginBlock,
   type PresetEdit,
 } from "./copyModel";

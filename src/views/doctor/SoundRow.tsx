@@ -7,29 +7,26 @@
 // picker/card. Only errored or unrun rows (no usable capture) are not expandable — a clean
 // row still expands (to pick it as a reference / show its cut-through read).
 
-import type { CSSProperties } from "react";
-
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { Button } from "../../ui/primitives";
-import { BandMeter } from "./BandMeter";
 import { BandSpark } from "./BandSpark";
 import { CutThroughCard } from "./CutThroughCard";
 import { DiagnosisChip } from "./DiagnosisChip";
 import { LevelIndicator } from "./LevelIndicator";
 import { MatchCard } from "./MatchCard";
-import { PrescriptionCard } from "./PrescriptionCard";
+import { DiagnosisPanel } from "./DiagnosisPanel";
+import { findingRowHeaderStyle } from "./findingRow";
+import { SevDot } from "./SevDot";
 import { bandLayoutsMatch } from "./matchModel";
 import { offbranchStatus } from "../level/leveling";
 import {
-  diagKicker,
   isPossible,
   possibleLabel,
   sevTone,
   sortedDiags,
   soundSev,
-  type Sev,
 } from "./severity";
 import type {
   DoctorDiag,
@@ -49,61 +46,6 @@ const SHARED_CAPTION =
 
 /** The row text for a sound a stopped run never reached. */
 const NOT_CHECKED = "Not checked — the run was stopped";
-
-/** Diagnosis-row header min-height (SevDot + serif label baseline) — off the
- *  t.spaceN scale, so it's a role-named const shared with SceneConsistency's
- *  identical row shape rather than a bare literal in each file. */
-export const ROW_MIN_HEIGHT = 38;
-
-// ---- severity dot ----------------------------------------------------------
-
-export interface SevDotProps {
-  sev: Sev;
-}
-
-export function SevDot({ sev }: SevDotProps) {
-  const { t } = useTheme();
-  const tone = sevTone(t, sev);
-  if (sev === "high") {
-    return (
-      <span
-        style={{
-          width: 9,
-          height: 9,
-          borderRadius: 999,
-          background: tone.fg,
-          boxShadow: `0 0 0 2.5px ${tone.soft}`,
-          flexShrink: 0,
-        }}
-      />
-    );
-  }
-  if (sev === "med") {
-    return (
-      <span
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: 999,
-          background: tone.fg,
-          flexShrink: 0,
-        }}
-      />
-    );
-  }
-  return (
-    <span
-      style={{
-        width: 7,
-        height: 7,
-        borderRadius: 999,
-        border: `1.5px solid ${tone.fg}`,
-        boxSizing: "border-box",
-        flexShrink: 0,
-      }}
-    />
-  );
-}
 
 // ---- shared-block detection (hoisted from PrescriptionCard) -----------------
 
@@ -213,14 +155,7 @@ export function SoundRow({
     !isReference &&
     bandLayoutsMatch(referenceSound, sound);
 
-  const headerStyle: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: t.space5,
-    minHeight: ROW_MIN_HEIGHT,
-    padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
-    background: open ? t.rowSel : "transparent",
-  };
+  const headerStyle = findingRowHeaderStyle(t, open);
   // An expandable row's header is a real disclosure button; a flat (error /
   // unrun) row has nothing to open, so it stays a plain, inert div.
   const header = (
@@ -456,108 +391,17 @@ export function SoundRow({
               <span>{SHARED_CAPTION}</span>
             </div>
           )}
-          {diags.map((diag) => {
-            const dTone = sevTone(t, diag.sev);
-            const possible = isPossible(diag);
-            return (
-              <div
-                key={diag.key}
-                style={{
-                  borderLeft: `2px solid ${dTone.fg}`,
-                  paddingLeft: t.space6,
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "baseline",
-                    gap: t.space4,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: t.sans,
-                      fontSize: t.fsBody,
-                      fontWeight: 600,
-                      color: possible ? t.mutedInk : dTone.fg,
-                    }}
-                  >
-                    {possibleLabel(diag)}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: t.mono,
-                      fontSize: t.fsTag,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      color: possible ? t.mutedInk : dTone.fg,
-                    }}
-                  >
-                    {diagKicker(diag)}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: t.mono,
-                      fontSize: t.fsData2,
-                      color: t.mutedInk,
-                    }}
-                  >
-                    {diag.detail}
-                  </span>
-                  <LevelIndicator
-                    level={diag.fromLevel}
-                    sev={diag.sev}
-                    finding={possibleLabel(diag)}
-                    size="rich"
-                  />
-                </div>
-                <div
-                  style={{
-                    fontFamily: t.sans,
-                    fontSize: t.fsControl,
-                    lineHeight: 1.5,
-                    color: t.ink2,
-                    marginTop: t.space2,
-                  }}
-                >
-                  {diag.explain}
-                </div>
-                {diag.bands.length > 0 && (
-                  <BandMeter
-                    balanceDb={sound.balanceDb}
-                    bandLabels={sound.bandLabels}
-                    bands={diag.bands}
-                    sev={diag.sev}
-                  />
-                )}
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: t.space5,
-                    marginTop: t.space5,
-                  }}
-                >
-                  {diag.rx.map((rx, i) => (
-                    <PrescriptionCard
-                      key={`${rx.kind}-${String(i)}`}
-                      cardId={`${id}|${diag.key}|${String(i)}`}
-                      rx={rx}
-                      listIndex={listIndex}
-                      presetName={presetName}
-                      soundScene={sound.scene}
-                      soundFootswitch={sound.footswitch}
-                      soundSceneOverrides={sound.sceneOverrides}
-                      nodes={input?.nodes}
-                      footswitches={input?.footswitches}
-                      stimulus={input}
-                    />
-                  ))}
-                </div>
-              </div>
-            );
-          })}
+          {diags.map((diag) => (
+            <DiagnosisPanel
+              key={diag.key}
+              diag={diag}
+              sound={sound}
+              cardIdBase={`${id}|${diag.key}`}
+              listIndex={listIndex}
+              presetName={presetName}
+              input={input}
+            />
+          ))}
           {sound.cutThrough && <CutThroughCard cutThrough={sound.cutThrough} />}
           {canMatch && (
             <MatchCard

@@ -15,10 +15,8 @@ import { BlockArt } from "../../ui/BlockArt";
 import { SegmentedControl } from "../../ui/primitives";
 import { resolveBlockArt, shortFallback } from "../../models/blockArt";
 import { cpuStr } from "../../models/cpu";
-import { type EditBlock, type OriginBlock } from "./copyModel";
+import { type EditBlock, type EditMode, type OriginBlock } from "./copyModel";
 import { checkOp, REASON_COPY, type BaseCounts } from "./validateBlockEdit";
-
-export type EditMode = "replace" | "before" | "after";
 
 export interface BlockEditorProps {
   block: EditBlock;

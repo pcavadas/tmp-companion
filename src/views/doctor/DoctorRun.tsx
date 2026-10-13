@@ -22,7 +22,9 @@ import { ProgressBar } from "../../ui/ProgressBar";
 import { ConfirmBar } from "../../ui/ConfirmBar";
 import { RunRow } from "../../ui/RunRow";
 import { RunFooterStatus } from "../../ui/RunFooterStatus";
-import { WizardShell, WizardFooter, WizTitle } from "../overlays/WizardShell";
+import { WizardShell } from "../overlays/WizardShell";
+import { WizardFooter } from "../overlays/WizardFooter";
+import { WizTitle } from "../overlays/WizTitle";
 import {
   DOCTOR_STEPS,
   countFinished,

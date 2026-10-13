@@ -7,8 +7,12 @@
 // centered-modal wizard chrome.
 export { LevelingWizard } from "./LevelingWizard";
 export type { LevelingWizardProps } from "./LevelingWizard";
-export { WizardShell, WizardFooter, WizTitle, StepRail } from "./WizardShell";
-export type { Stage, WizardShellProps, WizardFooterProps } from "./WizardShell";
+export { WizardShell } from "./WizardShell";
+export type { Stage, WizardShellProps } from "./WizardShell";
+export { WizardFooter } from "./WizardFooter";
+export type { WizardFooterProps } from "./WizardFooter";
+export { WizTitle } from "./WizTitle";
+export { StepRail } from "./StepRail";
 export { WizardPage } from "./WizardPage";
 export type { WizardPageProps } from "./WizardPage";
 export { Pick } from "./Pick";

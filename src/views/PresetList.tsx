@@ -21,17 +21,11 @@ import { Skel, SkelStatus } from "../ui/Skeleton";
 import { ProgressBar } from "../ui/ProgressBar";
 import { Button, Checkbox, SearchInput } from "../ui/primitives";
 import { PresetRow as PresetRowComponent } from "./level/PresetRow";
-import { childKeys } from "./level/leveling";
+import { childKeys, type PresetRow } from "./level/leveling";
 import { presetCpu } from "../models/cpu";
 import type { ScanState } from "./level/usePresetData";
 import { useLibraryScanPercent } from "../device/libraryScan";
 import type { ActiveGraph, FootswitchInfo, SceneInfo } from "../lib/types";
-
-export interface PresetRow {
-  slot: number;
-  name: string;
-  empty: boolean;
-}
 
 export interface PresetListProps {
   rows: PresetRow[];

@@ -11,7 +11,7 @@
 import { useRef, type ReactNode } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { WizardHeader } from "./WizardShell";
+import { WizardHeader } from "./WizardHeader";
 import { DialogCardCtx, WIZ_STEPS, type RailStep } from "./wizardContext";
 
 export interface WizardPageProps {

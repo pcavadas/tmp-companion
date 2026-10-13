@@ -27,11 +27,11 @@ import {
   footswitchName,
   fswKey,
   sceneKeyOf,
+  type PresetRow as PresetRowData,
 } from "./leveling";
 import { SceneRow } from "./SceneRow";
 import { presetRowPropsEqual } from "./presetRowEqual";
 import { RowCpu } from "./RowCpu";
-import type { PresetRow as PresetRowData } from "../PresetList";
 import type { FootswitchInfo, SceneInfo } from "../../lib/types";
 
 const COLUMNS = "34px 26px 52px 1fr";

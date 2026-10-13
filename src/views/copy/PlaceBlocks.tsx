@@ -7,7 +7,7 @@
 // the Save button, which is disabled until there's an edit, nothing's over budget, AND
 // the backup box is ticked).
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type Dispatch } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
@@ -17,36 +17,35 @@ import { Tag } from "../../ui/Tag";
 import { slotLabel } from "../../lib/format";
 import { CopyPath } from "./CopyPath";
 import { TargetEditCard } from "./TargetEditCard";
-import { OnUnitChip } from "./copyBits";
-import { type EditMode } from "./BlockEditor";
+import { OnUnitChip } from "./OnUnitChip";
 import { editGraphFromActive, originBlocks, type EditMap } from "./copyModel";
 import type { CopyPreset } from "./useCopyLibrary";
+import type { CopyAction, OpenBlock } from "./copyFlow";
 
-export interface PlaceBlocksProps {
-  from: CopyPreset;
-  targets: number[];
-  edit: EditMap;
-  open: { slot: number; uid: string } | null;
+/** The derived Save gating (CopyView computes it once per edit). */
+export interface SaveGate {
   changedCount: number;
   /** Slots whose staged edit violates a firmware cap (CPU or a block-count rule) —
    *  they block the save until fixed. */
   blockedSlots: number[];
   saveBlocked: boolean;
   hint: string | null;
+}
+
+export interface PlaceBlocksProps {
+  from: CopyPreset;
+  targets: number[];
+  edit: EditMap;
+  open: OpenBlock | null;
   backedUp: boolean;
-  setBackedUp: (v: boolean) => void;
-  nameOf: (slot: number) => string;
-  onBack: () => void;
-  onSave: () => void;
-  onTapBlock: (slot: number, uid: string) => void;
-  onApply: (slot: number, uid: string, mode: EditMode, model: string) => void;
-  onRemove: (slot: number, uid: string) => void;
-  onClose: () => void;
+  gate: SaveGate;
   /** Offline undo/redo of the staged edits (local — never touches the unit). */
-  onUndo: () => void;
-  onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  nameOf: (slot: number) => string;
+  onSave: () => void;
+  /** The Copy flow's reducer — every Step-2 interaction is one action. */
+  dispatch: Dispatch<CopyAction>;
 }
 
 export function PlaceBlocks({
@@ -54,23 +53,13 @@ export function PlaceBlocks({
   targets,
   edit,
   open,
-  changedCount,
-  blockedSlots,
-  saveBlocked,
-  hint,
   backedUp,
-  setBackedUp,
-  nameOf,
-  onBack,
-  onSave,
-  onTapBlock,
-  onApply,
-  onRemove,
-  onClose,
-  onUndo,
-  onRedo,
+  gate,
   canUndo,
   canRedo,
+  nameOf,
+  onSave,
+  dispatch,
 }: PlaceBlocksProps) {
   const { t } = useTheme();
   const [onlyOver, setOnlyOver] = useState(false);
@@ -78,6 +67,7 @@ export function PlaceBlocks({
   const refGraph = useMemo(() => editGraphFromActive(from.graph), [from.graph]);
   const origin = useMemo(() => originBlocks(from.graph), [from.graph]);
 
+  const { changedCount, blockedSlots, saveBlocked, hint } = gate;
   const blockedSet = new Set(blockedSlots);
   const showOver = onlyOver && blockedSlots.length > 0;
   const visible = showOver ? targets.filter((s) => blockedSet.has(s)) : targets;
@@ -209,15 +199,17 @@ export function PlaceBlocks({
               fromName={from.name}
               origin={origin}
               onTapBlock={(uid) => {
-                onTapBlock(slot, uid);
+                dispatch({ type: "tapBlock", slot, uid });
               }}
               onRemove={(uid) => {
-                onRemove(slot, uid);
+                dispatch({ type: "remove", slot, uid });
               }}
               onApply={(uid, mode, model) => {
-                onApply(slot, uid, mode, model);
+                dispatch({ type: "apply", slot, uid, mode, model });
               }}
-              onClose={onClose}
+              onClose={() => {
+                dispatch({ type: "closeEditor" });
+              }}
             />
           );
         })}
@@ -236,7 +228,9 @@ export function PlaceBlocks({
           >
             <Button
               variant="bare"
-              onClick={onBack}
+              onClick={() => {
+                dispatch({ type: "back" });
+              }}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -263,8 +257,8 @@ export function PlaceBlocks({
             >
               {(
                 [
-                  { icon: "undo", label: "Undo", on: onUndo, enabled: canUndo },
-                  { icon: "redo", label: "Redo", on: onRedo, enabled: canRedo },
+                  { icon: "undo", label: "Undo", enabled: canUndo },
+                  { icon: "redo", label: "Redo", enabled: canRedo },
                 ] as const
               ).map((b) => (
                 <Button
@@ -272,7 +266,9 @@ export function PlaceBlocks({
                   variant="bare"
                   aria-label={b.label}
                   disabled={!b.enabled}
-                  onClick={b.on}
+                  onClick={() => {
+                    dispatch({ type: b.icon });
+                  }}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -325,7 +321,12 @@ export function PlaceBlocks({
               flexShrink: 0,
             }}
           >
-            <BackupAckLabel checked={backedUp} onChange={setBackedUp} />
+            <BackupAckLabel
+              checked={backedUp}
+              onChange={(value) => {
+                dispatch({ type: "setBackedUp", value });
+              }}
+            />
             <Button
               variant="primary"
               icon="check"

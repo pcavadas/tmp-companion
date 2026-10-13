@@ -4,9 +4,10 @@
 // target's signal path by hand (Replace / Insert / Remove from the reference's blocks)
 // and saves. Everything is staged off-device; the unit is written ONLY on Save, one
 // preset at a time via the live `copy_apply` command, gated on a per-preset CPU budget
-// (76.5%) + the "I've backed up with Pro Control" checkbox.
+// (76.5%) + the "I've backed up with Pro Control" checkbox. The flow's state is one
+// reducer (./copyFlow): choose | edit | saving, the staged work riding all three.
 
-import { useMemo, useState } from "react";
+import { useMemo, useReducer } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { LoadErrorPane } from "../LoadErrorPane";
@@ -14,23 +15,20 @@ import { errMsg, slotLabel } from "../../lib/format";
 import { copyApply } from "../../lib/invoke";
 import { patchLibraryGraph } from "../../device/libraryScan";
 import { patchLiveGraph, useLiveDevice } from "../../device/useLiveDevice";
-import { EmptyState, UsbC } from "../EmptyState";
+import { EmptyState } from "../EmptyState";
+import { UsbC } from "../UsbC";
 import { ChoosePresets } from "./ChoosePresets";
 import { PlaceBlocks } from "./PlaceBlocks";
 import { SaveOverlay } from "./SaveOverlay";
-import { type EditMode } from "./BlockEditor";
 import { useCopyLibrary } from "./useCopyLibrary";
 import {
   activeFromEditGraph,
   reconcileReadBack,
-  applyEditOp,
   diffToOps,
   isEdited,
-  removeEditBlock,
   retargetHistory,
-  type EditHistory,
-  type EditMap,
 } from "./copyModel";
+import { copyReducer, currentEdit, INITIAL_COPY_STATE } from "./copyFlow";
 import {
   checkEdit,
   REASON_COPY,
@@ -62,26 +60,10 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
   const lib = useCopyLibrary(connected, activeSlot);
   const { presets, bySlot, ready } = lib;
 
-  const [step, setStep] = useState<1 | 2>(1);
-  const [fromSlot, setFromSlot] = useState<number | null>(null);
-  const [toSet, setToSet] = useState<Set<number>>(new Set());
-  // Offline undo/redo: a snapshot stack of the whole staged edit + a pointer. The
-  // working copy is `edit = hist.stack[hist.idx]`. Local to the editing session — it
-  // never touches the unit (the only device write is Save). It survives Back → Place
-  // the blocks and a failed save; only a fully saved run clears it.
-  const [hist, setHist] = useState<EditHistory | null>(null);
-  const [open, setOpen] = useState<{ slot: number; uid: string } | null>(null);
-  const [backedUp, setBackedUp] = useState(false);
-
-  // Save-run state.
-  const [saving, setSaving] = useState(false);
-  const [saveSlots, setSaveSlots] = useState<number[]>([]);
-  const [results, setResults] = useState<Map<number, CopyApplyItem>>(new Map());
-  const [saveDone, setSaveDone] = useState(false);
-  // Set when the whole copy_apply run REJECTS (vs per-preset errors in `results`).
-  const [saveError, setSaveError] = useState<string | null>(null);
-
-  const edit = hist ? hist.stack[hist.idx] : null;
+  const [state, dispatch] = useReducer(copyReducer, INITIAL_COPY_STATE);
+  const { fromSlot, toSet, phase } = state;
+  const edit = currentEdit(phase);
+  const hist = phase.draft.hist;
   const canUndo = hist != null && hist.idx > 0;
   const canRedo = hist != null && hist.idx < hist.stack.length - 1;
 
@@ -90,7 +72,7 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
   // adjustment rather than an effect.
   if (fromSlot == null && presets.length > 0) {
     const def = presets.find((p) => p.onUnit)?.slot ?? presets[0].slot;
-    setFromSlot(def);
+    dispatch({ type: "setFrom", slot: def });
   }
 
   const nameOf = (slot: number): string =>
@@ -107,27 +89,10 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
   // Re-entering Step 2 keeps the staged edits (and their undo steps) of every target
   // still selected; only a newly picked target starts from its library graph.
   const enterStep2 = (): void => {
-    setHist((h) => retargetHistory(h, toSlots, graphForSlot));
-    setOpen(null);
-    setStep(2);
-  };
-
-  // Push a new edit snapshot (truncating any redo branch); undo/redo move the pointer.
-  const commitEdit = (updater: (m: EditMap) => EditMap): void => {
-    setHist((h) => {
-      if (!h) return h;
-      const next = updater(h.stack[h.idx]);
-      const stack = [...h.stack.slice(0, h.idx + 1), next];
-      return { ...h, stack, idx: stack.length - 1 };
+    dispatch({
+      type: "enterEdit",
+      hist: retargetHistory(hist, toSlots, graphForSlot),
     });
-  };
-  const undo = (): void => {
-    setHist((h) => (h && h.idx > 0 ? { ...h, idx: h.idx - 1 } : h));
-  };
-  const redo = (): void => {
-    setHist((h) =>
-      h && h.idx < h.stack.length - 1 ? { ...h, idx: h.idx + 1 } : h,
-    );
   };
 
   // ── derived save gating (Step 2) ─────────────────────────────────────────
@@ -163,50 +128,20 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
           ? "Tap a block in a preset to change it."
           : null;
 
-  // ── edit handlers ────────────────────────────────────────────────────────
-  const tapBlock = (slot: number, uid: string): void => {
-    setOpen((o) => (o?.slot === slot && o.uid === uid ? null : { slot, uid }));
-  };
-  const applyOp = (
-    slot: number,
-    uid: string,
-    mode: EditMode,
-    model: string,
-  ): void => {
-    commitEdit((prev) => {
-      const e = prev[slot];
-      if (!e) return prev;
-      return { ...prev, [slot]: applyEditOp(e, uid, mode, model) };
-    });
-    setOpen(null);
-  };
-  const removeOp = (slot: number, uid: string): void => {
-    commitEdit((prev) => {
-      const e = prev[slot];
-      if (!e) return prev;
-      return { ...prev, [slot]: removeEditBlock(e, uid) };
-    });
-    setOpen(null);
-  };
-
   // ── save (the only device write) ─────────────────────────────────────────
   const runJobs = (jobs: CopyJob[]): void => {
-    setSaveSlots(jobs.map((j) => j.listIndex));
-    setResults(new Map());
-    setSaveDone(false);
-    setSaveError(null);
-    setSaving(true);
+    dispatch({ type: "saveStart", slots: jobs.map((j) => j.listIndex) });
     // Every result this run has seen: the streamed channel (online only) plus the
     // resolved list (the offline bridge streams nothing). A rejected run still keeps
     // the presets the channel already reported as saved.
     const seen = new Map<number, CopyApplyItem>();
     const onResult = (item: CopyApplyItem): void => {
       seen.set(item.slot, item);
-      setResults(new Map(seen));
+      dispatch({ type: "saveResults", results: new Map(seen) });
     };
     const settle = (items: CopyApplyItem[]): void => {
       for (const item of items) seen.set(item.slot, item);
-      setResults(new Map(seen));
+      dispatch({ type: "saveResults", results: new Map(seen) });
       // Patch the cached library graph in place so a second edit reads the just-saved
       // path WITHOUT a ~22 s backup re-scan — an edit NEVER triggers a refetch. The edit
       // the device acked is the truth (optimistic); the device's working-copy read
@@ -232,19 +167,19 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
         // repaint the hero when we just edited the ACTIVE preset (no device re-read).
         if (item.slot === activeSlot) patchLiveGraph(patch);
       }
-      setSaveDone(true);
+      dispatch({ type: "saveSettled" });
     };
     void copyApply(jobs, true, onResult).then(settle, (e: unknown) => {
       // The whole run failed (device error / lost connection) — surface it instead of a
       // false "saved" (previously this swallowed the rejection and showed success).
-      setSaveError(errMsg(e));
+      dispatch({ type: "saveFailed", error: errMsg(e) });
       settle([]);
     });
   };
 
   const onSave = (): void => {
     // `saveBlocked` already covers `edit == null`, so this guard narrows edit non-null.
-    if (saveBlocked || !backedUp) return;
+    if (saveBlocked || !phase.draft.backedUp) return;
     const jobs: CopyJob[] = toSlots
       .map((s): CopyJob | null => {
         const e = edit[s];
@@ -257,30 +192,23 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
   };
 
   const onSaveDone = (): void => {
+    if (phase.kind !== "saving") return;
+    const { slots, results } = phase;
     // A preset is written when its result is "updated" (or "skipped": it had nothing to
     // write). An "error" row, or no row at all (a rejected or stopped run), was not saved.
-    const written = saveSlots.filter((s) => {
+    const written = slots.filter((s) => {
       const r = results.get(s);
       return r != null && r.outcome !== "error";
     });
-    setSaving(false);
-    setSaveSlots([]);
-    setResults(new Map());
-    setSaveDone(false);
-    setSaveError(null);
-    setOpen(null);
-    if (written.length === saveSlots.length) {
-      // Everything saved: the unit now matches the edit, so discard the staged work and
-      // return to Step 1.
-      setHist(null);
-      setBackedUp(false);
-      setStep(1);
-      return;
-    }
-    // Some or all presets did not save: stay on Step 2 with their staged edits (and
-    // undo steps) intact. The written presets restart from their just-saved graph.
-    // The backup acknowledgment stands — those presets are still as backed up.
-    setHist((h) => retargetHistory(h, toSlots, graphForSlot, new Set(written)));
+    // Some or all presets did not save: the written presets restart from their
+    // just-saved graph; every other staged edit (and its undo steps) stays.
+    dispatch({
+      type: "saveDismiss",
+      hist:
+        written.length === slots.length
+          ? null
+          : retargetHistory(hist, toSlots, graphForSlot, new Set(written)),
+    });
   };
 
   // ── render ────────────────────────────────────────────────────────────────
@@ -306,7 +234,10 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
   }
 
   const from = fromSlot != null ? bySlot.get(fromSlot) : undefined;
-  const activeSaveSlot = saveSlots.find((s) => !results.has(s)) ?? null;
+  const saving = phase.kind === "saving" ? phase : null;
+  const activeSaveSlot = saving
+    ? (saving.slots.find((s) => !saving.results.has(s)) ?? null)
+    : null;
 
   return (
     <div
@@ -319,13 +250,17 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
         background: t.bg,
       }}
     >
-      {step === 1 || !edit || !from ? (
+      {phase.kind === "choose" || !edit || !from ? (
         <ChoosePresets
           presets={presets}
           fromSlot={fromSlot}
-          setFrom={setFromSlot}
+          setFrom={(slot) => {
+            dispatch({ type: "setFrom", slot });
+          }}
           toSet={toSet}
-          setTo={setToSet}
+          setTo={(next) => {
+            dispatch({ type: "setTo", next });
+          }}
           ready={ready}
           scanning={lib.scanning}
           onContinue={enterStep2}
@@ -335,39 +270,30 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
           from={from}
           targets={toSlots}
           edit={edit}
-          open={open}
-          changedCount={changedCount}
-          blockedSlots={blockedSlotNums}
-          saveBlocked={saveBlocked}
-          hint={hint}
-          backedUp={backedUp}
-          setBackedUp={setBackedUp}
-          nameOf={nameOf}
-          onBack={() => {
-            setStep(1);
+          open={phase.open}
+          backedUp={phase.draft.backedUp}
+          gate={{
+            changedCount,
+            blockedSlots: blockedSlotNums,
+            saveBlocked,
+            hint,
           }}
-          onSave={onSave}
-          onTapBlock={tapBlock}
-          onApply={applyOp}
-          onRemove={removeOp}
-          onClose={() => {
-            setOpen(null);
-          }}
-          onUndo={undo}
-          onRedo={redo}
           canUndo={canUndo}
           canRedo={canRedo}
+          nameOf={nameOf}
+          onSave={onSave}
+          dispatch={dispatch}
         />
       )}
 
       {saving && (
         <SaveOverlay
-          slots={saveSlots}
+          slots={saving.slots}
           nameOf={nameOf}
-          results={results}
+          results={saving.results}
           activeSlot={activeSaveSlot}
-          done={saveDone}
-          failed={saveError}
+          done={saving.done}
+          failed={saving.error}
           onDone={onSaveDone}
         />
       )}

@@ -15,8 +15,8 @@ import {
   sceneKeyOf,
   sortRunItems,
   targetFromCandidate,
+  type PresetRow,
 } from "../views/level/leveling";
-import type { PresetRow } from "../views/PresetList";
 import type {
   FootswitchInfo,
   LevelParamCandidate,

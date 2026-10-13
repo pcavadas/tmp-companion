@@ -14,7 +14,7 @@ import { Icon } from "../../ui/Icon";
 import { ReadingPill } from "../../ui/ReadingPill";
 import { PresetList } from "../PresetList";
 import type { ScanState } from "../level/usePresetData";
-import type { PresetRow } from "../PresetList";
+import type { PresetRow } from "../level/leveling";
 import type { ActiveGraph, FootswitchInfo, SceneInfo } from "../../lib/types";
 
 // CPU-free: PresetList derives each row's CPU from this map; empty → null → no

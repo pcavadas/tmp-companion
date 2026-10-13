@@ -106,6 +106,9 @@ export interface PresetEdit {
   origByNodeId: Map<string, { model: string; group: string }>;
 }
 
+/** How a picked model lands on the tapped block: swap it, or insert before/after it. */
+export type EditMode = "replace" | "before" | "after";
+
 /** The working-copy map for the chosen targets — keyed by slot. A slot may be absent
  *  (a target outside the current set), so indexing yields `PresetEdit | undefined`. */
 export type EditMap = Partial<Record<number, PresetEdit>>;
@@ -141,11 +144,30 @@ const EMPTY_EDIT_GRAPH: EditGraph = {
   stages: [],
 };
 
-// ── uid minting (module-scoped, runtime only — never read during render) ──────
-let _uid = 0;
-function newUid(): string {
-  _uid += 1;
-  return `cb${String(_uid)}`;
+// ── uid minting (pure — scoped to one derivation, never a module counter) ─────
+// A uid is `cb<N>`. It keys React rows and the open inline editor, and an INSERTED
+// block's uid is its insert key on the wire (`diffToOps`) — which a later round's
+// optimistic read-back also adopts as that block's synthetic node id
+// (`activeFromEditGraph`). So a fresh uid must clear every `cb<N>` already in the
+// graph: its uids AND its node ids. Each derivation mints from its own counter, so
+// the same input always yields the same uids — safe inside a render-phase `useMemo`
+// or a state updater (which StrictMode may call twice).
+
+const UID_RE = /^cb(\d+)$/;
+
+/** The `<N>` of a `cb<N>` id, or 0 for any other id (a real device node id). */
+function uidNum(id: string | null | undefined): number {
+  const m = id == null ? null : UID_RE.exec(id);
+  return m ? Number(m[1]) : 0;
+}
+
+/** A uid minter whose first uid is `cb<floor + 1>`. */
+function uidMinter(floor: number): () => string {
+  let n = floor;
+  return () => {
+    n += 1;
+    return `cb${String(n)}`;
+  };
 }
 
 // ── graph derivation from the device's routed graph ───────────────────────────
@@ -153,7 +175,7 @@ function newUid(): string {
 // `inputs` / `outputs` / `lanes` views tell us the SERIES vs PARALLEL shape. We
 // never alter the routing — only the blocks within it.
 
-function toEditBlock(n: GraphNode): EditBlock {
+function toEditBlock(n: GraphNode, newUid: () => string): EditBlock {
   return {
     uid: newUid(),
     group: n.group_id,
@@ -170,9 +192,13 @@ function toEditBlock(n: GraphNode): EditBlock {
 /** Build the editable `EditGraph` from the device's `ActiveGraph`, minting a uid per
  *  block and preserving the real routing (inline splits, dual lanes, merge/fork). */
 export function editGraphFromActive(graph: ActiveGraph): EditGraph {
+  const newUid = uidMinter(
+    graph.nodes.reduce((m, n) => Math.max(m, uidNum(n.node_id)), 0),
+  );
+  const toBlock = (n: GraphNode) => toEditBlock(n, newUid);
   const mkLane = <T extends string>(l: { type: T; blocks: GraphNode[] }) => ({
     type: l.type,
-    blocks: l.blocks.map(toEditBlock),
+    blocks: l.blocks.map(toBlock),
   });
   const inputs = graph.inputs
     ? { a: mkLane(graph.inputs.a), b: mkLane(graph.inputs.b) }
@@ -185,7 +211,7 @@ export function editGraphFromActive(graph: ActiveGraph): EditGraph {
       ? graph.lanes.map((l) => ({
           input: l.input,
           output: l.output,
-          blocks: l.blocks.map(toEditBlock),
+          blocks: l.blocks.map(toBlock),
         }))
       : null;
   const stages: EditStage[] = graph.stages.map((st) =>
@@ -193,10 +219,10 @@ export function editGraphFromActive(graph: ActiveGraph): EditGraph {
       ? {
           kind: "split",
           uid: newUid(),
-          a: st.a.map(toEditBlock),
-          b: st.b.map(toEditBlock),
+          a: st.a.map(toBlock),
+          b: st.b.map(toBlock),
         }
-      : { kind: "series", blocks: st.blocks.map(toEditBlock) },
+      : { kind: "series", blocks: st.blocks.map(toBlock) },
   );
 
   const hasRoute =
@@ -204,7 +230,7 @@ export function editGraphFromActive(graph: ActiveGraph): EditGraph {
   // No routed structure (truncated read) — fall back to one flat series stage.
   const finalStages: EditStage[] = hasRoute
     ? stages
-    : [{ kind: "series", blocks: graph.nodes.map(toEditBlock) }];
+    : [{ kind: "series", blocks: graph.nodes.map(toBlock) }];
 
   return {
     inputType: graph.input_type ?? null,
@@ -314,6 +340,20 @@ export function blockArrays(graph: EditGraph): EditBlock[][] {
 
 function eachBlock(graph: EditGraph, fn: (b: EditBlock) => void): void {
   for (const arr of blockArrays(graph)) for (const b of arr) fn(b);
+}
+
+/** The highest `cb<N>` in a working copy — over its block uids, its split uids, the
+ *  node ids it holds, and the original node ids (a removed block's id included). */
+function maxUidNum(edit: PresetEdit): number {
+  let max = 0;
+  for (const st of edit.graph.stages) {
+    if (st.kind === "split") max = Math.max(max, uidNum(st.uid));
+  }
+  eachBlock(edit.graph, (b) => {
+    max = Math.max(max, uidNum(b.uid), uidNum(b.nodeId));
+  });
+  for (const id of edit.origByNodeId.keys()) max = Math.max(max, uidNum(id));
+  return max;
 }
 
 /** Locate the array + index holding `uid` (descending into splits). */
@@ -508,7 +548,7 @@ export function findBlock(graph: EditGraph, uid: string): EditBlock | null {
 export function applyEditOp(
   edit: PresetEdit,
   uid: string,
-  mode: "replace" | "before" | "after",
+  mode: EditMode,
   model: string,
 ): PresetEdit {
   const next = cloneEdit(edit);
@@ -516,6 +556,7 @@ export function applyEditOp(
   if (!loc) return next;
   const { arr, i } = loc;
   const anchor = arr[i];
+  const newUid = uidMinter(maxUidNum(edit));
   if (mode === "replace") {
     // A replace is always an edit — even a same-model pick copies the reference block's
     // settings onto the target. An inserted block (no nodeId) stays "added" since it's

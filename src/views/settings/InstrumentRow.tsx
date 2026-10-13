@@ -1,29 +1,23 @@
 // src/views/settings/InstrumentRow.tsx — status dot + serif name + "Type ·
 // Pickup" + status sub-line; right side = the calibrate control + a ⋯ menu (Edit
 // / Move up / Move down / Delete — reorder is click-only, so the row carries no
-// drag grip). The calibration state machine lives here (local per-row state;
-// never disables other rows). Every attempt gets its own token, so a cancelled
-// capture that resolves late can't touch a newer attempt's timers or result.
+// drag grip). The calibration state machine is ./useCalibration (one tagged union,
+// local per row; never disables other rows). Every attempt gets its own token, so a
+// cancelled capture that resolves late can't touch a newer attempt's timers or result.
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
-import { calibrateProfile } from "../../lib/invoke";
-import { errMsg } from "../../lib/format";
-import type { CalibrateResult, Profile, TopologyInfo } from "../../lib/types";
-import { NeedsDevicePill } from "./SettingsView";
-
-// Tier-2 capture length passed to calibrate_profile (backend clamps 2..30).
-const CALIBRATE_SECS = 8;
+import type { Profile, TopologyInfo } from "../../lib/types";
+import { NeedsDevicePill } from "./NeedsDevicePill";
+import { CALIBRATE_SECS, useCalibration } from "./useCalibration";
 
 // ===========================================================================
 // InstrumentRow
 // ===========================================================================
-
-type Phase = "idle" | "countdown" | "recording" | "error";
 
 interface InstrumentRowProps {
   profile: Profile;
@@ -46,122 +40,21 @@ export function InstrumentRow({
 }: InstrumentRowProps) {
   const { t } = useTheme();
 
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [count, setCount] = useState(3);
-  const [rec, setRec] = useState(0);
   const [menu, setMenu] = useState(false);
-  const [calibErr, setCalibErr] = useState<string | null>(null);
-  // Non-fatal quality caveats from the last calibration (clip / stimulus ceiling).
-  const [calibWarn, setCalibWarn] = useState<string | null>(null);
-  // Full result of the last SUCCESSFUL calibration this session — drives the
-  // "what was captured" readout (spread + per-band coverage). Session-only: not
-  // persisted, so a page reload shows the plain calibrated LUFS line only.
-  const [calibResult, setCalibResult] = useState<CalibrateResult | null>(null);
-
-  // Live timers. `attemptRef` numbers each calibration attempt: a calibrate_profile
-  // promise applies its result only while its own attempt is still the current one,
-  // so a cancelled / superseded / unmounted attempt never applies its result, clears
-  // a newer attempt's timers, or fires a spurious onCalibrated. It does NOT stop the
-  // backend capture itself — that still runs to completion on the device and may
-  // persist; the recording-cancel path re-reads the store to surface any value the
-  // device already saved.
-  const countdownRef = useRef<number | null>(null);
-  const recIntervalRef = useRef<number | null>(null);
-  const attemptRef = useRef(0);
-
-  function clearTimers() {
-    if (countdownRef.current != null) {
-      window.clearTimeout(countdownRef.current);
-      countdownRef.current = null;
-    }
-    if (recIntervalRef.current != null) {
-      window.clearInterval(recIntervalRef.current);
-      recIntervalRef.current = null;
-    }
-  }
-
-  // On unmount, retire the in-flight attempt too (not just the timers) so its
-  // .then()/.catch() can't fire a spurious onCalibrated.
-  useEffect(
-    () => () => {
-      attemptRef.current += 1;
-      clearTimers();
-    },
-    [],
-  );
+  const { cal, start, cancel } = useCalibration(profile.id, onCalibrated);
+  const startCountdown = () => {
+    setMenu(false);
+    start();
+  };
+  // The render reads the union through these views of it.
+  const phase = cal.kind;
+  const count = cal.kind === "countdown" ? cal.n : 3;
+  const rec = cal.kind === "recording" ? cal.secs : 0;
+  const calibErr = cal.kind === "error" ? cal.message : null;
+  const calibWarn = cal.kind === "idle" ? cal.warn : null;
+  const calibResult = cal.kind === "idle" ? cal.result : null;
 
   const calibrated = profile.calibration_lufs != null;
-
-  // Countdown 3 → 2 → 1 at ~850ms steps, then start recording.
-  function startCountdown() {
-    setMenu(false);
-    attemptRef.current += 1;
-    const attempt = attemptRef.current;
-    clearTimers();
-    setCalibWarn(null);
-    setCalibResult(null);
-    setPhase("countdown");
-    let n = 3;
-    setCount(n);
-    const tick = () => {
-      n -= 1;
-      if (n <= 0) {
-        startRecording(attempt);
-        return;
-      }
-      setCount(n);
-      countdownRef.current = window.setTimeout(tick, 850);
-    };
-    countdownRef.current = window.setTimeout(tick, 850);
-  }
-
-  // Recording: a DETERMINATE bar animates 0→CALIBRATE_SECS over ~8s while the
-  // REAL backend calibration runs concurrently. Backend result wins the phase.
-  function startRecording(attempt: number) {
-    setPhase("recording");
-    setRec(0);
-    const stepMs = 100;
-    const stepSecs = stepMs / 1000; // seconds advanced per step
-    recIntervalRef.current = window.setInterval(() => {
-      setRec((r) => Math.min(CALIBRATE_SECS, +(r + stepSecs).toFixed(1)));
-    }, stepMs);
-
-    calibrateProfile(profile.id, CALIBRATE_SECS)
-      .then((res) => {
-        if (attemptRef.current !== attempt) return;
-        clearTimers();
-        setCalibResult(res);
-        const warns: string[] = [];
-        if (res.clipped)
-          warns.push(
-            "signal clipped — play softer, or turn the instrument volume down, then re-calibrate",
-          );
-        if (res.stimulus_shortfall_lu != null)
-          warns.push(
-            `your instrument is louder than the test signal — leveling drives ~${res.stimulus_shortfall_lu.toFixed(1)} LU softer`,
-          );
-        setCalibWarn(warns.join("; ") || null);
-        setPhase("idle");
-        onCalibrated();
-      })
-      .catch((e: unknown) => {
-        if (attemptRef.current !== attempt) return;
-        clearTimers();
-        setCalibErr(errMsg(e));
-        setPhase("error");
-      });
-  }
-
-  function cancel() {
-    const wasRecording = phase === "recording";
-    attemptRef.current += 1;
-    clearTimers();
-    setPhase("idle");
-    // The backend calibrate_profile may have ALREADY persisted before the user hit cancel;
-    // re-read the store so a just-saved value surfaces instead of staying "not calibrated".
-    // (The in-flight promise's .then() is aborted, so this can't double-apply.)
-    if (wasRecording) onCalibrated();
-  }
 
   // The status dot and the status sub-line share one phase-derived colour.
   const statusColor =

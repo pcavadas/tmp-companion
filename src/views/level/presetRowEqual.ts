@@ -6,7 +6,6 @@
 // Kept out of PresetRow.tsx so that file exports components only (fast refresh).
 
 import { baseKey, fswKey, sceneKeyOf } from "./leveling";
-import type { PresetRowProps } from "./PresetRow";
 import type { FootswitchInfo, SceneInfo } from "../../lib/types";
 
 /** Every selection key this row reads — its Base, each scene, and EVERY footswitch
@@ -24,14 +23,23 @@ function rowSelKeys(
   ];
 }
 
+/** The props the equality reads by name. Kept structural (not `PresetRowProps`) so this
+ *  pure module never imports the component that imports it. */
+export interface RowSelProps {
+  row: { slot: number };
+  scenes: SceneInfo[] | undefined;
+  footswitches: FootswitchInfo[] | undefined;
+  sel: Set<string>;
+}
+
 /** `memo` equality for a row: every prop by identity EXCEPT `sel`, the list-wide
  *  selection Set (a fresh Set on every toggle), which compares only by membership of
  *  this row's own keys. So one tick re-renders the one row it touched, not all ~500. */
-export function presetRowPropsEqual(
-  prev: PresetRowProps,
-  next: PresetRowProps,
+export function presetRowPropsEqual<P extends RowSelProps>(
+  prev: P,
+  next: P,
 ): boolean {
-  const keys = Object.keys(next) as (keyof PresetRowProps)[];
+  const keys = Object.keys(next) as (keyof P)[];
   if (Object.keys(prev).length !== keys.length) return false;
   for (const k of keys) {
     if (k !== "sel" && !Object.is(prev[k], next[k])) return false;

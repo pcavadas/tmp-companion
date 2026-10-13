@@ -11,10 +11,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import {
-  PresetList,
-  type PresetRow as PresetRowData,
-} from "../views/PresetList";
+import { PresetList } from "../views/PresetList";
+import type { PresetRow as PresetRowData } from "../views/level/leveling";
 import type { PresetRowProps } from "../views/level/PresetRow";
 import { presetRowPropsEqual } from "../views/level/presetRowEqual";
 import type { FootswitchInfo, SceneInfo } from "../lib/types";

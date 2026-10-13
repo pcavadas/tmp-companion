@@ -27,9 +27,7 @@ import type {
   SceneInfo,
   SilenceHint,
 } from "../../lib/types";
-import type { PresetRow } from "../PresetList";
 import type { PickOption } from "../overlays/Pick";
-import type { PresetGroup } from "./PresetGroupRow";
 import { blockArtTile, shortFallback } from "../../models/blockArt";
 import { stripNameFor } from "../../models/catalog";
 
@@ -38,6 +36,14 @@ import { stripNameFor } from "../../models/catalog";
 // `SetupOption`/`RunItem` and the scene-handle-picker wiring can import it from
 // either module without a second, driftable copy.
 export type { SceneHandlePick };
+
+/** One My-Presets row as the preset lists and the leveling flow carry it: its 0-based
+ *  list slot, its name, and whether the slot is empty. */
+export interface PresetRow {
+  slot: number;
+  name: string;
+  empty: boolean;
+}
 
 // ── selection scene-key helpers (shared by the list + the flow) ─────────────
 
@@ -417,6 +423,77 @@ export interface SetupChoice {
   targetName: string;
 }
 
+/** One Set up row's own picks, as `buildSetupChoices` reads them. `sceneContext`
+ *  undefined = not chosen (a footswitch then takes its suggested scene). */
+export interface SetupRowPick {
+  inst: string;
+  target: string;
+  sceneContext: number | null | undefined;
+}
+
+/** The Set up page's commit, pure: one `SetupChoice` per option, with each row's
+ *  effective leveling handle folded into its option. `handleOf` resolves a row's
+ *  handle (its pick, else the page's preselect); `suggestedSceneOf` a footswitch's
+ *  suggested scene context (null while unread). A footswitch whose handle matches one
+ *  of its level params is re-targeted at that param (and an unlabeled switch named
+ *  after it); a Base row carries its pick as `baseHandle`; a Scene row as
+ *  `sceneHandle`. */
+export function buildSetupChoices(
+  options: SetupOption[],
+  rowOf: (key: string) => SetupRowPick | undefined,
+  handleOf: (o: SetupOption) => SceneHandlePick | null,
+  suggestedSceneOf: (o: SetupOption) => number | null,
+  defaults: { inst: string; target: string },
+): SetupChoice[] {
+  return options.map((o) => {
+    const row = rowOf(o.key);
+    let option = o;
+    if (o.footswitch != null) {
+      const chosenHandle = handleOf(o);
+      const candidate = chosenHandle
+        ? (o.levelParams ?? []).find(
+            (c) =>
+              c.group_id === chosenHandle.groupId &&
+              c.node_id === chosenHandle.nodeId &&
+              c.parameter_id === chosenHandle.parameterId,
+          )
+        : undefined;
+      const suggested = suggestedSceneOf(o);
+      const sceneContext =
+        row?.sceneContext !== undefined
+          ? row.sceneContext
+          : (suggested ?? o.footswitch.sceneContext);
+      const target: FootswitchTarget = candidate
+        ? targetFromCandidate(o.footswitch.switchIndex, sceneContext, candidate)
+        : { ...o.footswitch, sceneContext };
+      option = {
+        ...o,
+        footswitch: target,
+        ...(o.fsUnlabeled === true && candidate
+          ? { sceneName: footswitchNameForCandidate(candidate) }
+          : {}),
+      };
+    } else if (o.isBase) {
+      const chosen = handleOf(o);
+      const baseHandle: BaseHandlePick | null = chosen
+        ? {
+            groupId: chosen.groupId,
+            nodeId: chosen.nodeId,
+            parameterId: chosen.parameterId,
+          }
+        : null;
+      option = { ...o, baseHandle };
+    } else if (o.sceneSlot != null) {
+      option = { ...o, sceneHandle: handleOf(o) };
+    }
+    return {
+      option,
+      instId: row?.inst ?? defaults.inst,
+      targetName: row?.target ?? defaults.target,
+    };
+  });
+}
+
 /** A row's position in its preset's DEPENDENCY order — each rank writes a control the
  *  ranks below it render through, so running them in any other order shifts rows that
  *  are already on target:
@@ -572,6 +649,21 @@ export function chosenFrom(
 export type Outcome =
   "done" | "clamped" | "unconverged" | "offbranch" | "skipped";
 
+/** The theme colour role each outcome renders in — ONE mapping for the Run page's result
+ *  text and the Summary's problem rows, so the two pages can't drift. `notrun` is a
+ *  sound a stopped run never reached (no outcome). */
+export const OUTCOME_TONE: Record<
+  Outcome | "notrun",
+  "good" | "sevWarn" | "warn" | "mutedInk"
+> = {
+  done: "good",
+  clamped: "sevWarn",
+  unconverged: "sevWarn",
+  offbranch: "warn",
+  skipped: "mutedInk",
+  notrun: "mutedInk",
+};
+
 export interface RunItem {
   key: string;
   /** 0-based list index of the preset. */
@@ -641,6 +733,13 @@ export interface RunItem {
    *  OFF could not be read back, so the unit may still be input-muted. The Summary shows
    *  one banner when any row carries it. */
   reampWarning?: string | null;
+}
+
+/** One preset row of the wizard lists: its slot, its name and its nested items. */
+export interface PresetGroup<T> {
+  slot: number;
+  name: string;
+  items: T[];
 }
 
 /** Group run items by preset slot, ascending — the shape both Run and Summary render

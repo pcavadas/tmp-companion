@@ -10,7 +10,8 @@ import type { ReactNode } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Button } from "../../ui/primitives";
-import { ROW_MIN_HEIGHT, SevDot } from "./SoundRow";
+import { findingRowHeaderStyle } from "./findingRow";
+import { SevDot } from "./SevDot";
 import { sevTone, type Sev } from "./severity";
 
 export interface PresetFindingRowProps {
@@ -43,14 +44,9 @@ export function PresetFindingRow({
         aria-expanded={open}
         onClick={onToggle}
         style={{
+          ...findingRowHeaderStyle(t, open),
           width: "100%",
           textAlign: "left",
-          display: "flex",
-          alignItems: "center",
-          gap: t.space5,
-          minHeight: ROW_MIN_HEIGHT,
-          padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
-          background: open ? t.rowSel : "transparent",
         }}
       >
         <SevDot sev={sev} />

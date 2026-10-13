@@ -9,11 +9,8 @@ import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import {
-  PresetList,
-  type PresetRow,
-  type PresetListProps,
-} from "../views/PresetList";
+import { PresetList, type PresetListProps } from "../views/PresetList";
+import type { PresetRow } from "../views/level/leveling";
 import type { ActiveGraph, FootswitchInfo, SceneInfo } from "../lib/types";
 import { renderWithTheme } from "./testKit";
 

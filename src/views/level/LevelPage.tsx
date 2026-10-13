@@ -12,7 +12,8 @@
 import type { ReactNode } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { WizardFooter, WizTitle } from "../overlays/WizardShell";
+import { WizardFooter } from "../overlays/WizardFooter";
+import { WizTitle } from "../overlays/WizTitle";
 import { WizardPage } from "../overlays/WizardPage";
 
 export interface LevelPageProps {

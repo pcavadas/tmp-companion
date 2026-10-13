@@ -94,6 +94,19 @@
       .tmp-fwpulse {
         animation: tmp-fwpulse 1s ease-in-out infinite;
       }
+      /* Instrument calibration recording dot (src/views/settings/InstrumentRow.tsx). */
+      @keyframes tmp-pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.25;
+        }
+      }
+      .tmp-pulse {
+        animation: tmp-pulse 1s ease-in-out infinite;
+      }
       /* Slim, low-contrast scrollbar for the signal-chain strip (SignalChainView). */
       .tmp-block-strip {
         scrollbar-width: thin;
