@@ -1801,7 +1801,7 @@ fn import_preset_keeps_the_echo_window_alive() {
     let echo = crate::test_support::import_echo_frames(1, 7);
     let t = ScriptedTransport::device().with_reply_to(&body, vec![Vec::new(), Vec::new(), echo]);
     let mut s = session_over(&t, Vec::new());
-    assert_eq!(s.import_preset(&bytes).unwrap(), Some((1, 7)));
+    assert_eq!(s.import_preset_echo(&bytes).unwrap(), Some((1, 7)));
 }
 
 /// A body carrying a HW-proven discard shape is refused before a single frame leaves.

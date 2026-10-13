@@ -495,46 +495,18 @@ pub fn probe_list_blocks(slot: ListIndex) -> Result<String, String> {
 
 /// Probe (AC3): re-import a `.preset` file to the device over USB and
 /// report where it landed. Reads the raw file bytes (the OFFLINE codec's XOR'd
-/// output), sends the chunked `importPresetRequest`, and re-lists "My Presets" to
-/// show the change. The device chooses the slot; this is additive (creates a new
-/// user preset) — clear it afterward to restore state.
+/// output) and imports them with the stored-row proof
+/// (`replace_inplace::import_with_stored_proof`): the predicted landing slot must hold
+/// the empty template before and the file after. This is additive (creates a new user
+/// preset) — clear it afterward to restore state.
 pub fn probe_import_preset(path: &str) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-    // Baseline list on its own session, then import on a second, then re-list on a
-    // third fresh session — the post-import re-list must NOT reuse the importing
-    // session's buffer (the chunked send pollutes its accumulated reports).
-    let before = Session::connect()?.list_my_presets()?;
-    let before_pairs: std::collections::HashSet<(ListIndex, String)> =
-        before.iter().map(|p| (p.slot, p.name.clone())).collect();
-
-    let resp = Session::connect()?.import_preset(&bytes)?;
-
-    let after = Session::connect()?.list_my_presets()?;
-    let changed: Vec<String> = after
-        .iter()
-        .filter(|p| !before_pairs.contains(&(p.slot, p.name.clone())))
-        .map(|p| {
-            format!(
-                "idx {} (device slot {}) = {:?}",
-                p.slot,
-                p.slot.device_slot(),
-                p.name
-            )
-        })
-        .collect();
-    let resp_str = match resp {
-        Some((le, slot)) => format!("importPresetResponse: listEnum={le} presetSlot={slot}"),
-        None => {
-            "no importPresetResponse echo (device may not reply — verify via the slot diff)".into()
-        }
-    };
+    let (slot, name) = crate::replace_inplace::import_with_stored_proof(&bytes)?;
     Ok(format!(
-        "[probe --import] file={path} raw_bytes={}\n{resp_str}\n\
-         My Presets: before={} slots, after={} slots\n\
-         slots whose name changed after import: {changed:?}\n",
+        "[probe --import] file={path} raw_bytes={}\n\
+         landed at list index {slot} (device slot {}) = {name:?}, proven from its stored row\n",
         bytes.len(),
-        before.len(),
-        after.len(),
+        slot.device_slot(),
     ))
 }
 

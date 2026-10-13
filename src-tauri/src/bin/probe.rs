@@ -1175,6 +1175,23 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--import-reload-check") {
+        // --import-reload-check <file.preset>
+        let Some(path) = args.get(i + 1).filter(|a| !a.starts_with("--")).cloned() else {
+            eprintln!("usage: probe --import-reload-check <file.preset>");
+            std::process::exit(2);
+        };
+        match tmp_companion_lib::probe_import_reload_check(&path) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if let Some(i) = args.iter().position(|a| a == "--restore-check") {
         // --restore-check <deviceSlot> [trials]
         let slot = slot_at(&args, i + 1);

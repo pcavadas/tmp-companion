@@ -384,10 +384,21 @@ impl Session {
     /// raw `.preset` file content (XOR'd compact JSON, the OFFLINE codec's output).
     /// It is LZ4-block compressed and wrapped in `importPresetRequest` (field 117),
     /// then sent as a chunked `0x33/0x34*/0x35` stream — the framing + encoding
-    /// reverse-engineered from a Pro Control import capture. Returns the `(listEnum, presetSlot)`
-    /// the device reports in `importPresetResponse` (118) if it replies; the device
-    /// chooses the slot (Pro Control then `loadPreset`s it).
-    pub fn import_preset(&mut self, preset_bytes: &[u8]) -> Result<Option<(u32, u32)>, String> {
+    /// reverse-engineered from a Pro Control import capture. The device chooses the slot
+    /// (the lowest empty one) and usually sends no `importPresetResponse` (118), so this
+    /// returns nothing about where the import landed: callers prove the landing from the
+    /// stored row (`replace_inplace::StoredProof`).
+    pub fn import_preset(&mut self, preset_bytes: &[u8]) -> Result<(), String> {
+        self.import_preset_echo(preset_bytes).map(|_| ())
+    }
+
+    /// [`Self::import_preset`], also returning the `(listEnum, presetSlot)` of an
+    /// `importPresetResponse` echo when one lands in the ingest wait. Only
+    /// `probe --import-reload-check` reads it, to log whether the echo is ever sent.
+    pub(crate) fn import_preset_echo(
+        &mut self,
+        preset_bytes: &[u8],
+    ) -> Result<Option<(u32, u32)>, String> {
         // The ONE import choke point: refuse a body the firmware would silently replace.
         // An undecodable body passes through — the firmware's own LZ4/JSON check handles it.
         if let Some(doc) = crate::library::decode_preset_bytes(preset_bytes)
@@ -413,6 +424,20 @@ impl Session {
         }
         // Stored-preset mutation — see save_current_preset's choke-point note.
         crate::commands::doctor::clear_doctor_before_cache();
+        Ok(echo)
+    }
+
+    /// Keep the session alive up to `max_ms` longer, until an `importPresetResponse`
+    /// echo lands. For `probe --import-reload-check`'s echo log only.
+    pub(crate) fn await_import_echo(&mut self, max_ms: u64) -> Result<Option<(u32, u32)>, String> {
+        let mut echo = self.import_echo();
+        for _ in 0..max_ms.div_ceil(KEEPALIVE_WINDOW_MS) {
+            if echo.is_some() {
+                break;
+            }
+            self.keepalive_pump()?;
+            echo = self.import_echo();
+        }
         Ok(echo)
     }
 

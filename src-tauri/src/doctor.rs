@@ -496,8 +496,9 @@ pub fn body_psd(samples: &[f32], rate: u32, onset: usize) -> crate::psd::Psd {
 
 /// Curated Doctor `SoundProfile`s for the marketing-screenshot showcase
 /// (`TMP_E2E_SHOWCASE=1`). The offline fake re-amp returns the raw stimulus for
-/// every preset, so every sound would measure identically and the Results page
-/// would read "All clear". Instead `doctor_check` injects these per showcase list
+/// every preset, so every sound would measure identically: a flat passthrough,
+/// which today draws the same "Gets lost in the mix" and "Fizzy" cards on every
+/// preset (#247), not the showcase's distinct ones. Instead `doctor_check` injects these per showcase list
 /// index (`commands/doctor.rs`), so the REAL `diagnose` engine renders genuine
 /// cards.
 ///

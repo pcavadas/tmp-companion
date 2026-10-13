@@ -134,13 +134,11 @@ pub(crate) async fn create_variant(
         )
     };
     with_released_seize(state.session.clone(), move || {
-        let reported = Session::connect()?.import_preset(&variant_bytes)?;
-        Ok(match reported {
-            Some((le, slot)) => {
-                format!("variant imported (device reported listEnum {le}, slot {slot})")
-            }
-            None => "variant imported (device gave no slot echo — re-list to confirm)".to_string(),
-        })
+        let (slot, name) = crate::replace_inplace::import_with_stored_proof(&variant_bytes)?;
+        Ok(format!(
+            "variant {name:?} imported to list index {slot} (device slot {})",
+            slot.device_slot()
+        ))
     })
     .await
 }
