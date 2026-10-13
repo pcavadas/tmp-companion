@@ -42,6 +42,10 @@ impl Drop for FailTempWrite {
     }
 }
 
+/// Held for the whole of a [`write_atomic`] call. The writes are small and rare (a
+/// settings save, a snapshot), so one process-wide lock costs nothing.
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Remove whatever sits at `path`, a leftover file or directory alike. Errors are
 /// ignored: an already-gone path is the common case.
 pub(crate) fn remove_any(path: &Path) {
@@ -75,10 +79,15 @@ pub(crate) fn temp_path(path: &Path) -> Result<PathBuf, String> {
 /// and again on this call's own failure path, so one bad leftover can never wedge every
 /// future write.
 ///
+/// Writes are serialized process-wide ([`WRITE_LOCK`]): two calls for the same `path`
+/// share its temp path, so without the lock one could clear or rename away the other's
+/// staged bytes (the settings commands and `calibrate_profile` both save `profiles.json`).
+///
 /// Windows keeps the atomic replace and syncs the temp file's contents, but cannot sync
 /// the directory entry, so a successful write there is not guaranteed to survive a
 /// sudden power loss.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let _serialized = WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
@@ -216,6 +225,32 @@ mod tests {
         };
         assert!(result.is_err(), "an injected failure must fail the write");
         assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert!(!temp_path(&path).unwrap().exists(), "temp file leaked");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_writes_to_one_path_all_succeed() {
+        // They share `<path>.tmp`: unserialized, one call could rename the other's staged
+        // bytes away and fail on its own rename.
+        let dir = tmp_dir("concurrent");
+        let path = dir.join("data.json");
+        let writers: Vec<_> = (0..8u8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    (0..25).try_for_each(|_| write_atomic(&path, &[i; 4096]))
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap().unwrap();
+        }
+        let got = std::fs::read(&path).unwrap();
+        assert!(
+            got.len() == 4096 && got.iter().all(|&b| b == got[0]),
+            "torn write"
+        );
         assert!(!temp_path(&path).unwrap().exists(), "temp file leaked");
         std::fs::remove_dir_all(dir).unwrap();
     }
