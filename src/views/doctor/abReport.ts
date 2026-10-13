@@ -60,6 +60,9 @@ export function findingCheckLine(
     return `${label}: +${fmt(before)} dB over → cleared by the fix.`;
   }
   const span = `${label}: +${fmt(before)} → +${fmt(check.after)} dB over.`;
+  if (check.after - before >= NO_CHANGE_DB) {
+    return `${span} Worse after the fix. Discard it.`;
+  }
   if (before - check.after < NO_CHANGE_DB) {
     return `${span} No measurable change, so the fix may not have landed. Discard and try again.`;
   }

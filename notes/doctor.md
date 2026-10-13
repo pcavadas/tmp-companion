@@ -210,8 +210,8 @@ still reloads the slot). Each clip is the processed STEREO pair as captured
 integrated loudness, so `ABAudition` turns the louder one down to match and
 says the real gap (#257; playback gain only, nothing is written). The same
 result re-measures the treated finding on both clips with the diagnosis's own
-pipeline and threshold (`FindingCheck`, #256): cleared, reduced, or no
-measurable change (a fix that may not have landed). The muddy and harsh EQ
+pipeline, graph and threshold (`FindingCheck`, #256): cleared, reduced, no
+measurable change (a fix that may not have landed), or worse. The muddy and harsh EQ
 cuts grow with the finding's margin past its gate (`sized_cut_db`: the shipped
 3 dB / 2 dB plus the margin, capped at 6 dB), never below the shipped size. `severity.ts` ranks findings per sound and rolls up
 the preset's worst severity.

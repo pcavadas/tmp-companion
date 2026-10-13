@@ -57,6 +57,12 @@ describe("findingCheckLine", () => {
     );
   });
 
+  it("flags a fix that made the finding worse", () => {
+    expect(
+      findingCheckLine("Muddy", { key: "muddy", before: 2.0, after: 2.5 }),
+    ).toBe("Muddy: +2.0 → +2.5 dB over. Worse after the fix. Discard it.");
+  });
+
   it("stays quiet when there is nothing to compare", () => {
     expect(findingCheckLine("Muddy", null)).toBeNull();
     expect(findingCheckLine("Muddy", undefined)).toBeNull();

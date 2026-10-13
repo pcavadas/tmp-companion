@@ -1310,9 +1310,12 @@ fn finding_severity(
 }
 
 /// The A/B's level match and finding check from its two sides (see
-/// [`AbLevels`] / [`FindingCheck`]).
+/// [`AbLevels`] / [`FindingCheck`]). `graph` is the sound's isolated graph
+/// (`SoundIsolation::graph`), the one its diagnosis read, so a graph-gated rule
+/// (washed, buried) judges both clips as the diagnosis did.
 fn ab_report(
     job: &DoctorApplyJob,
+    graph: &[doctor::DoctorNode],
     family: doctor::Instrument,
     kind: doctor::StimulusKind,
     before: &AbSide,
@@ -1325,7 +1328,7 @@ fn ab_report(
             before_lufs,
             after_lufs,
         });
-    let nodes = (!job.nodes.is_empty()).then_some(job.nodes.as_slice());
+    let nodes = (!graph.is_empty()).then_some(graph);
     let finding = job.diag.as_ref().and_then(|diag| {
         let (b, a) = (before.measured.as_ref()?, after.measured.as_ref()?);
         Some(FindingCheck {
@@ -1774,7 +1777,7 @@ fn doctor_apply_run(
         }
     };
 
-    let (levels, finding) = ab_report(job, family, kind, &before, &after);
+    let (levels, finding) = ab_report(job, &iso.graph, family, kind, &before, &after);
     Ok(DoctorApplyResult {
         before_clip: before.clip,
         after_clip: after.clip,

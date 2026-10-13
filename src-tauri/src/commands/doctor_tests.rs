@@ -1339,6 +1339,7 @@ fn apply_job(diag: Option<(&str, &str)>) -> DoctorApplyJob {
 fn ab_report_carries_both_clip_loudnesses() {
     let (levels, finding) = ab_report(
         &apply_job(None),
+        &[],
         doctor::Instrument::Guitar,
         doctor::StimulusKind::Synthetic,
         &ab_side_of(Some(-18.0), None),
@@ -1350,6 +1351,7 @@ fn ab_report_carries_both_clip_loudnesses() {
     // A silent side has no loudness → no level match, never a bogus number.
     let (levels, _) = ab_report(
         &apply_job(None),
+        &[],
         doctor::Instrument::Guitar,
         doctor::StimulusKind::Synthetic,
         &ab_side_of(Some(-18.0), None),
@@ -1366,6 +1368,7 @@ fn ab_report_measures_the_treated_finding_before_and_after() {
     // The fix cleared it.
     let (_, finding) = ab_report(
         &job,
+        &[],
         doctor::Instrument::Guitar,
         doctor::StimulusKind::Synthetic,
         &ab_side_of(Some(-18.0), Some(low_mid_profile(gate + 3.0))),
@@ -1378,6 +1381,7 @@ fn ab_report_measures_the_treated_finding_before_and_after() {
     // An op that didn't land: the finding reads the same on both clips.
     let (_, finding) = ab_report(
         &job,
+        &[],
         doctor::Instrument::Guitar,
         doctor::StimulusKind::Synthetic,
         &ab_side_of(Some(-18.0), Some(low_mid_profile(gate + 3.0))),
@@ -1388,6 +1392,7 @@ fn ab_report_measures_the_treated_finding_before_and_after() {
     // An unprofiled side (no onset, no tail) → no check rather than a guess.
     let (_, finding) = ab_report(
         &job,
+        &[],
         doctor::Instrument::Guitar,
         doctor::StimulusKind::Synthetic,
         &ab_side_of(Some(-18.0), Some(low_mid_profile(gate + 3.0))),
