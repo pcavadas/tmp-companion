@@ -77,6 +77,7 @@
 //! [`Session`]: crate::session::Session
 //! [`HidTransport`]: crate::hid::HidTransport
 
+use crate::slot::{DeviceSlot, ListIndex};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -279,7 +280,7 @@ pub enum SimEvent {
     SongAssign {
         song: u32,
         row: u32,
-        list_index: u32,
+        list_index: ListIndex,
         scene: u32,
     },
     /// A song setter refused with `SongError{code}` and no write (recorded, not encoded:
@@ -1238,9 +1239,11 @@ fn patch_scene_overlays(
 ) {
     let roster = crate::audiograph::roster(v);
     for ((scene, group, node, param), value) in scene_params {
+        // Instance first, then a model id's first instance — `audiograph::roster_entry`'s rule.
         let Some((_, node_id, fender_id)) = roster
             .iter()
-            .find(|(_, nid, fid)| nid == node || fid == node)
+            .find(|(_, nid, _)| nid == node)
+            .or_else(|| roster.iter().find(|(_, _, fid)| fid == node))
         else {
             continue;
         };
@@ -1471,12 +1474,12 @@ impl SimDevice {
 
     /// Give the preset at 0-based `list_index` `n` scenes (the `assignSongPreset` scene check).
     #[cfg(test)]
-    pub(crate) fn with_preset_scenes(self, list_index: u32, n: u32) -> SimDevice {
+    pub(crate) fn with_preset_scenes(self, list_index: ListIndex, n: u32) -> SimDevice {
         self.state
             .lock()
             .expect("sim lock")
             .preset_scenes
-            .insert(list_index, n);
+            .insert(list_index.get(), n);
         self
     }
 
@@ -1836,7 +1839,7 @@ impl SimDevice {
                 });
                 return Vec::new();
             }
-            let new_id = mint_node_id(&ids, &fender_id);
+            let new_id = crate::audiograph::mint_node_id(&ids, &fender_id);
             let reply = node_json_payload(&group, &fender_id, &new_id);
             return confirm_structural(
                 &mut st,
@@ -2373,7 +2376,9 @@ impl SimDevice {
             st.events.push(SimEvent::SongAssign {
                 song: i as u32 + 1,
                 row: row as u32,
-                list_index: dev_slot - 1,
+                list_index: DeviceSlot::try_from(dev_slot)
+                    .map(ListIndex::from)
+                    .unwrap_or_default(),
                 scene,
             });
             return Vec::new();
@@ -3023,7 +3028,7 @@ fn load_stored_levels() -> Option<std::collections::HashMap<u32, StoredLevels>> 
     let mut out = std::collections::HashMap::new();
     for p in crate::probe_api::seed_scenario::scenario_spec().ok()? {
         let pj: serde_json::Value = serde_json::from_str(&p.preset_json).ok()?;
-        out.insert(p.list_index, stored_from_preset(&pj));
+        out.insert(p.list_index.get(), stored_from_preset(&pj));
     }
     Some(out)
 }
@@ -3230,18 +3235,6 @@ fn working_group_ids(st: &mut SimState, group: &str, except: Option<&str>) -> Ve
         .unwrap_or_default()
 }
 
-/// The firmware's id for a new node (fw 1.8.58 `FUN_00c7fd80`): its FenderId, or the
-/// first free `<FenderId>_<n>` when the group already uses it.
-fn mint_node_id(ids: &[String], base: &str) -> String {
-    if !ids.iter().any(|id| id == base) {
-        return base.to_string();
-    }
-    (1..)
-        .map(|n| format!("{base}_{n}"))
-        .find(|id| !ids.contains(id))
-        .expect("an unbounded range always finds a free id")
-}
-
 /// Confirm a replace, minting the new node's id against the rest of its group.
 fn confirm_replace(
     st: &mut SimState,
@@ -3249,7 +3242,8 @@ fn confirm_replace(
     node_id: String,
     fender_id: String,
 ) -> Vec<Vec<u8>> {
-    let new_id = mint_node_id(&working_group_ids(st, &group, Some(&node_id)), &fender_id);
+    let new_id =
+        crate::audiograph::mint_node_id(&working_group_ids(st, &group, Some(&node_id)), &fender_id);
     let reply = node_json_payload(&group, &fender_id, &new_id);
     confirm_structural(
         st,
@@ -3317,7 +3311,7 @@ fn group_nodes_mut<'a>(
 }
 
 /// One structural edit on the working copy, group-scoped like the device's own ops. An
-/// inserted or replaced node carries the id [`mint_node_id`] gave it.
+/// inserted or replaced node carries the id [`crate::audiograph::mint_node_id`] gave it.
 fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
     match e {
         WorkingEdit::Replace {
@@ -3329,7 +3323,7 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
             if let Some(nodes) = group_nodes_mut(v, group, false) {
                 if let Some(node) = nodes
                     .iter_mut()
-                    .find(|n| audiograph::node_id(n) == Some(node_id.as_str()))
+                    .find(|n| audiograph::instance_id(n) == Some(node_id.as_str()))
                 {
                     if let Some(obj) = node.as_object_mut() {
                         obj.insert("nodeId".into(), serde_json::Value::String(new_id.clone()));
@@ -3343,7 +3337,7 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
         }
         WorkingEdit::Remove { group, node_id } => {
             if let Some(nodes) = group_nodes_mut(v, group, false) {
-                nodes.retain(|n| audiograph::node_id(n) != Some(node_id.as_str()));
+                nodes.retain(|n| audiograph::instance_id(n) != Some(node_id.as_str()));
             }
         }
         WorkingEdit::Insert {
@@ -3356,7 +3350,11 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
                 // field-2 = the nodeId to insert BEFORE; absent → append at the group end.
                 let at = before
                     .as_deref()
-                    .and_then(|b| nodes.iter().position(|n| audiograph::node_id(n) == Some(b)))
+                    .and_then(|b| {
+                        nodes
+                            .iter()
+                            .position(|n| audiograph::instance_id(n) == Some(b))
+                    })
                     .unwrap_or(nodes.len());
                 nodes.insert(
                     at,
@@ -3409,7 +3407,7 @@ fn scenario_json_for(slot0: u32) -> Option<&'static str> {
         crate::probe_api::seed_scenario::scenario_spec()
             .map(|v| {
                 v.into_iter()
-                    .map(|p| (p.list_index, p.preset_json))
+                    .map(|p| (p.list_index.get(), p.preset_json))
                     .collect()
             })
             .unwrap_or_default()
@@ -4167,7 +4165,7 @@ mod physics_tests {
     /// wire round-trip, not just the internal store).
     fn read_saved_preset_level(s: &mut crate::session::Session, dev_slot: u32) -> f64 {
         let bytes = s
-            .read_slot_preset_json(dev_slot)
+            .read_slot_preset_json(crate::slot::ds(dev_slot))
             .expect("field-8 read")
             .expect("a scenario slot answers field-8");
         let json: serde_json::Value =
@@ -4181,9 +4179,9 @@ mod physics_tests {
     fn save_then_immediate_field8_read_shows_the_saved_value() {
         let sim = SimDevice::new();
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         s.set_preset_level(0.81).unwrap();
-        s.save_current_preset(401).unwrap();
+        s.save_current_preset(ListIndex(401)).unwrap();
         let level = read_saved_preset_level(&mut s, 402); // dev slot = list index + 1
         assert!(
             (level - 0.81).abs() < 1e-3,
@@ -4203,10 +4201,10 @@ mod physics_tests {
     fn a_baked_param_survives_a_save_then_fresh_load() {
         let sim = SimDevice::new();
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         s.change_parameter("G1", "pedal", "level", 0.1857).unwrap();
-        s.save_current_preset(401).unwrap();
-        s.load_preset(401).unwrap(); // fresh load, no new write this session
+        s.save_current_preset(ListIndex(401)).unwrap();
+        s.load_preset(ListIndex(401)).unwrap(); // fresh load, no new write this session
         assert_eq!(
             sim.param_write(SCENE_BASE, "G1", "pedal", "level"),
             Some(0.1857),
@@ -4222,15 +4220,15 @@ mod physics_tests {
     fn a_later_unrelated_save_does_not_erase_an_earlier_baked_param() {
         let sim = SimDevice::new();
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         s.change_parameter("G1", "pedal", "level", 0.1857).unwrap();
-        s.save_current_preset(401).unwrap();
+        s.save_current_preset(ListIndex(401)).unwrap();
         // A second, unrelated session: fresh load (reseeds the baked param), a plain
         // presetLevel change, save — never touches "pedal"/"level" itself.
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         s.set_preset_level(0.9).unwrap();
-        s.save_current_preset(401).unwrap();
-        s.load_preset(401).unwrap();
+        s.save_current_preset(ListIndex(401)).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         assert_eq!(
             sim.param_write(SCENE_BASE, "G1", "pedal", "level"),
             Some(0.1857),
@@ -4251,9 +4249,9 @@ mod physics_tests {
         let sim = SimDevice::new();
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
         // 402 has 8 scenes: a real-scene recall on a scene-less preset swaps in the template.
-        s.load_preset(402).unwrap();
+        s.load_preset(ListIndex(402)).unwrap();
         s.set_preset_level(0.81).unwrap();
-        s.save_current_preset(402).unwrap(); // saves 0.81, marks 401 `ever_saved`
+        s.save_current_preset(ListIndex(402)).unwrap(); // saves 0.81, marks 401 `ever_saved`
 
         // A real scene recall.
         s.set_preset_level(0.55).unwrap(); // unsaved working-copy write, e.g. a solved level
@@ -4288,7 +4286,7 @@ mod scene_context_tests {
     fn a_load_activates_the_saved_scene_not_base() {
         let sim = SimDevice::new().with_saved_scene(2, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(2).unwrap();
+        s.load_preset(ListIndex(2)).unwrap();
         s.change_parameter("G1", "n1", "level", 0.42).unwrap();
         let ev = sim.events();
         assert!(
@@ -4303,7 +4301,7 @@ mod scene_context_tests {
     fn loading_a_preset_with_no_saved_scene_activates_base() {
         let sim = SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(5).unwrap();
+        s.load_preset(ListIndex(5)).unwrap();
         s.change_parameter("G1", "n1", "level", 0.42).unwrap();
         let ev = sim.events();
         assert!(
@@ -4324,11 +4322,11 @@ mod scene_context_tests {
     fn saving_records_the_active_scene_for_the_next_load() {
         let sim = SimDevice::new().with_preset_json(SCENED_PRESET_JSON);
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(1).unwrap();
+        s.load_preset(ListIndex(1)).unwrap();
         s.load_scene(4).unwrap();
-        s.save_current_preset(1).unwrap();
-        s.load_preset(9).unwrap(); // a different slot in between
-        s.load_preset(1).unwrap(); // reload slot 1 → restores scene 4
+        s.save_current_preset(ListIndex(1)).unwrap();
+        s.load_preset(ListIndex(9)).unwrap(); // a different slot in between
+        s.load_preset(ListIndex(1)).unwrap(); // reload slot 1 → restores scene 4
         s.change_parameter("G1", "n1", "level", 0.1).unwrap();
         let ev = sim.events();
         assert!(
@@ -4344,7 +4342,7 @@ mod scene_context_tests {
     fn load_scene_base_sentinel_resolves_to_scene_base() {
         let sim = SimDevice::new().with_saved_scene(0, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(0).unwrap();
+        s.load_preset(ListIndex(0)).unwrap();
         s.load_scene(BASE_SCENE_SLOT).unwrap();
         s.change_parameter("G1", "n1", "level", 0.9).unwrap();
         let ev = sim.events();
@@ -4367,7 +4365,7 @@ mod scene_context_tests {
     fn enabling_scene_edit_reseeds_the_node_from_base() {
         let sim = SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(0).unwrap();
+        s.load_preset(ListIndex(0)).unwrap();
         // A prior scene-3 overlay write on "drive" (as if scene-edited earlier).
         s.load_scene(3).unwrap();
         s.set_node_scene_edit("G1", "amp", true).unwrap();
@@ -4410,7 +4408,7 @@ mod scene_context_tests {
     fn scene_recall_renders_the_overlay_per_param_with_no_retention_from_the_prior_scene() {
         let sim = SimDevice::new().with_preset_json(PER_PARAM_OVERLAY_FIXTURE);
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(6).unwrap();
+        s.load_preset(ListIndex(6)).unwrap();
         s.load_scene(0).unwrap(); // scene 0: a FULL overlay (gain: 5.0)
         assert_eq!(
             sim.rendered_param("G1", "amp", "gain"),
@@ -4439,7 +4437,7 @@ mod scene_context_tests {
         ]}"#;
         let sim = SimDevice::new().with_preset_json(FIXTURE);
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(10).unwrap();
+        s.load_preset(ListIndex(10)).unwrap();
         s.load_scene(0).unwrap();
         assert_eq!(
             sim.rendered_bypass("G1", "fx"),
@@ -4456,7 +4454,7 @@ mod scene_context_tests {
     fn parameter_writes_accept_raw_values_outside_0_1() {
         let sim = SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(7).unwrap();
+        s.load_preset(ListIndex(7)).unwrap();
         s.change_parameter("G1", "ACD_Boost", "gain", 7.0).unwrap();
         assert_eq!(
             sim.param_write(SCENE_BASE, "G1", "ACD_Boost", "gain"),
@@ -4480,7 +4478,7 @@ mod scene_context_tests {
         ]}"#;
         let sim = SimDevice::new().with_preset_json(FIXTURE);
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(8).unwrap();
+        s.load_preset(ListIndex(8)).unwrap();
         s.load_scene(0).unwrap(); // scene 0: bypass-only overlay on "amp" — no enable sent
         s.change_parameter("G1", "amp", "gain", 7.0).unwrap();
         assert_eq!(
@@ -4528,7 +4526,7 @@ mod scene_context_tests {
         ]}"#;
         let sim = SimDevice::new().with_preset_json(FIXTURE);
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(9).unwrap();
+        s.load_preset(ListIndex(9)).unwrap();
         s.load_scene(0).unwrap(); // scene 0: Full overlay missing `level` — no enable sent
         s.change_parameter("G1", "ts", "level", 0.22).unwrap();
         assert_eq!(
@@ -4601,7 +4599,7 @@ mod ftsw_tests {
     fn a_set_materializes_ftsw_on_a_graph_that_has_none() {
         let sim = SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(7).unwrap();
+        s.load_preset(ListIndex(7)).unwrap();
         assert!(
             rendered(&sim).get("ftsw").is_none(),
             "the default graph carries no ftsw key until an edit creates one"
@@ -4638,7 +4636,7 @@ mod ftsw_tests {
     fn a_clear_removes_the_function_and_a_load_discards_the_unsaved_edit() {
         let sim = SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(7).unwrap();
+        s.load_preset(ListIndex(7)).unwrap();
         s.set_footswitch_assignment(1, 0, PARAM_FN, false, None)
             .unwrap();
         s.clear_footswitch_assignment(1, 0).unwrap();
@@ -4653,7 +4651,7 @@ mod ftsw_tests {
         );
         s.set_footswitch_assignment(1, 0, PARAM_FN, false, None)
             .unwrap();
-        s.load_preset(7).unwrap();
+        s.load_preset(ListIndex(7)).unwrap();
         assert!(
             rendered(&sim).get("ftsw").is_none(),
             "a fresh load discards the unsaved ftsw edit buffer"
@@ -4749,10 +4747,10 @@ mod same_slot_load_tests {
     fn a_clean_same_slot_load_keeps_the_working_copy() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(3).unwrap();
-        s.save_current_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
         poke_knob(&sim);
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         assert_eq!(
             knob(&sim),
             Some(0.7),
@@ -4764,11 +4762,11 @@ mod same_slot_load_tests {
     fn an_edit_makes_the_same_slot_load_a_real_reload() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(3).unwrap();
-        s.save_current_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
         poke_knob(&sim);
         s.change_parameter("G1", "n2", "mix", 0.1).unwrap();
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         assert_eq!(knob(&sim), None, "a dirty same-slot load must reload");
     }
 
@@ -4776,11 +4774,11 @@ mod same_slot_load_tests {
     fn a_scene_recall_makes_the_same_slot_load_a_real_reload() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(3).unwrap();
-        s.save_current_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
         poke_knob(&sim);
         s.load_scene(crate::session::BASE_SCENE_SLOT).unwrap();
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         assert_eq!(knob(&sim), None);
     }
 
@@ -4788,11 +4786,11 @@ mod same_slot_load_tests {
     fn a_remove_of_an_unknown_node_still_makes_the_load_real() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(3).unwrap();
-        s.save_current_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
         poke_knob(&sim);
         let _ = s.remove_node("G1", "no-such-node");
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         assert_eq!(knob(&sim), None);
     }
 
@@ -4801,11 +4799,11 @@ mod same_slot_load_tests {
     fn a_scene_edit_on_base_leaves_the_load_skipped() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(3).unwrap();
-        s.save_current_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
         poke_knob(&sim);
         s.set_node_scene_edit("G1", "n1", true).unwrap();
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         assert_eq!(knob(&sim), Some(0.7));
     }
 
@@ -4814,11 +4812,11 @@ mod same_slot_load_tests {
     fn a_refused_footswitch_clear_leaves_the_load_skipped() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(3).unwrap();
-        s.save_current_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
         poke_knob(&sim);
         s.clear_footswitch_assignment(0, 4).unwrap();
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         assert_eq!(knob(&sim), Some(0.7));
     }
 
@@ -4826,11 +4824,11 @@ mod same_slot_load_tests {
     fn loading_another_slot_first_forces_the_real_reload() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(3).unwrap();
-        s.save_current_preset(3).unwrap();
-        s.load_preset(4).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
+        s.load_preset(ListIndex(4)).unwrap();
         poke_knob(&sim);
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         assert_eq!(knob(&sim), None);
     }
 
@@ -4839,16 +4837,16 @@ mod same_slot_load_tests {
     fn a_save_to_another_slot_moves_the_load_identity() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(3).unwrap();
-        s.save_current_preset(5).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s.save_current_preset(ListIndex(5)).unwrap();
         poke_knob(&sim);
-        s.load_preset(5).unwrap();
+        s.load_preset(ListIndex(5)).unwrap();
         assert_eq!(
             knob(&sim),
             Some(0.7),
             "the saved-to slot is now the loaded one"
         );
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         assert_eq!(
             knob(&sim),
             None,
@@ -4863,10 +4861,10 @@ mod same_slot_load_tests {
     fn a_skipped_load_after_a_save_elsewhere_pushes_the_live_level() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         s.set_preset_level(0.6).unwrap();
-        s.save_current_preset(402).unwrap();
-        s.load_preset(402).unwrap();
+        s.save_current_preset(ListIndex(402)).unwrap();
+        s.load_preset(ListIndex(402)).unwrap();
         let pushed = s.live_preset_value(|_| true).unwrap()["audioGraph"]["presetLevel"]
             .as_f64()
             .unwrap();
@@ -4896,10 +4894,10 @@ mod same_slot_load_tests {
             .expect("fixture 401 has a float knob");
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         s.change_parameter(&group, &node, &param, 0.123).unwrap();
-        s.save_current_preset(402).unwrap();
-        s.load_preset(402).unwrap();
+        s.save_current_preset(ListIndex(402)).unwrap();
+        s.load_preset(ListIndex(402)).unwrap();
         let pushed = s.live_preset_value(|_| true).unwrap();
         let value = pushed["audioGraph"]["guitarNodes"][&group]
             .as_array()
@@ -4927,11 +4925,11 @@ mod same_slot_load_tests {
             .expect("fixture 401 has a node with a bypass");
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         s.change_parameter_bool(&group, &node, "bypass", !bypassed)
             .unwrap();
-        s.save_current_preset(401).unwrap();
-        s.load_preset(401).unwrap();
+        s.save_current_preset(ListIndex(401)).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         let pushed = s.live_preset_value(|_| true).unwrap();
         let shown = pushed["audioGraph"]["guitarNodes"][&group]
             .as_array()
@@ -4946,7 +4944,7 @@ mod same_slot_load_tests {
     fn a_skipped_load_pushes_a_knob_on_an_inserted_node() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         assert!(s.insert_node("G1", None, "ACD_ChorusCE2").unwrap());
         let doc = s.live_preset_value(|_| true).unwrap();
         let id = doc["audioGraph"]["guitarNodes"]["G1"]
@@ -4956,8 +4954,8 @@ mod same_slot_load_tests {
             .unwrap()
             .to_string();
         s.change_parameter("G1", &id, "mix", 0.42).unwrap();
-        s.save_current_preset(401).unwrap();
-        s.load_preset(401).unwrap();
+        s.save_current_preset(ListIndex(401)).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         let pushed = s.live_preset_value(|_| true).unwrap();
         let mix = pushed["audioGraph"]["guitarNodes"]["G1"]
             .as_array()
@@ -4974,7 +4972,7 @@ mod same_slot_load_tests {
     fn a_refused_footswitch_clear_leaves_ftsw_untouched() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         s.clear_footswitch_assignment(3, 0).unwrap();
         assert!(sim.state.lock().expect("sim lock").ftsw_working.is_none());
     }
@@ -4987,18 +4985,18 @@ mod same_slot_load_tests {
     fn the_saved_preset_level_comes_back_only_on_a_real_reload() {
         let sim = SimDevice::new();
         let mut s = session(&sim);
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         s.set_preset_level(0.81).unwrap();
-        s.save_current_preset(401).unwrap();
+        s.save_current_preset(ListIndex(401)).unwrap();
         sim.state.lock().expect("sim lock").preset_level = 0.5;
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         assert!(
             (sim.preset_level() - 0.5).abs() < 1e-6,
             "a clean same-slot load must keep the live level, got {}",
             sim.preset_level()
         );
         s.set_preset_level(0.3).unwrap();
-        s.load_preset(401).unwrap();
+        s.load_preset(ListIndex(401)).unwrap();
         assert!(
             (sim.preset_level() - 0.81).abs() < 1e-6,
             "a dirty same-slot load must restore the saved level, got {}",
@@ -5312,7 +5310,7 @@ mod oracle_and_census_tests {
     fn a_saved_replace_persists_its_minted_id_across_a_reload() {
         let sim = SimDevice::new();
         sim.receive(&proto::replace_node("G1", "n2", "ACD_Fuzz", None));
-        sim.receive(&proto::save_current_preset(1));
+        sim.receive(&proto::save_current_preset(crate::slot::ds(1)));
         // Load another slot, then this one: a real reload of the stored document.
         sim.receive(&proto::load_preset(2, 1));
         sim.receive(&proto::load_preset(1, 1));

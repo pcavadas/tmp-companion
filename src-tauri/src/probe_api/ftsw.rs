@@ -6,7 +6,7 @@ use crate::session::Session;
 
 /// The `ftsw` array of the SAVED preset at `device_slot` (1-based), via a field-8 slot
 /// read on a fresh quiet session — the reliable post-save source.
-pub(crate) fn read_slot_ftsw(device_slot: u32) -> Option<serde_json::Value> {
+pub(crate) fn read_slot_ftsw(device_slot: crate::slot::DeviceSlot) -> Option<serde_json::Value> {
     let mut v = Session::connect().ok()?;
     v.drain_until_quiet(250, 20).ok()?;
     let raw = v.read_slot_preset_json(device_slot).ok()??;
@@ -68,7 +68,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
     let list_index = loaded
         .or_else(|| {
             active_name.as_ref().and_then(|nm| {
-                let m: Vec<u32> = presets
+                let m: Vec<crate::slot::ListIndex> = presets
                     .iter()
                     .filter(|p| &p.name == nm)
                     .map(|p| p.slot)
@@ -97,7 +97,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         .ok_or("no ftsw in the active preset's field-3 push")?;
     report.push_str(&format!(
         "  active {name:?} list_index={list_index} (device slot {})\n  current ftsw ({} switches):\n{}\n",
-        list_index + 1,
+        list_index.device_slot(),
         ftsw0.as_array().map(|a| a.len()).unwrap_or(0),
         serde_json::to_string_pretty(&ftsw0).unwrap_or_default()
     ));
@@ -137,8 +137,8 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
     let mut param = "volume".to_string();
     if let Some(g) = &graph {
         audiograph::for_each_node(g, |obj| {
-            if obj.get("nodeId").and_then(|v| v.as_str()) == Some(node.as_str()) {
-                if let Some(ps) = obj.get("dspUnitParameters").and_then(|v| v.as_object()) {
+            if obj.matches_instance(&node) {
+                if let Some(ps) = obj.params() {
                     if let Some(k) = ps
                         .keys()
                         .find(|k| !matches!(k.as_str(), "bypass" | "bypassType"))
@@ -258,10 +258,10 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         s.save_current_preset(list_index)?;
         drop(s);
         std::thread::sleep(std::time::Duration::from_millis(600));
-        let persisted = read_slot_ftsw(list_index + 1);
+        let persisted = read_slot_ftsw(list_index.device_slot());
         report.push_str(&format!(
             "  [commit] field-8 readback slot {:03}: PROBE persisted = {}\n",
-            list_index + 1,
+            list_index.device_slot(),
             persisted.as_ref().and_then(find_probe).is_some()
         ));
         // RESTORE: clear the probe fn and re-save.
@@ -274,7 +274,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         }
         drop(r);
         std::thread::sleep(std::time::Duration::from_millis(600));
-        let restored = read_slot_ftsw(list_index + 1);
+        let restored = read_slot_ftsw(list_index.device_slot());
         report.push_str(&format!(
             "  [restore] field-8 readback: PROBE gone = {}, switch [{target}] func count = {} (original {})\n",
             restored.as_ref().and_then(find_probe).is_none(),

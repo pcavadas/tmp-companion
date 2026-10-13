@@ -3,6 +3,7 @@
 use crate::proto;
 use crate::session;
 use crate::session::Session;
+use crate::slot::{DeviceSlot, ListIndex};
 
 /// Tier-4 diagnostic: capture the live `currentPresetDataChanged` (field 3) preset
 /// JSON on a dense-heartbeat session, write the full decompressed body to
@@ -10,7 +11,7 @@ use crate::session::Session;
 /// present and the JSON parses to the end) — the go/no-go for live FS-tags and the
 /// "truncates at scenes" gotcha. `slot` (Some) loads that preset first to trigger a
 /// fresh push. Non-destructive (load + reads only).
-pub fn probe_dump_preset_data(slot: Option<u32>, out_path: &str) -> Result<String, String> {
+pub fn probe_dump_preset_data(slot: Option<ListIndex>, out_path: &str) -> Result<String, String> {
     let raw = Session::connect()?.capture_full_preset_json(slot, 2000)?;
     std::fs::write(out_path, &raw).map_err(|e| format!("write {out_path}: {e}"))?;
     let text = String::from_utf8_lossy(&raw);
@@ -48,7 +49,7 @@ pub fn probe_listen(seconds: u64, hb_ms: u64, poll_secs: u64) -> Result<(), Stri
 ///
 /// The request MUST ride inside the handshake burst with NO batchStatus — a
 /// standalone post-handshake request, or one carrying a batch, gets no reply.
-pub fn probe_export_preset(list_enum: u32, slot: u32) -> Result<String, String> {
+pub fn probe_export_preset(list_enum: u32, slot: DeviceSlot) -> Result<String, String> {
     // Slot-addressed full read on a MINIMAL re-armed burst (connect() +
     // read_slot_preset_json), NOT the full-handshake Classic burst. The field-9
     // reply's unkeyed 0x33/0x34/0x35 framing collides with the ~17 KB ProductProfile
@@ -134,7 +135,10 @@ pub fn probe_dump_list(
     );
     let (mut ok, mut miss) = (0u32, 0u32);
     for slot in from_slot..=to_slot {
-        match s.read_list_preset_json(list_enum as u64, slot, false)? {
+        let Ok(dev_slot) = DeviceSlot::try_from(slot) else {
+            continue; // slot 0 addresses nothing
+        };
+        match s.read_list_preset_json(list_enum as u64, dev_slot, false)? {
             Some(raw) => {
                 let decoded = match proto::lz4_block_decompress(&raw) {
                     Ok(d) if !d.is_empty() => d,
@@ -233,7 +237,7 @@ fn slotread_forensics(raw: &[Vec<u8>], expected_name: &str) -> String {
 /// non-destructive mapping confirmation) + raw-frame forensics.
 fn slotread_report(
     tag: &str,
-    slot: u32,
+    slot: DeviceSlot,
     expected_name: &str,
     reply: Option<&[u8]>,
     s: &Session,
@@ -277,26 +281,26 @@ fn slotread_harvest(s: &mut Session) -> Option<Vec<u8>> {
 ///   C-early    in-burst, read fired BEFORE the flood requests
 ///   C-minimal  trimmed burst: connection_request + My Presets + read only
 ///   A          classic full-burst baseline (the 0/25 configuration)
-/// Slots are 1-based DEVICE slots (list index + 1); default = first 3
+/// Slots are 1-based DEVICE slots; default = first 3
 /// non-empty presets. Sends ZERO LoadPreset.
-pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, String> {
+pub fn probe_slotread_experiments(device_slots: Vec<DeviceSlot>) -> Result<String, String> {
     use session::SlotReadBurst;
 
     // ── Exp B: warmed live session (also sources the preset list + slots). ──
     let mut s = Session::connect()?;
     let presets = s.list_my_presets()?;
-    let name_of = |dev_slot: u32| {
+    let name_of = |dev_slot: DeviceSlot| {
         presets
-            .get((dev_slot - 1) as usize)
+            .get(dev_slot.list_index().as_usize())
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "?".to_string())
     };
-    let slots: Vec<u32> = if device_slots.is_empty() {
+    let slots: Vec<DeviceSlot> = if device_slots.is_empty() {
         presets
             .iter()
             .filter(|p| !session::is_empty_slot_name(&p.name))
             .take(3)
-            .map(|p| p.slot + 1)
+            .map(|p| p.slot.device_slot())
             .collect()
     } else {
         device_slots
@@ -314,7 +318,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
     }
     for &slot in &slots {
         s.raw.clear();
-        s.send_and_collect(&proto::preset_data_request(1, slot as u64, None), 400)?;
+        s.send_and_collect(&proto::preset_data_request(1, slot.wire(), None), 400)?;
         let reply = slotread_harvest(&mut s);
         out += &slotread_report("B", slot, &name_of(slot), reply.as_deref(), &s);
         let _ = s.heartbeat();
@@ -329,7 +333,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
     // device keeps answering data requests on the same session.
     out += "\n── Exp D: sequential reads on ONE minimal-burst connection ──\n";
     {
-        let first_req = proto::preset_data_request(1, slots[0] as u64, None);
+        let first_req = proto::preset_data_request(1, slots[0].wire(), None);
         match Session::connect_slotread(SlotReadBurst::Minimal, &first_req) {
             Ok(mut s) => {
                 s.set_auto_reopen(false); // the question is whether the session keeps answering
@@ -337,7 +341,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
                 out += &slotread_report("D", slots[0], &name_of(slots[0]), reply.as_deref(), &s);
                 for &slot in &slots[1..] {
                     s.raw.clear();
-                    s.send_and_collect(&proto::preset_data_request(1, slot as u64, None), 400)?;
+                    s.send_and_collect(&proto::preset_data_request(1, slot.wire(), None), 400)?;
                     let reply = slotread_harvest(&mut s);
                     out += &slotread_report("D", slot, &name_of(slot), reply.as_deref(), &s);
                 }
@@ -354,7 +358,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
     out += "\n── Exp E: connection_request re-arm per read, ONE connection ──\n";
     {
         let t0 = std::time::Instant::now();
-        let first_req = proto::preset_data_request(1, slots[0] as u64, None);
+        let first_req = proto::preset_data_request(1, slots[0].wire(), None);
         match Session::connect_slotread(SlotReadBurst::Minimal, &first_req) {
             Ok(mut s) => {
                 s.set_auto_reopen(false); // the explicit per-read re-arm is what's measured
@@ -369,7 +373,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
                     s.raw.clear();
                     s.send_and_collect(&proto::connection_request(), 100)?;
                     s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
-                    s.send_and_collect(&proto::preset_data_request(1, slot as u64, None), 200)?;
+                    s.send_and_collect(&proto::preset_data_request(1, slot.wire(), None), 200)?;
                     let reply = slotread_harvest(&mut s);
                     out += &format!(
                         "  ({:.2}s){}",
@@ -390,7 +394,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
     ] {
         out += &format!("\n── Exp {tag}: in-burst read, {variant:?} burst ──\n");
         for &slot in &slots {
-            let req = proto::preset_data_request(1, slot as u64, None);
+            let req = proto::preset_data_request(1, slot.wire(), None);
             match Session::connect_slotread(variant, &req) {
                 Ok(mut s) => {
                     let reply = slotread_harvest(&mut s);
@@ -413,7 +417,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
 /// HW result: the re-arm path draws 1 `connectionError`/read and runs ~140 ms slower;
 /// the live path is 0 errors, both return the same field-9. NON-DESTRUCTIVE — zero
 /// LoadPreset, no re-amp.
-pub fn probe_slotread_live(device_slot: u32, rounds: u32) -> Result<String, String> {
+pub fn probe_slotread_live(device_slot: DeviceSlot, rounds: u32) -> Result<String, String> {
     // connectionError = ConnectionMessage (TMS field 4) → inner field 3.
     fn is_connection_error(body: &[u8]) -> bool {
         proto::first_bytes(&proto::parse(body), 4)

@@ -21,6 +21,7 @@
 
 use crate::doctor;
 use crate::leveller;
+use crate::slot::ListIndex;
 
 use super::analyze::{analyze_capture, DoctorRead};
 use super::stimulus::{probe_stimulus_path, read_stimulus_48k};
@@ -76,7 +77,7 @@ pub(crate) fn measure(
 fn node_params<'a>(doc: &'a serde_json::Value, fender_id: &str) -> Option<&'a serde_json::Value> {
     // guitarNodes/micNodes are OBJECTS keyed by group id (G1..G7 / M1..M4),
     // each holding the node array.
-    ["guitarNodes", "micNodes"].iter().find_map(|grp| {
+    crate::audiograph::GRAPHS.iter().find_map(|grp| {
         doc.pointer(&format!("/audioGraph/{grp}"))?
             .as_object()?
             .values()
@@ -112,7 +113,7 @@ pub(crate) fn tail_ms_for_doc(doc: &serde_json::Value) -> u32 {
 /// (`doctor_defects.rs`) shares this exact resolution instead of forking it —
 /// a graph shaped `[...guitar, ...mic]` (any gtrMicMix/Parallel/Series
 /// template) would otherwise let a plain `.nodes.last()` pick a mic node.
-pub(crate) fn last_guitar_group_anchor(slot: u32) -> Result<(String, String, u32), String> {
+pub(crate) fn last_guitar_group_anchor(slot: ListIndex) -> Result<(String, String, u32), String> {
     let (preset, _, _) = crate::read_slot_preset_parsed(slot)?;
     let graph = crate::session::extract_active_graph(&preset, None);
     let doctor_nodes: Vec<doctor::DoctorNode> = graph
@@ -142,7 +143,7 @@ pub(crate) fn last_guitar_group_anchor(slot: u32) -> Result<(String, String, u32
 /// high-Q resonance the `resonant` rule exists for, without needing any
 /// documented controlIds.
 pub fn probe_doctor_inject(
-    slot: u32,
+    slot: ListIndex,
     gains: &[(String, f64)],
     block: Option<&str>,
 ) -> Result<String, String> {

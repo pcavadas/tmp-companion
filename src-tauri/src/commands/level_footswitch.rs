@@ -61,10 +61,10 @@ pub(crate) fn node_param_f64(
     param: &str,
 ) -> Option<f64> {
     let mut found = None;
-    audiograph::for_each_node(preset, |obj| {
-        if obj.get("nodeId").and_then(|v| v.as_str()) == Some(node_id) {
-            found = obj
-                .get("dspUnitParameters")
+    audiograph::for_each_node(preset, |node| {
+        if node.matches_instance(node_id) {
+            found = node
+                .params()
                 .and_then(|p| p.get(param))
                 .and_then(|v| v.as_f64());
         }
@@ -177,7 +177,7 @@ const SCENE_CONTEXT_SECTIONS: &[&str] = &["ftsw", "scenes"];
 #[tauri::command]
 pub(crate) async fn list_footswitch_scene_contexts(
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
 ) -> Result<Vec<footswitch::FsSceneContext>, String> {
     with_released_seize(state.session.clone(), move || {
         let (preset, _, _) = read_slot_preset_complete(slot, SCENE_CONTEXT_SECTIONS)?;
@@ -194,7 +194,7 @@ pub(crate) async fn list_footswitch_scene_contexts(
 pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
     jobs: Vec<FootswitchLevelJob>,
     save: bool,
     topology_id: Option<String>,

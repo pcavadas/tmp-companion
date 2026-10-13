@@ -120,7 +120,7 @@ pub(super) struct RouteGraph {
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct ActiveGraph {
     pub name: Option<String>,
-    pub slot: Option<u32>,
+    pub slot: Option<ListIndex>,
     pub template: Option<String>,
     pub split_mix: Option<serde_json::Value>,
     /// Flat block list in stable group+array order (every block, all groups).
@@ -185,19 +185,13 @@ pub(crate) fn extract_level_blocks(v: &serde_json::Value) -> Vec<LevelBlock> {
             continue;
         };
         for node in nodes {
-            let node_id = node
-                .get("nodeId")
-                .and_then(|x| x.as_str())
-                .or_else(|| node.get("FenderId").and_then(|x| x.as_str()))
-                .unwrap_or("");
-            if node_id.is_empty() {
+            let Some(node) = crate::audiograph::Node::of(node) else {
                 continue;
-            }
-            let model_id = node
-                .get("FenderId")
-                .and_then(|x| x.as_str())
-                .unwrap_or(node_id);
-            let Some(params) = node.get("dspUnitParameters").and_then(|p| p.as_object()) else {
+            };
+            let (Some(node_id), Some(model_id)) = (node.instance(), node.model()) else {
+                continue;
+            };
+            let Some(params) = node.params() else {
                 continue;
             };
             for (pname, pval) in params {
@@ -243,22 +237,16 @@ pub(crate) fn extract_level_candidates(v: &serde_json::Value) -> Vec<LevelBlock>
     };
     for (group_id, nodes) in groups {
         for node in nodes.as_array().into_iter().flatten() {
-            let node_id = node
-                .get("nodeId")
-                .and_then(|x| x.as_str())
-                .or_else(|| node.get("FenderId").and_then(|x| x.as_str()))
-                .unwrap_or("");
-            if node_id.is_empty() {
+            let Some(node) = crate::audiograph::Node::of(node) else {
                 continue;
-            }
-            // The classifier's override key. A graph carrying no `FenderId` falls back to the
-            // node id — the same fallback `leveller::FsParamTarget::from_preset` applies, so
-            // the picker and the solve classify such a node identically.
-            let model_id = node
-                .get("FenderId")
-                .and_then(|x| x.as_str())
-                .unwrap_or(node_id);
-            let Some(params) = node.get("dspUnitParameters").and_then(|p| p.as_object()) else {
+            };
+            // The classifier's override key is the model. A graph carrying no `FenderId`
+            // falls back to the node id — the same fallback `leveller::FsParamTarget::from_preset`
+            // applies, so the picker and the solve classify such a node identically.
+            let (Some(node_id), Some(model_id)) = (node.instance(), node.model()) else {
+                continue;
+            };
+            let Some(params) = node.params() else {
                 continue;
             };
             out.extend(
@@ -326,15 +314,12 @@ pub(crate) fn extract_active_graph(
             let Some(arr) = val.as_array() else { continue };
             let mut blocks = Vec::new();
             for node in arr {
-                let model = node
-                    .get("FenderId")
-                    .and_then(|x| x.as_str())
-                    .or_else(|| node.get("nodeId").and_then(|x| x.as_str()))
-                    .unwrap_or("");
-                if model.is_empty() {
+                let Some(view) = crate::audiograph::Node::of(node) else {
                     continue;
-                }
-                let node_id = node.get("nodeId").and_then(|x| x.as_str()).unwrap_or(model);
+                };
+                let (Some(model), Some(node_id)) = (view.model(), view.instance()) else {
+                    continue;
+                };
                 let params = node.get("dspUnitParameters");
                 let bypassed = params
                     .and_then(|p| p.get("bypass"))
@@ -405,7 +390,9 @@ pub(crate) fn extract_active_graph(
         slot: v
             .pointer("/info/userSlot")
             .and_then(|x| x.as_u64())
-            .and_then(|s| (s as u32).checked_sub(1)),
+            .and_then(|s| u32::try_from(s).ok())
+            .and_then(|s| DeviceSlot::try_from(s).ok())
+            .map(ListIndex::from),
         template,
         split_mix,
         nodes,

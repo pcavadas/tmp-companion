@@ -12,6 +12,7 @@
 //! so this module stays pure + unit-testable and the firmware coupling lives in the
 //! app layer.
 
+use crate::slot::ListIndex;
 use std::collections::BTreeSet;
 
 use serde::Serialize;
@@ -62,11 +63,8 @@ pub fn index_preset(preset: &Value, categories: &CategoryMap) -> Facets {
 
     // Walk every node under audioGraph.{guitarNodes,micNodes}.{group}[].
     crate::audiograph::for_each_node(preset, |node| {
-        let id = node
-            .get("nodeId")
-            .and_then(Value::as_str)
-            .or_else(|| node.get("FenderId").and_then(Value::as_str))
-            .unwrap_or("");
+        // The block index is by MODEL: a second instance (`X_1`) is still an `X` block.
+        let id = node.model().unwrap_or("");
         if !id.is_empty() {
             blocks.insert(id.to_string());
         }
@@ -111,7 +109,7 @@ pub fn index_preset(preset: &Value, categories: &CategoryMap) -> Facets {
 /// One indexed preset (its list position + facets). The unit a filter selects over.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PresetRecord {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub facets: Facets,
 }
 
@@ -237,7 +235,7 @@ mod tests {
 
     fn rec(idx: u32, name: &str, amps: &[&str], level: Option<f64>) -> PresetRecord {
         PresetRecord {
-            list_index: idx,
+            list_index: ListIndex(idx),
             facets: Facets {
                 name: name.into(),
                 template: "gtrSeries".into(),
@@ -267,7 +265,7 @@ mod tests {
         let sel = |f: &Filter| {
             filter_records(&recs, f)
                 .iter()
-                .map(|r| r.list_index)
+                .map(|r| r.list_index.get())
                 .collect::<Vec<u32>>()
         };
         // facet: amp

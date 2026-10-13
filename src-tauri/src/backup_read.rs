@@ -1,5 +1,6 @@
 //! Decode a device backup archive into preset/scene/song data.
 
+use crate::slot::DeviceSlot;
 use crate::{
     audiograph, base_handle_candidates_scanned, decode_preset_scenes, filter_amp_candidates,
     footswitch, is_amp_model_id, is_amp_output_level_param, scan_node_graph,
@@ -358,11 +359,7 @@ fn create_private_temp_db(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
 /// objects (the `sqlite3 -json` shape the consumers were written against). An empty
 /// result set is `[]`, not an error.
 fn run_sql(db: &TempDb, sql: &str) -> Result<serde_json::Value, String> {
-    let conn = rusqlite::Connection::open_with_flags(
-        &db.0,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| format!("open backup db: {e}"))?;
+    let conn = open_db(db)?;
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let rows = stmt
@@ -377,6 +374,56 @@ fn run_sql(db: &TempDb, sql: &str) -> Result<serde_json::Value, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     Ok(serde_json::Value::Array(rows))
+}
+
+fn open_db(db: &TempDb) -> Result<rusqlite::Connection, String> {
+    rusqlite::Connection::open_with_flags(
+        &db.0,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("open backup db: {e}"))
+}
+
+/// One typed query: each row through `f`. A row `f` refuses (a NULL or out-of-range slot,
+/// say) is logged by `label` and skipped, never wrapped into a huge slot or dropped
+/// silently. A failed query degrades to `[]`, logged — a fixture or older DB lacking a
+/// table must not fail the whole backup read.
+fn typed_rows<T>(
+    conn: &rusqlite::Connection,
+    label: &str,
+    sql: &str,
+    f: impl Fn(&rusqlite::Row<'_>) -> Result<T, String>,
+) -> Vec<T> {
+    let mapped = conn.prepare(sql).and_then(|mut stmt| {
+        stmt.query_map([], |row| Ok(f(row)))?
+            .collect::<Result<Vec<_>, _>>()
+    });
+    match mapped {
+        Ok(rows) => rows
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                r.inspect_err(|e| log::warn!("backup read: {label} row {i} skipped: {e}"))
+                    .ok()
+            })
+            .collect(),
+        Err(e) => {
+            log::warn!("backup read: {label} query failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// An unsigned slot/position column: NULL or a value outside `u32` is an error naming it.
+fn u32_col(row: &rusqlite::Row<'_>, name: &str) -> Result<u32, String> {
+    let v: Option<i64> = row.get(name).map_err(|e| format!("{name}: {e}"))?;
+    let v = v.ok_or_else(|| format!("{name} is NULL"))?;
+    u32::try_from(v).map_err(|_| format!("{name} = {v} is out of range"))
+}
+
+/// A text column that may be NULL.
+fn opt_text_col(row: &rusqlite::Row<'_>, name: &str) -> Result<Option<String>, String> {
+    row.get(name).map_err(|e| format!("{name}: {e}"))
 }
 
 /// `sqlite3 -json`'s value mapping: NULL → null, INTEGER/REAL → number, TEXT →
@@ -491,7 +538,7 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
 /// TAIL-TRUNCATED (on fw 1.8.58 a cut is the device's inactivity drop, which the
 /// kept-alive read no longer hits — this stays the fallback for any partial).
 ///
-/// `device_slot` is the DB `slot` = list index + 1 (see [`BackupPresetRow::slot`]).
+/// `device_slot` is the DB `slot`, a 1-based [`DeviceSlot`] (see [`BackupPresetRow::slot`]).
 /// IDENTITY-GUARDED (danger.md's address-space rule): the caller states the slot,
 /// the name it expects there, and — when its own partial could name one —
 /// `expect_id` (the partial's `info.preset_id`, per `crate::library::preset_id_of`).
@@ -511,7 +558,7 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
 /// own doc for the vacuous-pass hazard this avoids).
 pub(crate) fn preset_json_from_backup(
     blob: &[u8],
-    device_slot: i64,
+    device_slot: DeviceSlot,
     expect_name: &str,
     expect_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
@@ -536,7 +583,7 @@ pub(crate) fn preset_json_from_backup(
 /// the `got_id` comparison, but the alignment is worth stating.
 fn backup_row_preset_json(
     rows: &serde_json::Value,
-    device_slot: i64,
+    device_slot: DeviceSlot,
     expect_name: &str,
     expect_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
@@ -623,79 +670,94 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
         .unwrap_or(-1);
 
     // The song→preset bindings + the Songs/Setlists tabs all read from the SAME
-    // backup DB (no live device reads). Each degrades to [] rather than failing the
-    // whole backup read on a query failure — logged (by `label`) so a fixture /
-    // older DB lacking a table is diagnosable.
-    let rows_of = |label: &str, sql: &str| -> Vec<serde_json::Value> {
-        run_sql(sql)
-            .inspect_err(|e| log::warn!("backup read: {label} query failed: {e}"))
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default()
-    };
+    // backup DB (no live device reads), each through a typed row closure (`typed_rows`).
+    let conn = open_db(&db);
+    let conn = conn
+        .inspect_err(|e| log::warn!("backup read: side tables unavailable: {e}"))
+        .ok();
 
-    let song_presets: Vec<SongPresetBinding> = rows_of(
-        "song_presets",
-        "SELECT s.slot AS song_slot, up.slot AS preset_slot \
+    let song_presets: Vec<SongPresetBinding> = conn
+        .as_ref()
+        .map(|c| {
+            typed_rows(
+                c,
+                "song_presets",
+                "SELECT s.slot AS song_slot, up.slot AS preset_slot \
          FROM SongPresets sp \
          JOIN Songs s        ON sp.Songs_id = s.id \
          JOIN UserPresets up ON sp.UserPresets_id = up.id \
          ORDER BY s.slot, sp.slot",
-    )
-    .iter()
-    .filter_map(|r| {
-        Some(SongPresetBinding {
-            song_slot: r.get("song_slot")?.as_i64()? as u32,
-            preset_slot: r.get("preset_slot")?.as_i64()? as u32,
+                |r| {
+                    Ok(SongPresetBinding {
+                        song_slot: u32_col(r, "song_slot")?,
+                        preset_slot: u32_col(r, "preset_slot")?,
+                    })
+                },
+            )
         })
-    })
-    .collect();
-    let songs: Vec<session::SongRecord> = rows_of(
-        "songs",
-        "SELECT slot, name, notes, bpmActive, bpm FROM Songs ORDER BY slot",
-    )
-    .iter()
-    .filter_map(|r| {
-        Some(session::SongRecord {
-            slot: r.get("slot")?.as_i64()? as u32,
-            name: r.get("name")?.as_str()?.to_string(),
-            notes: r
-                .get("notes")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            bpm: r.get("bpm").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
-            bpm_active: r.get("bpmActive").and_then(|v| v.as_i64()).unwrap_or(0) != 0,
+        .unwrap_or_default();
+    let songs: Vec<session::SongRecord> = conn
+        .as_ref()
+        .map(|c| {
+            typed_rows(
+                c,
+                "songs",
+                "SELECT slot, name, notes, bpmActive, bpm FROM Songs ORDER BY slot",
+                |r| {
+                    Ok(session::SongRecord {
+                        slot: u32_col(r, "slot")?,
+                        name: opt_text_col(r, "name")?.ok_or("name is NULL")?,
+                        notes: opt_text_col(r, "notes")?.unwrap_or_default(),
+                        // A NULL or out-of-range bpm reads as 0 (unset), as before.
+                        bpm: u32_col(r, "bpm").unwrap_or(0),
+                        bpm_active: r
+                            .get::<_, Option<i64>>("bpmActive")
+                            .map_err(|e| format!("bpmActive: {e}"))?
+                            .unwrap_or(0)
+                            != 0,
+                    })
+                },
+            )
         })
-    })
-    .collect();
-    let setlists: Vec<session::SetlistRecord> =
-        rows_of("setlists", "SELECT slot, name FROM Setlists ORDER BY slot")
-            .iter()
-            .filter_map(|r| {
-                Some(session::SetlistRecord {
-                    slot: r.get("slot")?.as_i64()? as u32,
-                    name: r.get("name")?.as_str()?.to_string(),
-                })
-            })
-            .collect();
-    let setlist_songs: Vec<BackupSetlistSong> = rows_of(
-        "setlist_songs",
-        "SELECT sl.slot AS setlist_slot, s.slot AS song_slot, ss.slot AS position \
+        .unwrap_or_default();
+    let setlists: Vec<session::SetlistRecord> = conn
+        .as_ref()
+        .map(|c| {
+            typed_rows(
+                c,
+                "setlists",
+                "SELECT slot, name FROM Setlists ORDER BY slot",
+                |r| {
+                    Ok(session::SetlistRecord {
+                        slot: u32_col(r, "slot")?,
+                        name: opt_text_col(r, "name")?.ok_or("name is NULL")?,
+                    })
+                },
+            )
+        })
+        .unwrap_or_default();
+    let setlist_songs: Vec<BackupSetlistSong> = conn
+        .as_ref()
+        .map(|c| {
+            typed_rows(
+                c,
+                "setlist_songs",
+                "SELECT sl.slot AS setlist_slot, s.slot AS song_slot, ss.slot AS position \
          FROM SetlistSongs ss \
          JOIN Setlists sl ON ss.Setlists_id = sl.id \
          JOIN Songs s     ON ss.Songs_id    = s.id \
          ORDER BY sl.slot, ss.slot",
-    )
-    .iter()
-    .filter_map(|r| {
-        Some(BackupSetlistSong {
-            setlist_slot: r.get("setlist_slot")?.as_i64()? as u32,
-            song_slot: r.get("song_slot")?.as_i64()? as u32,
-            position: r.get("position")?.as_i64()? as u32,
+                |r| {
+                    Ok(BackupSetlistSong {
+                        setlist_slot: u32_col(r, "setlist_slot")?,
+                        song_slot: u32_col(r, "song_slot")?,
+                        position: u32_col(r, "position")?,
+                    })
+                },
+            )
         })
-    })
-    .collect();
+        .unwrap_or_default();
+    drop(conn);
 
     let mut presets = Vec::new();
     let mut parsed = 0usize;
@@ -864,8 +926,7 @@ pub(crate) fn silence_hint(v: &serde_json::Value) -> Option<&'static str> {
     let mut active = 0usize;
     let mut zeroed = 0usize;
     audiograph::for_each_node(v, |node| {
-        let model = node.get("FenderId").and_then(|x| x.as_str()).unwrap_or("");
-        if !is_amp_model_id(model) {
+        if !is_amp_model_id(node.model().unwrap_or("")) {
             return;
         }
         let params = node.get("dspUnitParameters");
@@ -919,7 +980,7 @@ fn is_active_amp_node(v: &serde_json::Value, group_id: &str, node_id: &str) -> b
     if group_id.is_empty() || node_id.is_empty() {
         return false;
     }
-    for graph in ["guitarNodes", "micNodes"] {
+    for graph in audiograph::GRAPHS {
         let Some(nodes) = v
             .get("audioGraph")
             .and_then(|ag| ag.get(graph))
@@ -929,10 +990,13 @@ fn is_active_amp_node(v: &serde_json::Value, group_id: &str, node_id: &str) -> b
             continue;
         };
         for node in nodes {
-            if audiograph::node_id(node) != Some(node_id) {
+            let Some(node) = audiograph::Node::of(node) else {
+                continue;
+            };
+            if !node.matches_instance(node_id) {
                 continue;
             }
-            let model = node.get("FenderId").and_then(|x| x.as_str()).unwrap_or("");
+            let model = node.model().unwrap_or("");
             let bypassed = node
                 .get("dspUnitParameters")
                 .and_then(|p| p.get("bypass"))

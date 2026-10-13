@@ -1,6 +1,10 @@
 use super::*;
 use crate::session;
 
+fn ds(n: u32) -> DeviceSlot {
+    DeviceSlot::try_from(n).unwrap()
+}
+
 /// The truncation fallback: a slot-addressed field-8 read of a LARGE preset is cut
 /// before its `ftsw`/`scenes` tail (per-slot-deterministic — a re-read cannot lengthen
 /// it), so the caller re-reads the COMPLETE body off a device backup. The read must be
@@ -20,7 +24,7 @@ fn backup_slot_read_returns_the_complete_body_and_refuses_a_slot_that_moved() {
     // Device slot 401 = list index 400. The whole document comes back, `ftsw` included.
     // The fixture body carries no `info.preset_id`, so the caller has nothing to expect —
     // `None` exercises the graceful-fallback (slot+name-only) path.
-    let doc = preset_json_from_backup(&archive, 401, "Big Rig", None).expect("complete body");
+    let doc = preset_json_from_backup(&archive, ds(401), "Big Rig", None).expect("complete body");
     assert_eq!(
         doc["ftsw"].as_array().map(Vec::len),
         Some(2),
@@ -29,12 +33,12 @@ fn backup_slot_read_returns_the_complete_body_and_refuses_a_slot_that_moved() {
     assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
 
     // The occupant changed since the slot was named → refuse, never substitute.
-    let err = preset_json_from_backup(&archive, 401, "Some Other Preset", None)
+    let err = preset_json_from_backup(&archive, ds(401), "Some Other Preset", None)
         .expect_err("a renamed occupant must refuse");
     assert!(err.contains("Big Rig") && err.contains("refusing"), "{err}");
 
     // A slot with no row is a refusal too, not an empty preset.
-    assert!(preset_json_from_backup(&archive, 402, "Big Rig", None).is_err());
+    assert!(preset_json_from_backup(&archive, ds(402), "Big Rig", None).is_err());
 }
 
 /// Same slot + name, matching `expect_id` → accepted (the identity guard's own
@@ -50,7 +54,7 @@ fn backup_slot_read_accepts_on_matching_name_and_preset_id() {
 
     let doc = preset_json_from_backup(
         &archive,
-        401,
+        ds(401),
         "Big Rig",
         Some("aaaaaaaa-0000-0000-0000-000000000001"),
     )
@@ -72,7 +76,7 @@ fn backup_slot_read_refuses_a_same_name_row_whose_preset_id_differs() {
 
     let err = preset_json_from_backup(
         &archive,
-        401,
+        ds(401),
         "Big Rig",
         Some("bbbbbbbb-0000-0000-0000-000000000002"),
     )
@@ -99,7 +103,7 @@ fn backup_slot_read_refuses_a_body_with_no_preset_id_when_one_was_expected() {
 
     let err = preset_json_from_backup(
         &archive,
-        401,
+        ds(401),
         "Big Rig",
         Some("aaaaaaaa-0000-0000-0000-000000000001"),
     )
@@ -123,7 +127,7 @@ fn backup_slot_read_accepts_on_name_alone_when_the_partial_could_not_identify_it
         preset_json.replace('\'', "''")
     ));
 
-    let doc = preset_json_from_backup(&archive, 401, "Big Rig", None)
+    let doc = preset_json_from_backup(&archive, ds(401), "Big Rig", None)
         .expect("no expected id → accepted on slot+name alone");
     assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
 }
@@ -145,7 +149,7 @@ fn backup_slot_read_treats_empty_string_ids_as_absent() {
     ));
     let err = preset_json_from_backup(
         &archive_empty_body,
-        401,
+        ds(401),
         "Big Rig",
         Some("aaaaaaaa-0000-0000-0000-000000000001"),
     )
@@ -165,7 +169,7 @@ fn backup_slot_read_treats_empty_string_ids_as_absent() {
          INSERT INTO UserPresets VALUES (401, 'Big Rig', '{}');",
         real_id_body.replace('\'', "''")
     ));
-    let doc = preset_json_from_backup(&archive_real_body, 401, "Big Rig", Some(""))
+    let doc = preset_json_from_backup(&archive_real_body, ds(401), "Big Rig", Some(""))
         .expect("empty-string expect_id falls back to slot+name");
     assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
 }
@@ -193,14 +197,14 @@ fn backup_slot_read_refuses_the_empty_template_id_on_either_side() {
         (tpl, None),
         (real, Some(tpl)),
     ] {
-        let err = preset_json_from_backup(&archive_for(row_id), 401, "Big Rig", expect)
+        let err = preset_json_from_backup(&archive_for(row_id), ds(401), "Big Rig", expect)
             .expect_err("a template id on either side must refuse");
         assert!(
             err.contains("\"Empty\" template"),
             "{row_id} / {expect:?}: {err}"
         );
     }
-    preset_json_from_backup(&archive_for(real), 401, "Big Rig", Some(real))
+    preset_json_from_backup(&archive_for(real), ds(401), "Big Rig", Some(real))
         .expect("a real id on both sides still passes");
 }
 
@@ -442,7 +446,7 @@ fn backup_row_carries_scene_and_base_handle_candidates() {
         {"nodeId":"amp","FenderId":"ACD_TwinReverb65NoFx",
          "dspUnitParameters":{"outputLevel":0.5,"bypass":false}}
     ]}},"scenes":[
-        {"guitarNodes":{"G1":{"ACD_TwinReverb65NoFx":{"dspUnitParameters":{"outputLevel":0.3}}}}}
+        {"guitarNodes":{"G1":{"amp":{"dspUnitParameters":{"outputLevel":0.3}}}}}
     ]}"#;
     let archive = build_backup_archive(&format!(
         "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
@@ -1003,4 +1007,36 @@ fn silence_hint_ignores_exp_binding_on_bypassed_amp() {
             {"func":"param","groupId":"G1","nodeId":"ACD_TweedDeluxe",
              "paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
     assert_eq!(silence_hint(&v), None);
+}
+
+// A negative or NULL slot in a backup side table is refused with a named warning, never
+// wrapped into a huge `u32` slot or dropped without a word; the good rows still come through.
+#[test]
+fn typed_rows_refuse_negative_and_null_slots() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE Setlists (slot INTEGER, name TEXT);
+         INSERT INTO Setlists VALUES (0, 'Gig'), (-1, 'Wrapped'), (NULL, 'Nulled'), (2, NULL);",
+    )
+    .unwrap();
+    let rows = super::typed_rows(
+        &conn,
+        "setlists",
+        "SELECT slot, name FROM Setlists ORDER BY rowid",
+        |r| {
+            Ok((
+                super::u32_col(r, "slot")?,
+                super::opt_text_col(r, "name")?.ok_or("name is NULL")?,
+            ))
+        },
+    );
+    assert_eq!(rows, vec![(0, "Gig".to_string())]);
+    let neg = conn
+        .query_row("SELECT -1 AS slot", [], |r| Ok(super::u32_col(r, "slot")))
+        .unwrap();
+    assert_eq!(neg.unwrap_err(), "slot = -1 is out of range");
+    let null = conn
+        .query_row("SELECT NULL AS slot", [], |r| Ok(super::u32_col(r, "slot")))
+        .unwrap();
+    assert_eq!(null.unwrap_err(), "slot is NULL");
 }

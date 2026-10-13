@@ -18,6 +18,7 @@ use crate::read_slot_preset_parsed;
 use crate::scenes;
 use crate::session;
 use crate::session::Session;
+use crate::slot::{DeviceSlot, ListIndex};
 use serde_json::Value;
 
 /// One amp's `{bypass, outputLevel}` extracted from a scene doc (saved-derived or live) —
@@ -53,12 +54,12 @@ pub(crate) fn amp_nodes(preset: &Value) -> Vec<AmpNode> {
             continue;
         };
         for node in nodes {
-            let fender = node.get("FenderId").and_then(Value::as_str);
-            let nid = node.get("nodeId").and_then(Value::as_str);
-            let Some(node_id) = nid.or(fender) else {
+            let Some(node) = crate::audiograph::Node::of(node) else {
                 continue;
             };
-            let model = fender.unwrap_or(node_id);
+            let (Some(node_id), Some(model)) = (node.instance(), node.model()) else {
+                continue;
+            };
             if is_amp_model_id(model) {
                 out.push(AmpNode {
                     group: group.clone(),
@@ -133,7 +134,7 @@ struct Tally {
 
 /// Compare one preset's SAVED overlay vs the LIVE prepass, plus saved-vs-saved across
 /// contexts. Appends table lines to `out` and returns running tallies.
-fn compare_preset(list_index: u32, contexts: u32, out: &mut String) -> Result<Tally, String> {
+fn compare_preset(list_index: ListIndex, contexts: u32, out: &mut String) -> Result<Tally, String> {
     // Context 0: the field-8 read BEFORE the live prepass.
     let (p0, _, len0) = read_slot_preset_parsed(list_index)?;
     let scene_count = p0
@@ -144,7 +145,7 @@ fn compare_preset(list_index: u32, contexts: u32, out: &mut String) -> Result<Ta
     let amps = amp_nodes(&p0);
     let mut ctx_presets = vec![p0];
 
-    let device_slot = list_index + 1;
+    let device_slot = list_index.device_slot();
     *out += &format!(
         "\n=== slot={device_slot} (list_index={list_index})  {scene_count} FS scene(s), {} amp(s), saved read {len0}B ===\n",
         amps.len(),
@@ -250,7 +251,7 @@ fn compare_preset(list_index: u32, contexts: u32, out: &mut String) -> Result<Ta
 /// guaranteed re-amp OFF for parity with the other device arms (this arm never engages it,
 /// but a clean-up costs nothing and guards against a stranded prior run).
 pub fn probe_overlay_ab(target: &str, contexts: u32) -> Result<String, String> {
-    let list_indices: Vec<u32> = if target.eq_ignore_ascii_case("all") {
+    let list_indices: Vec<ListIndex> = if target.eq_ignore_ascii_case("all") {
         Session::connect()?
             .list_my_presets()?
             .into_iter()
@@ -258,13 +259,10 @@ pub fn probe_overlay_ab(target: &str, contexts: u32) -> Result<String, String> {
             .map(|p| p.slot)
             .collect()
     } else {
-        let slot: u32 = target.parse().map_err(|_| {
-            format!("bad slot {target:?} — expected a 1-based device slot or 'all'")
+        let slot: DeviceSlot = target.parse().map_err(|e| {
+            format!("bad slot {target:?} — expected a 1-based device slot or 'all' ({e})")
         })?;
-        if slot == 0 {
-            return Err("slot is 1-based (device userSlot); use >= 1".to_string());
-        }
-        vec![slot - 1]
+        vec![slot.list_index()]
     };
 
     let contexts = contexts.max(1);

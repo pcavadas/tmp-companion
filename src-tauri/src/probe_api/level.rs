@@ -13,6 +13,7 @@ use crate::leveller;
 use crate::lufs;
 use crate::session;
 use crate::session::Session;
+use crate::slot::ListIndex;
 use crate::LevelBlockArg;
 
 /// The engaged/floor criterion the diagnostic arms share, delegating to the ONE
@@ -121,9 +122,9 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
             // anything on the known scenario preset — a unit without the seeded
             // fixture at 400 (empty slot, or some unrelated user preset) could
             // invert it. Name-confirm in the same list space before loading.
-            super::slot_write::confirm_slot_name(400, "E2E Rig")?;
+            super::slot_write::confirm_slot_name(ListIndex(400), "E2E Rig")?;
             let mut s = Session::connect_lean()?;
-            s.load_preset(400)?;
+            s.load_preset(ListIndex(400))?;
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
         std::thread::sleep(std::time::Duration::from_millis(400));
@@ -214,7 +215,7 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
 /// before (a bare WAV, no row) — there is nothing to validate a capture against.
 pub fn probe_measure_current_lufs(
     topology_id: &str,
-    slot: Option<u32>,
+    slot: Option<ListIndex>,
     scene_slot: Option<u32>,
     calibration_lufs: Option<f32>,
     dump_dir: Option<&str>,
@@ -267,23 +268,24 @@ pub fn probe_measure_current_lufs(
     // The P5 validation row (below) does its OWN dump into the row's directory, so the
     // two never both write: `--target` upgrades `--dump-wav` from a bare file to a file
     // plus an expectation an external meter can judge it against.
-    let validate = match (dump_dir, target_lufs) {
-        (Some(dir), Some(target)) => Some(match (slot, scene_slot) {
-            (Some(s), Some(sc)) if sc != crate::session::BASE_SCENE_SLOT => {
-                crate::validate_log::ValidationRow::scene(s, sc, target).with_wav_dir(dir)
-            }
-            (Some(s), _) => crate::validate_log::ValidationRow::base(s, target).with_wav_dir(dir),
-            // No slot = "whatever is loaded"; there is no stable identity to record, so
-            // this stays a plain dump.
-            (None, _) => {
-                return Err(
+    let validate =
+        match (dump_dir, target_lufs) {
+            (Some(dir), Some(target)) => Some(match (slot, scene_slot) {
+                (Some(s), Some(sc)) if sc != crate::session::BASE_SCENE_SLOT => {
+                    crate::validate_log::ValidationRow::scene(s.get(), sc, target).with_wav_dir(dir)
+                }
+                (Some(s), _) => {
+                    crate::validate_log::ValidationRow::base(s.get(), target).with_wav_dir(dir)
+                }
+                // No slot = "whatever is loaded"; there is no stable identity to record, so
+                // this stays a plain dump.
+                (None, _) => return Err(
                     "--target needs an explicit slot (use --measure-scene, not --measure-current)"
                         .to_string(),
-                )
-            }
-        }),
-        _ => None,
-    };
+                ),
+            }),
+            _ => None,
+        };
     let dump_note = match (dump_dir, validate.is_some()) {
         (Some(dir), false) => {
             let label = format!(
@@ -342,7 +344,7 @@ pub fn probe_measure_current_lufs(
 /// the proven FRESH-connection control — and compares.
 pub fn probe_held_reengage(
     topology_id: &str,
-    slot: u32,
+    slot: ListIndex,
     scenes: &[u32],
     calibration_lufs: Option<f32>,
 ) -> Result<String, String> {
@@ -449,7 +451,7 @@ pub fn probe_held_reengage(
 /// C≈-28.2 on "Plumes+BD2+OCD"), which is what made this arm useless for cross-checking a
 /// base-clamp regression against production.
 pub fn probe_level_preset(
-    slot: u32,
+    slot: ListIndex,
     target_lufs: f64,
     save: bool,
     verify: bool,
@@ -514,7 +516,7 @@ pub fn probe_level_preset(
 /// must match a plain `--levelpreset` run (the advisory meter must not perturb the solve);
 /// run the A/B on a REVERB/DELAY preset to catch any capture-length re-baseline.
 pub fn probe_live_lufs(
-    slot: u32,
+    slot: ListIndex,
     target_lufs: f64,
     save: bool,
     verify: bool,
@@ -548,7 +550,7 @@ pub(crate) fn filter_amp_candidates(blocks: Vec<session::LevelBlock>) -> Vec<Lev
 /// Run the 1.8.45-safe block discovery (`load_then_discover_blocks`) and filter it to
 /// amp `outputLevel` leveling candidates.
 pub(crate) fn load_and_filter_amp_candidates(
-    list_index: u32,
+    list_index: ListIndex,
 ) -> Result<Vec<LevelBlockArg>, String> {
     Ok(filter_amp_candidates(load_then_discover_blocks(
         list_index,
@@ -561,7 +563,7 @@ pub(crate) fn load_and_filter_amp_candidates(
 /// (current value in 0..1) search [0,1]; dB-unit params (e.g. an IR `outputlevel`)
 /// search a ±range around the current value. Stimulus via `TMP_LEVELLER_STIMULUS`.
 pub fn probe_level_block(
-    slot: u32,
+    slot: ListIndex,
     target_lufs: f64,
     group_id: String,
     node_id: String,
@@ -632,7 +634,7 @@ pub fn probe_level_block(
 /// sits on ONE channel (ch1 ≪ ch0 → cross-preset variance for a stereo rig).
 /// Loads + re-amps only; never writes/saves/clears. Stimulus = humbucker sample
 /// (override with `TMP_LEVELLER_STIMULUS`).
-pub fn probe_channels(slot: u32) -> Result<String, String> {
+pub fn probe_channels(slot: ListIndex) -> Result<String, String> {
     let stim_path = match std::env::var("TMP_LEVELLER_STIMULUS") {
         Ok(p) => p,
         Err(_) => probe_stimulus_path("guitar-humbucker")?,
@@ -731,7 +733,7 @@ pub fn probe_capture_input(secs: f32) -> Result<String, String> {
 /// compresses near the top = normal amp behavior (Tier-2 valid). A path that's
 /// flat at ALL levels = the tap/input is normalized (Tier-2 premise broken).
 /// Stimulus via `TMP_LEVELLER_STIMULUS`. Load `slot` = a CLEAN preset.
-pub fn probe_reamp_agc_test(slot: u32) -> Result<String, String> {
+pub fn probe_reamp_agc_test(slot: ListIndex) -> Result<String, String> {
     let stim_path = std::env::var("TMP_LEVELLER_STIMULUS")
         .map_err(|_| "set TMP_LEVELLER_STIMULUS to the stimulus WAV".to_string())?;
     let base = read_stimulus_48k(&stim_path)?;

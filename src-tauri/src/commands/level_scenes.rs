@@ -403,7 +403,7 @@ pub(crate) fn cancel_scene_leveling() {
 }
 
 fn pick_scene_level_knob(
-    slot: u32,
+    slot: ListIndex,
     scene: u32,
     candidates: &[LevelBlockArg],
 ) -> Result<(leveller::LevelKnob, f32, f32, f32), String> {
@@ -424,7 +424,7 @@ fn pick_scene_level_knob(
             s.pump_silent(120)?;
         }
         s.raw.clear();
-        s.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
+        s.send_and_collect(&proto::load_my_preset(slot.into()), 300)?;
         for _ in 0..8 {
             s.heartbeat()?;
             s.pump_silent(200)?;
@@ -476,7 +476,7 @@ fn pick_scene_level_knob(
 /// `level_scenes_rebalance` for the parallel-amp option) — NOT the retired
 /// bench-only `level_scenes_live_batched` (see notes/leveling.md).
 fn level_one_scene_legacy(
-    slot: u32,
+    slot: ListIndex,
     scene: u32,
     candidates: &[LevelBlockArg],
     stimulus: &[f32],
@@ -511,7 +511,7 @@ fn level_one_scene_legacy(
 pub(crate) async fn level_scenes_apply<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
     scene_slots: Vec<u32>,
     candidates: Vec<LevelBlockArg>,
     target_lufs: f64,
@@ -566,7 +566,7 @@ pub(crate) async fn level_scenes_apply<R: tauri::Runtime>(
 pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
     jobs: Vec<SceneLevelJobArg>,
     candidates: Vec<LevelBlockArg>,
     save: bool,
@@ -1325,7 +1325,7 @@ fn adopt_trade_levels(
 /// So a preview PLANS the trade and says so, and the rows it would have rescued keep their
 /// honest clamp: without the trade, they really do clamp.
 fn trade_for_batch(
-    slot: u32,
+    slot: ListIndex,
     scene_jobs: &mut [leveller::SceneJob],
     saved: Option<&serde_json::Value>,
     stim: &[f32],
@@ -1474,7 +1474,7 @@ fn trade_for_batch(
 /// awaited return, so leaving this `None` would land a permanent un-revertable `presetLevel`
 /// raise with zero UI disclosure.
 fn scene_progress_item(
-    slot: u32,
+    slot: ListIndex,
     save: bool,
     scene: u32,
     done: Option<&leveller::BatchedSceneOutcome>,
@@ -1536,7 +1536,7 @@ fn tail_progress_item(tail: &str) -> SceneLevelProgressItem {
 /// contract (the batched runner's outcome is per-scene; `verify_lufs` carries
 /// the final measured window).
 fn outcome_to_level_result(
-    slot: u32,
+    slot: ListIndex,
     save: bool,
     o: &leveller::BatchedSceneOutcome,
     trade: Option<&crate::headroom_trade::TradeSummary>,
@@ -1610,7 +1610,7 @@ fn outcome_to_level_result(
 #[tauri::command]
 pub(crate) async fn list_scene_level_handles(
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
 ) -> Result<Vec<SceneHandleRow>, String> {
     with_released_seize(state.session.clone(), move || {
         // The row set is `scenes.len()` — the tail section a large preset's field-8 read
@@ -1630,7 +1630,7 @@ const SETLIST_HEADROOM_LU: f64 = 1.0;
 /// topology (resolved to that instrument's stimulus).
 #[derive(serde::Deserialize)]
 pub(crate) struct SetlistJobEntry {
-    slot: u32,
+    slot: ListIndex,
     topology_id: Option<String>,
     calibration_lufs: Option<f32>,
 }
@@ -1656,7 +1656,7 @@ pub(crate) async fn level_setlist<R: tauri::Runtime>(
     let playback = profiles::load(&app)
         .map(|s| s.playback_level)
         .unwrap_or_default();
-    let resolved: Vec<(u32, String, Option<f32>, f64)> = entries
+    let resolved: Vec<(ListIndex, String, Option<f32>, f64)> = entries
         .into_iter()
         .map(|e| {
             let offset_lu = profiles::playback_offset_lu(
@@ -1670,7 +1670,7 @@ pub(crate) async fn level_setlist<R: tauri::Runtime>(
     with_released_seize(state.session.clone(), move || {
         // Own each stimulus (calibrated if the profile has a real-output level),
         // then borrow into entries for the leveller.
-        let stims: Vec<(u32, Vec<f32>, f64)> = resolved
+        let stims: Vec<(ListIndex, Vec<f32>, f64)> = resolved
             .into_iter()
             .map(|(slot, path, cal, off)| {
                 read_stimulus_calibrated(&path, cal).map(|s| (slot, s, off))
@@ -1697,7 +1697,7 @@ pub(crate) async fn level_setlist<R: tauri::Runtime>(
 #[tauri::command]
 pub(crate) async fn level_scenes<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    slot: u32,
+    slot: ListIndex,
     scene_count: u32,
     topology_id: Option<String>,
     headroom_lu: f64,
@@ -1738,7 +1738,7 @@ mod trade_planner_tests {
             },
             "scenes": [
                 { "guitarNodes": { "G1": {
-                    "ACD_TwinReverb65NoFx": { "dspUnitParameters": { "outputLevel": 0.5 } } } } },
+                    "amp": { "dspUnitParameters": { "outputLevel": 0.5 } } } } },
                 // Scene 1 mentions no amp at all (`Absent`): it READS base's fader, so a base
                 // fader drop moves it too — exactly net-zero, and it never benefits.
                 { "guitarNodes": { "G1": {
@@ -2044,9 +2044,9 @@ mod scene_handle_tests {
             ] } },
             "scenes": [
                 { "guitarNodes": { "G1": {
-                    "ACD_TwinReverb65NoFx": { "dspUnitParameters": { "outputLevel": 0.3 } } } } },
+                    "amp": { "dspUnitParameters": { "outputLevel": 0.3 } } } } },
                 { "guitarNodes": { "G1": {
-                    "ACD_TwinReverb65NoFx": { "dspUnitParameters": { "bypass": true } } } } }
+                    "amp": { "dspUnitParameters": { "bypass": true } } } } }
             ]
         })
     }
@@ -2330,13 +2330,13 @@ mod scene_handle_tests {
             ] } },
             "scenes": [
                 { "guitarNodes": { "G1": {
-                    "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 5.0 } } } } },
+                    "boost": { "dspUnitParameters": { "bypass": true, "gain": 5.0 } } } } },
                 { "guitarNodes": { "G1": {
-                    "ACD_Boost": { "dspUnitParameters": { "bypass": true } } } } },
+                    "boost": { "dspUnitParameters": { "bypass": true } } } } },
                 { "guitarNodes": { "G1": {
-                    "ACD_Boost": { "dspUnitParameters": { "bypass": false } } } } },
+                    "boost": { "dspUnitParameters": { "bypass": false } } } } },
                 { "guitarNodes": { "G1": {
-                    "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 6.0 } } } } }
+                    "boost": { "dspUnitParameters": { "bypass": true, "gain": 6.0 } } } } }
             ]
         })
     }
@@ -2383,7 +2383,7 @@ mod scene_handle_tests {
         let mut preset = hbe_boost_preset();
         // Clean (scene 1) un-bypassed too, with no Full overlay pinning `gain` there — now
         // BOTH Clean and Solo would hear the shared write, so neither can safely take it.
-        preset["scenes"][1]["guitarNodes"]["G1"]["ACD_Boost"] =
+        preset["scenes"][1]["guitarNodes"]["G1"]["boost"] =
             serde_json::json!({ "dspUnitParameters": { "bypass": false } });
         let rows = scene_handle_rows(&preset);
         assert_eq!(

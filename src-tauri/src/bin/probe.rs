@@ -161,6 +161,58 @@ fn flag_arg(args: &[String], name: &str) -> Option<String> {
     }
 }
 
+/// A required slot argument at `args[at]`, parsed as whatever the call takes (a 0-based
+/// `ListIndex`, a 1-based `DeviceSlot`, or a plain number). Missing or unparseable is a
+/// usage error, exit 2, before any device I/O — never a silent `0` / `u32::MAX` sentinel
+/// that a later guard has to catch (a `--replace-debug abc …` once ran on slot 0).
+fn slot_at<T: std::str::FromStr>(args: &[String], at: usize) -> T
+where
+    T::Err: std::fmt::Display,
+{
+    let flag = args.get(at.saturating_sub(1)).map_or("", String::as_str);
+    match args.get(at).map(|raw| raw.parse::<T>()) {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => {
+            eprintln!("[probe] bad argument {:?} after {flag}: {e}", args[at]);
+            std::process::exit(2);
+        }
+        None => {
+            eprintln!("[probe] missing slot argument after {flag}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// An optional slot argument at `args[at]`: absent (or the next `--flag`) is `None`, but
+/// a value that doesn't parse is a usage error, exit 2 — not a silent `None`.
+fn opt_slot_at<T: std::str::FromStr>(args: &[String], at: usize) -> Option<T>
+where
+    T::Err: std::fmt::Display,
+{
+    match args.get(at) {
+        Some(raw) if !raw.starts_with("--") => Some(slot_at(args, at)),
+        _ => None,
+    }
+}
+
+/// A comma list of slots at `args[at]` (empty when absent, so each arm keeps its own usage
+/// message). Any entry that doesn't parse refuses the whole list, exit 2 — never dropped.
+fn slots_at<T: std::str::FromStr>(args: &[String], at: usize) -> Vec<T>
+where
+    T::Err: std::fmt::Display,
+{
+    let Some(raw) = args.get(at) else {
+        return Vec::new();
+    };
+    match tmp_companion_lib::slot::parse_slot_list(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[probe] bad slot list {raw:?}: {e}");
+            std::process::exit(2);
+        }
+    }
+}
+
 /// Resolve an opspec argument: if it names an existing file, read its contents;
 /// otherwise treat it as a literal inline JSON string. Empty when absent.
 fn opspec_arg(arg: Option<&String>) -> String {
@@ -209,6 +261,8 @@ fn parse_target_overrides(args: &[String], from: usize) -> Vec<(String, f64)> {
 fn is_unit_knob(v: f32) -> bool {
     v.is_finite() && (0.0..=1.0).contains(&v)
 }
+
+use tmp_companion_lib::{DeviceSlot, ListIndex};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -269,11 +323,8 @@ fn main() {
         // --import-file <path> <listIdx>  — import a .preset FILE into an EMPTY 0-based
         // list index (repro instrumentation; refuses an occupied target).
         let path = args.get(i + 1).cloned().unwrap_or_default();
-        let idx: u32 = args
-            .get(i + 2)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        if path.is_empty() || idx == u32::MAX {
+        let idx = slot_at(&args, i + 2);
+        if path.is_empty() {
             eprintln!("usage: probe --import-file <path> <listIdx>");
             std::process::exit(2);
         }
@@ -292,16 +343,13 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--scene-doc") {
         // --scene-doc <listIdx> <scene…>  — rendered field-3 amp params after each
         // recall, in the given order (arrival-order-controlled; non-destructive).
-        let idx: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let idx = slot_at(&args, i + 1);
         let scenes: Vec<u32> = args
             .iter()
             .skip(i + 2)
             .filter_map(|s| s.parse().ok())
             .collect();
-        if idx == u32::MAX || scenes.is_empty() {
+        if scenes.is_empty() {
             eprintln!("usage: probe --scene-doc <listIdx> <scene…>");
             std::process::exit(2);
         }
@@ -322,8 +370,8 @@ fn main() {
         // slot range of any preset list (My=1, Cloud=3, Factory=4), JSON per slot to
         // outDir. Read-only census instrumentation.
         let le: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let from: u32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let to: u32 = args.get(i + 3).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let from = slot_at(&args, i + 2);
+        let to = slot_at(&args, i + 3);
         let dir = args.get(i + 4).cloned().unwrap_or_default();
         if le == 0 || from == 0 || to < from || dir.is_empty() {
             eprintln!("usage: probe --dump-list <listEnum> <fromSlot> <toSlot> <outDir>");
@@ -345,10 +393,7 @@ fn main() {
         // --scene-node-doc <listIdx> <group> <node> <scene…>  — probe_scene_doc
         // generalized to a caller-chosen node: rendered field-3 params + ftsw active
         // flags after each recall, in the given order (non-destructive).
-        let idx: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let idx = slot_at(&args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         let scenes: Vec<u32> = args
@@ -356,7 +401,7 @@ fn main() {
             .skip(i + 4)
             .filter_map(|s| s.parse().ok())
             .collect();
-        if idx == u32::MAX || group.is_empty() || node.is_empty() || scenes.is_empty() {
+        if group.is_empty() || node.is_empty() || scenes.is_empty() {
             eprintln!("usage: probe --scene-node-doc <listIdx> <group> <node> <scene…>");
             std::process::exit(2);
         }
@@ -374,10 +419,7 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--knob-sweep") {
         // --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)
-        let idx: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let idx = slot_at(&args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         let param = args.get(i + 4).cloned().unwrap_or_default();
@@ -393,12 +435,7 @@ fn main() {
                     .ok()
             })
             .unwrap_or_default();
-        if idx == u32::MAX
-            || group.is_empty()
-            || node.is_empty()
-            || param.is_empty()
-            || values.is_empty()
-        {
+        if group.is_empty() || node.is_empty() || param.is_empty() || values.is_empty() {
             eprintln!("usage: probe --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
@@ -420,10 +457,7 @@ fn main() {
         // block-param point (headroom-trade physics), optionally in a SCENE context
         // (loadScene before the writes, scene latches at engage). Bundled stimulus;
         // read-only (working copy).
-        let idx: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let idx = slot_at(&args, i + 1);
         let topology = args.get(i + 2).cloned().unwrap_or_default();
         let preset_level: f32 = args
             .get(i + 3)
@@ -465,7 +499,7 @@ fn main() {
             );
             std::process::exit(2);
         };
-        if idx == u32::MAX || topology.is_empty() || !preset_level.is_finite() {
+        if topology.is_empty() || !preset_level.is_finite() {
             eprintln!(
                 "usage: probe --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…"
             );
@@ -489,7 +523,7 @@ fn main() {
         // decompressed JSON, and report whether scenes[] + ftsw are complete.
         // Optional `slot` (0-based list index) loads that preset first to trigger a
         // fresh push (non-destructive). Output: <temp dir>/tmp_currentpresetdata.json.
-        let slot: Option<u32> = args.get(i + 1).and_then(|s| s.parse().ok());
+        let slot = opt_slot_at(&args, i + 1);
         let out = std::env::temp_dir().join("tmp_currentpresetdata.json");
         let out = out.to_str().expect("temp dir path is UTF-8");
         eprintln!("[probe] capturing currentPresetDataChanged (slot={slot:?})…");
@@ -558,7 +592,7 @@ fn main() {
             eprintln!("usage: probe --doctor-inject <slot> <gains_csv|none> [--block <fender_id>]");
             std::process::exit(2);
         };
-        let slot: u32 = match args.get(i + 1).and_then(|s| s.parse().ok()) {
+        let slot = match args.get(i + 1).and_then(|s| s.parse().ok()) {
             Some(s) => s,
             None => usage(),
         };
@@ -598,15 +632,12 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--doctor-fs") {
         // --doctor-fs <listIdx> <switch>  — one FS sound through the production Doctor
         // seam (isolation + param-func valueA writes), print the diagnosis verdicts.
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
-        if slot == u32::MAX || switch == u32::MAX {
+        if switch == u32::MAX {
             eprintln!("usage: probe --doctor-fs <listIdx> <switch>");
             std::process::exit(2);
         }
@@ -624,7 +655,7 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--doctor-defects") {
         // --doctor-defects <slot> [--out <report.json>]  (versioned defect-fixture sweep)
-        let slot: u32 = match args.get(i + 1).and_then(|s| s.parse().ok()) {
+        let slot = match args.get(i + 1).and_then(|s| s.parse().ok()) {
             Some(s) => s,
             None => {
                 eprintln!("usage: probe --doctor-defects <slot> [--out <report.json>]");
@@ -646,7 +677,7 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--replace-debug") {
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let slot = slot_at(&args, i + 1);
         let from = args.get(i + 2).cloned().unwrap_or_default();
         let to = args.get(i + 3).cloned().unwrap_or_default();
         match tmp_companion_lib::probe_replace_debug(slot, &from, &to) {
@@ -665,10 +696,7 @@ fn main() {
         // --bulk-replace FROM TO SLOTS [--commit]   (SLOTS = comma list, 1-based)
         let from = args.get(i + 1).cloned().unwrap_or_default();
         let to = args.get(i + 2).cloned().unwrap_or_default();
-        let slots: Vec<u32> = args
-            .get(i + 3)
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+        let slots = slots_at(&args, i + 3);
         let commit = args.iter().any(|a| a == "--commit");
         if from.is_empty() || to.is_empty() || slots.is_empty() {
             eprintln!("usage: probe --bulk-replace <FROM_ID> <TO_ID> <slot,slot,…> [--commit]");
@@ -688,10 +716,7 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--roster") {
         // --roster <slot,slot,…>   (1-based device slots; read-only roster dump)
-        let slots: Vec<u32> = args
-            .get(i + 1)
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+        let slots = slots_at(&args, i + 1);
         if slots.is_empty() {
             eprintln!("usage: probe --roster <slot,slot,…>");
             std::process::exit(2);
@@ -711,10 +736,7 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--discover-diff") {
         // E5: --discover-diff FROM SLOTS   (field-8 vs backup discovery; read-only)
         let from = args.get(i + 1).cloned().unwrap_or_default();
-        let slots: Vec<u32> = args
-            .get(i + 2)
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+        let slots = slots_at(&args, i + 2);
         if from.is_empty() || slots.is_empty() {
             eprintln!("usage: probe --discover-diff <FROM_ID> <slot,slot,…>");
             std::process::exit(2);
@@ -732,11 +754,7 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--slot-json") {
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
-        if slot == 0 {
-            eprintln!("usage: probe --slot-json <slot>   (1-based)");
-            std::process::exit(2);
-        }
+        let slot = slot_at(&args, i + 1);
         match tmp_companion_lib::probe_slot_json(slot) {
             Ok(report) => {
                 print!("{report}");
@@ -753,10 +771,7 @@ fn main() {
         // E1: --replace-held FROM TO SLOTS [--commit]   (held-session decider)
         let from = args.get(i + 1).cloned().unwrap_or_default();
         let to = args.get(i + 2).cloned().unwrap_or_default();
-        let slots: Vec<u32> = args
-            .get(i + 3)
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+        let slots = slots_at(&args, i + 3);
         let commit = args.iter().any(|a| a == "--commit");
         if from.is_empty() || to.is_empty() || slots.is_empty() {
             eprintln!("usage: probe --replace-held <FROM_ID> <TO_ID> <slot,slot,…> [--commit]");
@@ -789,11 +804,10 @@ fn main() {
             .position(|a| a == "--after")
             .and_then(|j| args.get(j + 1))
             .cloned();
-        let slot: Option<u32> = args
+        let slot: Option<DeviceSlot> = args
             .iter()
             .position(|a| a == "--slot")
-            .and_then(|j| args.get(j + 1))
-            .and_then(|s| s.parse().ok());
+            .map(|j| slot_at(&args, j + 1));
         let commit = args.iter().any(|a| a == "--commit");
         if fender_id.is_empty() || fender_id.starts_with("--") {
             eprintln!("usage: probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <NODE_ID>] [--slot <deviceSlot>] [--commit]");
@@ -825,7 +839,7 @@ fn main() {
         // --level-footswitch drove); omit it for a BAKED switch, whose engaged sound IS
         // the base value. --target + --dump-wav together arm the P5 validation row (a
         // WAV plus one TMP_E2E_VALIDATE_LOG line) — see scripts/level-validate.sh.
-        let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let slot = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
         let switch = args.get(i + 2).and_then(|s| s.parse::<u32>().ok());
         let topology = args.get(i + 3).cloned().unwrap_or_default();
         if slot.is_none() || switch.is_none() || topology.is_empty() || topology.starts_with("--") {
@@ -881,10 +895,7 @@ fn main() {
         // --level-footswitch <slot> <switch> <levGroup> <levNode> <levParam> <target> [--commit]
         // Level a block-acting footswitch's engaged state (stimulus via TMP_LEVELLER_STIMULUS).
         // DRY by default (measure + solve, no write); --commit writes valueA + saves.
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -897,7 +908,7 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(f64::NAN);
         let commit = args.iter().any(|a| a == "--commit");
-        if slot == u32::MAX || switch == u32::MAX || lev_node.is_empty() || target.is_nan() {
+        if switch == u32::MAX || lev_node.is_empty() || target.is_nan() {
             eprintln!("usage: probe --level-footswitch <slot> <switch> <levGroup> <levNode> <levParam> <target> [--commit]  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
@@ -917,10 +928,7 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--bake-validate") {
         // --bake-validate <slot> <switch> <group> <node> <param> <target>  (commit + restore)
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -932,7 +940,7 @@ fn main() {
             .get(i + 6)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f64::NAN);
-        if slot == u32::MAX || switch == u32::MAX || node.is_empty() || target.is_nan() {
+        if switch == u32::MAX || node.is_empty() || target.is_nan() {
             eprintln!("usage: probe --bake-validate <slot> <switch> <group> <node> <param> <target>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
@@ -952,10 +960,7 @@ fn main() {
         // --amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>
         // Measure one amp operating point across the whole footswitch set (base + each switch),
         // to read the base↔boost GAP. Read-only (working-copy writes discarded by the reload).
-        let idx: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let idx = slot_at(&args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         let gain: Option<f32> = args.get(i + 4).and_then(|s| s.parse().ok());
@@ -964,12 +969,7 @@ fn main() {
             eprintln!("usage: probe --amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         };
-        if idx == u32::MAX
-            || group.is_empty()
-            || node.is_empty()
-            || !is_unit_knob(gain)
-            || !is_unit_knob(out_level)
-        {
+        if group.is_empty() || node.is_empty() || !is_unit_knob(gain) || !is_unit_knob(out_level) {
             eprintln!("usage: probe --amp-recipe <listIdx> <group> <ampNode> <gain 0..=1> <outputLevel 0..=1>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
@@ -989,10 +989,7 @@ fn main() {
         // --fs-sweep <listIdx> <switch> <group> <node> <param> <v1,v2,…>
         // The solver's own response curve: sweep <node>.<param> under <switch>'s engaged
         // isolation. Read-only (working-copy writes discarded by the final reload).
-        let idx: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let idx = slot_at(&args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -1011,8 +1008,7 @@ fn main() {
                     .ok()
             })
             .unwrap_or_default();
-        if idx == u32::MAX
-            || switch == u32::MAX
+        if switch == u32::MAX
             || group.is_empty()
             || node.is_empty()
             || param.is_empty()
@@ -1039,10 +1035,7 @@ fn main() {
         // Write ONE numeric block param + persist with `save`; DRY by default. `expectName`
         // is checked against the slot's displayName INSIDE the mutating function (the
         // destructive-op name guard), and `save` is read from its positional slot only.
-        let idx: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let idx = slot_at(&args, i + 1);
         let expect_name = args.get(i + 2).cloned().unwrap_or_default();
         let group = args.get(i + 3).cloned().unwrap_or_default();
         let node = args.get(i + 4).cloned().unwrap_or_default();
@@ -1052,8 +1045,7 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(f32::NAN);
         let save = args.get(i + 7).is_some_and(|a| a == "save");
-        if idx == u32::MAX
-            || expect_name.is_empty()
+        if expect_name.is_empty()
             || expect_name.starts_with("--")
             || group.is_empty()
             || node.is_empty()
@@ -1087,14 +1079,7 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--fs-list") {
         // --fs-list <slot>   (read-only: footswitch blocks + bake/assign classification)
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        if slot == u32::MAX {
-            eprintln!("usage: probe --fs-list <slot>");
-            std::process::exit(2);
-        }
+        let slot = slot_at(&args, i + 1);
         match tmp_companion_lib::probe_fs_list(slot) {
             Ok(report) => {
                 print!("{report}");
@@ -1109,13 +1094,10 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--measure-forced") {
         // --measure-forced <slot> <group> <node>   (GO/NO-GO: does live bypass=false work?)
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
-        if slot == u32::MAX || group.is_empty() || node.is_empty() {
+        if group.is_empty() || node.is_empty() {
             eprintln!("usage: probe --measure-forced <slot> <group> <node>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
@@ -1146,10 +1128,7 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--clear-ftsw") {
         // --clear-ftsw <slot> <switch> <index>   (restore/cleanup)
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let switch: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -1158,7 +1137,7 @@ fn main() {
             .get(i + 3)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
-        if slot == u32::MAX || switch == u32::MAX || index == u32::MAX {
+        if switch == u32::MAX || index == u32::MAX {
             eprintln!("usage: probe --clear-ftsw <slot> <switch> <index>");
             std::process::exit(2);
         }
@@ -1198,12 +1177,8 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--restore-check") {
         // --restore-check <deviceSlot> [trials]
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let slot = slot_at(&args, i + 1);
         let trials: u32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(1);
-        if slot == 0 {
-            eprintln!("usage: probe --restore-check <deviceSlot> [trials]");
-            std::process::exit(2);
-        }
         match tmp_companion_lib::probe_restore_check(slot, trials) {
             Ok(report) => {
                 print!("{report}");
@@ -1217,7 +1192,7 @@ fn main() {
     }
     if let Some(i) = args.iter().position(|a| a == "--reprompt-map") {
         // --reprompt-map <slot> <name> <group> (--remove <nodeId> | --insert <fenderId> [--before <id>]) [--commit]
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let slot = slot_at(&args, i + 1);
         let name = args.get(i + 2).cloned().unwrap_or_default();
         let group = args.get(i + 3).cloned().unwrap_or_default();
         let opt = |flag: &str| {
@@ -1228,11 +1203,7 @@ fn main() {
         };
         let (remove, insert, before) = (opt("--remove"), opt("--insert"), opt("--before"));
         let commit = args.iter().any(|a| a == "--commit");
-        if slot == 0
-            || name.is_empty()
-            || group.is_empty()
-            || (remove.is_none() && insert.is_none())
-        {
+        if name.is_empty() || group.is_empty() || (remove.is_none() && insert.is_none()) {
             eprintln!("usage: probe --reprompt-map <slot> <name> <group> (--remove <nodeId> | --insert <fenderId> [--before <id>]) [--commit]");
             std::process::exit(2);
         }
@@ -1260,7 +1231,7 @@ fn main() {
         // --insert-map <slot> <group> <fenderId> [--before <id>] [--at-index <n>]
         // EMPIRICAL: load slot, print ordered group roster, insert (field-34 --before OR
         // field-99 --at-index OR bare append), print roster again, then commit/revert.
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let slot = slot_at(&args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let fender_id = args.get(i + 3).cloned().unwrap_or_default();
         let before = args
@@ -1274,7 +1245,7 @@ fn main() {
             .and_then(|j| args.get(j + 1))
             .and_then(|s| s.parse().ok());
         let commit = args.iter().any(|a| a == "--commit");
-        if slot == 0 || group.is_empty() || fender_id.is_empty() {
+        if group.is_empty() || fender_id.is_empty() {
             eprintln!("usage: probe --insert-map <slot> <group> <fenderId> [--before <id>] [--at-index <n>] [--commit]");
             std::process::exit(2);
         }
@@ -1300,10 +1271,7 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--bulk-replace-saved") {
         // E6: --bulk-replace-saved FROM SLOTS [--commit]   (auto-picks first dual-cab)
         let from = args.get(i + 1).cloned().unwrap_or_default();
-        let slots: Vec<u32> = args
-            .get(i + 2)
-            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-            .unwrap_or_default();
+        let slots = slots_at(&args, i + 2);
         let commit = args.iter().any(|a| a == "--commit");
         if from.is_empty() || slots.is_empty() {
             eprintln!("usage: probe --bulk-replace-saved <FROM_CAB_ID> <slot,slot,…> [--commit]");
@@ -1391,7 +1359,12 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--slotread-x") {
-        let slots: Vec<u32> = args[i + 1..].iter().map_while(|a| a.parse().ok()).collect();
+        // Every positional token up to the next `--flag` is a slot; any bad one refuses.
+        let count = args[i + 1..]
+            .iter()
+            .take_while(|a| !a.starts_with("--"))
+            .count();
+        let slots: Vec<DeviceSlot> = (0..count).map(|k| slot_at(&args, i + 1 + k)).collect();
         match tmp_companion_lib::probe_slotread_experiments(slots) {
             Ok(report) => {
                 print!("{report}");
@@ -1405,12 +1378,8 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--slotread-live") {
-        let slot: u32 = args.get(i + 1).and_then(|a| a.parse().ok()).unwrap_or(0);
+        let slot: DeviceSlot = slot_at(&args, i + 1);
         let rounds: u32 = args.get(i + 2).and_then(|a| a.parse().ok()).unwrap_or(4);
-        if slot == 0 {
-            eprintln!("usage: probe --slotread-live <slot> [rounds]   (1-based device slot)");
-            std::process::exit(1);
-        }
         match tmp_companion_lib::probe_slotread_live(slot, rounds) {
             Ok(report) => {
                 print!("{report}");
@@ -1491,7 +1460,12 @@ fn main() {
             Ok(presets) => {
                 println!("[probe --listall] {} entries:", presets.len());
                 for p in &presets {
-                    println!("  idx {:>3} · slot {:>3}  {}", p.slot, p.slot + 1, p.name);
+                    println!(
+                        "  idx {:>3} · slot {:>3}  {}",
+                        p.slot,
+                        p.slot.device_slot(),
+                        p.name
+                    );
                 }
                 return;
             }
@@ -1518,14 +1492,7 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--agc-test") {
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        if slot == u32::MAX {
-            eprintln!("usage: probe --agc-test <clean-preset-slot>  (TMP_LEVELLER_STIMULUS=<wav>)");
-            std::process::exit(2);
-        }
+        let slot = slot_at(&args, i + 1);
         eprintln!("[probe] GATE 2 — re-amp inject AGC test on slot {slot} (no playing needed)…");
         match tmp_companion_lib::probe_reamp_agc_test(slot) {
             Ok(r) => {
@@ -1540,16 +1507,7 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--channels") {
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        if slot == u32::MAX {
-            eprintln!(
-                "usage: probe --channels <slot>   (N1: per-channel re-amp LUFS; mono-vs-stereo check)"
-            );
-            std::process::exit(2);
-        }
+        let slot = slot_at(&args, i + 1);
         match tmp_companion_lib::probe_channels(slot) {
             Ok(r) => {
                 print!("{r}");
@@ -1569,10 +1527,7 @@ fn main() {
         // setNodeSceneEdit / changeParameter independently so the cause of the
         // overlay reset can be separated. Always saves; diff the slot afterwards.
         // <expectName> is a non-destructive-read guard — refuses if slot doesn't match.
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let expect_name = args.get(i + 2).cloned().unwrap_or_default();
         let scene: Option<u32> = args.get(i + 3).and_then(|s| s.parse().ok());
         let group = args.get(i + 4).cloned().unwrap_or_default();
@@ -1604,8 +1559,7 @@ fn main() {
             std::process::exit(2);
         }
         // 8 = session::BASE_SCENE_SLOT (private to the lib crate) — not a real scene overlay.
-        if slot == u32::MAX
-            || expect_name.is_empty()
+        if expect_name.is_empty()
             || scene.is_none_or(|s| s == 8)
             || group.is_empty()
             || node.is_empty()
@@ -1643,10 +1597,7 @@ fn main() {
         // Pure WRITE (no measurement, no re-amp): set one block param and save. A
         // numeric sceneSlot writes that scene's overlay (recall + Scene Edit); "base"
         // writes the base/global value.
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         // Name of the preset EXPECTED at `slot`, checked against a non-destructive
         // read before this saves — same guard shape as `--scene-write-cell`.
         let expect_name = args.get(i + 2).cloned().unwrap_or_default();
@@ -1663,8 +1614,7 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(f32::NAN);
         // 8 = session::BASE_SCENE_SLOT (private to the lib crate) — use "base", not "8".
-        if slot == u32::MAX
-            || expect_name.is_empty()
+        if expect_name.is_empty()
             || expect_name.starts_with("--")
             || scene.is_none()
             || scene == Some(Some(8))
@@ -1701,10 +1651,7 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--levelblock") {
         // --levelblock <slot> <target_lufs> <groupId> <nodeId> <parameterId>  (stimulus via env)
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -1712,12 +1659,7 @@ fn main() {
         let group = args.get(i + 3).cloned().unwrap_or_default();
         let node = args.get(i + 4).cloned().unwrap_or_default();
         let param = args.get(i + 5).cloned().unwrap_or_default();
-        if slot == u32::MAX
-            || target.is_nan()
-            || group.is_empty()
-            || node.is_empty()
-            || param.is_empty()
-        {
+        if target.is_nan() || group.is_empty() || node.is_empty() || param.is_empty() {
             eprintln!("usage: probe --levelblock <slot> <target_lufs> <groupId> <nodeId> <parameterId>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
@@ -1737,17 +1679,13 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--bench-scene-leveling") {
         // --bench-scene-leveling <slots_csv> <target_lufs> <topology_id> <out.json>
         // Example: --bench-scene-leveling 0,1,5 -22 guitar-humbucker /tmp/level.json
-        let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
         let target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f64::NAN);
         let topology = args.get(i + 3).cloned().unwrap_or_default();
         let out = args.get(i + 4).cloned().unwrap_or_default();
-        let slots: Vec<u32> = slots_csv
-            .split(',')
-            .filter_map(|s| s.trim().parse::<u32>().ok())
-            .collect();
+        let slots: Vec<ListIndex> = slots_at(&args, i + 1);
         if slots.is_empty() || target.is_nan() || topology.is_empty() || out.is_empty() {
             eprintln!("usage: probe --bench-scene-leveling <slots_csv> <target_lufs> <topology_id> <out.json>");
             std::process::exit(2);
@@ -1768,14 +1706,7 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--blocks") {
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        if slot == u32::MAX {
-            eprintln!("usage: probe --blocks <slot>");
-            std::process::exit(2);
-        }
+        let slot = slot_at(&args, i + 1);
         eprintln!("[probe] enumerating level-type block controls for slot {slot}…");
         match tmp_companion_lib::probe_list_blocks(slot) {
             Ok(r) => {
@@ -1811,7 +1742,7 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--classify") {
         // --classify <listIdx> [scene…] — NON-DESTRUCTIVE: print how build_scene_jobs
         // classifies each scene's amp-knob set (routing-aware). No re-amp / writes.
-        let Some(list_index) = args.get(i + 1).and_then(|s| s.parse::<u32>().ok()) else {
+        let Some(list_index) = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok()) else {
             eprintln!("usage: probe --classify <listIdx> [scene…]");
             std::process::exit(2);
         };
@@ -1838,7 +1769,7 @@ fn main() {
         // --level-scenes <listIdx> <target> <topology> [scene…]      NO-SAVE joint-k run.
         // --rebalance-scenes <listIdx> <target> <topology> [scene…]  NO-SAVE rebalance run.
         let rebalance = args[i] == "--rebalance-scenes";
-        let list_index = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let list_index = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
         let target = args.get(i + 2).and_then(|s| s.parse::<f64>().ok());
         let topology = args.get(i + 3).cloned();
         let (Some(list_index), Some(target), Some(topology)) = (list_index, target, topology)
@@ -1946,7 +1877,7 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--set-param") {
         // C2 step: set ONE block parameter on the working copy. One step per
         // invocation, so each verifying read rides its own fresh handshake.
-        let slot: u32 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
+        let slot = match args.get(i + 1).and_then(|v| v.parse().ok()) {
             Some(v) => v,
             None => {
                 eprintln!(
@@ -2022,7 +1953,7 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--switch-template") {
         // WRITE: repopulates a scratch preset's signal path. Scratch-guarded.
-        let slot: u32 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
+        let slot = match args.get(i + 1).and_then(|v| v.parse().ok()) {
             Some(v) => v,
             None => {
                 eprintln!("[probe] usage: --switch-template <slot 400..402> <templateType>");
@@ -2094,7 +2025,7 @@ fn main() {
         // USB 1/2 audio. `--measure-current` can't do this: it resolves its
         // stimulus from the bundled per-topology WAV (probe_stimulus_path) and
         // returns only LUFS, so a chirp/PSD experiment needs its own seam.
-        let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let slot = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
         let stim = args.get(i + 2).cloned().unwrap_or_default();
         let out = args.get(i + 3).cloned().unwrap_or_default();
         let (Some(slot), false) = (slot, stim.is_empty() || out.is_empty()) else {
@@ -2166,7 +2097,7 @@ fn main() {
         // (a burst + silence), and an unbounded tail_ms (e.g. u64::MAX) would ask
         // for hours of audio and gigabytes of buffer for no diagnostic benefit.
         const TAIL_MS_MAX: u64 = 60_000;
-        let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let slot = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
         let stim = args.get(i + 2).cloned().unwrap_or_default();
         let tail_ms = args.get(i + 3).and_then(|s| s.parse::<u64>().ok());
         let out = args.get(i + 4).cloned().unwrap_or_default();
@@ -2214,8 +2145,8 @@ fn main() {
         // Reordering renumbers presets; whether Song/Setlist bindings follow is the
         // open question. SCRATCH ZONE ONLY (400/401/402) — a reorder outside it
         // shifts real presets.
-        let from = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
-        let to = args.get(i + 2).and_then(|s| s.parse::<u32>().ok());
+        let from = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
+        let to = args.get(i + 2).and_then(|s| s.parse::<ListIndex>().ok());
         let (Some(from), Some(to)) = (from, to) else {
             eprintln!("usage: probe --move-preset <from-list-index> <to-list-index>");
             std::process::exit(2);
@@ -2299,7 +2230,7 @@ fn main() {
         // slot = 0-based list index (same convention as --levelpreset; NOT the
         // 1-based device userSlot). Loads the preset in its own connection, then
         // scene+reamp in a fresh one.
-        let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let slot = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
         let scene_slot = args.get(i + 2).and_then(|s| s.parse::<u32>().ok());
         let topology = args.get(i + 3).cloned().unwrap_or_default();
         if slot.is_none() || scene_slot.is_none() || topology.is_empty() {
@@ -2343,7 +2274,7 @@ fn main() {
         // --held-reengage <slot> <topology_id> <sceneA,sceneB,...> [calibrationLUFS]
         // HW probe: can re-amp disengage→re-engage on ONE held connection? Compares
         // held-session per-scene loudness vs the proven fresh-connection control.
-        let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let slot = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
         let topology = args.get(i + 2).cloned().unwrap_or_default();
         let scenes: Vec<u32> = args
             .get(i + 3)
@@ -2388,11 +2319,8 @@ fn main() {
             .get(i + 1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
-        let slot: u32 = args
-            .get(i + 2)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        if list_enum == u32::MAX || slot == u32::MAX {
+        let slot = slot_at(&args, i + 2);
+        if list_enum == u32::MAX {
             eprintln!("usage: probe --export <listEnum> <slot>   (listEnum 1 = My Presets)");
             std::process::exit(2);
         }
@@ -2485,23 +2413,15 @@ fn main() {
         // space as `list_my_presets`). --commit's expected name is checked against a
         // non-destructive read of slotA BEFORE the mutation — required, not optional,
         // since this command has no non-destructive form.
-        let a: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        let b: u32 = args
-            .get(i + 2)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let a = slot_at(&args, i + 1);
+        let b = slot_at(&args, i + 2);
         let level: f32 = args
             .get(i + 3)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f32::NAN);
         let commit_i = args.iter().position(|arg| arg == "--commit");
         let expected_name = commit_i.and_then(|ci| args.get(ci + 1)).cloned();
-        let Some(expected_name) =
-            expected_name.filter(|_| a != u32::MAX && b != u32::MAX && level.is_finite())
-        else {
+        let Some(expected_name) = expected_name.filter(|_| level.is_finite()) else {
             eprintln!(
                 "usage: probe --save-load-test <slotA> <slotB> <level> --commit <expectedNameOfSlotA>  (slotA/slotB are 0-based list indices; DESTRUCTIVE)"
             );
@@ -2528,14 +2448,9 @@ fn main() {
         // persist through ONE save? Point at a prepared scratch preset with an amp +
         // ≥1 scene (e.g. E2E Rig at 400 after --seed-scenario). 0-based list index;
         // name-guarded; restores the slot afterward.
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let expected_name = args.get(i + 2).cloned();
-        let Some(expected_name) =
-            expected_name.filter(|n| !n.starts_with("--") && slot != u32::MAX)
-        else {
+        let Some(expected_name) = expected_name.filter(|n| !n.starts_with("--")) else {
             eprintln!(
                 "usage: probe --redistribute-persist-check <scratchSlot> <expectedName>  (0-based list index; the scratch preset needs an amp + ≥1 scene)"
             );
@@ -2557,12 +2472,9 @@ fn main() {
         // --clear <listIndex> <expect-name>  — clears only if the slot reads
         // expect-name. 0-BASED list index (what `--import`'s diff prints), NOT the
         // 1-based device slot `--export` takes.
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let expect = args.get(i + 2).cloned().unwrap_or_default();
-        if slot == u32::MAX || expect.is_empty() {
+        if expect.is_empty() {
             eprintln!("usage: probe --clear <listIndex(0-based)> <expect-name>");
             std::process::exit(2);
         }
@@ -2743,11 +2655,8 @@ fn main() {
             .get(i + 2)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
-        let idx: u32 = args
-            .get(i + 3)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        if name.is_empty() || row == u32::MAX || idx == u32::MAX {
+        let idx = slot_at(&args, i + 3);
+        if name.is_empty() || row == u32::MAX {
             eprintln!("usage: probe --assign-song-preset <song-name> <row> <list-index>");
             std::process::exit(2);
         }
@@ -2843,12 +2752,9 @@ fn main() {
         // --replace-inplace <orig-list-index> <file.preset>
         //   Edit a preset IN PLACE (preserve slot + Song link): import → load scratch
         //   → saveCurrentPreset over the original → guarded clear of the scratch.
-        let idx: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let idx = slot_at(&args, i + 1);
         let path = args.get(i + 2).cloned().unwrap_or_default();
-        if idx == u32::MAX || path.is_empty() {
+        if path.is_empty() {
             eprintln!("usage: probe --replace-inplace <orig-list-index> <file.preset>");
             std::process::exit(2);
         }
@@ -2888,13 +2794,10 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--capture-reference") {
         // --capture-reference <slot> <topology> <out.wav>  (offline-harness corpus)
         // DEVICE OP: load slot + engage + full ~6.8s capture → write the mono clip.
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let topology = args.get(i + 2).cloned().unwrap_or_default();
         let out = args.get(i + 3).cloned().unwrap_or_default();
-        if slot == u32::MAX || topology.is_empty() || out.is_empty() {
+        if topology.is_empty() || out.is_empty() {
             eprintln!("usage: probe --capture-reference <slot> <topology> <out.wav>");
             std::process::exit(2);
         }
@@ -2913,12 +2816,9 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--measure-adaptive") {
         // --measure-adaptive <slot> <topology>  (DEVICE A/B: full vs adaptive capture)
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let topology = args.get(i + 2).cloned().unwrap_or_default();
-        if slot == u32::MAX || topology.is_empty() {
+        if topology.is_empty() {
             eprintln!("usage: probe --measure-adaptive <slot> <topology>");
             std::process::exit(2);
         }
@@ -2941,15 +2841,18 @@ fn main() {
         // scene S — e.g. `0:1` = list index 0, scene 1).
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
         let topology = args.get(i + 2).cloned().unwrap_or_default();
-        let slots: Vec<(u32, Option<u32>)> = match slots_csv
+        let slots: Vec<(ListIndex, Option<u32>)> = match slots_csv
             .split(',')
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
             .map(|x| match x.split_once(':') {
-                Some((slot, scene)) => Ok((slot.parse::<u32>()?, Some(scene.parse::<u32>()?))),
-                None => x.parse::<u32>().map(|s| (s, None)),
+                Some((slot, scene)) => Ok((
+                    slot.parse::<ListIndex>()?,
+                    Some(scene.parse::<u32>().map_err(|e| e.to_string())?),
+                )),
+                None => x.parse::<ListIndex>().map(|s| (s, None)),
             })
-            .collect::<Result<Vec<(u32, Option<u32>)>, std::num::ParseIntError>>()
+            .collect::<Result<Vec<(ListIndex, Option<u32>)>, String>>()
         {
             Ok(s) if !s.is_empty() && !topology.is_empty() => s,
             _ => {
@@ -2981,12 +2884,12 @@ fn main() {
         let family = flag_arg(&args, "--family").unwrap_or_default();
         let out = flag_arg(&args, "--out").unwrap_or_default();
         let labels = flag_arg(&args, "--labels");
-        let slots: Vec<u32> = match slots_csv
+        let slots: Vec<ListIndex> = match slots_csv
             .split(',')
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
-            .map(|x| x.parse::<u32>())
-            .collect::<Result<Vec<u32>, _>>()
+            .map(|x| x.parse::<ListIndex>())
+            .collect::<Result<Vec<ListIndex>, _>>()
         {
             Ok(s) if !s.is_empty() && !stim.is_empty() && !family.is_empty() && !out.is_empty() => {
                 s
@@ -3022,12 +2925,12 @@ fn main() {
         let stim = flag_arg(&args, "--stim").unwrap_or_default();
         let family = flag_arg(&args, "--family").unwrap_or_default();
         let out = flag_arg(&args, "--out").unwrap_or_default();
-        let slots: Vec<u32> = match slots_csv
+        let slots: Vec<ListIndex> = match slots_csv
             .split(',')
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
-            .map(|x| x.parse::<u32>())
-            .collect::<Result<Vec<u32>, _>>()
+            .map(|x| x.parse::<ListIndex>())
+            .collect::<Result<Vec<ListIndex>, _>>()
         {
             Ok(s) if !s.is_empty() && !stim.is_empty() && !family.is_empty() && !out.is_empty() => {
                 s
@@ -3062,12 +2965,12 @@ fn main() {
         let stim = flag_arg(&args, "--stim").unwrap_or_default();
         let family = flag_arg(&args, "--family").unwrap_or_else(|| "guitar".to_string());
         let out = flag_arg(&args, "--out");
-        let slots: Vec<u32> = match slots_csv
+        let slots: Vec<ListIndex> = match slots_csv
             .split(',')
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
-            .map(|x| x.parse::<u32>())
-            .collect::<Result<Vec<u32>, _>>()
+            .map(|x| x.parse::<ListIndex>())
+            .collect::<Result<Vec<ListIndex>, _>>()
         {
             Ok(s) if !s.is_empty() && !stim.is_empty() => s,
             _ => {
@@ -3140,12 +3043,12 @@ fn main() {
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
         // Reject a malformed slot token instead of silently dropping it (which would
         // produce a valid-looking A/B table for a different set of presets).
-        let slots: Vec<u32> = match slots_csv
+        let slots: Vec<ListIndex> = match slots_csv
             .split(',')
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
-            .map(|x| x.parse::<u32>())
-            .collect::<Result<Vec<u32>, _>>()
+            .map(|x| x.parse::<ListIndex>())
+            .collect::<Result<Vec<ListIndex>, _>>()
         {
             Ok(s) => s,
             Err(_) => {
@@ -3291,15 +3194,12 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--levelpreset") {
         // --levelpreset <slot> <target_lufs> [save] [noverify]  (stimulus via env)
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f64::NAN);
-        if slot == u32::MAX || target.is_nan() {
+        if target.is_nan() {
             eprintln!("usage: probe --levelpreset <slot> <target_lufs> [save] [noverify]  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
@@ -3325,15 +3225,12 @@ fn main() {
     // streamed reading. The final summary must match a plain --levelpreset run — A/B on a
     // REVERB/DELAY preset to catch any capture-length re-baseline.
     if let Some(i) = args.iter().position(|a| a == "--live-lufs") {
-        let slot: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let slot = slot_at(&args, i + 1);
         let target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f64::NAN);
-        if slot == u32::MAX || target.is_nan() {
+        if target.is_nan() {
             eprintln!("usage: probe --live-lufs <slot> <target_lufs> [save] [noverify]  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
@@ -3358,10 +3255,7 @@ fn main() {
     // Levels a preset's Base + every FS scene; per-scene-name overrides hit a different
     // target. Example: --level-preset-scenes 0 -23 guitar-humbucker 1 Dist=-22 Swell=-22
     if let Some(i) = args.iter().position(|a| a == "--level-preset-scenes") {
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let list_index = slot_at(&args, i + 1);
         let default_target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3371,7 +3265,7 @@ fn main() {
             args.get(i + 4).map(|s| s.as_str()),
             Some("1" | "true" | "save" | "yes")
         );
-        if list_index == u32::MAX || default_target.is_nan() || topology.is_empty() {
+        if default_target.is_nan() || topology.is_empty() {
             eprintln!("usage: probe --level-preset-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]");
             std::process::exit(2);
         }
@@ -3400,10 +3294,7 @@ fn main() {
     // --bisect-scene <listIndex> <sceneSlot> <groupId> <nodeId> <value> [asis] [save]
     // HW bisection: potent isolated write-measure, plus optional jointk elements.
     if let Some(i) = args.iter().position(|a| a == "--bisect-scene") {
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let list_index = slot_at(&args, i + 1);
         let scene_slot: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3414,12 +3305,7 @@ fn main() {
             .get(i + 5)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f32::NAN);
-        if list_index == u32::MAX
-            || scene_slot == u32::MAX
-            || group.is_empty()
-            || node.is_empty()
-            || value.is_nan()
-        {
+        if scene_slot == u32::MAX || group.is_empty() || node.is_empty() || value.is_nan() {
             eprintln!("usage: probe --bisect-scene <listIndex> <sceneSlot> <groupId> <nodeId> <value> [asis] [save]");
             std::process::exit(2);
         }
@@ -3449,14 +3335,7 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--fs-batch") {
         // --fs-batch <listIndex> [v1 v2 …]  — batched footswitch WRITE validation:
         // plan bake/assign per block-acting switch, write ALL on one session, ONE save.
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        if list_index == u32::MAX {
-            eprintln!("usage: probe --fs-batch <listIndex> [v1 v2 …]");
-            std::process::exit(2);
-        }
+        let list_index = slot_at(&args, i + 1);
         let values: Vec<f32> = args[i + 2..].iter().map_while(|s| s.parse().ok()).collect();
         match tmp_companion_lib::probe_fs_batch(list_index, values) {
             Ok(r) => {
@@ -3473,10 +3352,7 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--defer-scenes") {
         // --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>
         // TMP_DEFER_FINAL=asis|return|base picks the final-save shape.
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let list_index = slot_at(&args, i + 1);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         // Reject a malformed scene:value pair instead of silently dropping it (which
@@ -3498,7 +3374,7 @@ fn main() {
             },
             None => Vec::new(),
         };
-        if list_index == u32::MAX || group.is_empty() || node.is_empty() || writes.is_empty() {
+        if group.is_empty() || node.is_empty() || writes.is_empty() {
             eprintln!("usage: probe --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>");
             std::process::exit(2);
         }
@@ -3519,10 +3395,7 @@ fn main() {
     // scene, like the wizard), with per-name target overrides. save=1 persists —
     // point it at a scratch preset.
     if let Some(i) = args.iter().position(|a| a == "--jointk-scenes") {
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let list_index = slot_at(&args, i + 1);
         let default_target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3532,7 +3405,7 @@ fn main() {
             args.get(i + 4).map(|s| s.as_str()),
             Some("1" | "true" | "save" | "yes")
         );
-        if list_index == u32::MAX || default_target.is_nan() || topology.is_empty() {
+        if default_target.is_nan() || topology.is_empty() {
             eprintln!("usage: probe --jointk-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]");
             std::process::exit(2);
         }
@@ -3560,10 +3433,7 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--redistribute") {
         // --redistribute <listIndex> <target> <topology> <worstDeficitDb>  (PR5; SAVES — scratch)
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let list_index = slot_at(&args, i + 1);
         let target: f64 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
@@ -3573,7 +3443,7 @@ fn main() {
             .get(i + 4)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f64::NAN);
-        if list_index == u32::MAX || target.is_nan() || topology.is_empty() || worst.is_nan() {
+        if target.is_nan() || topology.is_empty() || worst.is_nan() {
             eprintln!(
                 "usage: probe --redistribute <listIndex> <target> <topology> <worstDeficitDb>  (SAVES — point at a scratch preset)"
             );
@@ -3595,16 +3465,13 @@ fn main() {
     // --scene-knob-authority <listIndex> <sceneSlot> <topology> : measure whether the
     // active amp outputLevel moves the scene's loudness (global vs scene-edit). No save.
     if let Some(i) = args.iter().position(|a| a == "--scene-knob-authority") {
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let list_index = slot_at(&args, i + 1);
         let scene_slot: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
         let topology = args.get(i + 3).cloned().unwrap_or_default();
-        if list_index == u32::MAX || scene_slot == u32::MAX || topology.is_empty() {
+        if scene_slot == u32::MAX || topology.is_empty() {
             eprintln!("usage: probe --scene-knob-authority <listIndex> <sceneSlot> <topology>");
             std::process::exit(2);
         }
@@ -3625,16 +3492,13 @@ fn main() {
     // combined output, the both-lanes-muted floor, and each lane solo + margin (rebalance
     // mute-isolation check). No save.
     if let Some(i) = args.iter().position(|a| a == "--mute-floor") {
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let list_index = slot_at(&args, i + 1);
         let scene_slot: u32 = args
             .get(i + 2)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
         let topology = args.get(i + 3).cloned().unwrap_or_default();
-        if list_index == u32::MAX || scene_slot == u32::MAX || topology.is_empty() {
+        if scene_slot == u32::MAX || topology.is_empty() {
             eprintln!("usage: probe --mute-floor <listIndex> <sceneSlot> <topology>");
             std::process::exit(2);
         }
@@ -3655,12 +3519,9 @@ fn main() {
 
     // --measure-scene-levels <listIndex> <topology> : measure each saved scene's loudness.
     if let Some(i) = args.iter().position(|a| a == "--measure-scene-levels") {
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
+        let list_index = slot_at(&args, i + 1);
         let topology = args.get(i + 2).cloned().unwrap_or_default();
-        if list_index == u32::MAX || topology.is_empty() {
+        if topology.is_empty() {
             eprintln!("usage: probe --measure-scene-levels <listIndex> <topology>");
             std::process::exit(2);
         }
@@ -3681,14 +3542,7 @@ fn main() {
 
     // --scene-amp-diag <listIndex> : per-scene amp bypass + level-control dump (read-only).
     if let Some(i) = args.iter().position(|a| a == "--scene-amp-diag") {
-        let list_index: u32 = args
-            .get(i + 1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        if list_index == u32::MAX {
-            eprintln!("usage: probe --scene-amp-diag <listIndex>");
-            std::process::exit(2);
-        }
+        let list_index = slot_at(&args, i + 1);
         eprintln!("[probe] scene amp diagnostic for list_index={list_index}…");
         match tmp_companion_lib::probe_scene_amp_diag(list_index) {
             Ok(r) => {
@@ -3731,15 +3585,10 @@ fn main() {
             eprintln!("usage: probe --bulk-apply <preset-folder> <opspec.json|inline-json> [--slots a,b,c] [revert]");
             std::process::exit(2);
         }
-        let slots = args
+        let slots: Option<Vec<ListIndex>> = args
             .iter()
             .position(|a| a == "--slots")
-            .and_then(|j| args.get(j + 1))
-            .map(|csv| {
-                csv.split(',')
-                    .filter_map(|s| s.trim().parse::<u32>().ok())
-                    .collect::<Vec<_>>()
-            });
+            .map(|j| slots_at(&args, j + 1));
         let revert = args.iter().any(|a| a == "revert");
         eprintln!("[probe] bulk apply over {folder} (slots={slots:?}, revert={revert})…");
         match tmp_companion_lib::probe_bulk_apply(&folder, &opspec, slots, revert) {
@@ -3767,7 +3616,12 @@ fn main() {
                 20
             };
             for p in presets.iter().take(shown) {
-                println!("  idx {:>3} · slot {:>3}  {}", p.slot, p.slot + 1, p.name);
+                println!(
+                    "  idx {:>3} · slot {:>3}  {}",
+                    p.slot,
+                    p.slot.device_slot(),
+                    p.name
+                );
             }
             if presets.len() > shown {
                 println!("  … and {} more", presets.len() - shown);

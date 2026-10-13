@@ -37,6 +37,7 @@
 
 use crate::doctor;
 use crate::leveller;
+use crate::slot::ListIndex;
 
 use super::analyze::analyze_capture;
 use super::stimulus::read_stimulus_calibrated;
@@ -60,7 +61,7 @@ struct Capture {
 /// Doctor measurement set — the SAME target-deviation/Theil-Sen/diagnosis path
 /// `doctor_check` runs, off ONE shared body PSD (Task 1's seams).
 fn capture_variant(
-    slot: u32,
+    slot: ListIndex,
     stim_slice: &[f32],
     tail_ms: u64,
     family: doctor::Family,
@@ -117,7 +118,7 @@ fn capture_to_json(c: &Capture) -> serde_json::Value {
 }
 
 pub fn probe_doctor_window_ab(
-    slots: &[u32],
+    slots: &[ListIndex],
     stim_path: &str,
     family_id: &str,
     out_path: Option<&str>,
@@ -165,7 +166,7 @@ pub fn probe_doctor_window_ab(
     let mut max_delta_c = 0.0f64;
     let mut flips_b = 0usize;
     let mut flips_c = 0usize;
-    let mut skipped: Vec<u32> = Vec::new();
+    let mut skipped: Vec<ListIndex> = Vec::new();
 
     for &slot in slots {
         // A failed capture skips its slot rather than failing the run. One shape for

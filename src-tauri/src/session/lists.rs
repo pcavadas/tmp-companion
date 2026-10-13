@@ -43,13 +43,13 @@ pub(super) fn extract_preset_list_for(body: &[u8], want_enum: u64) -> Option<Vec
 }
 
 /// Display names → `PresetEntry` rows: the 0-based list index IS the slot (the
-/// device's 1-based `userSlot` translation happens in the setters, not here).
+/// device's 1-based `userSlot` is derived in the setters, not here).
 pub(super) fn preset_entries(names: Vec<String>) -> Vec<PresetEntry> {
     names
         .into_iter()
         .enumerate()
         .map(|(i, name)| PresetEntry {
-            slot: i as u32,
+            slot: ListIndex(i as u32),
             name,
         })
         .collect()

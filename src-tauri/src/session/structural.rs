@@ -203,7 +203,7 @@ impl Session {
             .preset_field(NODE_INSERTED)
             .or_else(|| self.preset_field(NODE_REPLACED))?;
         let v: serde_json::Value = serde_json::from_slice(proto::first_bytes(&reply, 3)?).ok()?;
-        crate::audiograph::node_id(&v).map(str::to_string)
+        crate::audiograph::instance_id(&v).map(str::to_string)
     }
 
     /// [`Self::confirmed_node_id`], else the one node `group` holds that is not in `known`

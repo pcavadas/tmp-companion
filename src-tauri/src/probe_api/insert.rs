@@ -4,6 +4,7 @@ use crate::audiograph;
 use crate::proto;
 use crate::session;
 use crate::session::Session;
+use crate::slot::{DeviceSlot, ListIndex};
 use crate::BulkReplaceItem;
 
 /// ADD a block to the device's CURRENT ACTIVE preset over USB — the live `insertNode`
@@ -22,7 +23,7 @@ pub fn probe_insert_active(
     fender_id: &str,
     group: Option<&str>,
     after: Option<&str>,
-    slot_override: Option<u32>,
+    slot_override: Option<DeviceSlot>,
     commit: bool,
 ) -> Result<String, String> {
     let mut report = String::new();
@@ -44,11 +45,11 @@ pub fn probe_insert_active(
 
     // Resolve the 0-based list index (loaded_slot + PresetEntry.slot are both 0-based).
     let list_index = if let Some(dev) = slot_override {
-        dev.saturating_sub(1)
+        dev.list_index()
     } else if let Some(idx) = loaded {
         idx
     } else if let Some(ref nm) = active_name {
-        let matches: Vec<u32> = presets
+        let matches: Vec<ListIndex> = presets
             .iter()
             .filter(|p| &p.name == nm)
             .map(|p| p.slot)
@@ -99,7 +100,7 @@ pub fn probe_insert_active(
     };
     report.push_str(&format!(
         "  active preset {name:?}  list_index={list_index} (device slot {})  group={target_group}  insert_after={after:?}\n",
-        list_index + 1
+        list_index.device_slot()
     ));
     drop(s);
     std::thread::sleep(std::time::Duration::from_millis(600));
@@ -127,13 +128,13 @@ pub fn probe_insert_active(
 
     // ── Verify the PERSISTED state on a fresh clean session (field-8 slot read) ──
     std::thread::sleep(std::time::Duration::from_millis(600));
-    let dev_slot = list_index + 1;
+    let dev_slot = list_index.device_slot();
     let mut v = Session::connect()?;
     v.drain_until_quiet(250, 20)?;
     match v.read_slot_preset_json(dev_slot)? {
         Some(raw) => {
             if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&raw)) {
-                let n = audiograph::count_nodes_with_id(&vval, fender_id);
+                let n = audiograph::count_model_nodes(&vval, fender_id);
                 report.push_str(&format!(
                     "  VERIFY (field-8, persisted) slot {dev_slot:03}: {fender_id}×{n}  {}\n",
                     if commit {
@@ -184,7 +185,7 @@ fn ordered_group(s: &mut Session, group: &str) -> Vec<String> {
 
 /// Ordered FenderIds in `group` of the SAVED preset at `device_slot` (field-8 read — the
 /// stored document, i.e. what a save actually persisted).
-fn field8_group_order(device_slot: u32, group: &str) -> Vec<String> {
+fn field8_group_order(device_slot: DeviceSlot, group: &str) -> Vec<String> {
     let read = || -> Result<Vec<String>, String> {
         let mut v = Session::connect()?;
         v.drain_until_quiet(250, 20)?;
@@ -205,14 +206,14 @@ fn field8_group_order(device_slot: u32, group: &str) -> Vec<String> {
 /// the ordered roster again, then either COMMITs (saves + field-8 readback) or REVERTs
 /// (reload, live readback). Used to nail down what each wire op does to the in-group ORDER.
 pub fn probe_insert_map(
-    device_slot: u32,
+    device_slot: DeviceSlot,
     group: &str,
     fender_id: &str,
     before: Option<&str>,
     at_index: Option<u32>,
     commit: bool,
 ) -> Result<String, String> {
-    let list_index = device_slot.saturating_sub(1);
+    let list_index = device_slot.list_index();
     let mut report = String::new();
     report.push_str(&format!(
         "[probe --insert-map] slot {device_slot:03} group={group} insert={fender_id} before={before:?} at_index={at_index:?} ({})\n",
@@ -233,7 +234,7 @@ pub fn probe_insert_map(
 
     // Load + re-arm the target preset (the held_insert_one preamble).
     s.clear_raw();
-    s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
+    s.send_and_collect(&proto::load_my_preset(device_slot), 200)?;
     s.rearm_active_info()?;
     let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
     if !s.active_matches(list_index, Some(&name)) {
@@ -263,7 +264,7 @@ pub fn probe_insert_map(
             "  REJECTED/UNCONFIRMED confirmed={confirmed} presetError={rejected} reply_fields={seen:?} — reverting\n"
         ));
         s.clear_raw();
-        let _ = s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200);
+        let _ = s.send_and_collect(&proto::load_my_preset(device_slot), 200);
         return Ok(report);
     }
 
@@ -284,7 +285,7 @@ pub fn probe_insert_map(
         let _ = s.send_and_collect(&proto::current_preset_data_request(proto::BATCH_DRAIN), 200);
         let order = ordered_group(&mut s, group);
         s.clear_raw();
-        s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
+        s.send_and_collect(&proto::load_my_preset(device_slot), 200)?;
         s.heartbeat()?;
         s.pump_silent(120)?;
         order
@@ -306,7 +307,7 @@ pub fn probe_insert_map(
 #[allow(clippy::too_many_arguments)]
 fn held_insert_one(
     s: &mut Session,
-    list_index: u32,
+    list_index: ListIndex,
     name: &str,
     group: &str,
     after: Option<&str>,
@@ -315,7 +316,7 @@ fn held_insert_one(
 ) -> Result<BulkReplaceItem, String> {
     // LOAD on the held session + RE-ARM the edit context to the just-loaded preset.
     s.clear_raw();
-    s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 200)?;
+    s.send_and_collect(&proto::load_my_preset(list_index.device_slot()), 200)?;
     s.rearm_active_info()?;
     let _ = s.await_active_preset(name, 8); // pump for the fresh currentPresetInfoChanged
                                             // SAFETY — confirm the held session re-attached to the TARGET preset (active_matches
@@ -398,7 +399,7 @@ fn held_insert_one(
     } else {
         // DRY: discard the live edit by reloading the same preset.
         s.clear_raw();
-        s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 200)?;
+        s.send_and_collect(&proto::load_my_preset(list_index.device_slot()), 200)?;
         s.heartbeat()?;
         s.pump_silent(120)?;
         Ok(BulkReplaceItem {
@@ -458,7 +459,7 @@ fn describe_graph(s: &Session) -> String {
 /// or runs the PRODUCT seam — `Session::live_audio_graph` then the immediate rename/save —
 /// and reads the slot back over field-8 to prove the save persists the edit (COMMIT).
 pub fn probe_reprompt_map(
-    device_slot: u32,
+    device_slot: DeviceSlot,
     name: &str,
     group: &str,
     remove: Option<&str>,
@@ -466,7 +467,7 @@ pub fn probe_reprompt_map(
     before: Option<&str>,
     commit: bool,
 ) -> Result<String, String> {
-    let list_index = device_slot.saturating_sub(1);
+    let list_index = device_slot.list_index();
     let mut report = String::new();
     report.push_str(&format!(
         "[probe --reprompt-map] slot {device_slot:03} group={group} remove={remove:?} insert={insert:?} before={before:?} ({})\n",
@@ -483,7 +484,7 @@ pub fn probe_reprompt_map(
 
     // Copy's per-preset preamble (`copy_apply_one`), verbatim.
     s.clear_raw();
-    s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
+    s.send_and_collect(&proto::load_my_preset(device_slot), 200)?;
     s.rearm_active_info()?;
     // Timed confirm: Copy waits 8 × 150 ms; here keep pumping up to ~10 s and report
     // WHEN the echo landed, so a slow unit is measured rather than mis-read as a drop.
@@ -536,7 +537,7 @@ pub fn probe_reprompt_map(
             s.saw_preset_error()
         ));
         s.clear_raw();
-        let _ = s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200);
+        let _ = s.send_and_collect(&proto::load_my_preset(device_slot), 200);
         return Ok(report);
     }
     report.push_str(&format!("  CONFIRMED reply_fields={seen:?}\n"));
@@ -641,7 +642,7 @@ pub fn probe_reprompt_map(
     }
 
     s.clear_raw();
-    s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
+    s.send_and_collect(&proto::load_my_preset(device_slot), 200)?;
     s.heartbeat()?;
     s.pump_silent(120)?;
     let reverted = ordered_group(&mut s, group);

@@ -10,7 +10,22 @@
 /// scratch zone is one edit, not four. 406-409 are the P3 leveling-doctor-fixtures
 /// additions (combined leveling / doctor oracle / two minimal-incident-repro slots).
 /// 410 is the P4 Friedman-HBE-class 3-scene addition (leveling regression coverage).
-pub(crate) const SCRATCH_SLOTS: [u32; 11] = [400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410];
+pub(crate) const SCRATCH_SLOTS: [crate::slot::ListIndex; 11] = {
+    use crate::slot::ListIndex as L;
+    [
+        L(400),
+        L(401),
+        L(402),
+        L(403),
+        L(404),
+        L(405),
+        L(406),
+        L(407),
+        L(408),
+        L(409),
+        L(410),
+    ]
+};
 
 pub(crate) mod analyze;
 pub(crate) mod audio_devices;

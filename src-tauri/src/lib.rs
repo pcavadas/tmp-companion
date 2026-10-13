@@ -85,6 +85,8 @@ mod search;
 mod session;
 #[cfg(any(test, feature = "e2e"))]
 mod sim_device;
+// `pub` so the `probe` bin parses and passes typed slots (`tmp_companion_lib::slot`).
+pub mod slot;
 mod slot_read;
 mod spectrum;
 // Shared test-only fixtures/generators (`audio` onset tests, `leveller`
@@ -145,6 +147,7 @@ pub use saved_blocks::*;
 pub use session::PresetEntry;
 use session::Session;
 pub use session::{ActiveGraph, GraphNode, Stage};
+pub use slot::{DeviceSlot, ListIndex};
 // The truncation-aware saved-preset read seam — re-exported at the crate root so the
 // ~20 probe_api call sites and the leveling commands keep addressing it as `crate::read_slot_preset_*`.
 pub(crate) use slot_read::*;
@@ -962,16 +965,15 @@ mod fixture_gates {
 
     /// A node's `dspUnitParameters.bypass`, by nodeId, walked from `p`'s base graph via
     /// the shared node-walk seam (`crate::audiograph::for_each_node` +
-    /// `crate::audiograph::node_id`, which falls back to `FenderId`) rather than a
+    /// `Node::matches_instance`, which falls back to `FenderId`) rather than a
     /// hand-rolled `guitarNodes`-only walk — this also covers `micNodes`. `None` if
     /// the node is absent.
     fn base_node_bypass(p: &serde_json::Value, node_id: &str) -> Option<bool> {
         let mut found = None;
         crate::audiograph::for_each_node(p, |n| {
-            let obj = serde_json::Value::Object(n.clone());
-            if crate::audiograph::node_id(&obj) == Some(node_id) {
+            if n.matches_instance(node_id) {
                 found = n
-                    .get("dspUnitParameters")
+                    .params()
                     .and_then(|d| d.get("bypass"))
                     .and_then(serde_json::Value::as_bool);
             }
@@ -1824,7 +1826,7 @@ mod fixture_gates {
                     ftsw_len,
                     "{name:?} scene {sn:?}: ftswStates must be as long as ftsw"
                 );
-                for group in ["guitarNodes", "micNodes"] {
+                for group in crate::audiograph::GRAPHS {
                     for (gid, nodes) in scene[group].as_object().into_iter().flatten() {
                         for (nid, body) in nodes.as_object().into_iter().flatten() {
                             for (pk, pv) in
@@ -2472,7 +2474,7 @@ mod fixture_gates {
             .lines()
             .find(|l| l.starts_with("SCRATCH_SLOTS="))
             .expect("validate-hbe.sh: the SCRATCH_SLOTS mirror line is gone");
-        let mirrored: Vec<u32> = line
+        let mirrored: Vec<crate::slot::ListIndex> = line
             .trim_start_matches("SCRATCH_SLOTS=")
             .trim_matches('"')
             .split_whitespace()

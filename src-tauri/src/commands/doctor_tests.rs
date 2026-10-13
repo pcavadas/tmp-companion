@@ -18,8 +18,8 @@ fn an_unreadable_ftsw_skips_a_footswitch_sound_but_not_a_base_sound() {
         let mut cache = std::collections::HashMap::new();
         // What the fallback read leaves behind when the body could not be read or its
         // `ftsw` tail never arrived.
-        cache.insert(7u32, serde_json::Value::Null);
-        resolve_sound_isolation(&[], &[], &[], None, footswitch, 7, &mut cache)
+        cache.insert(ListIndex(7), serde_json::Value::Null);
+        resolve_sound_isolation(&[], &[], &[], None, footswitch, ListIndex(7), &mut cache)
     };
     let fs = unreadable(Some(2));
     let msg = fs.unresolved.expect("a footswitch sound must be skipped");
@@ -34,9 +34,9 @@ fn an_unreadable_ftsw_skips_a_footswitch_sound_but_not_a_base_sound() {
     // A readable `ftsw` resolves normally — the guard must not misfire on a preset whose
     // switches are simply all empty (a legitimate saved state).
     let mut cache = std::collections::HashMap::new();
-    cache.insert(7u32, serde_json::json!({ "ftsw": [[], [], []] }));
+    cache.insert(ListIndex(7), serde_json::json!({ "ftsw": [[], [], []] }));
     assert!(
-        resolve_sound_isolation(&[], &[], &[], None, Some(2), 7, &mut cache)
+        resolve_sound_isolation(&[], &[], &[], None, Some(2), ListIndex(7), &mut cache)
             .unresolved
             .is_none()
     );
@@ -60,7 +60,7 @@ fn doctor_apply_job_round_trips_from_frontend_json() {
             "calibrationLufs": -18.0
         }"#;
     let job: DoctorApplyJob = serde_json::from_str(json).expect("DoctorApplyJob deserializes");
-    assert_eq!(job.list_index, 4);
+    assert_eq!(job.list_index, ListIndex(4));
     assert_eq!(job.name, "Lead Tone");
     assert_eq!(job.topology_id.as_deref(), Some("guitar-humbucker"));
     assert_eq!(job.calibration_lufs, Some(-18.0));
@@ -257,8 +257,8 @@ fn base_isolation_or_refuse_force_list_matches_doctor_force_bypass_directly() {
     // SAME preset fixture — proven by `base_isolation_or_refuse` deriving it via
     // `doctor_force_bypass` verbatim, not a hand-maintained copy that could drift.
     let p = force_bypass_fixture();
-    let (_, force, _) =
-        base_isolation_or_refuse(Ok(p.clone()), 26).expect("a readable preset must never refuse");
+    let (_, force, _) = base_isolation_or_refuse(Ok(p.clone()), ListIndex(26))
+        .expect("a readable preset must never refuse");
     let direct = doctor_force_bypass(&p["ftsw"], &p, None);
     assert_eq!(
         force, direct,
@@ -283,7 +283,7 @@ fn base_isolation_or_refuse_refuses_on_a_truncated_ftsw_read_exactly_like_produc
              acting on a partial preset"
                 .to_string(),
         ),
-        26,
+        ListIndex(26),
     )
     .expect_err("an unreadable ftsw must refuse, never guess a force list");
     assert!(
@@ -311,7 +311,7 @@ fn base_isolation_or_refuse_refuses_on_a_truncated_ftsw_read_exactly_like_produc
 fn nodes_from(preset: &serde_json::Value) -> Vec<doctor::DoctorNode> {
     let mut out = Vec::new();
     crate::audiograph::for_each_node(preset, |obj| {
-        let Some(nid) = obj.get("nodeId").and_then(serde_json::Value::as_str) else {
+        let Some(nid) = obj.instance() else {
             return;
         };
         let bypassed = obj
@@ -383,22 +383,29 @@ fn derived_force_bypass_matches_the_live_engine_on_every_sound() {
 // --- consecutive-scene load skip (doctor_skip_load) ---
 
 fn prev(list_index: u32, wrote: bool) -> PrevSound {
-    PrevSound { list_index, wrote }
+    PrevSound {
+        list_index: ListIndex(list_index),
+        wrote,
+    }
 }
 
 #[test]
 fn skip_load_only_for_a_clean_ok_same_preset_scene_chain() {
     // The one allowed case: same preset, previous sound clean, current is a scene.
-    assert!(doctor_skip_load(Some(&prev(3, false)), 3, true));
+    assert!(doctor_skip_load(Some(&prev(3, false)), ListIndex(3), true));
     // First sound of the run — and any sound after an ERRORED one (the loop resets
     // prev to None on error) — never skips.
-    assert!(!doctor_skip_load(None, 3, true));
+    assert!(!doctor_skip_load(None, ListIndex(3), true));
     // Different preset → reload.
-    assert!(!doctor_skip_load(Some(&prev(2, false)), 3, true));
+    assert!(!doctor_skip_load(Some(&prev(2, false)), ListIndex(3), true));
     // Previous sound wrote force-bypasses (base/footswitch) → reload.
-    assert!(!doctor_skip_load(Some(&prev(3, true)), 3, true));
+    assert!(!doctor_skip_load(Some(&prev(3, true)), ListIndex(3), true));
     // Base/footswitch sounds always reload, even after a clean scene.
-    assert!(!doctor_skip_load(Some(&prev(3, false)), 3, false));
+    assert!(!doctor_skip_load(
+        Some(&prev(3, false)),
+        ListIndex(3),
+        false
+    ));
 }
 
 // --- floor_error_for: silent-inject guard on the Doctor's capture spread ---
@@ -449,10 +456,10 @@ fn resolve_sound_isolation_never_writes_for_a_scene_sound() {
     let (preset, infos) = iso_ab_fixture();
     let nodes = nodes_from(&preset);
     let mut cache = std::collections::HashMap::new();
-    let iso = resolve_sound_isolation(&nodes, &infos, &[], Some(0), None, 5, &mut cache);
+    let iso = resolve_sound_isolation(&nodes, &infos, &[], Some(0), None, ListIndex(5), &mut cache);
     assert!(iso.bypass.is_empty() && iso.params.is_empty());
     // Graph absent too — the pre-existing empty-nodes behavior for scenes.
-    let iso = resolve_sound_isolation(&[], &infos, &[], Some(0), None, 5, &mut cache);
+    let iso = resolve_sound_isolation(&[], &infos, &[], Some(0), None, ListIndex(5), &mut cache);
     assert!(iso.bypass.is_empty() && iso.params.is_empty());
 }
 
@@ -497,7 +504,7 @@ fn resolve_sound_isolation_carries_param_writes_for_a_param_only_switch() {
     let (preset, infos) = iso_ab_fixture();
     let nodes = nodes_from(&preset);
     let mut cache = std::collections::HashMap::new();
-    let iso = resolve_sound_isolation(&nodes, &infos, &[], None, Some(2), 5, &mut cache);
+    let iso = resolve_sound_isolation(&nodes, &infos, &[], None, Some(2), ListIndex(5), &mut cache);
     assert_eq!(
         iso.params,
         vec![("G1".into(), "MOD".into(), "gain".into(), 0.9_f32)]
@@ -618,7 +625,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     let _guard = crate::lock_ok(&BEFORE_CACHE_SERIAL);
     clear_doctor_before_cache();
     let key: BeforeKey = (
-        7,
+        ListIndex(7),
         "Lead".into(),
         "/stim/tele.wav".into(),
         Some(0xC196_0000),
@@ -630,7 +637,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     // Any identity change misses: renamed preset, different stimulus, different cal.
     assert_eq!(
         before_cache_get(&(
-            7,
+            ListIndex(7),
             "Lead 2".into(),
             "/stim/tele.wav".into(),
             key.3,
@@ -641,7 +648,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     );
     assert_eq!(
         before_cache_get(&(
-            7,
+            ListIndex(7),
             "Lead".into(),
             "/stim/strat.wav".into(),
             key.3,
@@ -652,7 +659,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     );
     assert_eq!(
         before_cache_get(&(
-            7,
+            ListIndex(7),
             "Lead".into(),
             "/stim/tele.wav".into(),
             None,
@@ -664,7 +671,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     // ...or a different scene/footswitch of the SAME preset.
     assert_eq!(
         before_cache_get(&(
-            7,
+            ListIndex(7),
             "Lead".into(),
             "/stim/tele.wav".into(),
             key.3,
@@ -675,7 +682,7 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     );
     assert_eq!(
         before_cache_get(&(
-            7,
+            ListIndex(7),
             "Lead".into(),
             "/stim/tele.wav".into(),
             key.3,
@@ -733,7 +740,7 @@ fn apply_ops_under_scene_recalls_before_writing() {
 fn apply_ops_under_scene_recalls_base_explicitly_for_none() {
     let sim = crate::sim_device::SimDevice::new().with_saved_scene(0, Some(3));
     let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-    s.load_preset(0).expect("load_preset"); // activates saved scene 3, not base
+    s.load_preset(ListIndex(0)).expect("load_preset"); // activates saved scene 3, not base
     apply_ops_under_scene(&mut s, None, &hpf_op()).expect("apply_ops_under_scene");
     let ev = sim.events();
     assert!(
@@ -861,7 +868,7 @@ fn item(
 ) -> (DoctorInput, String, doctor::StimulusKind) {
     let input = DoctorInput {
         key: key.to_string(),
-        list_index: 4,
+        list_index: ListIndex(4),
         scene,
         footswitch,
         label: key.to_string(),
@@ -996,7 +1003,7 @@ fn wet_by_switch_fixture() -> serde_json::Value {
                "valueA": 0.9, "valueB": 0.5, "valueType": 0, "isActive": false }],
         ],
         "scenes": [
-            { "guitarNodes": { "G1": { "ACD_TMLargePlate": {
+            { "guitarNodes": { "G1": { "plate1": {
                 "dspUnitParameters": { "bypass": false, "wetdrymix": 0.7 } } } } },
             { "guitarNodes": {} }
         ]
@@ -1030,7 +1037,7 @@ fn fixture_sound(
         &input.scene_overrides,
         scene,
         footswitch,
-        4,
+        ListIndex(4),
         &mut cache,
     );
     (input, iso.graph)
@@ -1121,7 +1128,7 @@ fn base_isolation_turns_off_a_saved_on_switched_reverb() {
         &[],
         None,
         None,
-        4,
+        ListIndex(4),
         &mut Default::default(),
     );
     let graph = iso.graph;

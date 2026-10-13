@@ -12,6 +12,7 @@
 //! ambiguous and get **no** `list_index`, so they are never selectable for a
 //! destructive op (the same-address-space guard from the destructive-op lesson).
 
+use crate::slot::ListIndex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -76,7 +77,7 @@ pub struct LibraryRecord {
     pub facets: Facets,
     /// 0-based "My Presets" index on the connected device; `None` if unmatched or
     /// ambiguous (a duplicate name) — such a record is NOT writable.
-    pub list_index: Option<u32>,
+    pub list_index: Option<ListIndex>,
     /// The list the record belongs to. Only `1` (My Presets) is writable this effort.
     pub list_enum: u32,
 }
@@ -96,7 +97,7 @@ impl LibraryRecord {
             list_index,
             list_enum: self.list_enum,
             display_name: self.display_name.clone(),
-            source: "offline-file".to_string(),
+            source: crate::backup::SnapshotSource::OfflineFile,
             before_json: self.decoded_json.clone(),
         })
     }
@@ -106,7 +107,7 @@ impl LibraryRecord {
     /// (search is read-only; selection-for-write re-checks `list_index.is_some()`).
     pub fn search_record(&self) -> PresetRecord {
         PresetRecord {
-            list_index: self.list_index.unwrap_or(u32::MAX),
+            list_index: self.list_index.unwrap_or(ListIndex(u32::MAX)),
             facets: self.facets.clone(),
         }
     }
@@ -209,7 +210,7 @@ pub fn reconcile_with_device(
     for r in records.iter() {
         *file_name_count.entry(r.display_name.clone()).or_default() += 1;
     }
-    let mut device_by_name: HashMap<&str, Vec<u32>> = HashMap::new();
+    let mut device_by_name: HashMap<&str, Vec<ListIndex>> = HashMap::new();
     for e in device_list.iter() {
         if !session::is_empty_slot_name(&e.name) {
             device_by_name
@@ -221,7 +222,7 @@ pub fn reconcile_with_device(
 
     let mut report = ReconcileReport::default();
     let mut ambiguous: std::collections::BTreeSet<String> = Default::default();
-    let mut matched_slots: std::collections::HashSet<u32> = Default::default();
+    let mut matched_slots: std::collections::HashSet<ListIndex> = Default::default();
 
     for r in records.iter_mut() {
         let name = r.display_name.clone();
@@ -328,7 +329,7 @@ mod tests {
     }
     fn entry(slot: u32, name: &str) -> PresetEntry {
         PresetEntry {
-            slot,
+            slot: ListIndex(slot),
             name: name.to_string(),
         }
     }
@@ -343,8 +344,8 @@ mod tests {
             entry(3, "--"), // empty slot ignored
         ];
         let report = reconcile_with_device(&mut recs, &device);
-        assert_eq!(recs[0].list_index, Some(0));
-        assert_eq!(recs[1].list_index, Some(1));
+        assert_eq!(recs[0].list_index, Some(ListIndex(0)));
+        assert_eq!(recs[1].list_index, Some(ListIndex(1)));
         assert_eq!(recs[2].list_index, None); // not on device
         assert_eq!(report.matched, 2);
         assert_eq!(report.unmatched_files, vec!["Orphan File"]);
@@ -358,7 +359,7 @@ mod tests {
         let report = reconcile_with_device(&mut recs, &device);
         // Both "Dup" records stay None — a wrong-slot write is impossible.
         assert!(recs[0].list_index.is_none() && recs[1].list_index.is_none());
-        assert_eq!(recs[2].list_index, Some(1));
+        assert_eq!(recs[2].list_index, Some(ListIndex(1)));
         assert_eq!(report.ambiguous, vec!["Dup"]);
         assert_eq!(report.matched, 1);
     }

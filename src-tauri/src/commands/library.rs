@@ -25,7 +25,7 @@ fn now_stamp_id() -> String {
 /// unmatched/ambiguous records have `list_index = None` and never reach here).
 pub(crate) fn targets_from_library(
     lib: &library::Library,
-    selection: &[u32],
+    selection: &[ListIndex],
 ) -> Result<Vec<bulkrun::PresetTarget>, String> {
     selection
         .iter()
@@ -115,7 +115,7 @@ pub(crate) struct FilterArgs {
 pub(crate) async fn library_filter(
     filter: FilterArgs,
     state: State<'_, AppState>,
-) -> Result<Vec<u32>, String> {
+) -> Result<Vec<ListIndex>, String> {
     let library = state.library.clone();
     blocking(move || {
         let guard = lock_ok(&library);
@@ -134,7 +134,7 @@ pub(crate) async fn library_filter(
         Ok(search::filter_records(&records, &f)
             .into_iter()
             .map(|r| r.list_index)
-            .filter(|&i| i != u32::MAX)
+            .filter(|&i| i != ListIndex(u32::MAX))
             .collect())
     })
     .await
@@ -144,7 +144,7 @@ pub(crate) async fn library_filter(
 /// Runs over the selection's decoded presets, so on the blocking pool (#271).
 #[tauri::command]
 pub(crate) async fn bulk_dry_run(
-    selection: Vec<u32>,
+    selection: Vec<ListIndex>,
     op: bulk_cmd::OpSpec,
     state: State<'_, AppState>,
 ) -> Result<Vec<bulkrun::DryRunEntry>, String> {
@@ -170,7 +170,7 @@ pub(crate) struct BulkApplyResult {
 #[tauri::command]
 pub(crate) async fn bulk_apply<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    selection: Vec<u32>,
+    selection: Vec<ListIndex>,
     op: bulk_cmd::OpSpec,
     backup: bool,
     state: State<'_, AppState>,

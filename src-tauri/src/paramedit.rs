@@ -56,11 +56,7 @@ pub fn edit_param(
 ) -> EditOutcome {
     let mut clamped_any = false;
     let edited = for_each_node_mut(preset, |node| {
-        let id = node
-            .get("nodeId")
-            .and_then(Value::as_str)
-            .or_else(|| node.get("FenderId").and_then(Value::as_str));
-        if id != Some(model) {
+        if !crate::audiograph::Node::new(node).matches_model(model) {
             return false;
         }
         let Some(params) = node
@@ -119,6 +115,7 @@ impl crate::bulkrun::Operation for ParamEditOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::slot::ListIndex;
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -198,10 +195,10 @@ mod tests {
             max: 1.0,
         };
         let t = PresetTarget {
-            list_index: 0,
+            list_index: ListIndex(0),
             list_enum: 1,
             display_name: "x".into(),
-            source: "offline-file".into(),
+            source: crate::backup::SnapshotSource::OfflineFile,
             before_json: serde_json::to_string(&p).unwrap(),
         };
         assert_eq!(op.transform(&t).unwrap(), None);

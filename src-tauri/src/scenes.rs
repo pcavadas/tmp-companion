@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::leveller::common_target;
 
 /// The node object at `group_id`/`node_id` under `preset`'s `audioGraph.guitarNodes`
-/// (an array per group; matched by `nodeId`/`FenderId` via `audiograph::node_id`). Shared
+/// (an array per group; matched by instance via `audiograph::instance_id`). Shared
 /// node-lookup for [`block_bypass_in_live_graph`] and the scene-repair diff
 /// (`probe_api::scene_jobs::node_dsp_params`) — both need "find this node in a
 /// materialized `audioGraph` doc" and previously duplicated the pointer/array/find walk.
@@ -16,7 +16,7 @@ pub fn guitar_node<'a>(preset: &'a Value, group_id: &str, node_id: &str) -> Opti
         .pointer(&format!("/audioGraph/guitarNodes/{group_id}"))?
         .as_array()?
         .iter()
-        .find(|n| crate::audiograph::node_id(n) == Some(node_id))
+        .find(|n| crate::audiograph::instance_id(n) == Some(node_id))
 }
 
 /// A block's `bypass` state in the LIVE `audioGraph` (`audioGraph.guitarNodes[group]`,

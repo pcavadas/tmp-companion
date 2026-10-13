@@ -9,6 +9,7 @@ use crate::leveller;
 use crate::lufs;
 use crate::read_slot_preset_parsed;
 use crate::session;
+use crate::slot::ListIndex;
 use crate::topologies;
 
 /// Read a WAV file's raw interleaved samples as f32 in [-1, 1] (handles both
@@ -150,7 +151,11 @@ pub(crate) fn dump_processed_capture(
 /// reference level (0.5) via the topology stimulus and write it to `out` (mono,
 /// 48 kHz f32) — building a corpus of real processed clips so the adaptive-capture
 /// constants can be tuned with no device. DEVICE OP (load + engage + full capture).
-pub fn probe_capture_reference(slot: u32, topology_id: &str, out: &str) -> Result<String, String> {
+pub fn probe_capture_reference(
+    slot: ListIndex,
+    topology_id: &str,
+    out: &str,
+) -> Result<String, String> {
     let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
     let (mono, rate) = leveller::capture_samples(slot, &stim, 0.5)?;
     write_wav_mono(out, &mono, rate)?;
@@ -175,7 +180,7 @@ pub fn probe_capture_reference(slot: u32, topology_id: &str, out: &str) -> Resul
 /// on the next reload, but real, so testing a real device-created preset should be
 /// a deliberate opt-in, same as `--reamp-wav`'s `TMP_ALLOW_NONSCRATCH_REAMP`.
 pub fn probe_tail_decay(
-    slot: u32,
+    slot: ListIndex,
     scene: Option<u32>,
     stimulus_wav: &str,
     tail_ms: u64,
@@ -214,7 +219,7 @@ pub fn probe_tail_decay(
 /// model generates harmonics that fill the octave above the fundamental sweep and
 /// muddy exactly the band edge the test reads.
 pub fn probe_reamp_wav(
-    slot: u32,
+    slot: ListIndex,
     stimulus_wav: &str,
     out: &str,
     ref_level: f32,
@@ -431,7 +436,7 @@ pub fn probe_measure_converge_replay(
 /// `reamp_measure` reachable and lets the operator judge the speed/accuracy trade on real
 /// presets before any decision to wire adaptive into the leveling path. Read-only
 /// (no save); ends with a guaranteed re-amp OFF.
-pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, String> {
+pub fn probe_measure_adaptive(slot: ListIndex, topology_id: &str) -> Result<String, String> {
     let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
     // Load once in its own connection (the set-after-load override gotcha).
     {
@@ -480,7 +485,10 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
 /// target-deviation metric) and print one JSON line per sound plus a human table —
 /// the headless iteration loop for tuning `doctor::Thresholds`. Read-only: loads +
 /// captures, NEVER saves; every capture path ends re-amp OFF.
-pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<String, String> {
+pub fn probe_doctor(
+    slots: &[(ListIndex, Option<u32>)],
+    topology_id: &str,
+) -> Result<String, String> {
     // Mirrors doctor_check's capture space: the production 3 s Doctor window.
     let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(topology_id)?)?);
     let instrument = doctor::Family::from_topology(
@@ -490,7 +498,7 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
     );
 
     type Sound = (
-        u32,
+        ListIndex,
         Option<u32>,
         doctor::SoundProfile,
         Option<Vec<doctor::DoctorNode>>,
@@ -647,7 +655,7 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
 /// write persists); ends with a guaranteed re-amp OFF. Per-slot errors print in-row
 /// and the sweep continues.
 pub fn probe_stim_ab(
-    slots: &[u32],
+    slots: &[ListIndex],
     wav_a: &str,
     wav_b: &str,
     ref_level: f32,

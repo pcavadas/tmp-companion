@@ -204,22 +204,26 @@ fn name_fallback_only_confirms_a_uniquely_mapped_slot() {
     assert!(name_maps_uniquely(
         &names(&["Cliff", "Target", "Lead"]),
         "Target",
-        1
+        ListIndex(1)
     ));
     // Same name in two slots ⇒ can't prove which is the target ⇒ fail closed.
     assert!(!name_maps_uniquely(
         &names(&["Target", "Lead", "Target"]),
         "Target",
-        0
+        ListIndex(0)
     ));
     // Name present but at a DIFFERENT slot than claimed ⇒ fail closed.
     assert!(!name_maps_uniquely(
         &names(&["Cliff", "Target"]),
         "Target",
-        0
+        ListIndex(0)
     ));
     // Name absent ⇒ fail closed.
-    assert!(!name_maps_uniquely(&names(&["Cliff", "Lead"]), "Target", 0));
+    assert!(!name_maps_uniquely(
+        &names(&["Cliff", "Lead"]),
+        "Target",
+        ListIndex(0)
+    ));
 }
 
 // HW (fw 1.8.58): a plain handshake's `PresetLoaded` echo lands ~1 s after it returns.
@@ -237,7 +241,7 @@ fn active_slot_live_reads_an_echo_that_lands_a_second_after_the_handshake() {
         late,
     ]);
     let mut s = crate::test_support::session_over(&t, Vec::new());
-    assert_eq!(s.active_slot_live(), Some(401));
+    assert_eq!(s.active_slot_live(), Some(ListIndex(401)));
 }
 
 // The song-BPM restore target: only a name at exactly one My Presets position.
@@ -246,7 +250,7 @@ fn active_slot_by_name_needs_a_unique_non_empty_name() {
     let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert_eq!(
         unique_list_index(&names(&["Cliff", "Guitar", "Lead"]), "Guitar"),
-        Some(1)
+        Some(ListIndex(1))
     );
     assert_eq!(
         unique_list_index(&names(&["Guitar", "Lead", "Guitar"]), "Guitar"),
@@ -402,7 +406,7 @@ fn extract_active_graph_normalizes_one_based_user_slot() {
         serde_json::from_str(r#"{"info":{"displayName":"Lead","userSlot":4}}"#).unwrap();
     let g = extract_active_graph(&v, None);
     assert_eq!(g.name.as_deref(), Some("Lead"));
-    assert_eq!(g.slot, Some(3));
+    assert_eq!(g.slot, Some(ListIndex(3)));
 }
 
 #[test]
@@ -424,7 +428,7 @@ fn current_preset_events_supply_name_and_zero_based_user_slot() {
     );
     assert_eq!(
         extract_loaded_user_slot(b"\x12\x06\x5a\x04\x08\x01\x30\x04"),
-        Some(3)
+        Some(ListIndex(3))
     );
     assert_eq!(
         extract_loaded_user_slot(b"\x12\x06\x5a\x04\x08\x04\x30\x04"),
@@ -436,19 +440,22 @@ fn current_preset_events_supply_name_and_zero_based_user_slot() {
 fn name_fallback_requires_a_unique_my_presets_match() {
     let presets = vec![
         PresetEntry {
-            slot: 0,
+            slot: ListIndex(0),
             name: "Clean".to_string(),
         },
         PresetEntry {
-            slot: 1,
+            slot: ListIndex(1),
             name: "Lead".to_string(),
         },
         PresetEntry {
-            slot: 2,
+            slot: ListIndex(2),
             name: "Lead".to_string(),
         },
     ];
-    assert_eq!(unique_preset_slot_by_name(&presets, "Clean"), Some(0));
+    assert_eq!(
+        unique_preset_slot_by_name(&presets, "Clean"),
+        Some(ListIndex(0))
+    );
     assert_eq!(unique_preset_slot_by_name(&presets, "Lead"), None);
     assert_eq!(unique_preset_slot_by_name(&presets, "Missing"), None);
 }
@@ -1657,8 +1664,20 @@ fn slot_read_survives_the_inactivity_drop_and_rearms_only_a_lapsed_session() {
         .with_reply_to(&req(6), streamed(&preset_data_frames(9_000), 30));
     let mut s = session_over(&t, Vec::new());
     s.pump_silent(1_000).unwrap(); // a drained, lapsed session
-    assert_eq!(s.read_slot_preset_json(5).unwrap().unwrap().len(), 17_000);
-    assert_eq!(s.read_slot_preset_json(6).unwrap().unwrap().len(), 9_000);
+    assert_eq!(
+        s.read_slot_preset_json(crate::slot::ds(5))
+            .unwrap()
+            .unwrap()
+            .len(),
+        17_000
+    );
+    assert_eq!(
+        s.read_slot_preset_json(crate::slot::ds(6))
+            .unwrap()
+            .unwrap()
+            .len(),
+        9_000
+    );
     assert_eq!(t.count_sent(&proto::connection_request()), 1);
     assert_eq!((t.live_rearms(), t.dropped_writes()), (0, 0));
 }
@@ -1673,7 +1692,13 @@ fn slot_read_of_a_small_preset_stops_once_stable() {
         vec![preset_data_frames(3_500)],
     );
     let mut s = session_over(&t, Vec::new());
-    assert_eq!(s.read_slot_preset_json(3).unwrap().unwrap().len(), 3_500);
+    assert_eq!(
+        s.read_slot_preset_json(crate::slot::ds(3))
+            .unwrap()
+            .unwrap()
+            .len(),
+        3_500
+    );
     assert!(
         t.heartbeats() <= 1,
         "{} heartbeats — ran past stable",
@@ -1708,13 +1733,13 @@ fn a_write_after_a_long_wait_reopens_the_client_first() {
     let t = ScriptedTransport::device();
     let mut s = session_over(&t, Vec::new());
     s.pump_silent(1_000).unwrap();
-    s.clear_user_preset(415).unwrap();
+    s.clear_user_preset(ListIndex(415)).unwrap();
     assert_eq!(t.dropped_writes(), 0);
     assert_eq!(t.count_sent(&proto::connection_request()), 1);
     // The escape hatch for experiments that measure lapsed behavior itself.
     s.set_auto_reopen(false);
     s.pump_silent(1_000).unwrap();
-    s.clear_user_preset(415).unwrap();
+    s.clear_user_preset(ListIndex(415)).unwrap();
     assert_eq!(t.dropped_writes(), 1);
 }
 
@@ -1737,7 +1762,7 @@ fn a_write_on_a_live_client_does_not_reopen_it() {
     let t = ScriptedTransport::device();
     let mut s = session_over(&t, Vec::new());
     s.pump_silent(300).unwrap();
-    s.clear_user_preset(415).unwrap();
+    s.clear_user_preset(ListIndex(415)).unwrap();
     assert_eq!(t.count_sent(&proto::connection_request()), 0);
     assert_eq!(t.live_rearms(), 0);
 }
@@ -1821,20 +1846,20 @@ fn saved_events(sim: &crate::sim_device::SimDevice) -> usize {
 fn a_scene_recall_on_a_scene_less_preset_blocks_the_save() {
     let sim = crate::sim_device::SimDevice::new();
     let mut s = Session::from_transport(Box::new(sim.clone()));
-    s.load_preset(0).expect("load");
+    s.load_preset(ListIndex(0)).expect("load");
     assert!(!s.template_substituted());
     s.load_scene(0).expect("recall");
     assert!(s.template_substituted(), "presetError 6 was answered");
     assert_eq!(
-        s.save_current_preset(0).expect_err("refused"),
+        s.save_current_preset(ListIndex(0)).expect_err("refused"),
         super::preset::TEMPLATE_SAVE_REFUSED
     );
     assert_eq!(saved_events(&sim), 0, "nothing reached the device");
     // A real load restores the stored body and clears the guard.
-    s.load_preset(1).expect("load another");
-    s.load_preset(0).expect("reload");
+    s.load_preset(ListIndex(1)).expect("load another");
+    s.load_preset(ListIndex(0)).expect("reload");
     assert!(!s.template_substituted());
-    s.save_current_preset(0).expect("save");
+    s.save_current_preset(ListIndex(0)).expect("save");
     assert_eq!(saved_events(&sim), 1);
 }
 
@@ -1845,11 +1870,11 @@ fn a_rejected_load_blocks_the_save_until_a_load_lands() {
     let sim = crate::sim_device::SimDevice::new();
     sim.arm(crate::sim_device::Injection::RejectNextLoad);
     let mut s = Session::from_transport(Box::new(sim.clone()));
-    s.load_preset(3).expect("load");
+    s.load_preset(ListIndex(3)).expect("load");
     assert!(s.template_substituted());
-    assert!(s.save_current_preset(3).is_err());
+    assert!(s.save_current_preset(ListIndex(3)).is_err());
     assert_eq!(saved_events(&sim), 0);
-    s.load_preset(4).expect("load another");
+    s.load_preset(ListIndex(4)).expect("load another");
     assert!(!s.template_substituted());
 }
 
@@ -1860,7 +1885,7 @@ fn the_template_guard_survives_a_new_session() {
     let sim = crate::sim_device::SimDevice::new();
     sim.arm(crate::sim_device::Injection::RejectNextLoad);
     Session::from_transport(Box::new(sim.clone()))
-        .load_preset(3)
+        .load_preset(ListIndex(3))
         .expect("load");
     let mut s = Session::from_transport(Box::new(sim.clone()));
     assert!(
@@ -1868,11 +1893,11 @@ fn the_template_guard_survives_a_new_session() {
         "the next session sees the template"
     );
     assert_eq!(
-        s.save_current_preset(3).expect_err("refused"),
+        s.save_current_preset(ListIndex(3)).expect_err("refused"),
         super::preset::TEMPLATE_SAVE_REFUSED
     );
     assert_eq!(saved_events(&sim), 0);
-    s.load_preset(4).expect("load another");
+    s.load_preset(ListIndex(4)).expect("load another");
     assert!(!Session::from_transport(Box::new(sim.clone())).template_substituted());
 }
 
@@ -1882,11 +1907,11 @@ fn a_valid_scene_recall_keeps_saves_open() {
     let sim =
         crate::sim_device::SimDevice::new().with_preset_json(crate::sim_device::SCENED_PRESET_JSON);
     let mut s = Session::from_transport(Box::new(sim.clone()));
-    s.load_preset(0).expect("load");
+    s.load_preset(ListIndex(0)).expect("load");
     s.load_scene(BASE_SCENE_SLOT).expect("base");
     s.load_scene(2).expect("scene 3");
     assert!(!s.template_substituted());
-    s.save_current_preset(0).expect("save");
+    s.save_current_preset(ListIndex(0)).expect("save");
     assert_eq!(saved_events(&sim), 1);
 }
 
@@ -1898,7 +1923,7 @@ fn a_scene_index_past_the_scenes_aborts_the_server() {
         r#"{"audioGraph":{"guitarNodes":{"G1":[]}},"scenes":[{"sceneName":"A"},{"sceneName":"B"}]}"#,
     );
     let mut s = Session::from_transport(Box::new(sim.clone()));
-    s.load_preset(0).expect("load");
+    s.load_preset(ListIndex(0)).expect("load");
     let _ = s.load_scene(2);
     assert!(sim
         .events()

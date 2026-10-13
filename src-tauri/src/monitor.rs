@@ -49,6 +49,7 @@
 //! is not a lock cycle → no deadlock. `hid.rs`'s open-retry absorbs the residual
 //! seize-recycle race on reconnect.
 
+use crate::slot::{DeviceSlot, ListIndex};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -131,7 +132,7 @@ pub(crate) fn startup_graph() -> Option<ActiveGraph> {
 /// backup re-read cannot be addressed safely" — the preset was readable off a backup the
 /// whole time; only its NAME was missing. The snapshot is the same list the UI shows,
 /// costs no device I/O and takes no lock on the device.
-pub(crate) fn startup_preset_name(slot: u32) -> Option<String> {
+pub(crate) fn startup_preset_name(slot: ListIndex) -> Option<String> {
     crate::lock_ok(snapshot_slot()).as_ref().and_then(|s| {
         s.presets
             .iter()
@@ -198,7 +199,7 @@ fn store_connect_error(error: String) {
 pub(crate) enum LiveOp {
     /// `loadPreset` — 0-based My-Presets list index (the +1 wire translation
     /// happens here, mirroring `session::load_preset`).
-    LoadPreset(u32),
+    LoadPreset(ListIndex),
     /// `loadScene` — 0-based wire `scenes[]` slot ([`session::BASE_SCENE_SLOT`]
     /// recalls base). Only valid for the ACTIVE preset (the proto has no preset
     /// addressing of its own).
@@ -218,7 +219,7 @@ pub(crate) struct LiveCmd {
 }
 
 pub(crate) struct MetadataReadCmd {
-    list_index: u32,
+    list_index: ListIndex,
     reply: Sender<MetadataReadReply>,
 }
 
@@ -271,7 +272,7 @@ pub(crate) fn try_live_op(op: LiveOp) -> Option<Result<(), String>> {
 /// Opportunistically read one preset's plaintext field-8 JSON on the monitor's
 /// open session. Returns `None` when the monitor is not actively pumping; callers
 /// must fall back to the classic pause + fresh-session path.
-pub(crate) fn try_metadata_read(list_index: u32) -> Option<Result<Option<Vec<u8>>, String>> {
+pub(crate) fn try_metadata_read(list_index: ListIndex) -> Option<Result<Option<Vec<u8>>, String>> {
     if !MONITOR_ENABLED.load(SeqCst) || !MONITOR_SESSION_LIVE.load(SeqCst) {
         return None;
     }
@@ -312,7 +313,7 @@ fn exec_live(session: &mut Session, op: &LiveOp) -> Result<(), String> {
         // Same wire form as `session::load_preset` / the scene-scan precedent:
         // device slot = list index + 1, tabEnum 1 = My Presets.
         LiveOp::LoadPreset(idx) => session.send_and_collect(
-            &crate::proto::load_preset(*idx as u64 + 1, 1),
+            &crate::proto::load_my_preset(idx.device_slot()),
             LIVE_OP_PUMP_MS,
         ),
         // Explicit slot emit even for 0 (the device ignores an empty LoadScene{}).
@@ -329,7 +330,7 @@ fn exec_metadata_read(
     // Live-controller session: skip the `connection_request` re-arm (the session
     // is already armed by its dense heartbeat — re-arming draws a `connectionError`)
     // and keep that heartbeat alive through the harvest.
-    session.read_slot_preset_json_live(cmd.list_index + 1)
+    session.read_slot_preset_json_live(cmd.list_index.device_slot())
 }
 
 /// RAII guard for [`MONITOR_SESSION_LIVE`]: constructed when [`pump_loop`] starts
@@ -365,7 +366,7 @@ struct LivePreset {
     /// 0-based My-Presets list index (`PresetLoaded.presetSlot − 1`); `None` when
     /// the active preset isn't a My-Presets slot (factory / song context) or before
     /// the first `PresetLoaded` push.
-    list_index: Option<u32>,
+    list_index: Option<ListIndex>,
     name: String,
     is_dirty: bool,
     is_favorite: bool,
@@ -448,7 +449,7 @@ struct SyncPayload {
 /// and self-healing); `sceneListResponse(125)` only tops up the names.
 #[derive(Default)]
 struct LiveCache {
-    list_index: Option<u32>,
+    list_index: Option<ListIndex>,
     name: String,
     is_dirty: bool,
     is_favorite: bool,
@@ -784,7 +785,7 @@ fn startup_live(session: &mut Session) -> (Option<session::CurrentPresetLive>, b
     // Live-controller session: skip the re-arm (already armed by the handshake's
     // heartbeat cadence) so the fallback doesn't draw a `connectionError`, and keep
     // the heartbeat alive through the read.
-    match session.read_slot_preset_json_live(active_slot + 1) {
+    match session.read_slot_preset_json_live(active_slot.device_slot()) {
         Ok(Some(json)) => {
             let Some(mut live) = session::decode_plain_preset_live(&json) else {
                 return (None, true);
@@ -1012,7 +1013,10 @@ fn decode_and_emit(app: &tauri::AppHandle, body: &[u8], cache: &mut LiveCache) {
         // tabEnum 1 = My Presets; presetSlot is 1-based → 0-based list index.
         // Other tabs (factory / song context) ⇒ no My-Presets list index.
         let new_index = if pl.tab_enum == 1 {
-            pl.preset_slot.checked_sub(1).map(|s| s as u32)
+            u32::try_from(pl.preset_slot)
+                .ok()
+                .and_then(|s| DeviceSlot::try_from(s).ok())
+                .map(ListIndex::from)
         } else {
             None
         };
@@ -1251,9 +1255,9 @@ mod tests {
         assert!(lp.is_dirty);
         assert!(!lp.is_favorite);
         // Then the (11) half arrives (presetSlot 12 → list index 11).
-        c.list_index = Some(11);
+        c.list_index = Some(ListIndex(11));
         let lp = c.live_preset();
-        assert_eq!(lp.list_index, Some(11));
+        assert_eq!(lp.list_index, Some(ListIndex(11)));
         assert_eq!(lp.name, "Lead"); // name half preserved
     }
 
@@ -1261,7 +1265,7 @@ mod tests {
     fn live_preset_payload_serializes_camel_for_the_frontend() {
         // The contract is camelCase keys (listIndex/isDirty/isFavorite).
         let lp = LivePreset {
-            list_index: Some(3),
+            list_index: Some(ListIndex(3)),
             name: "X".into(),
             is_dirty: false,
             is_favorite: true,

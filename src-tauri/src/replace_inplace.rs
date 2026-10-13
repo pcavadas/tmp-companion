@@ -1,6 +1,7 @@
 //! In-place preset re-import — overwrite a slot preserving its Song link.
 
 use crate::session::Session;
+use crate::slot::ListIndex;
 use crate::{backup, read_song_presets, session};
 
 /// The tolerant list read, retried on a fresh reconnect until `pred` is satisfied (or a
@@ -25,7 +26,7 @@ fn read_list_until(
 /// the caller looks the entry up by (`find(|p| p.slot == orig_list_index)`), not merely
 /// `list.len()`: a dropped INTERIOR entry can make the list longer than the index while
 /// the target itself is still missing, which a length-only check would treat as reached.
-fn read_list_reaching(orig_list_index: u32) -> Result<Vec<session::PresetEntry>, String> {
+fn read_list_reaching(orig_list_index: ListIndex) -> Result<Vec<session::PresetEntry>, String> {
     read_list_until(|list| list.iter().any(|p| p.slot == orig_list_index))
 }
 
@@ -33,7 +34,7 @@ fn read_list_reaching(orig_list_index: u32) -> Result<Vec<session::PresetEntry>,
 /// report whether the slot, its Song assignment, and scene binding survive.
 /// Compare against `--import` (bare append) as the negative control — that one
 /// lands the edit at a new slot and the Song row then points at the stale copy.
-pub fn probe_replace_inplace(orig_list_index: u32, path: &str) -> Result<String, String> {
+pub fn probe_replace_inplace(orig_list_index: ListIndex, path: &str) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
     run_replace_inplace(orig_list_index, &bytes, &format!("file={path}"))
 }
@@ -50,8 +51,8 @@ pub fn probe_replace_inplace(orig_list_index: u32, path: &str) -> Result<String,
 /// edit took, and whether the Song binding survived. Consumed by the `--replace-inplace`
 /// / `--restore` probe formatter AND by `preset_io::OfflineIo::write`.
 pub(crate) struct ReplaceOutcome {
-    pub orig_list_index: u32,
-    pub scratch_slot: u32,
+    pub orig_list_index: ListIndex,
+    pub scratch_slot: ListIndex,
     pub scratch_name: String,
     pub orig_name_before: String,
     pub orig_name_after: Option<String>,
@@ -70,7 +71,7 @@ pub(crate) struct ReplaceOutcome {
 /// the edit landed and the Song-1 binding survived. All addresses are 0-based list
 /// indices; `session/preset.rs` translates each to the 1-based device userSlot.
 pub(crate) fn replace_inplace_core(
-    orig_list_index: u32,
+    orig_list_index: ListIndex,
     bytes: &[u8],
 ) -> Result<ReplaceOutcome, String> {
     replace_inplace_with(orig_list_index, bytes, true)
@@ -83,7 +84,7 @@ pub(crate) fn replace_inplace_core(
 /// guarded clear) is identical in both modes. An import that landed ON the (empty)
 /// target needs no save or clear, but is still loaded and body-checked.
 pub(crate) fn replace_inplace_with(
-    orig_list_index: u32,
+    orig_list_index: ListIndex,
     bytes: &[u8],
     verify: bool,
 ) -> Result<ReplaceOutcome, String> {
@@ -121,7 +122,7 @@ pub(crate) fn replace_inplace_with(
             )
         })?;
     // Slots that were EMPTY before — import will fill exactly one of these.
-    let empty_before: std::collections::HashSet<u32> = before
+    let empty_before: std::collections::HashSet<ListIndex> = before
         .iter()
         .filter(|p| session::is_empty_slot_name(&p.name))
         .map(|p| p.slot)
@@ -301,7 +302,7 @@ impl ProofError {
 /// device-side unless dirty; the working copy then still comes from a real load, since an
 /// import over the current slot reloads it (fw 1.8.58 static RE).
 pub(crate) fn load_and_prove(
-    list_index: u32,
+    list_index: ListIndex,
     name: &str,
     proof: &LoadProof,
 ) -> Result<Session, ProofError> {
@@ -364,7 +365,11 @@ fn check_loaded_body(
 }
 
 /// String-reporting wrapper over [`replace_inplace_core`] for the probe subcommands.
-fn run_replace_inplace(orig_list_index: u32, bytes: &[u8], src: &str) -> Result<String, String> {
+fn run_replace_inplace(
+    orig_list_index: ListIndex,
+    bytes: &[u8],
+    src: &str,
+) -> Result<String, String> {
     let o = replace_inplace_core(orig_list_index, bytes)?;
     let ac7 = if o.had_binding {
         format!(
@@ -403,11 +408,11 @@ fn run_replace_inplace(orig_list_index: u32, bytes: &[u8], src: &str) -> Result<
 }
 
 /// Clear the user preset at LIST index `list_index`, but only if that list entry
-/// reads `expect_name`. The guard checks the slot in **list-index space** and then
-/// clears the matching **device userSlot = list_index + 1** — so the verification
+/// reads `expect_name`. The guard and the clear both take a [`ListIndex`] (the session
+/// derives the device userSlot), so the compiler keeps the verification
 /// and the mutation address the *same* preset (the earlier guard bug checked the
 /// list index but cleared a same-numbered device slot = a different preset).
-pub(crate) fn guarded_clear(list_index: u32, expect_name: &str) -> Result<(), String> {
+pub(crate) fn guarded_clear(list_index: ListIndex, expect_name: &str) -> Result<(), String> {
     // Tolerant read: a tail-truncated list leaves the slot ABSENT → cur = None →
     // the guard refuses (fail-closed). Strict fails outright on interleaved
     // responses from back-to-back sessions (see replace_inplace_with).
@@ -421,44 +426,42 @@ pub(crate) fn guarded_clear(list_index: u32, expect_name: &str) -> Result<(), St
             "guarded clear refused: list index {list_index} reads {cur:?}, expected {expect_name:?}"
         ));
     }
-    Session::connect()?.clear_user_preset(list_index) // session translates list → device slot
+    Session::connect()?.clear_user_preset(list_index) // the session derives the device slot
 }
 
-/// Reorder the user preset at LIST index `from` to `to` (`moveUserPreset`), but only if
-/// `from` reads `expect_name` — the same expected-name guard [`guarded_clear`] gives a
-/// clear (#267). The list read and the move share ONE connection (the shape
-/// `probe_move_preset` validated on hardware), and both address list-index space;
-/// `Session::move_user_preset` adds the device +1.
-pub(crate) fn guarded_move(from: u32, to: u32, expect_name: &str) -> Result<(), String> {
-    let mut s = Session::connect()?;
-    // Tolerant read, fail-closed: a slot missing from a tail-truncated list refuses.
-    move_guard(&s.list_my_presets()?, from, to, expect_name)?;
-    s.move_user_preset(from, to)
-}
-
-/// The pure half of [`guarded_move`]: refuse unless list index `from` holds
-/// `expect_name`, and refuse a no-op move.
-fn move_guard(
+/// The guard for a reorder: both list indices must still hold the presets the caller
+/// picked. Pure, over one `list_my_presets` read, in the same list-index space the move
+/// takes (the session derives both device slots). A row missing from a truncated list
+/// refuses (fail-closed).
+pub(crate) fn check_move_mapping(
     list: &[crate::PresetEntry],
-    from: u32,
-    to: u32,
-    expect_name: &str,
+    from: ListIndex,
+    expect_from: &str,
+    to: ListIndex,
+    expect_to: &str,
 ) -> Result<(), String> {
-    if from == to {
-        return Err(format!(
-            "guarded move refused: from == to ({from}), nothing to reorder"
-        ));
-    }
-    let cur = list
-        .iter()
-        .find(|p| p.slot == from)
-        .map(|p| p.name.as_str());
-    if cur != Some(expect_name) {
-        return Err(format!(
-            "guarded move refused: list index {from} reads {cur:?}, expected {expect_name:?}"
-        ));
+    for (idx, expect) in [(from, expect_from), (to, expect_to)] {
+        let cur = list.iter().find(|p| p.slot == idx).map(|p| p.name.as_str());
+        if cur != Some(expect) {
+            return Err(format!(
+                "guarded move refused: list index {idx} reads {cur:?}, expected {expect:?}"
+            ));
+        }
     }
     Ok(())
+}
+
+/// Reorder `from` → `to` only after a non-destructive read confirms both still hold the
+/// expected presets (a list that changed since the UI read it must not move another preset).
+pub(crate) fn guarded_move(
+    from: ListIndex,
+    expect_from: &str,
+    to: ListIndex,
+    expect_to: &str,
+) -> Result<(), String> {
+    let list = Session::connect()?.list_my_presets()?;
+    check_move_mapping(&list, from, expect_from, to, expect_to)?;
+    Session::connect()?.move_user_preset(from, to)
 }
 
 /// Probe (AC5): restore a backup snapshot to the device IN PLACE — onto the
@@ -484,31 +487,29 @@ mod tests {
     use crate::library::TEMPLATE_PRESET_ID;
     use serde_json::json;
 
+    #[test]
+    fn a_move_is_refused_unless_both_indices_hold_the_expected_presets() {
+        let list: Vec<crate::PresetEntry> = ["Clean", "Lead", "--"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| crate::PresetEntry {
+                slot: ListIndex(i as u32),
+                name: (*n).to_string(),
+            })
+            .collect();
+        let (a, b, c) = (ListIndex(0), ListIndex(1), ListIndex(2));
+        assert!(check_move_mapping(&list, a, "Clean", c, "--").is_ok());
+        // The list shifted since the caller read it: either side's name no longer matches.
+        assert!(check_move_mapping(&list, a, "Lead", c, "--").is_err());
+        assert!(check_move_mapping(&list, a, "Clean", b, "--").is_err());
+        // A row a truncated read left out refuses (fail-closed).
+        assert!(check_move_mapping(&list, a, "Clean", ListIndex(9), "--").is_err());
+    }
+
     fn body(id: &str) -> serde_json::Value {
         json!({"audioGraph": {"template": "gtrSeries", "guitarNodes": {"G1": [
             {"nodeId": "ACD_Comp", "FenderId": "ACD_Comp", "dspUnitParameters": {"bypass": false}}
         ]}}, "info": {"displayName": "Big Rig", "preset_id": id}})
-    }
-
-    fn entry(slot: u32, name: &str) -> crate::PresetEntry {
-        crate::PresetEntry {
-            slot,
-            name: name.into(),
-        }
-    }
-
-    #[test]
-    fn a_move_proceeds_only_when_the_source_reads_the_expected_name() {
-        let list = [entry(4, "Clean"), entry(5, "Lead")];
-        assert!(move_guard(&list, 5, 9, "Lead").is_ok());
-        // The list-index/device-slot off-by-one: index 4 holds a DIFFERENT preset.
-        let err = move_guard(&list, 4, 9, "Lead").unwrap_err();
-        assert!(err.contains("reads Some(\"Clean\")"), "{err}");
-        // Missing from the read (truncated list or empty slot): fail closed.
-        assert!(move_guard(&list, 6, 9, "Lead").is_err());
-        assert!(move_guard(&list, 5, 5, "Lead")
-            .unwrap_err()
-            .contains("from == to"));
     }
 
     #[test]

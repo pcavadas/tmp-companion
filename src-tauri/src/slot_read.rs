@@ -12,7 +12,7 @@ use crate::*;
 /// whether the switch already carries a `param` fn for the selected control — it doesn't read
 /// scene data at all — so this flag only ever informs `probe --fs-list`'s printout.
 pub(crate) fn read_slot_preset_parsed(
-    slot: u32,
+    slot: ListIndex,
 ) -> Result<(serde_json::Value, bool, usize), String> {
     let (preset, has_fs_scenes, len, _) = read_slot_preset_sections(slot, &[])?;
     Ok((preset, has_fs_scenes, len))
@@ -34,14 +34,14 @@ pub(crate) fn read_slot_preset_parsed(
 /// (`level_preset`'s base isolation reads `presetLevel` and `lastLoadedScene` out of the
 /// SAME body, both of which survive a cut that takes `ftsw`).
 pub(crate) fn read_slot_preset_sections(
-    slot: u32,
+    slot: ListIndex,
     required: &[&str],
 ) -> Result<(serde_json::Value, bool, usize, TailRead), String> {
     let mut s = Session::connect()?;
     s.drain_until_quiet(250, 20)?;
     let json = s
-        .read_slot_preset_json(slot + 1)?
-        .ok_or_else(|| format!("no preset data for slot {}", slot + 1))?;
+        .read_slot_preset_json(slot.device_slot())?
+        .ok_or_else(|| format!("no preset data for slot {}", slot.device_slot()))?;
     let text = String::from_utf8_lossy(&json);
     let preset = session::tolerant_parse_json(&text)
         .ok_or_else(|| "preset JSON did not parse".to_string())?;
@@ -117,7 +117,7 @@ pub(crate) struct TailRead {
 /// Never fires offline: the trigger is section completeness and the SimDevice serves its
 /// committed bodies whole.
 pub(crate) fn read_slot_preset_complete(
-    slot: u32,
+    slot: ListIndex,
     required: &[&str],
 ) -> Result<(serde_json::Value, bool, usize), String> {
     let (preset, has_fs_scenes, len, tail) = read_slot_preset_sections(slot, required)?;
@@ -132,14 +132,14 @@ pub(crate) fn read_slot_preset_complete(
              off the field-8 read, and the preset list did not answer with the slot's name, \
              so a backup re-read cannot be addressed safely. Refusing rather than acting on \
              a partial preset",
-            slot + 1,
+            slot.device_slot(),
             tail.truncated.join(", ")
         ));
     }
     log::warn!(
         "slot {} ({:?}): field-8 read truncated before its {} section(s) ({len} B) — \
          re-reading the complete preset off a device backup",
-        slot + 1,
+        slot.device_slot(),
         tail.name,
         tail.truncated.join(", ")
     );
@@ -150,13 +150,13 @@ pub(crate) fn read_slot_preset_complete(
         s.device_backup(60, |_| {})?.0
     };
     let doc =
-        backup_read::preset_json_from_backup(&blob, i64::from(slot) + 1, &tail.name, expect_id)
+        backup_read::preset_json_from_backup(&blob, slot.device_slot(), &tail.name, expect_id)
             .map_err(|e| {
                 format!(
                 "slot {}: the preset is too large to read over USB — its {} section(s) were cut \
                  off the field-8 read, and the complete backup re-read failed ({e}). Refusing \
                  rather than acting on a partial preset",
-                slot + 1,
+                slot.device_slot(),
                 tail.truncated.join(", ")
             )
             })?;
@@ -173,10 +173,10 @@ pub(crate) fn read_slot_preset_complete(
 
 /// The id the backup fallback expects: the partial's own (`None` when the cut took
 /// `info`), refused when it is the "Empty" template's.
-fn backup_expect_id(preset: &serde_json::Value, slot: u32) -> Result<Option<&str>, String> {
+fn backup_expect_id(preset: &serde_json::Value, slot: ListIndex) -> Result<Option<&str>, String> {
     let id = crate::library::preset_id_of(preset);
     crate::library::refuse_template_id(id, "the field-8 read")
-        .map_err(|e| format!("slot {}: {e}", slot + 1))?;
+        .map_err(|e| format!("slot {}: {e}", slot.device_slot()))?;
     Ok(id)
 }
 
@@ -188,7 +188,8 @@ mod tests {
     #[test]
     fn backup_expect_id_refuses_a_template_partial() {
         let template = json!({"info": {"preset_id": crate::library::TEMPLATE_PRESET_ID}});
-        let err = backup_expect_id(&template, 400).expect_err("template partial must refuse");
+        let err =
+            backup_expect_id(&template, ListIndex(400)).expect_err("template partial must refuse");
         assert!(
             err.contains("slot 401") && err.contains("\"Empty\" template"),
             "{err}"
@@ -196,10 +197,13 @@ mod tests {
 
         let real = json!({"info": {"preset_id": "aaaaaaaa-0000-0000-0000-000000000001"}});
         assert_eq!(
-            backup_expect_id(&real, 400),
+            backup_expect_id(&real, ListIndex(400)),
             Ok(Some("aaaaaaaa-0000-0000-0000-000000000001"))
         );
         // A cut that took `info` still falls back to slot + name.
-        assert_eq!(backup_expect_id(&json!({"ftsw": []}), 400), Ok(None));
+        assert_eq!(
+            backup_expect_id(&json!({"ftsw": []}), ListIndex(400)),
+            Ok(None)
+        );
     }
 }

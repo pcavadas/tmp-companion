@@ -7,6 +7,7 @@ use crate::audio;
 use crate::footswitch;
 use crate::leveller;
 use crate::session::Session;
+use crate::slot::ListIndex;
 use crate::{node_param_f64, read_slot_preset_parsed, resolve_footswitch_job, FootswitchLevelJob};
 
 /// Probe entry: isolate the in-process CoreAudio → chunked-HID failure. Sends a chunked
@@ -15,7 +16,7 @@ use crate::{node_param_f64, read_slot_preset_parsed, resolve_footswitch_job, Foo
 /// [] = dropped). Tells us whether one capture is enough to break chunked sends, or if it
 /// accumulates. Targets slot 23 / FS6 (the BD2 preset); restores after each set.
 pub fn probe_repro_chunked() -> Result<String, String> {
-    let slot = 23u32;
+    let slot = ListIndex(23);
     let switch = 6u32;
     let json = r#"{"func":"param","groupId":"G1","nodeId":"ACD_BluesDriver","parameterId":"gain","valueA":0.5,"valueB":0.35,"valueType":2,"colorA":3,"colorB":0,"customLabel":"REPRO","switchType":0,"isActive":true,"linkGroup":0}"#;
     let mut out = String::from("[probe --repro-chunked]\n");
@@ -80,7 +81,7 @@ pub fn probe_repro_chunked() -> Result<String, String> {
 
 /// Probe entry: clear one footswitch function (restore/cleanup after a `--level-footswitch
 /// --commit`). Loads `slot`, clears `(switch, index)`, saves, and field-8 verifies.
-pub fn probe_clear_footswitch(slot: u32, switch: u32, index: u32) -> Result<String, String> {
+pub fn probe_clear_footswitch(slot: ListIndex, switch: u32, index: u32) -> Result<String, String> {
     let count_at = |f: &Option<serde_json::Value>| -> usize {
         f.as_ref()
             .and_then(|f| f.as_array())
@@ -89,7 +90,7 @@ pub fn probe_clear_footswitch(slot: u32, switch: u32, index: u32) -> Result<Stri
             .map(|fns| fns.len())
             .unwrap_or(usize::MAX)
     };
-    let before = count_at(&read_slot_ftsw(slot + 1));
+    let before = count_at(&read_slot_ftsw(slot.device_slot()));
     let mut s = Session::connect()?;
     s.begin_live_edit()?;
     s.load_preset(slot)?;
@@ -110,7 +111,7 @@ pub fn probe_clear_footswitch(slot: u32, switch: u32, index: u32) -> Result<Stri
     s.save_current_preset(slot)?;
     drop(s);
     std::thread::sleep(std::time::Duration::from_millis(600));
-    let count = read_slot_ftsw(slot + 1)
+    let count = read_slot_ftsw(slot.device_slot())
         .and_then(|f| {
             f.as_array()
                 .and_then(|a| a.get(switch as usize))
@@ -120,7 +121,7 @@ pub fn probe_clear_footswitch(slot: u32, switch: u32, index: u32) -> Result<Stri
         .unwrap_or(usize::MAX);
     Ok(format!(
         "[probe --clear-ftsw] slot {} FS{switch} index {index}: before clear {before} function(s) → cleared + saved → now {count} function(s)\n",
-        slot + 1
+        slot.device_slot()
     ))
 }
 
@@ -128,7 +129,7 @@ pub fn probe_clear_footswitch(slot: u32, switch: u32, index: u32) -> Result<Stri
 /// landed on the block (bypass unchanged, no param fn added), then RESTORE the original value.
 /// Mirrors `--ftsw-validate --commit`'s commit-then-restore. Stimulus via `TMP_LEVELLER_STIMULUS`.
 pub fn probe_bake_validate(
-    slot: u32,
+    slot: ListIndex,
     switch: u32,
     group: &str,
     node: &str,
@@ -173,7 +174,7 @@ pub fn probe_bake_validate(
     let (orig, byp0, fns0, engaged, restore, lev_param) = snapshot()?;
     let mut out = format!(
         "[probe --bake-validate] slot {} · FS{switch} · {group}/{node}.{param}\n  before: value={orig:.4} bypass={byp0} switch_fns={fns0}\n",
-        slot + 1
+        slot.device_slot()
     );
 
     // Commit the bake (engaged-measured, value written onto the block).
@@ -251,7 +252,7 @@ pub fn probe_bake_validate(
 /// sweep), and it ends with the guaranteed re-amp OFF. Stimulus via `TMP_LEVELLER_STIMULUS`
 /// (injected verbatim, like a calibrated profile's DI capture).
 pub fn probe_fs_sweep(
-    list_index: u32,
+    list_index: ListIndex,
     switch: u32,
     group: &str,
     node: &str,
@@ -346,7 +347,7 @@ pub fn probe_fs_sweep(
 /// reload discards the working-copy writes) and it ends with the guaranteed re-amp OFF.
 /// Stimulus via `TMP_LEVELLER_STIMULUS` (injected verbatim, like a calibrated profile's capture).
 pub fn probe_amp_recipe(
-    list_index: u32,
+    list_index: ListIndex,
     group: &str,
     amp_node: &str,
     gain: f32,
@@ -440,7 +441,7 @@ pub fn probe_amp_recipe(
 /// read DIAGNOSTIC only — the bake/assign gate is per-node (a scene overlay CHANGING that
 /// block's `bypass` OR its leveled param vs base), so a `has_fs_scenes=true` preset can
 /// still classify as Bake.
-pub fn probe_fs_list(slot: u32) -> Result<String, String> {
+pub fn probe_fs_list(slot: ListIndex) -> Result<String, String> {
     let (preset, has_fs_scenes, json_len) = read_slot_preset_parsed(slot)?;
     let ftsw = preset
         .get("ftsw")
@@ -449,7 +450,7 @@ pub fn probe_fs_list(slot: u32) -> Result<String, String> {
     let infos = footswitch::enumerate_block_footswitches(&ftsw, &preset);
     let mut out = format!(
         "[probe --fs-list] slot {} · {} block-footswitch(es) · has_fs_scenes={has_fs_scenes} ({json_len}B)\n",
-        slot + 1,
+        slot.device_slot(),
         infos.len()
     );
     for fi in &infos {
@@ -485,7 +486,7 @@ pub fn probe_fs_list(slot: u32) -> Result<String, String> {
 /// block is OFF in base, the base capture is the preset WITHOUT it and the forced capture is
 /// WITH it, so a meaningful loudness delta proves the live bypass write took effect (the bake
 /// path depends on this). Stimulus via `TMP_LEVELLER_STIMULUS`.
-pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String, String> {
+pub fn probe_measure_forced(slot: ListIndex, group: &str, node: &str) -> Result<String, String> {
     let stim_path = std::env::var("TMP_LEVELLER_STIMULUS")
         .map_err(|_| "set TMP_LEVELLER_STIMULUS to the stimulus WAV".to_string())?;
     let stim = read_stimulus_calibrated(&stim_path, None)?;
@@ -519,7 +520,7 @@ pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String
     };
     let mut out = format!(
         "[probe --measure-forced] slot {} · {group}/{node}\n",
-        slot + 1
+        slot.device_slot()
     );
     out += &row("base (as-is)       ", &base);
     out += &row("forced bypass=true ", &off);
@@ -571,7 +572,7 @@ pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String
 /// Read-only throughout: every write lands on a throwaway connection's working copy and
 /// nothing is ever saved.
 pub fn probe_measure_footswitch(
-    slot: u32,
+    slot: ListIndex,
     switch: u32,
     topology_id: &str,
     lev: Option<(&str, &str, &str)>,
@@ -592,7 +593,8 @@ pub fn probe_measure_footswitch(
     // the dump is simply not armed (the measurement still prints).
     let row = match (dump_dir, target_lufs) {
         (Some(dir), Some(target)) => Some(
-            crate::validate_log::ValidationRow::footswitch(slot, switch, target).with_wav_dir(dir),
+            crate::validate_log::ValidationRow::footswitch(slot.get(), switch, target)
+                .with_wav_dir(dir),
         ),
         _ => None,
     };
@@ -621,7 +623,7 @@ pub fn probe_measure_footswitch(
 /// DRY by default (measure + solve, no write); `commit` writes `valueA` + saves.
 /// Stimulus via `TMP_LEVELLER_STIMULUS` (+ optional `TMP_LEVELLER_CAL_LUFS`).
 pub fn probe_level_footswitch(
-    slot: u32,
+    slot: ListIndex,
     switch: u32,
     lev_group: &str,
     lev_node: &str,
@@ -710,7 +712,7 @@ pub fn probe_level_footswitch(
     )?;
     let mut out = format!(
         "[probe --level-footswitch] preset slot {} · FS{switch} · {lev_group}/{lev_node}.{lev_param}  ({})\n",
-        slot + 1,
+        slot.device_slot(),
         if commit { "COMMIT — wrote + saved" } else { "DRY — not written" }
     );
     out += &format!("  plan: {plan_label}  ·  method={}\n", r.method);
@@ -750,7 +752,7 @@ pub fn probe_level_footswitch(
 /// code), then commit every write on ONE live-edit session with ONE save
 /// (`write_footswitch_values`). Verify persistence with `--export` afterwards.
 /// Point it at a SCRATCH preset: it persists.
-pub fn probe_fs_batch(list_index: u32, values: Vec<f32>) -> Result<String, String> {
+pub fn probe_fs_batch(list_index: ListIndex, values: Vec<f32>) -> Result<String, String> {
     let (preset, _, _) = read_slot_preset_parsed(list_index)?;
     let ftsw = preset
         .get("ftsw")
@@ -864,7 +866,7 @@ pub fn probe_fs_batch(list_index: u32, values: Vec<f32>) -> Result<String, Strin
 /// mirroring is out of scope (this is a probe diagnostic, not the product write path) — on a
 /// preset WITH scenes, overlays that restate the param keep their authored values.
 pub fn probe_set_param_save(
-    list_index: u32,
+    list_index: ListIndex,
     expect_name: &str,
     group: &str,
     node: &str,
@@ -888,14 +890,18 @@ pub fn probe_set_param_save(
     if name != expect_name {
         return Err(format!(
             "refusing slot {}: reads \u{201c}{name}\u{201d}, expected \u{201c}{expect_name}\u{201d}",
-            list_index + 1
+            list_index.device_slot()
         ));
     }
-    let before = node_param_f64(&preset, node, param)
-        .ok_or_else(|| format!("{node}.{param} not found in slot {}", list_index + 1))?;
+    let before = node_param_f64(&preset, node, param).ok_or_else(|| {
+        format!(
+            "{node}.{param} not found in slot {}",
+            list_index.device_slot()
+        )
+    })?;
     let mut out = format!(
         "[probe --set-param-save] slot {} \u{201c}{name}\u{201d} \u{b7} {group}/{node}.{param}\n  before: {before:.4}\n",
-        list_index + 1
+        list_index.device_slot()
     );
     if !save {
         out += &format!("  DRY \u{2014} would write {value:.4} (re-run with `save` to persist)\n");

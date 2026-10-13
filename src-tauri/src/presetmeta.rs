@@ -72,6 +72,7 @@ impl crate::bulkrun::Operation for SetOnLoadMidiOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::slot::ListIndex;
     use std::path::PathBuf;
 
     // AC1 — set bpm + MIDI messages on a fixture; cap enforced.
@@ -106,10 +107,10 @@ mod tests {
     fn onload_midi_op_transforms_and_caps() {
         use crate::bulkrun::{Operation, PresetTarget};
         let target = PresetTarget {
-            list_index: 0,
+            list_index: ListIndex(0),
             list_enum: 1,
             display_name: "P0".to_string(),
-            source: "offline-file".to_string(),
+            source: crate::backup::SnapshotSource::OfflineFile,
             before_json: r#"{"bpm":120.0,"onLoadMidiMsgs":null}"#.to_string(),
         };
         let op = SetOnLoadMidiOp {

@@ -16,6 +16,7 @@
 use super::SCRATCH_SLOTS;
 use crate::leveller;
 use crate::session::Session;
+use crate::slot::{DeviceSlot, ListIndex};
 use serde_json::Value;
 
 /// Appended by the insert trial: one cheap block, legal in any guitar group.
@@ -131,7 +132,7 @@ fn group_nodes<'a>(doc: &'a Value, group: &str) -> impl Iterator<Item = &'a Valu
 
 fn param<'a>(doc: &'a Value, group: &str, node: &str, p: &str) -> Option<&'a Value> {
     group_nodes(doc, group)
-        .find(|n| crate::audiograph::node_id(n) == Some(node))?
+        .find(|n| crate::audiograph::instance_id(n) == Some(node))?
         .get("dspUnitParameters")?
         .get(p)
 }
@@ -160,7 +161,7 @@ fn pick_edits(doc: &Value) -> Result<Vec<Edit>, String> {
         let b = n.get("dspUnitParameters")?.get("bypass")?.as_bool()?;
         Some(Edit::Bypass {
             group: g.clone(),
-            node: crate::audiograph::node_id(n)?.to_string(),
+            node: crate::audiograph::instance_id(n)?.to_string(),
             from: b,
         })
     });
@@ -173,7 +174,7 @@ fn pick_edits(doc: &Value) -> Result<Vec<Edit>, String> {
         let to = if v > 0.5 { v - 0.1 } else { v + 0.1 };
         Some(Edit::Float {
             group: g.clone(),
-            node: crate::audiograph::node_id(n)?.to_string(),
+            node: crate::audiograph::instance_id(n)?.to_string(),
             param: p.to_string(),
             from: v,
             to: to as f32,
@@ -190,9 +191,9 @@ fn pick_edits(doc: &Value) -> Result<Vec<Edit>, String> {
 /// The trial slot: its list index, its name (every read is checked against it, so a
 /// document from the bounce slot can never pass for the target's), and the bounce slot.
 struct Target {
-    list: u32,
+    list: ListIndex,
     name: String,
-    other: u32,
+    other: ListIndex,
 }
 
 /// What a fresh connection sees: the dirty flag its handshake reported, and the working copy.
@@ -316,7 +317,7 @@ fn verdict(edit: &Edit, doc: &Value) -> String {
     format!("{v} [{}]", edit.observed(doc))
 }
 
-fn timed_restore(list: u32) -> Result<u128, String> {
+fn timed_restore(list: ListIndex) -> Result<u128, String> {
     let t0 = std::time::Instant::now();
     leveller::restore_saved_preset(list)?;
     Ok(t0.elapsed().as_millis())
@@ -350,7 +351,7 @@ fn trial(t: &Target, edit: &Edit, product: bool, out: &mut String) -> Result<(),
         return Err(format!(
             "cleanup real reload did not restore the original ({}) — stop and inspect slot {}",
             verdict(edit, &clean.doc),
-            t.list + 1
+            t.list.device_slot()
         ));
     }
     out.push_str(&format!(
@@ -360,17 +361,17 @@ fn trial(t: &Target, edit: &Edit, product: bool, out: &mut String) -> Result<(),
     Ok(())
 }
 
-pub fn probe_restore_check(device_slot: u32, trials: u32) -> Result<String, String> {
-    let list = device_slot.checked_sub(1).ok_or("the slot is 1-based")?;
+pub fn probe_restore_check(device_slot: DeviceSlot, trials: u32) -> Result<String, String> {
+    let list = device_slot.list_index();
     if !SCRATCH_SLOTS.contains(&list) {
         return Err(format!(
             "list {list} is outside the scratch zone {SCRATCH_SLOTS:?} — refusing a working-copy edit"
         ));
     }
     let other = if list == SCRATCH_SLOTS[0] {
-        list + 1
+        ListIndex(list.get() + 1)
     } else {
-        list - 1
+        ListIndex(list.get() - 1)
     };
     let _reamp_off = super::ReampOffGuard;
 
@@ -381,7 +382,7 @@ pub fn probe_restore_check(device_slot: u32, trials: u32) -> Result<String, Stri
         s.rearm_active_info()?;
         s.pump_collect_alive(400)?;
         let active = s.active_preset_name();
-        let hits: Vec<u32> = presets
+        let hits: Vec<ListIndex> = presets
             .iter()
             .filter(|p| Some(&p.name) == active.as_ref())
             .map(|p| p.slot)

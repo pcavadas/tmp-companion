@@ -9,6 +9,7 @@ use crate::library;
 use crate::proto;
 use crate::session;
 use crate::session::Session;
+use crate::slot::ListIndex;
 use crate::PresetEntry;
 use crate::{format_dry_run, io_for_path, library_categories, targets_from_library};
 
@@ -75,7 +76,7 @@ pub fn probe_set_scene_change_behavior(value: u64) -> Result<String, String> {
 ///
 /// Nothing is saved. Discard the working copy afterwards by loading another preset.
 pub fn probe_set_param(
-    slot: u32,
+    slot: ListIndex,
     group: &str,
     node: &str,
     param: &str,
@@ -146,7 +147,7 @@ pub fn probe_settings_read(field: u32) -> Result<String, String> {
 /// Scratch-guarded: this is a destructive edit if the device auto-saves, and
 /// whether it does is one of the unknowns. Does NOT load `slot` itself — see the
 /// active-preset check below for why an explicit load can't substitute for it.
-pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, String> {
+pub fn probe_switch_template(slot: ListIndex, template_type: &str) -> Result<String, String> {
     if !SCRATCH_SLOTS.contains(&slot) {
         return Err(format!(
             "refusing switchTemplate on {slot}: scratch-zone only {SCRATCH_SLOTS:?} \
@@ -171,7 +172,7 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
     // BEFORE the undrained capture below — the two don't interleave.
     s.drain_until_quiet(250, 20)?;
     let expected_raw = s
-        .read_slot_preset_json(slot + 1)?
+        .read_slot_preset_json(slot.device_slot())?
         .ok_or_else(|| format!("list index {slot}: no presetJson on the device (empty slot?)"))?;
     let expected_json = session::tolerant_parse_json(&String::from_utf8_lossy(&expected_raw))
         .ok_or_else(|| format!("list index {slot}: presetJson did not parse"))?;
@@ -245,7 +246,7 @@ fn json_str_field(j: &str, key: &str) -> Option<String> {
 
 /// The saved body's `info.preset_id`, refused (before any capture) when absent, empty or
 /// the "Empty" template's — none of those identifies a preset.
-fn expected_identity(expected_json: &serde_json::Value, slot: u32) -> Result<&str, String> {
+fn expected_identity(expected_json: &serde_json::Value, slot: ListIndex) -> Result<&str, String> {
     library::identity_preset_id_of(expected_json).ok_or_else(|| {
         format!(
             "list index {slot}: presetJson has no info.preset_id identifying a preset (absent, \
@@ -261,7 +262,7 @@ fn switch_template_identity(
     expected_json: &serde_json::Value,
     expected_id: &str,
     before: &str,
-    slot: u32,
+    slot: ListIndex,
 ) -> Result<(), String> {
     let expected_name = expected_json
         .pointer("/info/displayName")
@@ -294,7 +295,7 @@ fn switch_template_identity(
 ///
 /// **Scratch-zone only.** A reorder outside 400/401/402 shifts real user presets,
 /// so anything else is refused rather than trusted to the caller.
-pub fn probe_move_preset(from: u32, to: u32) -> Result<String, String> {
+pub fn probe_move_preset(from: ListIndex, to: ListIndex) -> Result<String, String> {
     if !SCRATCH_SLOTS.contains(&from) || !SCRATCH_SLOTS.contains(&to) {
         return Err(format!(
             "refusing move {from}→{to}: probe reorder is scratch-zone only {SCRATCH_SLOTS:?} \
@@ -306,7 +307,7 @@ pub fn probe_move_preset(from: u32, to: u32) -> Result<String, String> {
     }
 
     let mut s = Session::connect()?;
-    fn name_at(list: &[PresetEntry], idx: u32) -> String {
+    fn name_at(list: &[PresetEntry], idx: ListIndex) -> String {
         list.iter()
             .find(|p| p.slot == idx)
             .map(|p| p.name.clone())
@@ -417,7 +418,9 @@ pub fn probe_reamp_off() -> Result<(), String> {
 /// silent, and delivers kept-alive on 1.8.58. Without this, FS-scene leveling found zero
 /// amp candidates and silently skipped every scene (the device never switched scenes).
 /// `slot` is the 0-based list index; every path opens its own session.
-pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
+pub(crate) fn load_then_discover_blocks(
+    slot: ListIndex,
+) -> Result<Vec<session::LevelBlock>, String> {
     match discover_blocks_rich(slot) {
         Ok(blocks) if !blocks.is_empty() => return Ok(blocks),
         Ok(_) => log::info!("rich block discovery for slot={slot}: loaded but no level blocks"),
@@ -458,7 +461,7 @@ pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelB
 /// rides on) and reads the level blocks from the accumulated push bodies. Mirrors the
 /// bench intel session + `prepass_scene_docs`. Private: the primary path of
 /// `load_then_discover_blocks`, which owns the fallbacks.
-fn discover_blocks_rich(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
+fn discover_blocks_rich(slot: ListIndex) -> Result<Vec<session::LevelBlock>, String> {
     crate::leveller::make_current(slot)?;
     let mut s = Session::connect()?;
     s.rich_warmup()?;
@@ -468,7 +471,7 @@ fn discover_blocks_rich(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
 
 /// Enumerate a preset's level-type block controls (the leveling-knob candidates).
 /// Used by `probe --blocks`.
-pub fn probe_list_blocks(slot: u32) -> Result<String, String> {
+pub fn probe_list_blocks(slot: ListIndex) -> Result<String, String> {
     let blocks = load_then_discover_blocks(slot)?;
     if blocks.is_empty() {
         return Err(
@@ -501,7 +504,7 @@ pub fn probe_import_preset(path: &str) -> Result<String, String> {
     // third fresh session — the post-import re-list must NOT reuse the importing
     // session's buffer (the chunked send pollutes its accumulated reports).
     let before = Session::connect()?.list_my_presets()?;
-    let before_pairs: std::collections::HashSet<(u32, String)> =
+    let before_pairs: std::collections::HashSet<(ListIndex, String)> =
         before.iter().map(|p| (p.slot, p.name.clone())).collect();
 
     let resp = Session::connect()?.import_preset(&bytes)?;
@@ -510,7 +513,14 @@ pub fn probe_import_preset(path: &str) -> Result<String, String> {
     let changed: Vec<String> = after
         .iter()
         .filter(|p| !before_pairs.contains(&(p.slot, p.name.clone())))
-        .map(|p| format!("idx {} (device slot {}) = {:?}", p.slot, p.slot + 1, p.name))
+        .map(|p| {
+            format!(
+                "idx {} (device slot {}) = {:?}",
+                p.slot,
+                p.slot.device_slot(),
+                p.name
+            )
+        })
         .collect();
     let resp_str = match resp {
         Some((le, slot)) => format!("importPresetResponse: listEnum={le} presetSlot={slot}"),
@@ -536,7 +546,7 @@ pub fn probe_import_preset(path: &str) -> Result<String, String> {
 /// guard's read) and `clear_user_preset`'s argument (the mutation), so guard and
 /// mutation act in ONE address space (the write-safety lesson). NB: `--export`
 /// takes the 1-BASED device slot instead — this probe's list index + 1.
-pub fn probe_clear_preset(slot: u32, expect_name: &str) -> Result<String, String> {
+pub fn probe_clear_preset(slot: ListIndex, expect_name: &str) -> Result<String, String> {
     let before = Session::connect()?.list_my_presets()?;
     let cur = before
         .iter()
@@ -610,7 +620,7 @@ pub fn probe_diag_writes() -> Result<String, String> {
 /// already saves via list index, which is consistent with that.
 pub fn probe_map_slots() -> Result<String, String> {
     let list = Session::connect()?.list_my_presets()?;
-    let empty_list: Vec<u32> = list
+    let empty_list: Vec<ListIndex> = list
         .iter()
         .filter(|p| session::is_empty_slot_name(&p.name))
         .map(|p| p.slot)
@@ -660,7 +670,7 @@ pub fn probe_bulk_dryrun(folder: &str, opspec_json: &str) -> Result<String, Stri
     let lib = probe_load_reconciled_library(folder)?;
     let op: bulk_cmd::OpSpec =
         serde_json::from_str(opspec_json).map_err(|e| format!("parse opspec: {e}"))?;
-    let selection: Vec<u32> = lib.records.iter().filter_map(|r| r.list_index).collect();
+    let selection: Vec<ListIndex> = lib.records.iter().filter_map(|r| r.list_index).collect();
     let targets = targets_from_library(&lib, &selection)?;
     let operation = bulk_cmd::build_operation(&op)?;
     Ok(format_dry_run(&bulkrun::dry_run(
@@ -674,7 +684,7 @@ pub fn probe_bulk_dryrun(folder: &str, opspec_json: &str) -> Result<String, Stri
 pub fn probe_bulk_apply(
     folder: &str,
     opspec_json: &str,
-    slots: Option<Vec<u32>>,
+    slots: Option<Vec<ListIndex>>,
     revert: bool,
 ) -> Result<String, String> {
     let lib = probe_load_reconciled_library(folder)?;
@@ -742,8 +752,8 @@ pub fn probe_bulk_apply(
 /// by a non-destructive read of `slot_a`'s current name against `expected_name_a`
 /// (same 0-based list-index space as the mutation) before anything is touched.
 pub fn probe_save_load_test(
-    slot_a: u32,
-    slot_b: u32,
+    slot_a: ListIndex,
+    slot_b: ListIndex,
     level: f32,
     expected_name_a: &str,
 ) -> Result<String, String> {
@@ -783,9 +793,9 @@ pub fn probe_save_load_test(
     ));
     Ok(format!(
         "set level {level} on slot {} (ack) · save sent · loaded slot {} — save+load on ONE connection (initial slot-{}-current load used a separate connection; persistence not read back)",
-        slot_a + 1,
-        slot_b + 1,
-        slot_a + 1
+        slot_a.device_slot(),
+        slot_b.device_slot(),
+        slot_a.device_slot()
     ))
 }
 
@@ -820,7 +830,10 @@ pub fn probe_save_load_test(
 /// unanswered (a truncated/garbled read), so let the device settle first.
 const READBACK_SETTLE_MS: u64 = 8_000;
 
-pub fn probe_redistribute_persist_check(slot: u32, expected_name: &str) -> Result<String, String> {
+pub fn probe_redistribute_persist_check(
+    slot: ListIndex,
+    expected_name: &str,
+) -> Result<String, String> {
     use crate::audiograph;
     use std::time::Duration;
 
@@ -959,7 +972,7 @@ fn pass(ok: bool) -> &'static str {
 /// Name-guard for a slot-keyed write: a slot is a position, not an identity — refuse
 /// unless it still holds the preset the caller named (the write-safety lesson). Opens
 /// its own connection (a non-destructive read before any mutation).
-fn guard_slot_name(slot: u32, expected_name: &str) -> Result<(), String> {
+fn guard_slot_name(slot: ListIndex, expected_name: &str) -> Result<(), String> {
     let name = Session::connect()?
         .list_my_presets()?
         .into_iter()
@@ -986,7 +999,7 @@ fn find_amp_output_level(preset: &serde_json::Value) -> Option<(String, String, 
                 .and_then(|p| p.get("outputLevel"))
                 .and_then(serde_json::Value::as_f64)
             {
-                let id = crate::audiograph::node_id(node)?.to_string();
+                let id = crate::audiograph::instance_id(node)?.to_string();
                 return Some((k.clone(), id, v as f32));
             }
         }
@@ -1038,7 +1051,7 @@ fn scene_overlay_output_level(
 /// must all share the SAME session. No re-amp is toggled, so the same-session save is
 /// safe (the post-re-amp save-drop can't bite).
 fn write_three_and_save(
-    slot: u32,
+    slot: ListIndex,
     group_id: &str,
     node_id: &str,
     scene_slot: u32,
@@ -1086,7 +1099,7 @@ fn write_three_and_save(
 /// Name-guarded restore of the three touched values (+ save), on one session.
 #[allow(clippy::too_many_arguments)]
 fn restore_scratch(
-    slot: u32,
+    slot: ListIndex,
     expected_name: &str,
     group_id: &str,
     node_id: &str,
@@ -1114,7 +1127,7 @@ fn restore_scratch(
 /// happens in the SAME address space as the mutation it protects, which is the whole
 /// point: a `clear` once deleted a real preset because its guard checked list-index
 /// space while the op acted in device-slot space.
-pub(crate) fn confirm_slot_name(slot: u32, expect_name: &str) -> Result<(), String> {
+pub(crate) fn confirm_slot_name(slot: ListIndex, expect_name: &str) -> Result<(), String> {
     let before = Session::connect()?.list_my_presets()?;
     let cur = before
         .iter()
@@ -1181,7 +1194,7 @@ pub(crate) fn confirm_slot_name(slot: u32, expect_name: &str) -> Result<(), Stri
 /// device's — widen it (multi-param targets, real-unit encoding) only if a repair
 /// actually needs it.
 pub fn probe_set_scene_param(
-    slot: u32,
+    slot: ListIndex,
     expect_name: &str,
     scene: Option<u32>,
     group: &str,
@@ -1236,7 +1249,7 @@ pub fn probe_set_scene_param(
     )?;
     Ok(format!(
         "[probe --set-scene-param] slot {} · scene {} · {group}/{node}.{param} = {value:.4}  ⇒  {}\n",
-        slot + 1,
+        slot.device_slot(),
         scene
             .map(|s| s.to_string())
             .unwrap_or_else(|| "base(global)".to_string()),
@@ -1261,7 +1274,7 @@ pub fn probe_set_scene_param(
 /// Always saves, so the caller can diff the persisted preset. Diagnostic only.
 #[allow(clippy::too_many_arguments)] // mirrors leveller::level_footswitch: a diagnostic seam with one arg per session step
 pub fn probe_scene_write_cell(
-    slot: u32,
+    slot: ListIndex,
     expect_name: &str,
     scene: Option<u32>,
     group: &str,
@@ -1301,7 +1314,7 @@ pub fn probe_scene_write_cell(
     Ok(format!(
         "[probe --scene-write-cell] slot {} · scene {:?} · {group}/{node}.{param}\n  \
          scene_edit={scene_edit} write={:?} recall_settle={recall_settle_ms}ms  ⇒ saved\n",
-        slot + 1,
+        slot.device_slot(),
         scene,
         value,
     ))
@@ -1322,7 +1335,7 @@ mod tests {
     fn switch_template_identity(
         saved: &serde_json::Value,
         before: &str,
-        slot: u32,
+        slot: ListIndex,
     ) -> Result<(), String> {
         super::switch_template_identity(saved, expected_identity(saved, slot)?, before, slot)
     }
@@ -1330,14 +1343,28 @@ mod tests {
     #[test]
     fn switch_template_identity_refuses_the_empty_template_on_either_side() {
         let real = "aaaaaaaa-0000-0000-0000-000000000001";
-        switch_template_identity(&saved(real), &active(real), 400).expect("same real id");
+        switch_template_identity(&saved(real), &active(real), ListIndex(400))
+            .expect("same real id");
 
         // Template vs template matches byte-for-byte and must still refuse.
-        let err =
-            switch_template_identity(&saved(TEMPLATE_PRESET_ID), &active(TEMPLATE_PRESET_ID), 400)
-                .expect_err("template saved body");
+        let err = switch_template_identity(
+            &saved(TEMPLATE_PRESET_ID),
+            &active(TEMPLATE_PRESET_ID),
+            ListIndex(400),
+        )
+        .expect_err("template saved body");
         assert!(err.contains("Empty"), "{err}");
-        assert!(switch_template_identity(&saved(TEMPLATE_PRESET_ID), &active(real), 400).is_err());
-        assert!(switch_template_identity(&saved(real), &active(TEMPLATE_PRESET_ID), 400).is_err());
+        assert!(switch_template_identity(
+            &saved(TEMPLATE_PRESET_ID),
+            &active(real),
+            ListIndex(400)
+        )
+        .is_err());
+        assert!(switch_template_identity(
+            &saved(real),
+            &active(TEMPLATE_PRESET_ID),
+            ListIndex(400)
+        )
+        .is_err());
     }
 }

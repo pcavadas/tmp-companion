@@ -5,6 +5,7 @@ use crate::proto;
 use crate::saved_blocks::{find_block_presets_blob, parse_block_presets_map, SavedBlock};
 use crate::session;
 use crate::session::Session;
+use crate::slot::DeviceSlot;
 use crate::{
     discover_replace_plans, held_replace_one, replace_many_held, BulkReplaceItem, ReplArg,
 };
@@ -13,7 +14,11 @@ use crate::{
 /// loads the preset, settles, sends `replaceNode`, and DUMPS the device's reply (looking
 /// for `nodeReplaced`/40 vs `connectionError`) so we can see why a replace does/doesn't
 /// take. Then saves + re-reads to verify. Read+write (gated on explicit invocation).
-pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<String, String> {
+pub fn probe_replace_debug(
+    dev_slot: DeviceSlot,
+    from_id: &str,
+    to_id: &str,
+) -> Result<String, String> {
     let hexn = |b: &[u8], n: usize| {
         b.iter()
             .take(n)
@@ -21,7 +26,7 @@ pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let list_index = dev_slot.saturating_sub(1);
+    let list_index = dev_slot.list_index();
     let mut report = String::new();
 
     // ── Connection 1: find the target node, then LOAD the preset (make it the
@@ -170,8 +175,8 @@ pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<
         if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&vraw)) {
             report.push_str(&format!(
                 "verify after save: {from_id}×{}  {to_id}×{}\n",
-                audiograph::count_nodes_with_id(&vval, from_id),
-                audiograph::count_nodes_with_id(&vval, to_id)
+                audiograph::count_model_nodes(&vval, from_id),
+                audiograph::count_model_nodes(&vval, to_id)
             ));
         }
     } else {
@@ -191,7 +196,7 @@ pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<
 pub fn probe_bulk_replace(
     from_id: &str,
     to_id: &str,
-    device_slots: &[u32],
+    device_slots: &[DeviceSlot],
     commit: bool,
 ) -> Result<String, String> {
     let mut report = String::new();
@@ -239,7 +244,7 @@ pub fn probe_bulk_replace(
     let t_commit = std::time::Instant::now();
     let items = replace_many_held(&plans, &repl, true, |_item| {})?;
     for item in &items {
-        let dev_slot = item.slot + 1;
+        let dev_slot = item.slot.device_slot();
         report.push_str(&format!(
             "    slot {dev_slot:03}: {} ({})\n",
             item.outcome, item.detail
@@ -259,8 +264,8 @@ pub fn probe_bulk_replace(
         for &dev_slot in device_slots {
             let vraw = s.read_slot_preset_json(dev_slot)?.unwrap_or_default();
             if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&vraw)) {
-                let now_from = audiograph::count_nodes_with_id(&vval, from_id);
-                let now_to = audiograph::count_nodes_with_id(&vval, to_id);
+                let now_from = audiograph::count_model_nodes(&vval, from_id);
+                let now_to = audiograph::count_model_nodes(&vval, to_id);
                 report.push_str(&format!(
                     "    slot {dev_slot:03}: {from_id}×{now_from}  {to_id}×{now_to}\n"
                 ));
@@ -284,7 +289,7 @@ pub fn probe_bulk_replace(
 pub fn probe_replace_held(
     from_id: &str,
     to_id: &str,
-    device_slots: &[u32],
+    device_slots: &[DeviceSlot],
     commit: bool,
 ) -> Result<String, String> {
     use std::time::Instant;
@@ -325,7 +330,7 @@ pub fn probe_replace_held(
         t_conn.elapsed().as_secs_f64()
     ));
     for plan in &plans {
-        let dev_slot = plan.list_index + 1;
+        let dev_slot = plan.list_index.device_slot();
         let t0 = Instant::now();
         let item =
             held_replace_one(&mut s, plan, &repl, commit).unwrap_or_else(|e| BulkReplaceItem {
@@ -353,8 +358,8 @@ pub fn probe_replace_held(
         for &dev_slot in device_slots {
             let vraw = v.read_slot_preset_json(dev_slot)?.unwrap_or_default();
             if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&vraw)) {
-                let now_from = audiograph::count_nodes_with_id(&vval, from_id);
-                let now_to = audiograph::count_nodes_with_id(&vval, to_id);
+                let now_from = audiograph::count_model_nodes(&vval, from_id);
+                let now_to = audiograph::count_model_nodes(&vval, to_id);
                 report.push_str(&format!(
                     "    slot {dev_slot:03}: {from_id}×{now_from}  {to_id}×{now_to}\n"
                 ));
@@ -375,7 +380,7 @@ pub fn probe_replace_held(
 /// name a cabinet node currently in the target presets (see `probe --roster`).
 pub fn probe_bulk_replace_saved(
     from_id: &str,
-    device_slots: &[u32],
+    device_slots: &[DeviceSlot],
     commit: bool,
 ) -> Result<String, String> {
     let mut report = String::new();
@@ -443,7 +448,7 @@ pub fn probe_bulk_replace_saved(
     report.push_str("\n  COMMIT (held session):\n");
     let items = replace_many_held(&plans, &repl, true, |_item| {})?;
     for item in &items {
-        let dev_slot = item.slot + 1;
+        let dev_slot = item.slot.device_slot();
         report.push_str(&format!(
             "    slot {dev_slot:03}: {} ({})\n",
             item.outcome, item.detail
@@ -457,8 +462,8 @@ pub fn probe_bulk_replace_saved(
         for &dev_slot in device_slots {
             let vraw = v.read_slot_preset_json(dev_slot)?.unwrap_or_default();
             if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&vraw)) {
-                let now_from = audiograph::count_nodes_with_id(&vval, from_id);
-                let now_to = audiograph::count_nodes_with_id(&vval, &to_id);
+                let now_from = audiograph::count_model_nodes(&vval, from_id);
+                let now_to = audiograph::count_model_nodes(&vval, &to_id);
                 report.push_str(&format!(
                     "    slot {dev_slot:03}: {from_id}×{now_from}  {to_id}×{now_to}\n"
                 ));

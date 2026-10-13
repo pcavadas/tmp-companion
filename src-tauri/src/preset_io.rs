@@ -147,10 +147,7 @@ pub fn diff_to_param_changes(
         let node = after
             .pointer(&format!("/audioGraph/{group_kind}/{group}/{idx}"))
             .ok_or_else(|| format!("could not resolve node at {:?}", ch.pointer))?;
-        let node_id = node
-            .get("nodeId")
-            .and_then(Value::as_str)
-            .or_else(|| node.get("FenderId").and_then(Value::as_str))
+        let node_id = crate::audiograph::instance_id(node)
             .ok_or_else(|| format!("node at {:?} has no nodeId/FenderId", ch.pointer))?;
         out.push(ParamChange {
             group_id: group.to_string(),
