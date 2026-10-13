@@ -364,6 +364,7 @@ pub fn level_scenes_oneshot(
                 save,
                 saved,
                 intended_preset_level,
+                asis_reuse_batch_ok(jobs, job, hold),
             ),
             None => jointk_one_scene(
                 slot,
@@ -1124,6 +1125,123 @@ pub(super) fn joint_clamp_report(
     (pinned, kind)
 }
 
+/// The value `saved` (the stored row) holds for `param` on `node` as SCENE `overlay_scene`
+/// hears it: the scene's own overlay value when it carries one, else base's (a `Full`
+/// overlay without the key, a `BypassOnly` one and an `Absent` one all inherit base —
+/// `overlay_scene_onto_graph`'s merge rule). `None` for base when the document lost its
+/// `audioGraph`, and for a scene whose overlay presence is unanswerable (`Unknown`).
+fn stored_effective_value(
+    saved: &serde_json::Value,
+    overlay_scene: Option<u32>,
+    node: &str,
+    param: &str,
+) -> Option<f64> {
+    let base = || crate::audiograph::node_param_f64(saved, node, param);
+    match overlay_scene {
+        None => base(),
+        Some(scene) => match overlay_param(saved, scene, node, param) {
+            SceneParamRead::Value(v) => v.as_f64(),
+            SceneParamRead::Absent => base(),
+            SceneParamRead::Unknown => None,
+        },
+    }
+}
+
+/// Band within which the job's `current` and the stored row's value are the SAME knob
+/// value — JSON float formatting only, far below any audible step.
+const ASIS_SEED_VALUE_TOL: f64 = 1e-6;
+
+/// The JOB-local half of the scene handle lane's as-is seed gate (#196): is the prologue's
+/// `measure_scene_asis` reading exactly what `measure_knob_at(stimulus, knob, kt.current,
+/// &job.force_bypass, saved, intended_preset_level)` would capture? The reading is either the
+/// prologue's own capture or the batch's PHASE-1 prepass capture of the same seam
+/// (`prepass_scene_ceilings`), taken at the same `presetLevel` when no trade landed
+/// (`scene_capture_level(None, ..)` both times). Element by element:
+///
+/// * STIMULUS, `presetLevel`, ISOLATION — identical by construction: both seams take the
+///   same `stimulus`, re-assert the same `intended_preset_level` right after their recall,
+///   and send the same `job.force_bypass` last, each on its own fresh connection and engage
+///   (danger.md: only the first capture after an engage is accurate — both are firsts).
+/// * SCENE — the as-is recalls `job.scene_slot`; `set_knobs` recalls the KNOB's scope. They
+///   must name the same scene (a base knob ⇔ the base slot).
+/// * KNOB VALUE — the as-is writes nothing, so it hears whatever the working copy holds,
+///   while `measure_knob_at` writes `kt.current`. The scene-doc prepass `load_preset` leaves
+///   the working copy equal to the stored row (danger.md: a same-slot load reloads a dirty
+///   copy and keeps a clean one, which already equals it), so the two agree exactly when
+///   `kt.current` IS the stored row's effective value for this scene — which is NOT a given:
+///   `handle_scene_job` falls back to BASE's value (or 0.0) when the live scene doc lacks the
+///   node (a lean field-3 push truncates large graphs), and the scene may overlay something
+///   else. Writes this run made since are the batch half's job ([`asis_reuse_batch_ok`]).
+/// * BOUNDS — `kt.current` must lie inside the handle's own bounds, so seed 1 can never
+///   become a best point the solve could not have probed itself.
+///
+/// The Scene Edit enable `measure_knob_at` may send on a node with no overlay reseeds that
+/// overlay FROM BASE, i.e. with the values the scene already inherits, so it is
+/// audio-neutral here. Any doubt answers `false` — the fixed-seed path is always safe.
+fn asis_seed_context_matches(
+    job: &SceneJob,
+    kt: &KnobTarget,
+    handle: &FsParamTarget,
+    saved: Option<&serde_json::Value>,
+) -> bool {
+    let LevelKnob::Block {
+        node_id,
+        parameter_id,
+        scene_slot,
+        ..
+    } = &kt.knob
+    else {
+        return false;
+    };
+    let same_scene = match scene_slot {
+        Some(n) => *n == job.scene_slot && *n < crate::session::BASE_SCENE_SLOT,
+        None => job.scene_slot == crate::session::BASE_SCENE_SLOT,
+    };
+    let (lo, hi) = handle.bounds();
+    let in_bounds = kt.current.is_finite() && kt.current >= lo && kt.current <= hi;
+    let stored_matches = saved
+        .and_then(|sv| stored_effective_value(sv, *scene_slot, node_id, parameter_id))
+        .is_some_and(|v| (v - f64::from(kt.current)).abs() <= ASIS_SEED_VALUE_TOL);
+    same_scene && in_bounds && stored_matches
+}
+
+/// The BATCH half of the as-is seed gate: nothing this run writes between the as-is reading
+/// and `job`'s solve may change what the solve's captures hear. Refused when:
+///
+/// * a headroom trade landed (`hold`): it wrote base `outputLevel`(s) and a raised
+///   `presetLevel` unsaved AFTER the PHASE-1 readings, and re-targets them by arithmetic;
+/// * any OTHER row of the batch touches the same node: a base write is inherited by every
+///   scene without its own overlay, and a `BypassOnly` scene write may land on base;
+/// * an EARLIER row (run order — `run_scene_jobs` walks `jobs` in order) carries an isolation
+///   list: its forced bypasses sit in the working copy while this row's solve runs, but were
+///   not there when the PHASE-1 reading was taken.
+///
+/// `job` must be an element of `jobs` (it is, inside `run_scene_jobs`); anything else is
+/// refused.
+fn asis_reuse_batch_ok(jobs: &[SceneJob], job: &SceneJob, hold: Option<&TradeHold>) -> bool {
+    let Some(pos) = jobs.iter().position(|o| std::ptr::eq(o, job)) else {
+        return false;
+    };
+    let node_of = |k: &LevelKnob| match k {
+        LevelKnob::Block { node_id, .. } => Some(node_id.clone()),
+        _ => None,
+    };
+    let mine: Vec<String> = job
+        .knobs
+        .iter()
+        .filter_map(|kt| node_of(&kt.knob))
+        .collect();
+    hold.is_none()
+        && !jobs[..pos].iter().any(|o| !o.force_bypass.is_empty())
+        && !jobs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != pos)
+            .flat_map(|(_, o)| o.knobs.iter())
+            .filter_map(|kt| node_of(&kt.knob))
+            .any(|n| mine.contains(&n))
+}
+
 /// Correction budget for the scene HANDLE lane's param secant — half [`FS_CORRECT_MAX`].
 /// Each iterate is a fresh-connect re-amp capture (~10 s) and a scene batch pays it up to 9
 /// times over, so the footswitch lane's 16 would put a whole-preset handle run past 20
@@ -1152,9 +1270,11 @@ pub(super) const SCENE_HANDLE_CORRECT_MAX: u32 = 8;
 /// becomes a per-scene failed outcome, never a write that leaks to base.
 ///
 /// AS-IS FIRST, exactly like `jointk_one_scene`: one `measure_scene_asis` capture (no write
-/// at all) supplies the idempotency skip, and the solve then seeds from the param's own
-/// range. That is why `current_value` is `None` below — the solve's own idempotency probe
-/// would re-measure this very point.
+/// at all) supplies the idempotency skip. That is why `current_value` is `None` below — the
+/// solve's own idempotency probe would re-measure this very point. The same capture then
+/// SEEDS the solve (`known_seed`, one capture saved) whenever [`asis_seed_context_matches`]
+/// proves it is exactly what `measure_knob_at(kt.current)` would capture; otherwise the
+/// solve seeds from the param's own range as before.
 ///
 /// The write is DEFERRED like every other scene write (`defer`), so the batch's single
 /// `save_deferred_scene_writes` persists it: ONE save per preset, unchanged.
@@ -1171,6 +1291,9 @@ pub(super) fn handle_one_scene(
     // asserted on the as-is capture AND on every solve capture — each `measure_knob_at` here
     // recalls the knob's scene, which reverts the level exactly like the as-is recall does.
     intended_preset_level: Option<f32>,
+    // The batch-level half of the as-is seed gate ([`asis_reuse_batch_ok`]): no trade hold
+    // and no other row of this batch writes the handle's node.
+    batch_allows_asis_seed: bool,
 ) -> Result<SceneSolve, LevelError> {
     // CLASS GATE, before any device work — the same refusal wording every lane shares.
     if let Some(refusal) = handle.refuse_if_not_a_level_control() {
@@ -1194,10 +1317,19 @@ pub(super) fn handle_one_scene(
         return Ok(prologue.already_there(vec![kt.current]));
     }
     let knob = &kt.knob;
+    // The as-is capture as seed 1, ONLY when its whole context provably equals the solve's
+    // own `measure_knob_at(kt.current)` capture — see `asis_seed_context_matches`.
+    let known_seed = (batch_allows_asis_seed && asis_seed_context_matches(job, kt, handle, saved))
+        .then_some(SeedPoint {
+            value: kt.current,
+            lufs: asis,
+            spread,
+        });
     let solved = solve_param_secant(
         stimulus,
         target_lufs,
         None,
+        known_seed,
         handle,
         SCENE_HANDLE_CORRECT_MAX,
         || reamp_off_fresh("scene_handle_solve"),
@@ -1661,5 +1793,282 @@ pub(super) fn failed_scene_outcome(
         dynamic_spread_lu: None,
         // A FAILED row is not a clamped row: it never produced a verdict to name.
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod scene_handle_asis_seed_tests {
+    use super::*;
+    use crate::session::BASE_SCENE_SLOT;
+
+    /// Base: amp outputLevel 0.5, pedal volume 1.0. Scene 0 overlays the amp's outputLevel
+    /// (0.3, `Full`); scene 1's amp overlay is bypass-only; no scene mentions the pedal.
+    fn saved() -> serde_json::Value {
+        serde_json::json!({
+            "audioGraph": { "guitarNodes": { "G1": [
+                { "nodeId": "amp", "FenderId": "ACD_TwinReverb65NoFx",
+                  "dspUnitParameters": { "outputLevel": 0.5, "bypass": false } },
+                { "nodeId": "ped", "FenderId": "ACD_KingOfTone",
+                  "dspUnitParameters": { "volume": 1.0, "bypass": false } }
+            ] } },
+            "scenes": [
+                { "guitarNodes": { "G1": {
+                    "amp": { "dspUnitParameters": { "outputLevel": 0.3 } } } } },
+                { "guitarNodes": { "G1": {
+                    "amp": { "dspUnitParameters": { "bypass": true } } } } }
+            ]
+        })
+    }
+
+    fn handle_job(scene_slot: u32, node: &str, param: &str, current: f32) -> SceneJob {
+        let knob_scene = (scene_slot < BASE_SCENE_SLOT).then_some(scene_slot);
+        SceneJob {
+            scene_slot,
+            target_lufs: -23.0,
+            knobs: vec![KnobTarget {
+                knob: LevelKnob::Block {
+                    group_id: "G1".into(),
+                    node_id: node.into(),
+                    parameter_id: param.into(),
+                    scene_slot: knob_scene,
+                },
+                lo: 0.0,
+                hi: 1.0,
+                current,
+            }],
+            skip: None,
+            rebalanceable: false,
+            handle: Some(FsParamTarget::from_preset(&saved(), node, param)),
+            prepass: None,
+            force_bypass: Vec::new(),
+        }
+    }
+
+    fn matches(job: &SceneJob, saved: Option<&serde_json::Value>) -> bool {
+        let handle = job.handle.as_ref().expect("handle job");
+        asis_seed_context_matches(job, &job.knobs[0], handle, saved)
+    }
+
+    #[test]
+    fn the_job_gate_accepts_only_the_stored_effective_value_in_the_same_scene() {
+        let sv = saved();
+        // Scene 0 overlays the amp: its own 0.3 matches, base's 0.5 (the doc-less fallback
+        // `handle_scene_job` would take) does not.
+        assert!(matches(
+            &handle_job(0, "amp", "outputLevel", 0.3),
+            Some(&sv)
+        ));
+        assert!(!matches(
+            &handle_job(0, "amp", "outputLevel", 0.5),
+            Some(&sv)
+        ));
+        // A bypass-only overlay and an absent one both inherit base.
+        assert!(matches(
+            &handle_job(1, "amp", "outputLevel", 0.5),
+            Some(&sv)
+        ));
+        assert!(matches(&handle_job(0, "ped", "volume", 1.0), Some(&sv)));
+        // Base row: the base value, recalled as base on both seams.
+        assert!(matches(
+            &handle_job(BASE_SCENE_SLOT, "ped", "volume", 1.0),
+            Some(&sv)
+        ));
+        // A knob scoped to a different scene than the job's recall never matches.
+        let mut crossed = handle_job(BASE_SCENE_SLOT, "ped", "volume", 1.0);
+        if let LevelKnob::Block { scene_slot, .. } = &mut crossed.knobs[0].knob {
+            *scene_slot = Some(0);
+        }
+        assert!(!matches(&crossed, Some(&sv)));
+        // No saved read, or a read that lost `scenes` (overlay presence Unknown): no seed.
+        assert!(!matches(&handle_job(0, "amp", "outputLevel", 0.3), None));
+        let mut truncated = sv.clone();
+        truncated.as_object_mut().unwrap().remove("scenes");
+        assert!(!matches(
+            &handle_job(0, "amp", "outputLevel", 0.3),
+            Some(&truncated)
+        ));
+        // Outside the handle's own bounds: never a seed the solve couldn't have probed.
+        let mut hot = saved();
+        hot["audioGraph"]["guitarNodes"]["G1"][1]["dspUnitParameters"]["volume"] = 1.5.into();
+        assert!(!matches(&handle_job(0, "ped", "volume", 1.5), Some(&hot)));
+    }
+
+    #[test]
+    fn the_batch_gate_refuses_a_trade_hold_or_another_row_on_the_same_node() {
+        let base = handle_job(BASE_SCENE_SLOT, "ped", "volume", 1.0);
+        let scene = handle_job(0, "amp", "outputLevel", 0.3);
+        let jobs = vec![base, scene];
+        // Different nodes, no hold: both rows may seed.
+        assert!(asis_reuse_batch_ok(&jobs, &jobs[0], None));
+        assert!(asis_reuse_batch_ok(&jobs, &jobs[1], None));
+        // Another row on the same node (a base write a scene inherits): neither may.
+        let jobs = vec![
+            handle_job(BASE_SCENE_SLOT, "ped", "volume", 1.0),
+            handle_job(0, "ped", "volume", 1.0),
+        ];
+        assert!(!asis_reuse_batch_ok(&jobs, &jobs[0], None));
+        assert!(!asis_reuse_batch_ok(&jobs, &jobs[1], None));
+        // An EARLIER row's isolation list sits in the working copy during this row's solve:
+        // the later row may not seed, the earlier one still may.
+        let mut isolated = handle_job(BASE_SCENE_SLOT, "ped", "volume", 1.0);
+        isolated.force_bypass = vec![("G1".into(), "fx".into(), true)];
+        let jobs = vec![isolated, handle_job(0, "amp", "outputLevel", 0.3)];
+        assert!(asis_reuse_batch_ok(&jobs, &jobs[0], None));
+        assert!(!asis_reuse_batch_ok(&jobs, &jobs[1], None));
+        // A job that is not an element of the batch is refused outright.
+        let stray = handle_job(0, "amp", "outputLevel", 0.3);
+        assert!(!asis_reuse_batch_ok(&jobs[..1], &stray, None));
+        // A landed trade has written base unsaved: no row seeds.
+        let hold = TradeHold {
+            preset_level: 0.8,
+            writes: Vec::new(),
+            force_bypass_restore: Vec::new(),
+        };
+        let jobs = vec![handle_job(0, "amp", "outputLevel", 0.3)];
+        assert!(!asis_reuse_batch_ok(&jobs, &jobs[0], Some(&hold)));
+    }
+
+    fn reading(integrated: f64) -> lufs::Loudness {
+        lufs::Loudness {
+            integrated_lufs: integrated,
+            short_term_max_lufs: integrated + 0.3,
+            true_peak_dbtp: -6.0,
+            momentary_spread_lu: 6.0,
+            clipped: false,
+        }
+    }
+
+    /// A level knob whose true response is exactly linear in dB.
+    fn law(v: f32) -> f64 {
+        -14.0 + 20.0 * f64::from(v.max(1e-6)).log10()
+    }
+
+    /// One handle row the way `handle_one_scene` drives it, device-free: the as-is capture
+    /// (the prologue — counted, it is a real engage), then the solve, seeded from that capture
+    /// when `reuse`. Returns (every capture's knob value, the solve).
+    fn handle_row(current: f32, target: f64, reuse: bool) -> (Vec<f32>, ParamSolve) {
+        let param = FsParamTarget::new("ACD_SomeBlock", "level", current);
+        let mut captured: Vec<f32> = Vec::new();
+        captured.push(current); // the as-is capture hears the knob where it sits
+        let asis = reading(law(current));
+        let seed = reuse.then_some(SeedPoint {
+            value: current,
+            lufs: asis.integrated_lufs,
+            spread: asis.spread_lu(),
+        });
+        let solved = solve_param_secant(
+            &[],
+            target,
+            None,
+            seed,
+            &param,
+            SCENE_HANDLE_CORRECT_MAX,
+            || {},
+            |v| {
+                captured.push(v);
+                Ok(reading(law(v)))
+            },
+        )
+        .expect("solve");
+        (captured, solved)
+    }
+
+    #[test]
+    fn reuse_saves_exactly_one_capture_and_lands_the_same_value() {
+        // Neither the as-is point nor the fixed 0.25 seed is already on target, so both paths
+        // need the law-placed seed 2, which lands exactly on this linear response.
+        let (target, current) = (-30.0, 0.8);
+        let (with, solved_with) = handle_row(current, target, true);
+        let (without, solved_without) = handle_row(current, target, false);
+        assert_eq!(
+            with.len() + 1,
+            without.len(),
+            "reuse: {with:?} vs no reuse: {without:?}"
+        );
+        // The as-is point is never captured twice.
+        assert_eq!(with.iter().filter(|&&v| v == current).count(), 1);
+        assert_eq!(solved_with.iterations + 1, solved_without.iterations);
+        assert!((solved_with.final_value - solved_without.final_value).abs() < 1e-4);
+        assert!((solved_with.predicted_lufs - target).abs() <= ACCEPT_TOL_LU);
+        assert!((solved_without.predicted_lufs - target).abs() <= ACCEPT_TOL_LU);
+        assert!(!solved_with.clamped && !solved_without.clamped);
+    }
+
+    #[test]
+    fn without_reuse_the_solve_is_unchanged() {
+        // No seed: the fixed `at_fraction(0.25)` seed 1, then seed 2 — two solve captures.
+        let param = FsParamTarget::new("ACD_SomeBlock", "level", 0.8);
+        let (captured, solved) = handle_row(0.8, -26.0, false);
+        assert_eq!(captured[1], param.at_fraction(0.25));
+        assert_eq!(solved.iterations, 2);
+        // A known seed never displaces the idempotency probe: with `current_value` set the
+        // capture sequence and the result are identical with or without one.
+        let run = |seed: Option<SeedPoint>| {
+            let mut seen = Vec::new();
+            let s = solve_param_secant(
+                &[],
+                -26.0,
+                Some(0.6),
+                seed,
+                &param,
+                SCENE_HANDLE_CORRECT_MAX,
+                || {},
+                |v| {
+                    seen.push(v);
+                    Ok(reading(law(v)))
+                },
+            )
+            .expect("solve");
+            (seen, s.final_value, s.iterations)
+        };
+        let decoy = SeedPoint {
+            value: 0.9,
+            lufs: law(0.9),
+            spread: 0.3,
+        };
+        assert_eq!(run(None), run(Some(decoy)));
+    }
+
+    /// A knob with NO authority (a flat response) must still land on a point the solve
+    /// captured itself, never on the unchanged as-is value the caller handed in — that
+    /// would make the run a silent no-op (the 402 Solo shared-base gate needs the write
+    /// to move). Without reuse the landing is the fixed seed 1, as before.
+    #[test]
+    fn a_flat_response_never_lands_on_the_reused_as_is_value() {
+        let param = FsParamTarget::new("ACD_SomeBlock", "level", 0.8);
+        let flat = |seed: Option<SeedPoint>| {
+            let mut seen = Vec::new();
+            let s = solve_param_secant(
+                &[],
+                -30.0,
+                None,
+                seed,
+                &param,
+                SCENE_HANDLE_CORRECT_MAX,
+                || {},
+                |v| {
+                    seen.push(v);
+                    Ok(reading(-20.0))
+                },
+            )
+            .expect("solve");
+            (seen, s)
+        };
+        let current = 0.8;
+        let (seen, with) = flat(Some(SeedPoint {
+            value: current,
+            lufs: -20.0,
+            spread: 0.3,
+        }));
+        assert!(with.clamped, "a flat response is a clamp");
+        assert_ne!(with.final_value, current, "landed on the as-is value");
+        assert!(
+            seen.contains(&with.final_value),
+            "the landing {} is a point this solve captured: {seen:?}",
+            with.final_value
+        );
+        let (_, without) = flat(None);
+        assert!(without.clamped);
+        assert_eq!(without.final_value, param.at_fraction(0.25));
     }
 }

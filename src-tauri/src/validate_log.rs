@@ -313,7 +313,16 @@ pub(crate) fn emit_doctor(row: &ValidationRow, cap: &audio::Capture, loud: &lufs
         target_lufs: loud.integrated_lufs,
         ..row.clone()
     };
-    emit_to(&log, &dir, &row, cap, loud);
+    // The Doctor's meter is pinned stereo (`leveller::doctor_capture_with_loudness`), so
+    // its dump is too, whatever the Settings playback-channels choice.
+    emit_to_as(
+        &log,
+        &dir,
+        &row,
+        cap,
+        loud,
+        crate::profiles::PlaybackChannels::Stereo,
+    );
 }
 
 /// [`emit`] with the destinations resolved — the env-free seam the unit tests drive
@@ -348,8 +357,21 @@ fn unique_wav_stem(dir: &str, stem: &str) -> String {
 }
 
 fn emit_to(log: &str, dir: &str, row: &ValidationRow, cap: &audio::Capture, loud: &lufs::Loudness) {
+    emit_to_as(log, dir, row, cap, loud, audio::meter_channels());
+}
+
+/// [`emit_to`] with the WAV dumped as the meter heard it under `mode` — the leveling
+/// seam follows the Settings playback-channels choice, the Doctor's pins stereo.
+fn emit_to_as(
+    log: &str,
+    dir: &str,
+    row: &ValidationRow,
+    cap: &audio::Capture,
+    loud: &lufs::Loudness,
+    mode: crate::profiles::PlaybackChannels,
+) {
     let stem = unique_wav_stem(dir, &sanitize(&row.label));
-    let (wav, wav_error) = match crate::stimulus::dump_processed_capture(cap, dir, &stem) {
+    let (wav, wav_error) = match crate::stimulus::dump_metered_capture(cap, dir, &stem, mode) {
         Ok(path) => (json_str(&path), "null".to_string()),
         // A dump failure must still produce a ROW: a swallowed row is an empty log, and
         // an empty log reads to the consumer as "nothing was leveled", i.e. a pass.

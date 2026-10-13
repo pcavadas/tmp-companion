@@ -91,6 +91,21 @@ pub(crate) fn set_playback_level<R: tauri::Runtime>(
     self::profiles::save(&app, &store)
 }
 
+/// Set which output(s) the rig plays (Settings "Playback" → Output): the meter every
+/// output-side measurement hub uses from the next capture on. The process-wide mode is
+/// updated only AFTER the store saved, so the meter never runs ahead of what persists.
+#[tauri::command]
+pub(crate) fn set_playback_channels<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    channels: profiles::PlaybackChannels,
+) -> Result<(), String> {
+    let mut store = self::profiles::load(&app)?;
+    store.playback_channels = channels;
+    self::profiles::save(&app, &store)?;
+    self::profiles::apply_meter_channels(&store);
+    Ok(())
+}
+
 /// Toggle background auto-download of app updates (Settings → App updates).
 /// Generic over the runtime (like `get_store`) so it also registers on the e2e
 /// MockRuntime handler.

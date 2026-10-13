@@ -37,6 +37,7 @@ import type {
   LevelBlockCandidate,
   LevelJob,
   LevelResult,
+  PlaybackChannels,
   PlaybackLevel,
   PresetEntry,
   Profile,
@@ -153,6 +154,7 @@ export interface Commands {
   save_profiles: { args: { profiles: Profile[] }; ret: Unit };
   save_targets: { args: { targets: Target[] }; ret: Unit };
   set_playback_level: { args: { level: PlaybackLevel }; ret: Unit };
+  set_playback_channels: { args: { channels: PlaybackChannels }; ret: Unit };
   set_auto_install_updates: { args: { on: boolean }; ret: Unit };
   calibrate_profile: {
     args: { profileId: string; secs: number };

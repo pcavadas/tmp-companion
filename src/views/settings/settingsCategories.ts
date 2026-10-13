@@ -28,9 +28,9 @@ export const CATEGORIES: Category[] = [
   },
   {
     id: "playback",
-    label: "Playback level",
+    label: "Playback",
     icon: "wave",
-    desc: "The volume you play at. Bass targets adjust to match it.",
+    desc: "The volume you play at, and how your speakers are connected.",
   },
   {
     id: "about",

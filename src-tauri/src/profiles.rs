@@ -62,6 +62,26 @@ pub enum PlaybackLevel {
     Stage,
 }
 
+/// Which processed output(s) the user's rig actually PLAYS — the loudness meter
+/// should hear what the listener hears. The TMP's USB 1/2 pair carries the stereo
+/// output; a mono PA/FRFR summing L+R, or a rig wired from output 1 alone, hears a
+/// different signal whenever the preset is genuinely stereo (ping-pong delays, wide
+/// reverbs, stereo-split chains). Read by every OUTPUT-side measurement hub via
+/// `audio::meter_channels` (see `audio::metered_frame` for the exact meters). The
+/// three modes read IDENTICALLY on a dual-mono capture, so the default changes
+/// nothing; the Doctor's spectral analysis is unaffected by design.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackChannels {
+    /// Both outputs (USB 1/2), metered as standard 2-ch BS.1770.
+    #[default]
+    Stereo,
+    /// A mono rig summing both outputs: `(L+R)/2` metered as mono, +3.0103 dB.
+    MonoSum,
+    /// Only output 1 (left) is connected: `L` metered as mono, +3.0103 dB.
+    LeftOnly,
+}
+
 /// Fletcher–Munson playback compensation, in LU, added to the leveling target
 /// for an instrument family (`topologies::Topology::instrument`). Guitar presets
 /// are the spectral reference (0 at every level — within-family leveling is
@@ -167,6 +187,10 @@ pub struct Store {
     /// `Stage` = no compensation, preserving their existing leveling baseline).
     #[serde(default)]
     pub playback_level: PlaybackLevel,
+    /// Which output(s) the rig plays (Settings → Playback). Older stores default
+    /// to `Stereo` = the meter every store before this field leveled with.
+    #[serde(default)]
+    pub playback_channels: PlaybackChannels,
     /// Auto-download updates in the background (Settings → App updates).
     #[serde(default = "default_true")]
     pub auto_install_updates: bool,
@@ -190,6 +214,7 @@ impl Default for Store {
             profile_by_slot: HashMap::new(),
             targets: default_targets(),
             playback_level: PlaybackLevel::default(),
+            playback_channels: PlaybackChannels::default(),
             auto_install_updates: true,
             // A fresh install's `default_targets()` are ALREADY expressed in the
             // current (stereo) convention — stamp it directly rather than routing
@@ -267,6 +292,22 @@ pub fn load_from_path(path: &Path) -> Result<Store, String> {
 pub fn save_to_path(path: &Path, store: &Store) -> Result<(), String> {
     let json = serde_json::to_string_pretty(store).map_err(|e| format!("serialize store: {e}"))?;
     crate::fsutil::write_atomic(path, json.as_bytes())
+}
+
+/// Copy `store`'s playback-channels choice into the process-wide meter mode every
+/// output-side measurement hub reads (`audio::meter_channels`).
+pub fn apply_meter_channels(store: &Store) {
+    crate::audio::set_meter_channels(store.playback_channels);
+}
+
+/// Startup sync of the meter mode from the persisted store (the app's `setup` and the
+/// e2e server's). A load failure is logged and leaves the default (Stereo) — the same
+/// meter as before the setting existed — rather than failing startup.
+pub fn sync_meter_channels<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    match load(app) {
+        Ok(store) => apply_meter_channels(&store),
+        Err(e) => log::warn!("playback-channels sync skipped (store load failed): {e}"),
+    }
 }
 
 /// Load the store for the running app (config-dir resolved).
@@ -418,6 +459,7 @@ mod tests {
                 lufs: -22.0,
             }],
             playback_level: PlaybackLevel::Rehearsal,
+            playback_channels: PlaybackChannels::MonoSum,
             auto_install_updates: false,
             meter_convention: METER_CONVENTION_STEREO,
         }
@@ -458,6 +500,39 @@ mod tests {
         // Likewise pre-playback_level stores: Stage = no compensation, so a
         // migrated store levels exactly as it did before the field existed.
         assert_eq!(store.playback_level, PlaybackLevel::Stage);
+        // And pre-playback_channels stores: Stereo = the meter they leveled with.
+        assert_eq!(store.playback_channels, PlaybackChannels::Stereo);
+    }
+
+    #[test]
+    fn playback_channels_default_stereo_and_round_trip() {
+        assert_eq!(Store::default().playback_channels, PlaybackChannels::Stereo);
+        // An existing on-disk store with no `playback_channels` key loads as Stereo.
+        let dir = std::env::temp_dir().join(format!("tmp-lvl-pc-test-{}", std::process::id()));
+        let path = dir.join("profiles.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"profiles":[],"profile_by_slot":{},"targets":[],"meter_convention":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            load_from_path(&path).unwrap().playback_channels,
+            PlaybackChannels::Stereo
+        );
+        // Each choice persists through disk under its wire name.
+        for (mode, wire) in [
+            (PlaybackChannels::Stereo, "stereo"),
+            (PlaybackChannels::MonoSum, "mono_sum"),
+            (PlaybackChannels::LeftOnly, "left_only"),
+        ] {
+            assert_eq!(serde_json::to_value(mode).unwrap(), wire);
+            let mut store = load_from_path(&path).unwrap();
+            store.playback_channels = mode;
+            save_to_path(&path, &store).unwrap();
+            assert_eq!(load_from_path(&path).unwrap().playback_channels, mode);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

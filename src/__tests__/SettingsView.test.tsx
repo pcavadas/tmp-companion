@@ -143,7 +143,7 @@ describe("SettingsView — playback level", () => {
     const user = userEvent.setup();
     renderView();
     await screen.findByText("Rhythm");
-    await openCategory(user, "Playback level");
+    await openCategory(user, "Playback");
 
     const group = screen.getByRole("radiogroup", { name: /playback level/i });
     await user.click(within(group).getByRole("radio", { name: "Rehearsal" }));
@@ -158,7 +158,7 @@ describe("SettingsView — playback level", () => {
     mockStore(SEED_TARGETS, "quiet");
     renderView();
     await screen.findByText("Rhythm");
-    await openCategory(user, "Playback level");
+    await openCategory(user, "Playback");
 
     const group = await screen.findByRole("radiogroup", {
       name: /playback level/i,
@@ -169,6 +169,55 @@ describe("SettingsView — playback level", () => {
     );
     // Quiet → the bass +1.5 LU chip (mirrors profiles::playback_offset_lu).
     expect(screen.getByText("bass +1.5 LU")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsView — playback outputs", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("defaults to Stereo and persists the picked outputs via set_playback_channels", async () => {
+    const user = userEvent.setup();
+    mockStore();
+    renderView();
+    await screen.findByText("Rhythm");
+    await openCategory(user, "Playback");
+
+    const group = screen.getByRole("radiogroup", { name: "Outputs" });
+    expect(
+      within(group).getByRole("radio", { name: "Stereo" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("both outputs")).toBeInTheDocument();
+
+    await user.click(
+      within(group).getByRole("radio", { name: "Mono (summed)" }),
+    );
+    await waitFor(() => {
+      expect(lastArgs("set_playback_channels")).toEqual({
+        channels: "mono_sum",
+      });
+    });
+    expect(screen.getByText("L + R summed")).toBeInTheDocument();
+    // The playback LEVEL is a separate setting: picking outputs never writes it.
+    expect(callsOf("set_playback_level")).toHaveLength(0);
+  });
+
+  it("reflects the stored outputs choice", async () => {
+    const user = userEvent.setup();
+    mockCommands({
+      get_store: () =>
+        makeStore({ targets: SEED_TARGETS, playback_channels: "left_only" }),
+    });
+    renderView();
+    await screen.findByText("Rhythm");
+    await openCategory(user, "Playback");
+
+    const group = await screen.findByRole("radiogroup", { name: "Outputs" });
+    expect(
+      within(group).getByRole("radio", { name: "Left output only" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("output 1 only")).toBeInTheDocument();
   });
 });
 
@@ -254,7 +303,7 @@ describe("SettingsView — category rail", () => {
     expect(tabs.map((el) => el.textContent)).toEqual([
       "Loudness targets",
       "Instruments",
-      "Playback level",
+      "Playback",
       "About & updates",
     ]);
     expect(

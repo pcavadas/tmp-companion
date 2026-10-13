@@ -1545,17 +1545,21 @@ pub(crate) fn scenes_restating_base(
 /// when `audioGraph` is missing OR any requested FS scene index is absent from `scenes[]` or
 /// isn't an object (a truncated field-8 read).
 ///
+/// The restore scene is [`last_loaded_scene`] of the same document — the SAVED on-load scene
+/// every other save lane re-stamps (`level_preset`, the Doctor, the footswitch lanes), and the
+/// same field the live prepass reads off its post-load push: a `load_preset` materializes the
+/// stored row, so on the freshly loaded preset the two name the same scene. Through the
+/// guarded helper, so a scene-less preset never hands the save an empty-template recall.
+///
 /// Overlay agreement validated against the live prepass by `probe --overlay-ab` (76/76
-/// scene-amp pairs, 0 bypass mismatches). Shipped DARK — see `prepass_scene_docs_via`.
+/// scene-amp pairs, 0 bypass mismatches). Adoption-ready but not yet the production
+/// default — see the call site in `commands::level_scenes` and `prepass_scene_docs_via`.
 pub(crate) fn scene_docs_from_saved(
     preset: &serde_json::Value,
     scene_slots: &[u32],
 ) -> Option<SceneDocs> {
     let base_graph = preset.get("audioGraph")?;
-    let restore = preset
-        .get("lastLoadedScene")
-        .and_then(serde_json::Value::as_u64)
-        .map(|v| v as u32);
+    let restore = last_loaded_scene(preset);
     let scenes = preset.get("scenes").and_then(|s| s.as_array());
     let mut docs = Vec::with_capacity(scene_slots.len());
     for &slot in scene_slots {
@@ -1576,44 +1580,90 @@ pub(crate) fn scene_docs_from_saved(
 }
 
 /// Scene-doc prepass with a switch between the SAVED-JSON path and the live recall path.
-/// `use_overlay` = read the field-8 preset and derive the docs via `scene_docs_from_saved`;
-/// on a `None` (missing graph / truncated scene) or read error it logs the reason and falls
-/// back to the live `prepass_scene_docs`. `!use_overlay` goes straight to the live prepass.
+/// `use_overlay` = derive the docs from the saved preset via `scene_docs_from_saved` (no scene
+/// recalls on the unit), then make the preset current; when the saved document cannot answer
+/// (no `audioGraph`, a requested scene missing or cut) or cannot be read, it logs the reason
+/// and falls back to the live `prepass_scene_docs`. `!use_overlay` goes straight to the live
+/// prepass.
 ///
-/// Shipped DARK: the sole production call site passes `use_overlay = false`, so default
-/// behavior is byte-identical to `prepass_scene_docs`. The overlay path was validated by
-/// `probe --overlay-ab` (76/76 scene-amp pairs agree, 0 bypass mismatches).
+/// The SAVED document is the caller's `saved` when given — the batch's one COMPLETE-OR-FAIL
+/// field-8 read (`read_saved_preset_complete`), never a raw read whose tail can be cut
+/// mid-`scenes` — else a complete-or-fail read of `audioGraph` + `scenes` here.
 ///
-/// ADOPTION-TIME TODO (before flipping to `true`): `read_slot_preset_parsed` opens its OWN
-/// session and does NOT recall the preset on the unit, but the batched-apply runner contract
-/// requires the preset to already be current (the apply session sends no LoadPreset — the
-/// live prepass's own `load_preset` is what makes it current today). Enabling the overlay
-/// path must therefore add a `load_preset(slot)` so the apply lands on the right preset.
+/// THE LOAD. The batched runner's contract is that the preset is already CURRENT (its apply
+/// sessions send no `LoadPreset`), and the live prepass's own `load_preset` is what made it so.
+/// The overlay path recalls nothing, so it loads the preset itself, through
+/// `leveller::make_current`: its OWN lean connection (danger.md: load in its own connection),
+/// one `load_preset` + the post-load settle, closed before any capture. It is the same load
+/// the live prepass opens with, at the same point of the run — after the field-8 read and
+/// before PHASE 1 and every deferred write, so it can never land ahead of
+/// `save_deferred_scene_writes`. On a dirty working copy it is a real reload, on a clean one a
+/// no-op that already equals the stored row, so either way the docs derived from the stored
+/// row describe the working copy every later capture hears. Nothing after the prepass relied
+/// on the live walk's scene recalls: every capture and write recalls its own scene first
+/// (the scene-context rule), and the batch-end save recalls `restore`.
 ///
-/// `saved` is the caller's COMPLETE saved preset: the amp roster the scene-doc repair scan
-/// checks every live doc against, and the answer it splices in. `None` = no repair.
+/// `saved` is ALSO, on the live path, the amp roster the scene-doc repair scan checks every
+/// live doc against, and the answer it splices in. `None` = no repair.
 pub(crate) fn prepass_scene_docs_via(
     slot: ListIndex,
     scene_slots: &[u32],
     use_overlay: bool,
     saved: Option<&serde_json::Value>,
 ) -> Result<SceneDocs, String> {
+    prepass_scene_docs_with(
+        slot,
+        scene_slots,
+        use_overlay,
+        saved,
+        |slot| crate::read_slot_preset_complete(slot, &["audioGraph", "scenes"]).map(|(p, _, _)| p),
+        crate::leveller::make_current,
+        prepass_scene_docs,
+    )
+}
+
+/// [`prepass_scene_docs_via`] with its three device seams injected (the complete read used
+/// when the caller has no `saved`, the load, and the live prepass), so the overlay-vs-live
+/// decision and the load are unit-tested without a device.
+pub(crate) fn prepass_scene_docs_with(
+    slot: ListIndex,
+    scene_slots: &[u32],
+    use_overlay: bool,
+    saved: Option<&serde_json::Value>,
+    read_complete: impl FnOnce(ListIndex) -> Result<serde_json::Value, String>,
+    load: impl FnOnce(ListIndex) -> Result<(), String>,
+    live: impl FnOnce(ListIndex, &[u32]) -> Result<SceneDocs, String>,
+) -> Result<SceneDocs, String> {
     if use_overlay {
-        match crate::read_slot_preset_parsed(slot) {
-            Ok((preset, _, _)) => {
-                if let Some(docs) = scene_docs_from_saved(&preset, scene_slots) {
-                    return Ok(docs);
+        let read;
+        let preset = match saved {
+            Some(p) => Some(p),
+            None => match read_complete(slot) {
+                Ok(p) => {
+                    read = p;
+                    Some(&read)
                 }
-                log::info!(
-                    "scene-doc overlay: slot {slot} field-8 read lacked audioGraph or a requested scene — falling back to live prepass"
-                );
-            }
-            Err(e) => log::info!(
-                "scene-doc overlay: slot {slot} field-8 read failed ({e}) — falling back to live prepass"
-            ),
+                Err(e) => {
+                    log::info!(
+                        "scene-doc overlay: slot {slot} complete field-8 read failed ({e}) — \
+                         falling back to live prepass"
+                    );
+                    None
+                }
+            },
+        };
+        if let Some(docs) = preset.and_then(|p| scene_docs_from_saved(p, scene_slots)) {
+            load(slot)?;
+            return Ok(docs);
+        }
+        if preset.is_some() {
+            log::info!(
+                "scene-doc overlay: slot {slot} saved preset lacked audioGraph or a requested \
+                 scene — falling back to live prepass"
+            );
         }
     }
-    let (mut docs, restore) = prepass_scene_docs(slot, scene_slots)?;
+    let (mut docs, restore) = live(slot, scene_slots)?;
     if let Some(preset) = saved {
         backfill_scene_docs_from_saved(slot, preset, &mut docs);
     }

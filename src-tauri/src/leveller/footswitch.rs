@@ -853,6 +853,7 @@ pub(super) fn solve_footswitch_with(
         stimulus,
         target_lufs,
         current_value,
+        None,
         param,
         FS_CORRECT_MAX,
         reamp_off,
@@ -963,6 +964,15 @@ impl ParamSolve {
     }
 }
 
+/// One already-captured solve point: the knob `value`, its integrated loudness and the
+/// dynamics spread of that capture — all the secant reads off a seed.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SeedPoint {
+    pub(super) value: f32,
+    pub(super) lufs: f64,
+    pub(super) spread: f64,
+}
+
 /// [`solve_footswitch`]'s loop with the CAPTURE BUDGET as an argument — the seam the scene
 /// handle lane reuses. Every correction iterate is a fresh-connect re-amp capture (~10 s),
 /// and the two lanes' cost profiles differ: a footswitch batch pays it per switch
@@ -980,10 +990,22 @@ impl ParamSolve {
 /// when the solve leaves early or after a failed capture, because the measurement's own
 /// last disengage can be dropped. The run-end OFF stays the caller's [`ReampRunGuard`], so
 /// the solve itself never opens a connection.
+///
+/// `known_seed` is a point the CALLER already captured ([`SeedPoint`]), taken in exactly
+/// the measurement context `measure_at(value)` would produce (same knob value, stimulus,
+/// `presetLevel`, scene and isolation) on its own fresh engage. When `Some` it is seed 1 —
+/// no capture is bought for it, exactly like a successful idempotency probe below — and it
+/// is ignored when `current_value` is `Some` (the probe then owns seed 1). It does NOT
+/// anchor the wet floor (that stays `current_value`'s job) and it is never the routing probe:
+/// the caller's capture already proved signal. The scene HANDLE lane passes its as-is
+/// reading here when [`asis_seed_context_matches`] proves the contexts identical; `None`
+/// everywhere else keeps the fixed-seed path byte-for-byte.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn solve_param_secant(
     stimulus: &[f32],
     target_lufs: f64,
     current_value: Option<f32>,
+    known_seed: Option<SeedPoint>,
     param: &FsParamTarget,
     correct_max: u32,
     mut reamp_off: impl FnMut(),
@@ -1041,9 +1063,17 @@ pub(super) fn solve_param_secant(
 
     // Seed 1: reuse a successful idempotency probe when there is one (no new capture — it
     // already proved signal, so the routing-clamp verdict below belongs to the fixed-seed
-    // path alone); else the fixed `at_fraction(0.25)` position exactly as before.
-    let (v_a, l_a) = if let Some((cur, l)) = probe_seed {
-        (cur, l)
+    // path alone); else the caller's own context-matched capture (`known_seed`, never paid by
+    // this solve); else the fixed `at_fraction(0.25)` position exactly as before.
+    let known_seed = known_seed.filter(|_| current_value.is_none());
+    let seed1_paid_here = known_seed.is_none();
+    let probe_seed = probe_seed.map(|(cur, l)| SeedPoint {
+        value: cur,
+        lufs: l.integrated_lufs,
+        spread: l.spread_lu(),
+    });
+    let (v_a, l_a_lufs, l_a_spread) = if let Some(p) = probe_seed.or(known_seed) {
+        (p.value, p.lufs, p.spread)
     } else {
         let v = param.at_fraction(0.25);
         // This seed doubles as the routing probe: a genuinely silent capture (device output
@@ -1080,7 +1110,7 @@ pub(super) fn solve_param_secant(
             }
             Err(e) => return Err(e),
         };
-        (v, l)
+        (v, l.integrated_lufs, l.spread_lu())
     };
 
     // Seed 2: probe → LAW → fixed-fraction ladder. `law_predicted` returns the linear-law
@@ -1099,8 +1129,8 @@ pub(super) fn solve_param_secant(
         }
     };
     let v_b = param
-        .law_predicted(v_a, l_a.integrated_lufs, target_lufs)
-        .filter(|&p| param.seed2_plausible(p, l_a.integrated_lufs, target_lufs))
+        .law_predicted(v_a, l_a_lufs, target_lufs)
+        .filter(|&p| param.seed2_plausible(p, l_a_lufs, target_lufs))
         .map(|p| p as f32)
         .unwrap_or_else(fixed_fallback);
     // Seed 2 can land silent (a knob whose useful range is a narrow slice of its own
@@ -1110,35 +1140,29 @@ pub(super) fn solve_param_secant(
     // never win it (mirrors `improve_best`'s exclusion of synthetic points).
     let (l_b_lufs, l_b_spread, seed2_synthetic) = match require_live(|| measure_at(v_b), stimulus) {
         Ok(l) => (l.integrated_lufs, l.spread_lu(), false),
-        Err(e) if e.is_no_signal() => (fs_silent_geometry(l_a.integrated_lufs), 0.0, true),
-        Err(LevelError::Clipped) => (
-            fs_clipped_geometry(l_a.integrated_lufs, target_lufs),
-            0.0,
-            true,
-        ),
+        Err(e) if e.is_no_signal() => (fs_silent_geometry(l_a_lufs), 0.0, true),
+        Err(LevelError::Clipped) => (fs_clipped_geometry(l_a_lufs, target_lufs), 0.0, true),
         Err(e) => return Err(e),
     };
     // The quietest REAL capture seen so far — the anchor `fs_silent_geometry` floors every
     // silent pseudo point under.
     let (mut min_real, mut max_real) = if seed2_synthetic {
-        (l_a.integrated_lufs, l_a.integrated_lufs)
+        (l_a_lufs, l_a_lufs)
     } else {
-        (
-            l_a.integrated_lufs.min(l_b_lufs),
-            l_a.integrated_lufs.max(l_b_lufs),
-        )
+        (l_a_lufs.min(l_b_lufs), l_a_lufs.max(l_b_lufs))
     };
     // The probe capture (when present) counts as capture 1, so after seed 2 this is 2 real
     // device round-trips on BOTH seeded paths — probe-as-seed-1+seed2, or fixed-seed1+
     // seed2. It is NOT the count on the probe-ERROR path (probe fails, falls through to a
     // fresh fixed seed 1, then seed 2 — 3 round-trips: the failed probe, seed 1, seed 2);
     // that extra failed round-trip is deliberately left uncounted here, pre-existing
-    // accounting this change doesn't touch.
-    let mut iterations = 2u32;
+    // accounting this change doesn't touch. A caller-supplied `known_seed` was NOT paid by
+    // this solve, so only seed 2 counts on that path.
+    let mut iterations = if seed1_paid_here { 2u32 } else { 1u32 };
     let err = |l: f64| (l - target_lufs).abs();
     let (mut best_v, mut best_lufs, mut best_spread) =
-        if seed2_synthetic || err(l_a.integrated_lufs) <= err(l_b_lufs) {
-            (v_a, l_a.integrated_lufs, l_a.spread_lu())
+        if seed2_synthetic || err(l_a_lufs) <= err(l_b_lufs) {
+            (v_a, l_a_lufs, l_a_spread)
         } else {
             (v_b, l_b_lufs, l_b_spread)
         };
@@ -1150,12 +1174,12 @@ pub(super) fn solve_param_secant(
         // The correction loop below interpolates in solve-COORD space
         // (`param.to_coord`), not raw parameter value — see `to_coord`'s doc for why
         // that makes the secant exact for a `LevelLinear`/`LevelDb` param.
-        let mut p0 = (param.to_coord(v_a as f64), l_a.integrated_lufs);
+        let mut p0 = (param.to_coord(v_a as f64), l_a_lufs);
         let mut p1 = (param.to_coord(v_b as f64), l_b_lufs);
         // Bracket before falling to the correction loop — see `fs_bracket_expansion`'s doc.
         if let Some(v_extreme) = fs_bracket_expansion(
             v_a,
-            l_a.integrated_lufs,
+            l_a_lufs,
             v_b,
             l_b_lufs,
             target_lufs,
@@ -1217,6 +1241,15 @@ pub(super) fn solve_param_secant(
                 // the ONE place no-authority is proven — the noise-robust KNOB_TOL_LU
                 // band over the widest pair the solve ever holds.
                 flat_response = true;
+                // A caller-supplied `known_seed` is the knob's UNCHANGED as-is value, so
+                // letting it win a flat seed pair would turn a no-authority run into a
+                // silent no-op write ("a run always WRITES"). Without a known seed this
+                // landing is the solve's first OWN capture (the fixed seed 1); with one, it
+                // is the first own capture too — seed 2 — unless the expansion probe
+                // already took the lead.
+                if !seed1_paid_here && !seed2_synthetic && best_v == v_a {
+                    (best_v, best_lufs, best_spread) = (v_b, l_b_lufs, l_b_spread);
+                }
             } else {
                 // −1 / +1: which side of the target the previous bracket-mode iterate
                 // landed on (0 until the pair straddles).
@@ -1317,7 +1350,7 @@ pub(super) fn solve_param_secant(
         // is a real reading OF the written value. A wet solve pinned at the floor arrives
         // here as an ordinary at-a-bound clamp; only the advisory flag below names it.
         final_value: best_v,
-        measured_lufs: l_a.integrated_lufs,
+        measured_lufs: l_a_lufs,
         predicted_lufs: best_lufs,
         clamped,
         unconverged,
@@ -1580,6 +1613,7 @@ mod fs_solve_noise_tests {
             let solved = solve_param_secant(
                 &[],
                 target,
+                None,
                 None,
                 &param,
                 FS_CORRECT_MAX,

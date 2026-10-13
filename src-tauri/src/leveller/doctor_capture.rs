@@ -261,7 +261,9 @@ pub fn doctor_capture_with_loudness(
     )?;
     let samples = cap.stereo_mix();
     let sample_rate = cap.sample_rate;
-    let loudness = measure_processed(&cap)?;
+    // The Doctor diagnoses the preset's own stereo output: pinned to the stereo meter,
+    // whatever the Settings playback-channels choice (that choice is a LEVELING meter).
+    let loudness = measure_processed_as(&cap, crate::profiles::PlaybackChannels::Stereo)?;
     if let Some(row) = validate {
         crate::validate_log::emit_doctor(row, &cap, &loudness);
     }
