@@ -11,7 +11,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import type { LevelResult, SceneLevelProgressItem } from "../lib/types";
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
 import type { SetupChoice } from "../views/level/leveling";
-import { resetLevelFlow } from "../views/level/levelRunStore";
+import { isRunOver, resetLevelFlow } from "../views/level/levelRunStore";
 import {
   makeLevelingFlowDeps,
   makeLevelResult,
@@ -150,7 +150,7 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
       batch.finish([]);
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
     expect(result.current.run.tailMessage).toBeNull();
   });

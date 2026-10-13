@@ -6,8 +6,8 @@
 // Mirrors the advisory semantics — no assertion that the live value ≈ the result
 // value. Replaces `RunBody.test.tsx`.
 
-import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 
@@ -17,7 +17,12 @@ import {
   NO_INSTRUMENT,
   type RunItem,
 } from "../views/level/leveling";
+import { IDLE_METER, setLiveMeter } from "../views/level/liveMeterStore";
 import { renderWithTheme } from "./testKit";
+
+beforeEach(() => {
+  setLiveMeter(IDLE_METER);
+});
 
 const activeItem: RunItem = {
   key: "k0",
@@ -32,21 +37,21 @@ const activeItem: RunItem = {
   status: "active",
 };
 
+/** The page with the live meter (its own store) reading `liveLufs`. */
 function runPage(
   liveLufs: number | null,
   items: RunItem[] = [activeItem],
   tailMessage: string | null = null,
 ): ReactElement {
+  act(() => {
+    setLiveMeter({ lufs: liveLufs, trace: [] });
+  });
   return (
     <RunPage
       items={items}
       currentIndex={0}
       total={items.length}
-      done={false}
-      stopped={false}
-      stopping={false}
-      liveLufs={liveLufs}
-      liveTrace={[]}
+      phase="running"
       tailMessage={tailMessage}
       instrumentName={() => "Telecaster"}
       targetLufsByName={() => -26}
@@ -227,11 +232,7 @@ describe("RunPage row label for the no-instrument choice (#287)", () => {
         items={[{ ...activeItem, instId: NO_INSTRUMENT, status: "queued" }]}
         currentIndex={0}
         total={1}
-        done={false}
-        stopped={false}
-        stopping={false}
-        liveLufs={null}
-        liveTrace={[]}
+        phase="running"
         tailMessage={null}
         instrumentName={(id) => instrumentName([], id)}
         targetLufsByName={() => -26}

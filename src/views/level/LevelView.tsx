@@ -91,7 +91,9 @@ export function LevelView({
   const live = useLiveDevice(connected);
 
   const [filter, setFilter] = useState("");
-  const [liveScene, setLiveScene] = useState<"base" | number | null>(null);
+  // The live scene is the preset's Base (a preset push resets to it optimistically, a
+  // scene push says so) — the hero tag reads "BASE" then, else the scene's own name.
+  const [onBase, setOnBase] = useState(false);
   const [diagError, setDiagError] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false); // "How leveling works" sheet
   // Prefer the LIVE graph over the connect-time seed: on a tab-switch remount the
@@ -175,7 +177,7 @@ export function LevelView({
     if (live.presetNonce !== 0) {
       // Optimistic default, corrected below once tmp://live-scene reports
       // the actual scene — see the scene-context rule (.claude/rules/danger.md).
-      setLiveScene("base");
+      setOnBase(true);
       setDiagError(false);
     }
   }
@@ -183,16 +185,10 @@ export function LevelView({
   // tmp://live-scene → the live scene within the active preset (render-phase),
   // plus the diagram-staleness watchdog (an effect — it owns a timer).
   const [prevSceneNonce, setPrevSceneNonce] = useState(live.sceneNonce);
-  const ls = live.liveScene;
   if (live.sceneNonce !== prevSceneNonce) {
     setPrevSceneNonce(live.sceneNonce);
-    if (live.sceneNonce !== 0 && ls != null) {
-      const k = ls.key;
-      const named =
-        k !== "base" && ls.name != null
-          ? live.scenes.findIndex((sc) => sc.name === ls.name)
-          : -1;
-      setLiveScene(named >= 0 ? named : k);
+    if (live.sceneNonce !== 0 && live.liveScene != null) {
+      setOnBase(live.liveScene.key === "base");
       setDiagError(false);
     }
   }
@@ -260,15 +256,16 @@ export function LevelView({
     if (!activeHasScenes) return null;
     if (live.syncing) return { text: "—", tone: t.faint, neutral: true };
     return {
-      text: liveScene === "base" ? "BASE" : (liveSceneName ?? "").toUpperCase(),
+      text: onBase ? "BASE" : (liveSceneName ?? "").toUpperCase(),
       tone: t.accentDeep,
     };
-  }, [activeHasScenes, live.syncing, liveScene, liveSceneName, t]);
+  }, [activeHasScenes, live.syncing, onBase, liveSceneName, t]);
 
+  const { openFlow } = flow;
   const handleLevel = useCallback(() => {
     if (sel.size === 0 && pendingWhole.size === 0) return;
-    flow.openFlow(sel);
-  }, [sel, pendingWhole, flow]);
+    openFlow(sel);
+  }, [sel, pendingWhole, openFlow]);
 
   // ── render ──────────────────────────────────────────────────────────────────
   if (!connected) {
@@ -364,22 +361,13 @@ export function LevelView({
           defaultTarget={defaultTarget}
           instrumentName={instName}
           targetLufsByName={targetLufsByName}
-          runItems={flow.run.items}
-          runCurrentIndex={flow.run.currentIndex}
-          runTotal={flow.run.total}
-          runDone={flow.run.done}
-          runStopped={flow.run.stopped}
-          runStopping={flow.run.stopping}
-          liveLufs={flow.liveLufs}
-          liveTrace={flow.liveTrace}
-          runTailMessage={flow.run.tailMessage}
+          run={flow.run}
           onCancel={flow.onCancel}
           onStart={flow.onSetupStart}
           onRunCancel={flow.onRunCancel}
           onRunComplete={flow.onRunComplete}
           onAccept={flow.onAccept}
           onRelevel={flow.onRelevel}
-          onRebalanceChange={flow.setRebalance}
           onCalibrate={onCalibrate}
         />
       )}

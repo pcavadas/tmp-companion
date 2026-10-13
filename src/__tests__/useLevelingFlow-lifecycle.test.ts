@@ -22,6 +22,7 @@ import type { SetupOption } from "../views/level/leveling";
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
 import {
   isLevelRunning,
+  isRunOver,
   onDeviceDetached,
   resetLevelFlow,
 } from "../views/level/levelRunStore";
@@ -90,7 +91,7 @@ describe("a leveling run outlives the Level tab (#283)", () => {
     // …and comes back. The fresh mount shows the in-flight run, not a closed wizard.
     const second = renderHook(() => useLevelingFlow(deps));
     expect(second.result.current.stage).toBe("run");
-    expect(second.result.current.run.done).toBe(false);
+    expect(isRunOver(second.result.current.run.phase)).toBe(false);
     expect(second.result.current.run.items[0].status).toBe("active");
 
     // Its Stop reaches the run: every lane is cancelled and the run reports stopped.
@@ -98,14 +99,14 @@ describe("a leveling run outlives the Level tab (#283)", () => {
       second.result.current.onRunCancel();
     });
     expect(callsOf("cancel_preset_leveling")).toHaveLength(1);
-    expect(second.result.current.run.stopping).toBe(true);
+    expect(second.result.current.run.phase === "stopping").toBe(true);
     act(() => {
       held.finish(leveled);
     });
     await waitFor(() => {
-      expect(second.result.current.run.done).toBe(true);
+      expect(isRunOver(second.result.current.run.phase)).toBe(true);
     });
-    expect(second.result.current.run.stopped).toBe(true);
+    expect(second.result.current.run.phase === "stopped").toBe(true);
     expect(isLevelRunning()).toBe(false);
   });
 
@@ -135,9 +136,9 @@ describe("a leveling run outlives the Level tab (#283)", () => {
       held.finish(leveled);
     });
     await waitFor(() => {
-      expect(again.result.current.run.done).toBe(true);
+      expect(isRunOver(again.result.current.run.phase)).toBe(true);
     });
-    expect(again.result.current.run.stopped).toBe(false);
+    expect(again.result.current.run.phase === "stopped").toBe(false);
   });
 });
 
@@ -153,10 +154,10 @@ describe("a throwing live block read ends the run (#285)", () => {
       );
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
-    expect(result.current.run.stopped).toBe(false);
-    expect(result.current.run.stopping).toBe(false);
+    expect(result.current.run.phase === "stopped").toBe(false);
+    expect(result.current.run.phase === "stopping").toBe(false);
     for (const row of result.current.run.items) {
       expect(row).toMatchObject({
         status: "result",
@@ -186,7 +187,7 @@ describe("a device detach closes the flow", () => {
       result.current.onSetupStart(choices([option("base")]));
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
     act(() => {
       result.current.onRunComplete();
@@ -223,7 +224,7 @@ describe("a device detach closes the flow", () => {
     await waitFor(() => {
       expect(result.current.stage).toBe("closed");
     });
-    expect(result.current.run.done).toBe(false);
+    expect(isRunOver(result.current.run.phase)).toBe(false);
     expect(isLevelRunning()).toBe(false);
   });
 });

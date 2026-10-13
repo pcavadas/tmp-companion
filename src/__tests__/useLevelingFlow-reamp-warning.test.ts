@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { SetupOption } from "../views/level/leveling";
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
-import { resetLevelFlow } from "../views/level/levelRunStore";
+import { isRunOver, resetLevelFlow } from "../views/level/levelRunStore";
 import {
   makeChoices,
   makeFootswitchLevelResult,
@@ -55,7 +55,7 @@ describe("run-end re-amp warning", () => {
       result.current.onSetupStart(makeChoices([option("base")]));
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
     expect(result.current.run.items[0].reampWarning).toBe(WARNING);
   });
@@ -83,7 +83,7 @@ describe("run-end re-amp warning", () => {
         );
       });
       await waitFor(() => {
-        expect(result.current.run.done).toBe(true);
+        expect(isRunOver(result.current.run.phase)).toBe(true);
       });
       for (const row of result.current.run.items) {
         expect(row.reampWarning).toBe(WARNING);
@@ -97,7 +97,7 @@ describe("run-end re-amp warning", () => {
       result.current.onSetupStart(makeChoices([option("scene", 0)]));
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
     expect(result.current.run.items[0].reampWarning).toBeUndefined();
   });

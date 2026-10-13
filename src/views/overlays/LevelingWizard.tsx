@@ -16,6 +16,7 @@ import { RunPage } from "../level/RunPage";
 import { SummaryPage } from "../level/SummaryPage";
 import type { PickOption } from "./Pick";
 import type { SetupOption, SetupChoice, RunItem } from "../level/leveling";
+import type { RunState } from "../level/levelRunStore";
 
 export interface LevelingWizardProps {
   stage: Exclude<Stage, "closed">;
@@ -29,27 +30,16 @@ export interface LevelingWizardProps {
   instrumentName: (id: string) => string;
   /** Resolve a target name to its LUFS (the run table's Target column). */
   targetLufsByName: (name: string | null) => number;
-  // run state
-  runItems: RunItem[];
-  runCurrentIndex: number;
-  runTotal: number;
-  runDone: boolean;
-  runStopped: boolean;
-  runStopping: boolean;
-  /** Advisory live measured loudness for the active run row (null = nothing measuring). */
-  liveLufs: number | null;
-  /** Rolling per-hop momentary levels (dB) for the decorative live VU bars. */
-  liveTrace: number[];
-  /** A batch-wide caption (issue 6b) — see `RunPage`'s own doc. */
-  runTailMessage?: string | null;
+  /** The run's published state (the live meter is RunPage's own store read). */
+  run: RunState;
   // callbacks
   onCancel: () => void;
-  onStart: (choices: SetupChoice[]) => void;
+  /** Set up's commit: the configured rows and its opt-in rebalance toggle. */
+  onStart: (choices: SetupChoice[], rebalance: boolean) => void;
   onRunCancel: () => void;
   onRunComplete: () => void;
   onAccept: () => void;
   onRelevel: (subset: RunItem[]) => void;
-  onRebalanceChange?: (on: boolean) => void;
   /** Jump to Settings → Instruments (the Set-up step's "calibrate" cue). */
   onCalibrate?: () => void;
 }
@@ -64,22 +54,13 @@ export function LevelingWizard({
   defaultTarget,
   instrumentName,
   targetLufsByName,
-  runItems,
-  runCurrentIndex,
-  runTotal,
-  runDone,
-  runStopped,
-  runStopping,
-  liveLufs,
-  liveTrace,
-  runTailMessage,
+  run,
   onCancel,
   onStart,
   onRunCancel,
   onRunComplete,
   onAccept,
   onRelevel,
-  onRebalanceChange,
   onCalibrate,
 }: LevelingWizardProps) {
   if (stage === "setup") {
@@ -93,7 +74,6 @@ export function LevelingWizard({
         defaultTarget={defaultTarget}
         onCancel={onCancel}
         onStart={onStart}
-        onRebalanceChange={onRebalanceChange}
         onCalibrate={onCalibrate}
       />
     );
@@ -102,15 +82,11 @@ export function LevelingWizard({
   if (stage === "run") {
     return (
       <RunPage
-        items={runItems}
-        currentIndex={runCurrentIndex}
-        total={runTotal}
-        done={runDone}
-        stopped={runStopped}
-        stopping={runStopping}
-        liveLufs={liveLufs}
-        liveTrace={liveTrace}
-        tailMessage={runTailMessage}
+        items={run.items}
+        currentIndex={run.currentIndex}
+        total={run.total}
+        phase={run.phase}
+        tailMessage={run.tailMessage}
         instrumentName={instrumentName}
         targetLufsByName={targetLufsByName}
         onCancel={onRunCancel}
@@ -121,8 +97,8 @@ export function LevelingWizard({
 
   return (
     <SummaryPage
-      items={runItems}
-      stopped={runStopped}
+      items={run.items}
+      stopped={run.phase === "stopped"}
       onAccept={onAccept}
       onRelevel={onRelevel}
     />

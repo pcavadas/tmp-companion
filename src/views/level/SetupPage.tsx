@@ -25,7 +25,7 @@
 // the backup-acknowledgment checkbox below is the one revert path: restore from your
 // Pro Control backup.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
@@ -402,8 +402,8 @@ export interface SetupPageProps {
   defaultInst: string;
   defaultTarget: string;
   onCancel: () => void;
-  onStart: (choices: SetupChoice[]) => void;
-  onRebalanceChange?: (on: boolean) => void;
+  /** The commit: the configured rows plus the opt-in rebalance toggle. */
+  onStart: (choices: SetupChoice[], rebalance: boolean) => void;
   onCalibrate?: () => void;
 }
 
@@ -416,25 +416,18 @@ export function SetupPage({
   defaultTarget,
   onCancel,
   onStart,
-  onRebalanceChange,
   onCalibrate,
 }: SetupPageProps) {
   const { t } = useTheme();
   const s = useStyles();
   const requireBackup = !isRelevel;
   const [backedUp, setBackedUp] = useState(false);
+  // Opt-in: equalize a path-MERGE scene's two parallel-amp lanes before joint-k. A fresh
+  // Set up starts it off; the commit hands it to the run with the choices.
   const [rebalance, setRebalance] = useState(false);
   const toggleRebalance = () => {
-    const next = !rebalance;
-    setRebalance(next);
-    onRebalanceChange?.(next);
+    setRebalance(!rebalance);
   };
-  const didSyncRebalance = useRef(false);
-  useEffect(() => {
-    if (didSyncRebalance.current) return;
-    didSyncRebalance.current = true;
-    onRebalanceChange?.(rebalance);
-  }, [onRebalanceChange, rebalance]);
 
   const groups = useMemo(() => {
     const by = new Map<
@@ -653,7 +646,7 @@ export function SetupPage({
         targetName: row?.target ?? defaultTarget,
       };
     });
-    if (choices.length) onStart(choices);
+    if (choices.length) onStart(choices, rebalance);
   };
 
   const [isOpen, toggle] = useGroupOpen(groups.length ? [groups[0].slot] : []);

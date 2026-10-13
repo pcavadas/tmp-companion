@@ -13,7 +13,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
 import type { SetupChoice, SetupOption } from "../views/level/leveling";
-import { resetLevelFlow } from "../views/level/levelRunStore";
+import { isRunOver, resetLevelFlow } from "../views/level/levelRunStore";
 import {
   makeLevelingFlowDeps,
   makeSceneOption,
@@ -85,7 +85,7 @@ describe("useLevelingFlow — base before scenes at the backend", () => {
     });
 
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
     expect(calls).toEqual(["base@0", "scenes@0", "base@1"]);
   });

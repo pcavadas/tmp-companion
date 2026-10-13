@@ -1,7 +1,8 @@
 // src/views/level/RunPage.tsx — the leveling wizard's "Level" (run) stage (design
 // handoff 1a: full window, one row per preset).
 //
-// Presentational: `levelRunStore` drives the sequence. The list groups by PRESET
+// Presentational: `levelRunStore` drives the sequence; the live meter is read from its own
+// store (`useLiveMeter`) right here, so its ~5 Hz ticks re-render this page alone. The list groups by PRESET
 // (`PresetGroupRow`) — the preset currently being worked on opens itself
 // (`useGroupOpen`), following the run; the user can override any row on top of that.
 // The live number renders ONCE, in the header (never in a static preset row) — sound
@@ -24,6 +25,8 @@ import { PresetGroupList, PresetGroupRow } from "./PresetGroupRow";
 import { useGroupOpen } from "./useGroupOpen";
 import { fmtLufs } from "../../lib/format";
 import { useAutoAdvance } from "../../lib/useAutoAdvance";
+import { useLiveMeter } from "./liveMeterStore";
+import { isRunOver, type RunPhase } from "./levelRunStore";
 import {
   groupItemsBySlot,
   hasInstrument,
@@ -35,11 +38,7 @@ export interface RunPageProps {
   items: RunItem[];
   currentIndex: number;
   total: number;
-  done: boolean;
-  stopped: boolean;
-  stopping: boolean;
-  liveLufs: number | null;
-  liveTrace: number[];
+  phase: RunPhase;
   tailMessage?: string | null;
   instrumentName: (id: string) => string;
   targetLufsByName: (name: string | null) => number;
@@ -51,11 +50,7 @@ export function RunPage({
   items,
   currentIndex,
   total,
-  done,
-  stopped,
-  stopping,
-  liveLufs,
-  liveTrace,
+  phase,
   tailMessage = null,
   instrumentName,
   targetLufsByName,
@@ -64,6 +59,10 @@ export function RunPage({
 }: RunPageProps) {
   const { t } = useTheme();
   const [confirm, setConfirm] = useState(false);
+  const { lufs: liveLufs, trace: liveTrace } = useLiveMeter();
+  const done = isRunOver(phase);
+  const stopped = phase === "stopped";
+  const stopping = phase === "stopping";
 
   useAutoAdvance(done, stopped, onComplete);
 

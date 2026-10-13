@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { SetupOption } from "../views/level/leveling";
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
-import { resetLevelFlow } from "../views/level/levelRunStore";
+import { isRunOver, resetLevelFlow } from "../views/level/levelRunStore";
 import {
   fired,
   makeChoices,
@@ -46,7 +46,7 @@ describe("leveling failure reasons", () => {
       result.current.onSetupStart(choices([option("base")]));
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
     expect(result.current.run.items[0]).toMatchObject({
       outcome: "skipped",
@@ -71,7 +71,7 @@ describe("leveling failure reasons", () => {
         );
       });
       await waitFor(() => {
-        expect(result.current.run.done).toBe(true);
+        expect(isRunOver(result.current.run.phase)).toBe(true);
       });
       for (const row of result.current.run.items) {
         expect(row).toMatchObject({
@@ -101,7 +101,7 @@ describe("leveling failure reasons", () => {
       );
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
     expect(result.current.run.items.map((row) => row.skipReason)).toEqual([
       "scene shares base knobs",
@@ -130,9 +130,9 @@ describe("leveling failure reasons", () => {
       reject(new Error("cancelled"));
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
-    expect(result.current.run.stopped).toBe(true);
+    expect(result.current.run.phase === "stopped").toBe(true);
     for (const row of result.current.run.items) {
       expect(row.status).toBe("queued");
       expect(row.skipReason).toBeUndefined();
@@ -151,7 +151,7 @@ describe("leveling failure reasons", () => {
         result.current.onSetupStart(choices([selected]));
       });
       await waitFor(() => {
-        expect(result.current.run.done).toBe(true);
+        expect(isRunOver(result.current.run.phase)).toBe(true);
       });
       expect(result.current.run.items[0].outcome).toBe("skipped");
       expect(result.current.run.items[0].skipReason).toBeUndefined();

@@ -2,9 +2,9 @@
 // Level view.
 //
 // The wizard's stage machine (setup → run → summary, all in one persistent frame) and the
-// run engine live in the module-scoped `levelRunStore`, so a run survives a tab switch:
-// this hook subscribes to that store and adapts the view's data (selection, store, backup
-// maps) into the engine's inputs. The SCENES are chosen in the list (the scene tree); setup
+// run (driven by the pure `runEngine`) live in the module-scoped `levelRunStore`, so a run
+// survives a tab switch: this hook subscribes to that store and adapts the view's data
+// (selection, store, backup maps) into the engine's inputs. The SCENES are chosen in the list (the scene tree); setup
 // only configures them. The backup acknowledgment is an inline checkbox in the Set-up
 // footer (no separate step) that gates the commit. Leveling always WRITES (save:true).
 //
@@ -14,7 +14,7 @@
 // "Restore original" state — a clamped row is reported and left for the user to
 // re-level at a lower target, nothing more.
 
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 import {
   bindRefresh,
@@ -23,7 +23,6 @@ import {
   openSetup,
   requestStop,
   runLeveling,
-  setRebalance,
   showSummary,
   subscribeLevelFlow,
 } from "./levelRunStore";
@@ -44,7 +43,7 @@ import type {
   SilenceHint,
 } from "../../lib/types";
 
-export type { RunState } from "./levelRunStore";
+export type { RunPhase, RunState } from "./levelRunStore";
 
 export interface UseLevelingFlowDeps {
   rows: PresetRow[];
@@ -118,9 +117,10 @@ export function useLevelingFlow({
   }, [deselectKeys]);
 
   // Set-up "Level N sounds" (the COMMIT) → build run items and start. The backup
-  // acknowledgment gated this button inline, so this goes straight to the run.
+  // acknowledgment gated this button inline, so this goes straight to the run. Set up
+  // hands over its opt-in rebalance toggle with the choices.
   const onSetupStart = useCallback(
-    (choices: SetupChoice[]) => {
+    (choices: SetupChoice[], rebalance = false) => {
       if (choices.length === 0) return;
       const items = choices.map((c) => ({
         ...optionToRunItem(c.option, c.instId, c.targetName),
@@ -131,6 +131,7 @@ export function useLevelingFlow({
         targetLufsByName,
         ampCandidates,
         blocksByIndex,
+        rebalance,
         refresh,
       });
     },
@@ -151,27 +152,28 @@ export function useLevelingFlow({
     openSetup(subset.map(runItemToOption), true);
   }, []);
 
-  return {
-    stage: flow.stage,
-    chosen: flow.chosen,
-    isRelevel: flow.isRelevel,
-    run: flow.run,
-    liveLufs: flow.liveLufs,
-    liveTrace: flow.liveTrace,
-    openFlow,
-    onCancel: onClose,
-    onSetupStart,
-    // Run "Stop" → halt the run in place; levels already written stay saved. Do NOT close
-    // the wizard — closing it hid that the in-flight item was still finishing on the
-    // device ("I don't know if it stopped"). The store flips to "Stopping…" at once and
-    // shows "Leveling stopped" + Continue when the in-flight command finishes.
-    onRunCancel: requestStop,
-    // Run → Summary (auto on a natural finish, or via Continue after a manual stop).
-    onRunComplete: showSummary,
-    onRelevel,
-    // Summary "Accept" / "Done" → close, deselecting just the leveled sounds.
-    onAccept: onClose,
-    // Toggle the opt-in rebalance (read at run time). SetupPage owns its own checkbox.
-    setRebalance,
-  };
+  // One object per store publish (or binding change), so a consumer's memo/callback that
+  // depends on it — LevelView's `handleLevel` — is not rebuilt on every render.
+  return useMemo(
+    () => ({
+      stage: flow.stage,
+      chosen: flow.chosen,
+      isRelevel: flow.isRelevel,
+      run: flow.run,
+      openFlow,
+      onCancel: onClose,
+      onSetupStart,
+      // Run "Stop" → halt the run in place; levels already written stay saved. Do NOT
+      // close the wizard — closing it hid that the in-flight item was still finishing on
+      // the device ("I don't know if it stopped"). The store flips to "Stopping…" at once
+      // and shows "Leveling stopped" + Continue when the in-flight command finishes.
+      onRunCancel: requestStop,
+      // Run → Summary (auto on a natural finish, or via Continue after a manual stop).
+      onRunComplete: showSummary,
+      onRelevel,
+      // Summary "Accept" / "Done" → close, deselecting just the leveled sounds.
+      onAccept: onClose,
+    }),
+    [flow, openFlow, onClose, onSetupStart, onRelevel],
+  );
 }

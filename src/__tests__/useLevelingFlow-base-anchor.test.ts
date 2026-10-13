@@ -15,7 +15,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
 import type { SetupChoice } from "../views/level/leveling";
-import { resetLevelFlow } from "../views/level/levelRunStore";
+import { isRunOver, resetLevelFlow } from "../views/level/levelRunStore";
 import {
   callsOf,
   fired,
@@ -79,7 +79,7 @@ describe("useLevelingFlow — scene-group dispatch carries baseAnchor (issue 1 /
       result.current.onSetupStart(choices);
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
 
     const batches = callsOf("level_scenes_apply_batched");
@@ -94,7 +94,7 @@ describe("useLevelingFlow — scene-group dispatch carries baseAnchor (issue 1 /
       result.current.onSetupStart([sceneChoice]);
     });
     await waitFor(() => {
-      expect(result.current.run.done).toBe(true);
+      expect(isRunOver(result.current.run.phase)).toBe(true);
     });
 
     expect(fired("level_preset")).toBe(false);
