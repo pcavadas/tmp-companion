@@ -5,7 +5,14 @@ use crate::proto;
 use crate::session;
 use crate::session::Session;
 use crate::slot::{DeviceSlot, ListIndex};
-use crate::BulkReplaceItem;
+
+/// One probe insert's result, printed by [`probe_insert_active`]. Its own shape
+/// rather than `BulkReplaceItem`: the probe reports outcomes (rejected, unconfirmed,
+/// inserted+saved, a dry revert) the UI's three-way [`crate::ItemOutcome`] has no word for.
+struct InsertItem {
+    outcome: String,
+    detail: String,
+}
 
 /// ADD a block to the device's CURRENT ACTIVE preset over USB — the live `insertNode`
 /// (field 34) path, RE'd byte-exact from a Pro Control add-block capture
@@ -117,9 +124,7 @@ pub fn probe_insert_active(
         fender_id,
         commit,
     )
-    .unwrap_or_else(|e| BulkReplaceItem {
-        slot: list_index,
-        name: name.clone(),
+    .unwrap_or_else(|e| InsertItem {
         outcome: "error".to_string(),
         detail: e,
     });
@@ -313,7 +318,7 @@ fn held_insert_one(
     after: Option<&str>,
     fender_id: &str,
     save: bool,
-) -> Result<BulkReplaceItem, String> {
+) -> Result<InsertItem, String> {
     // LOAD on the held session + RE-ARM the edit context to the just-loaded preset.
     s.clear_raw();
     s.send_and_collect(&proto::load_my_preset(list_index.device_slot()), 200)?;
@@ -322,9 +327,7 @@ fn held_insert_one(
                                             // SAFETY — confirm the held session re-attached to the TARGET preset (active_matches
                                             // prefers the PresetLoaded slot echo, falling back to the active name) before editing.
     if !s.active_matches(list_index, Some(name)) {
-        return Ok(BulkReplaceItem {
-            slot: list_index,
-            name: name.to_string(),
+        return Ok(InsertItem {
             outcome: "error".to_string(),
             detail: format!(
                 "could not confirm target preset loaded (slot {:?} ≠ {list_index}, active {:?} ≠ {name:?}) — not edited",
@@ -338,9 +341,7 @@ fn held_insert_one(
     let was = match insert_guard(s, group, after, fender_id) {
         Ok(was) => was,
         Err(detail) => {
-            return Ok(BulkReplaceItem {
-                slot: list_index,
-                name: name.to_string(),
+            return Ok(InsertItem {
                 outcome: "error".to_string(),
                 detail,
             })
@@ -367,17 +368,13 @@ fn held_insert_one(
     );
 
     if rejected {
-        return Ok(BulkReplaceItem {
-            slot: list_index,
-            name: name.to_string(),
+        return Ok(InsertItem {
             outcome: "rejected".to_string(),
             detail: format!("device sent presetError — NOT saved. {detail}"),
         });
     }
     if !confirmed && !present {
-        return Ok(BulkReplaceItem {
-            slot: list_index,
-            name: name.to_string(),
+        return Ok(InsertItem {
             outcome: "unconfirmed".to_string(),
             detail: format!("no nodeInserted + block absent from read-back — NOT saved. {detail}"),
         });
@@ -390,9 +387,7 @@ fn held_insert_one(
         s.save_current_preset(list_index)?;
         s.heartbeat()?;
         s.pump_silent(120)?;
-        Ok(BulkReplaceItem {
-            slot: list_index,
-            name: name.to_string(),
+        Ok(InsertItem {
             outcome: "inserted+saved".to_string(),
             detail,
         })
@@ -402,9 +397,7 @@ fn held_insert_one(
         s.send_and_collect(&proto::load_my_preset(list_index.device_slot()), 200)?;
         s.heartbeat()?;
         s.pump_silent(120)?;
-        Ok(BulkReplaceItem {
-            slot: list_index,
-            name: name.to_string(),
+        Ok(InsertItem {
             outcome: "inserted (dry, reverted)".to_string(),
             detail,
         })

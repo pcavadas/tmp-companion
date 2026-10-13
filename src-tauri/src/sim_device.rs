@@ -2589,7 +2589,10 @@ pub fn set_capture_delay(ms: u64) {
 /// Doctor profiles rather than measuring). The runtime online guard in
 /// `audio::reamp_capture` means this is never reached online.
 #[cfg(feature = "e2e")]
-pub fn e2e_capture(stimulus: &[f32], rate: u32) -> Result<crate::audio::Capture, String> {
+pub fn e2e_capture(
+    stimulus: &[f32],
+    rate: u32,
+) -> Result<crate::audio::Capture, crate::error::LevelError> {
     let Some(dev) = LIVE.lock().expect("sim live lock").clone() else {
         log::debug!("e2e_capture: no live SimDevice — stimulus passthrough");
         return Ok(passthrough(stimulus, rate));

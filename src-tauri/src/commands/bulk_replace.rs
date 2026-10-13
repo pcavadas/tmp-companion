@@ -29,14 +29,34 @@ pub enum ReplArg {
     Remove,
 }
 
+/// What happened to one preset in a live bulk-replace or Copy run. Serializes to the same
+/// lowercase words the field always carried (`"updated" | "skipped" | "error"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ItemOutcome {
+    Updated,
+    Skipped,
+    Error,
+}
+
+impl std::fmt::Display for ItemOutcome {
+    /// The wire word, for the probe's text reports.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ItemOutcome::Updated => "updated",
+            ItemOutcome::Skipped => "skipped",
+            ItemOutcome::Error => "error",
+        })
+    }
+}
+
 /// One preset's outcome from a live bulk-replace run (streamed to the UI per preset).
 #[derive(Debug, Clone, Serialize)]
 pub struct BulkReplaceItem {
     /// 0-based list index of the preset (the UI keys its rows by this).
     pub slot: ListIndex,
     pub name: String,
-    /// `"updated"` | `"skipped"` | `"error"`.
-    pub outcome: String,
+    pub outcome: ItemOutcome,
     pub detail: String,
 }
 /// Cooperative cancel for [`bulk_replace_live`] — set by `cancel_bulk_replace` (the
@@ -101,7 +121,7 @@ pub(crate) async fn bulk_replace_live(
                     let item = replace_one_live(plan, &repl, save).unwrap_or_else(|e| BulkReplaceItem {
                         slot: plan.list_index,
                         name: plan.name.clone(),
-                        outcome: "error".to_string(),
+                        outcome: ItemOutcome::Error,
                         detail: e,
                     });
                     let _ = on_result.send(item.clone());
@@ -230,7 +250,7 @@ pub(crate) fn error_item(list_index: ListIndex, name: String, detail: String) ->
     BulkReplaceItem {
         slot: list_index,
         name,
-        outcome: "error".to_string(),
+        outcome: ItemOutcome::Error,
         detail,
     }
 }
@@ -420,7 +440,7 @@ fn replace_one_live(
         return Ok(BulkReplaceItem {
             slot: list_index,
             name,
-            outcome: "skipped".to_string(),
+            outcome: ItemOutcome::Skipped,
             detail: "no matching block".to_string(),
         });
     }
@@ -444,7 +464,7 @@ fn replace_one_live(
         return Ok(BulkReplaceItem {
             slot: list_index,
             name: name.clone(),
-            outcome: "error".to_string(),
+            outcome: ItemOutcome::Error,
             detail: format!(
                 "could not confirm target preset (slot {:?} ≠ {list_index}, active {:?} ≠ target {name:?}) — not edited",
                 s.loaded_slot(),
@@ -469,7 +489,7 @@ fn replace_one_live(
             return Ok(BulkReplaceItem {
                 slot: list_index,
                 name: name.clone(),
-                outcome: "error".to_string(),
+                outcome: ItemOutcome::Error,
                 detail: format!(
                     "blocked by block-count cap ({reason}) replacing {group}/{node_id} — NOT saved"
                 ),
@@ -487,7 +507,7 @@ fn replace_one_live(
             return Ok(BulkReplaceItem {
                 slot: list_index,
                 name: name.clone(),
-                outcome: "error".to_string(),
+                outcome: ItemOutcome::Error,
                 detail: format!("device rejected replace of {group}/{node_id} (presetError / no nodeReplaced) — NOT saved"),
             });
         }
@@ -505,7 +525,7 @@ fn replace_one_live(
     Ok(BulkReplaceItem {
         slot: list_index,
         name,
-        outcome: "updated".to_string(),
+        outcome: ItemOutcome::Updated,
         detail: format!("{applied} block(s)"),
     })
 }

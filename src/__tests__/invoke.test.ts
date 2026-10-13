@@ -616,7 +616,7 @@ describe("the remaining wrappers", () => {
 
 describe("invoke rejections are normalized to CommandError", () => {
   it("wraps a bare-string backend rejection in an Error carrying its text + command", async () => {
-    // Every command returns Result<_, String>, so the real IPC rejects with a
+    // Most commands return Result<_, String>, so the real IPC rejects with a
     // STRING — the shape that made `e instanceof Error ? e.message : "generic"`
     // drop the backend's reason.
     invokeMock.mockRejectedValueOnce(
@@ -632,6 +632,37 @@ describe("invoke rejections are normalized to CommandError", () => {
       "guarded insert refused: over the CPU budget",
     );
     expect((err as CommandError).cmd).toBe("list_presets");
+    // A bare string carries no kind of its own.
+    expect((err as CommandError).kind).toBe("other");
+  });
+
+  it("keeps a typed { kind, message } rejection's kind and message (#269)", async () => {
+    // `connect_device` returns the typed `error::AppError`, serialized as
+    // `{ kind, message }` — the frontend classifies by `kind`, not by the text.
+    invokeMock.mockRejectedValueOnce({
+      kind: "busy",
+      message: "IOHIDDeviceOpen failed: 0xe00002c5 — close Fender Pro Control",
+    });
+    const err: unknown = await connectDevice().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(CommandError);
+    expect((err as CommandError).kind).toBe("busy");
+    expect((err as CommandError).message).toBe(
+      "IOHIDDeviceOpen failed: 0xe00002c5 — close Fender Pro Control",
+    );
+    expect((err as CommandError).cmd).toBe("connect_device");
+  });
+
+  it("reads an unknown kind as other rather than trusting it", async () => {
+    invokeMock.mockRejectedValueOnce({ kind: "exploded", message: "boom" });
+    const err: unknown = await connectDevice().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect((err as CommandError).kind).toBe("other");
+    expect((err as CommandError).message).toBe("boom");
   });
 });
 
@@ -650,15 +681,40 @@ describe("invoke-failure logging", () => {
     }
   });
 
-  it("stays quiet on the designed connect-poll rejection (no TMP found)", async () => {
-    // The 3 s auto-connect retry rejects with "no TMP found" while nothing is
-    // plugged in — logging it would churn the size-capped log file forever.
+  it.each([
+    [
+      "not_connected",
+      "no TMP found (VID 0x1ED8 / PID 0x44) — is it plugged in?",
+    ],
+    ["not_ready", "IOHIDDeviceSetReport failed: 0xe00002d6"],
+  ])(
+    "stays quiet on the designed connect-poll rejection (%s)",
+    async (kind, message) => {
+      // The 3 s auto-connect retry rejects while nothing is plugged in (or the
+      // unit is still booting) — logging it would churn the size-capped log file
+      // forever. Keyed on the typed kind, not the text.
+      const win = window as unknown as Record<string, unknown>;
+      win.__TAURI_INTERNALS__ = {};
+      invokeMock.mockRejectedValueOnce({ kind, message });
+      try {
+        await expect(connectDevice()).rejects.toThrow(message);
+        expect(pluginErrorMock).not.toHaveBeenCalled();
+      } finally {
+        delete win.__TAURI_INTERNALS__;
+      }
+    },
+  );
+
+  it("logs a connect failure whose text looks like the gate but whose kind is not", async () => {
+    // The old regexes would have swallowed this; only the kind decides now.
     const win = window as unknown as Record<string, unknown>;
     win.__TAURI_INTERNALS__ = {};
     invokeMock.mockRejectedValueOnce(new Error("no TMP found"));
     try {
       await expect(connectDevice()).rejects.toThrow("no TMP found");
-      expect(pluginErrorMock).not.toHaveBeenCalled();
+      expect(pluginErrorMock).toHaveBeenCalledWith(
+        expect.stringContaining("invoke(connect_device) failed"),
+      );
     } finally {
       delete win.__TAURI_INTERNALS__;
     }
@@ -667,9 +723,10 @@ describe("invoke-failure logging", () => {
   it("still logs an actionable connect failure (close Pro Control)", async () => {
     const win = window as unknown as Record<string, unknown>;
     win.__TAURI_INTERNALS__ = {};
-    invokeMock.mockRejectedValueOnce(
-      new Error("IOHIDDeviceOpen failed: close Fender Pro Control"),
-    );
+    invokeMock.mockRejectedValueOnce({
+      kind: "busy",
+      message: "IOHIDDeviceOpen failed: close Fender Pro Control",
+    });
     try {
       await expect(connectDevice()).rejects.toThrow("IOHIDDeviceOpen");
       expect(pluginErrorMock).toHaveBeenCalledWith(

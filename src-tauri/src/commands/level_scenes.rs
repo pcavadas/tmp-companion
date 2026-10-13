@@ -1,4 +1,6 @@
 //! Per-scene leveling commands + setlist common-target leveling.
+use super::ProgressStatus;
+use crate::error::LevelError;
 use crate::*;
 
 /// One resolved amp knob: `(group_id, node_id, current_outputLevel)`.
@@ -19,7 +21,7 @@ pub struct LevelBlockArg {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SceneLevelProgressItem {
     scene_slot: u32,
-    status: String,
+    status: ProgressStatus,
     result: Option<leveller::LevelResult>,
     message: Option<String>,
     /// B6 (issue 6b): a batch-wide caption ("Saving preset…" / "Verifying…") for the
@@ -482,7 +484,7 @@ fn level_one_scene_legacy(
     stimulus: &[f32],
     target_lufs: f64,
     save: bool,
-) -> Result<leveller::LevelResult, String> {
+) -> Result<leveller::LevelResult, LevelError> {
     let (knob, lo, hi, _current) = pick_scene_level_knob(slot, scene, candidates)?;
     let opts = leveller::LevelOptions {
         save,
@@ -532,7 +534,7 @@ pub(crate) async fn level_scenes_apply<R: tauri::Runtime>(
     let stim_path = resolve_stimulus(&app, None, topology_id)?;
     with_released_seize(state.session.clone(), move || {
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
-        let run = || -> Result<Vec<leveller::LevelResult>, String> {
+        let run = || -> Result<Vec<leveller::LevelResult>, LevelError> {
             let mut results = Vec::with_capacity(scene_slots.len());
             for scene in &scene_slots {
                 let r = level_one_scene_legacy(
@@ -661,7 +663,8 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             Vec<leveller::BatchedSceneOutcome>,
             Option<crate::headroom_trade::TradeSummary>,
         );
-        let run_batched = |save_run: bool| -> Result<BatchOutcome, String> {
+        // Typed, so a Stop anywhere in the run reaches the match below as a cancel.
+        let run_batched = |save_run: bool| -> Result<BatchOutcome, LevelError> {
             // Un-engaged pre-pass (scene docs → jobs), then the ONE-SHOT runner:
             // amp `outputLevel` is linear in dB, so each scene is measured once at a
             // reference level (ISOLATED fresh re-amp capture) and solved exactly — the
@@ -758,10 +761,10 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                         format!("built scene job slot {} has no wire target", sj.scene_slot)
                     })?;
                 if !arg.target_lufs.is_finite() {
-                    return Err(format!(
+                    return Err(LevelError::Device(format!(
                         "scene slot {} has a non-finite target ({})",
                         arg.scene_slot, arg.target_lufs
-                    ));
+                    )));
                 }
                 sj.target_lufs = arg.target_lufs + offset;
             }
@@ -769,10 +772,10 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 .iter()
                 .find(|j| !scene_jobs.iter().any(|sj| sj.scene_slot == j.scene_slot))
             {
-                return Err(format!(
+                return Err(LevelError::Device(format!(
                     "requested scene slot {} produced no scene job",
                     j.scene_slot
-                ));
+                )));
             }
             let cancelled = || SCENE_LEVEL_CANCEL.load(SeqCst);
             // ── THE REORDERED RUN ────────────────────────────────────────────────────
@@ -845,11 +848,11 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                         .is_some_and(|sj| !sj.force_bypass.is_empty());
                 if base_isolated {
                     if let Err(e) = leveller::restore_saved_preset(slot) {
-                        return Err(format!(
+                        return Err(LevelError::Device(format!(
                             "slot {slot}: could not clear the base isolation prepass write \
                              ({e}) — aborting the run rather than risk a later save persisting \
                              every pedal forced off with an empty verify list"
-                        ));
+                        )));
                     }
                 }
                 prepass_result?;
@@ -954,9 +957,9 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 if SCENE_LEVEL_CANCEL.load(SeqCst) {
                     let _ = on_result.send(SceneLevelProgressItem {
                         scene_slot: session::BASE_SCENE_SLOT,
-                        status: "cancelled".to_string(),
+                        status: ProgressStatus::Cancelled,
                         result: None,
-                        message: Some(leveller::CANCELLED.to_string()),
+                        message: Some(LevelError::Cancelled.to_string()),
                         tail: None,
                     });
                 }
@@ -968,12 +971,12 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     .map(|o| outcome_to_level_result(slot, save, o, summary.as_ref()))
                     .collect())
             }
-            Err(e) if e == leveller::CANCELLED => {
+            Err(e) if e.is_cancelled() => {
                 let _ = on_result.send(SceneLevelProgressItem {
                     scene_slot: session::BASE_SCENE_SLOT,
-                    status: "cancelled".to_string(),
+                    status: ProgressStatus::Cancelled,
                     result: None,
-                    message: Some(e),
+                    message: Some(e.to_string()),
                     tail: None,
                 });
                 Ok(Vec::new())
@@ -1484,7 +1487,7 @@ fn scene_progress_item(
     match done {
         None => SceneLevelProgressItem {
             scene_slot: scene,
-            status: "active".to_string(),
+            status: ProgressStatus::Active,
             result: None,
             message: active_message.map(str::to_string),
             tail: None,
@@ -1492,14 +1495,14 @@ fn scene_progress_item(
         Some(o) => match &o.failure {
             None => SceneLevelProgressItem {
                 scene_slot: scene,
-                status: "done".to_string(),
+                status: ProgressStatus::Done,
                 result: Some(outcome_to_level_result(slot, save, o, trade)),
                 message: None,
                 tail: None,
             },
             Some(e) => SceneLevelProgressItem {
                 scene_slot: scene,
-                status: "error".to_string(),
+                status: ProgressStatus::Error,
                 result: None,
                 message: Some(e.clone()),
                 tail: None,
@@ -1525,7 +1528,7 @@ fn scene_progress_item(
 fn tail_progress_item(tail: &str) -> SceneLevelProgressItem {
     SceneLevelProgressItem {
         scene_slot: u32::MAX,
-        status: "active".to_string(),
+        status: ProgressStatus::Active,
         result: None,
         message: None,
         tail: Some(tail.to_string()),
@@ -1686,7 +1689,7 @@ pub(crate) async fn level_setlist<R: tauri::Runtime>(
             .collect();
         let result = leveller::level_setlist(&lvl_entries, SETLIST_HEADROOM_LU, 0.5, save);
         leveller::reamp_off_guaranteed("level_setlist");
-        result
+        result.map_err(String::from)
     })
     .await
 }

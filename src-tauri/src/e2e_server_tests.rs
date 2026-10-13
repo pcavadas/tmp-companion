@@ -4424,7 +4424,7 @@ impl crate::hid::HidTransport for CancelAtSceneWrite {
 }
 
 /// ⟦F2⟧ CANCEL AFTER A LANDED TRADE RETURNS ITS OUTCOMES AND DISCLOSES THE TRADE — it does not
-/// come back as the bare `CANCELLED` sentinel, whose results the command maps to an EMPTY vec.
+/// come back as a bare cancel error, whose results the command maps to an EMPTY vec.
 /// That historical shape is the silent-wrong-numbers outcome this codebase refuses: the save
 /// on the stopped path has already persisted the raised `presetLevel` + the base fader holding
 /// base on target, every scene already solved was solved AT that raised level, and handing

@@ -130,8 +130,9 @@ Pro Control" error.
   reconnect churn lets two _operations_ overlap across a tab switch.
 - Boot-window `IOHIDDeviceSetReport failed: 0xe00002d6` (kIOReturnTimeout) is **not an
   error** — the HID interface enumerates ~20 s before the USB stack accepts reports, so the
-  first cold-boot handshake _send_ times out. Classify by error string, not a retry count
-  (`connectError.ts`).
+  first cold-boot handshake _send_ times out. Classify by error KIND, not a retry count:
+  `connect_device` returns `{ kind: "not_ready" }` (`error::DeviceError::NotReady`, set when
+  the OS refused a report write during the handshake) and `connectError.ts` gates on it.
 
 ## The monitor's pause/ack seize-sharing
 

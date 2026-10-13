@@ -639,6 +639,12 @@ export interface ActiveGraph {
   stages: Stage[];
 }
 
+/** The kind of a typed command error (mirrors `error::AppError`'s `kind`). A command
+ * migrated to the typed error rejects with `{ kind, message }`; every other command
+ * still rejects with a bare string, which `invoke`'s `CommandError` reads as `"other"`.
+ * Today only `connect_device` sends a typed error. */
+export type CommandErrorKind = "not_connected" | "busy" | "not_ready" | "other";
+
 /** Combined connect result: firmware + active graph in one handshake (mirrors
  * lib.rs ConnectResult). The graph is null when no preset is loaded or the
  * handshake's field-3 stream was truncated before a complete audioGraph. */

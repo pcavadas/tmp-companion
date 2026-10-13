@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::thread::JoinHandle;
 
+use crate::error::DeviceError;
 use crate::proto;
 
 #[cfg(any(windows, test))]
@@ -109,13 +110,40 @@ pub struct Hid {
 /// ours.
 static LIVE_HANDLES: AtomicUsize = AtomicUsize::new(0);
 
+/// Report writes the OS refused (macOS `IOHIDDeviceSetReport` failing), counted so a
+/// connect can tell "the unit is present but not accepting reports yet" (the cold-boot
+/// window, or a unit pulled mid-handshake) from any other handshake failure without reading
+/// the error text: it compares [`report_write_refusals`] before and after. One device, so
+/// one counter, like [`DEVICE_TEMPLATE_MARK`]. The hidraw and Win32 transports do not count
+/// their write failures: their text was never classified as not-ready either.
+static REPORT_WRITE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+/// How many report writes the OS has refused so far (see [`REPORT_WRITE_REFUSALS`]).
+pub(crate) fn report_write_refusals() -> u64 {
+    REPORT_WRITE_REFUSALS.load(Ordering::SeqCst)
+}
+
+/// Classify a failure on an OPEN device (the handshake, or the startup snapshot read):
+/// [`DeviceError::NotReady`] when the OS refused a report write since `refusals_before` (a
+/// [`report_write_refusals`] reading taken before the work), else [`DeviceError::Other`].
+pub(crate) fn open_device_failure(e: String, refusals_before: u64) -> DeviceError {
+    if report_write_refusals() != refusals_before {
+        DeviceError::NotReady(e)
+    } else {
+        DeviceError::Other(e)
+    }
+}
+
 impl Hid {
     /// Open the TMP (seizing it). Errors if no device is present or Pro Control
-    /// holds it. Blocks until the worker thread has the device open.
-    pub fn open() -> Result<Hid, String> {
+    /// holds it. Blocks until the worker thread has the device open. The error's kind
+    /// ([`DeviceError::NotFound`], [`DeviceError::SeizeHeld`]) is what callers branch on.
+    pub fn open() -> Result<Hid, DeviceError> {
         let hid = imp::open().map_err(|e| match LIVE_HANDLES.load(Ordering::SeqCst) {
             0 => e,
-            n => format!("{n} other session(s) in this app still hold the device ({e})"),
+            n => e.map_message(|e| {
+                format!("{n} other session(s) in this app still hold the device ({e})")
+            }),
         })?;
         LIVE_HANDLES.fetch_add(1, Ordering::SeqCst);
         Ok(hid)
@@ -428,11 +456,11 @@ mod imp {
     ///
     /// Must run on the HID worker thread, which then owns both returned refs and releases
     /// each exactly once (`Seized`'s Drop).
-    unsafe fn open_device() -> Result<(IOHIDManagerRef, IOHIDDeviceRef), String> {
+    unsafe fn open_device() -> Result<(IOHIDManagerRef, IOHIDDeviceRef), DeviceError> {
         // Short backoff: fw 1.8.58 has no open lockout to wait out.
         const ENUM_RETRIES: u32 = 3;
         const ENUM_RETRY_DELAY_MS: u64 = 400;
-        let mut last_err = String::new();
+        let mut last_err = DeviceError::Other(String::new());
         for attempt in 0..=ENUM_RETRIES {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(ENUM_RETRY_DELAY_MS));
@@ -445,7 +473,8 @@ mod imp {
                     return Ok(pair);
                 }
                 Err(e) => {
-                    let transient = e.contains("0xe00002c5");
+                    // Only a held seize (kIOReturnExclusiveAccess) is worth re-enumerating for.
+                    let transient = matches!(e, DeviceError::SeizeHeld(_));
                     last_err = e;
                     if !transient {
                         break;
@@ -463,10 +492,12 @@ mod imp {
     /// # Safety
     ///
     /// As [`open_device`]: worker thread only; the caller owns and releases the returned refs.
-    unsafe fn open_device_once() -> Result<(IOHIDManagerRef, IOHIDDeviceRef), String> {
+    unsafe fn open_device_once() -> Result<(IOHIDManagerRef, IOHIDDeviceRef), DeviceError> {
         let manager = IOHIDManagerCreate(kCFAllocatorDefault as CFTypeRef, 0);
         if manager.is_null() {
-            return Err("IOHIDManagerCreate returned null".into());
+            return Err(DeviceError::Other(
+                "IOHIDManagerCreate returned null".into(),
+            ));
         }
         let dict: CFMutableDictionaryRef = CFDictionaryCreateMutable(
             kCFAllocatorDefault,
@@ -492,13 +523,17 @@ mod imp {
 
         if devices.is_null() {
             CFRelease(manager as CFTypeRef);
-            return Err("no TMP found (VID 0x1ED8 / PID 0x44) — is it plugged in?".into());
+            return Err(DeviceError::NotFound(
+                "no TMP found (VID 0x1ED8 / PID 0x44) — is it plugged in?".into(),
+            ));
         }
         let count = CFSetGetCount(devices);
         if count == 0 {
             CFRelease(devices as CFTypeRef);
             CFRelease(manager as CFTypeRef);
-            return Err("no TMP found (VID 0x1ED8 / PID 0x44) — is it plugged in?".into());
+            return Err(DeviceError::NotFound(
+                "no TMP found (VID 0x1ED8 / PID 0x44) — is it plugged in?".into(),
+            ));
         }
         let mut values: Vec<*const c_void> = vec![std::ptr::null(); count as usize];
         CFSetGetValues(devices, values.as_mut_ptr());
@@ -537,7 +572,14 @@ mod imp {
             } else {
                 ""
             };
-            return Err(format!("IOHIDDeviceOpen failed: 0x{:08x}{hint}", rc as u32));
+            let msg = format!("IOHIDDeviceOpen failed: 0x{:08x}{hint}", rc as u32);
+            // Exclusive access alone is a held seize (the kind `open_device` retries on);
+            // not-permitted keeps the hint but is not retried, as before.
+            return Err(if rc == K_IORETURN_EXCLUSIVE_ACCESS {
+                DeviceError::SeizeHeld(msg)
+            } else {
+                DeviceError::Other(msg)
+            });
         }
         // Keep `manager` alive (returned to caller); it backs the device.
         Ok((manager, device))
@@ -582,9 +624,9 @@ mod imp {
         }
     }
 
-    pub fn open() -> Result<Hid, String> {
+    pub fn open() -> Result<Hid, DeviceError> {
         // Worker reports the open result back through this oneshot.
-        let (ready_tx, ready_rx) = bounded::<Result<(), String>>(1);
+        let (ready_tx, ready_rx) = bounded::<Result<(), DeviceError>>(1);
         let (cmd_tx, cmd_rx) = unbounded::<Cmd>();
 
         let join = std::thread::Builder::new()
@@ -644,6 +686,8 @@ mod imp {
                         pkt.len() as CFIndex,
                     );
                     if rc != 0 {
+                        // Counted, so a connect can classify the failure as not-ready.
+                        REPORT_WRITE_REFUSALS.fetch_add(1, Ordering::SeqCst);
                         Err(format!("IOHIDDeviceSetReport failed: 0x{:08x}", rc as u32))
                     } else {
                         Ok(())
@@ -725,7 +769,7 @@ mod imp {
 
                 drop(seized);
             })
-            .map_err(|e| format!("spawn HID thread: {e}"))?;
+            .map_err(|e| DeviceError::Other(format!("spawn HID thread: {e}")))?;
 
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Hid {
@@ -736,7 +780,9 @@ mod imp {
                 let _ = join.join();
                 Err(e)
             }
-            Err(_) => Err("HID thread exited before reporting status".into()),
+            Err(_) => Err(DeviceError::Other(
+                "HID thread exited before reporting status".into(),
+            )),
         }
     }
 }
@@ -791,9 +837,12 @@ mod imp {
     /// `pub(super)`: also called by `device_present()` above `imp`, for the
     /// hotplug poller — the only reason this needs to reach past `imp`'s own
     /// boundary.
-    pub(super) fn find_hidraw() -> Result<CString, String> {
-        let dir = std::fs::read_dir("/sys/class/hidraw")
-            .map_err(|e| format!("cannot list /sys/class/hidraw ({e}) — is hidraw available?"))?;
+    pub(super) fn find_hidraw() -> Result<CString, DeviceError> {
+        let dir = std::fs::read_dir("/sys/class/hidraw").map_err(|e| {
+            DeviceError::Other(format!(
+                "cannot list /sys/class/hidraw ({e}) — is hidraw available?"
+            ))
+        })?;
         let mut seen = 0usize;
         for entry in dir.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -805,24 +854,25 @@ mod imp {
                 continue;
             };
             if parse_hid_id(&body) == Some((VID, PID)) {
-                return CString::new(format!("/dev/{name}")).map_err(|e| e.to_string());
+                return CString::new(format!("/dev/{name}"))
+                    .map_err(|e| DeviceError::Other(e.to_string()));
             }
         }
-        Err(format!(
+        Err(DeviceError::NotFound(format!(
             "no TMP found (VID 0x{VID:04X} / PID 0x{PID:02X}) among {seen} HID device(s) — is it plugged in?"
-        ))
+        )))
     }
 
     /// The open, `flock`ed hidraw node. An [`OwnedFd`]: a worker that unwinds still closes
     /// it, releasing the lock with it (#266). A leaked fd kept its `flock` for the life of
     /// the process, and every later open failed "already in use by another TMP Companion
     /// process".
-    fn open_device() -> Result<OwnedFd, String> {
+    fn open_device() -> Result<OwnedFd, DeviceError> {
         open_locked(&find_hidraw()?)
     }
 
     /// [`open_device`] on a known `path`: open read-write, then take the exclusive `flock`.
-    fn open_locked(path: &CString) -> Result<OwnedFd, String> {
+    fn open_locked(path: &CString) -> Result<OwnedFd, DeviceError> {
         // SAFETY: `path` is a valid NUL-terminated C string that outlives the call.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
         if fd < 0 {
@@ -840,7 +890,10 @@ mod imp {
             } else {
                 ""
             };
-            return Err(format!("open {}: {err}{hint}", path.to_string_lossy()));
+            return Err(DeviceError::Other(format!(
+                "open {}: {err}{hint}",
+                path.to_string_lossy()
+            )));
         }
         // SAFETY: `open` just returned this fd (checked non-negative), and nothing else owns
         // it: the `OwnedFd` is now its only closer.
@@ -860,12 +913,16 @@ mod imp {
             let err = IoError::last_os_error();
             drop(fd);
             if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
-                return Err(
+                // The hidraw counterpart of a held seize.
+                return Err(DeviceError::SeizeHeld(
                     "the Tone Master Pro is already in use by another TMP Companion process (app or probe) — close it and retry"
                         .into(),
-                );
+                ));
             }
-            return Err(format!("lock {}: {err}", path.to_string_lossy()));
+            return Err(DeviceError::Other(format!(
+                "lock {}: {err}",
+                path.to_string_lossy()
+            )));
         }
         Ok(fd)
     }
@@ -969,8 +1026,8 @@ mod imp {
         out
     }
 
-    pub fn open() -> Result<Hid, String> {
-        let (ready_tx, ready_rx) = bounded::<Result<(), String>>(1);
+    pub fn open() -> Result<Hid, DeviceError> {
+        let (ready_tx, ready_rx) = bounded::<Result<(), DeviceError>>(1);
         let (cmd_tx, cmd_rx) = unbounded::<Cmd>();
 
         let join = std::thread::Builder::new()
@@ -1024,7 +1081,7 @@ mod imp {
                     log::warn!("hidraw close failed: {}", IoError::last_os_error());
                 }
             })
-            .map_err(|e| format!("spawn HID thread: {e}"))?;
+            .map_err(|e| DeviceError::Other(format!("spawn HID thread: {e}")))?;
 
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Hid {
@@ -1035,7 +1092,9 @@ mod imp {
                 let _ = join.join();
                 Err(e)
             }
-            Err(_) => Err("HID thread exited before reporting status".into()),
+            Err(_) => Err(DeviceError::Other(
+                "HID thread exited before reporting status".into(),
+            )),
         }
     }
 
@@ -1319,13 +1378,13 @@ mod imp {
         read_pending: bool,
     }
 
-    fn open_device() -> Result<Dev, String> {
+    fn open_device() -> Result<Dev, DeviceError> {
         let paths = hid_interface_paths()?;
         let seen = paths.len();
         let Some((wide, text)) = paths.into_iter().find(|(_, t)| path_matches_tmp(t)) else {
-            return Err(format!(
+            return Err(DeviceError::NotFound(format!(
                 "no TMP found (VID 0x{VID:04X} / PID 0x{PID:02X}) among {seen} HID device(s) — is it plugged in?"
-            ));
+            )));
         };
         // Share mode 0 = exclusive: the Windows counterpart of IOKit's seize.
         // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the call; null security
@@ -1349,7 +1408,14 @@ mod imp {
             } else {
                 ""
             };
-            return Err(format!("open {text}: {err}{hint}"));
+            let msg = format!("open {text}: {err}{hint}");
+            // A sharing violation is the held exclusive open (Share mode 0 above); an access
+            // denial keeps the hint but stays `Other`, like macOS's not-permitted.
+            return Err(if code == ERROR_SHARING_VIOLATION {
+                DeviceError::SeizeHeld(msg)
+            } else {
+                DeviceError::Other(msg)
+            });
         }
         let dev = (|| -> Result<Dev, String> {
             // SAFETY: plain old data; all-zero is valid, and `Size` is set right after.
@@ -1419,7 +1485,7 @@ mod imp {
             // close.
             unsafe { CloseHandle(handle) };
         }
-        dev
+        dev.map_err(DeviceError::Other)
     }
 
     struct PendingWrite<'a> {
@@ -1673,8 +1739,8 @@ mod imp {
         }
     }
 
-    pub fn open() -> Result<Hid, String> {
-        let (ready_tx, ready_rx) = bounded::<Result<(), String>>(1);
+    pub fn open() -> Result<Hid, DeviceError> {
+        let (ready_tx, ready_rx) = bounded::<Result<(), DeviceError>>(1);
         let (cmd_tx, cmd_rx) = unbounded::<Cmd>();
 
         let join = std::thread::Builder::new()
@@ -1720,7 +1786,7 @@ mod imp {
                 }
                 drop(dev);
             })
-            .map_err(|e| format!("spawn HID thread: {e}"))?;
+            .map_err(|e| DeviceError::Other(format!("spawn HID thread: {e}")))?;
 
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Hid {
@@ -1731,7 +1797,9 @@ mod imp {
                 let _ = join.join();
                 Err(e)
             }
-            Err(_) => Err("HID thread exited before reporting status".into()),
+            Err(_) => Err(DeviceError::Other(
+                "HID thread exited before reporting status".into(),
+            )),
         }
     }
 }
@@ -1739,11 +1807,11 @@ mod imp {
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod imp {
     use super::*;
-    pub fn open() -> Result<Hid, String> {
-        Err(
+    pub fn open() -> Result<Hid, DeviceError> {
+        Err(DeviceError::Other(
             "TMP Companion supports macOS (IOKit HID), Linux (hidraw) and Windows (Win32 HID)"
                 .into(),
-        )
+        ))
     }
 }
 

@@ -1,4 +1,5 @@
 //! Preset-level (`presetLevel`) leveling command + stimulus resolution + calibration.
+use crate::error::LevelError;
 use crate::*;
 
 /// One leveling job from the UI: a preset slot + the LUFS target to hit.
@@ -310,7 +311,8 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         let mut opts = leveller::LevelOptions { save, verify: true, ..Default::default() };
         let cancelled = || PRESET_LEVEL_CANCEL.load(SeqCst);
         let mut previous_level: Option<f32> = None;
-        let result = match block {
+        // Typed, so the run-end `stamp` below can tell a cancel from a failure.
+        let result: Result<leveller::LevelResult, LevelError> = match block {
             Some((group_id, node_id, parameter_id)) => {
                 // CLASS GATE + RANGE, replacing the value-sniffed `knob_bounds(current)`:
                 // the picker can offer ANY block param, and sweeping a non-level control
@@ -357,7 +359,8 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // (the leveller bails at its own pre-measure checkpoint) so the run-end
                 // backstop below is skipped, mirroring the None arm's cancel path.
                 if cancelled() {
-                    return leveller::level_preset_block(slot, &stim, &knob, lo, hi, target_lufs, opts, cancelled);
+                    return leveller::level_preset_block(slot, &stim, &knob, lo, hi, target_lufs, opts, cancelled)
+                        .map_err(String::from);
                 }
                 leveller::level_preset_block(slot, &stim, &knob, lo, hi, target_lufs, opts, cancelled)
             }
@@ -384,7 +387,8 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                         &[],
                         previous_level,
                         cancelled,
-                    );
+                    )
+                    .map_err(String::from);
                 }
                 // BASE MEANS BASE — every footswitch-owned on-off block is forced OFF, so the
                 // measurement describes the preset with nothing switched on. A preset saved

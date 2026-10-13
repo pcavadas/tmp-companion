@@ -1,5 +1,6 @@
 //! Process-global device-op serialization gate + monitor-pause guard.
 
+use crate::error::LevelError;
 use crate::session::Session;
 use crate::{lock_ok, MONITOR_ENABLED, MONITOR_PAUSED_ACK, MONITOR_PAUSE_REQ};
 use std::sync::atomic::Ordering::SeqCst;
@@ -25,7 +26,7 @@ static DEVICE_OP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// the ~6 s re-amp capture (or the settles around it) used to sit out the whole thing —
 /// 10 s of dead time, ~22 s when the floor guard's 5 s retry gap fired. This flag makes
 /// those waits interruptible: every sleep on a leveling/Doctor path polls it and bails
-/// with [`crate::leveller::CANCELLED`].
+/// with [`LevelError::Cancelled`].
 ///
 /// ponytail: ONE process-global flag, not one per lane — [`DEVICE_OP_LOCK`] serializes
 /// device work, so exactly one operation can ever observe it. Per-lane abort flags if a
@@ -110,12 +111,12 @@ pub(crate) fn sleep_abortable(ms: u64) -> bool {
     }
 }
 
-/// [`sleep_abortable`] as a `?`-able step: `Ok(())` if the wait completed, the
-/// [`crate::leveller::CANCELLED`] sentinel if a Stop landed. The shape of nearly every
-/// settle on a leveling/Doctor path — `sleep_or_cancel(SETTLE_X)?;`.
-pub(crate) fn sleep_or_cancel(ms: u64) -> Result<(), String> {
+/// [`sleep_abortable`] as a `?`-able step: `Ok(())` if the wait completed,
+/// [`LevelError::Cancelled`] if a Stop landed. The shape of nearly every settle on a
+/// leveling/Doctor path — `sleep_or_cancel(SETTLE_X)?;`.
+pub(crate) fn sleep_or_cancel(ms: u64) -> Result<(), LevelError> {
     if sleep_abortable(ms) {
-        Err(crate::leveller::CANCELLED.to_string())
+        Err(LevelError::Cancelled)
     } else {
         Ok(())
     }
@@ -130,7 +131,7 @@ pub(crate) fn settle_abortable(ms: u64) -> bool {
 
 /// [`sleep_or_cancel`] for a HARDWARE SETTLE — the `?`-able form of [`settle_abortable`].
 /// The abort check runs before the (possibly zero) wait, so Stop still wins in both tiers.
-pub(crate) fn settle_or_cancel(ms: u64) -> Result<(), String> {
+pub(crate) fn settle_or_cancel(ms: u64) -> Result<(), LevelError> {
     sleep_or_cancel(settle_ms(ms))
 }
 

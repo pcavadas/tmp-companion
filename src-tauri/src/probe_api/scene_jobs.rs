@@ -654,7 +654,7 @@ fn handle_scene_job(
     let target =
         match leveller::FsParamTarget::classified(preset, h.node_id, h.parameter_id, current) {
             Ok(t) => t,
-            Err(refusal) => return skip_scene_job(scene, target_lufs, refusal),
+            Err(refusal) => return skip_scene_job(scene, target_lufs, refusal.to_string()),
         };
     let (lo, hi) = target.bounds();
     leveller::SceneJob {

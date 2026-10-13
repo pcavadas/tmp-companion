@@ -56,6 +56,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crossbeam_channel::{Receiver, Sender};
 use serde::Serialize;
 
+use crate::error::DeviceError;
 use crate::session::{self, ActiveGraph, PresetEntry, Session};
 use crate::{footswitch, MONITOR_ENABLED, MONITOR_PAUSED_ACK, MONITOR_PAUSE_REQ};
 
@@ -81,13 +82,15 @@ struct AppliedStartupLive {
 }
 
 static STARTUP_SNAPSHOT: OnceLock<Mutex<Option<StartupSnapshot>>> = OnceLock::new();
-static LAST_CONNECT_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+/// The monitor's last failed connect, typed: `connect_device` hands its kind to the
+/// frontend (a "please connect" gate for no-device / not-ready, a red banner otherwise).
+static LAST_CONNECT_ERROR: OnceLock<Mutex<Option<DeviceError>>> = OnceLock::new();
 
 fn snapshot_slot() -> &'static Mutex<Option<StartupSnapshot>> {
     STARTUP_SNAPSHOT.get_or_init(|| Mutex::new(None))
 }
 
-fn error_slot() -> &'static Mutex<Option<String>> {
+fn error_slot() -> &'static Mutex<Option<DeviceError>> {
     LAST_CONNECT_ERROR.get_or_init(|| Mutex::new(None))
 }
 
@@ -141,7 +144,7 @@ pub(crate) fn startup_preset_name(slot: ListIndex) -> Option<String> {
     })
 }
 
-pub(crate) fn last_connect_error() -> Option<String> {
+pub(crate) fn last_connect_error() -> Option<DeviceError> {
     crate::lock_ok(error_slot()).clone()
 }
 
@@ -169,7 +172,7 @@ pub(crate) fn refresh_snapshot_graph(graph: ActiveGraph) {
     }
 }
 
-fn store_connect_error(error: String) {
+fn store_connect_error(error: DeviceError) {
     *crate::lock_ok(snapshot_slot()) = None;
     *crate::lock_ok(error_slot()) = Some(error);
 }
@@ -630,6 +633,9 @@ fn run_monitor_iteration(
     // Connect with the firmware request riding the same startup handshake that
     // carries the preset list and usually the active field-3 graph.
     emit_sync(app, true);
+    // A report write the OS refuses from here on (the handshake, or the snapshot reads
+    // below) marks the unit as not ready yet — see `hid::open_device_failure`.
+    let refusals = crate::hid::report_write_refusals();
     let mut session = match Session::connect_with_firmware() {
         Ok(s) => s,
         Err(e) => {
@@ -704,7 +710,7 @@ fn run_monitor_iteration(
         }
         Err(e) => {
             log::warn!("monitor: startup snapshot failed ({e})");
-            store_connect_error(e);
+            store_connect_error(crate::hid::open_device_failure(e, refusals));
         }
     }
     emit_sync(app, false);

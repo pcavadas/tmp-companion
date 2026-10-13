@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde::Serialize;
 
+use crate::error::DeviceError;
 use crate::hid::{Hid, HidTransport};
 use crate::proto::{self, Val};
 use crate::slot::{DeviceSlot, ListIndex};

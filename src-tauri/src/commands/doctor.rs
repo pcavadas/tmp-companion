@@ -1,4 +1,6 @@
 //! Doctor (tone diagnosis) commands — capture · diagnose · live apply/save/discard.
+use super::ProgressStatus;
+use crate::error::LevelError;
 use crate::*;
 
 // ───────────────────────── Doctor (tone diagnosis) ─────────────────────────
@@ -346,7 +348,7 @@ fn instrument_of(item: &DoctorInput) -> doctor::Instrument {
 #[serde(rename_all = "camelCase")]
 pub struct DoctorProgressItem {
     pub key: String,
-    pub status: String,
+    pub status: ProgressStatus,
     pub message: Option<String>,
 }
 
@@ -654,7 +656,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 };
                 let _ = on_result.send(DoctorProgressItem {
                     key: item.key.clone(),
-                    status: "done".to_string(),
+                    status: ProgressStatus::Done,
                     message: None,
                 });
                 // No device load happened — the skip decision must not chain off this.
@@ -664,7 +666,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             last_scanned = Some(item.list_index);
             let _ = on_result.send(DoctorProgressItem {
                 key: item.key.clone(),
-                status: "active".to_string(),
+                status: ProgressStatus::Active,
                 message: None,
             });
             // A CAPTURE stimulus (real DI) is injected VERBATIM — calibration
@@ -714,9 +716,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             // One capture + profile attempt, `skip_load` threaded through (the retry
             // below forces a fresh preset recall — a floor read means the inject
             // failed, not that the working copy is stale).
+            // Typed, so a Stop mid-capture reaches the match below as a cancel.
             let capture_profile = |skip_load: bool,
                                     stim: &[f32]|
-             -> Result<(doctor::SoundProfile, Vec<bool>), String> {
+             -> Result<(doctor::SoundProfile, Vec<bool>), LevelError> {
                 // `_with_loudness`: the production Doctor path REPORTS `integrated_lufs`
                 // to the user (D4), so it needs the un-mixed capture's stereo-measured
                 // Loudness alongside the average-mixdown `samples` bands/PSD run on —
@@ -792,12 +795,12 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 );
                 Ok((profile, cov))
             };
-            let result = stim.and_then(|(stim, stim_spread)| {
+            let result = stim.map_err(LevelError::from).and_then(|(stim, stim_spread)| {
                 let stim_spread = *stim_spread;
                 capture_profile(skip_load, stim).and_then(|(profile, cov)| {
                     match floor_error_for(profile.momentary_spread_lu, stim_spread) {
                         None => Ok((profile, cov)),
-                        Some(err) => {
+                        Some(_) => {
                             // A silent-inject floor read (the leveller's guard, applied
                             // here to the Doctor's capture): the reading is finite but
                             // stationary. Wait out the quiet gap and force a fresh
@@ -811,7 +814,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                             let (profile, cov) = capture_profile(false, stim)?;
                             match floor_error_for(profile.momentary_spread_lu, stim_spread) {
                                 None => Ok((profile, cov)),
-                                Some(_) => Err(err.to_string()),
+                                Some(_) => Err(LevelError::FloorRead),
                             }
                         }
                     }
@@ -830,25 +833,26 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     });
                     let _ = on_result.send(DoctorProgressItem {
                         key: item.key.clone(),
-                        status: "done".to_string(),
+                        status: ProgressStatus::Done,
                         message: None,
                     });
                 }
-                // A Stop that landed mid-capture surfaces as the CANCELLED sentinel, not a
-                // failure: end the run like the top-of-loop check would have, leaving this
-                // sound un-run rather than reporting it as an errored sound.
-                Err(e) if e == leveller::CANCELLED => {
+                // A Stop that landed mid-capture surfaces as a cancel, not a failure: end the
+                // run like the top-of-loop check would have, leaving this sound un-run rather
+                // than reporting it as an errored sound.
+                Err(e) if e.is_cancelled() => {
                     stopped = true;
                     break;
                 }
                 Err(e) => {
+                    let e = e.to_string();
                     outcomes[i] = SoundOutcome::Failed(e.clone());
                     // A failed sound may have left the unit on ANY preset (e.g. its
                     // load connection never opened) — the next sound must reload.
                     prev = None;
                     let _ = on_result.send(DoctorProgressItem {
                         key: item.key.clone(),
-                        status: "error".to_string(),
+                        status: ProgressStatus::Error,
                         message: Some(e),
                     });
                 }

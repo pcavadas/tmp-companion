@@ -771,7 +771,8 @@ async fn e2e_measure_sound(
                 &stim,
                 row.as_ref(),
             )
-            .map(|l| l.integrated_lufs);
+            .map(|l| l.integrated_lufs)
+            .map_err(String::from);
         }
         // Base / footswitch context: the ONE shared isolation derivation the leveling +
         // Doctor lanes use (`doctor_force_bypass` over the SAVED doc) — not a private copy.
@@ -827,6 +828,7 @@ async fn e2e_measure_sound(
         };
         leveller::measure_sound_asis_strict(slot, None, &force, fs_value, &stim, row.as_ref())
             .map(|l| l.integrated_lufs)
+            .map_err(String::from)
     })
     .await
 }

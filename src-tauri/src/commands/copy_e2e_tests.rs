@@ -101,7 +101,7 @@ mod audition_copy_tests {
         let item = CopyApplyItem {
             slot: ListIndex(7),
             name: "Lead Tone".to_string(),
-            outcome: "updated".to_string(),
+            outcome: ItemOutcome::Updated,
             detail: "5 op(s)".to_string(),
             graph: None,
         };
@@ -171,7 +171,7 @@ mod copy_level_e2e_tests {
     #[test]
     fn copy_replace_happy_path_loads_confirms_renames_and_saves_in_order() {
         let (item, ev) = run_copy(SimDevice::new(), &one_replace_job(5, "Stadium Lead"), true);
-        assert_eq!(item.outcome, "updated");
+        assert_eq!(item.outcome, ItemOutcome::Updated);
         assert_eq!(
             ev,
             vec![
@@ -211,7 +211,7 @@ mod copy_level_e2e_tests {
             ],
         };
         let (item, ev) = run_copy(SimDevice::new(), &job, true);
-        assert_eq!(item.outcome, "updated");
+        assert_eq!(item.outcome, ItemOutcome::Updated);
         assert_eq!(
             ev,
             vec![
@@ -245,7 +245,7 @@ mod copy_level_e2e_tests {
             &one_replace_job(5, "Stadium Lead"),
             true,
         );
-        assert_eq!(item.outcome, "error");
+        assert_eq!(item.outcome, ItemOutcome::Error);
         assert!(item.detail.contains("NOT saved"), "detail: {}", item.detail);
         // The fake rejects with code 14, a replace over the CPU budget on fw 1.8.58.
         assert!(
@@ -275,7 +275,7 @@ mod copy_level_e2e_tests {
             &one_replace_job(5, "Stadium Lead"),
             true,
         );
-        assert_eq!(item.outcome, "updated", "{item:?}");
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{item:?}");
         let replaces = ev
             .iter()
             .filter(|e| matches!(e, SimEvent::Replace { .. }))
@@ -296,7 +296,7 @@ mod copy_level_e2e_tests {
             &one_replace_job(5, "Stadium Lead"),
             true,
         );
-        assert_eq!(item.outcome, "updated", "{item:?}");
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{item:?}");
         assert_eq!(
             ev.iter()
                 .filter(|e| matches!(e, SimEvent::Replace { .. }))
@@ -327,7 +327,7 @@ mod copy_level_e2e_tests {
             &job,
             true,
         );
-        assert_eq!(item.outcome, "error", "{item:?}");
+        assert_eq!(item.outcome, ItemOutcome::Error, "{item:?}");
         assert_eq!(
             ev.iter()
                 .filter(|e| matches!(e, SimEvent::Replace { .. }))
@@ -358,7 +358,7 @@ mod copy_level_e2e_tests {
             &job,
             true,
         );
-        assert_eq!(item.outcome, "updated", "{item:?}");
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{item:?}");
         assert_eq!(
             ev.iter()
                 .filter(|e| matches!(e, SimEvent::Remove { .. }))
@@ -372,7 +372,7 @@ mod copy_level_e2e_tests {
     #[test]
     fn copy_dry_run_applies_edits_but_does_not_save() {
         let (item, ev) = run_copy(SimDevice::new(), &one_replace_job(5, "Stadium Lead"), false);
-        assert_eq!(item.outcome, "updated");
+        assert_eq!(item.outcome, ItemOutcome::Updated);
         assert!(ev.iter().any(|e| matches!(e, SimEvent::Replace { .. })));
         assert!(
             !ev.iter()
@@ -389,7 +389,7 @@ mod copy_level_e2e_tests {
             ops: vec![],
         };
         let (item, ev) = run_copy(SimDevice::new(), &job, true);
-        assert_eq!(item.outcome, "skipped");
+        assert_eq!(item.outcome, ItemOutcome::Skipped);
         assert!(ev.is_empty(), "no ops → no device traffic");
     }
 
@@ -419,8 +419,8 @@ mod copy_level_e2e_tests {
         let mut s = Session::from_transport(Box::new(sim.clone()));
         let a = copy_apply_one(&mut s, &one_replace_job(5, "Target A"), true).unwrap();
         let b = copy_apply_one(&mut s, &one_replace_job(6, "Target B"), true).unwrap();
-        assert_eq!(a.outcome, "updated");
-        assert_eq!(b.outcome, "error");
+        assert_eq!(a.outcome, ItemOutcome::Updated);
+        assert_eq!(b.outcome, ItemOutcome::Error);
         let ev = sim.events();
         assert!(
             ev.contains(&SimEvent::Saved(5)),
@@ -458,7 +458,7 @@ mod copy_level_e2e_tests {
             }],
         };
         let item = copy_apply_one(&mut s, &job, true).unwrap();
-        assert_eq!(item.outcome, "error");
+        assert_eq!(item.outcome, ItemOutcome::Error);
         assert!(
             item.detail.contains("ComboHalfStackCabinetsLimit"),
             "detail: {}",
@@ -517,7 +517,7 @@ mod copy_level_e2e_tests {
         };
         let mut s = Session::from_transport(Box::new(sim.clone()));
         let item = copy_apply_one(&mut s, &job, true).unwrap();
-        assert_eq!(item.outcome, "updated");
+        assert_eq!(item.outcome, ItemOutcome::Updated);
         let graph = item
             .graph
             .expect("the pre-save working-copy read shows the acked edit → adopted");
@@ -568,7 +568,7 @@ mod copy_level_e2e_tests {
             }],
         };
         let (item, ev) = run_copy(sim, &job, true);
-        assert_eq!(item.outcome, "updated");
+        assert_eq!(item.outcome, ItemOutcome::Updated);
         assert!(ev.contains(&SimEvent::Saved(3)), "{ev:?}");
         let graph = item.graph.expect("the pre-save read is adopted");
         assert_eq!(
@@ -596,7 +596,7 @@ mod copy_level_e2e_tests {
         };
         let mut s = Session::from_transport(Box::new(sim.clone()));
         let item = copy_apply_one(&mut s, &job, true).unwrap();
-        assert_eq!(item.outcome, "updated");
+        assert_eq!(item.outcome, ItemOutcome::Updated);
         let ev = sim.events();
         assert!(ev.contains(&SimEvent::Saved(3)), "{ev:?}");
         assert!(
@@ -633,7 +633,7 @@ mod copy_level_e2e_tests {
             }],
         };
         let (item, ev) = run_copy(sim, &job, true);
-        assert_eq!(item.outcome, "updated");
+        assert_eq!(item.outcome, ItemOutcome::Updated);
         assert!(
             ev.contains(&SimEvent::Replace {
                 group: "G1".into(),
@@ -683,7 +683,7 @@ mod copy_level_e2e_tests {
             ],
         };
         let (item, ev) = run_copy(sim, &job, true);
-        assert_eq!(item.outcome, "error");
+        assert_eq!(item.outcome, ItemOutcome::Error);
         assert!(item.detail.contains("ambiguous"), "detail: {}", item.detail);
         assert!(item.detail.contains("NOT saved"), "detail: {}", item.detail);
         assert_eq!(
@@ -723,7 +723,7 @@ mod copy_level_e2e_tests {
             }],
         };
         let (item, ev) = run_copy(sim, &job, true);
-        assert_eq!(item.outcome, "updated");
+        assert_eq!(item.outcome, ItemOutcome::Updated);
         assert_eq!(
             ev.iter()
                 .filter(|e| matches!(e, SimEvent::Insert { .. }))
@@ -783,7 +783,7 @@ mod copy_level_e2e_tests {
             }],
         };
         let (item, ev) = run_copy(sim, &job, true);
-        assert_eq!(item.outcome, "updated", "{item:?}");
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{item:?}");
         let (sent, missed) = inserts_sent(&ev);
         assert_eq!(sent, [(Some("cab1".into()), "ACD_TapeEcho".into())]);
         assert!(!missed, "{ev:?}");
@@ -833,7 +833,7 @@ mod copy_level_e2e_tests {
             ],
         };
         let (item, ev) = run_copy(sim, &job, true);
-        assert_eq!(item.outcome, "updated", "{item:?}");
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{item:?}");
         let (sent, missed) = inserts_sent(&ev);
         assert_eq!(
             sent,
@@ -876,7 +876,7 @@ mod copy_level_e2e_tests {
             }],
         };
         let (item, ev) = run_copy(sim, &job, true);
-        assert_eq!(item.outcome, "updated", "{item:?}");
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{item:?}");
         assert_eq!(
             ev.iter()
                 .filter(|e| matches!(e, SimEvent::Insert { .. }))
@@ -915,7 +915,7 @@ mod copy_level_e2e_tests {
             }],
         };
         let (item, ev) = run_copy(sim, &job, true);
-        assert_eq!(item.outcome, "error");
+        assert_eq!(item.outcome, ItemOutcome::Error);
         assert!(item.detail.contains("NOT sent"), "{}", item.detail);
         assert!(
             !ev.iter().any(|e| matches!(e, SimEvent::Insert { .. })),

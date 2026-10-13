@@ -25,6 +25,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::audio;
+use crate::error::LevelError;
 use crate::lufs;
 use crate::probe_api::scene_jobs::{overlay_param, SceneParamRead};
 use crate::session::Session;
@@ -250,9 +251,6 @@ const RATE: u32 = 48_000;
 const LEVEL_MIN: f32 = 0.0;
 /// THE amplitude ceiling every `presetLevel` / amp-`outputLevel` lane clamps to.
 pub(crate) const LEVEL_MAX: f32 = 1.0;
-/// `processed_loudness`'s sentinel error text for a capture with no measurable signal — shared
-/// so producer and consumers can't drift.
-const NO_SIGNAL_CAPTURED: &str = "no signal captured";
 
 /// How a written level's reported loudness is KNOWN — the one vocabulary the base and
 /// scene lanes report in, so a prediction can never pass for a measurement.
@@ -437,7 +435,7 @@ fn measure_at_level(
     stimulus: &[f32],
     level: f32,
     force_bypass: &[(String, String, bool)],
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     // No intended-level assert: `level` IS the `presetLevel` being measured here.
     measure_knob_at(
         stimulus,
@@ -448,11 +446,6 @@ fn measure_at_level(
         None,
     )
 }
-
-/// Sentinel error returned when a cooperative cancel flag is observed at a leveling
-/// checkpoint. Compared by `restore_after_unsaved_error` (a cancel must restore the
-/// stored preset even on the `save=true` path) and treated as a skip by the frontend.
-pub const CANCELLED: &str = "cancelled";
 
 /// Reload the stored preset to discard temporary level edits made while
 /// measuring. `save=false` is a preview/read-only contract for callers: the TMP
@@ -501,12 +494,25 @@ pub(crate) fn make_current(slot: ListIndex) -> Result<(), String> {
 }
 
 /// If an unsaved operation fails after touching a level control, try to discard
-/// the temporary edit before returning the original error.
+/// the temporary edit before returning the original error. A restore that fails too
+/// comes back as [`LevelError::Restore`], which keeps the original's kind: a cancel
+/// whose restore failed still reads as a cancel to every caller.
 fn restore_after_unsaved_error<T>(
     slot: ListIndex,
     save: bool,
-    result: Result<T, String>,
-) -> Result<T, String> {
+    result: Result<T, LevelError>,
+) -> Result<T, LevelError> {
+    restore_after_unsaved_error_with(slot, save, result, restore_saved_preset)
+}
+
+/// [`restore_after_unsaved_error`] over any `restore` — the seam a unit test hands a
+/// failing restore, with no device.
+fn restore_after_unsaved_error_with<T>(
+    slot: ListIndex,
+    save: bool,
+    result: Result<T, LevelError>,
+    restore: impl FnOnce(ListIndex) -> Result<(), String>,
+) -> Result<T, LevelError> {
     let err = match result {
         Ok(value) => return Ok(value),
         Err(err) => err,
@@ -516,20 +522,20 @@ fn restore_after_unsaved_error<T>(
     // bails before `apply_level`, leaving `presetLevel` at the measurement reference
     // (`measure_knob_at` sets it and never restores). A non-cancel save error keeps the
     // prior pass-through behavior (no reload).
-    if save && err != CANCELLED {
+    if save && !err.is_cancelled() {
         return Err(err);
     }
-    Err(append_restore_err(err, restore_saved_preset(slot)))
+    Err(err.with_restore(restore(slot)))
 }
 
 /// Fold a restore failure into a primary error — the ONE wording for the
 /// "primary error + edit-buffer restore failure" merge every restore-after-
-/// failure path shares (here, `probe_api::doctor_inject`/`doctor_defects`).
+/// failure path shares (here, `probe_api::doctor_inject`/`doctor_defects`). The
+/// String form of [`LevelError::with_restore`], for callers whose primary is text.
 pub(crate) fn append_restore_err(primary: String, restore: Result<(), String>) -> String {
-    match restore {
-        Ok(()) => primary,
-        Err(r) => format!("{primary}; also failed to restore stored preset: {r}"),
-    }
+    LevelError::Device(primary)
+        .with_restore(restore)
+        .to_string()
 }
 
 // ───────────────────────── Floor-read guard ─────────────────────────
@@ -561,9 +567,9 @@ pub(crate) const STATIONARY_STIM_LU: f64 = 2.0;
 /// Quiet gap before the guard's retry — 5 s recovered 9/9 flagged rows on HW
 /// (`probe --stim-ab`).
 pub(crate) const FLOOR_RETRY_GAP_MS: u64 = 5_000;
-/// The honest per-item error when a floor read persists through the retry.
-pub(crate) const FLOOR_READ_ERR: &str = "no stimulus reached the device (captured only \
-    the output floor) — check the USB audio connection and try again";
+/// The honest per-item error when a floor read persists through the retry (the text of
+/// [`LevelError::FloorRead`]).
+pub(crate) use crate::error::FLOOR_READ_ERR;
 
 /// Should this capture be suspected as a floor read? Both arguments are MOMENTARY
 /// spreads (`lufs::Loudness::momentary_spread_lu`).
@@ -572,7 +578,7 @@ pub(crate) fn floor_suspect(capture_momentary_lu: f64, stimulus_momentary_lu: f6
 }
 
 /// A floor-guarded measurement's outcome. `StillFlat` carries the retry's loudness for
-/// the caller's log; every caller turns it into [`FLOOR_READ_ERR`].
+/// the caller's log; every caller turns it into [`LevelError::FloorRead`].
 pub(crate) enum GuardOutcome {
     Live(lufs::Loudness),
     StillFlat(lufs::Loudness),
@@ -583,10 +589,10 @@ pub(crate) enum GuardOutcome {
 /// transient inject failure). A capture still flat after the retry is reported as
 /// [`GuardOutcome::StillFlat`], not swallowed.
 pub(crate) fn measure_floor_guarded(
-    mut measure: impl FnMut() -> Result<lufs::Loudness, String>,
+    mut measure: impl FnMut() -> Result<lufs::Loudness, LevelError>,
     stimulus_momentary_lu: f64,
     gap: Duration,
-) -> Result<GuardOutcome, String> {
+) -> Result<GuardOutcome, LevelError> {
     let first = measure()?;
     if !floor_suspect(first.momentary_spread_lu, stimulus_momentary_lu) {
         return Ok(GuardOutcome::Live(first));
@@ -605,11 +611,11 @@ pub(crate) fn measure_floor_guarded(
 }
 
 /// The call-site shape every guarded measurement uses: guard `measure`, collapse a
-/// persistent flat read to the honest [`FLOOR_READ_ERR`].
+/// persistent flat read to the honest [`LevelError::FloorRead`].
 pub(crate) fn require_live(
-    measure: impl FnMut() -> Result<lufs::Loudness, String>,
+    measure: impl FnMut() -> Result<lufs::Loudness, LevelError>,
     stimulus: &[f32],
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     match measure_floor_guarded(
         measure,
         stimulus_momentary_spread(stimulus),
@@ -623,7 +629,7 @@ pub(crate) fn require_live(
                 l.momentary_spread_lu,
                 l.integrated_lufs
             );
-            Err(FLOOR_READ_ERR.to_string())
+            Err(LevelError::FloorRead)
         }
     }
 }
@@ -691,13 +697,6 @@ pub struct MeasuredC {
     pub captures: u32,
 }
 
-/// The per-item error when a capture flat-tops at full scale on the processed pair
-/// ([`lufs::Loudness::clipped`]): its integrated loudness reads LOW, so a level solved
-/// from it lands too LOUD. Raised by the shared measurement hub, so every lane refuses
-/// to solve from a clipped capture; only `measure_c` has a rescue (half the reference).
-pub(crate) const CLIPPED_CAPTURE_ERR: &str = "the sound clipped at full scale while it was \
-    measured, so its loudness can't be read — turn this sound's level down and run it again";
-
 /// Two reference captures at different `presetLevel`s must solve the same `C` within this
 /// (LU) or a third capture decides. ~2.5σ of the ~0.12 LU run-to-run capture noise, far
 /// under the ~3 LU outliers on record (`notes/leveling.md`).
@@ -731,7 +730,7 @@ pub fn measure_c(
     stimulus: &[f32],
     ref_level: f32,
     force_bypass: &[(String, String, bool)],
-) -> Result<MeasuredC, String> {
+) -> Result<MeasuredC, LevelError> {
     measure_c_checked(slot, stimulus, ref_level, force_bypass, false)
 }
 
@@ -742,7 +741,7 @@ pub fn measure_c(
 /// A single silently-wrong capture (the 2.9 LU-low outliers on record) can then no longer
 /// set the saved level on its own.
 ///
-/// CLIP RESCUE: a reference capture that clipped ([`CLIPPED_CAPTURE_ERR`]) is re-taken
+/// CLIP RESCUE: a reference capture that clipped ([`LevelError::Clipped`]) is re-taken
 /// ONCE at half the reference level, on its own fresh connection like every capture here
 /// (one engage per connection, the level set before the engage). Still clipped there → the
 /// error stands.
@@ -752,7 +751,7 @@ pub(crate) fn measure_c_checked(
     ref_level: f32,
     force_bypass: &[(String, String, bool)],
     cross_check: bool,
-) -> Result<MeasuredC, String> {
+) -> Result<MeasuredC, LevelError> {
     let mut ref_level = ref_level.clamp(0.05, 1.0);
     {
         let mut s = Session::connect_lean()?;
@@ -763,7 +762,7 @@ pub(crate) fn measure_c_checked(
     let at =
         |level: f32| require_live(|| measure_at_level(stimulus, level, force_bypass), stimulus);
     let loudness = match at(ref_level) {
-        Err(e) if e == CLIPPED_CAPTURE_ERR && ref_level / 2.0 >= 0.05 => {
+        Err(LevelError::Clipped) if ref_level / 2.0 >= 0.05 => {
             ref_level /= 2.0;
             log::warn!(
                 "measure_c slot={slot}: the reference capture clipped — re-measuring at \
@@ -844,7 +843,7 @@ fn capture_full_at(
     ref_level: Option<f32>,
     tail_ms: u64,
     skip_load: bool,
-) -> Result<audio::Capture, String> {
+) -> Result<audio::Capture, LevelError> {
     capture_full_at_params(
         slot,
         scene,
@@ -873,7 +872,7 @@ fn capture_full_at_params(
     ref_level: Option<f32>,
     tail_ms: u64,
     skip_load: bool,
-) -> Result<audio::Capture, String> {
+) -> Result<audio::Capture, LevelError> {
     // Names this capture in the trace (inert unless recording); an outer caller's name wins.
     let _trace_ctx = crate::trace::capture_ctx("capture", Some(slot.get()), scene, None);
     // The settles here are `sleep_abortable`: a Stop pressed anywhere in the ~1.9 s of
@@ -925,7 +924,7 @@ pub(crate) fn capture_on_session(
     stimulus: &[f32],
     ref_level: Option<f32>,
     tail_ms: u64,
-) -> Result<audio::Capture, String> {
+) -> Result<audio::Capture, LevelError> {
     // Force-bypass isolation AFTER the caller's scene recall (`arm_measurement`'s rule: a
     // recall re-asserts that scene's own bypass state, so isolation written before it is
     // reverted) and before the engage. The presetLevel set below is a global multiplier, not
@@ -988,7 +987,7 @@ pub fn capture_full(
     slot: ListIndex,
     stimulus: &[f32],
     ref_level: f32,
-) -> Result<audio::Capture, String> {
+) -> Result<audio::Capture, LevelError> {
     capture_full_at(
         slot,
         None,
@@ -1007,7 +1006,7 @@ pub fn capture_asis_full(
     slot: Option<ListIndex>,
     scene: Option<u32>,
     stimulus: &[f32],
-) -> Result<audio::Capture, String> {
+) -> Result<audio::Capture, LevelError> {
     capture_full_at(
         slot.unwrap_or_default(), // unused when skip_load
         scene,
@@ -1027,7 +1026,7 @@ pub fn capture_samples(
     slot: ListIndex,
     stimulus: &[f32],
     ref_level: f32,
-) -> Result<(Vec<f32>, u32), String> {
+) -> Result<(Vec<f32>, u32), LevelError> {
     let cap = capture_full(slot, stimulus, ref_level)?;
     let (ch, _) = cap.loudest_channel();
     Ok((cap.channel(ch), cap.sample_rate))
@@ -1050,7 +1049,7 @@ pub fn capture_samples_bypassed(
     stimulus: &[f32],
     ref_level: f32,
     force_bypass: &[(String, String, bool)],
-) -> Result<(Vec<f32>, u32), String> {
+) -> Result<(Vec<f32>, u32), LevelError> {
     let cap = capture_full_at(
         slot,
         None,
@@ -1094,7 +1093,7 @@ pub fn doctor_capture(
     ref_level: Option<f32>,
     tail_ms: u64,
     skip_load: bool,
-) -> Result<(Vec<f32>, u32), String> {
+) -> Result<(Vec<f32>, u32), LevelError> {
     Ok(to_stereo(capture_full_at_params(
         slot,
         scene,
@@ -1136,7 +1135,7 @@ pub fn doctor_capture_with_loudness(
     tail_ms: u64,
     skip_load: bool,
     validate: Option<&crate::validate_log::ValidationRow>,
-) -> Result<(Vec<f32>, u32, lufs::Loudness), String> {
+) -> Result<(Vec<f32>, u32, lufs::Loudness), LevelError> {
     let cap = capture_full_at_params(
         slot,
         scene,
@@ -1191,7 +1190,7 @@ pub fn doctor_capture_current(
     force_bypass: &[(String, String, bool)],
     ref_level: Option<f32>,
     tail_ms: u64,
-) -> Result<(Vec<f32>, u32), String> {
+) -> Result<(Vec<f32>, u32), LevelError> {
     Ok(to_stereo(capture_full_at(
         ListIndex::default(), // slot unused: skip_load
         scene,
@@ -1221,7 +1220,7 @@ pub fn doctor_capture_on_session(
     stimulus: &[f32],
     ref_level: Option<f32>,
     tail_ms: u64,
-) -> Result<(Vec<f32>, u32), String> {
+) -> Result<(Vec<f32>, u32), LevelError> {
     for (g, n, p, v) in fs_params {
         s.change_parameter(g, n, p, *v)?;
     }
@@ -1264,7 +1263,7 @@ pub fn measure_sound_asis_strict(
     fs_value: Option<((String, String, String), f32)>,
     stimulus: &[f32],
     validate: Option<&crate::validate_log::ValidationRow>,
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     // The trace names these captures by the validation row's identity when there is one.
     let _trace_ctx = match validate {
         Some(r) => crate::trace::capture_ctx(&r.label, Some(r.slot), r.scene_slot, r.switch),
@@ -1335,7 +1334,7 @@ pub fn capture_scene_ceilings(
     slot: ListIndex,
     scene_count: u32,
     stimulus: &[f32],
-) -> Result<Vec<f64>, String> {
+) -> Result<Vec<f64>, LevelError> {
     let mut cs = Vec::with_capacity(scene_count as usize);
     // Scenes are 0-based `scenes[]` indices on the wire (base is the constant slot 8)
     // — HW-proven by the `--loadscene 1` → scenes[1] activegraph diff. Slot 0 IS
@@ -1459,7 +1458,7 @@ pub fn apply_level(
     final_level: f32,
     opts: LevelOptions,
     reload_preset: bool,
-) -> Result<(bool, Option<f64>), String> {
+) -> Result<(bool, Option<f64>), LevelError> {
     apply_levels(
         slot,
         stimulus,
@@ -1490,7 +1489,7 @@ pub fn apply_levels(
     // own recall via `set_knobs`, so the ordering is reproduced here rather than routed through
     // it).
     force_bypass: &[(String, String, bool)],
-) -> Result<(bool, Option<f64>), String> {
+) -> Result<(bool, Option<f64>), LevelError> {
     if reload_preset {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
@@ -1532,7 +1531,7 @@ pub fn apply_levels(
         // run can't carry on and report a prediction as this sound's result.
         verify_lufs = match engage_measure_disengage(&mut s, stimulus) {
             Ok(l) => Some(l.integrated_lufs),
-            Err(e) if e == CANCELLED => return Err(e),
+            Err(e) if e.is_cancelled() => return Err(e),
             Err(e) => {
                 log::warn!("apply_levels slot={slot}: verify capture failed: {e}");
                 None
@@ -1726,7 +1725,7 @@ pub fn level_preset(
     force_bypass: &[(String, String, bool)],
     previous_level: Option<f32>,
     cancelled: impl FnMut() -> bool,
-) -> Result<LevelResult, String> {
+) -> Result<LevelResult, LevelError> {
     level_preset_impl(
         slot,
         stimulus,
@@ -1749,11 +1748,11 @@ pub(crate) fn level_preset_impl(
     previous_level: Option<f32>,
     ctx: BoostContext,
     mut cancelled: impl FnMut() -> bool,
-) -> Result<LevelResult, String> {
+) -> Result<LevelResult, LevelError> {
     // Pre-measure cancel: nothing has touched the device yet, so return WITHOUT the
     // restore wrapper (no needless reload).
     if cancelled() {
-        return Err(CANCELLED.to_string());
+        return Err(LevelError::Cancelled);
     }
     let result = (|| {
         let ref_level = base_ref_level(opts.ref_level, previous_level);
@@ -1764,7 +1763,7 @@ pub(crate) fn level_preset_impl(
             Ok(m) => m,
             // Silence == output not routed to USB 1/2 (a routing state, can happen on ANY preset):
             // report the honest "not on USB 1/2" clamp instead of a generic read failure.
-            Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
+            Err(e) if e.is_no_signal() => {
                 // `measure_c` already set `presetLevel`/forced bypasses on the live device;
                 // discard that before returning (this is an Ok result, so
                 // `restore_after_unsaved_error` below never runs for it).
@@ -1795,9 +1794,10 @@ pub(crate) fn level_preset_impl(
             Err(e) => return Err(e),
         };
         // Post-measure cancel: `measure_c` left `presetLevel` at `ref_level`; bail before
-        // the apply+save. The restore wrapper reloads the stored preset (see CANCELLED).
+        // the apply+save. The restore wrapper reloads the stored preset (see
+        // `restore_after_unsaved_error`).
         if cancelled() {
-            return Err(CANCELLED.to_string());
+            return Err(LevelError::Cancelled);
         }
         // The level the reading was actually taken at (half the request after a clip rescue).
         let ref_level = m.ref_level;
@@ -1889,11 +1889,10 @@ pub(crate) fn level_preset_impl(
             } = &job.knobs[0].knob
             else {
                 // Belt-and-suspenders, not an observed failure.
-                return Err(
+                return Err(LevelError::from(
                     "base boost candidate's own knob was not a Block knob (unreachable in \
-                     practice — build_scene_jobs never emits this shape for an amp candidate)"
-                        .to_string(),
-                );
+                     practice — build_scene_jobs never emits this shape for an amp candidate)",
+                ));
             };
             let ids = (group_id.clone(), node_id.clone(), parameter_id.clone());
 
@@ -1957,7 +1956,7 @@ pub(crate) fn level_preset_impl(
         if let Some(v) = verify_lufs.filter(|v| !clamped && (v - target_lufs).abs() > ACCEPT_TOL_LU)
         {
             if cancelled() {
-                return Err(CANCELLED.to_string());
+                return Err(LevelError::Cancelled);
             }
             let c_verify = v - 20.0 * (final_level.max(1e-6) as f64).log10();
             let (level2, clamped2, predicted2) = solve_level(c_verify, target_lufs);
@@ -2097,17 +2096,17 @@ fn apply_base_boost(
     m: &MeasuredC,
     ref_level: f32,
     cancelled: &mut impl FnMut() -> bool,
-) -> Result<LevelResult, String> {
-    let bail = |e: String| -> String {
+) -> Result<LevelResult, LevelError> {
+    let bail = |e: LevelError| -> LevelError {
         backout_pair(slot, "base_boost_backout");
         e
     };
     if cancelled() {
-        return Err(bail(CANCELLED.to_string()));
+        return Err(bail(LevelError::Cancelled));
     }
     // A boost backs out on ANY failure here, connect included — unlike the trade's own
     // prologue below, which only bails on the SET (see that call site's comment).
-    raise_preset_level_unsaved(plan.preset_level, bail, bail)?;
+    raise_preset_level_unsaved(plan.preset_level, |e| bail(e.into()), |e| bail(e.into()))?;
     // SEED THE HOLD FROM base's OWN as-is reading (already have it — `measure_c`'s capture,
     // taken before either control moved), SHIFTED by the raise: `presetLevel` is exact
     // (module header), so this costs no extra capture — the same seeding
@@ -2138,7 +2137,7 @@ fn apply_base_boost(
     // on (the raise and solved fader are unsaved deferred writes), so the isolation is undone
     // with inverse writes on their own fresh connection instead (mirrors
     // `apply_headroom_trade`'s A5/F2 cleanup).
-    undo_isolation_or_bail(&job.force_bypass, saved, "boost", bail)?;
+    undo_isolation_or_bail(&job.force_bypass, saved, "boost", |e| bail(e.into()))?;
     let fader_value = solved
         .levels
         .first()
@@ -2171,12 +2170,12 @@ fn apply_base_boost(
     let pl_ok = pl_doc.is_some_and(|v| (v - plan.preset_level as f64).abs() <= PERSIST_TOL);
     let fader_ok = fader_doc.is_some_and(|v| (v - fader_value as f64).abs() <= PERSIST_TOL);
     if !(pl_ok && fader_ok) {
-        return Err(format!(
+        return Err(LevelError::Device(format!(
             "base boost save for slot {slot} did not persist as written (presetLevel wrote \
              {:.4} read {pl_doc:?}; {node_id}.{parameter_id} wrote {fader_value:.4} read \
              {fader_doc:?})",
             plan.preset_level
-        ));
+        )));
     }
     Ok(LevelResult {
         slot,
@@ -2253,9 +2252,9 @@ pub fn level_setlist(
     headroom_lu: f64,
     ref_level: f32,
     save: bool,
-) -> Result<SetlistResult, String> {
+) -> Result<SetlistResult, LevelError> {
     if entries.is_empty() {
-        return Err("no presets to level".to_string());
+        return Err(LevelError::from("no presets to level"));
     }
     let ref_level = ref_level.clamp(0.05, 1.0);
 
@@ -2468,7 +2467,7 @@ fn saved_for_scene_knobs<'a>(
 /// shared by every base-context write/save seam that isn't already inside a
 /// per-scene Scene Edit dance (which pays its own `SETTLE_AFTER_SCENE_RECALL_MS`
 /// / `SETTLE_AFTER_SCENE_EDIT_MS` pair instead, in `set_knobs`).
-fn recall_base(s: &mut Session) -> Result<(), String> {
+fn recall_base(s: &mut Session) -> Result<(), LevelError> {
     s.load_scene(crate::session::BASE_SCENE_SLOT)?;
     crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     Ok(())
@@ -2480,7 +2479,7 @@ fn recall_base(s: &mut Session) -> Result<(), String> {
 /// survive the recall (HW, `probe --defer-scenes`). `None` = no recall (old behavior).
 /// The ONE pre-save recall shared by `apply_levels`, `save_deferred_scene_writes`, and
 /// `write_fs_values_on_session` — a settle-timing fix here fixes all three.
-fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<(), String> {
+fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<(), LevelError> {
     if let Some(scene) = restore_scene {
         s.load_scene(scene)?;
         crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
@@ -2513,7 +2512,7 @@ fn recall_reassert_save(
     slot: ListIndex,
     restore_scene: Option<u32>,
     reasserts: &[Reassert],
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     recall_original_scene(s, restore_scene)?;
     // Only a recall reverts the working copy, so only a recall needs undoing. Without one the
     // values are already in the device's working copy from this same session.
@@ -2554,7 +2553,7 @@ fn set_knob(
     knob: &LevelKnob,
     value: f32,
     saved: Option<&serde_json::Value>,
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     set_knobs(s, &[(knob, value)], saved)
 }
 
@@ -2658,7 +2657,7 @@ fn set_knobs(
     s: &mut Session,
     targets: &[(&LevelKnob, f32)],
     saved: Option<&serde_json::Value>,
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     // ONE scene per batch, ENFORCED not just documented: only the first scene found is
     // recalled below, so a batch mixing two scenes would land every write in that first
     // scene's overlay — silently, with each write confirming normally. Refuse instead.
@@ -2675,11 +2674,11 @@ fn set_knobs(
     scenes.sort_unstable();
     scenes.dedup();
     if scenes.len() > 1 {
-        return Err(format!(
+        return Err(LevelError::Device(format!(
             "set_knobs: batch mixes scenes {scenes:?}; only one scene may be recalled per batch, \
              so the others would silently write into scene {}",
             scenes[0]
-        ));
+        )));
     }
     let scene = scenes.first().copied();
     let has_base_block = targets.iter().any(|(k, _)| {
@@ -2698,11 +2697,11 @@ fn set_knobs(
     // One connection can hold one scene context, so base and scene targets cannot share a
     // batch; split them into two calls.
     if scene.is_some() && has_base_block {
-        return Err(format!(
+        return Err(LevelError::Device(format!(
             "set_knobs: batch mixes base and scene {} targets; the scene recall would capture \
              the base write too — split them into separate calls",
             scene.unwrap_or_default()
-        ));
+        )));
     }
     // Which nodes need the Scene Edit enable — decided BEFORE any device write, so an
     // unanswerable overlay state refuses with the preset untouched. The verdict itself is
@@ -2735,13 +2734,13 @@ fn set_knobs(
                 // document, so having none is this caller's own gap, and it keeps its own
                 // wording.
                 let Some(sv) = saved else {
-                    return Err(format!(
+                    return Err(LevelError::Device(format!(
                         "set_knobs: refusing to write {group_id}/{node_id} in scene {scene} — \
                          the saved preset does not say whether that node already has a scene \
                          overlay (no saved-preset read), and both write shapes corrupt it \
                          (enable reseeds an existing overlay from base; omitting it leaks the \
                          write to base)"
-                    ));
+                    )));
                 };
                 match scene_write_verdict_for_param(sv, scene, node_id, parameter_id) {
                     SceneWriteVerdict::WriteDirect { .. } => {}
@@ -2752,7 +2751,7 @@ fn set_knobs(
                         }
                     }
                     SceneWriteVerdict::Refuse { reason, .. } => {
-                        return Err(format!("set_knobs: {reason}"))
+                        return Err(LevelError::Device(format!("set_knobs: {reason}")))
                     }
                 }
             }
@@ -2808,29 +2807,31 @@ fn set_knobs(
 /// USB-Out 1/2, not an argmax-picked single channel — `loudest_channel` is still
 /// used elsewhere (advisory VU pick, per-channel probe diagnostics) but no longer
 /// describes this hub.
-pub(crate) fn processed_lufs(cap: Result<audio::Capture, String>) -> Result<f64, String> {
+pub(crate) fn processed_lufs(cap: Result<audio::Capture, LevelError>) -> Result<f64, LevelError> {
     processed_loudness(cap).map(|l| l.integrated_lufs)
 }
 
 /// Like [`processed_lufs`] but keeps the full meter reading (integrated + short-term
 /// max), for paths that report the capture's dynamics spread alongside the level.
-fn processed_loudness(cap: Result<audio::Capture, String>) -> Result<lufs::Loudness, String> {
+fn processed_loudness(
+    cap: Result<audio::Capture, LevelError>,
+) -> Result<lufs::Loudness, LevelError> {
     processed_loudness_of(&cap?)
 }
 
 /// [`processed_loudness`] on a BORROWED capture — for the one caller that must keep the
 /// PCM alive past the measurement (the strict re-measure's external-validation dump,
 /// `measure_sound_asis_strict`). Same verdict, same sentinel error.
-fn processed_loudness_of(cap: &audio::Capture) -> Result<lufs::Loudness, String> {
+fn processed_loudness_of(cap: &audio::Capture) -> Result<lufs::Loudness, LevelError> {
     loudness_verdict(measure_processed(cap)?)
 }
 
-/// The hub's verdict on one processed-pair reading: silence → [`NO_SIGNAL_CAPTURED`], a
-/// flat-topped capture → [`CLIPPED_CAPTURE_ERR`] (its integrated reading is LOW, so no lane
+/// The hub's verdict on one processed-pair reading: silence → [`LevelError::NoSignal`], a
+/// flat-topped capture → [`LevelError::Clipped`] (its integrated reading is LOW, so no lane
 /// may solve from it), else the reading.
-fn loudness_verdict(m: lufs::Loudness) -> Result<lufs::Loudness, String> {
+fn loudness_verdict(m: lufs::Loudness) -> Result<lufs::Loudness, LevelError> {
     if !m.integrated_lufs.is_finite() {
-        return Err(NO_SIGNAL_CAPTURED.to_string());
+        return Err(LevelError::NoSignal);
     }
     if m.clipped {
         log::warn!(
@@ -2838,7 +2839,7 @@ fn loudness_verdict(m: lufs::Loudness) -> Result<lufs::Loudness, String> {
             m.integrated_lufs,
             m.true_peak_dbtp
         );
-        return Err(CLIPPED_CAPTURE_ERR.to_string());
+        return Err(LevelError::Clipped);
     }
     Ok(m)
 }
@@ -2867,12 +2868,12 @@ pub(crate) fn is_engaged(l: &lufs::Loudness) -> bool {
 /// calls this — it stays on `measure_mono` directly. `pub(crate)` so a probe
 /// diagnostic headline can share the exact production convention instead of a
 /// parallel per-channel re-check (`probe_api::level::probe_measure_current_lufs`).
-pub(crate) fn measure_processed(cap: &audio::Capture) -> Result<lufs::Loudness, String> {
+pub(crate) fn measure_processed(cap: &audio::Capture) -> Result<lufs::Loudness, LevelError> {
     let sample_rate = cap.sample_rate;
-    match cap.processed_stereo() {
+    Ok(match cap.processed_stereo() {
         Some(stereo) => lufs::measure_stereo(&stereo, sample_rate),
         None => lufs::measure_mono(&cap.channel(0), sample_rate),
-    }
+    }?)
 }
 
 /// Engage re-amp on `s` (latching the already-set knob/scene), settle, capture the
@@ -2890,7 +2891,7 @@ pub(crate) fn measure_processed(cap: &audio::Capture) -> Result<lufs::Loudness, 
 pub(crate) fn engage_measure_disengage(
     s: &mut Session,
     stimulus: &[f32],
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     processed_loudness(engage_capture_disengage(s, stimulus))
 }
 
@@ -2901,7 +2902,7 @@ pub(crate) fn engage_measure_disengage(
 pub(crate) fn engage_capture_disengage(
     s: &mut Session,
     stimulus: &[f32],
-) -> Result<audio::Capture, String> {
+) -> Result<audio::Capture, LevelError> {
     let _ = s.set_reamp_mode(true)?;
     // Same no-early-return rule as `capture_full_at`: re-amp is engaged, the OFF must fire.
     let _ = settle_abortable(SETTLE_AFTER_REAMP_MS);
@@ -2928,19 +2929,20 @@ impl ReampOffOutcome {
         (!self.verified).then(|| REAMP_STILL_ON_WARNING.to_string())
     }
 
-    /// `e` with the warning appended, for a run that failed AND left re-amp unverified. The
-    /// [`CANCELLED`] sentinel is returned untouched: callers compare it by equality.
-    pub(crate) fn annotate_err(self, e: String) -> String {
+    /// `e` with the warning appended, for a run that failed AND left re-amp unverified. A
+    /// cancel is returned untouched: it stays a cancel, with its own text.
+    pub(crate) fn annotate_err(self, e: LevelError) -> LevelError {
         match self.warning() {
-            Some(w) if e != CANCELLED => format!("{e} — {w}"),
+            Some(w) if !e.is_cancelled() => LevelError::Device(format!("{e} — {w}")),
             _ => e,
         }
     }
 
     /// Stamp the warning on every row of a run's result, or append it to the run's error.
-    pub(crate) fn stamp<T>(
+    /// The run-end step of a command, so it hands back the command's `String` error.
+    pub(crate) fn stamp<T, E: Into<LevelError>>(
         self,
-        result: Result<T, String>,
+        result: Result<T, E>,
         rows: impl FnOnce(&mut T, Option<String>),
     ) -> Result<T, String> {
         match result {
@@ -2948,7 +2950,7 @@ impl ReampOffOutcome {
                 rows(&mut r, self.warning());
                 Ok(r)
             }
-            Err(e) => Err(self.annotate_err(e)),
+            Err(e) => Err(self.annotate_err(e.into()).to_string()),
         }
     }
 }
@@ -3204,7 +3206,7 @@ fn measure_scene_asis(
     stimulus: &[f32],
     intended_preset_level: Option<f32>,
     force_bypass: &[(String, String, bool)],
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     let mut s = Session::connect_lean()?;
     s.load_scene(scene_slot)?;
     settle_or_cancel(SETTLE_AFTER_SET_MS)?;
@@ -3255,7 +3257,7 @@ fn arm_measurement(
     force_bypass: &[(String, String, bool)],
     saved: Option<&serde_json::Value>,
     intended_preset_level: Option<f32>,
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     if matches!(knob, LevelKnob::PresetLevel) {
         recall_base(s)?;
     }
@@ -3283,7 +3285,7 @@ fn arm_pair_measurement(
     scene: Option<u32>,
     preset_level: f32,
     writes: &[(String, String, String, f32)],
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     match scene {
         None => arm_measurement(s, &LevelKnob::PresetLevel, preset_level, &[], None, None)?,
         Some(sc) => {
@@ -3318,7 +3320,7 @@ pub(crate) fn measure_pair_at(
     preset_level: f32,
     writes: &[(String, String, String, f32)],
     stimulus: &[f32],
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     let mut s = Session::connect_lean()?;
     arm_pair_measurement(&mut s, scene, preset_level, writes)?;
     engage_measure_disengage(&mut s, stimulus)
@@ -3336,7 +3338,7 @@ fn measure_knob_at(
     force_bypass: &[(String, String, bool)],
     saved: Option<&serde_json::Value>,
     intended_preset_level: Option<f32>,
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     let mut s = Session::connect_lean()?;
     arm_measurement(
         &mut s,
@@ -3564,10 +3566,10 @@ impl FsParamTarget {
         node_id: &str,
         param: &str,
         authored: f32,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, LevelError> {
         let target = Self::new(&Self::fender_id_of(preset, node_id), param, authored);
         match target.refuse_if_not_a_level_control() {
-            Some(refusal) => Err(refusal),
+            Some(refusal) => Err(LevelError::from(refusal)),
             None => Ok(target),
         }
     }
@@ -3846,7 +3848,7 @@ pub(crate) fn measure_fs_at(
     stimulus: &[f32],
     v: f32,
     intended_preset_level: Option<f32>,
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     match scene {
         None => processed_loudness(capture_fs_at(
             lev,
@@ -3873,7 +3875,7 @@ pub(crate) fn capture_fs_at(
     stimulus: &[f32],
     v: f32,
     intended_preset_level: Option<f32>,
-) -> Result<audio::Capture, String> {
+) -> Result<audio::Capture, LevelError> {
     let mut s = Session::connect_lean()?;
     let knob = LevelKnob::Block {
         group_id: lev.0.to_string(),
@@ -3924,7 +3926,7 @@ fn measure_fs_state(
     params: &[(String, String, String, f32)],
     stimulus: &[f32],
     intended_preset_level: Option<f32>,
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     let mut s = Session::connect_lean()?;
     match scene {
         None => recall_base(&mut s)?,
@@ -4005,7 +4007,7 @@ pub fn measure_fs_ceiling(
     probe: &FsCeilingProbe<'_>,
     stimulus: &[f32],
     intended_preset_level: Option<f32>,
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     let params = probe.ceiling_params();
     require_live(
         || {
@@ -4168,7 +4170,7 @@ pub fn measure_footswitch(
     current_value: Option<f32>,
     param: &FsParamTarget,
     intended_preset_level: Option<f32>,
-) -> Result<FootswitchLevelResult, String> {
+) -> Result<FootswitchLevelResult, LevelError> {
     solve_footswitch_with(
         switch,
         engaged_bypass,
@@ -4205,8 +4207,8 @@ fn solve_footswitch_with(
     current_value: Option<f32>,
     param: &FsParamTarget,
     reamp_off: impl FnMut(),
-    mut measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, String>,
-) -> Result<FootswitchLevelResult, String> {
+    mut measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, LevelError>,
+) -> Result<FootswitchLevelResult, LevelError> {
     let solved = solve_param_secant(
         stimulus,
         target_lufs,
@@ -4230,8 +4232,8 @@ fn solve_footswitch(
     method: &str,
     current_value: Option<f32>,
     param: &FsParamTarget,
-    measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, String>,
-) -> Result<FootswitchLevelResult, String> {
+    measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, LevelError>,
+) -> Result<FootswitchLevelResult, LevelError> {
     solve_footswitch_with(
         switch,
         engaged_bypass,
@@ -4340,14 +4342,14 @@ fn solve_param_secant(
     param: &FsParamTarget,
     correct_max: u32,
     mut reamp_off: impl FnMut(),
-    mut measure_at: impl FnMut(f32) -> Result<lufs::Loudness, String>,
-) -> Result<ParamSolve, String> {
+    mut measure_at: impl FnMut(f32) -> Result<lufs::Loudness, LevelError>,
+) -> Result<ParamSolve, LevelError> {
     // ENTRY GUARD, before any device work: a param the classifier doesn't recognise as a
     // level or wet/mix control is not a volume control. Sweeping it would change the sound
     // the player wrote, not its loudness — refuse instead of "levelling" it. Surfaces as a
     // clean per-switch `status: "error"` item (the batched command's `Err` arm).
     if let Some(refusal) = param.refuse_if_not_a_level_control() {
-        return Err(refusal);
+        return Err(LevelError::from(refusal));
     }
     // The wet floor anchors on the ENGAGED value when the switch already has one (see
     // `anchored`'s doc); applied here, not at call sites, so it cannot be forgotten.
@@ -4417,7 +4419,7 @@ fn solve_param_secant(
         // stays separate — genuine silence is the routing clamp, not a floor read.
         let l = match require_live(|| measure_at(v), stimulus) {
             Ok(l) => l,
-            Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
+            Err(e) if e.is_no_signal() => {
                 reamp_off();
                 return Ok(ParamSolve {
                     final_value: v,
@@ -4463,10 +4465,8 @@ fn solve_param_secant(
     // never win it (mirrors `improve_best`'s exclusion of synthetic points).
     let (l_b_lufs, l_b_spread, seed2_synthetic) = match require_live(|| measure_at(v_b), stimulus) {
         Ok(l) => (l.integrated_lufs, l.spread_lu(), false),
-        Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
-            (fs_silent_geometry(l_a.integrated_lufs), 0.0, true)
-        }
-        Err(e) if e == CLIPPED_CAPTURE_ERR => (
+        Err(e) if e.is_no_signal() => (fs_silent_geometry(l_a.integrated_lufs), 0.0, true),
+        Err(LevelError::Clipped) => (
             fs_clipped_geometry(l_a.integrated_lufs, target_lufs),
             0.0,
             true,
@@ -4533,7 +4533,7 @@ fn solve_param_secant(
                     );
                     Some((param.to_coord(v_extreme as f64), l_extreme.integrated_lufs))
                 }
-                Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
+                Err(e) if e.is_no_signal() => {
                     iterations += 1;
                     Some((
                         param.to_coord(v_extreme as f64),
@@ -4618,11 +4618,11 @@ fn solve_param_secant(
                             );
                             (l2.integrated_lufs, true)
                         }
-                        Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
+                        Err(e) if e.is_no_signal() => {
                             iterations += 1;
                             (fs_silent_geometry(min_real), false)
                         }
-                        Err(e) if e == CLIPPED_CAPTURE_ERR => {
+                        Err(LevelError::Clipped) => {
                             iterations += 1;
                             (fs_clipped_geometry(max_real, target_lufs), false)
                         }
@@ -4714,8 +4714,8 @@ pub fn level_footswitch(
     verify: bool,
     restore_scene: Option<u32>,
     param: &FsParamTarget,
-) -> Result<FootswitchLevelResult, String> {
-    let body = || -> Result<FootswitchLevelResult, String> {
+) -> Result<FootswitchLevelResult, LevelError> {
+    let body = || -> Result<FootswitchLevelResult, LevelError> {
         // Load the preset in its own connection (re-amp latch workaround), then measure on
         // fresh connections (the preset stays current across reconnects).
         {
@@ -4829,7 +4829,7 @@ pub fn write_footswitch_values(
     slot: ListIndex,
     pending: &[FsPendingWrite],
     restore_scene: Option<u32>,
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     if pending.is_empty() {
         return Ok(());
     }
@@ -4855,7 +4855,7 @@ fn write_fs_values_on_session(
     slot: ListIndex,
     pending: &[FsPendingWrite],
     restore_scene: Option<u32>,
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     s.begin_live_edit()?;
     s.load_preset(slot)?;
     let name = s.active_preset_name().unwrap_or_default();
@@ -4914,10 +4914,10 @@ fn write_fs_values_on_session(
                     }
                 }
                 if !confirmed {
-                    return Err(format!(
+                    return Err(LevelError::Device(format!(
                         "footswitch assignment not confirmed (no field-54 echo / read-back, \
                          retried; device replied with PresetMessage fields {last_seen:?}) — not saved"
-                    ));
+                    )));
                 }
             }
             FsWrite::Bake { clear_stale, .. } => {
@@ -5045,13 +5045,13 @@ fn coord_to_knob(coord: f32, log_space: bool, lo: f32, hi: f32) -> f32 {
     }
 }
 
-fn live_window_lufs(live: &audio::LiveReamp, window_ms: u64) -> Result<f64, String> {
+fn live_window_lufs(live: &audio::LiveReamp, window_ms: u64) -> Result<f64, LevelError> {
     let cap = live.recent_capture(window_ms)?;
     let lufs = measure_processed(&cap)?.integrated_lufs;
     if lufs.is_finite() {
         Ok(lufs)
     } else {
-        Err("no finite live LUFS measurement".to_string())
+        Err(LevelError::from("no finite live LUFS measurement"))
     }
 }
 
@@ -5232,17 +5232,17 @@ pub struct ScenePrepass {
 impl SceneJob {
     /// The single knob for the single-knob paths; errors if this is a multi-knob
     /// (parallel) job or a skip job, which those probe-only runners can't solve.
-    fn solo(&self) -> Result<&KnobTarget, String> {
+    fn solo(&self) -> Result<&KnobTarget, LevelError> {
         if let Some(reason) = &self.skip {
-            return Err(reason.clone());
+            return Err(LevelError::from(reason.clone()));
         }
         match self.knobs.as_slice() {
             [one] => Ok(one),
-            n => Err(format!(
+            n => Err(LevelError::Device(format!(
                 "this leveling path supports a single amp knob per scene, got {} \
                  (a parallel-merged scene needs the joint-k runner)",
                 n.len()
-            )),
+            ))),
         }
     }
 }
@@ -5267,7 +5267,7 @@ pub fn level_scenes_live_batched(
     saved: Option<&serde_json::Value>,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     mut cancelled: impl FnMut() -> bool,
-) -> Result<Vec<BatchedSceneOutcome>, String> {
+) -> Result<Vec<BatchedSceneOutcome>, LevelError> {
     let result = (|| {
         // Load in its own connection (set-after-load override + engage latch).
         {
@@ -5284,7 +5284,7 @@ pub fn level_scenes_live_batched(
         let mut outcomes = Vec::with_capacity(jobs.len());
         for job in jobs {
             if cancelled() {
-                return Err(CANCELLED.to_string());
+                return Err(LevelError::Cancelled);
             }
             on_scene(job.scene_slot, None);
             let t0 = std::time::Instant::now();
@@ -5293,7 +5293,7 @@ pub fn level_scenes_live_batched(
 
             let scene_result = (|windows: &mut u32,
                                  writes: &mut u32|
-             -> Result<(f64, f32, bool), String> {
+             -> Result<(f64, f32, bool), LevelError> {
                 // This closed-loop runner is single-knob only (probe benchmark path);
                 // a parallel-merged scene must use the joint-k `level_scenes_oneshot`.
                 let kt = job.solo()?;
@@ -5317,7 +5317,7 @@ pub fn level_scenes_live_batched(
 
                 for iter in 0..BATCH_MAX_TRIMS {
                     if cancelled() {
-                        return Err(CANCELLED.to_string());
+                        return Err(LevelError::Cancelled);
                     }
                     if (best.1 - job.target_lufs).abs() <= KNOB_TOL_LU {
                         break;
@@ -5389,7 +5389,7 @@ pub fn level_scenes_live_batched(
                     // Its result IS a live-window measurement of the written value.
                     verification: Verification::Verified,
                 },
-                Err(e) if e == CANCELLED => return Err(e),
+                Err(e) if e.is_cancelled() => return Err(e),
                 Err(e) => BatchedSceneOutcome {
                     scene_slot: job.scene_slot,
                     target_lufs: job.target_lufs,
@@ -5399,7 +5399,7 @@ pub fn level_scenes_live_batched(
                     windows,
                     writes,
                     elapsed_ms: t0.elapsed().as_millis(),
-                    failure: Some(e),
+                    failure: Some(e.to_string()),
                     ..Default::default()
                 },
             };
@@ -5470,7 +5470,7 @@ pub fn prepass_scene_ceilings(
     intended_preset_level: Option<f32>,
     mut on_scene: impl FnMut(u32),
     mut cancelled: impl FnMut() -> bool,
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     let mut stopped = false;
     for job in jobs.iter_mut() {
         if cancelled() {
@@ -5512,7 +5512,7 @@ pub fn prepass_scene_ceilings(
                     );
                 }
             }
-            Err(e) if e == CANCELLED => {
+            Err(e) if e.is_cancelled() => {
                 stopped = true;
                 break;
             }
@@ -5524,7 +5524,7 @@ pub fn prepass_scene_ceilings(
     }
     reamp_off_guaranteed("prepass_scene_ceilings");
     if stopped {
-        return Err(CANCELLED.to_string());
+        return Err(LevelError::Cancelled);
     }
     Ok(())
 }
@@ -5634,7 +5634,7 @@ pub fn level_scenes_oneshot(
     // B6: forwarded to `run_scene_jobs` verbatim — see its own doc.
     on_tail: impl FnMut(&str),
     cancelled: impl FnMut() -> bool,
-) -> Result<Vec<BatchedSceneOutcome>, String> {
+) -> Result<Vec<BatchedSceneOutcome>, LevelError> {
     let intended_preset_level = scene_capture_level(hold, saved);
     run_scene_jobs(
         slot,
@@ -5783,7 +5783,7 @@ pub fn apply_headroom_trade(
     if cancelled() {
         return Err(TradeFailure {
             kind: ClampKind::PartialTrade,
-            why: CANCELLED.to_string(),
+            why: LevelError::Cancelled.to_string(),
             base_overshoot_lu: None,
         });
     }
@@ -5844,7 +5844,7 @@ pub fn apply_headroom_trade(
         // half-trade there for the NEXT thing that saves this preset (a save on the unit, a
         // later non-leveling flow) to persist. `restore_saved_preset` is cancel-safe by
         // design and danger.md requires the post-cancel restore to run to completion.
-        Err(e) => return Err(bail(ClampKind::PartialTrade, e)),
+        Err(e) => return Err(bail(ClampKind::PartialTrade, e.to_string())),
     };
     if solved.clamped {
         // The hold FAILED: base cannot be held at its target with the raise in place. See
@@ -5896,7 +5896,7 @@ pub fn apply_headroom_trade(
 /// write with no preceding recall lands in whatever scene the connection currently holds, and
 /// this fresh connection holds none — an un-recalled inverse write would risk creating (or
 /// polluting) a SCENE overlay for the forced node instead of restoring its BASE value.
-fn write_isolation_restore(restore: &[(String, String, bool)]) -> Result<(), String> {
+fn write_isolation_restore(restore: &[(String, String, bool)]) -> Result<(), LevelError> {
     if restore.is_empty() {
         return Ok(());
     }
@@ -5955,7 +5955,7 @@ pub(crate) fn isolation_restore_list(
 fn undo_base_isolation(
     force_bypass: &[(String, String, bool)],
     saved: Option<&serde_json::Value>,
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     write_isolation_restore(&isolation_restore_list(force_bypass, saved))
 }
 
@@ -6053,9 +6053,9 @@ pub fn redistribute_clamped_headroom(
     // same tail-emitter shape directly rather than inheriting it.
     mut on_tail: impl FnMut(&str),
     mut cancelled: impl FnMut() -> bool,
-) -> Result<Vec<BatchedSceneOutcome>, String> {
+) -> Result<Vec<BatchedSceneOutcome>, LevelError> {
     if cancelled() {
-        return Err(CANCELLED.to_string());
+        return Err(LevelError::Cancelled);
     }
     // Raise presetLevel FIRST, UNSAVED. `measure_scene_asis` (the jointk measure) connects
     // LEAN — no `load_preset` — so this working-copy value survives every scene's fresh
@@ -6107,13 +6107,18 @@ pub fn redistribute_clamped_headroom(
             Ok(s) => {
                 solved_scene_outcome(job.scene_slot, job.target_lufs, s, t0.elapsed().as_millis())
             }
-            Err(e) if e == CANCELLED => {
+            Err(e) if e.is_cancelled() => {
                 stopped = true;
                 break;
             }
             Err(e) => {
                 log::warn!("scene {} failed: {e}", job.scene_slot);
-                failed_scene_outcome(job.scene_slot, job.target_lufs, e, t0.elapsed().as_millis())
+                failed_scene_outcome(
+                    job.scene_slot,
+                    job.target_lufs,
+                    e.to_string(),
+                    t0.elapsed().as_millis(),
+                )
             }
         };
         on_scene(job.scene_slot, Some(&o));
@@ -6136,9 +6141,9 @@ pub fn redistribute_clamped_headroom(
             );
         }
         return Err(if stopped {
-            CANCELLED.to_string()
+            LevelError::Cancelled
         } else {
-            "redistribution aborted: a compensating write did not land — nothing saved".to_string()
+            "redistribution aborted: a compensating write did not land — nothing saved".into()
         });
     }
 
@@ -6298,8 +6303,8 @@ fn run_scene_jobs(
     // no captions.
     mut on_tail: impl FnMut(&str),
     mut cancelled: impl FnMut() -> bool,
-    mut solve: impl FnMut(&SceneJob) -> Result<SceneSolve, String>,
-) -> Result<Vec<BatchedSceneOutcome>, String> {
+    mut solve: impl FnMut(&SceneJob) -> Result<SceneSolve, LevelError>,
+) -> Result<Vec<BatchedSceneOutcome>, LevelError> {
     let reasserts = Reassert::preset_level_only(hold.map(|h| h.preset_level));
     let mut outcomes = Vec::with_capacity(jobs.len());
     let mut attempted = false;
@@ -6382,13 +6387,18 @@ fn run_scene_jobs(
                 }
                 solved_scene_outcome(job.scene_slot, job.target_lufs, s, t0.elapsed().as_millis())
             }
-            Err(e) if e == CANCELLED => {
+            Err(e) if e.is_cancelled() => {
                 stopped = true;
                 break;
             }
             Err(e) => {
                 log::warn!("scene {} failed: {e}", job.scene_slot);
-                failed_scene_outcome(job.scene_slot, job.target_lufs, e, t0.elapsed().as_millis())
+                failed_scene_outcome(
+                    job.scene_slot,
+                    job.target_lufs,
+                    e.to_string(),
+                    t0.elapsed().as_millis(),
+                )
             }
         };
         on_scene(job.scene_slot, Some(&outcome));
@@ -6413,10 +6423,10 @@ fn run_scene_jobs(
                      isolation cleanup (slot {slot}): {e2}"
                 );
             }
-            return Err(format!(
+            return Err(LevelError::Device(format!(
                 "the base isolation could not be undone before the save ({e}) — abandoning \
                  this batch's unsaved writes rather than risk saving a pedal forced off"
-            ));
+            )));
         }
     }
     // Did the run PERSIST a headroom trade? Only then is there anything to disclose on a
@@ -6444,7 +6454,7 @@ fn run_scene_jobs(
             on_tail("Saving preset…");
             save_deferred_scene_writes(slot, restore_scene, &reasserts)?;
             // Confirm the save kept what the run reports — no re-capture, one field-8 read,
-            // after every audio step. A stopped run with no trade returns CANCELLED below and
+            // after every audio step. A stopped run with no trade returns a cancel below and
             // its outcomes are discarded, so it is not worth a read.
             on_tail("Verifying…");
             verify_persisted_writes(slot, &written, &force_bypass_restore, &mut outcomes);
@@ -6471,7 +6481,7 @@ fn run_scene_jobs(
         // exactly `raise_db` while the run reported them on target — silently wrong numbers,
         // the one outcome this codebase refuses. Skipped benefiting scenes DO end up
         // `raise_db` louder than authored, which is a real cost — so the run returns its
-        // outcomes (rather than the historical `CANCELLED`, whose results the command drops)
+        // outcomes (rather than the historical cancel error, whose results the command drops)
         // and the trade summary rides along, giving the UI both the disclosure and the
         // pre-trade values to restore from. danger.md's cancel contract is intact either way:
         // nothing early-returns past the re-amp engage and the cleanup above ran whole.
@@ -6482,7 +6492,7 @@ fn run_scene_jobs(
             );
             return Ok(outcomes);
         }
-        return Err(CANCELLED.to_string());
+        return Err(LevelError::Cancelled);
     }
     Ok(outcomes)
 }
@@ -6499,10 +6509,10 @@ fn save_deferred_scene_writes(
     slot: ListIndex,
     restore_scene: Option<u32>,
     reasserts: &[Reassert],
-) -> Result<(), String> {
+) -> Result<(), LevelError> {
     // NOT `sleep_or_cancel`: this is ALSO fired on cancel, to persist the scene overlays
     // already written. Bailing here would throw away the run's completed work.
-    let attempt = || -> Result<(), String> {
+    let attempt = || -> Result<(), LevelError> {
         let mut s = Session::connect()?;
         recall_reassert_save(&mut s, slot, restore_scene, reasserts)
     };
@@ -6912,18 +6922,18 @@ fn solve_joint_k_at(
     target_lufs: f64,
     measured: f64,
     floor: f32,
-) -> Result<JointK, String> {
+) -> Result<JointK, LevelError> {
     if knobs.is_empty() {
-        return Err("joint-k: no amp knobs in scene".to_string());
+        return Err(LevelError::from("joint-k: no amp knobs in scene"));
     }
     for kt in knobs {
         if kt.lo < -1e-6 || kt.hi > 1.0 + 1e-6 {
-            return Err(format!(
+            return Err(LevelError::Device(format!(
                 "joint-k requires amplitude (0..1) knobs; got bounds [{}, {}] for {}",
                 kt.lo,
                 kt.hi,
                 kt.knob.label()
-            ));
+            )));
         }
     }
     let max_cur = knobs
@@ -7070,7 +7080,7 @@ const FS_CLIP_MARGIN_LU: f64 = 6.0;
 
 /// The pseudo-LUFS for a CLIPPED probe past the first seed — the loud mirror of
 /// [`fs_silent_geometry`]. A clipped capture's integrated reading is LOW (the hub refuses it
-/// with [`CLIPPED_CAPTURE_ERR`]), but the knob value that produced it is plainly too loud, so
+/// with [`LevelError::Clipped`]), but the knob value that produced it is plainly too loud, so
 /// the geometry places it `FS_CLIP_MARGIN_LU` above both the loudest real capture and the
 /// target: the secant then steps back down instead of the whole row aborting. Geometry only,
 /// like the silent point — never handed to `improve_best` or reported.
@@ -7127,7 +7137,7 @@ fn scene_prologue(
     job: &SceneJob,
     stimulus: &[f32],
     intended_preset_level: Option<f32>,
-) -> Result<Prologue, String> {
+) -> Result<Prologue, LevelError> {
     // Hard-error on a persistent flat read (after the retry). Trade-off, made
     // consciously: a real scene crushed by a limiter (the UA1176 case) with spread ≤ the
     // trip gate would false-error — but the library's Base minimum is 0.12 and without the
@@ -7204,7 +7214,7 @@ fn jointk_one_scene(
     // literal here — they take it from `job.force_bypass` instead (A4: base's isolation lives
     // on the job, not a parallel parameter chain).
     intended_preset_level: Option<f32>,
-) -> Result<SceneSolve, String> {
+) -> Result<SceneSolve, LevelError> {
     let prologue = scene_prologue(job, stimulus, intended_preset_level)?;
     let (measured, spread) = (prologue.asis, prologue.spread);
     let JointK {
@@ -7429,18 +7439,18 @@ fn handle_one_scene(
     // asserted on the as-is capture AND on every solve capture — each `measure_knob_at` here
     // recalls the knob's scene, which reverts the level exactly like the as-is recall does.
     intended_preset_level: Option<f32>,
-) -> Result<SceneSolve, String> {
+) -> Result<SceneSolve, LevelError> {
     // CLASS GATE, before any device work — the same refusal wording every lane shares.
     if let Some(refusal) = handle.refuse_if_not_a_level_control() {
-        return Err(refusal);
+        return Err(LevelError::from(refusal));
     }
     let kt = match job.knobs.as_slice() {
         [one] => one,
         n => {
-            return Err(format!(
+            return Err(LevelError::Device(format!(
                 "a user-chosen scene handle addresses exactly one control, got {}",
                 n.len()
-            ))
+            )))
         }
     };
     let prologue = scene_prologue(job, stimulus, intended_preset_level)?;
@@ -7564,7 +7574,7 @@ fn apply_first_verified(
     // A4: the job's isolation list — empty for every scene job, the base row's own list when
     // this apply is base's (both a plain base solve and the headroom trade's hold).
     force_bypass: &[(String, String, bool)],
-) -> Result<(Option<f64>, u32), String> {
+) -> Result<(Option<f64>, u32), LevelError> {
     let targets = zip_targets(knobs, levels);
     let v0 = apply_levels(slot, stimulus, &targets, opts, false, saved, force_bypass)?.1;
     match v0 {
@@ -7637,8 +7647,8 @@ fn correct_iter(
     // A4: the job's isolation list, forwarded to every `apply` inside the loop below — same
     // contract as `apply_first_verified`'s.
     force_bypass: &[(String, String, bool)],
-) -> Result<Correction, String> {
-    let apply = |levels: &[f32], verify: bool| -> Result<Option<f64>, String> {
+) -> Result<Correction, LevelError> {
+    let apply = |levels: &[f32], verify: bool| -> Result<Option<f64>, LevelError> {
         let opts = LevelOptions {
             verify,
             defer,
@@ -7661,8 +7671,8 @@ struct HeldLevels<F> {
     writes: u32,
 }
 
-impl<F: FnMut(&[f32], bool) -> Result<Option<f64>, String>> HeldLevels<F> {
-    fn write(&mut self, levels: &[f32], verify: bool) -> Result<Option<f64>, String> {
+impl<F: FnMut(&[f32], bool) -> Result<Option<f64>, LevelError>> HeldLevels<F> {
+    fn write(&mut self, levels: &[f32], verify: bool) -> Result<Option<f64>, LevelError> {
         let v = (self.apply)(levels, verify)?;
         self.held = levels.to_vec();
         self.writes += 1;
@@ -7687,8 +7697,8 @@ fn correct_iter_core(
     v0: f64,
     target: f64,
     floor: f32,
-    apply: impl FnMut(&[f32], bool) -> Result<Option<f64>, String>,
-) -> Result<Correction, String> {
+    apply: impl FnMut(&[f32], bool) -> Result<Option<f64>, LevelError>,
+) -> Result<Correction, LevelError> {
     let max_base = base
         .iter()
         .map(|&x| x.clamp(1e-3, 1.0) as f64)
@@ -7880,7 +7890,7 @@ fn measure_knobs_at(
     targets: &[(&LevelKnob, f32)],
     saved: Option<&serde_json::Value>,
     intended_preset_level: Option<f32>,
-) -> Result<lufs::Loudness, String> {
+) -> Result<lufs::Loudness, LevelError> {
     let mut s = Session::connect_lean()?;
     set_knobs(&mut s, targets, saved)?;
     if let Some(pl) = intended_preset_level {
@@ -7900,7 +7910,7 @@ fn measure_mute_floor(
     b: &LevelKnob,
     saved: Option<&serde_json::Value>,
     intended_preset_level: Option<f32>,
-) -> Result<f64, String> {
+) -> Result<f64, LevelError> {
     match measure_knobs_at(
         stimulus,
         &[(a, 0.0), (b, 0.0)],
@@ -7908,7 +7918,7 @@ fn measure_mute_floor(
         intended_preset_level,
     ) {
         Ok(l) => Ok(l.integrated_lufs),
-        Err(e) if e.contains(NO_SIGNAL_CAPTURED) => Ok(MUTE_FLOOR_SILENT_LUFS),
+        Err(e) if e.is_no_signal() => Ok(MUTE_FLOOR_SILENT_LUFS),
         Err(e) => Err(e),
     }
 }
@@ -7926,7 +7936,7 @@ pub fn mute_floor_report(
     b: &LevelKnob,
     cur_b: f32,
     stimulus: &[f32],
-) -> Result<String, String> {
+) -> Result<String, LevelError> {
     // Before the load: the field-8 read this diagnostic's scene writes need (see
     // `saved_for_scene_knobs`) — `read_saved_preset` sleeps after itself, so the load
     // session that follows still gets a spaced boundary.
@@ -8016,7 +8026,7 @@ pub fn level_scenes_rebalance(
     // B6: forwarded to `run_scene_jobs` verbatim — see its own doc.
     on_tail: impl FnMut(&str),
     cancelled: impl FnMut() -> bool,
-) -> Result<Vec<BatchedSceneOutcome>, String> {
+) -> Result<Vec<BatchedSceneOutcome>, LevelError> {
     // Same rule and same level as `level_scenes_oneshot`: every per-scene capture recalls its
     // scene, which reverts an unsaved raise — so the held or saved level is re-asserted per
     // capture, matching the prepass (see `scene_capture_level`).
@@ -8081,7 +8091,7 @@ fn rebalance_one_scene(
     // first apply, correction) — see [`LevelOptions::intended_preset_level`]. Each recalls the
     // scene, which reverts an unsaved level; asserting it on only some captures skews the secant.
     intended_preset_level: Option<f32>,
-) -> Result<SceneSolve, String> {
+) -> Result<SceneSolve, LevelError> {
     let a = &job.knobs[0];
     let b = &job.knobs[1];
     let cur_a = a.current.clamp(1e-3, 1.0);
@@ -8312,14 +8322,16 @@ pub fn level_preset_block(
     target_lufs: f64,
     opts: LevelOptions,
     mut cancelled: impl FnMut() -> bool,
-) -> Result<LevelResult, String> {
+) -> Result<LevelResult, LevelError> {
     // Pre-measure cancel: no device touch yet → return without the restore wrapper.
     if cancelled() {
-        return Err(CANCELLED.to_string());
+        return Err(LevelError::Cancelled);
     }
     let result = (|| {
         if hi <= lo {
-            return Err(format!("invalid knob bounds [{lo}, {hi}]"));
+            return Err(LevelError::Device(format!(
+                "invalid knob bounds [{lo}, {hi}]"
+            )));
         }
         // ONE field-8 read up front for a SCENE knob — every measure and the final apply
         // write through `set_knobs`, whose Scene Edit decision needs it (see
@@ -8366,7 +8378,7 @@ pub fn level_preset_block(
         let mut ca = c_lo + 0.4 * cspan;
         let mut cb = c_lo + 0.75 * cspan;
         if cancelled() {
-            return Err(CANCELLED.to_string());
+            return Err(LevelError::Cancelled);
         }
         // Floor-guarded: the first capture characterizes the preset (spread is
         // gain-invariant), so a floor read here poisons the whole secant loop.
@@ -8382,7 +8394,7 @@ pub fn level_preset_block(
         let dynamic_spread_lu = first.spread_lu();
         let mut ya = first.integrated_lufs;
         if cancelled() {
-            return Err(CANCELLED.to_string());
+            return Err(LevelError::Cancelled);
         }
         let mut yb =
             measure_knob_at(stimulus, knob, from_c(cb), &[], overlays, None)?.integrated_lufs;
@@ -8406,7 +8418,7 @@ pub fn level_preset_block(
                 break;
             }
             if cancelled() {
-                return Err(CANCELLED.to_string());
+                return Err(LevelError::Cancelled);
             }
             let ynext = measure_knob_at(stimulus, knob, from_c(cnext), &[], overlays, None)?
                 .integrated_lufs;
@@ -8428,7 +8440,7 @@ pub fn level_preset_block(
         // from the initial load, so no reload — the same Conn-3 seam the one-shot path
         // uses, just with a block knob.
         if cancelled() {
-            return Err(CANCELLED.to_string());
+            return Err(LevelError::Cancelled);
         }
         let (saved, verify_lufs) = apply_levels(
             slot,
@@ -9125,14 +9137,15 @@ mod floor_guard_tests {
     fn a_clipped_capture_is_refused_and_a_hot_transient_is_not() {
         let mut clipped = loud(-12.0, 0.2, 5.0);
         clipped.clipped = true;
+        assert_eq!(loudness_verdict(clipped).unwrap_err(), LevelError::Clipped);
         assert_eq!(
-            loudness_verdict(clipped).unwrap_err(),
-            CLIPPED_CAPTURE_ERR.to_string()
+            LevelError::Clipped.to_string(),
+            crate::error::CLIPPED_CAPTURE_ERR
         );
         assert!(loudness_verdict(loud(-12.0, 0.2, 5.0)).is_ok());
         assert_eq!(
             loudness_verdict(loud(f64::NEG_INFINITY, 0.0, 0.0)).unwrap_err(),
-            NO_SIGNAL_CAPTURED.to_string()
+            LevelError::NoSignal
         );
         // The detector itself, on a real stereo capture shape: a 3-sample apex on one channel
         // is a transient; a 4-sample run pinned at full scale is clipping.
@@ -9227,21 +9240,77 @@ mod tests {
 
     // A cancel flag already set at entry must bail at the PRE-MEASURE checkpoint —
     // before any `Session::connect`/device touch — so this runs with no hardware and
-    // returns the CANCELLED sentinel. Guards both the master-level and block-knob paths.
+    // returns `LevelError::Cancelled`. Guards both the master-level and block-knob paths.
     #[test]
     fn cancel_before_measure_short_circuits_without_device() {
         let stim = [0.0f32; 16];
         let opts = LevelOptions::default();
         assert_eq!(
             level_preset(ListIndex(0), &stim, -30.0, opts, &[], None, || true).unwrap_err(),
-            CANCELLED
+            LevelError::Cancelled
         );
         let knob = LevelKnob::PresetLevel;
         assert_eq!(
             level_preset_block(ListIndex(0), &stim, &knob, 0.05, 1.0, -30.0, opts, || true)
                 .unwrap_err(),
-            CANCELLED
+            LevelError::Cancelled
         );
+    }
+
+    // #269: a cancel whose stored-preset restore ALSO fails used to come back as
+    // "cancelled; also failed to restore …", which no longer equalled the sentinel, so every
+    // `== CANCELLED` caller treated the Stop as an ordinary failure. Typed, it stays a cancel.
+    #[test]
+    fn a_cancelled_run_whose_restore_fails_is_still_a_cancel() {
+        let mut restored = Vec::new();
+        let failing = |slot: ListIndex| -> Result<(), String> {
+            restored.push(slot);
+            Err("HID thread gone".to_string())
+        };
+        // `save: true` still restores on a cancel (it bailed before `apply_level`).
+        let err = restore_after_unsaved_error_with(
+            ListIndex(7),
+            true,
+            Err::<(), _>(LevelError::Cancelled),
+            failing,
+        )
+        .unwrap_err();
+        assert_eq!(
+            restored,
+            [ListIndex(7)],
+            "a cancel must attempt the restore"
+        );
+        assert!(
+            err.is_cancelled(),
+            "a cancel with a failed restore is still a cancel: {err:?}"
+        );
+        // The text the UI shows is unchanged from the String era.
+        assert_eq!(
+            err.to_string(),
+            "cancelled; also failed to restore stored preset: HID thread gone"
+        );
+        // And the run-end stamp leaves it a cancel: no re-amp warning appended to it.
+        let unverified = ReampOffOutcome { verified: false };
+        assert!(unverified.annotate_err(err).is_cancelled());
+
+        // A non-cancel failure on a `save: true` run skips the restore entirely …
+        let err = restore_after_unsaved_error_with(
+            ListIndex(7),
+            true,
+            Err::<(), _>(LevelError::Device("write failed".into())),
+            |_| panic!("a save run's own failure must not reload"),
+        )
+        .unwrap_err();
+        assert_eq!(err, LevelError::Device("write failed".into()));
+        // … and a silent capture on an unsaved run keeps its kind through a failed restore.
+        let err = restore_after_unsaved_error_with(
+            ListIndex(7),
+            false,
+            Err::<(), _>(LevelError::NoSignal),
+            |_| Err("gone".to_string()),
+        )
+        .unwrap_err();
+        assert!(err.is_no_signal() && !err.is_cancelled(), "{err:?}");
     }
 
     // Footswitch generic param-space secant: hits a linear response, gives up on a flat one.
@@ -10334,7 +10403,7 @@ mod tests {
         let err = set_knobs(&mut s, &[(&a, 0.6), (&b, 0.4)], None)
             .expect_err("a batch mixing scenes 1 and 2 must be refused, not silently merged");
         assert!(
-            err.contains("mixes scenes"),
+            err.to_string().contains("mixes scenes"),
             "error should name the mixed-scene cause: {err}"
         );
         assert!(
@@ -10363,7 +10432,7 @@ mod tests {
         let err = set_knobs(&mut s, &[(&base, 0.6), (&scened, 0.4)], None)
             .expect_err("a batch mixing a base target with a scene target must be refused");
         assert!(
-            err.contains("mixes base and scene"),
+            err.to_string().contains("mixes base and scene"),
             "error should name the base/scene mix: {err}"
         );
         assert!(
@@ -10588,7 +10657,7 @@ mod tests {
             let err = set_knobs(&mut s, &[(&knob, 0.9)], saved.as_ref())
                 .expect_err("a scene write with unknown overlay presence must be refused");
             assert!(
-                err.contains("overlay"),
+                err.to_string().contains("overlay"),
                 "{label}: the error must name the overlay-presence cause: {err}"
             );
             assert!(
@@ -10627,7 +10696,7 @@ mod tests {
             let err = set_knobs(&mut s, &[(&knob, 0.9)], Some(&saved))
                 .expect_err("a bypass-only overlay must refuse the scene-scoped write");
             assert!(
-                err.contains("shares") && err.contains("Base"),
+                err.to_string().contains("shares") && err.to_string().contains("Base"),
                 "{label}: the error must name the sharing and point at Base: {err}"
             );
             assert!(
@@ -10829,7 +10898,7 @@ mod tests {
                 let clipped = v > 0.40;
                 seen.borrow_mut().push((v, clipped));
                 if clipped {
-                    Err(CLIPPED_CAPTURE_ERR.to_string())
+                    Err(LevelError::Clipped)
                 } else {
                     Ok(fs_loud(-40.0 + 45.0 * f64::from(v)))
                 }
@@ -10863,7 +10932,7 @@ mod tests {
             None,
             &fs_unit_param(),
             || offs += 1,
-            |_, _| Err(NO_SIGNAL_CAPTURED.to_string()),
+            |_, _| Err(LevelError::NoSignal),
         )
         .expect("a routing clamp is a result, not an error");
         assert!(r.clamped, "{r:?}");
@@ -10881,7 +10950,7 @@ mod tests {
     /// narrow slice of its own range extrapolates a knob value PAST the silent
     /// extreme mid-correction, not at either seed. `v ≤ 0.11` collapses to a
     /// genuinely SILENT capture (not merely quiet).
-    fn plumes_level_curve(v: f32) -> Result<lufs::Loudness, String> {
+    fn plumes_level_curve(v: f32) -> Result<lufs::Loudness, LevelError> {
         const ANCHORS: [(f64, f64); 6] = [
             (0.11, -66.9),
             (0.20, -24.2),
@@ -10891,12 +10960,12 @@ mod tests {
             (1.00, -16.9),
         ];
         if f64::from(v) <= 0.11 {
-            return Err(NO_SIGNAL_CAPTURED.to_string());
+            return Err(LevelError::NoSignal);
         }
         Ok(fs_loud(piecewise_lufs(&ANCHORS, v)))
     }
 
-    /// Re-pinned to the MID-LOOP silence arm (a `NO_SIGNAL_CAPTURED` on the bracket-aware
+    /// Re-pinned to the MID-LOOP silence arm (a `LevelError::NoSignal` on the bracket-aware
     /// secant's OWN extrapolated point, not on either seed) — the law-predicted seed 2
     /// reroutes this fixture off the arm it was originally built to cover, and the
     /// `FS_MIN_SEED_GAP_LU` fix (the law-predicted seed 2's acceptance gate is now the
@@ -10980,10 +11049,10 @@ mod tests {
     /// leaving the flat pair undisturbed → the false reason-less clamp. After the fix the
     /// probe's silence becomes a pseudo point, giving the pair real slope so the secant
     /// reaches the target sitting in the 0.12–0.25 ramp.
-    fn flat_plateau_curve(v: f32) -> Result<lufs::Loudness, String> {
+    fn flat_plateau_curve(v: f32) -> Result<lufs::Loudness, LevelError> {
         let v = f64::from(v);
         if v < 0.12 {
-            return Err(NO_SIGNAL_CAPTURED.to_string());
+            return Err(LevelError::NoSignal);
         }
         if v >= 0.25 {
             return Ok(fs_loud(-17.0));
@@ -11068,10 +11137,10 @@ mod tests {
     /// must still choose the real (0.25) reading, never the synthesized one, and the pseudo
     /// point must still let the secant find the target. Provably reaches the arm: `seen[1]`
     /// (seed 2 itself) is asserted silent.
-    fn second_seed_silent_curve(v: f32) -> Result<lufs::Loudness, String> {
+    fn second_seed_silent_curve(v: f32) -> Result<lufs::Loudness, LevelError> {
         let v = f64::from(v);
         if v >= 0.60 {
-            return Err(NO_SIGNAL_CAPTURED.to_string());
+            return Err(LevelError::NoSignal);
         }
         Ok(fs_loud(-14.0 - (v / 0.60) * 44.0))
     }
@@ -11121,7 +11190,7 @@ mod tests {
     /// BELOW the −50 sentinel. A fixed-LUFS pseudo point would be the LOUDEST point in any
     /// pair it enters (slope sign inverts — the solver would walk the wrong way), so the
     /// sentinel must ride a fixed margin below the quietest real capture instead.
-    fn deep_quiet_pedal_curve(v: f32) -> Result<lufs::Loudness, String> {
+    fn deep_quiet_pedal_curve(v: f32) -> Result<lufs::Loudness, LevelError> {
         const ANCHORS: [(f64, f64); 7] = [
             (0.10, -106.9),
             (0.15, -69.8),
@@ -11132,7 +11201,7 @@ mod tests {
             (1.00, -56.9),
         ];
         if f64::from(v) <= 0.10 {
-            return Err(NO_SIGNAL_CAPTURED.to_string());
+            return Err(LevelError::NoSignal);
         }
         Ok(fs_loud(piecewise_lufs(&ANCHORS, v)))
     }
@@ -11454,7 +11523,7 @@ mod tests {
     /// `seen[2] == 1.0` (the expansion probe, not a seed).
     #[test]
     fn solve_footswitch_accepted_flat_pair_is_rescued_by_bracket_expansion() {
-        fn accepted_flat_pair_curve(v: f32) -> Result<lufs::Loudness, String> {
+        fn accepted_flat_pair_curve(v: f32) -> Result<lufs::Loudness, LevelError> {
             let v = f64::from(v);
             let l = if v <= 0.25 {
                 -24.0
@@ -11587,7 +11656,8 @@ mod tests {
             captures += 1;
             Ok(fs_loud(-20.0))
         })
-        .expect_err("an Other-classified param must refuse");
+        .expect_err("an Other-classified param must refuse")
+        .to_string();
         assert_eq!(captures, 0, "the refusal must precede every device capture");
         assert!(
             err.contains("intensity")
@@ -12874,10 +12944,20 @@ mod reamp_off_ladder_tests {
         // Engage; the final OFF; one more OFF; the Settings ON → OFF re-sync.
         assert_eq!(reamp_writes(&sim), [true, false, false, true, false]);
         assert_eq!(
-            out.annotate_err("boom".into()),
+            out.annotate_err("boom".into()).to_string(),
             format!("boom — {REAMP_STILL_ON_WARNING}")
         );
-        assert_eq!(out.annotate_err(CANCELLED.into()), CANCELLED);
+        // A cancel stays a cancel — also one whose restore failed (#269).
+        assert_eq!(
+            out.annotate_err(LevelError::Cancelled),
+            LevelError::Cancelled
+        );
+        let restore_failed = LevelError::Cancelled.with_restore(Err("HID gone".into()));
+        assert_eq!(out.annotate_err(restore_failed.clone()), restore_failed);
+        assert_eq!(
+            out.stamp(Err::<(), _>(LevelError::Cancelled), |_, _| {}),
+            Err("cancelled".to_string())
+        );
     }
 
     /// #261: a panic after an engage unwinds through the guard, which sends the OFF ladder

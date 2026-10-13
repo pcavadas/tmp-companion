@@ -174,7 +174,8 @@ pub fn probe_doctor_inject(
     let (_, before_line) = measure(
         &stim,
         "before",
-        leveller::doctor_capture(slot, None, &[], &[], &stim, Some(0.5), before_tail, false),
+        leveller::doctor_capture(slot, None, &[], &[], &stim, Some(0.5), before_tail, false)
+            .map_err(String::from),
         before_tail_ms,
     )?;
     out += &before_line;
@@ -221,7 +222,8 @@ pub fn probe_doctor_inject(
     let after_res = measure(
         &stim,
         "after",
-        leveller::doctor_capture_current(&stim, None, &[], Some(0.5), after_tail),
+        leveller::doctor_capture_current(&stim, None, &[], Some(0.5), after_tail)
+            .map_err(String::from),
         after_tail_ms,
     );
 

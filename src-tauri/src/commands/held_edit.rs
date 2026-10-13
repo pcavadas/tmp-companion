@@ -25,7 +25,7 @@ pub(crate) fn held_replace_one(
         return Ok(BulkReplaceItem {
             slot: list_index,
             name,
-            outcome: "skipped".to_string(),
+            outcome: ItemOutcome::Skipped,
             detail: "no matching block".to_string(),
         });
     }
@@ -48,7 +48,7 @@ pub(crate) fn held_replace_one(
         return Ok(BulkReplaceItem {
             slot: list_index,
             name: name.clone(),
-            outcome: "error".to_string(),
+            outcome: ItemOutcome::Error,
             detail: format!(
                 "could not confirm target preset loaded on held session (slot {:?} ≠ {list_index}, active {:?} ≠ target {name:?}) — not edited",
                 s.loaded_slot(),
@@ -73,7 +73,7 @@ pub(crate) fn held_replace_one(
             return Ok(BulkReplaceItem {
                 slot: list_index,
                 name: name.clone(),
-                outcome: "error".to_string(),
+                outcome: ItemOutcome::Error,
                 detail: format!(
                     "blocked by block-count cap ({reason}) replacing {group}/{node_id} — NOT saved"
                 ),
@@ -91,7 +91,7 @@ pub(crate) fn held_replace_one(
             return Ok(BulkReplaceItem {
                 slot: list_index,
                 name: name.clone(),
-                outcome: "error".to_string(),
+                outcome: ItemOutcome::Error,
                 detail: format!("device rejected replace of {group}/{node_id} (presetError / no nodeReplaced) — NOT saved"),
             });
         }
@@ -110,7 +110,7 @@ pub(crate) fn held_replace_one(
     Ok(BulkReplaceItem {
         slot: list_index,
         name,
-        outcome: "updated".to_string(),
+        outcome: ItemOutcome::Updated,
         detail: format!("{applied} block(s)"),
     })
 }
@@ -138,7 +138,7 @@ pub(crate) fn replace_many_held(
         let item = held_replace_one(&mut s, plan, repl, save).unwrap_or_else(|e| BulkReplaceItem {
             slot: plan.list_index,
             name: plan.name.clone(),
-            outcome: "error".to_string(),
+            outcome: ItemOutcome::Error,
             detail: e,
         });
         on_each(&item);
@@ -191,7 +191,7 @@ mod plan_identity_tests {
     fn a_preset_swapped_into_the_slot_after_discovery_is_not_edited_or_saved() {
         let sim = SimDevice::new().with_preset_json(&doc_with_id("pid-other"));
         let (item, ev) = run(sim, &plan(Some("pid-planned")));
-        assert_eq!(item.outcome, "error", "{}", item.detail);
+        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
         assert!(item.detail.contains("pid-other") && item.detail.contains("pid-planned"));
         assert!(
             !ev.iter().any(|e| matches!(
@@ -206,7 +206,7 @@ mod plan_identity_tests {
     fn the_planned_preset_is_edited_and_saved() {
         let sim = SimDevice::new().with_preset_json(&doc_with_id("pid-planned"));
         let (item, ev) = run(sim, &plan(Some("pid-planned")));
-        assert_eq!(item.outcome, "updated", "{}", item.detail);
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
         assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
     }
 

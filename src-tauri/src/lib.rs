@@ -55,6 +55,7 @@ mod doctor;
 mod e2e_server;
 #[cfg(feature = "e2e")]
 mod e2e_ui_bridge;
+mod error;
 mod footswitch;
 // Crash-safe writes for user data (`write_atomic`), and the app config dir for the CLI.
 mod fsutil;

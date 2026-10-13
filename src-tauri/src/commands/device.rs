@@ -1,4 +1,5 @@
 //! Device connect/status/list + sample enumeration Tauri commands.
+use crate::error::{AppError, DeviceError};
 use crate::*;
 
 #[derive(Serialize)]
@@ -49,10 +50,14 @@ pub(crate) struct ConnectResult {
 /// snapshot (its graph is kept current by `monitor::refresh_snapshot_graph` on
 /// every field-3 push) — or, when the monitor is mid-connect/device-absent, polls
 /// WITHOUT clearing so the monitor's own connect error / next snapshot surfaces.
+///
+/// The ONE command whose error is typed ([`AppError`], `{ kind, message }` on the wire): the
+/// frontend shows its friendly "please connect" gate for `not_connected` / `not_ready` and a
+/// red banner for everything else, keyed on `kind`, not on the message text.
 #[tauri::command]
-pub(crate) async fn connect_device(state: State<'_, AppState>) -> Result<ConnectResult, String> {
+pub(crate) async fn connect_device(state: State<'_, AppState>) -> Result<ConnectResult, AppError> {
     let arc = state.session.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<ConnectResult, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<ConnectResult, AppError> {
         if !MONITOR_ENABLED.load(SeqCst) {
             // Genuinely-disabled path (first connect / post-stop): fresh start.
             *lock_ok(&arc) = None;
@@ -81,19 +86,23 @@ pub(crate) async fn connect_device(state: State<'_, AppState>) -> Result<Connect
                 });
             }
             if let Some(e) = monitor::last_connect_error() {
-                if !e.contains("no TMP found") && !e.contains("IOHIDDeviceSetReport failed") {
+                // The gate cases (nothing plugged in, unit still booting) are the steady
+                // state while unplugged — not worth a warning every 3 s poll.
+                if !matches!(e, DeviceError::NotFound(_) | DeviceError::NotReady(_)) {
                     log::warn!("connect_device failed via monitor: {e}");
                 }
-                return Err(e);
+                return Err(e.into());
             }
             if t0.elapsed() >= deadline {
-                return Err("monitor startup timed out waiting for TMP handshake".to_string());
+                return Err(AppError::Other(
+                    "monitor startup timed out waiting for TMP handshake".to_string(),
+                ));
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     })
     .await
-    .map_err(|e| format!("connect task failed: {e}"))?
+    .map_err(|e| AppError::Other(format!("connect task failed: {e}")))?
 }
 
 // (There is intentionally no `disconnect_device` command — the app has no manual
@@ -113,7 +122,7 @@ pub(crate) async fn list_presets(state: State<'_, AppState>) -> Result<Vec<Prese
                 return Ok(snapshot.presets);
             }
             if let Some(e) = monitor::last_connect_error() {
-                return Err(e);
+                return Err(e.into());
             }
             return Err("not connected — monitor startup snapshot is not ready".to_string());
         }

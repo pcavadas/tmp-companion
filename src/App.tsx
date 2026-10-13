@@ -47,7 +47,7 @@ import { ensureLibraryScan, resetLibraryScan } from "./device/libraryScan";
 import { onDeviceDetached as resetLevelOnDetach } from "./views/level/levelRunStore";
 import { startScanAfterGraph } from "./lib/scheduleLibraryScan";
 import type { ActiveGraph } from "./lib/types";
-import { actionableError } from "./lib/connectError";
+import { connectBannerMessage, errorKind } from "./lib/connectError";
 import { errMsg } from "./lib/format";
 import { DISCLAIMER_PERM_KEY, DISCLAIMER_SESSION_KEY } from "./lib/gates";
 
@@ -132,11 +132,10 @@ export default function App() {
         startScan: ensureLibraryScan,
       });
     } catch (e) {
-      const msg = errMsg(e);
-      // A booting/just-replugged unit fails the first handshake send with a
-      // timeout — suppressed by actionableError into the friendly gate, not a
-      // red banner; the retry loop reconnects once the unit is up.
-      setConnectError(actionableError(msg));
+      // No unit, or a booting/just-replugged one whose first handshake send
+      // failed: the error's KIND routes it to the friendly gate, not a red
+      // banner; the retry loop reconnects once the unit is up.
+      setConnectError(connectBannerMessage(errorKind(e), errMsg(e)));
       if (!connectedRef.current) setStatus("disconnected");
     }
   }, []);

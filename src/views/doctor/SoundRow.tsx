@@ -38,7 +38,7 @@ import type {
   SilenceHint,
 } from "../../lib/types";
 
-/** The Doctor capture's own silent-inject error string (`leveller::NO_SIGNAL_CAPTURED`,
+/** The Doctor capture's own silent-inject error string (`error::LevelError::NoSignal`'s text,
  *  surfaced verbatim as `DoctorSoundResult.error`) — the ONE case a backup-scan silence
  *  hint refines. `FLOOR_READ_ERR` (a stimulus that never reached the device — a
  *  different failure class, not "output routing") is deliberately left alone. */

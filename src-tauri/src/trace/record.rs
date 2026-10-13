@@ -328,11 +328,11 @@ impl Recorder {
 
     /// Open a transport through `f` and wrap it. The `open` event records the attempt,
     /// a failed seize included.
-    pub(crate) fn open(
+    pub(crate) fn open<E: std::fmt::Display>(
         self: &Arc<Self>,
         backend: Backend,
-        f: impl FnOnce() -> Result<Box<dyn HidTransport>, String>,
-    ) -> Result<Box<dyn HidTransport>, String> {
+        f: impl FnOnce() -> Result<Box<dyn HidTransport>, E>,
+    ) -> Result<Box<dyn HidTransport>, E> {
         let t = Instant::now();
         let r = f();
         let sid = self.next_sid.fetch_add(1, Ordering::Relaxed);
@@ -341,7 +341,7 @@ impl Recorder {
                 sid,
                 backend,
                 ok: r.is_ok(),
-                err: r.as_ref().err().cloned(),
+                err: r.as_ref().err().map(|e| e.to_string()),
                 ms: t.elapsed().as_millis() as u64,
                 t,
             },

@@ -199,7 +199,8 @@ fn run_recipe(
     let (before, line) = measure(
         stim,
         "before",
-        leveller::doctor_capture(slot, None, &[], &[], stim, Some(0.5), before_tail_ms, false),
+        leveller::doctor_capture(slot, None, &[], &[], stim, Some(0.5), before_tail_ms, false)
+            .map_err(String::from),
         before_tail_ms as u32,
     )?;
     text += &line;
@@ -221,7 +222,8 @@ fn run_recipe(
     let after_res = measure(
         stim,
         "after",
-        leveller::doctor_capture_current(stim, None, &[], Some(0.5), after_tail_ms),
+        leveller::doctor_capture_current(stim, None, &[], Some(0.5), after_tail_ms)
+            .map_err(String::from),
         after_tail_ms as u32,
     );
     // Restore BEFORE propagating an after-capture failure: a mid-table recipe's
@@ -402,7 +404,8 @@ pub fn probe_doctor_fs(slot: ListIndex, switch: u32) -> Result<String, String> {
     let (read, line) = measure(
         &stim,
         &format!("FS{switch}"),
-        leveller::doctor_capture(slot, None, &fb, &fs_params, &stim, Some(0.5), tail, false),
+        leveller::doctor_capture(slot, None, &fb, &fs_params, &stim, Some(0.5), tail, false)
+            .map_err(String::from),
         tail_ms,
     )?;
     Ok(format!(

@@ -30,7 +30,7 @@ describe("App — manual retry shares the single-flight guard (#305)", () => {
   });
 
   it("a Scan while the mount attempt is still in flight starts no second connect", async () => {
-    let fail: (e: Error) => void = () => undefined;
+    let fail: (e: unknown) => void = () => undefined;
     mockCommands({
       connect_device: () =>
         new Promise<ConnectResult>((_res, rej) => {
@@ -49,7 +49,8 @@ describe("App — manual retry shares the single-flight guard (#305)", () => {
 
     // Once that attempt settles (no unit), a Scan connects again at once.
     await act(async () => {
-      fail(new Error("no TMP found"));
+      // The typed `connect_device` rejection (#269): nothing plugged in.
+      fail({ kind: "not_connected", message: "no TMP found" });
       await Promise.resolve();
     });
     await userEvent.click(screen.getByText("scan-now"));

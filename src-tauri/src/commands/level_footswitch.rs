@@ -1,4 +1,6 @@
 //! Footswitch (engaged-state) leveling command + job resolution.
+use super::ProgressStatus;
+use crate::error::LevelError;
 use crate::*;
 
 // ───────────────────────── Footswitch (engaged-state) leveling ─────────────────────────
@@ -40,7 +42,7 @@ pub(crate) struct FootswitchLevelJob {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FootswitchLevelProgressItem {
     switch: u32,
-    status: String, // active | done | error | cancelled
+    status: ProgressStatus,
     result: Option<leveller::FootswitchLevelResult>,
     message: Option<String>,
 }
@@ -322,7 +324,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                 // PHASE 2's own `active` carries no message, which flips the verb back.
                 let _ = on_result.send(FootswitchLevelProgressItem {
                     switch: job.switch,
-                    status: "active".to_string(),
+                    status: ProgressStatus::Active,
                     result: None,
                     message: Some(leveller::PREPASS_ACTIVE_MSG.to_string()),
                 });
@@ -382,7 +384,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
             if FOOTSWITCH_LEVEL_CANCEL.load(SeqCst) {
                 let _ = on_result.send(FootswitchLevelProgressItem {
                     switch: job.switch,
-                    status: "cancelled".into(),
+                    status: ProgressStatus::Cancelled,
                     result: None,
                     message: None,
                 });
@@ -390,7 +392,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
             }
             let _ = on_result.send(FootswitchLevelProgressItem {
                 switch: job.switch,
-                status: "active".into(),
+                status: ProgressStatus::Active,
                 result: None,
                 message: None,
             });
@@ -420,7 +422,8 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
             // the honest clamp at the loudest the sound can actually be, write nothing, and
             // keep the row's authored value exactly as the player wrote it.
             let unreachable = ceilings[idx].filter(|c| c.unreachable);
-            let outcome: Result<leveller::FootswitchLevelResult, String> = match plan {
+            // Typed, so a Stop inside the sweep stays a cancel (`is_cancelled` below).
+            let outcome: Result<leveller::FootswitchLevelResult, LevelError> = match plan {
                 _ if unreachable.is_some() => {
                     let c = unreachable.expect("checked by the guard");
                     Ok(leveller::fs_result_from_ceiling(
@@ -443,12 +446,12 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                     || job.lev_node_id.is_empty()
                     || job.lev_parameter_id.is_empty() =>
                 {
-                    Err("no leveling parameter chosen for this footswitch".to_string())
+                    Err("no leveling parameter chosen for this footswitch".into())
                 }
                 // Unreachable by construction (`plans[idx]` is `Some` for every row); an
                 // honest per-row error beats a panic inside a device run.
-                None => Err("internal: no plan built for this footswitch row".to_string()),
-                Some(footswitch::FsLevelPlan::Clamp(msg)) => Err(msg.clone()),
+                None => Err("internal: no plan built for this footswitch row".into()),
+                Some(footswitch::FsLevelPlan::Clamp(msg)) => Err(msg.clone().into()),
                 // A sibling switch already baked this (node, param, target) — reuse its
                 // result. `rep` is a JOB index (translated at alignment), so it indexes
                 // `results` directly.
@@ -458,7 +461,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                         r.switch = job.switch;
                         r
                     })
-                    .ok_or_else(|| "shared bake produced no result".to_string()),
+                    .ok_or_else(|| LevelError::from("shared bake produced no result")),
                 // Re-run anchor: for a Bake plan the block's OWN stored param value IS the
                 // engaged value (baking writes straight to the block, no footswitch-function
                 // valueA to read instead) — so the idempotency probe in `measure_footswitch`
@@ -531,7 +534,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                 }
                 Some(footswitch::FsLevelPlan::Assign { engaged }) => {
                     match resolve_footswitch_job(&ftsw, &preset, job) {
-                        Err(e) => Err(e),
+                        Err(e) => Err(e.into()),
                         Ok((value_b, spec)) => {
                             // Re-run anchor: a prior assign's stored valueA (None = fresh).
                             // Also the wet-floor anchor — the solve raises `lev_param`'s
@@ -578,13 +581,13 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                     }
                 }
             };
-            // A Stop mid-sweep surfaces as the CANCELLED sentinel, not a failure — report
-            // it like the top-of-loop check would rather than as an errored switch.
+            // A Stop mid-sweep surfaces as a cancel, not a failure — report it like the
+            // top-of-loop check would rather than as an errored switch.
             if let Err(e) = &outcome {
-                if *e == leveller::CANCELLED {
+                if e.is_cancelled() {
                     let _ = on_result.send(FootswitchLevelProgressItem {
                         switch: job.switch,
-                        status: "cancelled".into(),
+                        status: ProgressStatus::Cancelled,
                         result: None,
                         message: None,
                     });
@@ -596,16 +599,16 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                     results[idx] = Some(r.clone());
                     FootswitchLevelProgressItem {
                         switch: job.switch,
-                        status: "done".into(),
+                        status: ProgressStatus::Done,
                         result: Some(r),
                         message: None,
                     }
                 }
                 Err(e) => FootswitchLevelProgressItem {
                     switch: job.switch,
-                    status: "error".into(),
+                    status: ProgressStatus::Error,
                     result: None,
-                    message: Some(e),
+                    message: Some(e.to_string()),
                 },
             };
             let _ = on_result.send(item);

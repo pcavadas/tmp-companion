@@ -388,7 +388,7 @@ pub fn probe_held_reengage(
             let cap = audio::reamp_capture(&stim, 48_000, 800);
             let _ = s.set_reamp_mode(false);
             std::thread::sleep(Duration::from_millis(500)); // disengage settle before next cycle
-            let m = measure(cap);
+            let m = measure(cap.map_err(String::from));
             out += &format!(
                 "    cycle {i}: scene={scene} engage_echo={echo:?} integrated_lufs={m:.3}\n"
             );
@@ -407,7 +407,7 @@ pub fn probe_held_reengage(
         std::thread::sleep(Duration::from_millis(500));
         let cap = audio::reamp_capture(&stim, 48_000, 800);
         let _ = s.set_reamp_mode(false);
-        let m = measure(cap);
+        let m = measure(cap.map_err(String::from));
         out += &format!("    scene={scene} integrated_lufs={m:.3}\n");
         fresh.push(m);
     }

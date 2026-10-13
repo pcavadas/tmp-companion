@@ -7,7 +7,8 @@ use crate::session;
 use crate::session::Session;
 use crate::slot::DeviceSlot;
 use crate::{
-    discover_replace_plans, held_replace_one, replace_many_held, BulkReplaceItem, ReplArg,
+    discover_replace_plans, held_replace_one, replace_many_held, BulkReplaceItem, ItemOutcome,
+    ReplArg,
 };
 
 /// Instrumented single-node ReplaceNode diagnostic (`probe --replace-debug SLOT FROM TO`):
@@ -336,7 +337,7 @@ pub fn probe_replace_held(
             held_replace_one(&mut s, plan, &repl, commit).unwrap_or_else(|e| BulkReplaceItem {
                 slot: plan.list_index,
                 name: plan.name.clone(),
-                outcome: "error".to_string(),
+                outcome: ItemOutcome::Error,
                 detail: e,
             });
         report.push_str(&format!(

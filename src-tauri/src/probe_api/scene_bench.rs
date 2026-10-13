@@ -364,7 +364,7 @@ pub fn probe_bench_scene_leveling(
                     final_output_level: None,
                     clamped: false,
                     saved: false,
-                    failure: Some(e),
+                    failure: Some(e.to_string()),
                 };
                 emit(&row);
                 rows.push(row);

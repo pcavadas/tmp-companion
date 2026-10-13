@@ -43,6 +43,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::error::LevelError;
 use crate::lufs::IncrementalLoudness;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -1209,7 +1210,7 @@ pub fn reamp_capture(
     stimulus_mono: &[f32],
     sample_rate: u32,
     tail_ms: u64,
-) -> Result<Capture, String> {
+) -> Result<Capture, LevelError> {
     // Both branches are recorded (`crate::trace`, inert unless armed) with the backend
     // that actually ran.
     #[cfg(feature = "e2e")]
@@ -1241,11 +1242,11 @@ fn reamp_capture_real(
     stimulus_mono: &[f32],
     sample_rate: u32,
     tail_ms: u64,
-) -> Result<Capture, String> {
+) -> Result<Capture, LevelError> {
     // A Stop landed during the pre-capture settles — don't spin up the CoreAudio streams
     // just to tear them down one hop later.
     if crate::device_gate::op_aborted() {
-        return Err(crate::leveller::CANCELLED.to_string());
+        return Err(LevelError::Cancelled);
     }
     // ponytail: TMP_AUDIO_TIMING is throwaway probe instrumentation (stream cost breakdown).
     let timing = std::env::var("TMP_AUDIO_TIMING").is_ok();

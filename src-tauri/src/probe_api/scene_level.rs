@@ -59,7 +59,7 @@ fn measure_scene_knob_isolated(
     std::thread::sleep(Duration::from_millis(500));
     let cap = audio::reamp_capture(stim, 48_000, 800);
     let _ = s.set_reamp_mode(false);
-    leveller::processed_lufs(cap)
+    leveller::processed_lufs(cap).map_err(String::from)
 }
 
 /// READ-ONLY outcome proof: measure each scene's ACTUAL captured loudness from the
@@ -98,7 +98,7 @@ pub fn probe_measure_scene_levels(
         std::thread::sleep(Duration::from_millis(500));
         let cap = audio::reamp_capture(&stim, 48_000, 800);
         let _ = s.set_reamp_mode(false);
-        leveller::processed_lufs(cap)
+        leveller::processed_lufs(cap).map_err(String::from)
     };
 
     let mut out = format!(
@@ -463,6 +463,7 @@ pub fn probe_mute_floor(
     let a = &job.knobs[0];
     let b = &job.knobs[1];
     leveller::mute_floor_report(list_index, &a.knob, a.current, &b.knob, b.current, &stim)
+        .map_err(String::from)
 }
 
 /// Bisection probe (`probe --bisect-scene`): run the PROVEN-POTENT isolated

@@ -186,7 +186,7 @@ pub struct CopyJob {
 pub struct CopyApplyItem {
     pub slot: ListIndex,
     pub name: String,
-    pub outcome: String,
+    pub outcome: ItemOutcome,
     pub detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph: Option<session::ActiveGraph>,
@@ -236,7 +236,7 @@ pub(crate) async fn copy_apply(
             let item = copy_apply_one(&mut s, job, save).unwrap_or_else(|e| CopyApplyItem {
                 slot: job.list_index,
                 name: job.name.clone(),
-                outcome: "error".to_string(),
+                outcome: ItemOutcome::Error,
                 detail: e,
                 graph: None,
             });
@@ -262,7 +262,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         return Ok(CopyApplyItem {
             slot: list_index,
             name,
-            outcome: "skipped".to_string(),
+            outcome: ItemOutcome::Skipped,
             detail: "no ops".to_string(),
             graph: None,
         });
@@ -472,7 +472,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     Ok(CopyApplyItem {
         slot: list_index,
         name,
-        outcome: "updated".to_string(),
+        outcome: ItemOutcome::Updated,
         detail: format!("{total} op(s)"),
         graph,
     })
@@ -483,7 +483,7 @@ fn error_item(list_index: ListIndex, name: &str, detail: String) -> CopyApplyIte
     CopyApplyItem {
         slot: list_index,
         name: name.to_string(),
-        outcome: "error".to_string(),
+        outcome: ItemOutcome::Error,
         detail,
         graph: None,
     }

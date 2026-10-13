@@ -456,7 +456,7 @@ pub fn probe_measure_adaptive(slot: ListIndex, topology_id: &str) -> Result<Stri
             audio::reamp_measure(&stim, 48_000, audio::MeasureOpts::adaptive())
         } else {
             std::thread::sleep(std::time::Duration::from_millis(500));
-            leveller::processed_lufs(audio::reamp_capture(&stim, 48_000, 800))
+            leveller::processed_lufs(audio::reamp_capture(&stim, 48_000, 800)).map_err(String::from)
         };
         let _ = s.set_reamp_mode(false);
         Ok((lufs?, t.elapsed().as_millis()))

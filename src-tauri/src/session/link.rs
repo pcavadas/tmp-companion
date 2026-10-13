@@ -46,7 +46,7 @@ pub mod e2e_transport {
 /// offline UI tests), else the real seized [`Hid`]. Single chokepoint for both the command
 /// lane and the monitor lane, and so the one place the trace recorder (`crate::trace`)
 /// hooks in, below `TrackedHid`; each branch names its own backend.
-pub(super) fn open_transport() -> Result<Box<dyn HidTransport>, String> {
+pub(super) fn open_transport() -> Result<Box<dyn HidTransport>, DeviceError> {
     #[cfg(feature = "e2e")]
     if let Some(t) = e2e_transport::take() {
         return crate::trace::open(crate::trace::Backend::Sim, || Ok(t));

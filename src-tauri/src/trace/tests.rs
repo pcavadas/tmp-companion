@@ -65,7 +65,7 @@ impl Drop for Run {
 fn wrap(rec: &Arc<Recorder>, t: &ScriptedTransport) -> Box<dyn HidTransport> {
     let inner = t.clone();
     rec.open(Backend::Sim, move || {
-        Ok(Box::new(inner) as Box<dyn HidTransport>)
+        Ok::<_, String>(Box::new(inner) as Box<dyn HidTransport>)
     })
     .unwrap()
 }
@@ -154,7 +154,7 @@ fn unset_dir_means_no_recorder() {
     assert!(super::recorder().is_none());
     let t = ScriptedTransport::device();
     let hid = super::open(Backend::Sim, || {
-        Ok(Box::new(t.clone()) as Box<dyn HidTransport>)
+        Ok::<_, String>(Box::new(t.clone()) as Box<dyn HidTransport>)
     })
     .unwrap();
     hid.send(&proto::heartbeat()).unwrap();
@@ -359,10 +359,9 @@ fn a_firmware_reply_is_recorded_and_written_only_for_a_device_session() {
         let t = ScriptedTransport::device().with_reply_to(&req, vec![vec![fw_report.clone()]]);
         let inner = t.clone();
         let hid = rec
-            .open(
-                backend,
-                move || Ok(Box::new(inner) as Box<dyn HidTransport>),
-            )
+            .open(backend, move || {
+                Ok::<_, String>(Box::new(inner) as Box<dyn HidTransport>)
+            })
             .unwrap();
         hid.transact(&req, 20).unwrap();
         let lines = run.lines(&rec);

@@ -19,11 +19,12 @@ import type {
   FootswitchLevelApplyArgs,
   SceneLevelApplyArgs,
 } from "./commands";
-import { actionableError } from "./connectError";
+import { errorKind, isConnectGateKind } from "./connectError";
 import { errMsg } from "./format";
 import { logError } from "./log";
 import type {
   AppInfo,
+  CommandErrorKind,
   PresetEntry,
   LevelJob,
   LevelResult,
@@ -62,20 +63,26 @@ import type {
 export { isTauri } from "./log";
 
 /**
- * A rejected backend command. Every command returns `Result<_, String>`, so a
+ * A rejected backend command. Most commands return `Result<_, String>`, so a
  * rejection reaches JS as a bare STRING — and `e instanceof Error ? e.message :
  * "generic text"` at a call site silently threw the backend's real reason away.
- * `invoke` normalizes every rejection into this one `Error` subclass at the
- * seam, so a `catch` always gets an `Error` whose `message` is the backend text.
+ * A command migrated to the typed error (`error::AppError`, today `connect_device`)
+ * rejects with `{ kind, message }` instead. `invoke` normalizes BOTH shapes into
+ * this one `Error` subclass at the seam, so a `catch` always gets an `Error` whose
+ * `message` is the backend text and whose `kind` says what failed (`"other"` for a
+ * bare string). Branch on `kind`, never on the message text.
  */
 export class CommandError extends Error {
   /** The backend command that rejected (e.g. `doctor_apply`). */
   readonly cmd: string;
+  /** What failed, for a caller that presents kinds differently. */
+  readonly kind: CommandErrorKind;
 
-  constructor(cmd: string, message: string) {
+  constructor(cmd: string, message: string, kind: CommandErrorKind = "other") {
     super(message);
     this.name = "CommandError";
     this.cmd = cmd;
+    this.kind = kind;
   }
 }
 
@@ -91,14 +98,16 @@ function invokeCommand<K extends CommandName>(
   ...args: CommandArgList<K>
 ): Promise<CommandRet<K>> {
   return tauriInvoke<CommandRet<K>>(cmd, args[0]).catch((e: unknown) => {
+    // A bare string (most commands) or a typed `{ kind, message }` (see CommandError).
     const message = errMsg(e);
+    const kind = errorKind(e);
     // The 3 s auto-connect poll rejects BY DESIGN while no unit is present —
     // error-logging that class (~1 line/3 s, forever, while unplugged) would
     // churn the size-capped log and evict the diagnostics a bug report needs,
-    // so the connect gate classes `connectError` already recognizes stay quiet.
-    if (cmd !== "connect_device" || actionableError(message) !== null)
+    // so the connect gate's kinds (no unit / unit still booting) stay quiet.
+    if (cmd !== "connect_device" || !isConnectGateKind(kind))
       logError(`invoke(${cmd}) failed: ${message}`);
-    throw new CommandError(cmd, message);
+    throw new CommandError(cmd, message, kind);
   });
 }
 

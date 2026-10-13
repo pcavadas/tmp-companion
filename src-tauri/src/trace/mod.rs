@@ -71,10 +71,10 @@ fn recorder() -> Option<&'static Arc<Recorder>> {
 /// Open a device transport through `f`, recording the open and, when it succeeds, every
 /// call on the transport. `backend` names the branch that ran. Returns `f`'s transport
 /// unwrapped when the recorder is off.
-pub(crate) fn open(
+pub(crate) fn open<E: std::fmt::Display>(
     backend: Backend,
-    f: impl FnOnce() -> Result<Box<dyn HidTransport>, String>,
-) -> Result<Box<dyn HidTransport>, String> {
+    f: impl FnOnce() -> Result<Box<dyn HidTransport>, E>,
+) -> Result<Box<dyn HidTransport>, E> {
     match recorder() {
         Some(r) => r.open(backend, f),
         None => f(),
@@ -95,8 +95,8 @@ pub(crate) fn capture(
     stimulus: &[f32],
     rate: u32,
     tail_ms: u64,
-    f: impl FnOnce() -> Result<crate::audio::Capture, String>,
-) -> Result<crate::audio::Capture, String> {
+    f: impl FnOnce() -> Result<crate::audio::Capture, crate::error::LevelError>,
+) -> Result<crate::audio::Capture, crate::error::LevelError> {
     let Some(r) = recorder() else {
         return f();
     };
@@ -109,7 +109,7 @@ pub(crate) fn capture(
             channels: c.channels,
             sample_rate: c.sample_rate,
         }),
-        Err(e) => Err(e.clone()),
+        Err(e) => Err(e.to_string()),
     };
     r.capture(capture::CaptureJob {
         backend: backend.as_str(),

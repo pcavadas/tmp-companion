@@ -23,7 +23,7 @@ impl Session {
     /// with the default pump windows (no preset-data JSON fetch). For
     /// measure/capture-only connections, prefer `connect_lean()` below.
     pub fn connect() -> Result<Session, String> {
-        Self::connect_inner(false, None, false, false)
+        Ok(Self::connect_inner(false, None, false, false)?)
     }
 
     /// `connect` with the handshake pump windows trimmed ×0.25 (~660 → ~165 ms).
@@ -36,13 +36,13 @@ impl Session {
     /// ftsw edits) were NOT part of that A/B — do not widen the lean set without a
     /// dedicated write-lands HW bisect.
     pub fn connect_lean() -> Result<Session, String> {
-        Self::connect_inner(false, None, false, true)
+        Ok(Self::connect_inner(false, None, false, true)?)
     }
 
     /// Like `connect`, but the handshake also waits out the drain's
     /// `currentPresetDataChanged` (field 3) JSON (adds ~2 s). Use for block enumeration (`current_preset_blocks`), not leveling.
     pub fn connect_for_discovery() -> Result<Session, String> {
-        Self::connect_inner(true, None, false, false)
+        Ok(Self::connect_inner(true, None, false, false)?)
     }
 
     /// AC1 spike: run the handshake with an extra slot-addressed read
@@ -50,7 +50,12 @@ impl Session {
     /// data requests). The reply (presetDataChanged 9 or exportPresetResponse 116) is
     /// then harvested from the accumulated streams by the caller.
     pub fn connect_with_burst_request(extra: &[u8]) -> Result<Session, String> {
-        Self::connect_inner(false, Some(extra.to_vec()), false, false)
+        Ok(Self::connect_inner(
+            false,
+            Some(extra.to_vec()),
+            false,
+            false,
+        )?)
     }
 
     /// Slot-read investigation (`probe --slotread-x`): connect with the
@@ -106,7 +111,11 @@ impl Session {
     /// `extra_burst` slot (which fires last). INFERRED from the same queueing
     /// measured on a delayed `currentPresetInfoRequest`; `currentFwRequest` itself
     /// was not measured.
-    pub fn connect_with_firmware() -> Result<Session, String> {
+    ///
+    /// Typed, because its caller tells the failures apart: the monitor's stored connect error
+    /// is what `connect_device` reports, and the frontend shows "please connect" for a
+    /// [`DeviceError::NotFound`] or [`DeviceError::NotReady`] instead of an error.
+    pub fn connect_with_firmware() -> Result<Session, DeviceError> {
         let mut s = Self::connect_inner(false, None, true, false)?;
         s.fw_version = s
             .streams()
@@ -120,7 +129,7 @@ impl Session {
         extra_burst: Option<Vec<u8>>,
         request_firmware: bool,
         lean: bool,
-    ) -> Result<Session, String> {
+    ) -> Result<Session, DeviceError> {
         let hid = open_transport()?;
         let mut s = Session {
             hid: TrackedHid::new(hid),
@@ -128,7 +137,11 @@ impl Session {
             fw_version: None,
             handshake_done: false,
         };
-        s.handshake(fetch_preset_json, extra_burst, request_firmware, lean)?;
+        // A handshake whose report write the OS refused is the not-ready unit (see
+        // `hid::open_device_failure`), told apart by a counter rather than the message.
+        let refusals = crate::hid::report_write_refusals();
+        s.handshake(fetch_preset_json, extra_burst, request_firmware, lean)
+            .map_err(|e| crate::hid::open_device_failure(e, refusals))?;
         Ok(s)
     }
 
