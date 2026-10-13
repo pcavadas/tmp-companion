@@ -1,9 +1,12 @@
 // Guards the Models catalog ingest against the device-authoritative counts.
 // The unified catalog (tmp-model-guide.json) carries all firmware versions with
-// inline `since` fields. A drift here means the source JSON changed or the
-// ingest mapping regressed.
+// inline `since` fields; the frontend bundles its slim projection
+// (tmp-model-guide.slim.json, from scripts/slim_model_guide.py). A drift here means
+// the source JSON changed, the slim file is stale, or the ingest mapping regressed.
 
 import { describe, it, expect } from "vitest";
+import fullGuide from "../models/tmp-model-guide.json";
+import slimGuide from "../models/tmp-model-guide.slim.json";
 import { BlockArt } from "../ui/BlockArt";
 import {
   MODELS,
@@ -73,16 +76,6 @@ describe("Models catalog ingest", () => {
     });
   });
 
-  it("carries a real image tile path (null only for blocks with no tile in the rcc bundle)", () => {
-    const nullImage = MODELS.filter((r) => r.image === null);
-    for (const r of MODELS) {
-      if (r.image !== null) {
-        expect(r.image, r.cid).toMatch(/^tmp_blocks\/.+\.png$/);
-      }
-    }
-    expect(nullImage.length).toBeLessThan(10);
-  });
-
   it("keeps amps in BOTH Combo Amps and Amp Heads (no de-dupe)", () => {
     const bid = "ACD_TweedDeluxe";
     const cats = MODELS.filter((r) => r.bid === bid)
@@ -92,15 +85,13 @@ describe("Models catalog ingest", () => {
     expect(new Set(MODELS.map((r) => r.cid)).size).toBe(TOTAL);
   });
 
-  it("half-stacks resolve a paired-cabinet tile for the composite", () => {
+  it("counts the half_stack-form records (head-over-cab composites)", () => {
     const hs = MODELS.filter((r) => r.form === "half_stack");
     // 24 half_stack-FORM records: the 18 in the "Half Stacks" category + 6
     // head/cab stacks filed under other categories (incl. the '66 Flip Top
     // Ampeg B-15, a head-on-1x15 stack that stays under Bass Amps).
     expect(hs).toHaveLength(24);
     expect(MODELS.filter((r) => r.cat === "Half Stacks")).toHaveLength(18);
-    for (const r of hs)
-      expect(r.pcabImage, r.cid).toMatch(/^tmp_blocks\/Cabinets\/.+\.png$/);
   });
 
   it("every Microphone resolves to mic art by name (bid is null — must not fall through to the generic pedal icon)", () => {
@@ -309,5 +300,64 @@ describe("Firmware 1.8 catalog additions", () => {
       );
       expect(container.querySelector("svg"), bid).not.toBeNull();
     });
+  });
+});
+
+// The frontend bundles a SLIM projection of the generated guide (#315): the full
+// guide's dead fields (`image` — vendor PNG tile paths — plus the provenance notes)
+// cost parse time on every start. The slim file is derived by
+// `scripts/slim_model_guide.py`; these gate it against the full guide so a regen
+// without a re-run fails here instead of shipping a stale catalog.
+describe("slim catalog (tmp-model-guide.slim.json) mirrors the full guide", () => {
+  type Row = Record<string, unknown>;
+  const full = fullGuide.blocks as Row[];
+  const slim = slimGuide.blocks as Row[];
+
+  it("has the same rows in the same order", () => {
+    expect(slim.map((r) => r.catalog_id)).toEqual(
+      full.map((r) => r.catalog_id),
+    );
+  });
+
+  it("carries every kept field with the full guide's exact value", () => {
+    slim.forEach((row, i) => {
+      const src = full[i];
+      for (const [k, v] of Object.entries(row)) {
+        expect(k in src, `${String(row.catalog_id)}.${k}`).toBe(true);
+        expect(v, `${String(row.catalog_id)}.${k}`).toEqual(src[k]);
+      }
+    });
+  });
+
+  it("keeps every field the ingest reads, wherever the full guide has it", () => {
+    // Mirrors `RawBlock` in catalog.ts and KEEP in scripts/slim_model_guide.py.
+    const read = [
+      "block_id",
+      "block_name",
+      "strip_name",
+      "available",
+      "since",
+      "catalog_id",
+      "real_unit",
+      "category",
+      "subcategory",
+      "effect_type",
+      "form",
+      "channels",
+      "convolution",
+    ];
+    full.forEach((src, i) => {
+      for (const k of read) {
+        expect(k in slim[i], `${String(src.catalog_id)}.${k}`).toBe(k in src);
+      }
+    });
+  });
+
+  it("drops the vendor PNG tile paths (never bundled — Fender IP)", () => {
+    for (const row of slim) {
+      expect("image" in row, String(row.catalog_id)).toBe(false);
+      expect("pcabImage" in row, String(row.catalog_id)).toBe(false);
+    }
+    expect(JSON.stringify(slimGuide)).not.toMatch(/\.png/);
   });
 });

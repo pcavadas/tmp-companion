@@ -12,9 +12,10 @@ where the hardware says "Sapphire OD".
 
 The catalog is GENERATED (see `.claude/rules/models-catalog.md`), and its generator
 (`expand_catalog.py`) lives outside this repo — so a regen would silently drop
-`strip_name` again. Run this after any regen to put it back, then re-run
+`strip_name` again. Run this after any regen to put it back, then re-derive the
+frontend's slim catalog (`python3 scripts/slim_model_guide.py`) and re-run
 `bun run test` (the strip-name gate in `src/__tests__/leveling-order.test.ts` is what
-catches the drop).
+catches the drop; `models-catalog.test.tsx` catches a stale slim file).
 
 USAGE
 -----
@@ -120,7 +121,10 @@ def main() -> int:
     print(f"no CDD record:           {sorted(skipped_unknown)}")
     print(f"identity in doubt:       {sorted(skipped_mismatch)}")
     print(f"written: {GUIDE}")
-    print("now run: bunx prettier --write src/models/tmp-model-guide.json && bun run test")
+    print(
+        "now run: bunx prettier --write src/models/tmp-model-guide.json"
+        " && python3 scripts/slim_model_guide.py && bun run test"
+    )
     return 0
 
 

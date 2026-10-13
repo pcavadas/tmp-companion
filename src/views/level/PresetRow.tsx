@@ -12,6 +12,8 @@
 // "—— empty ——" and aren't interactive. Clicking a row does NOT recall it on the
 // unit — preset recall is owned by Pro Control / the footswitches, not this list.
 
+import { memo } from "react";
+
 import { useTheme } from "../../theme/ThemeContext";
 import { Button, Checkbox } from "../../ui/primitives";
 import { Icon } from "../../ui/Icon";
@@ -27,6 +29,7 @@ import {
   sceneKeyOf,
 } from "./leveling";
 import { SceneRow } from "./SceneRow";
+import { presetRowPropsEqual } from "./presetRowEqual";
 import { RowCpu } from "./RowCpu";
 import type { PresetRow as PresetRowData } from "../PresetList";
 import type { FootswitchInfo, SceneInfo } from "../../lib/types";
@@ -49,12 +52,16 @@ export interface PresetRowProps {
   footswitches: FootswitchInfo[] | undefined;
   /** Whether this preset's drawer is expanded. */
   expanded: boolean;
-  /** The full selection set (scene keys). */
+  /** The full selection set (scene keys). Only this row's own keys matter to its
+   *  memo (`presetRowPropsEqual`, in `presetRowEqual.ts`), so a toggle elsewhere
+   *  doesn't re-render it. */
   sel: Set<string>;
   /** Ticked WHOLE during the load (scenes not yet known) — drives the checkbox then. */
   pendingWhole: boolean;
   /** Real per-preset CPU % (from the startup backup graph); null hides the readout. */
   cpu: number | null;
+  /** The three toggles must be STABLE (`usePresetData`'s are `useCallback([])`) —
+   *  a fresh function per render defeats the row's `memo`. */
   onTogglePreset: (slot: number) => void;
   onToggleExpand: (slot: number) => void;
   onToggleKey: (key: string) => void;
@@ -63,7 +70,7 @@ export interface PresetRowProps {
   selectTitle?: string;
 }
 
-export function PresetRow({
+export const PresetRow = memo(function PresetRow({
   row,
   active,
   ready,
@@ -340,7 +347,7 @@ export function PresetRow({
       )}
     </>
   );
-}
+}, presetRowPropsEqual);
 
 function metaStyle(
   t: ReturnType<typeof useTheme>["t"],

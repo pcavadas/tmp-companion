@@ -14,7 +14,14 @@
 // to the signal-chain strip). Logic + grouping ported from the design prototype
 // (catalog-models.jsx); styling reads the app's theme tokens.
 
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  memo,
+  useDeferredValue,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 
 import { useTheme } from "../theme/ThemeContext";
 import { plainButton, type ThemeTokens } from "../theme/tokens";
@@ -191,7 +198,16 @@ interface ModelCardProps {
   onPick: (r: ModelRecord) => void;
 }
 
-function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
+// Memoized: the wall holds every model (~350 procedural-SVG cards), and its props are
+// stable — `t` is the module-constant theme, `onPick` is the `setPick` setter — so a
+// pick re-renders only the cards whose `selected` flipped, not the whole wall.
+const ModelCard = memo(function ModelCard({
+  r,
+  t,
+  selected,
+  icon,
+  onPick,
+}: ModelCardProps) {
   const [hov, setHov] = useState(false);
   const clamp2: CSSProperties = {
     display: "-webkit-box",
@@ -279,7 +295,7 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
       </div>
     </button>
   );
-}
+});
 
 // ── detail bar ────────────────────────────────────────────────────────────
 
@@ -491,6 +507,9 @@ export interface CatalogViewProps {
 export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
   const { t } = useTheme();
   const [q, setQ] = useState("");
+  // The wall filters on the DEFERRED query, so each keystroke paints the input
+  // first and the (expensive) card wall catches up at transition priority.
+  const deferredQ = useDeferredValue(q);
   const [sel, setSel] = useState<Sel>({ cat: "all", sub: null });
   const [et, setEt] = useState<string | null>(null);
   const [routing, setRouting] = useState<Routing>("all");
@@ -523,7 +542,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
   }, [sel]);
 
   const shown = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+    const needle = deferredQ.trim().toLowerCase();
     return inScope.filter((r) => {
       if (et && r.et !== et) return false;
       if (routing === "mono" && r.ch !== "mono") return false;
@@ -532,7 +551,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
       if (needle && !r.search.includes(needle)) return false;
       return true;
     });
-  }, [inScope, et, routing, convOnly, q]);
+  }, [inScope, et, routing, convOnly, deferredQ]);
 
   const groups: Group[] = useMemo(() => {
     // CPU sort overrides grouping — one flat, ranked "By CPU usage" wall.
@@ -948,7 +967,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
                 color: t.mutedInk,
               }}
             >
-              No models match {q ? `“${q}”` : "these filters"}.
+              No models match {deferredQ ? `“${deferredQ}”` : "these filters"}.
             </div>
           ) : (
             groups.map((g) => (

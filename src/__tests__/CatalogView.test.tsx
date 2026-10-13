@@ -9,7 +9,23 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { CatalogView } from "../views/CatalogView";
+import { MODELS, displayName, type ModelRecord } from "../models/catalog";
 import { renderWithTheme } from "./testKit";
+
+// Render probe for the memoized model wall: every ModelTile (and the detail bar)
+// resolves its art through `resolveBlockArt`, so the ids it is called with name
+// exactly which cards rendered. Delegates to the real resolver.
+const { artCalls } = vi.hoisted(() => ({ artCalls: [] as string[] }));
+vi.mock("../models/blockArt", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../models/blockArt")>();
+  return {
+    ...actual,
+    resolveBlockArt: (bid: string) => {
+      artCalls.push(bid);
+      return actual.resolveBlockArt(bid);
+    },
+  };
+});
 
 // Each test renders the full model wall (hundreds of BlockArt SVGs) and a search/
 // facet/sort interaction re-renders it several times over; that's routinely
@@ -109,5 +125,37 @@ describe("CatalogView — search + facets + sort", () => {
     // Second click flips to ascending.
     await user.click(screen.getByText("CPU ↓"));
     expect(screen.getByText("CPU ↑")).toBeInTheDocument();
+  });
+});
+
+describe("regression: picking a model card re-renders only the affected cards (#315)", () => {
+  // Two plain (non-half-stack) models whose block_id appears on ONE row only, so a
+  // resolver call names exactly one card.
+  const once = (r: ModelRecord) =>
+    r.bid !== null &&
+    r.form !== "half_stack" &&
+    MODELS.filter((m) => m.bid === r.bid).length === 1;
+  const picks = MODELS.filter(once).slice(0, 2);
+  const card = (r: ModelRecord) =>
+    screen.getByTitle(`${displayName(r)} — ${r.real}`);
+
+  it("a pick redraws the picked card (+ the detail bar), not the whole wall", async () => {
+    const [a, b] = picks;
+    const user = userEvent.setup();
+    renderCatalog();
+    // The whole wall drew once — the probe sees every card.
+    expect(artCalls.length).toBeGreaterThan(300);
+
+    artCalls.length = 0;
+    await user.click(card(a));
+    expect(card(a)).toHaveAttribute("aria-pressed", "true");
+    expect(new Set(artCalls)).toEqual(new Set([a.bid]));
+
+    // Moving the pick redraws the old and the new card only.
+    artCalls.length = 0;
+    await user.click(card(b));
+    expect(card(a)).toHaveAttribute("aria-pressed", "false");
+    expect(card(b)).toHaveAttribute("aria-pressed", "true");
+    expect(new Set(artCalls)).toEqual(new Set([a.bid, b.bid]));
   });
 });

@@ -1,7 +1,9 @@
 // src/ui/BlockArt.tsx — the public block-art engine: BlockArt (single icon)
 // + HalfStackArt (head-over-cab). Dispatches an icon to its form-factor renderer
 // (formFor → amps/cabs/mics/forms/pedals). The procedural-SVG bodies + shared
-// helpers live under ./blockart/.
+// helpers live under ./blockart/. Both are pure functions of their props (plus the
+// theme context), so both are `React.memo`'d: a Catalog wall or a chain strip that
+// re-renders for an unrelated reason skips redrawing every procedural SVG.
 import React from "react";
 import { useTheme } from "../theme/ThemeContext";
 import { formFor, toneOf } from "./blockart/shared";
@@ -83,7 +85,7 @@ interface HalfStackDims {
   H: number;
 }
 
-function HalfStackArt({
+const HalfStackArt = React.memo(function HalfStackArt({
   topIcon,
   topTone,
   topVariant,
@@ -145,7 +147,7 @@ function HalfStackArt({
       </g>
     </svg>
   );
-}
+});
 
 // Catalog form-factor → amp chassis icon. The SAME amp block_id is catalogued as
 // both a combo and a head (different `form`, identical icon), so the icon alone
@@ -156,7 +158,7 @@ const AMP_FORM_ICON: Record<"combo" | "head" | "half_stack", IconId> = {
   half_stack: "stack",
 };
 
-function BlockArt({
+const BlockArt = React.memo(function BlockArt({
   size = 56,
   label = true,
   icon,
@@ -251,7 +253,7 @@ function BlockArt({
       )}
     </div>
   );
-}
+});
 
 export { BlockArt, HalfStackArt };
 

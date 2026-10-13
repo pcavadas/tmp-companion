@@ -4,7 +4,7 @@
 // nothing to apply). The apply path writes LIVE (unsaved) and the save is gated on
 // the backup acknowledgment, mirroring the Leveling / Copy save-disclaimer model.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
@@ -133,6 +133,13 @@ export function PrescriptionCard({
   // remount without harm (the ack must be re-ticked, which is the safe side).
   const [error, setError] = useState<string | null>(null);
   const [acked, setAcked] = useState(false);
+  // Memoized on the chain preview so `SignalChainView`'s `React.memo` holds: every
+  // apply-lock change re-renders every card, and an inline `chainGraph(...)` would
+  // hand the strip a fresh graph object (and redraw all its block art) each time.
+  const chainStrip = useMemo(
+    () => (rx.chain ? chainGraph(rx.chain) : null),
+    [rx.chain],
+  );
 
   // The card can unmount while an edit sits applied-but-unsaved on the device
   // (a tab switch, or a Match card whose reference stops matching) — with no
@@ -422,9 +429,9 @@ export function PrescriptionCard({
               {rx.cpuNote}
             </div>
           )}
-          {rx.chain && (
+          {chainStrip && (
             <div style={{ marginTop: t.space5 }}>
-              <SignalChainView size="sm" graph={chainGraph(rx.chain)} />
+              <SignalChainView size="sm" graph={chainStrip} />
             </div>
           )}
           {rx.kind === "advisory" && (

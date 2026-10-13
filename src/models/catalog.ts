@@ -1,12 +1,15 @@
 // src/models/catalog.ts — the Models page data layer.
 //
-// Ingests the unified block catalog (tmp-model-guide.json) into the flat record
-// list + taxonomy that drives the Models tab. The catalog carries all fields
-// including `since` (introducing firmware version). We keep only `available` rows
-// and map each to the documented record shape. Amps intentionally appear twice
-// (combo + head) — different `cid`/`cat`, never de-duped.
+// Ingests the unified block catalog into the flat record list + taxonomy that drives
+// the Models tab. It reads `tmp-model-guide.slim.json` — the full generated guide
+// (`tmp-model-guide.json`, which Rust also embeds) projected onto just the fields
+// `RawBlock` names, by `scripts/slim_model_guide.py`; re-run that after any change to
+// the full guide (`models-catalog.test.tsx` fails on drift). The catalog carries
+// `since` (introducing firmware version). We keep only `available` rows and map each
+// to the documented record shape. Amps intentionally appear twice (combo + head) —
+// different `cid`/`cat`, never de-duped.
 
-import catalog from "./tmp-model-guide.json";
+import catalog from "./tmp-model-guide.slim.json";
 import { DASH } from "../lib/format";
 import { LINEAGE_BY_BID } from "./lineage";
 import { cpuForBid } from "./cpu";
@@ -18,7 +21,8 @@ export type Channels = "mono" | "stereo";
 export type Form =
   "combo" | "head" | "half_stack" | "product" | "loop" | "ir" | "ext_speaker";
 
-/** A single raw row from the Model Guide export (`blocks[]`). */
+/** A single raw row from the slim Model Guide export (`blocks[]`). Every field here
+ *  must be in `scripts/slim_model_guide.py`'s KEEP list, or the slim JSON drops it. */
 interface RawBlock {
   block_id: string | null;
   block_name: string;
@@ -32,8 +36,6 @@ interface RawBlock {
   subcategory: string | null;
   effect_type: string | null;
   form: string;
-  paired_cabinet: string | null;
-  image: string | null;
   channels: string;
   convolution?: boolean;
   since?: string;
@@ -57,10 +59,9 @@ export interface ModelRecord {
   conv: boolean; // Reverb only: convolution engine
   cpu: number | null; // REAL DSP cost (% of preset budget); null for mics / FX-loop markers
   since: string; // introducing firmware version ("1.0" launch default; from catalog JSON)
-  image: string | null; // web path to the real artwork tile (public/); null for 1.8 (no tiles yet)
-  /** half_stack only: the paired cabinet's tile path, for the stacked composite. */
-  pcabImage: string | null;
-  lineage: string; // brand-lineage label (carried over; DASH for mics)
+  /** Brand-lineage label (DASH for mics), from `lineage.ts` — not the catalog JSON.
+   *  No view displays it; it is kept because SEARCH needs it ("vox", "boss"). */
+  lineage: string;
   /** precomputed lowercased search haystack (name·real·et·sub·cat·lineage). */
   search: string;
 }
@@ -192,8 +193,6 @@ export const CAB_SIZE_ORDER = [
 
 // ── Ingest ────────────────────────────────────────────────────────────────
 
-const CABINET_TILE_DIR = "tmp_blocks/Cabinets/";
-
 function toRecord(r: RawBlock): ModelRecord {
   const lineage =
     (r.block_id != null ? LINEAGE_BY_BID[r.block_id] : null) ?? DASH;
@@ -211,14 +210,6 @@ function toRecord(r: RawBlock): ModelRecord {
     conv: r.convolution === true,
     cpu: cpuForBid(r.block_id),
     since: r.since ?? "1.0",
-    image: r.image,
-    // Half-stacks render the head tile (r.image) stacked over the paired
-    // cabinet's own tile, mirroring the device. The extracted cab tile is named
-    // by its block_id under Cabinets/.
-    pcabImage:
-      r.form === "half_stack" && r.paired_cabinet
-        ? CABINET_TILE_DIR + r.paired_cabinet + ".png"
-        : null,
     lineage,
     search:
       `${r.block_name} ${r.real_unit} ${r.effect_type ?? ""} ${r.subcategory ?? ""} ${r.category} ${lineage}`.toLowerCase(),
