@@ -290,7 +290,7 @@ pub fn run() {
             log::info!("TMP Companion {} started", env!("CARGO_PKG_VERSION"));
             // Dock icon for `tauri dev` (the raw binary has no bundle .icns).
             #[cfg(target_os = "macos")]
-            dock::set_dock_icon();
+            crate::dock::set_dock_icon();
             // Hotplug watcher: attach/detach events + dead-seize cleanup.
             use tauri::Manager;
             let session = app.state::<AppState>().session.clone();
