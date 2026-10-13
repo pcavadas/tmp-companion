@@ -16,6 +16,7 @@
 import { useContext } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { blockArtTile } from "../../models/blockArt";
@@ -169,19 +170,24 @@ export function FlatLevelPick({
           onClose={close}
         >
           {pseudoLabel != null && (
-            <div
+            <button
+              type="button"
+              role="option"
+              aria-selected={handle == null}
               onClick={(e) => {
                 e.stopPropagation();
                 onHandleChange(null);
                 close();
               }}
               style={{
+                ...plainButton(),
+                width: "100%",
+                textAlign: "left",
                 display: "flex",
                 alignItems: "center",
                 gap: t.space5,
                 padding: `${String(t.space3)}px ${String(t.space4)}px`,
                 borderRadius: 5,
-                cursor: "pointer",
                 background: handle == null ? t.accentSoft : "transparent",
               }}
               onMouseEnter={(e) => {
@@ -211,7 +217,7 @@ export function FlatLevelPick({
                   />
                 </span>
               )}
-            </div>
+            </button>
           )}
 
           {candidates.status === "loading" && (
@@ -243,7 +249,11 @@ export function FlatLevelPick({
             if (!first) return null;
             const art = blockArtTile(first.fenderId);
             return (
-              <div key={blockKeyOf(first)}>
+              <div
+                key={blockKeyOf(first)}
+                role="group"
+                aria-label={art.fullName ?? art.name}
+              >
                 {blocks.length > 1 && (
                   <div
                     style={{

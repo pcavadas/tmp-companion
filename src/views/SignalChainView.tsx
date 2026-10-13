@@ -4,6 +4,7 @@
 
 import React from "react";
 import { useTheme } from "../theme/ThemeContext";
+import { plainButton } from "../theme/tokens";
 
 import {
   BlockArt,
@@ -187,26 +188,15 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
             : "transparent",
       };
 
-  return (
-    <div
-      role={interactive ? "button" : undefined}
-      // e2e hook: a stable selector for an interactive (Copy-path) block tile, carrying the
-      // block's MODEL id so a test can match it model-exactly against candidates (the
-      // display label differs between the tile and the candidate chip). Absent on the
-      // non-interactive Level strip (no behavior/appearance change).
-      data-block-tile={interactive ? (b.model ?? b.name) : undefined}
-      // Hover shows the fuller Pro-Control model name; the visible caption stays terse.
-      title={b.fullName}
-      onClick={b.onClick}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        width: dims.w,
-        flexShrink: 0,
-        opacity: byp ? 0.34 : 1,
-        cursor: interactive ? "pointer" : undefined,
-      }}
-    >
+  const tileStyle: React.CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    width: dims.w,
+    flexShrink: 0,
+    opacity: byp ? 0.34 : 1,
+  };
+  const content = (
+    <>
       <div
         style={{
           flex: 1,
@@ -338,6 +328,28 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
           {b.name}
         </span>
       </div>
+    </>
+  );
+  // Interactive (Copy) tiles are real buttons; the Level strip's tiles stay plain divs.
+  // e2e hook: `data-block-tile` is a stable selector for an interactive (Copy-path) block
+  // tile, carrying the block's MODEL id so a test can match it model-exactly against
+  // candidates (the display label differs between the tile and the candidate chip). Absent
+  // on the non-interactive Level strip (no behavior/appearance change). Hover (`title`)
+  // shows the fuller Pro-Control model name; the visible caption stays terse.
+  return b.onClick ? (
+    <button
+      type="button"
+      data-block-tile={b.model ?? b.name}
+      title={b.fullName}
+      aria-pressed={selected}
+      onClick={b.onClick}
+      style={plainButton(tileStyle)}
+    >
+      {content}
+    </button>
+  ) : (
+    <div title={b.fullName} style={tileStyle}>
+      {content}
     </div>
   );
 }

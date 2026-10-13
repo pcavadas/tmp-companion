@@ -120,7 +120,7 @@ function tile(name: string, model: string): HTMLElement {
 
 function undoButton(): HTMLElement {
   const el = document.querySelector<HTMLElement>(
-    '[title^="Undo / redo"] [role="button"]',
+    '[title^="Undo / redo"] button[aria-label="Undo"]',
   );
   if (!el) throw new Error("no undo button");
   return el;

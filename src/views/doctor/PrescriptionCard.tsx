@@ -337,7 +337,7 @@ export function PrescriptionCard({
           <div style={{ display: "flex", gap: t.space4, flexShrink: 0 }}>
             <Button
               variant="ghost"
-              small
+              size="sm"
               disabled={busy}
               onClick={() => {
                 void runDiscard();
@@ -347,7 +347,7 @@ export function PrescriptionCard({
             </Button>
             <Button
               variant="primary"
-              small
+              size="sm"
               icon="save"
               disabled={!acked || busy}
               onClick={() => {
@@ -436,7 +436,7 @@ export function PrescriptionCard({
             <div style={{ marginTop: t.space8 }}>
               <Button
                 variant="primary"
-                small
+                size="sm"
                 icon={busy ? undefined : "check"}
                 disabled={busy || lockedByOther}
                 onClick={() => {

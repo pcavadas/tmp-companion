@@ -9,6 +9,7 @@
 import type { MouseEvent, RefObject } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
 import { pickTriggerBorder } from "./pickTriggerChrome";
 
@@ -20,7 +21,7 @@ export interface PickTriggerProps {
   warn: boolean;
   label: string;
   title: string;
-  onClick: (e: MouseEvent) => void;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
 }
 
 export function PickTrigger({
@@ -37,10 +38,16 @@ export function PickTrigger({
       ref={triggerRef}
       style={{ position: "relative", width: "100%", minWidth: 0 }}
     >
-      <div
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
         onClick={onClick}
         title={title}
         style={{
+          ...plainButton(),
+          width: "100%",
+          textAlign: "left",
           display: "flex",
           alignItems: "center",
           gap: t.space3,
@@ -50,7 +57,6 @@ export function PickTrigger({
           border: pickTriggerBorder(t, { open, warn }),
           borderRadius: 6,
           background: t.bg,
-          cursor: "pointer",
           whiteSpace: "nowrap",
           overflow: "hidden",
         }}
@@ -81,7 +87,7 @@ export function PickTrigger({
           size={11}
           stroke={open ? t.accentDeep : t.faint}
         />
-      </div>
+      </button>
     </div>
   );
 }

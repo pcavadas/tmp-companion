@@ -145,7 +145,7 @@ export function RunPage({
       footerLeft={
         <Button
           variant="ghost"
-          small
+          size="sm"
           disabled={done}
           onClick={() => {
             setConfirm(true);
@@ -159,7 +159,7 @@ export function RunPage({
         stopped ? (
           <Button
             variant="primary"
-            small
+            size="sm"
             onClick={onComplete}
             style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
           >

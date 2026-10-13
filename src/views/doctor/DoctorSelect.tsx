@@ -211,7 +211,7 @@ function DoctorSelectFooter({
       }
       right={
         ready ? (
-          <Button variant="primary" small icon="wave" onClick={onCheck}>
+          <Button variant="primary" size="sm" icon="wave" onClick={onCheck}>
             {`Check ${String(m)} sound${m === 1 ? "" : "s"}…`}
           </Button>
         ) : (

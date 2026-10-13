@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { Button } from "../../ui/primitives";
 import { SlotLabel } from "../../ui/SlotLabel";
 
 export interface PresetGroup<T> {
@@ -108,16 +109,19 @@ export function PresetGroupRow({
         background: open ? t.accentSoft : "transparent",
       }}
     >
-      <div
+      <Button
+        variant="bare"
+        aria-expanded={open}
         onClick={onToggle}
         data-preset-group={slot}
         style={{
+          width: "100%",
+          textAlign: "left",
           display: "flex",
           alignItems: "center",
           gap: t.space6,
           height: 44,
           padding: `0 ${String(t.space5)}px`,
-          cursor: "pointer",
         }}
       >
         <span
@@ -179,7 +183,7 @@ export function PresetGroupRow({
             strokeWidth={1.6}
           />
         </span>
-      </div>
+      </Button>
       {open && (
         <div
           style={{

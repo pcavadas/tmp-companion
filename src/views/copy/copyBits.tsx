@@ -3,6 +3,7 @@
 
 import type { ReactNode } from "react";
 import { useTheme } from "../../theme/ThemeContext";
+import { Button } from "../../ui/primitives";
 import { Tag } from "../../ui/Tag";
 
 export interface StepBadgeProps {
@@ -48,24 +49,20 @@ export interface MiniLinkProps {
 export function MiniLink({ children, onClick, disabled }: MiniLinkProps) {
   const { t } = useTheme();
   return (
-    <span
-      role="button"
-      onClick={
-        disabled
-          ? undefined
-          : () => {
-              onClick();
-            }
-      }
+    <Button
+      variant="bare"
+      disabled={disabled}
+      onClick={() => {
+        onClick();
+      }}
       style={{
         fontFamily: t.sans,
         fontSize: t.fsUi,
         color: disabled ? t.faint : t.accentDeep,
-        cursor: disabled ? "default" : "pointer",
         whiteSpace: "nowrap",
       }}
     >
       {children}
-    </span>
+    </Button>
   );
 }

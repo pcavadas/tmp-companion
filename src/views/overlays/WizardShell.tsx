@@ -147,10 +147,14 @@ export interface WizardShellProps {
   /** Rail nodes (defaults to the leveling rail). Bulk Block Edit passes its own
    *  4-node rail (Block · Choose · Check · Done). */
   steps?: readonly RailStep[];
+  /** The dialog's accessible name (the DS `Dialog` requires one — an unnamed dialog is
+   *  announced as just "dialog"). */
+  label: string;
 }
 
 export function WizardShell({
   current,
+  label,
   onBackdrop,
   children,
   height = 512,
@@ -158,7 +162,7 @@ export function WizardShell({
   steps = WIZ_STEPS,
 }: WizardShellProps) {
   return (
-    <Dialog size={size} height={height} onClose={onBackdrop}>
+    <Dialog size={size} height={height} onClose={onBackdrop} label={label}>
       <WizardHeader current={current} steps={steps} />
       {children}
     </Dialog>

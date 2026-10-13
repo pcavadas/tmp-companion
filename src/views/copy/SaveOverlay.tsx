@@ -314,7 +314,7 @@ export function SaveOverlay({
 
       <DialogFooter>
         {done ? (
-          <Button variant="primary" small onClick={onDone}>
+          <Button variant="primary" size="sm" onClick={onDone}>
             Done
           </Button>
         ) : (

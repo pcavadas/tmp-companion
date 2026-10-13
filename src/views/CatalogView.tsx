@@ -17,7 +17,7 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
-import type { ThemeTokens } from "../theme/tokens";
+import { plainButton, type ThemeTokens } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { SearchInput } from "../ui/primitives";
 import { Tag } from "../ui/Tag";
@@ -201,7 +201,9 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
     maxWidth: icon + TEXT_PAD,
   };
   return (
-    <div
+    <button
+      type="button"
+      aria-pressed={selected}
       onClick={() => {
         onPick(r);
       }}
@@ -213,6 +215,7 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
       }}
       title={`${displayName(r)} — ${r.real}`}
       style={{
+        ...plainButton(),
         width: icon + CARD_PAD,
         display: "flex",
         flexDirection: "column",
@@ -274,7 +277,7 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
           </div>
         )}
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -615,10 +618,26 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
     onClick: () => void,
     opts: { child?: boolean; caret?: boolean; k?: string } = {},
   ) => (
-    <div
+    <button
+      type="button"
       key={opts.k ?? label}
+      aria-current={active ? true : undefined}
+      aria-expanded={opts.caret}
       onClick={onClick}
       style={{
+        // Hand-rolled reset (not `plainButton`): the varying `borderLeft` bar must
+        // not share the style object with a `border` shorthand.
+        appearance: "none",
+        margin: 0,
+        fontFamily: "inherit",
+        fontSize: "inherit",
+        color: "inherit",
+        textAlign: "left",
+        width: "100%",
+        boxSizing: "border-box",
+        borderTop: "none",
+        borderRight: "none",
+        borderBottom: "none",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
@@ -685,7 +704,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
       >
         {count}
       </span>
-    </div>
+    </button>
   );
 
   const facetBtn = (
@@ -694,10 +713,14 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
     onClick: () => void,
     disabled = false,
   ) => (
-    <span
+    <button
+      type="button"
       key={label}
-      onClick={disabled ? undefined : onClick}
+      aria-pressed={on}
+      disabled={disabled}
+      onClick={onClick}
       style={{
+        ...plainButton(),
         fontFamily: t.mono,
         fontSize: t.fsData2,
         letterSpacing: "0.03em",
@@ -713,7 +736,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
       }}
     >
       {label}
-    </span>
+    </button>
   );
 
   return (

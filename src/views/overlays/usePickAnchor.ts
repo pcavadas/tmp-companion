@@ -23,6 +23,25 @@ export interface PickAnchor {
   cardH: number;
 }
 
+/** The ONE placement rule for an anchored floating menu, shared by this hook (in the
+ *  dialog card's coordinate space) and the DS `Menu` (in the viewport's): clamp `left`
+ *  into the frame with an 8px margin, drop BELOW the trigger, and flip ABOVE it (`gap`
+ *  px clear) when the `mw`×`mh` menu would overflow the frame's bottom edge. */
+export function placeAnchored(
+  anchor: PickAnchor,
+  mw: number,
+  mh: number,
+  gap = 4,
+): { left: number; top: number } {
+  const left = Math.min(
+    Math.max(8, anchor.left),
+    Math.max(8, anchor.cardW - mw - 8),
+  );
+  let top = anchor.below;
+  if (top + mh > anchor.cardH - 8) top = Math.max(8, anchor.above - mh - gap);
+  return { left, top };
+}
+
 export interface UsePickAnchorOptions {
   /** Fired once the menu has opened (FlatLevelPick's lazy per-preset candidate
    *  fetch — idempotent, safe to call on every open). */
@@ -80,15 +99,13 @@ export function usePickAnchor(
   // measured dimension, so a re-run with an unchanged key re-derives the same numbers.
   useLayoutEffect(() => {
     if (!open || !anchor || !menuRef.current) return;
-    const mw = menuRef.current.offsetWidth;
-    const mh = menuRef.current.offsetHeight;
-    const left = Math.min(
-      Math.max(8, anchor.left),
-      Math.max(8, anchor.cardW - mw - 8),
+    setPos(
+      placeAnchored(
+        anchor,
+        menuRef.current.offsetWidth,
+        menuRef.current.offsetHeight,
+      ),
     );
-    let top = anchor.below;
-    if (top + mh > anchor.cardH - 8) top = Math.max(8, anchor.above - mh - 4);
-    setPos({ left, top });
   }, [open, anchor, contentKey]);
 
   const openMenu = (e: React.MouseEvent) => {

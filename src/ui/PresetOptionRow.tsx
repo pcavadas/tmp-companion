@@ -12,7 +12,7 @@
 import type { ReactNode } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
-import { Checkbox } from "./primitives";
+import { Button, Checkbox } from "./primitives";
 import { Tag } from "./Tag";
 
 export interface PresetOptionRowProps {
@@ -57,16 +57,29 @@ export function PresetOptionRow({
         background: isPicked ? t.rowSel : "transparent",
       }}
     >
-      <div
+      <Button
+        variant="bare"
+        role="checkbox"
+        aria-checked={isPicked}
+        aria-label={tag ? `${name} ${tag}` : name}
         onClick={onTogglePick}
         title={title}
-        style={{ display: "flex", alignItems: "center", cursor: "pointer" }}
+        style={{ display: "flex", alignItems: "center" }}
       >
         <Checkbox checked={isPicked} />
-      </div>
-      <div
+      </Button>
+      <Button
+        variant="bare"
+        tabIndex={-1}
+        aria-hidden
         onClick={onTogglePick}
-        style={{ minWidth: 0, paddingRight: t.space4, cursor: "pointer" }}
+        style={{
+          display: "block",
+          width: "100%",
+          textAlign: "left",
+          minWidth: 0,
+          paddingRight: t.space4,
+        }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
           <span
@@ -93,7 +106,7 @@ export function PresetOptionRow({
             {sub}
           </div>
         )}
-      </div>
+      </Button>
       {children}
     </div>
   );

@@ -1,9 +1,10 @@
 // src/ui/Rail.tsx — the shared left-rail idiom (the Songs setlist rail + the
 // Settings category rail): a 210px bgAlt column behind a 0.5px hairline edge,
 // mono micro-labels, and serif rows with a 2px left-accent bar when active.
-// Rows are role="tab" (the rail always picks what the pane shows) with a
-// leading icon slot (Settings categories) and/or a trailing mono meta slot
-// (Songs counts).
+// Rows are real <button>s with a leading icon slot (Settings categories) and/or
+// a trailing mono meta slot (Songs counts). `nav="tab"` rows sit in the caller's
+// role="tablist" (Settings) and carry aria-selected; `nav="current"` rows are a
+// plain navigation list (Songs) and mark the shown item with aria-current.
 
 import type { CSSProperties, ReactNode } from "react";
 
@@ -70,6 +71,8 @@ interface RailItemProps {
   label: string;
   active: boolean;
   onClick: () => void;
+  /** "tab" inside a role="tablist"; "current" in a plain navigation list. */
+  nav: "tab" | "current";
   /** Leading icon (the Settings category rows). */
   icon?: IconName;
   /** Trailing mono meta — a count or DASH (the Songs setlist rows). */
@@ -80,16 +83,32 @@ export function RailItem({
   label,
   active,
   onClick,
+  nav,
   icon,
   meta,
 }: RailItemProps) {
   const { t } = useTheme();
+  // Hand-rolled reset rather than `plainButton`: the active bar is a varying
+  // `borderLeft`, which must not share the style object with a `border` shorthand.
   return (
-    <div
-      role="tab"
-      aria-selected={active}
+    <button
+      type="button"
+      role={nav === "tab" ? "tab" : undefined}
+      aria-selected={nav === "tab" ? active : undefined}
+      aria-current={nav === "current" && active ? true : undefined}
       onClick={onClick}
       style={{
+        appearance: "none",
+        margin: 0,
+        fontFamily: "inherit",
+        fontSize: "inherit",
+        color: "inherit",
+        textAlign: "left",
+        width: "100%",
+        boxSizing: "border-box",
+        borderTop: "none",
+        borderRight: "none",
+        borderBottom: "none",
         display: "flex",
         alignItems: "center",
         gap: t.space4,
@@ -137,6 +156,6 @@ export function RailItem({
           {meta}
         </span>
       )}
-    </div>
+    </button>
   );
 }

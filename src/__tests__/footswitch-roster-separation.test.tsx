@@ -115,9 +115,7 @@ describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression gu
       "Select preset to level",
     )[0];
     await user.click(presetCheckboxWrap);
-    expect(
-      presetCheckboxWrap.querySelector('[role="checkbox"]'),
-    ).toHaveAttribute("aria-checked", "true");
+    expect(presetCheckboxWrap).toHaveAttribute("aria-checked", "true");
   });
 
   it("Doctor's list shows ONLY the levelable switch — the bare one never appears at all", async () => {

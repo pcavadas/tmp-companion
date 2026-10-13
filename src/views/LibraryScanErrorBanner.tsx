@@ -35,7 +35,12 @@ export function LibraryScanErrorBanner() {
         Couldn&rsquo;t read your preset library from the unit, so scenes,
         footswitches, signal paths and songs may be missing here. ({lib.error})
       </span>
-      <Button variant="ghost" small icon="refresh" onClick={retryLibraryScan}>
+      <Button
+        variant="ghost"
+        size="sm"
+        icon="refresh"
+        onClick={retryLibraryScan}
+      >
         Retry
       </Button>
     </AlertBanner>

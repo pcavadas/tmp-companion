@@ -8,56 +8,92 @@
 // between the resulting modules. Keep them co-located.
 
 import { useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import { createPortal } from "react-dom";
+import type {
+  ComponentPropsWithRef,
+  CSSProperties,
+  MouseEvent,
+  ReactNode,
+} from "react";
 import { Dialog, DialogBody, DialogFooter } from "./Dialog";
 import { Icon, type IconName } from "./Icon";
 import { Spinner } from "./Spinner";
 import { ProgressBar } from "./ProgressBar";
 import { useTheme, useStyles } from "../theme/ThemeContext";
-import { plainInput, type ThemeTokens } from "../theme/tokens";
+import { plainButton, plainInput, type ThemeTokens } from "../theme/tokens";
 
 // ===========================================================================
-// Button — primary (ink fill / bg text), inverse alias, ghost (bordered), warn.
+// Button — primary (ink fill / bg text), ghost (bordered), warn, and `bare` (a
+// native-button reset that keeps the look of the row / chip / glyph / inline link
+// it replaces). EVERY clickable control is a real <button>, so it is reachable by
+// Tab and VoiceOver and activates on Space/Enter natively — the app adds no key
+// handlers of its own (click-only). The rest of the native button props pass
+// straight through (aria-*, title, ref, onMouseEnter, …), and `onClick` receives
+// the event so a nested control can stopPropagation.
 // ===========================================================================
 
-export type ButtonVariant = "primary" | "ghost" | "warn";
+export type ButtonVariant = "primary" | "ghost" | "warn" | "bare";
+export type ButtonSize = "sm" | "md" | "lg";
 
-export interface ButtonProps {
-  children: ReactNode;
-  onClick?: () => void;
+export interface ButtonProps extends ComponentPropsWithRef<"button"> {
   variant?: ButtonVariant;
-  disabled?: boolean;
+  /** `sm` = toolbar / inline, `md` = default, `lg` = a hero call to action.
+   *  Ignored by the `bare` variant, which carries no padding or type scale. */
+  size?: ButtonSize;
   /** Optional leading icon. */
   icon?: IconName;
-  type?: "button" | "submit";
-  style?: CSSProperties;
-  /** Smaller padding/font (toolbar / inline). */
-  small?: boolean;
 }
 
 export function Button({
   children,
-  onClick,
   variant = "primary",
+  size = "md",
   disabled,
   icon,
   type = "button",
   style,
-  small,
+  ...rest
 }: ButtonProps) {
   const { t } = useTheme();
+  if (variant === "bare") {
+    return (
+      <button
+        {...rest}
+        type={type}
+        disabled={disabled}
+        style={plainButton({
+          cursor: disabled ? "default" : "pointer",
+          ...style,
+        })}
+      >
+        {icon && <Icon name={icon} size={13} stroke="currentColor" />}
+        {children}
+      </button>
+    );
+  }
+  const sizing = {
+    sm: {
+      fontSize: t.fsLabel,
+      padding: `${String(t.space4)}px ${String(t.space6)}px`,
+    },
+    md: {
+      fontSize: t.fsUi,
+      padding: `${String(t.space5)}px ${String(t.space8)}px`,
+    },
+    lg: {
+      fontSize: t.fsBody,
+      padding: `${String(t.space6)}px ${String(t.space10)}px`,
+    },
+  }[size];
   const base: CSSProperties = {
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
     gap: t.space3,
     fontFamily: t.sans,
-    fontSize: small ? t.fsLabel : t.fsUi,
+    ...sizing,
     fontWeight: 500,
     borderRadius: t.rMd,
-    padding: small
-      ? `${String(t.space4)}px ${String(t.space6)}px`
-      : `${String(t.space5)}px ${String(t.space8)}px`,
     cursor: disabled ? "default" : "pointer",
     opacity: disabled ? 0.45 : 1,
   };
@@ -78,8 +114,8 @@ export function Button({
 
   return (
     <button
+      {...rest}
       type={type}
-      onClick={disabled ? undefined : onClick}
       disabled={disabled}
       style={{ ...base, ...variantStyle, ...style }}
     >
@@ -102,6 +138,8 @@ export function Button({
 
 export interface ModalProps {
   open: boolean;
+  /** Accessible name for the dialog — plain text, since `headline` may be markup. */
+  label: string;
   /** Warn-red mono kicker, e.g. "DESTRUCTIVE · BACKUP WILL BE CREATED". */
   kicker?: string;
   /** Serif-24 headline (an italic accent <span> is allowed). */
@@ -122,6 +160,7 @@ export interface ModalProps {
 
 export function Modal({
   open,
+  label,
   kicker,
   headline,
   body,
@@ -135,7 +174,7 @@ export function Modal({
   const { t } = useTheme();
   if (!open) return null;
   return (
-    <Dialog size="sm" onClose={onCancel}>
+    <Dialog size="sm" onClose={onCancel} label={label}>
       <DialogBody>
         {kicker && (
           <div
@@ -192,10 +231,10 @@ export function Modal({
         )}
       </DialogBody>
       <DialogFooter>
-        <Button variant="ghost" small onClick={onCancel}>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
           {cancelLabel}
         </Button>
-        <Button variant={applyVariant} small onClick={onApply}>
+        <Button variant={applyVariant} size="sm" onClick={onApply}>
           {applyLabel}
         </Button>
       </DialogFooter>
@@ -325,12 +364,15 @@ export function Toast({
       ? Math.max(0, Math.min(100, percent))
       : undefined;
 
-  return (
+  // Portalled to <body> with position:fixed: an open Dialog marks the app
+  // root `inert`, and a toast left inside it would swallow no clicks — its ×
+  // would fall through to the dialog's backdrop and close the dialog.
+  return createPortal(
     <div
       className="tmp-toast-in"
       role={resolved === "error" ? "alert" : "status"}
       style={{
-        position: "absolute",
+        position: "fixed",
         right: 18,
         bottom: 18,
         width: 360,
@@ -447,7 +489,7 @@ export function Toast({
             {actions.map((a) => (
               <Button
                 key={a.label}
-                small
+                size="sm"
                 variant={a.primary ? "primary" : "ghost"}
                 onClick={a.onClick}
                 style={a.primary ? { background: tone.edge } : undefined}
@@ -482,29 +524,16 @@ export function Toast({
           <Icon name="x" size={13} strokeWidth={2} />
         </button>
       )}
-    </div>
-  );
-}
-
-// ---- Scrim (outside-click catcher behind a floating popover) ---------------
-// A full-viewport transparent click-catcher. `zIndex` is per-context (popover
-// stacks differ by surface). The popover card itself is composed at the call
-// site from `useStyles().popoverCard`.
-export interface ScrimProps {
-  onClose: () => void;
-  zIndex?: number;
-}
-
-export function Scrim({ onClose, zIndex = 30 }: ScrimProps) {
-  return (
-    <div
-      onClick={onClose}
-      style={{ position: "fixed", inset: 0, zIndex, background: "transparent" }}
-    />
+    </div>,
+    document.body,
   );
 }
 
 // ---- Checkbox (per-row + select-all; supports indeterminate) ---------------
+// The VISUAL box only (aria-hidden). Every checkbox sits inside a clickable cell
+// or row, and THAT element is the control: a real <button role="checkbox"> with
+// `aria-checked` ("mixed" when indeterminate; `aria-disabled` when inert), so the role
+// is never nested inside another interactive element.
 export interface CheckboxProps {
   checked?: boolean;
   indeterminate?: boolean;
@@ -519,9 +548,7 @@ export function Checkbox({ checked, indeterminate, disabled }: CheckboxProps) {
   const on = !disabled && ((checked ?? false) || (indeterminate ?? false));
   return (
     <span
-      role="checkbox"
-      aria-checked={indeterminate ? "mixed" : (checked ?? false)}
-      aria-disabled={disabled ? true : undefined}
+      aria-hidden
       style={{
         width: 14,
         height: 14,
@@ -553,53 +580,74 @@ export function Checkbox({ checked, indeterminate, disabled }: CheckboxProps) {
 }
 
 // ---- Toggle (pill switch) — a run-wide MODE control, distinct from the per-row
-//      selection Checkboxes. 38×22 track, 17×17 sliding knob. -----------------
-export interface ToggleProps {
+//      selection Checkboxes. 38×22 track, 17×17 sliding knob. Interactive, it is a
+//      real <button role="switch"> and MUST be named (`label`); without `onClick`
+//      it is the display-only pill inside a caller's own labelled switch button
+//      (SetupPage's "Even out parallel amps" row). -----------------------------
+interface ToggleSwitchProps {
   on: boolean;
   /** Receives the event so the caller can stopPropagation (e.g. when the whole
    *  enclosing row is also clickable). */
-  onClick?: (e: React.MouseEvent) => void;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+  /** Accessible name — the switch has no visible text of its own. */
+  label: string;
 }
 
-export function Toggle({ on, onClick }: ToggleProps) {
+interface ToggleDisplayProps {
+  on: boolean;
+  onClick?: undefined;
+  label?: undefined;
+}
+
+export type ToggleProps = ToggleSwitchProps | ToggleDisplayProps;
+
+export function Toggle({ on, onClick, label }: ToggleProps) {
   const { t } = useTheme();
-  return (
+  const track: CSSProperties = {
+    display: "inline-block",
+    width: 38,
+    height: 22,
+    boxSizing: "content-box",
+    borderRadius: t.rPill,
+    flexShrink: 0,
+    background: on ? t.accent : t.toggleTrack,
+    border: `0.5px solid ${on ? t.accent : t.hairlineStrong}`,
+    position: "relative",
+    cursor: "pointer",
+    transition: "background 0.16s",
+  };
+  const knob = (
     <span
+      style={{
+        position: "absolute",
+        top: 2.5,
+        left: on ? 18 : 2,
+        width: 17,
+        height: 17,
+        borderRadius: t.rPill,
+        background: t.knob,
+        boxShadow: t.shadowKnob,
+        transition: "left 0.16s",
+      }}
+    />
+  );
+  if (!onClick) return <span style={track}>{knob}</span>;
+  return (
+    <button
+      type="button"
       role="switch"
       aria-checked={on}
+      aria-label={label}
       onClick={onClick}
-      style={{
-        display: "inline-block",
-        width: 38,
-        height: 22,
-        borderRadius: t.rPill,
-        flexShrink: 0,
-        background: on ? t.accent : t.toggleTrack,
-        border: `0.5px solid ${on ? t.accent : t.hairlineStrong}`,
-        position: "relative",
-        cursor: "pointer",
-        transition: "background 0.16s",
-      }}
+      style={plainButton(track)}
     >
-      <span
-        style={{
-          position: "absolute",
-          top: 2.5,
-          left: on ? 18 : 2,
-          width: 17,
-          height: 17,
-          borderRadius: t.rPill,
-          background: t.knob,
-          boxShadow: t.shadowKnob,
-          transition: "left 0.16s",
-        }}
-      />
-    </span>
+      {knob}
+    </button>
   );
 }
 
 // ---- MenuItem (hover-tinted popover row) — radius 5 matches the prototype's
-//      SMenuItem (songs.jsx) / mItem (screens.jsx). -------------------------
+//      SMenuItem (songs.jsx) / mItem (screens.jsx). A full-width real <button>. ---
 export interface MenuItemProps {
   label: string;
   onClick: () => void;
@@ -609,23 +657,26 @@ export interface MenuItemProps {
 export function MenuItem({ label, onClick, danger }: MenuItemProps) {
   const { t } = useTheme();
   return (
-    <div
+    <button
+      type="button"
       role="menuitem"
       onClick={onClick}
-      style={{
+      style={plainButton({
+        display: "block",
+        width: "100%",
+        textAlign: "left",
         fontFamily: t.sans,
         fontSize: t.fsControl,
         color: danger ? t.warn : t.ink2,
         padding: `${String(t.space4)}px ${String(t.space5)}px`,
         borderRadius: t.rMenuItem,
-        cursor: "pointer",
         whiteSpace: "nowrap",
-      }}
+      })}
       onMouseEnter={(e) => (e.currentTarget.style.background = t.hover)}
       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
     >
       {label}
-    </div>
+    </button>
   );
 }
 
@@ -689,14 +740,16 @@ export function SearchInput({
         })}
       />
       {clearable && value && (
-        <span
+        <button
+          type="button"
+          aria-label="Clear search"
           onClick={() => {
             onChange("");
           }}
-          style={{ cursor: "pointer", display: "flex" }}
+          style={plainButton({ display: "flex" })}
         >
           <Icon name="x" size={13} stroke={t.faint} />
-        </span>
+        </button>
       )}
     </div>
   );

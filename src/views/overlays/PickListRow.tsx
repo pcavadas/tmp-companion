@@ -8,6 +8,7 @@
 import type { ReactNode } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
 
 export interface PickListRowProps {
@@ -36,7 +37,12 @@ export function PickListRow({
 }: PickListRowProps) {
   const { t } = useTheme();
   return (
-    <div
+    // aria-disabled (not native `disabled`) keeps the disabled row's reason tooltip.
+    <button
+      type="button"
+      role="option"
+      aria-selected={selected}
+      aria-disabled={disabled ? true : undefined}
       data-block-param-pick={pickKey}
       onClick={(e) => {
         e.stopPropagation();
@@ -45,6 +51,9 @@ export function PickListRow({
       }}
       title={disabled ? disabledTitle : undefined}
       style={{
+        ...plainButton(),
+        width: "100%",
+        textAlign: "left",
         display: "flex",
         alignItems: "center",
         gap: t.space5,
@@ -82,6 +91,6 @@ export function PickListRow({
           <Icon name="check" size={15} stroke={t.accentDeep} strokeWidth={2} />
         </span>
       )}
-    </div>
+    </button>
   );
 }

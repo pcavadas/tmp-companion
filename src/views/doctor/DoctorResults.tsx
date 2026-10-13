@@ -328,7 +328,7 @@ export function DoctorResults({
             <Tag tone="accent">{`Reference: ${referenceSound.label}`}</Tag>
             <Button
               variant="ghost"
-              small
+              size="sm"
               disabled={busy}
               onClick={clearReference}
             >
@@ -367,11 +367,13 @@ export function DoctorResults({
             />
           ))}
           {showFilter && filter === "look" && (
-            <div
+            <Button
+              variant="bare"
               onClick={() => {
                 changeFilter("all");
               }}
               style={{
+                textAlign: "left",
                 display: "flex",
                 alignItems: "center",
                 gap: t.space4,
@@ -379,7 +381,6 @@ export function DoctorResults({
                 borderRadius: 10,
                 border: `0.5px dashed ${t.hairlineStrong}`,
                 background: t.bgAlt,
-                cursor: "pointer",
               }}
             >
               <Icon name="check" size={14} stroke={t.good} />
@@ -405,7 +406,7 @@ export function DoctorResults({
               >
                 Show all
               </span>
-            </div>
+            </Button>
           )}
         </div>
 

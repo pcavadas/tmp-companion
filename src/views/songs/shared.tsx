@@ -2,6 +2,7 @@
 // PRIVATE: not re-exported from index.ts; must not import any sub-component.
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { plainButton } from "../../theme/tokens";
 
 /** Inline-edit draft of a song (the create/edit form's working values). */
 export interface SongDraft {
@@ -36,16 +37,19 @@ export function IconBtn({
   const { t } = useTheme();
   const s = useStyles();
   return (
-    <span
-      onClick={disabled ? undefined : onClick}
+    <button
+      type="button"
+      aria-label={title}
+      disabled={disabled}
+      onClick={onClick}
       title={title}
-      style={{
+      style={plainButton({
         ...s.iconBtnBox({ box: size, radius: t.rMd, danger }),
         opacity: disabled ? 0.4 : 1,
         cursor: disabled ? "default" : "pointer",
-      }}
+      })}
     >
       <Icon name={icon} size={14} stroke={danger ? t.warn : t.ink2} />
-    </span>
+    </button>
   );
 }

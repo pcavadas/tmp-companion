@@ -113,7 +113,7 @@ async function closeAnyOpenPicker(page: Page): Promise<void> {
  *  text) — there is no separate "control" trigger to reveal. */
 function pickTrigger(page: Page, key: string) {
   return page.locator(
-    `[data-setup-row="${key}"] div[title="Choose this sound's leveling control"]`,
+    `[data-setup-row="${key}"] button[title="Choose this sound's leveling control"]`,
   );
 }
 /** One candidate row in the open flat list — `data-block-param-pick`, keyed
@@ -553,11 +553,13 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
     // but reached by a DIFFERENT predicate — WetMix-only, not Other-class). Scoped to
     // SPRING's own row (two ancestors up from its exact-text name span) rather than the
     // page-wide count that test already covers, so this failure names SPRING specifically.
+    // The row IS the checkbox (`SceneRow` renders one role="checkbox" button).
     const springRow = page
       .getByText("SPRING", { exact: true })
       .locator("xpath=../..");
     await expect(springRow.getByText("no level control")).toBeVisible();
-    const springCheckbox = springRow.getByRole("checkbox");
+    await expect(springRow).toHaveAttribute("role", "checkbox");
+    const springCheckbox = springRow;
     await expect(springCheckbox).toBeDisabled();
     // Clicking the row is a no-op (`SceneRow`'s `onClick={disabled ? undefined : onToggle}`)
     // — the danger-rule Pick trap closed from the absence side: nothing to click through to

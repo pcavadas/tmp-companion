@@ -23,6 +23,7 @@ export function PickInlineMenu({ onClose, children }: PickInlineMenuProps) {
         style={{ position: "fixed", inset: 0, zIndex: 60 }}
       />
       <div
+        role="listbox"
         style={{
           ...s.menuCard,
           position: "absolute",

@@ -6,7 +6,7 @@
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
-import { Checkbox } from "./primitives";
+import { Button, Checkbox } from "./primitives";
 
 export interface BackupAckLabelProps {
   checked: boolean;
@@ -23,7 +23,10 @@ export function BackupAckLabel({
 }: BackupAckLabelProps) {
   const { t } = useTheme();
   return (
-    <label
+    <Button
+      variant="bare"
+      role="checkbox"
+      aria-checked={checked}
       onClick={() => {
         onChange(!checked);
       }}
@@ -32,7 +35,6 @@ export function BackupAckLabel({
         display: "inline-flex",
         alignItems: "center",
         gap: t.space4,
-        cursor: "pointer",
         ...style,
       }}
     >
@@ -47,6 +49,6 @@ export function BackupAckLabel({
       >
         I&apos;ve backed up with Pro Control
       </span>
-    </label>
+    </Button>
   );
 }

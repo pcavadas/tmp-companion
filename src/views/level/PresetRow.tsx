@@ -13,7 +13,7 @@
 // unit — preset recall is owned by Pro Control / the footswitches, not this list.
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Checkbox } from "../../ui/primitives";
+import { Button, Checkbox } from "../../ui/primitives";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { Spinner } from "../../ui/Spinner";
@@ -32,6 +32,8 @@ import type { PresetRow as PresetRowData } from "../PresetList";
 import type { FootswitchInfo, SceneInfo } from "../../lib/types";
 
 const COLUMNS = "34px 26px 52px 1fr";
+/** The slot + name tracks of COLUMNS, re-declared on the button that spans them. */
+const NAME_COLUMNS = "52px 1fr";
 
 export interface PresetRowProps {
   row: PresetRowData;
@@ -144,10 +146,13 @@ export function PresetRow({
   // faint until `ready`.
   const caretActive = hasChildren && ready;
   const caret = hasChildren ? (
-    <div
-      onClick={(e) => {
-        e.stopPropagation();
-        if (caretActive) onToggleExpand(row.slot);
+    <Button
+      variant="bare"
+      aria-expanded={expanded}
+      aria-label={`${row.name} sounds`}
+      disabled={!caretActive}
+      onClick={() => {
+        onToggleExpand(row.slot);
       }}
       title={
         caretActive
@@ -161,7 +166,6 @@ export function PresetRow({
         alignItems: "center",
         justifyContent: "center",
         height: "100%",
-        cursor: caretActive ? "pointer" : "default",
         opacity: caretActive ? 1 : 0.4,
       }}
     >
@@ -171,7 +175,7 @@ export function PresetRow({
         stroke={caretActive ? t.mutedInk : t.faint}
         strokeWidth={2}
       />
-    </div>
+    </Button>
   ) : (
     <div />
   );
@@ -180,9 +184,6 @@ export function PresetRow({
     <>
       <div
         data-active={active ? "1" : undefined}
-        onClick={() => {
-          if (!empty) onTogglePreset(row.slot);
-        }}
         style={{
           position: "relative",
           display: "grid",
@@ -196,68 +197,91 @@ export function PresetRow({
             ? `2px solid ${t.accent}`
             : "2px solid transparent",
           opacity: empty ? 0.5 : 1,
-          cursor: empty ? "default" : "pointer",
         }}
       >
-        <div
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!empty) onTogglePreset(row.slot);
+        <Button
+          variant="bare"
+          role="checkbox"
+          aria-checked={indeterminate ? "mixed" : allOn}
+          aria-label={row.name}
+          disabled={empty}
+          onClick={() => {
+            onTogglePreset(row.slot);
           }}
           title={selectTitle}
           style={{
             display: "flex",
             alignItems: "center",
             height: "100%",
-            cursor: empty ? "default" : "pointer",
           }}
         >
           {!empty && <Checkbox checked={allOn} indeterminate={indeterminate} />}
-        </div>
+        </Button>
 
         {caret}
 
-        <SlotLabel index={row.slot} faint={empty} />
-
-        <span
+        {/* Slot + name: a mouse-only duplicate of the checkbox (the keyboard / VoiceOver
+            control is the checkbox cell above), spanning the last two grid tracks. */}
+        <Button
+          variant="bare"
+          tabIndex={-1}
+          aria-hidden
+          disabled={empty}
+          onClick={() => {
+            onTogglePreset(row.slot);
+          }}
           style={{
-            display: "flex",
+            gridColumn: "3 / 5",
+            display: "grid",
+            gridTemplateColumns: NAME_COLUMNS,
             alignItems: "center",
-            gap: t.space4,
+            height: "100%",
             minWidth: 0,
+            textAlign: "left",
           }}
         >
+          <SlotLabel index={row.slot} faint={empty} />
+
           <span
             style={{
-              fontFamily: empty ? t.mono : t.serif,
-              fontSize: empty ? t.fsUi : t.fsName,
-              color: empty ? t.faint : t.ink,
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              flexShrink: 1,
+              display: "flex",
+              alignItems: "center",
+              gap: t.space4,
               minWidth: 0,
             }}
           >
-            {empty ? "—— empty ——" : row.name}
-          </span>
-          {active && <Tag tone="good">ACTIVE</Tag>}
-          <span style={{ flex: 1 }} />
-          {meta}
-          {/* Real per-preset CPU bar — base rows only, once the backup graph is ready.
-              The space8 (16px) gap keeps the scene-summary meta off the bar. */}
-          {!empty && ready && cpu != null && (
             <span
               style={{
-                display: "inline-flex",
-                marginLeft: meta ? t.space8 : 0,
-                flexShrink: 0,
+                fontFamily: empty ? t.mono : t.serif,
+                fontSize: empty ? t.fsUi : t.fsName,
+                color: empty ? t.faint : t.ink,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                flexShrink: 1,
+                minWidth: 0,
               }}
             >
-              <RowCpu value={cpu} />
+              {empty ? "—— empty ——" : row.name}
             </span>
-          )}
-        </span>
+            {active && <Tag tone="good">ACTIVE</Tag>}
+            <span style={{ flex: 1 }} />
+            {meta}
+            {/* Real per-preset CPU bar — base rows only, once the backup graph is ready.
+              The space8 (16px) gap keeps the scene-summary meta off the bar. */}
+            {!empty && ready && cpu != null && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  marginLeft: meta ? t.space8 : 0,
+                  flexShrink: 0,
+                }}
+              >
+                <RowCpu value={cpu} />
+              </span>
+            )}
+          </span>
+        </Button>
       </div>
 
       {expanded && caretActive && (

@@ -80,7 +80,8 @@ function CalibrateCue({
   const { t } = useTheme();
   const [hover, setHover] = useState(false);
   return (
-    <span
+    <Button
+      variant="bare"
       title="Calibrate instruments in Settings"
       onClick={onCalibrate}
       onMouseEnter={() => {
@@ -92,7 +93,6 @@ function CalibrateCue({
       style={{
         color: t.accentDeep,
         fontWeight: 500,
-        cursor: "pointer",
         textDecoration: "underline",
         textDecorationStyle: "dotted",
         textDecorationColor: hover ? t.accentDeep : t.warnBorder,
@@ -100,7 +100,7 @@ function CalibrateCue({
       }}
     >
       {children}
-    </span>
+    </Button>
   );
 }
 
@@ -688,7 +688,7 @@ export function SetupPage({
       footerLeft={
         <Button
           variant="ghost"
-          small
+          size="sm"
           onClick={onCancel}
           style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
         >
@@ -706,7 +706,7 @@ export function SetupPage({
           )}
           <Button
             variant="primary"
-            small
+            size="sm"
             icon="gauge"
             disabled={
               total === 0 ||

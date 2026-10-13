@@ -447,6 +447,7 @@ export function SettingsView({
           >
             {CATEGORIES.map((c) => (
               <RailItem
+                nav="tab"
                 key={c.id}
                 label={c.label}
                 icon={c.icon}
@@ -524,7 +525,7 @@ export function SettingsView({
                 </span>
                 <Button
                   variant="ghost"
-                  small
+                  size="sm"
                   icon="refresh"
                   onClick={retryLoad}
                 >
@@ -595,7 +596,7 @@ export function SettingsView({
 
                 <Button
                   variant="ghost"
-                  small
+                  size="sm"
                   icon="plus"
                   onClick={addTarget}
                   style={{ marginTop: t.space6 }}
@@ -717,7 +718,7 @@ export function SettingsView({
               ) : (
                 <Button
                   variant="ghost"
-                  small
+                  size="sm"
                   icon="plus"
                   onClick={() => {
                     setAdding(true);

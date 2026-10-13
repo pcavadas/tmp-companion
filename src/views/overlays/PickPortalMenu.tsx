@@ -50,6 +50,7 @@ export function PickPortalMenu({
       />
       <div
         ref={menuRef}
+        role="listbox"
         style={{
           ...s.menuCard,
           position: "absolute",

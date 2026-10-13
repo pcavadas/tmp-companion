@@ -15,7 +15,7 @@ import type React from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { plainInput } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
-import { MenuItem, MenuDivider } from "../../ui/primitives";
+import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
 
 // Slider domain (handoff): v ∈ [−29 .. −13]. No upper clamp — any value in range
@@ -227,6 +227,14 @@ export function TargetRow({
         onPointerUp={onTrackUp}
         onPointerCancel={onTrackCancel}
         onLostPointerCapture={onTrackCancel}
+        // Pointer-driven (the app is click-only — no key handling), but exposed to
+        // VoiceOver as a slider carrying its value and range.
+        role="slider"
+        aria-label={`${name} target`}
+        aria-valuemin={TMIN}
+        aria-valuemax={TMAX}
+        aria-valuenow={lufs}
+        aria-valuetext={`${lufs.toFixed(1)} LUFS`}
         title="Drag to set level"
         style={{
           flex: 1,
@@ -279,13 +287,16 @@ export function TargetRow({
       </span>
 
       <div style={{ position: "relative", display: "flex", flexShrink: 0 }}>
-        <span
+        <Button
+          variant="bare"
+          aria-label={`More actions for ${name}`}
+          aria-haspopup="menu"
+          aria-expanded={menu}
           onClick={() => {
             setMenu((o) => !o);
           }}
           title="More"
           style={{
-            cursor: "pointer",
             display: "flex",
             color: t.faint,
             padding: t.space1,
@@ -293,7 +304,7 @@ export function TargetRow({
           }}
         >
           <Icon name="more" size={16} stroke="currentColor" />
-        </span>
+        </Button>
         {menu && (
           <Menu
             onClose={() => {

@@ -10,7 +10,14 @@ import { light, microLabel } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { ICONS } from "../ui/iconNames";
 import { BlockArt } from "../ui/BlockArt";
-import { Checkbox, Toggle, MenuItem, Toast, Button } from "../ui/primitives";
+import {
+  Checkbox,
+  Toggle,
+  MenuItem,
+  Toast,
+  Button,
+  SearchInput,
+} from "../ui/primitives";
 import { Tag } from "../ui/Tag";
 import { PaneEmpty } from "../ui/PaneEmpty";
 import { Spinner } from "../ui/Spinner";
@@ -87,30 +94,66 @@ describe("icons — fuller catalogs", () => {
 });
 
 describe("primitives — a11y roles (VoiceOver)", () => {
-  it("Checkbox exposes role=checkbox with aria-checked", () => {
-    renderWithTheme(<Checkbox checked />);
-    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe(
-      "true",
-    );
+  it("Checkbox is the visual box only — its owning button carries the role", () => {
+    const { container } = renderWithTheme(<Checkbox checked />);
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(container.querySelector('[aria-hidden="true"]')).not.toBeNull();
   });
 
-  it("Checkbox indeterminate → aria-checked=mixed", () => {
-    renderWithTheme(<Checkbox indeterminate />);
-    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe(
-      "mixed",
+  it("Toggle is a named <button role=switch> with aria-checked", () => {
+    renderWithTheme(
+      <Toggle on label="Auto-install" onClick={() => undefined} />,
     );
+    const sw = screen.getByRole("switch", { name: "Auto-install" });
+    expect(sw.tagName).toBe("BUTTON");
+    expect(sw.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("Toggle exposes role=switch with aria-checked", () => {
-    renderWithTheme(<Toggle on onClick={() => undefined} />);
-    expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe(
-      "true",
-    );
+  it("display-only Toggle renders no control", () => {
+    renderWithTheme(<Toggle on />);
+    expect(screen.queryByRole("switch")).toBeNull();
   });
 
-  it("MenuItem exposes role=menuitem", () => {
+  it("MenuItem is a <button role=menuitem>", () => {
     renderWithTheme(<MenuItem label="Delete" onClick={() => undefined} />);
-    expect(screen.getByRole("menuitem")).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Delete" }).tagName).toBe(
+      "BUTTON",
+    );
+  });
+
+  it("Button passes native props through and hands onClick the event", () => {
+    const seen: string[] = [];
+    renderWithTheme(
+      <Button
+        variant="bare"
+        aria-label="Close"
+        title="Close panel"
+        onClick={(e) => {
+          seen.push(e.type);
+        }}
+      >
+        x
+      </Button>,
+    );
+    const b = screen.getByRole("button", { name: "Close" });
+    expect(b.getAttribute("title")).toBe("Close panel");
+    fireEvent.click(b);
+    expect(seen).toEqual(["click"]);
+  });
+
+  it("SearchInput's clear (×) is a named button", () => {
+    const changes: string[] = [];
+    renderWithTheme(
+      <SearchInput
+        value="abc"
+        clearable
+        onChange={(v) => {
+          changes.push(v);
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(changes).toEqual([""]);
   });
 });
 

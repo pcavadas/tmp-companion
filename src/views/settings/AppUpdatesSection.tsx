@@ -101,7 +101,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
             {check === "idle" && (
               <Button
                 variant="ghost"
-                small
+                size="sm"
                 onClick={() => {
                   void runCheck();
                 }}
@@ -161,6 +161,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
               </span>
               <Toggle
                 on={updater.autoInstall}
+                label="Install updates automatically"
                 onClick={() => {
                   updater.setAutoInstall(!updater.autoInstall);
                 }}

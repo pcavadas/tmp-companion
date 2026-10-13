@@ -415,9 +415,9 @@ describe("CopyView — live device", () => {
       // Anchor on the unique chip, not the name (names can repeat across Copy's columns).
       const chip0 = await screen.findByText("ON UNIT");
       expect(
-        within(ancestor(chip0, "div")).getByText("Beta"),
+        within(ancestor(chip0, "button")).getByText("Beta"),
       ).toBeInTheDocument();
-      expect(within(ancestor(chip0, "div")).queryByText("Alpha")).toBeNull();
+      expect(within(ancestor(chip0, "button")).queryByText("Alpha")).toBeNull();
 
       // A hardware preset change to slot 0 arrives — the chip follows to Alpha.
       await waitFor(() => {
@@ -436,11 +436,11 @@ describe("CopyView — live device", () => {
       await waitFor(() => {
         const chip = screen.getByText("ON UNIT"); // still exactly one
         expect(
-          within(ancestor(chip, "div")).queryByText("Alpha"),
+          within(ancestor(chip, "button")).queryByText("Alpha"),
         ).toBeInTheDocument();
       });
       expect(
-        within(ancestor(screen.getByText("ON UNIT"), "div")).queryByText(
+        within(ancestor(screen.getByText("ON UNIT"), "button")).queryByText(
           "Beta",
         ),
       ).toBeNull();

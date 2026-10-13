@@ -7,6 +7,7 @@
 
 import { useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
 import { Button, Checkbox, SearchInput } from "../../ui/primitives";
 import { ActionBar } from "../../ui/ActionBar";
 import { ReadingPill } from "../../ui/ReadingPill";
@@ -198,6 +199,8 @@ export function ChoosePresets({
             clearable
           />
           <div
+            role="radiogroup"
+            aria-label="Copy from"
             style={{
               flex: 1,
               minHeight: 0,
@@ -214,13 +217,17 @@ export function ChoosePresets({
               ? fromList.map((p) => {
                   const sel = fromSlot === p.slot;
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={p.slot}
-                      role="button"
+                      role="radio"
+                      aria-checked={sel}
                       onClick={() => {
                         pickFrom(p.slot);
                       }}
                       style={{
+                        ...plainButton(),
+                        textAlign: "left",
                         display: "flex",
                         alignItems: "center",
                         gap: t.space6,
@@ -258,7 +265,7 @@ export function ChoosePresets({
                       <SlotLabel index={p.slot} style={slotCell} />
                       <span style={rowName}>{p.name}</span>
                       {p.onUnit && <OnUnitChip />}
-                    </div>
+                    </button>
                   );
                 })
               : empty(fq)}
@@ -311,6 +318,8 @@ export function ChoosePresets({
             clearable
           />
           <div
+            role="group"
+            aria-label="Copy to"
             style={{
               flex: 1,
               minHeight: 0,
@@ -327,13 +336,17 @@ export function ChoosePresets({
               ? toList.map((p) => {
                   const on = toSet.has(p.slot);
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={p.slot}
-                      role="button"
+                      role="checkbox"
+                      aria-checked={on}
                       onClick={() => {
                         toggleTo(p.slot);
                       }}
                       style={{
+                        ...plainButton(),
+                        textAlign: "left",
                         display: "flex",
                         alignItems: "center",
                         gap: t.space6,
@@ -348,7 +361,7 @@ export function ChoosePresets({
                       <Checkbox checked={on} />
                       <SlotLabel index={p.slot} style={slotCell} />
                       <span style={rowName}>{p.name}</span>
-                    </div>
+                    </button>
                   );
                 })
               : empty(tq)}

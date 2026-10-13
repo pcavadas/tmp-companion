@@ -1,12 +1,13 @@
 // src/views/level/SceneRow.tsx — one scene sub-row (Base or a footswitch scene).
 //
 // Revealed under a PresetRow when its caret is expanded. Grid `34px 1fr`, height 38,
-// indented to align under the preset name. The whole row toggles that one scene key.
+// indented to align under the preset name. The whole row is ONE role="checkbox"
+// button that toggles that one scene key.
 //   • Base child: tag BASE (muted), name "Base Preset", sub "main preset sound".
 //   • FS child:   tag FS{n} (terracotta), name = scene name, sub "footswitch scene".
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Checkbox } from "../../ui/primitives";
+import { Button, Checkbox } from "../../ui/primitives";
 import { Tag } from "../../ui/Tag";
 
 export interface SceneRowProps {
@@ -39,10 +40,17 @@ export function SceneRow({
   const isBase = kind === "base";
 
   return (
-    <div
+    // aria-disabled (not native `disabled`) keeps the disabled row's reason tooltip.
+    <Button
+      variant="bare"
+      role="checkbox"
+      aria-checked={selected}
+      aria-disabled={disabled ? true : undefined}
       onClick={disabled ? undefined : onToggle}
       title={disabled ? disabledTitle : undefined}
       style={{
+        width: "100%",
+        textAlign: "left",
         display: "grid",
         gridTemplateColumns: "34px 1fr",
         alignItems: "center",
@@ -92,6 +100,6 @@ export function SceneRow({
           {sub}
         </span>
       </span>
-    </div>
+    </Button>
   );
 }

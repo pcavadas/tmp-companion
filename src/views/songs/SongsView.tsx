@@ -612,6 +612,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
             />
           </div>
           <RailItem
+            nav="current"
             label="All songs"
             meta={songs.length}
             active={view.mode === "all"}
@@ -631,6 +632,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
               <div style={railScroll}>
                 {setlists.map((l) => (
                   <RailItem
+                    nav="current"
                     key={l.slot}
                     label={l.name}
                     meta={membership.get(l.slot)?.length ?? DASH}
@@ -678,31 +680,33 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
                         fontSize: t.fsBody2,
                       })}
                     />
-                    <span
+                    <Button
+                      variant="bare"
+                      aria-label="Create"
                       onClick={commitList}
                       title="Create"
-                      style={{ cursor: "pointer", display: "flex" }}
+                      style={{ display: "flex" }}
                     >
                       <Icon name="check" size={14} stroke={t.accentDeep} />
-                    </span>
-                    <span
+                    </Button>
+                    <Button
+                      variant="bare"
                       onClick={() => {
                         setCreatingList(false);
                         setDraftList("");
                       }}
-                      role="button"
                       aria-label="Cancel"
                       title="Cancel"
-                      style={{ cursor: "pointer", display: "flex" }}
+                      style={{ display: "flex" }}
                     >
                       <Icon name="x" size={13} stroke={t.faint} />
-                    </span>
+                    </Button>
                   </div>
                 ) : (
                   <Button
                     variant="ghost"
                     icon="plus"
-                    small
+                    size="sm"
                     disabled={busy}
                     onClick={() => {
                       setCreatingList(true);
@@ -736,6 +740,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
                 ) : (
                   lib.presets.map((p) => (
                     <RailItem
+                      nav="current"
                       key={p.slot}
                       label={p.name}
                       meta={
@@ -809,6 +814,11 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
 
       <Modal
         open={confirm != null}
+        label={
+          confirm?.kind === "song"
+            ? `Delete song ${confirm.name}?`
+            : `Delete setlist ${confirm?.name ?? ""}?`
+        }
         kicker="DESTRUCTIVE · WRITES TO THE TONE MASTER PRO"
         headline={
           confirm?.kind === "song" ? (

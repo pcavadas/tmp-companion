@@ -253,3 +253,29 @@ export function plainInput(
     ...extra,
   };
 }
+
+/** Native-<button> reset — the ONE shared reset behind every clickable row, chip,
+ *  glyph and inline link (the `bare` Button variant and any hand-rolled <button>).
+ *  It strips the UA chrome so a real, keyboard- and VoiceOver-reachable button keeps
+ *  the exact look of the div/span it replaced. Spread the site's own layout in
+ *  `extra` (a block-level row adds `display` + `width: "100%"`, since a button
+ *  shrink-wraps where a div would stretch). */
+export function plainButton(extra?: CSSProperties): CSSProperties {
+  return {
+    appearance: "none",
+    background: "none",
+    border: "none",
+    padding: 0,
+    margin: 0,
+    fontFamily: "inherit",
+    fontSize: "inherit",
+    fontWeight: "inherit",
+    lineHeight: "inherit",
+    letterSpacing: "inherit",
+    color: "inherit",
+    textAlign: "inherit",
+    cursor: "pointer",
+    boxSizing: "border-box",
+    ...extra,
+  };
+}

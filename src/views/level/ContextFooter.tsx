@@ -52,7 +52,7 @@ export function ContextFooter({
               gap: t.space6,
             }}
           >
-            <Button variant="ghost" small onClick={onHelp}>
+            <Button variant="ghost" size="sm" onClick={onHelp}>
               How it works
             </Button>
             <span
@@ -106,7 +106,7 @@ export function ContextFooter({
       }
       right={
         ready ? (
-          <Button variant="primary" small icon="gauge" onClick={onLevel}>
+          <Button variant="primary" size="sm" icon="gauge" onClick={onLevel}>
             {`Level ${String(count)} ${noun}…`}
           </Button>
         ) : (

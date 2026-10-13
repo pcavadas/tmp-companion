@@ -159,19 +159,19 @@ export function DoctorSetup({
           background: t.bgAlt,
         }}
       >
-        <span
+        <Button
+          variant="bare"
           onClick={onBack}
           style={{
             fontFamily: t.sans,
             fontSize: t.fsLabel,
             color: t.mutedInk,
-            cursor: "pointer",
             whiteSpace: "nowrap",
             flexShrink: 0,
           }}
         >
           Back
-        </span>
+        </Button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <StepRail current={0} steps={DOCTOR_STEPS} />
         </div>
@@ -290,7 +290,7 @@ export function DoctorSetup({
           right={
             <Button
               variant="primary"
-              small
+              size="sm"
               icon="wave"
               disabled={total === 0}
               onClick={run}

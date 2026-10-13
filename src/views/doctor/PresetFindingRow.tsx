@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { Button } from "../../ui/primitives";
 import { ROW_MIN_HEIGHT, SevDot } from "./SoundRow";
 import { sevTone, type Sev } from "./severity";
 
@@ -37,15 +38,18 @@ export function PresetFindingRow({
 
   return (
     <div style={{ borderTop: `0.5px solid ${t.hairline}` }}>
-      <div
+      <Button
+        variant="bare"
+        aria-expanded={open}
         onClick={onToggle}
         style={{
+          width: "100%",
+          textAlign: "left",
           display: "flex",
           alignItems: "center",
           gap: t.space5,
           minHeight: ROW_MIN_HEIGHT,
           padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
-          cursor: "pointer",
           background: open ? t.rowSel : "transparent",
         }}
       >
@@ -93,7 +97,7 @@ export function PresetFindingRow({
             <Icon name="chev-right" size={13} stroke={tone.fg} />
           </span>
         </span>
-      </div>
+      </Button>
 
       {open && (
         <div

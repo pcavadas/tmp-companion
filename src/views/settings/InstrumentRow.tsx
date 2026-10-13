@@ -363,7 +363,7 @@ export function InstrumentRow({
           (connected ? (
             <Button
               variant="ghost"
-              small
+              size="sm"
               icon={calibrated ? "refresh" : "gauge"}
               onClick={startCountdown}
               style={{ whiteSpace: "nowrap" }}
@@ -398,15 +398,15 @@ export function InstrumentRow({
             >
               {count}
             </span>
-            <span
-              role="button"
+            <Button
+              variant="bare"
               aria-label="Cancel"
               onClick={cancel}
               title="Cancel"
-              style={{ cursor: "pointer", display: "inline-flex" }}
+              style={{ display: "inline-flex" }}
             >
               <Icon name="x" size={12} stroke={t.mutedInk} />
-            </span>
+            </Button>
           </span>
         )}
 
@@ -439,19 +439,18 @@ export function InstrumentRow({
                 }}
               />
               Recording {rec.toFixed(1)} / {CALIBRATE_SECS}s
-              <span
-                role="button"
+              <Button
+                variant="bare"
                 aria-label="Cancel"
                 onClick={cancel}
                 title="Cancel"
                 style={{
-                  cursor: "pointer",
                   display: "inline-flex",
                   marginLeft: t.space1,
                 }}
               >
                 <Icon name="x" size={11} stroke={t.mutedInk} />
-              </span>
+              </Button>
             </span>
             <div
               style={{
@@ -479,7 +478,7 @@ export function InstrumentRow({
           (connected ? (
             <Button
               variant="ghost"
-              small
+              size="sm"
               icon="refresh"
               onClick={startCountdown}
             >
@@ -491,13 +490,16 @@ export function InstrumentRow({
 
         {/* per-row menu: edit / reorder / delete */}
         <div style={{ position: "relative", display: "flex" }}>
-          <span
+          <Button
+            variant="bare"
+            aria-label={`More actions for ${profile.name}`}
+            aria-haspopup="menu"
+            aria-expanded={menu}
             onClick={() => {
               setMenu((o) => !o);
             }}
             title="More"
             style={{
-              cursor: "pointer",
               display: "flex",
               color: t.faint,
               padding: t.space1,
@@ -505,7 +507,7 @@ export function InstrumentRow({
             }}
           >
             <Icon name="more" size={16} stroke="currentColor" />
-          </span>
+          </Button>
           {menu && (
             <Menu
               onClose={() => {

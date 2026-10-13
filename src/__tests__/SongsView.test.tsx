@@ -616,10 +616,10 @@ function gate(): { until: Promise<void>; open: () => void } {
   };
 }
 
-/** The rail row for `name` (rows are role="tab"). */
+/** The rail row for `name` (rows are navigation buttons). */
 const railRow = (name: string): HTMLElement => {
   const row = screen
-    .getAllByRole("tab")
+    .getAllByRole("button")
     .find((t) => within(t).queryByText(name, { exact: true }) != null);
   if (!row) throw new Error(`no rail row "${name}"`);
   return row;

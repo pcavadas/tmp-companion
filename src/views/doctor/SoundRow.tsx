@@ -7,6 +7,8 @@
 // picker/card. Only errored or unrun rows (no usable capture) are not expandable — a clean
 // row still expands (to pick it as a reference / show its cut-through read).
 
+import type { CSSProperties } from "react";
+
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
@@ -211,6 +213,180 @@ export function SoundRow({
     !isReference &&
     bandLayoutsMatch(referenceSound, sound);
 
+  const headerStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: t.space5,
+    minHeight: ROW_MIN_HEIGHT,
+    padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
+    background: open ? t.rowSel : "transparent",
+  };
+  // An expandable row's header is a real disclosure button; a flat (error /
+  // unrun) row has nothing to open, so it stays a plain, inert div.
+  const header = (
+    <>
+      <SevDot sev={sev} />
+      {/* label + tag */}
+      <span
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: t.space4,
+          minWidth: 96,
+          flexShrink: 0,
+        }}
+      >
+        <span
+          style={{
+            fontFamily: t.serif,
+            fontSize: t.fsName2,
+            color: hasDiags ? t.ink : t.ink2,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            maxWidth: 150,
+          }}
+        >
+          {sound.label}
+        </span>
+        {sound.tag != null && sound.tag !== "" && (
+          <Tag tone={isTagged ? "accent" : "neutral"}>{sound.tag}</Tag>
+        )}
+      </span>
+      {/* middle: clear state, error, or diagnosis chips */}
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          alignItems: "center",
+          gap: t.space3,
+          overflow: "hidden",
+        }}
+      >
+        {flat ? (
+          <span
+            style={{
+              fontFamily: t.sans,
+              fontSize: t.fsLabel,
+              color: isError ? t.warn : t.mutedInk,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {isError ? errorText : NOT_CHECKED}
+          </span>
+        ) : hasDiags ? (
+          diags.map((d) => (
+            <span
+              key={d.key}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: t.space3,
+              }}
+            >
+              <DiagnosisChip
+                label={possibleLabel(d)}
+                sev={d.sev}
+                possible={isPossible(d)}
+              />
+              <LevelIndicator
+                level={d.fromLevel}
+                sev={d.sev}
+                finding={possibleLabel(d)}
+                size="tiny"
+              />
+            </span>
+          ))
+        ) : (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: t.space3,
+              fontFamily: t.sans,
+              fontSize: t.fsLabel,
+              color: t.good,
+            }}
+          >
+            <Icon name="check" size={12} stroke={t.good} />
+            Sounds good
+            <LevelIndicator
+              level="clean"
+              sev="ok"
+              finding="Sounds good"
+              size="tiny"
+            />
+          </span>
+        )}
+        {!flat && coverageGated && (
+          <span
+            title={`Some checks skipped — signal too quiet on ${String(sound.skippedBandCount)} band${sound.skippedBandCount === 1 ? "" : "s"}`}
+            style={{ display: "inline-flex", flexShrink: 0, opacity: 0.7 }}
+          >
+            <Icon name="info" size={12} stroke={t.mutedInk} />
+          </span>
+        )}
+      </span>
+      {/* metrics: sparkline + LUFS (suppressed on error and unrun rows) */}
+      {!flat && (
+        <>
+          <BandSpark
+            balanceDb={sound.balanceDb}
+            bandCount={sound.bandLabels.length}
+            hotBands={hotBands}
+            color={tone.fg}
+            muted={!hasDiags}
+          />
+          <span
+            style={{
+              fontFamily: t.mono,
+              fontSize: t.fsMeta,
+              color: hasDiags ? t.ink2 : t.faint,
+              fontVariantNumeric: "tabular-nums",
+              width: 62,
+              textAlign: "right",
+              flexShrink: 0,
+            }}
+          >
+            {lufs != null ? (
+              <>
+                {lufs.toFixed(1)}
+                <span style={{ color: t.faint }}> LUFS</span>
+              </>
+            ) : (
+              "—"
+            )}
+          </span>
+        </>
+      )}
+      {/* caret */}
+      <span
+        style={{
+          width: 14,
+          flexShrink: 0,
+          display: "inline-flex",
+          justifyContent: "center",
+          opacity: expandable ? 0.6 : 0,
+        }}
+      >
+        {expandable && (
+          <span
+            style={{
+              display: "inline-flex",
+              transform: open ? "rotate(90deg)" : "none",
+              transition: "transform 0.12s",
+            }}
+          >
+            <Icon name="chev-right" size={13} stroke={tone.fg} />
+          </span>
+        )}
+      </span>
+    </>
+  );
+
   return (
     <div
       // e2e hook: count a preset card's rendered sound rows, mirroring
@@ -218,178 +394,18 @@ export function SoundRow({
       data-sound-row={sound.key}
       style={{ borderTop: `0.5px solid ${t.hairline}` }}
     >
-      <div
-        onClick={expandable ? onToggle : undefined}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: t.space5,
-          minHeight: ROW_MIN_HEIGHT,
-          padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
-          cursor: expandable ? "pointer" : "default",
-          background: open ? t.rowSel : "transparent",
-        }}
-      >
-        <SevDot sev={sev} />
-        {/* label + tag */}
-        <span
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: t.space4,
-            minWidth: 96,
-            flexShrink: 0,
-          }}
+      {expandable ? (
+        <Button
+          variant="bare"
+          aria-expanded={open}
+          onClick={onToggle}
+          style={{ ...headerStyle, width: "100%", textAlign: "left" }}
         >
-          <span
-            style={{
-              fontFamily: t.serif,
-              fontSize: t.fsName2,
-              color: hasDiags ? t.ink : t.ink2,
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              maxWidth: 150,
-            }}
-          >
-            {sound.label}
-          </span>
-          {sound.tag != null && sound.tag !== "" && (
-            <Tag tone={isTagged ? "accent" : "neutral"}>{sound.tag}</Tag>
-          )}
-        </span>
-        {/* middle: clear state, error, or diagnosis chips */}
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            display: "flex",
-            alignItems: "center",
-            gap: t.space3,
-            overflow: "hidden",
-          }}
-        >
-          {flat ? (
-            <span
-              style={{
-                fontFamily: t.sans,
-                fontSize: t.fsLabel,
-                color: isError ? t.warn : t.mutedInk,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {isError ? errorText : NOT_CHECKED}
-            </span>
-          ) : hasDiags ? (
-            diags.map((d) => (
-              <span
-                key={d.key}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: t.space3,
-                }}
-              >
-                <DiagnosisChip
-                  label={possibleLabel(d)}
-                  sev={d.sev}
-                  possible={isPossible(d)}
-                />
-                <LevelIndicator
-                  level={d.fromLevel}
-                  sev={d.sev}
-                  finding={possibleLabel(d)}
-                  size="tiny"
-                />
-              </span>
-            ))
-          ) : (
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: t.space3,
-                fontFamily: t.sans,
-                fontSize: t.fsLabel,
-                color: t.good,
-              }}
-            >
-              <Icon name="check" size={12} stroke={t.good} />
-              Sounds good
-              <LevelIndicator
-                level="clean"
-                sev="ok"
-                finding="Sounds good"
-                size="tiny"
-              />
-            </span>
-          )}
-          {!flat && coverageGated && (
-            <span
-              title={`Some checks skipped — signal too quiet on ${String(sound.skippedBandCount)} band${sound.skippedBandCount === 1 ? "" : "s"}`}
-              style={{ display: "inline-flex", flexShrink: 0, opacity: 0.7 }}
-            >
-              <Icon name="info" size={12} stroke={t.mutedInk} />
-            </span>
-          )}
-        </span>
-        {/* metrics: sparkline + LUFS (suppressed on error and unrun rows) */}
-        {!flat && (
-          <>
-            <BandSpark
-              balanceDb={sound.balanceDb}
-              bandCount={sound.bandLabels.length}
-              hotBands={hotBands}
-              color={tone.fg}
-              muted={!hasDiags}
-            />
-            <span
-              style={{
-                fontFamily: t.mono,
-                fontSize: t.fsMeta,
-                color: hasDiags ? t.ink2 : t.faint,
-                fontVariantNumeric: "tabular-nums",
-                width: 62,
-                textAlign: "right",
-                flexShrink: 0,
-              }}
-            >
-              {lufs != null ? (
-                <>
-                  {lufs.toFixed(1)}
-                  <span style={{ color: t.faint }}> LUFS</span>
-                </>
-              ) : (
-                "—"
-              )}
-            </span>
-          </>
-        )}
-        {/* caret */}
-        <span
-          style={{
-            width: 14,
-            flexShrink: 0,
-            display: "inline-flex",
-            justifyContent: "center",
-            opacity: expandable ? 0.6 : 0,
-          }}
-        >
-          {expandable && (
-            <span
-              style={{
-                display: "inline-flex",
-                transform: open ? "rotate(90deg)" : "none",
-                transition: "transform 0.12s",
-              }}
-            >
-              <Icon name="chev-right" size={13} stroke={tone.fg} />
-            </span>
-          )}
-        </span>
-      </div>
+          {header}
+        </Button>
+      ) : (
+        <div style={headerStyle}>{header}</div>
+      )}
 
       {open && expandable && (
         <div
@@ -404,14 +420,14 @@ export function SoundRow({
             {isReference ? (
               <>
                 <Tag tone="accent">Reference</Tag>
-                <Button variant="ghost" small onClick={onClearReference}>
+                <Button variant="ghost" size="sm" onClick={onClearReference}>
                   Clear reference
                 </Button>
               </>
             ) : hasMatchSpectrum ? (
               <Button
                 variant="ghost"
-                small
+                size="sm"
                 onClick={() => {
                   onSetReference(id);
                 }}

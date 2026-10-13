@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
-import { plainInput } from "../../theme/tokens";
+import { plainButton, plainInput } from "../../theme/tokens";
 import type { SongDraft } from "./shared";
 
 interface SongFormProps {
@@ -98,24 +98,24 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
             BPM
           </span>
         </div>
-        <span
-          role="button"
+        <button
+          type="button"
           aria-label="Save"
           onClick={save}
           title="Save"
-          style={{ cursor: "pointer", display: "flex", padding: t.space2 }}
+          style={plainButton({ display: "flex", padding: t.space2 })}
         >
           <Icon name="check" size={15} stroke={t.accentDeep} />
-        </span>
-        <span
-          role="button"
+        </button>
+        <button
+          type="button"
           aria-label="Cancel"
           onClick={onCancel}
           title="Cancel"
-          style={{ cursor: "pointer", display: "flex", padding: t.space2 }}
+          style={plainButton({ display: "flex", padding: t.space2 })}
         >
           <Icon name="x" size={13} stroke={t.faint} />
-        </span>
+        </button>
       </div>
       <input
         value={notes}

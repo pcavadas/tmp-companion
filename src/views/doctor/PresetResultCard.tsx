@@ -8,6 +8,7 @@ import { useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { Button } from "../../ui/primitives";
 import { SlotLabel } from "../../ui/SlotLabel";
 import { SevDot, SoundRow } from "./SoundRow";
 import { SceneConsistency } from "./SceneConsistency";
@@ -228,18 +229,21 @@ export function PresetResultCard({
           (showHealthy ? (
             healthy.map(row)
           ) : (
-            <div
+            <Button
+              variant="bare"
+              aria-expanded={false}
               onClick={() => {
                 setShowHealthy(true);
               }}
               style={{
+                width: "100%",
+                textAlign: "left",
                 display: "flex",
                 alignItems: "center",
                 gap: t.space4,
                 minHeight: 34,
                 padding: `0 ${String(t.space4)}px 0 ${String(t.space3)}px`,
                 borderTop: `0.5px solid ${t.hairline}`,
-                cursor: "pointer",
               }}
             >
               <SevDot sev="ok" />
@@ -251,7 +255,7 @@ export function PresetResultCard({
               <span style={{ display: "inline-flex", opacity: 0.6 }}>
                 <Icon name="chev-right" size={12} stroke={t.mutedInk} />
               </span>
-            </div>
+            </Button>
           ))}
       </div>
     </div>

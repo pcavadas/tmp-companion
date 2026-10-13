@@ -10,6 +10,7 @@
 import { useContext } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
 import { DialogCardCtx } from "./wizardContext";
 import { PickPortalMenu } from "./PickPortalMenu";
@@ -86,7 +87,10 @@ export function Pick({
   const optionRows = options.map((o) => {
     const on = o.id === value;
     return (
-      <div
+      <button
+        type="button"
+        role="option"
+        aria-selected={on}
         key={o.id}
         data-pick-option={tid ? `${tid}:${o.id}` : undefined}
         onClick={(e) => {
@@ -94,12 +98,14 @@ export function Pick({
           pick(o.id);
         }}
         style={{
+          ...plainButton(),
+          width: "100%",
+          textAlign: "left",
           display: "flex",
           alignItems: "center",
           gap: t.space5,
           padding: `${String(t.space3)}px ${String(t.space4)}px`,
           borderRadius: 5,
-          cursor: "pointer",
           background: on ? t.accentSoft : "transparent",
         }}
         onMouseEnter={(e) => {
@@ -130,7 +136,7 @@ export function Pick({
             {o.sub}
           </span>
         )}
-      </div>
+      </button>
     );
   });
 
@@ -143,11 +149,16 @@ export function Pick({
         minWidth: grow ? 0 : undefined,
       }}
     >
-      <div
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
         onClick={openMenu}
         title={stale ? `"${value}" is no longer offered` : title}
         data-pick={tid}
         style={{
+          ...plainButton(),
+          width: "100%",
           display: "flex",
           alignItems: "center",
           gap: t.space3,
@@ -156,7 +167,6 @@ export function Pick({
           border: pickTriggerBorder(t, { open, warn: stale }),
           borderRadius: 6,
           background: t.bg,
-          cursor: "pointer",
           whiteSpace: "nowrap",
         }}
       >
@@ -185,7 +195,7 @@ export function Pick({
           size={11}
           stroke={open ? t.accentDeep : t.faint}
         />
-      </div>
+      </button>
 
       {open && anchor && cardEl && (
         <PickPortalMenu

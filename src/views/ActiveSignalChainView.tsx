@@ -384,7 +384,7 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
               </span>
               <Button
                 variant="ghost"
-                small
+                size="sm"
                 icon="refresh"
                 onClick={onRetryDiagram}
               >

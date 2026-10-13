@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
 import { BlockArt } from "../../ui/BlockArt";
 import { SegmentedControl } from "../../ui/primitives";
@@ -84,10 +85,11 @@ export function BlockEditor({
           {headName}
         </span>
         <span style={{ flex: 1 }} />
-        <span
-          role="button"
+        <button
+          type="button"
           onClick={onRemove}
           style={{
+            ...plainButton(),
             display: "inline-flex",
             alignItems: "center",
             gap: t.space3,
@@ -103,18 +105,16 @@ export function BlockEditor({
         >
           <Icon name="trash" size={13} stroke={t.warn} />
           Remove
-        </span>
-        <span
-          role="button"
+        </button>
+        <button
+          type="button"
+          aria-label="Close"
+          title="Close"
           onClick={onClose}
-          style={{
-            display: "inline-flex",
-            cursor: "pointer",
-            padding: t.space2,
-          }}
+          style={plainButton({ display: "inline-flex", padding: t.space2 })}
         >
           <Icon name="x" size={15} stroke={t.faint} />
-        </span>
+        </button>
       </div>
       <div style={{ padding: `${String(t.space5)}px ${String(t.space6)}px` }}>
         <div
@@ -156,9 +156,11 @@ export function BlockEditor({
             const reason = checkOp(counts, o.model, mode, { anchor });
             const blocked = reason != null;
             return (
-              <span
+              // aria-disabled (not native `disabled`) so a blocked chip stays
+              // focusable and keeps its hover tooltip explaining WHY it is blocked.
+              <button
+                type="button"
                 key={o.model}
-                role="button"
                 aria-disabled={blocked}
                 // e2e hook: pick a candidate by its MODEL id (matches the tile's
                 // `data-block-tile` model exactly; the display label differs between them).
@@ -172,6 +174,7 @@ export function BlockEditor({
                       }
                 }
                 style={{
+                  ...plainButton(),
                   display: "inline-flex",
                   alignItems: "center",
                   gap: t.space4,
@@ -214,7 +217,7 @@ export function BlockEditor({
                 >
                   {o.cpu == null ? "" : `+${cpuStr(o.cpu, "")}`}
                 </span>
-              </span>
+              </button>
             );
           })}
         </div>

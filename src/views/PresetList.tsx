@@ -19,7 +19,7 @@ import { useTheme } from "../theme/ThemeContext";
 import { Spinner } from "../ui/Spinner";
 import { Skel, SkelStatus } from "../ui/Skeleton";
 import { ProgressBar } from "../ui/ProgressBar";
-import { Checkbox, SearchInput } from "../ui/primitives";
+import { Button, Checkbox, SearchInput } from "../ui/primitives";
 import { PresetRow as PresetRowComponent } from "./level/PresetRow";
 import { childKeys } from "./level/leveling";
 import { presetCpu } from "../models/cpu";
@@ -333,18 +333,21 @@ export function PresetList(props: PresetListProps) {
           flexShrink: 0,
         }}
       >
-        <div
+        <Button
+          variant="bare"
+          role="checkbox"
+          aria-checked={allSel ? true : someSel ? "mixed" : false}
+          aria-label="Select all presets"
           onClick={onToggleAll}
           title={allSel ? "Clear selection" : "Select all"}
           style={{
             display: "flex",
             alignItems: "center",
             height: "100%",
-            cursor: "pointer",
           }}
         >
           <Checkbox checked={allSel} indeterminate={!allSel && someSel} />
-        </div>
+        </Button>
         <span />
         <span>slot</span>
         <span>preset</span>

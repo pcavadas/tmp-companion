@@ -11,6 +11,7 @@
 import type { ReactNode } from "react";
 
 import { useTheme, useStyles } from "../theme/ThemeContext";
+import { Button } from "./primitives";
 
 export interface ApplyToBarProps {
   /** Full kicker text ("Apply to all 3 sounds" / "Instrument for the 2 ticked"). */
@@ -51,20 +52,20 @@ export function ApplyToBar({
           {label}
         </span>
         {somePicked && (
-          <span
+          <Button
+            variant="bare"
             onClick={onClear}
             style={{
               fontFamily: t.sans,
               fontSize: t.fsLabel,
               color: t.accentDeep,
-              cursor: "pointer",
               whiteSpace: "nowrap",
               flexShrink: 0,
               paddingLeft: t.space6,
             }}
           >
             Clear ticks
-          </span>
+          </Button>
         )}
       </div>
       {children}

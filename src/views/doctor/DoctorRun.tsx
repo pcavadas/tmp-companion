@@ -154,7 +154,12 @@ export function DoctorRun({
   };
 
   return (
-    <WizardShell current={1} height={560} steps={DOCTOR_STEPS}>
+    <WizardShell
+      current={1}
+      height={560}
+      steps={DOCTOR_STEPS}
+      label="Doctor run"
+    >
       <div
         style={{
           flexShrink: 0,
@@ -275,7 +280,7 @@ export function DoctorRun({
             failed ? (
               <Button
                 variant="ghost"
-                small
+                size="sm"
                 onClick={onBack}
                 style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
               >
@@ -289,7 +294,7 @@ export function DoctorRun({
             failed ? (
               <Button
                 variant="primary"
-                small
+                size="sm"
                 icon="refresh"
                 onClick={onRetry}
                 style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
@@ -301,7 +306,7 @@ export function DoctorRun({
               // same thing, so this is the one clickable CTA.
               <Button
                 variant="primary"
-                small
+                size="sm"
                 onClick={onComplete}
                 style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
               >
@@ -341,7 +346,7 @@ export function DoctorRun({
             ) : (
               <Button
                 variant="ghost"
-                small
+                size="sm"
                 onClick={() => {
                   setConfirm(true);
                 }}

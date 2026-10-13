@@ -157,8 +157,9 @@ export function PlaceBlocks({
             : `Editing ${String(targets.length)} preset${targets.length === 1 ? "" : "s"} — each keeps its own path`}
         </span>
         {blockedSlots.length > 0 && (
-          <span
-            role="button"
+          <Button
+            variant="bare"
+            aria-pressed={showOver}
             onClick={() => {
               setOnlyOver((v) => !v);
             }}
@@ -173,14 +174,13 @@ export function PlaceBlocks({
               background: t.sevWarnChipSoft,
               borderRadius: t.rPill,
               padding: `${String(t.space2)}px ${String(t.space5)}px`,
-              cursor: "pointer",
               whiteSpace: "nowrap",
             }}
           >
             <Icon name="warn-tri" size={12} stroke={t.sevWarn} />
             {`${String(blockedSlots.length)} can't save`} ·{" "}
             {showOver ? "Show all" : "Show only these"}
-          </span>
+          </Button>
         )}
       </div>
 
@@ -234,8 +234,8 @@ export function PlaceBlocks({
               minWidth: 0,
             }}
           >
-            <span
-              role="button"
+            <Button
+              variant="bare"
               onClick={onBack}
               style={{
                 display: "inline-flex",
@@ -244,7 +244,6 @@ export function PlaceBlocks({
                 fontFamily: t.sans,
                 fontSize: t.fsControl,
                 color: t.ink2,
-                cursor: "pointer",
               }}
             >
               <span style={{ display: "inline-flex", transform: "scaleX(-1)" }}>
@@ -256,7 +255,7 @@ export function PlaceBlocks({
                 />
               </span>
               Back
-            </span>
+            </Button>
             <span style={{ width: 1, height: 22, background: t.hairline }} />
             <div
               title="Undo / redo your edits — nothing is on the unit yet"
@@ -264,14 +263,16 @@ export function PlaceBlocks({
             >
               {(
                 [
-                  { icon: "undo", on: onUndo, enabled: canUndo },
-                  { icon: "redo", on: onRedo, enabled: canRedo },
+                  { icon: "undo", label: "Undo", on: onUndo, enabled: canUndo },
+                  { icon: "redo", label: "Redo", on: onRedo, enabled: canRedo },
                 ] as const
               ).map((b) => (
-                <span
+                <Button
                   key={b.icon}
-                  role="button"
-                  onClick={b.enabled ? b.on : undefined}
+                  variant="bare"
+                  aria-label={b.label}
+                  disabled={!b.enabled}
+                  onClick={b.on}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -280,12 +281,10 @@ export function PlaceBlocks({
                     padding: `0 ${String(t.space5)}px`,
                     borderRadius: t.rBtn,
                     opacity: b.enabled ? 1 : 0.35,
-                    pointerEvents: b.enabled ? "auto" : "none",
-                    cursor: b.enabled ? "pointer" : "default",
                   }}
                 >
                   <Icon name={b.icon} size={15} stroke={t.ink2} />
-                </span>
+                </Button>
               ))}
             </div>
             <span style={{ width: 1, height: 22, background: t.hairline }} />

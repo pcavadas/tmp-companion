@@ -96,24 +96,24 @@ function SetlistRow({
         >
           {(onMoveUp ?? onMoveDown) && (
             <span style={{ position: "relative", display: "flex" }}>
-              <span
-                onClick={
-                  busy
-                    ? undefined
-                    : () => {
-                        setMenu((o) => !o);
-                      }
-                }
+              <Button
+                variant="bare"
+                aria-label="Move"
+                aria-haspopup="menu"
+                aria-expanded={menu && !busy}
+                disabled={busy}
+                onClick={() => {
+                  setMenu((o) => !o);
+                }}
                 title="Move"
                 style={{
-                  cursor: busy ? "default" : "pointer",
                   display: "flex",
                   padding: t.space2,
                   borderRadius: t.rSm,
                 }}
               >
                 <Icon name="more" size={14} stroke={t.faint} />
-              </span>
+              </Button>
               {menu && !busy && (
                 <Menu
                   onClose={() => {
@@ -137,18 +137,20 @@ function SetlistRow({
               )}
             </span>
           )}
-          <span
-            onClick={busy ? undefined : onRemove}
+          <Button
+            variant="bare"
+            aria-label="Remove from setlist"
+            disabled={busy}
+            onClick={onRemove}
             title="Remove from setlist"
             style={{
-              cursor: busy ? "default" : "pointer",
               display: "flex",
               padding: t.space2,
               borderRadius: t.rSm,
             }}
           >
             <Icon name="x" size={14} stroke={t.faint} />
-          </span>
+          </Button>
         </span>
       }
     />
@@ -267,12 +269,19 @@ export function SetlistDetail({
               })}
             />
           ) : (
-            <div
+            <Button
+              variant="bare"
               onClick={() => {
                 setRenaming(true);
               }}
               title="Rename"
-              style={{ marginTop: t.space2, cursor: "text" }}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                marginTop: t.space2,
+                cursor: "text",
+              }}
             >
               <span
                 style={{
@@ -287,7 +296,7 @@ export function SetlistDetail({
               >
                 {setlist.name}
               </span>
-            </div>
+            </Button>
           )}
         </div>
         <div
@@ -299,18 +308,22 @@ export function SetlistDetail({
             position: "relative",
           }}
         >
-          <Button
-            variant="primary"
-            icon="plus"
-            small
-            disabled={busy}
-            onClick={() => {
-              setPicker((o) => !o);
-            }}
-          >
-            Add songs
-          </Button>
-          {picker && picker_el}
+          {/* The picker's anchor box: the trigger + popover only, so a press on the
+              neighbouring options button counts as OUTSIDE and dismisses it. */}
+          <span style={{ position: "relative", display: "flex" }}>
+            <Button
+              variant="primary"
+              icon="plus"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                setPicker((o) => !o);
+              }}
+            >
+              Add songs
+            </Button>
+            {picker && picker_el}
+          </span>
           <div style={{ position: "relative", display: "flex" }}>
             <IconBtn
               icon="more"
@@ -374,7 +387,7 @@ export function SetlistDetail({
             <Button
               variant="primary"
               icon="plus"
-              small
+              size="sm"
               disabled={busy}
               onClick={() => {
                 setPicker(true);
