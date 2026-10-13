@@ -563,8 +563,11 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
     await expect(springCheckbox).toBeDisabled();
     // Clicking the row is a no-op (`SceneRow`'s `onClick={disabled ? undefined : onToggle}`)
     // — the danger-rule Pick trap closed from the absence side: nothing to click through to
-    // an `options[0]` fallback because the row can never become selected.
-    await springRow.click();
+    // an `options[0]` fallback because the row can never become selected. `force`: the row is
+    // `aria-disabled` (kept focusable for its reason tooltip), which Playwright's actionability
+    // check treats as disabled and would wait on forever — the click must still LAND so this
+    // proves the handler is absent, not merely that the click was never sent.
+    await springRow.click({ force: true });
     await expect(springCheckbox).not.toBeChecked();
 
     await page.getByText("Boost", { exact: true }).click();
