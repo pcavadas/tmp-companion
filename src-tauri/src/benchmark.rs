@@ -643,7 +643,7 @@ pub struct LevelingScore {
 /// Acceptance thresholds. Every field is optional; an absent one is not
 /// checked. Set them from a measured baseline (`notes/benchmarks.md`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Thresholds {
     #[serde(default)]
     pub doctor: BTreeMap<String, RuleThresholds>,
@@ -652,7 +652,7 @@ pub struct Thresholds {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuleThresholds {
     pub min_precision: Option<f64>,
     pub min_recall: Option<f64>,
@@ -661,7 +661,7 @@ pub struct RuleThresholds {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LevelingThresholds {
     pub max_p90_abs_error_lu: Option<f64>,
     pub max_abs_error_lu: Option<f64>,
@@ -706,22 +706,11 @@ fn parse_kind(id: &str) -> Result<StimulusKind, String> {
     }
 }
 
-/// Whether `rule` can judge `r` at all: a band rule whose band was not excited
-/// is skipped by the engine, and the tilt rules need ≥3 covered body bands.
+/// Whether `rule` can judge `r` at all, by the engine's own structural gates
+/// (`doctor::rule_judgeable`). A replay carries no graph, so `buried` always
+/// abstains here.
 fn rule_can_judge(rule: &str, r: &ReplayProfile, family: Family) -> bool {
-    let Some(cov) = r.coverage.as_deref() else {
-        return true;
-    };
-    let (lows, low_mids, mids, high_mids, highs, air) = family.semantic_bands();
-    match rule {
-        "muddy" => cov[low_mids],
-        "boomy" | "thin" | "buried" => cov[lows],
-        "harsh" => cov[high_mids],
-        "lost" => cov[mids],
-        "fizzy" => cov[air] && cov[highs],
-        "dark" | "bright" => (lows..=highs).filter(|&i| cov[i]).count() >= 3,
-        _ => true,
-    }
+    doctor::rule_judgeable(rule, family, r.coverage.as_deref(), false)
 }
 
 fn score_doctor(
@@ -1300,5 +1289,110 @@ mod tests {
         .unwrap();
         assert_eq!(row.id, "scene:slot404:scene2");
         assert_eq!(row.measured_lufs, Some(-17.1));
+    }
+
+    #[test]
+    fn a_misspelled_threshold_key_is_refused_not_silently_unset() {
+        for bad in [
+            r#"{"doctor":{"muddy":{"max_fp_rate":0.05}}}"#,
+            r#"{"leveling":{"maxP90AbsErrorLU":0.5}}"#,
+            r#"{"levelling":{}}"#,
+        ] {
+            assert!(serde_json::from_str::<Thresholds>(bad).is_err(), "{bad}");
+        }
+        let ok: Thresholds =
+            serde_json::from_str(r#"{"doctor":{"muddy":{"maxFpRate":0.05}}}"#).unwrap();
+        assert_eq!(ok.doctor["muddy"].max_fp_rate, Some(0.05));
+    }
+
+    #[test]
+    fn judgeability_mirrors_the_engine_gates() {
+        let g = Family::Guitar;
+        let none: [bool; 6] = [false; 6];
+        assert!(doctor::rule_judgeable("thin", g, None, false));
+        assert!(!doctor::rule_judgeable("thin", Family::Bass, None, false));
+        assert!(!doctor::rule_judgeable("buried", Family::Bass, None, false));
+        assert!(doctor::rule_judgeable("buried", Family::Bass, None, true));
+        assert!(!doctor::rule_judgeable("buried", g, None, true));
+        for rule in ["boxy", "resonant", "thin", "dark", "muddy"] {
+            assert!(
+                !doctor::rule_judgeable(rule, g, Some(&none), false),
+                "{rule}"
+            );
+        }
+        assert!(doctor::rule_judgeable("washed", g, Some(&none), false));
+    }
+
+    /// Drift guard: across shapes, coverage masks and localized peaks, every
+    /// verdict the engine returns is one `rule_judgeable` admits.
+    #[test]
+    fn no_verdict_fires_on_a_rule_counted_as_abstaining() {
+        let t = doctor::target_curve(Family::Guitar);
+        let shapes = [
+            [12.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [-12.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 12.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, -12.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 12.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, -6.0, 12.0],
+            [8.0, 4.0, 0.0, -4.0, -8.0, -12.0],
+            [-8.0, -4.0, 0.0, 4.0, 8.0, 12.0],
+        ];
+        let peaks = vec![
+            PeakRecord {
+                freq_hz: 400.0,
+                height_db: 20.0,
+                q: 6.0,
+            },
+            PeakRecord {
+                freq_hz: 2600.0,
+                height_db: 20.0,
+                q: 8.0,
+            },
+        ];
+        let kind = StimulusKind::Synthetic;
+        let shipped = Calibration::shipped(Family::Guitar);
+        let mut fired = std::collections::BTreeSet::new();
+        for shape in shapes {
+            let mut r = replay(
+                [
+                    t[0] + shape[0],
+                    t[1] + shape[1],
+                    t[2] + shape[2],
+                    t[3] + shape[3],
+                    t[4] + shape[4],
+                    t[5] + shape[5],
+                ],
+                -30.0,
+            );
+            r.peaks = peaks.clone();
+            r.tail_ratio_db = -5.0;
+            for mask in 0u8..64 {
+                r.coverage = Some((0..6).map(|i| mask & (1 << i) != 0).collect());
+                for d in diagnose(&r, Family::Guitar, kind, &shipped) {
+                    fired.insert(d.key);
+                    assert!(
+                        rule_can_judge(d.key, &r, Family::Guitar),
+                        "{} fired on mask {mask:06b}, shape {shape:?}",
+                        d.key
+                    );
+                }
+            }
+        }
+        // Not vacuous: the gated rules really fire somewhere in the sweep.
+        for rule in [
+            "boxy", "resonant", "thin", "dark", "bright", "muddy", "boomy",
+        ] {
+            assert!(fired.contains(rule), "{rule} never fired: {fired:?}");
+        }
+    }
+
+    #[test]
+    fn a_graphless_buried_label_abstains_rather_than_counting_a_miss() {
+        let mut c = corpus();
+        c.doctor[0].labels.push("buried".into());
+        let r = score_corpus(&c, &Thresholds::default()).unwrap();
+        let m = &r.doctor.unwrap().per_rule["buried"];
+        assert_eq!((m.tp, m.fn_, m.abstained), (0, 0, 3));
     }
 }

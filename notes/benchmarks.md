@@ -72,10 +72,10 @@ Exits 1 when any threshold is violated. The result JSON is deterministic and nam
 
 - **Provenance is mandatory.** A corpus with any empty provenance field is refused.
 - **The split.** Rows marked `tuning` are the data a threshold may be set on; only `validation` rows are scored. A sound never moves from validation to tuning after it has graded a threshold.
-- **Doctor metrics, per diagnosis:** precision, recall, false-positive rate and abstention rate. A rule abstains when the capture did not excite its band (the engine skips it), and an abstention is never counted as a negative.
+- **Doctor metrics, per diagnosis:** precision, recall, false-positive rate and abstention rate. A rule abstains when the engine could not have fired it on that row, and an abstention is never counted as a negative. The gates come from `doctor::rule_judgeable`, which mirrors the engine: the rule's band was not excited, the tilt rules (and `thin`) have fewer than 3 covered body bands, `thin` on a bass family, or a localized rule with no covered band in its scan range. A replay carries no graph, so `buried` always abstains.
 - **Leveling metrics:** the absolute error distribution (median, p90, max) and the mean signed error over measured, unclamped rows; false clamps (clamped while labeled reachable); persistence mismatches; re-runs that wrote again (a correct run is idempotent); unmeasured rows.
 
-**Thresholds** are optional per field and are set from a measured baseline, never guessed:
+**Thresholds** are optional per field and are set from a measured baseline, never guessed. An unknown or misspelled key is refused, so a gate can never be silently off:
 
 ```json
 {

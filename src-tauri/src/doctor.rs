@@ -886,6 +886,46 @@ fn band_covered(coverage: Option<&[bool]>, i: usize) -> bool {
     coverage.is_none_or(|c| c.get(i).copied().unwrap_or(true))
 }
 
+/// Whether `rule` can fire at all for this family, coverage and graph — the
+/// structural gates of [`apply_thresholds`] and [`localized_diags`], without
+/// any metric. A benchmark counts a rule that cannot fire as an abstention,
+/// never as a negative. Keep this in step with those two functions.
+pub(crate) fn rule_judgeable(
+    rule: &str,
+    instrument: Family,
+    coverage: Option<&[bool]>,
+    graph_known: bool,
+) -> bool {
+    let covered = |i: usize| band_covered(coverage, i);
+    let (lows, low_mids, mids, high_mids, highs, air) = instrument.semantic_bands();
+    // `tilt_split` determines a slope only from ≥3 covered body bands.
+    let slope_known = (lows..=highs).filter(|&i| covered(i)).count() >= 3;
+    // A localized peak needs a covered band in its scan range to corroborate.
+    let range_covered = |lo: f64, hi: f64| {
+        instrument
+            .bands()
+            .iter()
+            .enumerate()
+            .any(|(i, &(b_lo, b_hi))| f64::from(b_lo) <= hi && f64::from(b_hi) >= lo && covered(i))
+    };
+    match rule {
+        "muddy" => covered(low_mids),
+        "boomy" => covered(lows),
+        "harsh" => covered(high_mids),
+        "lost" => covered(mids),
+        "fizzy" => covered(air) && covered(highs),
+        "dark" | "bright" => slope_known,
+        "thin" => instrument == Family::Guitar && slope_known && covered(lows),
+        // `buried` needs the graph's drive fact; with no graph it never fires.
+        "buried" => {
+            matches!(instrument, Family::Bass | Family::BassVi) && graph_known && covered(lows)
+        }
+        "boxy" => LOCALIZED_RULES_ENABLED && range_covered(BOXY_LO_HZ, BOXY_HI_HZ),
+        "resonant" => LOCALIZED_RULES_ENABLED && range_covered(0.0, RESONANT_MAX_FREQ_HZ),
+        _ => true,
+    }
+}
+
 /// Robust tilt/local decomposition of a sound's target deviations: a Theil–Sen
 /// line fit over `(log2(band_center), dev[i])` for the semantic BODY bands
 /// ([`Family::semantic_bands`]'s `lows..=highs` — Sub and Air are excluded from
