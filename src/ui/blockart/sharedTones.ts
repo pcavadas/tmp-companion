@@ -31,9 +31,8 @@ export interface PedalTone {
 //     uni-vibe; tape & digital delay; spring / plate / hall / shimmer reverb;
 //     graphic & parametric EQ; wah / envelope; octave / whammy; synth; fx-loop.
 //
-// Resolve order:  explicit props  →  legacy BLOCK_MAP[code]  →  CATALOG_BY_ID.
-// Legacy short codes (COMP, AMP-T, CAB-G, DLY-D …) still resolve unchanged so
-// data.jsx / the gallery / the table keep working.
+// Callers pass the catalog BlockArtSpec's icon/tone/variant explicitly (resolved
+// by FenderId in models/blockArt.ts); an absent tone falls back to "slate".
 // ============================================================================
 
 // ---- Chassis tone palette — fixed, theme-independent -----------------------

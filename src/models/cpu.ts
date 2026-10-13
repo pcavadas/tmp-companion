@@ -8,7 +8,7 @@
 // that file's header). Keyed by ACD_ FenderId
 // (= a catalog `bid`, or a device audioGraph node's model id).
 import cpuData from "./model-cpu.json";
-import { resolveDeviceId } from "./blockArt";
+import { resolveDeviceId } from "./deviceId";
 import { DASH } from "../lib/format";
 import type { ActiveGraph } from "../lib/types";
 

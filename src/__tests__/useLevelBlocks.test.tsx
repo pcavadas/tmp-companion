@@ -7,17 +7,10 @@
 
 import { useState } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import {
-  renderHook,
-  act,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { renderHook, act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import {
   FlatLevelPick,
   type BlockLevelHandle,
@@ -26,46 +19,23 @@ import { WithCard } from "./pickCardTestUtils";
 import { useLevelBlocks } from "../views/level/useLevelBlocks";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type {
-  ActiveGraph,
-  BackupReadResult,
+  BackupPresetRow,
+  LevelBlock,
   SceneHandleCandidate,
 } from "../lib/types";
-
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => undefined),
-}));
-
-const emptyGraph: ActiveGraph = {
-  name: null,
-  slot: null,
-  template: null,
-  split_mix: null,
-  nodes: [],
-  stages: [],
-};
+import {
+  makeBackupPresetRow,
+  makeBackupRead,
+  mockCommands,
+} from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 function backupRow(
   slot: number,
   name: string,
   baseHandles: SceneHandleCandidate[],
-) {
-  return {
-    slot,
-    name,
-    preset_id: null,
-    scene_count: 0,
-    scenes: [],
-    amp_candidates: [],
-    base_active_amp_count: 0,
-    blocks: [],
-    graph: emptyGraph,
-    footswitches: [],
-    silence_hint: null,
-    scene_handles: [],
-    base_handles: baseHandles,
-    scene_overrides: [],
-    fs_scene_contexts: [],
-  };
+): BackupPresetRow {
+  return makeBackupPresetRow({ slot, name, base_handles: baseHandles });
 }
 
 const AMP_CANDIDATE: SceneHandleCandidate = {
@@ -81,26 +51,13 @@ const AMP_CANDIDATE: SceneHandleCandidate = {
 };
 
 async function seedScan(
-  presets: ReturnType<typeof backupRow>[],
-  deviceBlocks: unknown[] = [],
+  presets: BackupPresetRow[],
+  deviceBlocks: LevelBlock[] = [],
 ) {
-  vi.mocked(invoke).mockImplementation((cmd: string) => {
-    if (cmd === "read_library_via_backup") {
-      const result: BackupReadResult = {
-        members: [],
-        db_bytes: 0,
-        total_rows: presets.length,
-        scene_mode: "test",
-        presets,
-        song_presets: [],
-        songs: [],
-        setlists: [],
-        setlist_songs: [],
-      };
-      return Promise.resolve(result);
-    }
-    if (cmd === "list_level_blocks") return Promise.resolve(deviceBlocks);
-    return Promise.resolve(null);
+  mockCommands({
+    read_library_via_backup: () =>
+      makeBackupRead({ total_rows: presets.length, presets }),
+    list_level_blocks: () => deviceBlocks,
   });
   await ensureLibraryScan();
 }
@@ -131,7 +88,6 @@ describe("useLevelBlocks — instant-first with device fallback", () => {
           node_id: "amp",
           model_id: "ACD_TwinReverb65NoFx",
           parameter_id: "outputLevel",
-          value: 0.42,
           paramClass: "level_linear",
           headroom: "full",
         },
@@ -197,7 +153,6 @@ describe("useLevelBlocks — instant-first with device fallback", () => {
           node_id: "amp0",
           model_id: "ACD_TweedDeluxe",
           parameter_id: "outputLevel",
-          value: 0.7,
         },
       ]);
     }
@@ -246,12 +201,10 @@ describe("useLevelBlocks — instant-first with device fallback", () => {
     }
 
     const user = userEvent.setup();
-    render(
-      <ThemeProvider>
-        <WithCard>
-          <Harness />
-        </WithCard>
-      </ThemeProvider>,
+    renderWithTheme(
+      <WithCard>
+        <Harness />
+      </WithCard>,
     );
 
     await user.click(screen.getByText("Preset level"));

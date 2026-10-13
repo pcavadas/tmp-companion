@@ -4,10 +4,12 @@
 // what BlockArt needs to draw the real modeled unit — resolved BY ID (not
 // by broad category), so e.g. Filtron gets the envelope-filter icon.
 
-import type { ToneId } from "../ui/BlockArt";
+import type { ArtVariant, IconId, ToneId } from "../ui/BlockArt";
 import { BLOCK_BODY, BLOCK_ACCENT } from "../ui/blockart/blockColors.generated";
 import { CAB_COVERING } from "./cabCovering.generated";
 import { TMP_CATALOG } from "./blockArtCatalog";
+import { ART_VARIANT } from "./blockArtCatalog/variants";
+import { resolveDeviceId } from "./deviceId";
 
 // Factory default head → cabinet pairing for each half-stack amp head, matching
 // the Tone Master Pro's shipped defaults (each head with its own brand's cab).
@@ -51,9 +53,10 @@ export const HALF_STACK_CAB_TONE: Record<string, ToneId> = {
 // ── Flatten → by-id map ──────────────────────────────────────────────────────
 export interface BlockArtSpec {
   id: string;
-  icon: string;
-  tone: string;
-  /** terse on-strip caption (uppercase, single line) */
+  icon: IconId;
+  tone: ToneId;
+  /** terse on-strip caption (uppercase, single line) — display copy only; art
+   *  never keys on it (see `variant`). */
   short: string;
   /** full Fender model name */
   name: string;
@@ -73,6 +76,8 @@ export interface BlockArtSpec {
    *  only for the few pedals whose ref shows a distinct coloured panel (the MEGA
    *  EQ-5 blue slider bed, the FILTRON blue control band). */
   panel?: string;
+  /** explicit per-model art treatment (see `blockArtCatalog/variants.ts`). */
+  variant?: ArtVariant;
 }
 
 // Footswitch overrides keyed by id (the brand/ref doesn't follow a clean rule):
@@ -121,6 +126,7 @@ for (const cat of TMP_CATALOG) {
       body: BLOCK_BODY[id],
       accent: BLOCK_ACCENT[id],
       panel: KNOB_PANEL[id],
+      variant: ART_VARIANT[id],
     };
     BY_ID[id] = art;
     if (name && !(name in BY_NAME)) BY_NAME[name] = art;
@@ -138,47 +144,15 @@ function normalizeShort(label: string): string {
     .trim();
 }
 
-// Device FenderIds carry cab/IR/convolution suffixes the catalog id omits
-// (e.g. ACD_TweedDeluxeCabIR → ACD_TweedDeluxe). Strip them one at a time,
-// checking after each. NoFx is part of real base ids so it is NOT stripped.
-const SUFFIX = /(ConvRvb|CabIR|NoCab|Cab|IR)$/;
-
 /** Resolve a model's block art by its full name — the fallback for catalog rows
  *  with no FenderId (the Microphones). Returns null if the name isn't catalogued. */
 export function resolveBlockArtByName(name: string): BlockArtSpec | null {
   return BY_NAME[name] ?? null;
 }
 
-// Resolve a device FenderId to a catalog id by stripping cab/IR/convolution suffixes one
-// at a time via the canonical SUFFIX, CHECKING `inSet` BEFORE each strip — so an id
-// already catalogued WITH a suffix (the `…CabIRConvRvb` reverb amps) matches directly and
-// is never over-stripped, while a bare-catalogued amp discovered with an extra suffix
-// (`ACD_HiwattDR103CanModCabIR` → `ACD_HiwattDR103CanMod`) still matches. The last-gap
-// bridge appends `NoFx` once: a device "wet" amp id (…BlondeVibratoCabIRConvRvb) strips to
-// a bare id (…BlondeVibrato) the catalog only carries WITH the NoFx token
-// (…BlondeVibratoNoFx); NoFx is never stripped, so it must be re-added to match. Returns
-// the first form satisfying `inSet`, else the fully-stripped id. The shared core of
-// resolveBlockArt + resolveDeviceId (mirrored in the Rust `is_amp_model_id`), so the
-// strip+NoFx rule lives in ONE place.
-function resolveCatalogId(
-  model: string,
-  inSet: (id: string) => boolean,
-): string {
-  let m = model;
-  for (let i = 0; i < 6; i++) {
-    if (inSet(m)) return m;
-    const next = m.replace(SUFFIX, "");
-    if (next === m) break;
-    m = next;
-  }
-  if (inSet(m)) return m;
-  if (!m.endsWith("NoFx") && inSet(m + "NoFx")) return m + "NoFx";
-  return m;
-}
-
 /** Resolve a device model id to its block art, or null if uncatalogued. */
 export function resolveBlockArt(model: string): BlockArtSpec | null {
-  return BY_ID[resolveCatalogId(model, (m) => Boolean(BY_ID[m]))] ?? null;
+  return BY_ID[resolveDeviceId(model, (m) => Boolean(BY_ID[m]))] ?? null;
 }
 
 /** Terse model→caption fallback for an uncatalogued block — spaces the camelCase
@@ -196,14 +170,16 @@ export function shortFallback(model: string): string {
  * drift from each other or from the Catalog (which feeds BlockArt the same set).
  * Returns a plain object (a structural superset of which is a `StripBlock`). */
 export interface BlockArtFields {
-  icon?: string;
-  tone?: string;
+  icon?: IconId;
+  tone?: ToneId;
   body?: string;
   panel?: string;
   footswitch?: "plate" | "metal" | "round";
   accent?: string;
-  /** = `art.short`; the engine's caption + 1.8 dispatch token (undefined when
-   *  uncatalogued — matches the Catalog's `lab={art?.short ?? ""}`). */
+  /** explicit per-model art treatment (= `art.variant`). */
+  variant?: ArtVariant;
+  /** = `art.short`; the engine's caption (undefined when uncatalogued — matches the
+   *  Catalog's `lab={art?.short ?? ""}`). */
   lab?: string;
   /** visible strip caption, with an uppercase fallback for uncatalogued blocks. */
   name: string;
@@ -223,6 +199,7 @@ export function blockArtTile(model: string): BlockArtFields {
     panel: art?.panel,
     footswitch: art?.footswitch,
     accent: art?.accent,
+    variant: art?.variant,
     lab: art?.short,
     name: art?.short ?? shortFallback(model).toUpperCase(),
     fullName: art?.name,
@@ -242,13 +219,13 @@ export function cabArtModel(
 }
 
 /** Head-over-cab art for an amp that carries its own cab (a combo / half-stack).
- *  `topIcon/topTone/topLab` = the amp head; `cabIcon/cabTone` = the cabinet. */
+ *  `topIcon/topTone/topVariant` = the amp head; `cabIcon/cabTone` = the cabinet. */
 export interface HalfStackSpec {
-  topIcon?: string;
-  topTone?: string;
-  topLab: string;
-  cabIcon: string;
-  cabTone?: string;
+  topIcon?: IconId;
+  topTone?: ToneId;
+  topVariant?: ArtVariant;
+  cabIcon: IconId;
+  cabTone?: ToneId;
 }
 
 /** Build the head-over-cab spec from an amp head's ALREADY-RESOLVED art + the device's
@@ -265,7 +242,7 @@ export function ampCabHalfStack(
   return {
     topIcon: head.icon,
     topTone: head.tone,
-    topLab: head.lab ?? "",
+    topVariant: head.variant,
     cabIcon: cab.icon ?? "cab4",
     cabTone: cab.tone,
   };
@@ -302,14 +279,6 @@ export function nodeTileArt(
   if (isCombo) return base;
   const halfStack = ampCabHalfStack(base, cabSimId);
   return halfStack ? { ...base, halfStack } : base;
-}
-
-/** Resolve a device FenderId to its catalog id (see {@link resolveCatalogId}). */
-export function resolveDeviceId(
-  model: string,
-  inSet: (id: string) => boolean,
-): string {
-  return resolveCatalogId(model, inSet);
 }
 
 export const HALF_STACK_PAIR: Record<string, string> = HALF_STACK_DEFAULTS;

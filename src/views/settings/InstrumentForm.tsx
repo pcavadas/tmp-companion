@@ -5,7 +5,7 @@
 import { useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { plainInput, type ThemeTokens } from "../../theme/tokens";
+import { plainButton, plainInput, type ThemeTokens } from "../../theme/tokens";
 import { Button } from "../../ui/primitives";
 import type { Profile, TopologyInfo } from "../../lib/types";
 
@@ -14,7 +14,7 @@ import type { Profile, TopologyInfo } from "../../lib/types";
 // ===========================================================================
 
 function chipStyle(t: ThemeTokens, on: boolean) {
-  return {
+  return plainButton({
     fontFamily: t.mono,
     fontSize: t.fsData2,
     letterSpacing: t.lsMeta,
@@ -26,7 +26,7 @@ function chipStyle(t: ThemeTokens, on: boolean) {
     cursor: "pointer",
     userSelect: "none" as const,
     whiteSpace: "nowrap" as const,
-  };
+  });
 }
 
 interface InstrumentFormProps {
@@ -134,9 +134,16 @@ export function InstrumentForm({
 
       <div style={{ display: "flex", flexDirection: "column", gap: t.space3 }}>
         {fieldLab("Type")}
-        <div style={{ display: "flex", gap: t.space3, flexWrap: "wrap" }}>
+        <div
+          role="radiogroup"
+          aria-label="Type"
+          style={{ display: "flex", gap: t.space3, flexWrap: "wrap" }}
+        >
           {types.map((ty) => (
-            <span
+            <button
+              type="button"
+              role="radio"
+              aria-checked={type === ty}
               key={ty}
               onClick={() => {
                 pickType(ty);
@@ -144,16 +151,23 @@ export function InstrumentForm({
               style={chipStyle(t, type === ty)}
             >
               {ty}
-            </span>
+            </button>
           ))}
         </div>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: t.space3 }}>
         {fieldLab("Pickup")}
-        <div style={{ display: "flex", gap: t.space3, flexWrap: "wrap" }}>
+        <div
+          role="radiogroup"
+          aria-label="Pickup"
+          style={{ display: "flex", gap: t.space3, flexWrap: "wrap" }}
+        >
           {pickups.map((tp) => (
-            <span
+            <button
+              type="button"
+              role="radio"
+              aria-checked={effectiveTopologyId === tp.id}
               key={tp.id}
               onClick={() => {
                 setTopologyId(tp.id);
@@ -161,7 +175,7 @@ export function InstrumentForm({
               style={chipStyle(t, effectiveTopologyId === tp.id)}
             >
               {tp.label}
-            </span>
+            </button>
           ))}
         </div>
       </div>
@@ -169,10 +183,10 @@ export function InstrumentForm({
       <div
         style={{ display: "flex", justifyContent: "flex-end", gap: t.space4 }}
       >
-        <Button variant="ghost" small onClick={onCancel}>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
           Cancel
         </Button>
-        <Button variant="primary" small onClick={save} disabled={!canSave}>
+        <Button variant="primary" size="sm" onClick={save} disabled={!canSave}>
           {initial ? "Save" : "Add instrument"}
         </Button>
       </div>

@@ -5,37 +5,29 @@
 // Done, then asserts the footer returns to the idle hint.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
-
-// 1) event bridge + listeners Map — the view's live subscriptions take the real
-//    listen() path under the forced isTauri().
-const listeners = new Map<string, (e: { payload: unknown }) => void>();
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (name: string, cb: (e: { payload: unknown }) => void) => {
-    listeners.set(name, cb);
-    return Promise.resolve(() => listeners.delete(name));
-  },
-}));
-
-// 2) force isTauri() true so libraryScan + live subscriptions run.
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return { ...actual, isTauri: () => true };
-});
-
-// NOTE: @tauri-apps/api/core invoke + Channel are globally mocked in src/__tests__/setup.ts
-//   (Channel = class MockChannel { onmessage = null }). Per test we OVERRIDE invoke via
-//   vi.mocked(invoke).mockImplementation((command, args) => switch(command){...}); unhandled
-//   commands fall through to setup.ts's empty shapes.
-
-// Imported AFTER the mocks so the view picks up the forced isTauri().
 import { LevelView } from "../views/level";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import { resetLevelFlow } from "../views/level/levelRunStore";
+import type { LevelResult } from "../lib/types";
+import {
+  callsOf,
+  fired,
+  forceTauri,
+  makeBackupPresetRow,
+  makeBackupRead,
+  makeLevelResult,
+  makeStore,
+  mockCommands,
+  withoutAmpCandidates,
+} from "./commandMocks";
+import { renderWithTheme } from "./testKit";
+
+// In-app: the live bridges and the library scan subscribe.
+forceTauri();
 
 // The leveling wizard lives in a module store that outlives a mount; start each case clean.
 beforeEach(() => {
@@ -45,120 +37,74 @@ beforeEach(() => {
 const SLOT = 0; // list index 0 == device slot 1
 const TARGET_LUFS = -26; // the single "Rhythm" store target
 
-function levelResultStub(over: Record<string, unknown> = {}) {
-  return {
-    slot: SLOT,
-    ref_level: 0.5,
-    measured_lufs: -13.0,
-    constant_c: -13.0,
-    final_level: 0.18,
-    target_lufs: TARGET_LUFS,
-    predicted_lufs: TARGET_LUFS,
-    clamped: false,
-    clamp_reason: null,
-    dynamic_spread_lu: 1.1,
-    verify_by_ear: null,
-    saved: true,
-    verify_lufs: TARGET_LUFS,
-    iterations: 1,
-    ...over,
-  };
-}
+const levelResultStub = (over: Partial<LevelResult> = {}): LevelResult =>
+  makeLevelResult({ slot: SLOT, target_lufs: TARGET_LUFS, ...over });
 
-// One preset "Stadium Lead" with a base + two FS scenes; the backup read supplies its
-// scenes (so the row expands), and the three level commands are stubbed. The batched
-// scene command harmlessly fires its Channel onmessage per scene before resolving.
-function mockHappyPath(baseOver: Record<string, unknown> = {}) {
-  vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
-    switch (command) {
-      case "list_presets":
-        return Promise.resolve([{ slot: SLOT, name: "Stadium Lead" }]);
-      case "get_store":
-        return Promise.resolve({
-          profiles: [
-            {
-              id: "tele",
-              name: "Telecaster",
-              topology_id: "sc",
-              calibration_lufs: -22,
-            },
-          ],
-          profile_by_slot: {},
-          targets: [{ name: "Rhythm", lufs: TARGET_LUFS }],
-        });
-      case "read_library_via_backup":
-        return Promise.resolve({
-          members: [],
-          db_bytes: 0,
-          total_rows: 1,
-          scene_mode: "test",
-          presets: [
-            {
-              slot: 1, // device slot 1 == list index 0
-              name: "Stadium Lead",
-              scene_count: 2,
-              scenes: [
-                { name: "Rhythm", fs: 1 },
-                { name: "Lead", fs: 2 },
-              ],
-              blocks: [],
-              footswitches: [],
-              scene_handles: [],
-              fs_scene_contexts: [],
-              base_handles: [],
-            },
-          ],
-          song_presets: [],
-          songs: [],
-          setlists: [],
-          setlist_songs: [],
-        });
-      case "level_preset":
-        return Promise.resolve(levelResultStub(baseOver));
-      case "list_level_blocks":
-        return Promise.resolve([
+// "Stadium Lead" with a base + two FS scenes. The row deliberately has NO
+// `amp_candidates` key, so the scene lane must fall back to the live
+// `list_level_blocks` read — the fallback this suite exercises.
+const STADIUM_LEAD = withoutAmpCandidates(
+  makeBackupPresetRow({
+    slot: 1, // device slot 1 == list index 0
+    name: "Stadium Lead",
+    scene_count: 2,
+    scenes: [
+      { name: "Rhythm", fs: 1 },
+      { name: "Lead", fs: 2 },
+    ],
+  }),
+);
+
+// One preset; the backup read supplies its scenes (so the row expands), and the three
+// level commands are stubbed. The batched scene command fires its Channel onmessage per
+// scene before resolving.
+function mockHappyPath(baseOver: Partial<LevelResult> = {}) {
+  mockCommands({
+    list_presets: () => [{ slot: SLOT, name: "Stadium Lead" }],
+    get_store: () =>
+      makeStore({
+        profiles: [
           {
-            group_id: "amp",
-            node_id: "amp0",
-            model_id: "ACD_TweedDeluxe", // a real amp bid → passes ampCandidates
-            parameter_id: "outputLevel",
-            value: 0.5,
+            id: "tele",
+            name: "Telecaster",
+            topology_id: "sc",
+            calibration_lufs: -22,
           },
-        ]);
-      case "level_scenes_apply_batched": {
-        const a = args as {
-          jobs: { sceneSlot: number; targetLufs: number }[];
-          onResult?: { onmessage?: (item: unknown) => void };
-        };
-        const results = a.jobs.map(() => levelResultStub());
-        a.jobs.forEach((j, i) =>
-          a.onResult?.onmessage?.({
-            sceneSlot: j.sceneSlot,
-            status: "done",
-            result: results[i],
-            message: null,
-          }),
-        );
-        return Promise.resolve(results);
-      }
-      default:
-        return Promise.resolve(null);
-    }
+        ],
+        targets: [{ name: "Rhythm", lufs: TARGET_LUFS }],
+      }),
+    read_library_via_backup: () =>
+      makeBackupRead({ total_rows: 1, presets: [STADIUM_LEAD] }),
+    level_preset: () => levelResultStub(baseOver),
+    list_level_blocks: () => [
+      {
+        group_id: "amp",
+        node_id: "amp0",
+        model_id: "ACD_TweedDeluxe", // a real amp bid → passes ampCandidates
+        parameter_id: "outputLevel",
+        value: 0.5,
+      },
+    ],
+    level_scenes_apply_batched: ({ jobs, onResult }) => {
+      const results = jobs.map(() => levelResultStub());
+      jobs.forEach((j, i) => {
+        onResult.onmessage({
+          sceneSlot: j.sceneSlot,
+          status: "done",
+          result: results[i],
+          message: null,
+        });
+      });
+      return results;
+    },
   });
 }
 
 function renderView() {
-  const r = render(
-    <ThemeProvider>
-      <LevelView connected={true} />
-    </ThemeProvider>,
-  );
+  const r = renderWithTheme(<LevelView connected={true} />);
   void ensureLibraryScan(); // App-owned scan in production; seed it for the view here
   return r;
 }
-
-const fired = (command: string) =>
-  vi.mocked(invoke).mock.calls.some((c) => c[0] === command);
 
 // Tick the inline backup acknowledgment in the Set-up footer — it gates the
 // "Level N sounds" button (there is no separate Back-up step).
@@ -169,7 +115,6 @@ async function ackBackup(user: ReturnType<typeof userEvent.setup>) {
 describe("LevelView — full Level wizard happy path (e2e, device mocked)", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
-    listeners.clear();
     resetLibraryScan();
     localStorage.clear();
   });
@@ -225,17 +170,10 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
     expect(fired("level_scenes_apply_batched")).toBe(true); // FS scene level
 
     // The level_preset call carries a job with the expected slot + target. The job
-    // payload keys are snake_case on the wire (invoke.ts: invoke("level_preset", { job })
-    // with LevelJob.target_lufs snake_case).
-    const baseCall = vi
-      .mocked(invoke)
-      .mock.calls.find((c) => c[0] === "level_preset");
-    expect(baseCall).toBeDefined();
-    const job = (
-      baseCall?.[1] as { job: { slot: number; target_lufs: number } }
-    ).job;
-    expect(job.slot).toBe(SLOT);
-    expect(job.target_lufs).toBe(TARGET_LUFS);
+    // payload keys are snake_case on the wire (LevelJob.target_lufs).
+    const [baseCall] = callsOf("level_preset");
+    expect(baseCall.job.slot).toBe(SLOT);
+    expect(baseCall.job.target_lufs).toBe(TARGET_LUFS);
   });
 
   // #187: the store maps the backend's `verify_failed` to a "not confirmed" row. A Base

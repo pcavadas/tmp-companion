@@ -103,7 +103,9 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     }
 
     await page.getByRole("button", { name: /Start.*2 sound/ }).click();
-    await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
+    await expect(
+      page.getByRole("button", { name: "Done", exact: true }),
+    ).toBeVisible({
       timeout: 240_000,
     });
 

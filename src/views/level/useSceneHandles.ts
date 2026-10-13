@@ -14,8 +14,9 @@
 // bare `undefined` ("not fetched yet") and an empty/mismatched list ("fetched,
 // this handle is gone") collapse into the same falsy check, so a carried-forward
 // VALID handle rendered "(removed)" until the fetch resolved (BUG→GATE). Naming
-// "unfetched" as its own state is what SceneLevelPick derives BOTH `stale` and
-// `triggerLabel` from now — see that component.
+// "unfetched" as its own state is what `FlatLevelPick` (fed through `SetupPage`'s
+// candidate mapping) derives BOTH `stale` and `triggerLabel` from now — see that
+// component.
 
 import { listSceneLevelHandles } from "../../lib/invoke";
 import type { SceneHandleRow, SceneHandleCandidate } from "../../lib/types";
@@ -41,7 +42,7 @@ export interface UseSceneHandlesResult {
    *  on every menu open; only the first call per slot per mount actually resolves.
    *  When the backup scan has NO entry for `slot`, this DOES reach the device
    *  (`list_scene_level_handles`) — callers doing an eager, provably-device-free warm
-   *  must gate on `hasBackupData` first (see `SetupBody`'s Set-up-render warm effect). */
+   *  must gate on `hasBackupData` first (see `SetupPage`'s Set-up-render warm effect). */
   prefetch: (slot: number) => void;
   /** This preset+scene's candidate fetch state, right now. */
   candidatesFor: (slot: number, sceneSlot: number) => HandleFetchState;

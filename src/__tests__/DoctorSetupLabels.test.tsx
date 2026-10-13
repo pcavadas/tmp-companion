@@ -1,30 +1,28 @@
 // src/__tests__/DoctorSetupLabels.test.tsx — BUG→GATE (issue 2), Doctor's Set-up step.
-// Same mislabel as SetupBody's (see SetupBodyLabels.test.tsx): a hardcoded "Whole
+// Same mislabel as SetupPage's (see SetupPage.labels.test.tsx): a hardcoded "Whole
 // preset" for every base row shadowed `chosenFrom`'s own "Base Preset" answer for a
 // multi-scene preset. The fix is `nameLabel = o.sceneName` here too.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { DoctorSetup } from "../views/doctor/DoctorSetup";
 import type { SetupOption } from "../views/level/leveling";
 import type { PickOption } from "../views/overlays/Pick";
+import { renderWithTheme } from "./testKit";
 
 const instrumentOptions: PickOption[] = [{ id: "none", label: "None" }];
 
 function renderSetup(option: SetupOption) {
-  return render(
-    <ThemeProvider>
-      <DoctorSetup
-        options={[option]}
-        presetCount={1}
-        instrumentOptions={instrumentOptions}
-        store={null}
-        onBack={vi.fn()}
-        onRun={vi.fn()}
-      />
-    </ThemeProvider>,
+  return renderWithTheme(
+    <DoctorSetup
+      options={[option]}
+      presetCount={1}
+      instrumentOptions={instrumentOptions}
+      store={null}
+      onBack={vi.fn()}
+      onRun={vi.fn()}
+    />,
   );
 }
 

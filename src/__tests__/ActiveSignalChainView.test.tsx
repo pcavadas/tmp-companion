@@ -4,21 +4,14 @@
 // (no baked text, no raw-id slices); and icon/tone resolve BY ID — so tweed and
 // blackface combos differ and Filtron is an envelope filter, not a blank box.
 
-import { describe, it, expect, vi, beforeAll } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-// jsdom has no SVGGraphicsElement.getBBox; HalfStackArt measures real geometry in a
-// layout effect to stack head over cab, so stub it (as BlockArt.test.tsx does).
-beforeAll(() => {
-  (SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox =
-    () => ({ x: 0, y: 0, width: 72, height: 100 }) as DOMRect;
-});
-
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { ActiveSignalChainView } from "../views/ActiveSignalChainView";
 import { resolveBlockArt } from "../models/blockArt";
 import type { ActiveGraph, GraphNode } from "../lib/types";
+import { renderWithTheme } from "./testKit";
 
 const blk = (model: string): GraphNode => ({
   group_id: "",
@@ -50,11 +43,7 @@ const DUAL_SPLIT: ActiveGraph = {
 };
 
 function renderStrip(graph: ActiveGraph) {
-  return render(
-    <ThemeProvider>
-      <ActiveSignalChainView graph={graph} />
-    </ThemeProvider>,
-  );
+  return renderWithTheme(<ActiveSignalChainView graph={graph} />);
 }
 
 const count = (hay: string, needle: string) => hay.split(needle).length - 1;
@@ -130,10 +119,8 @@ describe("ActiveSignalChainView — dual-split via shared BlockArt engine", () =
   });
 
   it("ghosts identity + chain while the active preset is still arriving", () => {
-    const { container } = render(
-      <ThemeProvider>
-        <ActiveSignalChainView graph={null} presetLoading diagramLoading />
-      </ThemeProvider>,
+    const { container } = renderWithTheme(
+      <ActiveSignalChainView graph={null} presetLoading diagramLoading />,
     );
     // Work-in-progress caption (not the disconnected empty state), and the
     // silhouette is ghosted (shimmer fills, no SPLIT/MIX labels).
@@ -143,10 +130,8 @@ describe("ActiveSignalChainView — dual-split via shared BlockArt engine", () =
   });
 
   it("reads 'Loading signal chain…' once the identity has resolved but the chain has not", () => {
-    render(
-      <ThemeProvider>
-        <ActiveSignalChainView graph={DUAL_SPLIT} diagramLoading />
-      </ThemeProvider>,
+    renderWithTheme(
+      <ActiveSignalChainView graph={DUAL_SPLIT} diagramLoading />,
     );
     // Identity (the slot badge) stays visible; the chain ghosts; caption is the
     // distinctive signal-chain wording.
@@ -156,13 +141,11 @@ describe("ActiveSignalChainView — dual-split via shared BlockArt engine", () =
 
   // ── R3 live-sync additions: sceneTag + diagram-fail overlay ─────────────────
   it("renders the live-scene tag (› SCENE) next to the name", () => {
-    const { container } = render(
-      <ThemeProvider>
-        <ActiveSignalChainView
-          graph={DUAL_SPLIT}
-          sceneTag={{ text: "CHORUS", tone: "#a7461f" }}
-        />
-      </ThemeProvider>,
+    const { container } = renderWithTheme(
+      <ActiveSignalChainView
+        graph={DUAL_SPLIT}
+        sceneTag={{ text: "CHORUS", tone: "#a7461f" }}
+      />,
     );
     const txt = container.textContent;
     expect(txt).toContain("CHORUS");
@@ -170,13 +153,11 @@ describe("ActiveSignalChainView — dual-split via shared BlockArt engine", () =
   });
 
   it("the neutral syncing tag is a faint em-dash with NO caret and the catching-up tooltip", () => {
-    render(
-      <ThemeProvider>
-        <ActiveSignalChainView
-          graph={DUAL_SPLIT}
-          sceneTag={{ text: "—", tone: "#9aa0a9", neutral: true }}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <ActiveSignalChainView
+        graph={DUAL_SPLIT}
+        sceneTag={{ text: "—", tone: "#9aa0a9", neutral: true }}
+      />,
     );
     expect(screen.getByTitle("Catching up to the unit…")).toBeInTheDocument();
   });
@@ -184,14 +165,12 @@ describe("ActiveSignalChainView — dual-split via shared BlockArt engine", () =
   it("the diagram-fail overlay shows the amber chip + a Retry that fires onRetryDiagram", async () => {
     const onRetryDiagram = vi.fn();
     const user = userEvent.setup();
-    render(
-      <ThemeProvider>
-        <ActiveSignalChainView
-          graph={DUAL_SPLIT}
-          diagramError
-          onRetryDiagram={onRetryDiagram}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <ActiveSignalChainView
+        graph={DUAL_SPLIT}
+        diagramError
+        onRetryDiagram={onRetryDiagram}
+      />,
     );
     expect(screen.getByText(/signal view didn't refresh/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /retry/i }));
@@ -297,19 +276,15 @@ describe("ActiveSignalChainView — slot badge", () => {
       ...seriesGraph([blk("ACD_KlonCentaur")]),
       slot: null,
     };
-    const { container } = render(
-      <ThemeProvider>
-        <ActiveSignalChainView graph={noSlot} slot={2} />
-      </ThemeProvider>,
+    const { container } = renderWithTheme(
+      <ActiveSignalChainView graph={noSlot} slot={2} />,
     );
     expect(container.textContent).toContain("003"); // one-based of index 2
   });
 
   it("falls back to the graph slot when no live index is given (startup)", () => {
-    const { container } = render(
-      <ThemeProvider>
-        <ActiveSignalChainView graph={seriesGraph([blk("ACD_KlonCentaur")])} />
-      </ThemeProvider>,
+    const { container } = renderWithTheme(
+      <ActiveSignalChainView graph={seriesGraph([blk("ACD_KlonCentaur")])} />,
     );
     expect(container.textContent).toContain("002"); // seriesGraph slot 1 → label 002
   });

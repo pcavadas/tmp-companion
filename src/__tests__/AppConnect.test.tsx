@@ -3,12 +3,13 @@
 // LevelView is shallow-mocked to expose its onScan prop.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { DISCLAIMER_PERM_KEY } from "../lib/gates";
+import type { ConnectResult } from "../lib/types";
+import { mockCommands } from "./commandMocks";
 import type { LevelViewProps } from "../views/level/LevelView";
 
 vi.mock("../views/level", () => ({
@@ -19,6 +20,7 @@ vi.mock("../views/level", () => ({
 
 // Imported AFTER the mock so App picks up the stand-in.
 import App from "../App";
+import { renderWithTheme } from "./testKit";
 
 describe("App — manual retry shares the single-flight guard (#305)", () => {
   beforeEach(() => {
@@ -29,19 +31,14 @@ describe("App — manual retry shares the single-flight guard (#305)", () => {
 
   it("a Scan while the mount attempt is still in flight starts no second connect", async () => {
     let fail: (e: Error) => void = () => undefined;
-    vi.mocked(invoke).mockImplementation((command: string) =>
-      command === "connect_device"
-        ? new Promise((_res, rej) => {
-            fail = rej;
-          })
-        : Promise.resolve(null),
-    );
+    mockCommands({
+      connect_device: () =>
+        new Promise<ConnectResult>((_res, rej) => {
+          fail = rej;
+        }),
+    });
     localStorage.setItem(DISCLAIMER_PERM_KEY, "1");
-    render(
-      <ThemeProvider>
-        <App />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<App />);
     const connects = () =>
       vi.mocked(invoke).mock.calls.filter(([c]) => c === "connect_device")
         .length;

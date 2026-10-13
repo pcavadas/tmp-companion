@@ -22,5 +22,3 @@ export function LoadErrorPane({ message, onRetry }: LoadErrorPaneProps) {
     </div>
   );
 }
-
-export default LoadErrorPane;

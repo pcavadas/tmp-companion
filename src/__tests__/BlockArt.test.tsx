@@ -7,29 +7,26 @@
 // after splitting the engine into per-form modules) surfaces here instead of only
 // at runtime when that form first appears on screen.
 
-import { describe, it, expect, beforeAll } from "vitest";
-import { render } from "@testing-library/react";
-import { ThemeProvider } from "../theme/ThemeProvider";
-import { BlockArt, HalfStackArt } from "../ui/BlockArt";
+import { describe, it, expect } from "vitest";
+import {
+  BlockArt,
+  HalfStackArt,
+  type IconId,
+  type ToneId,
+} from "../ui/BlockArt";
 import { ampCabHalfStack, nodeTileArt, blockArtTile } from "../models/blockArt";
 import { clothFor } from "../ui/blockart/shared";
-
-// jsdom has no SVGGraphicsElement.getBBox (HalfStackArt measures real geometry in
-// a layout effect to fit head-over-cab); stub it so the component can render here.
-beforeAll(() => {
-  (SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox =
-    () => ({ x: 0, y: 0, width: 72, height: 100 }) as DOMRect;
-});
+import { renderWithTheme } from "./testKit";
 
 function svgOf(node: React.ReactNode): SVGSVGElement {
-  const { container } = render(<ThemeProvider>{node}</ThemeProvider>);
+  const { container } = renderWithTheme(node);
   const svg = container.querySelector("svg");
   if (!svg) throw new Error("expected the component to render an <svg>");
   return svg;
 }
 
 // One representative icon per form-factor (see formFor()).
-const PER_FORM: [form: string, icon: string, tone: string][] = [
+const PER_FORM: [form: string, icon: IconId, tone: ToneId][] = [
   ["amp", "combo", "tweed"],
   ["amp/head", "amp", "marshall"],
   ["amp/stack", "stack", "mesa"],
@@ -83,17 +80,16 @@ describe("BlockArt — every form-factor renders an svg", () => {
 // ============================================================================
 
 // New tones × every amp form they ship in (combo + head; cab where applicable).
-const FW18_AMPS: [name: string, icon: string, tone: string, lab?: string][] = [
+const FW18_AMPS: [name: string, icon: IconId, tone: ToneId, lab?: string][] = [
   ["silverface combo", "combo", "silverface", "68 CUSTOM DELUXE"],
   ["silverface head", "amp", "silverface", "68 CUSTOM DELUXE"],
   ["evh green combo", "combo", "evhmodern", "EVH 5150 III GREEN"],
   ["evh blue combo", "combo", "evhmodern", "EVH 5150 III BLUE"],
   ["evh red combo", "combo", "evhmodern", "EVH 5150 III RED"],
   ["evh green head", "amp", "evhmodern", "EVH 5150 III GREEN"],
-  ["evh twin15 combo", "combo", "evhmodern", "65 TWIN 15"],
 ];
 
-const FW18_CABS: [name: string, icon: string, tone: string][] = [
+const FW18_CABS: [name: string, icon: IconId, tone: ToneId][] = [
   ["silverface 1x12", "cab1", "silverface"],
   ["evh 1x12", "cab1", "evhmodern"],
   ["evh 4x12", "cab4", "evhmodern"],
@@ -102,7 +98,7 @@ const FW18_CABS: [name: string, icon: string, tone: string][] = [
 
 // New pedal icons: the gear pedals (od3 across all 3 lineages), the 2 boosts,
 // the 8 Fender-designed concept motifs.
-const FW18_PEDALS: [name: string, icon: string, tone: string, lab?: string][] =
+const FW18_PEDALS: [name: string, icon: IconId, tone: ToneId, lab?: string][] =
   [
     ["pinions od3", "od3", "yellow", "PLUMES"],
     ["runes od3", "od3", "green", "BLUMES"],
@@ -160,6 +156,7 @@ describe("BlockArt — firmware 1.8 illustrations", () => {
         icon="rack"
         tone="slate"
         lab="SEVENTY SIXER"
+        variant="rack-1176"
         size={56}
         label={false}
       />,
@@ -236,6 +233,7 @@ describe("BlockArt — firmware 1.8 illustrations", () => {
         icon="combo"
         tone="evhmodern"
         lab="EVH 5150 III BLUE"
+        variant="evh-blue"
         size={56}
         label={false}
       />,
@@ -252,6 +250,7 @@ describe("BlockArt — firmware 1.8 illustrations", () => {
         icon="combo"
         tone="evhmodern"
         lab="EVH 5150 III RED"
+        variant="evh-red"
         size={56}
         label={false}
       />,
@@ -323,6 +322,7 @@ describe("BlockArt — firmware 1.8 illustrations", () => {
         icon="rack"
         tone="slate"
         lab="SEVENTY SIXER"
+        variant="rack-1176"
         size={56}
         label={false}
       />,
@@ -337,19 +337,21 @@ describe("BlockArt — firmware 1.8 illustrations", () => {
   it.each([
     ["silverface", "silverface"],
     ["evhmodern", "evhmodern"],
-  ])("HalfStackArt %s head over cab renders", (topTone, cabTone) => {
-    const svg = svgOf(
-      <HalfStackArt
-        topIcon="amp"
-        topTone={topTone}
-        cabIcon="cab1"
-        cabTone={cabTone}
-        topLab="EVH 5150 III GREEN"
-        cabLab="EVH 5150"
-      />,
-    );
-    expect(svg).not.toBeNull();
-  });
+  ] satisfies [ToneId, ToneId][])(
+    "HalfStackArt %s head over cab renders",
+    (topTone, cabTone) => {
+      const svg = svgOf(
+        <HalfStackArt
+          topIcon="amp"
+          topTone={topTone}
+          cabIcon="cab1"
+          cabTone={cabTone}
+          topVariant="evh-green"
+        />,
+      );
+      expect(svg).not.toBeNull();
+    },
+  );
 });
 
 describe("ampCabHalfStack / nodeTileArt — device-driven half-stack", () => {
@@ -360,7 +362,6 @@ describe("ampCabHalfStack / nodeTileArt — device-driven half-stack", () => {
     expect(hs).toMatchObject({
       topIcon: "amp",
       topTone: "hiwatt",
-      topLab: "DR103",
       cabIcon: "cab4", // the real cabinet, from the device's cabsimid
     });
   });

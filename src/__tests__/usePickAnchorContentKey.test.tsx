@@ -16,16 +16,16 @@
 // at the below-value and fails this test.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { FlatLevelPick } from "../views/level/FlatLevelPick";
 import { WithCard } from "./pickCardTestUtils";
 import type {
   FlatLevelFetch,
   BlockLevelCandidate,
 } from "../views/level/FlatLevelPick";
+import { renderWithTheme } from "./testKit";
 
 const CARD_H = 400;
 const CARD_W = 400;
@@ -131,20 +131,18 @@ describe("usePickAnchor — a menu whose content arrives after the open", () => 
     try {
       const user = userEvent.setup();
       const props = (candidates: FlatLevelFetch) => (
-        <ThemeProvider>
-          <WithCard>
-            <FlatLevelPick
-              pseudoLabel="Amp output level"
-              handle={null}
-              onHandleChange={vi.fn()}
-              candidates={candidates}
-              onOpen={vi.fn()}
-            />
-          </WithCard>
-        </ThemeProvider>
+        <WithCard>
+          <FlatLevelPick
+            pseudoLabel="Amp output level"
+            handle={null}
+            onHandleChange={vi.fn()}
+            candidates={candidates}
+            onOpen={vi.fn()}
+          />
+        </WithCard>
       );
 
-      const { rerender } = render(props({ status: "loading" }));
+      const { rerender } = renderWithTheme(props({ status: "loading" }));
       await user.click(screen.getByText("Amp output level"));
       await screen.findByText("Loading controls…");
 

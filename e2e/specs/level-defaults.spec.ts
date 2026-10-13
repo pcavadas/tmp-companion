@@ -104,7 +104,12 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     // allGood (SummaryPage.tsx): no clamp/unconverged/offbranch/skip rows this run ⇒ "Done",
     // not "Accept" — the row solved, it didn't need acknowledgement.
-    await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
+    // `exact`: the Run page's preset-group header is a button whose name ends in its "done"
+    // tag, and a substring match resolves it a beat BEFORE the auto-advance to Summary —
+    // the group click below then lands on a Run-page row that is about to unmount.
+    await expect(
+      page.getByRole("button", { name: "Done", exact: true }),
+    ).toBeVisible({
       timeout: 240_000,
     });
     // `useGroupOpen`'s `badSlots` auto-open list is built from non-"done" rows only
@@ -156,7 +161,9 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await page.getByText(/I.ve backed up with Pro Control/i).click();
     await pickBaseTarget(page, SCENARIO[3].slot, "Lead"); // pick the LOUD target
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
-    await expect(page.getByRole("button", { name: "Accept" })).toBeVisible({
+    await expect(
+      page.getByRole("button", { name: "Accept", exact: true }),
+    ).toBeVisible({
       timeout: 240_000,
     });
     await expect(page.getByText(/Clamped .* already maxed/)).toBeVisible();
@@ -164,7 +171,9 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await page.getByRole("button", { name: /Re-level clamped/ }).click();
     await pickBaseTarget(page, SCENARIO[3].slot, "Crunch"); // QUIETER target
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
-    await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
+    await expect(
+      page.getByRole("button", { name: "Done", exact: true }),
+    ).toBeVisible({
       timeout: 240_000,
     });
     await expect(page.getByText(/Clamped .* already maxed/)).toHaveCount(0);
@@ -246,7 +255,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expect(page.getByText("Leveling stopped")).toBeVisible({
       timeout: 15_000,
     });
-    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
 
     await expect(page.getByText("Stopped — 0 sounds match")).toBeVisible();
     await expect(
@@ -293,7 +302,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expect(page.getByText("Leveling stopped")).toBeVisible({
       timeout: 60_000,
     });
-    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
     await expect(page.getByText(/^Stopped — \d+ sounds? match/)).toBeVisible();
     // Only the item in flight at the Stop ran; the rest of the run did not.
     await expect(

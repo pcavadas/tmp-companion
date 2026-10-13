@@ -6,10 +6,8 @@
 // commands (apply/save/discard) are mocked.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-
-import { ThemeProvider } from "../theme/ThemeProvider";
 
 vi.mock("../lib/invoke", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/invoke")>();
@@ -35,6 +33,7 @@ import type {
   FootswitchInfo,
   SilenceHint,
 } from "../lib/types";
+import { renderWithTheme } from "./testKit";
 
 const NAMES = new Map<number, string>([
   [0, "Studio Clean"],
@@ -287,16 +286,14 @@ function renderResults(
   silenceHintByIndex: Map<number, SilenceHint> = new Map<number, SilenceHint>(),
   inputByKey = new Map<string, DoctorInputArg>(),
 ) {
-  return render(
-    <ThemeProvider>
-      <DoctorResults
-        result={result}
-        presetNames={NAMES}
-        inputByKey={inputByKey}
-        silenceHintByIndex={silenceHintByIndex}
-        onCheckMore={onCheckMore}
-      />
-    </ThemeProvider>,
+  return renderWithTheme(
+    <DoctorResults
+      result={result}
+      presetNames={NAMES}
+      inputByKey={inputByKey}
+      silenceHintByIndex={silenceHintByIndex}
+      onCheckMore={onCheckMore}
+    />,
   );
 }
 
@@ -1289,16 +1286,14 @@ describe("DoctorResults — shared-block caption", () => {
         ]),
       ),
     );
-    return render(
-      <ThemeProvider>
-        <DoctorResults
-          result={result}
-          presetNames={new Map([[0, "Overdrive Rhythm"]])}
-          inputByKey={inputByKey}
-          silenceHintByIndex={new Map()}
-          onCheckMore={() => undefined}
-        />
-      </ThemeProvider>,
+    return renderWithTheme(
+      <DoctorResults
+        result={result}
+        presetNames={new Map([[0, "Overdrive Rhythm"]])}
+        inputByKey={inputByKey}
+        silenceHintByIndex={new Map()}
+        onCheckMore={() => undefined}
+      />,
     );
   }
 

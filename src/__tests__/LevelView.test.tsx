@@ -9,32 +9,44 @@
 //     summary on a natural finish.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
-
-// Capture event listeners (the backup-progress + live-sync subscriptions) so the
-// view's useLiveDevice / usePresetData take the real listen() path under isTauri().
-const listeners = new Map<string, (e: { payload: unknown }) => void>();
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (name: string, cb: (e: { payload: unknown }) => void) => {
-    listeners.set(name, cb);
-    return Promise.resolve(() => listeners.delete(name));
-  },
-}));
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return { ...actual, isTauri: () => true };
-});
-
-// Imported AFTER the mocks so the view picks up the forced isTauri().
 import { LevelView } from "../views/level";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import { resetLiveDevice } from "../device/useLiveDevice";
-import type { ActiveGraph } from "../lib/types";
+import type {
+  ActiveGraph,
+  BackupPresetRow,
+  FootswitchInfo,
+  FootswitchLevelResult,
+  LevelBlock,
+  LevelResult,
+} from "../lib/types";
 import { resetLevelFlow } from "../views/level/levelRunStore";
+import {
+  callsOf,
+  fired,
+  forceTauri,
+  makeActiveGraph,
+  makeBackupPresetRow,
+  makeBackupRead,
+  makeFootswitchLevelResult,
+  makeLevelResult,
+  makeStore,
+  mockCommands,
+  mockLiveEvents,
+  rejectWith,
+  withoutAmpCandidates,
+  type Handler,
+} from "./commandMocks";
+import { renderWithTheme } from "./testKit";
+
+// In-app: the live bridges and the library scan subscribe.
+forceTauri();
+
+const listeners = mockLiveEvents();
 
 // The leveling wizard lives in a module store that outlives a mount; start each case clean.
 beforeEach(() => {
@@ -42,11 +54,7 @@ beforeEach(() => {
 });
 
 function renderView(connected: boolean) {
-  const r = render(
-    <ThemeProvider>
-      <LevelView connected={connected} />
-    </ThemeProvider>,
-  );
+  const r = renderWithTheme(<LevelView connected={connected} />);
   // The backup scan is App-owned in production; seed it here when connected so the
   // view's scene/block data populates (the view itself no longer triggers the scan).
   if (connected) void ensureLibraryScan();
@@ -59,57 +67,28 @@ async function ackBackup(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByText(/backed up with Pro Control/i));
 }
 
-const listPresetsCalls = () =>
-  vi.mocked(invoke).mock.calls.filter((c) => c[0] === "list_presets").length;
+const listPresetsCalls = () => callsOf("list_presets").length;
+
+const RHYTHM_STORE = makeStore({ targets: [{ name: "Rhythm", lufs: -26 }] });
+
+/** A scene-less preset at device slot 1 (list index 0). */
+const STUDIO_CLEAN = makeBackupPresetRow({ slot: 1, name: "Studio Clean" });
 
 // One non-empty, scene-less preset; the backup read returns its (empty) scenes so the
 // row settles to "base only" and selecting it yields a single "Whole preset" sound.
 function mockOnePreset() {
-  vi.mocked(invoke).mockImplementation((command: string) => {
-    switch (command) {
-      case "list_presets":
-        return Promise.resolve([{ slot: 0, name: "Studio Clean" }]);
-      case "get_store":
-        return Promise.resolve({
-          profiles: [],
-          profile_by_slot: {},
-          targets: [{ name: "Rhythm", lufs: -26 }],
-        });
-      case "read_library_via_backup":
-        return Promise.resolve({
-          members: [],
-          db_bytes: 0,
-          total_rows: 1,
-          scene_mode: "test",
-          // device slot 1 = list index 0; scene-less → "Whole preset".
-          presets: [
-            {
-              slot: 1,
-              name: "Studio Clean",
-              scene_count: 0,
-              scenes: [],
-              blocks: [],
-              footswitches: [],
-              scene_handles: [],
-              fs_scene_contexts: [],
-              base_handles: [],
-            },
-          ],
-          song_presets: [],
-          songs: [],
-          setlists: [],
-          setlist_songs: [],
-        });
-      default:
-        return Promise.resolve(null);
-    }
+  mockCommands({
+    list_presets: () => [{ slot: 0, name: "Studio Clean" }],
+    get_store: () => RHYTHM_STORE,
+    // device slot 1 = list index 0; scene-less → "Whole preset".
+    read_library_via_backup: () =>
+      makeBackupRead({ total_rows: 1, presets: [STUDIO_CLEAN] }),
   });
 }
 
 describe("LevelView — gating + crash regression", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
-    listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
   });
@@ -117,18 +96,21 @@ describe("LevelView — gating + crash regression", () => {
   it("does not load while disconnected, then loads once on the rising edge", async () => {
     const { rerender } = renderView(false);
     expect(listPresetsCalls()).toBe(0);
-    rerender(
-      <ThemeProvider>
-        <LevelView connected={true} />
-      </ThemeProvider>,
-    );
+    rerender(<LevelView connected={true} />);
     await waitFor(() => {
       expect(listPresetsCalls()).toBe(1);
     });
   });
 
   it("survives the error→ready transition via Try again", async () => {
-    vi.mocked(invoke).mockRejectedValueOnce(new Error("device offline"));
+    let offline = true; // the first list read fails; Try again succeeds
+    mockCommands({
+      list_presets: () => {
+        if (!offline) return [];
+        offline = false;
+        throw new Error("device offline");
+      },
+    });
     renderView(true);
     const user = userEvent.setup();
     expect(await screen.findByText("device offline")).toBeInTheDocument();
@@ -142,7 +124,6 @@ describe("LevelView — gating + crash regression", () => {
 describe("LevelView — list + leveling entry", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
-    listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
     mockOnePreset();
@@ -192,49 +173,72 @@ describe("LevelView — list + leveling entry", () => {
 // Walks the whole wizard — select in the list → setup → run → summary —
 // deterministically, asserting each stage + that the right device commands fire.
 
-function levelResultStub(over: Record<string, unknown> = {}) {
-  return {
-    slot: 0,
-    ref_level: 0.5,
-    measured_lufs: -13.0,
-    constant_c: -13.0,
-    final_level: 0.18,
+const levelResultStub = (over: Partial<LevelResult> = {}): LevelResult =>
+  makeLevelResult({
     target_lufs: -22,
     predicted_lufs: -22,
-    clamped: false,
-    saved: true,
     verify_lufs: -22,
-    iterations: 1,
+    dynamic_spread_lu: null,
     ...over,
-  };
-}
+  });
 
 // FootswitchLevelResult shape (distinct from LevelResult — carries `method`).
-function footswitchResultStub(over: Record<string, unknown> = {}) {
-  return {
+const footswitchResultStub = (
+  over: Partial<FootswitchLevelResult> = {},
+): FootswitchLevelResult =>
+  makeFootswitchLevelResult({
     switch: 4,
     measured_lufs: -13.0,
     final_value: 0.4,
     target_lufs: -22,
     predicted_lufs: -22,
-    clamped: false,
-    // Mirrors the wire shape exactly — the stub is untyped, so a missing field would
-    // silently read as `undefined` instead of failing the way the real contract does.
-    unconverged: false,
-    clamp_reason: null,
-    wet_floor: false,
-    saved: true,
     verify_lufs: -22,
-    iterations: 1,
-    dynamic_spread_lu: null,
-    method: "baked",
-    persist_mismatch: null,
-    clamp_kind: null,
     ...over,
-  };
-}
+  });
 
-const SOLO_FOOTSWITCH = {
+/** The amp output knob the live `list_level_blocks` fallback finds. */
+const TWEED_OUTPUT: LevelBlock = {
+  group_id: "amp",
+  node_id: "amp0",
+  model_id: "ACD_TweedDeluxe", // a real amp bid → passes ampCandidates
+  parameter_id: "outputLevel",
+  value: 0.5,
+};
+
+/** A scene batch that streams "done" for every job, then returns their results. */
+const levelScenesDone: Handler<"level_scenes_apply_batched"> = ({
+  jobs,
+  onResult,
+}) => {
+  const results = jobs.map(() => levelResultStub());
+  jobs.forEach((j, i) => {
+    onResult.onmessage({
+      sceneSlot: j.sceneSlot,
+      status: "done",
+      result: results[i],
+      message: null,
+    });
+  });
+  return results;
+};
+
+/** "Plexi" (device slot 1 = list index 0) with two FS scenes. No `amp_candidates`, so
+ * a scene run takes the live `list_level_blocks` fallback. */
+const plexiRow = (over: Partial<BackupPresetRow> = {}) =>
+  withoutAmpCandidates(
+    makeBackupPresetRow({
+      slot: 1,
+      name: "Plexi",
+      scene_count: 2,
+      scenes: [
+        { name: "Rhythm", fs: 1 },
+        { name: "Lead", fs: 2 },
+      ],
+      ...over,
+    }),
+  );
+
+const SOLO_FOOTSWITCH: FootswitchInfo = {
   switch: 4, // → tag FS5
   label: "Solo",
   link_group: null,
@@ -263,119 +267,65 @@ function mockLevelingFixture(
     envelopeBlock?: boolean;
   } = {},
 ) {
-  vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
-    switch (command) {
-      case "list_presets":
-        return Promise.resolve([{ slot: 0, name: "Plexi" }]);
-      case "get_store":
-        return Promise.resolve({
-          profiles: [
-            {
-              id: "tele",
-              name: "Telecaster",
-              topology_id: "sc",
-              calibration_lufs: -22,
-            },
-          ],
-          profile_by_slot: {},
-          targets: [{ name: "Rhythm", lufs: -26 }],
-        });
-      case "read_library_via_backup":
-        return Promise.resolve({
-          members: [],
-          db_bytes: 0,
-          total_rows: 1,
-          scene_mode: "test",
-          presets: [
-            {
-              slot: 1, // device slot 1 = list index 0
-              name: "Plexi",
-              scene_count: 2,
-              scenes: [
-                { name: "Rhythm", fs: 1 },
-                { name: "Lead", fs: 2 },
-              ],
-              blocks: opts.envelopeBlock
-                ? [
-                    {
-                      group_id: "pedals",
-                      node_id: "env0",
-                      fender_id: "ACD_MicroTronIV",
-                    },
-                  ]
-                : [],
-              footswitches: opts.footswitch ? [SOLO_FOOTSWITCH] : [],
-              scene_handles: [],
-              fs_scene_contexts: [],
-              base_handles: [],
-            },
-          ],
-          song_presets: [],
-          songs: [],
-          setlists: [],
-          setlist_songs: [],
-        });
-      case "level_footswitches_apply": {
-        // Every row levels now (D2 — the backend removed the verify-only mode
-        // entirely), so every job resolves the same way.
-        const job = args as {
-          jobs: { switch: number }[];
-          onResult?: { onmessage?: (item: unknown) => void };
-        };
-        job.jobs.forEach((j) => {
-          job.onResult?.onmessage?.({
-            switch: j.switch,
-            status: "done",
-            result: footswitchResultStub(),
-            message: null,
-          });
-        });
-        return Promise.resolve(job.jobs.map(() => footswitchResultStub()));
-      }
-      case "level_preset":
-        return Promise.resolve(
-          levelResultStub({
-            clamped: !!opts.clamped,
-            dynamic_spread_lu: opts.spreadLu ?? null,
-            verify_by_ear: !!opts.verifyByEar,
-          }),
-        );
-      case "list_level_blocks":
-        return Promise.resolve([
+  mockCommands({
+    list_presets: () => [{ slot: 0, name: "Plexi" }],
+    get_store: () =>
+      makeStore({
+        profiles: [
           {
-            group_id: "amp",
-            node_id: "amp0",
-            model_id: "ACD_TweedDeluxe", // a real amp bid → passes ampCandidates
-            parameter_id: "outputLevel",
-            value: 0.5,
+            id: "tele",
+            name: "Telecaster",
+            topology_id: "sc",
+            calibration_lufs: -22,
           },
-        ]);
-      case "level_scenes_apply_batched": {
-        const job = args as {
-          jobs: { sceneSlot: number; targetLufs: number }[];
-          onResult?: { onmessage?: (item: unknown) => void };
-        };
-        const results = job.jobs.map(() => levelResultStub());
-        job.jobs.forEach((j, i) =>
-          job.onResult?.onmessage?.({
-            sceneSlot: j.sceneSlot,
-            status: "done",
-            result: results[i],
-            message: null,
+        ],
+        targets: [{ name: "Rhythm", lufs: -26 }],
+      }),
+    read_library_via_backup: () =>
+      makeBackupRead({
+        total_rows: 1,
+        presets: [
+          plexiRow({
+            blocks: opts.envelopeBlock
+              ? [
+                  {
+                    group_id: "pedals",
+                    node_id: "env0",
+                    fender_id: "ACD_MicroTronIV",
+                  },
+                ]
+              : [],
+            footswitches: opts.footswitch ? [SOLO_FOOTSWITCH] : [],
           }),
-        );
-        return Promise.resolve(results);
-      }
-      // No candidates in these fixtures — the point is exercising the target-mode
-      // pick, not the handle picker's candidate list (see SceneLevelPick.test.tsx).
-      case "list_scene_level_handles":
-        return Promise.resolve([
-          { sceneSlot: 0, candidates: [] },
-          { sceneSlot: 1, candidates: [] },
-        ]);
-      default:
-        return Promise.resolve(null);
-    }
+        ],
+      }),
+    level_footswitches_apply: ({ jobs, onResult }) => {
+      // Every row levels now (D2 — the backend removed the verify-only mode
+      // entirely), so every job resolves the same way.
+      jobs.forEach((j) => {
+        onResult.onmessage({
+          switch: j.switch,
+          status: "done",
+          result: footswitchResultStub(),
+          message: null,
+        });
+      });
+      return jobs.map(() => footswitchResultStub());
+    },
+    level_preset: () =>
+      levelResultStub({
+        clamped: !!opts.clamped,
+        dynamic_spread_lu: opts.spreadLu ?? null,
+        verify_by_ear: !!opts.verifyByEar,
+      }),
+    list_level_blocks: () => [TWEED_OUTPUT],
+    level_scenes_apply_batched: levelScenesDone,
+    // No candidates in these fixtures — the point is exercising the target-mode
+    // pick, not the handle picker's candidate list (see SceneLevelPick.test.tsx).
+    list_scene_level_handles: () => [
+      { sceneSlot: 0, candidates: [], allCandidates: [] },
+      { sceneSlot: 1, candidates: [], allCandidates: [] },
+    ],
   });
 }
 
@@ -394,13 +344,9 @@ async function selectWholePreset(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getAllByTitle("Select preset to level")[0]);
 }
 
-const fired = (command: string) =>
-  vi.mocked(invoke).mock.calls.some((c) => c[0] === command);
-
 describe("LevelView — hero recovers from a graphless connect", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
-    listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
   });
@@ -410,49 +356,34 @@ describe("LevelView — hero recovers from a graphless connect", () => {
   // hero must NOT stay stuck on "No active preset" — it self-heals by reading the
   // monitor's already-current cached graph via current_graph.
   it("seeds the hero from current_graph when initialGraph is null and no live push arrives", async () => {
-    vi.mocked(invoke).mockImplementation((command: string) => {
-      switch (command) {
-        // The list name differs from the hero name so the assertion can only
-        // match the hero (not a preset row).
-        case "list_presets":
-          return Promise.resolve([{ slot: 0, name: "Studio Clean" }]);
-        case "get_store":
-          return Promise.resolve({
-            profiles: [],
-            profile_by_slot: {},
-            targets: [{ name: "Rhythm", lufs: -26 }],
-          });
-        case "current_graph":
-          return Promise.resolve({
-            name: "Klon Live",
-            slot: 0,
-            template: "gtrSeries",
-            split_mix: null,
-            nodes: [],
-            stages: [
-              {
-                kind: "series",
-                blocks: [
-                  {
-                    group_id: "G1",
-                    node_id: "n0",
-                    model: "ACD_Klon",
-                    bypassed: false,
-                  },
-                ],
-              },
-            ],
-          });
-        default:
-          return Promise.resolve(null);
-      }
+    mockCommands({
+      // The list name differs from the hero name so the assertion can only
+      // match the hero (not a preset row).
+      list_presets: () => [{ slot: 0, name: "Studio Clean" }],
+      get_store: () => RHYTHM_STORE,
+      current_graph: () =>
+        makeActiveGraph({
+          name: "Klon Live",
+          slot: 0,
+          template: "gtrSeries",
+          stages: [
+            {
+              kind: "series",
+              blocks: [
+                {
+                  group_id: "G1",
+                  node_id: "n0",
+                  model: "ACD_Klon",
+                  bypassed: false,
+                  params: {},
+                },
+              ],
+            },
+          ],
+        }),
     });
 
-    render(
-      <ThemeProvider>
-        <LevelView connected={true} initialGraph={null} />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<LevelView connected={true} initialGraph={null} />);
 
     // The hero recovers: the active preset's name appears and the empty state is gone.
     expect(await screen.findByText("Klon Live")).toBeInTheDocument();
@@ -463,7 +394,6 @@ describe("LevelView — hero recovers from a graphless connect", () => {
 describe("LevelView — full leveling wizard e2e", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
-    listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
     localStorage.clear();
@@ -541,13 +471,9 @@ describe("LevelView — full leveling wizard e2e", () => {
     // runner) REGARDLESS of per-scene target — each job carries its own targetLufs, so
     // a mixed-target preset no longer splits into several prepasses. Per-scene calls
     // re-loaded the preset each time, flashing the unit back to base twice per scene.
-    const sceneCalls = vi
-      .mocked(invoke)
-      .mock.calls.filter(([cmd]) => cmd === "level_scenes_apply_batched");
+    const sceneCalls = callsOf("level_scenes_apply_batched");
     expect(sceneCalls).toHaveLength(1);
-    const sceneJobs = (
-      sceneCalls[0][1] as { jobs: { sceneSlot: number; targetLufs: number }[] }
-    ).jobs;
+    const sceneJobs = sceneCalls[0].jobs;
     expect(sceneJobs.map((j) => j.sceneSlot)).toEqual([0, 1]);
     // Every job carries a resolved per-scene target (the store's single target here).
     expect(sceneJobs.map((j) => j.targetLufs)).toEqual([-26, -26]);
@@ -741,46 +667,13 @@ describe("LevelView — full leveling wizard e2e", () => {
     const gate = new Promise<void>((res) => {
       resolveLevel = res;
     });
-    vi.mocked(invoke).mockImplementation((command: string) => {
-      switch (command) {
-        case "list_presets":
-          return Promise.resolve([{ slot: 0, name: "Studio Clean" }]);
-        case "get_store":
-          return Promise.resolve({
-            profiles: [],
-            profile_by_slot: {},
-            targets: [{ name: "Rhythm", lufs: -26 }],
-          });
-        case "read_library_via_backup":
-          return Promise.resolve({
-            members: [],
-            db_bytes: 0,
-            total_rows: 1,
-            scene_mode: "test",
-            presets: [
-              {
-                slot: 1,
-                name: "Studio Clean",
-                scene_count: 0,
-                scenes: [],
-                blocks: [],
-                footswitches: [],
-                scene_handles: [],
-                fs_scene_contexts: [],
-                base_handles: [],
-              },
-            ],
-            song_presets: [],
-            songs: [],
-            setlists: [],
-            setlist_songs: [],
-          });
-        // The only item's leveling stays pending until the test resolves the gate.
-        case "level_preset":
-          return gate.then(() => levelResultStub());
-        default:
-          return Promise.resolve(null);
-      }
+    mockCommands({
+      list_presets: () => [{ slot: 0, name: "Studio Clean" }],
+      get_store: () => RHYTHM_STORE,
+      read_library_via_backup: () =>
+        makeBackupRead({ total_rows: 1, presets: [STUDIO_CLEAN] }),
+      // The only item's leveling stays pending until the test resolves the gate.
+      level_preset: () => gate.then(() => levelResultStub()),
     });
     renderView(true);
     const user = userEvent.setup();
@@ -846,75 +739,15 @@ describe("LevelView — full leveling wizard e2e", () => {
   // A device failure on one sound must not abort the whole run; it's marked skipped
   // and the remaining sounds still level (data-loss-family regression).
   it("a mid-run item failure is skipped and the run continues to the rest", async () => {
-    vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
-      switch (command) {
-        case "list_presets":
-          return Promise.resolve([{ slot: 0, name: "Plexi" }]);
-        case "get_store":
-          return Promise.resolve({
-            profiles: [],
-            profile_by_slot: {},
-            targets: [{ name: "Rhythm", lufs: -26 }],
-          });
-        case "read_library_via_backup":
-          return Promise.resolve({
-            members: [],
-            db_bytes: 0,
-            total_rows: 1,
-            scene_mode: "test",
-            presets: [
-              {
-                slot: 1,
-                name: "Plexi",
-                scene_count: 2,
-                scenes: [
-                  { name: "Rhythm", fs: 1 },
-                  { name: "Lead", fs: 2 },
-                ],
-                blocks: [],
-                footswitches: [],
-                scene_handles: [],
-                fs_scene_contexts: [],
-                base_handles: [],
-              },
-            ],
-            song_presets: [],
-            songs: [],
-            setlists: [],
-            setlist_songs: [],
-          });
-        // The Base sound fails; the two FS scenes still level.
-        case "level_preset":
-          return Promise.reject(new Error("device dropped the level"));
-        case "list_level_blocks":
-          return Promise.resolve([
-            {
-              group_id: "amp",
-              node_id: "amp0",
-              model_id: "ACD_TweedDeluxe",
-              parameter_id: "outputLevel",
-              value: 0.5,
-            },
-          ]);
-        case "level_scenes_apply_batched": {
-          const job = args as {
-            jobs: { sceneSlot: number }[];
-            onResult?: { onmessage?: (item: unknown) => void };
-          };
-          const results = job.jobs.map(() => levelResultStub());
-          job.jobs.forEach((j, i) =>
-            job.onResult?.onmessage?.({
-              sceneSlot: j.sceneSlot,
-              status: "done",
-              result: results[i],
-              message: null,
-            }),
-          );
-          return Promise.resolve(results);
-        }
-        default:
-          return Promise.resolve(null);
-      }
+    mockCommands({
+      list_presets: () => [{ slot: 0, name: "Plexi" }],
+      get_store: () => RHYTHM_STORE,
+      read_library_via_backup: () =>
+        makeBackupRead({ total_rows: 1, presets: [plexiRow()] }),
+      // The Base sound fails; the two FS scenes still level.
+      level_preset: () => rejectWith(new Error("device dropped the level")),
+      list_level_blocks: () => [TWEED_OUTPUT],
+      level_scenes_apply_batched: levelScenesDone,
     });
     renderView(true);
     const user = userEvent.setup();
@@ -948,7 +781,6 @@ describe("LevelView — full leveling wizard e2e", () => {
 describe("LevelView — hero survives a tab-switch remount after a live change", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
-    listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
   });
@@ -976,32 +808,18 @@ describe("LevelView — hero survives a tab-switch remount after a live change",
   it("keeps the live preset on remount instead of reverting to the connect-time seed", async () => {
     // List names are distinct from the hero names, so a name assertion can only match
     // the hero (never a preset row).
-    vi.mocked(invoke).mockImplementation((command: string) => {
-      switch (command) {
-        case "list_presets":
-          return Promise.resolve([
-            { slot: 0, name: "Row One" },
-            { slot: 2, name: "Row Three" },
-          ]);
-        case "get_store":
-          return Promise.resolve({
-            profiles: [],
-            profile_by_slot: {},
-            targets: [{ name: "Rhythm", lufs: -26 }],
-          });
-        default:
-          return Promise.resolve(null);
-      }
+    mockCommands({
+      list_presets: () => [
+        { slot: 0, name: "Row One" },
+        { slot: 2, name: "Row Three" },
+      ],
+      get_store: () => RHYTHM_STORE,
     });
 
     // Connect-time handshake graph = the (soon-stale) preset 003 "Cello".
     const seed = heroGraph("Cello", 2, "ACD_HiwattDR103CanModCabIR");
-    const ui = (
-      <ThemeProvider>
-        <LevelView connected={true} initialGraph={seed} />
-      </ThemeProvider>
-    );
-    const { unmount } = render(ui);
+    const ui = <LevelView connected={true} initialGraph={seed} />;
+    const { unmount } = renderWithTheme(ui);
     expect(await screen.findByText("Cello")).toBeInTheDocument();
 
     // The unit is switched to preset 001 "Guitar" — a live signal-chain push arrives.
@@ -1017,7 +835,7 @@ describe("LevelView — hero survives a tab-switch remount after a live change",
 
     // Tab away + back = unmount + remount with the SAME stale connect-time seed.
     unmount();
-    render(ui);
+    renderWithTheme(ui);
 
     // The hero stays on the unit's CURRENT preset (001 Guitar), never reverts to 003.
     expect(await screen.findByText("Guitar")).toBeInTheDocument();

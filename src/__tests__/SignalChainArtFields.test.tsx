@@ -6,9 +6,7 @@
 // BlockTile → BlockArt) without asserting brittle SVG geometry.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render } from "@testing-library/react";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import type { ActiveGraph, GraphNode, Stage } from "../lib/types";
 
 // Capture every BlockArt render's props. SignalChainView imports BlockArt from
@@ -25,6 +23,7 @@ vi.mock("../ui/BlockArt", () => ({
 // Imported AFTER the mock so the strip picks up the captured BlockArt.
 import { ActiveSignalChainView } from "../views/ActiveSignalChainView";
 import { blockArtTile, resolveBlockArt } from "../models/blockArt";
+import { renderWithTheme } from "./testKit";
 
 function node(model: string): GraphNode {
   return { group_id: "G1", node_id: "n0", model, bypassed: false, params: {} };
@@ -43,11 +42,7 @@ function oneBlockGraph(model: string): ActiveGraph {
 }
 
 function renderStrip(model: string) {
-  render(
-    <ThemeProvider>
-      <ActiveSignalChainView graph={oneBlockGraph(model)} />
-    </ThemeProvider>,
-  );
+  renderWithTheme(<ActiveSignalChainView graph={oneBlockGraph(model)} />);
 }
 
 describe("SignalChainView — strip feeds BlockArt the full art prop set", () => {

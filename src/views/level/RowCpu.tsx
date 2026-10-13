@@ -52,5 +52,3 @@ export function RowCpu({ value }: RowCpuProps) {
     </span>
   );
 }
-
-export default RowCpu;

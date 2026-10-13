@@ -1,6 +1,5 @@
 // src/views/level/SetupPage.tsx — the leveling wizard's "Set up" stage (design
-// handoff 1a: full window, one row per preset). Replaces `overlays/SetupBody.tsx` +
-// `overlays/LevelSetupPage.tsx`.
+// handoff 1a: full window, one row per preset).
 //
 // A bulk row (Guitar / How loud) writes every sound at once — no ticking; what gets
 // leveled was already chosen on the preset list, so a second selection model here
@@ -13,9 +12,8 @@
 // The leveling HANDLE (D2 — every row levels against one user-chosen block+param
 // control) keeps its full any-block/any-param capability via `FlatLevelPick`
 // (Base rows default to "Preset level", Scene rows to "Amp output level", Footswitch
-// rows always carry a real pick) — this is the one piece of Set up that ISN'T a
-// simplification of the pre-redesign `BlockLevelPick`, just a single-dropdown
-// re-render of the same candidate data.
+// rows always carry a real pick), over the candidate data `blockLevelGroups.ts`
+// groups and ranks.
 //
 // History (do not reintroduce): an earlier build put inclusion checkboxes here,
 // forcing users to pick sounds twice (list + dialog) — the list is the single place
@@ -27,7 +25,7 @@
 // the backup-acknowledgment checkbox below is the one revert path: restore from your
 // Pro Control backup.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
@@ -82,7 +80,8 @@ function CalibrateCue({
   const { t } = useTheme();
   const [hover, setHover] = useState(false);
   return (
-    <span
+    <Button
+      variant="bare"
       title="Calibrate instruments in Settings"
       onClick={onCalibrate}
       onMouseEnter={() => {
@@ -94,7 +93,6 @@ function CalibrateCue({
       style={{
         color: t.accentDeep,
         fontWeight: 500,
-        cursor: "pointer",
         textDecoration: "underline",
         textDecorationStyle: "dotted",
         textDecorationColor: hover ? t.accentDeep : t.warnBorder,
@@ -102,7 +100,7 @@ function CalibrateCue({
       }}
     >
       {children}
-    </span>
+    </Button>
   );
 }
 
@@ -404,8 +402,8 @@ export interface SetupPageProps {
   defaultInst: string;
   defaultTarget: string;
   onCancel: () => void;
-  onStart: (choices: SetupChoice[]) => void;
-  onRebalanceChange?: (on: boolean) => void;
+  /** The commit: the configured rows plus the opt-in rebalance toggle. */
+  onStart: (choices: SetupChoice[], rebalance: boolean) => void;
   onCalibrate?: () => void;
 }
 
@@ -418,25 +416,18 @@ export function SetupPage({
   defaultTarget,
   onCancel,
   onStart,
-  onRebalanceChange,
   onCalibrate,
 }: SetupPageProps) {
   const { t } = useTheme();
   const s = useStyles();
   const requireBackup = !isRelevel;
   const [backedUp, setBackedUp] = useState(false);
+  // Opt-in: equalize a path-MERGE scene's two parallel-amp lanes before joint-k. A fresh
+  // Set up starts it off; the commit hands it to the run with the choices.
   const [rebalance, setRebalance] = useState(false);
   const toggleRebalance = () => {
-    const next = !rebalance;
-    setRebalance(next);
-    onRebalanceChange?.(next);
+    setRebalance(!rebalance);
   };
-  const didSyncRebalance = useRef(false);
-  useEffect(() => {
-    if (didSyncRebalance.current) return;
-    didSyncRebalance.current = true;
-    onRebalanceChange?.(rebalance);
-  }, [onRebalanceChange, rebalance]);
 
   const groups = useMemo(() => {
     const by = new Map<
@@ -655,7 +646,7 @@ export function SetupPage({
         targetName: row?.target ?? defaultTarget,
       };
     });
-    if (choices.length) onStart(choices);
+    if (choices.length) onStart(choices, rebalance);
   };
 
   const [isOpen, toggle] = useGroupOpen(groups.length ? [groups[0].slot] : []);
@@ -690,7 +681,7 @@ export function SetupPage({
       footerLeft={
         <Button
           variant="ghost"
-          small
+          size="sm"
           onClick={onCancel}
           style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
         >
@@ -708,7 +699,7 @@ export function SetupPage({
           )}
           <Button
             variant="primary"
-            small
+            size="sm"
             icon="gauge"
             disabled={
               total === 0 ||
@@ -1028,5 +1019,3 @@ export function SetupPage({
     </LevelPage>
   );
 }
-
-export default SetupPage;

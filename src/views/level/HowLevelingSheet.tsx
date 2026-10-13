@@ -331,7 +331,7 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
           </span>
         }
       >
-        <Button variant="primary" small onClick={onClose}>
+        <Button variant="primary" size="sm" onClick={onClose}>
           Got it
         </Button>
       </DialogFooter>

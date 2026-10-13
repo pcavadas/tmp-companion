@@ -11,9 +11,19 @@
 //      dialog never clips past the window edge.
 //   3. Padding + dividers are owned by DialogHeader/DialogBody/DialogFooter (one
 //      DIALOG_PAD_X), so dialogs stop drifting to per-screen ad-hoc padding.
+//   4. The dialog is MODAL for assistive tech and the Tab key too, not just the mouse
+//      (#308): it portals to `document.body` — OUTSIDE the app root — and the app root
+//      (`#root`, main.tsx) is `inert` while any dialog is open, so nothing behind the
+//      scrim is Tab-reachable or announced. A module-level open-dialog COUNT owns the
+//      attribute, so stacked dialogs (a confirm over a sheet) un-inert the root only when
+//      the LAST one closes. No `#root` (a unit test's container) → the inert step no-ops.
+//   5. `label` is REQUIRED — a dialog with no accessible name is announced as just
+//      "dialog". The card takes focus on open only when nothing inside it already has it,
+//      so a child's `autoFocus` (which fires before this component's effects) wins.
 
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { useTheme } from "../theme/ThemeContext";
 import { DialogCardCtx } from "./dialogContext";
@@ -44,9 +54,32 @@ export interface DialogProps {
   height?: number;
   /** Stacking order. Default 50. */
   zIndex?: number;
-  /** Accessible name — labels the dialog for screen readers. */
-  label?: string;
+  /** Accessible name — labels the dialog for screen readers. Required: an unnamed
+   *  dialog is announced as just "dialog". */
+  label: string;
   children: ReactNode;
+}
+
+// ---- app-root inert (shared by every open dialog) ---------------------------
+// One count for the whole app: the root goes inert with the FIRST open dialog and comes
+// back only when the LAST one closes, so closing a confirm stacked over a sheet never
+// re-exposes the app behind the sheet that is still open.
+const APP_ROOT_ID = "root";
+let openDialogs = 0;
+
+/** Marks the app root inert while ≥1 dialog is open; returns the matching release. */
+function holdAppInert(): () => void {
+  openDialogs += 1;
+  if (openDialogs === 1)
+    document.getElementById(APP_ROOT_ID)?.setAttribute("inert", "");
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    openDialogs -= 1;
+    if (openDialogs === 0)
+      document.getElementById(APP_ROOT_ID)?.removeAttribute("inert");
+  };
 }
 
 export function Dialog({
@@ -60,16 +93,28 @@ export function Dialog({
   const { t } = useTheme();
   const cardRef = useRef<HTMLDivElement>(null);
 
-  // Move focus into the dialog on open and restore it to the prior element on close.
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    cardRef.current?.focus();
-    return () => {
-      prev?.focus();
-    };
-  }, []);
+  // The element focused BEFORE this dialog mounted, captured at first render — an
+  // effect would run after a child's `autoFocus` and capture that child instead.
+  const [opener] = useState(() =>
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null,
+  );
 
-  return (
+  // Inert the app root, move focus into the dialog (unless a child already took it),
+  // and on close release the root FIRST — focus() on an element inside an inert root is
+  // a no-op — then restore focus to the opener.
+  useLayoutEffect(() => {
+    const release = holdAppInert();
+    const card = cardRef.current;
+    if (card && !card.contains(document.activeElement)) card.focus();
+    return () => {
+      release();
+      opener?.focus();
+    };
+  }, [opener]);
+
+  return createPortal(
     <div
       style={{
         position: "fixed",
@@ -81,6 +126,7 @@ export function Dialog({
       }}
     >
       <div
+        data-backdrop=""
         onClick={onClose}
         style={{
           position: "absolute",
@@ -118,7 +164,8 @@ export function Dialog({
           {children}
         </DialogCardCtx.Provider>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

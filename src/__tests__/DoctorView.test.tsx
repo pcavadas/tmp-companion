@@ -9,36 +9,28 @@
 //   • The list never recalls a preset and the whole flow never saves.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
-
-// Capture the backup-progress / live-sync listeners so usePresetData takes the real
-// listen() path under the forced isTauri().
-const listeners = new Map<string, (e: { payload: unknown }) => void>();
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (name: string, cb: (e: { payload: unknown }) => void) => {
-    listeners.set(name, cb);
-    return Promise.resolve(() => listeners.delete(name));
-  },
-}));
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return { ...actual, isTauri: () => true };
-});
-
-// Imported AFTER the mocks so the view picks up the forced isTauri().
 import { DoctorView } from "../views/doctor";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
+import type { CommandArgs } from "../lib/commands";
+import type { DoctorCheckResult, FootswitchInfo } from "../lib/types";
+import {
+  forceTauri,
+  makeBackupPresetRow,
+  makeBackupRead,
+  makeStore,
+  mockCommands,
+} from "./commandMocks";
+import { renderWithTheme } from "./testKit";
+
+// In-app: the live bridges and the library scan subscribe.
+forceTauri();
 
 function renderView(connected: boolean) {
-  const r = render(
-    <ThemeProvider>
-      <DoctorView connected={connected} />
-    </ThemeProvider>,
-  );
+  const r = renderWithTheme(<DoctorView connected={connected} />);
   // The backup scan is App-owned in production; seed it here when connected so the
   // view's scene/graph data populates (the view no longer triggers the scan).
   if (connected) void ensureLibraryScan();
@@ -47,24 +39,12 @@ function renderView(connected: boolean) {
 
 // One non-empty, scene-less preset; the backup returns its (empty) scenes so the
 // row settles to "base only" and selecting it yields a single "Whole preset" sound.
-interface DoctorCheckArgs {
-  items: {
-    key: string;
-    listIndex: number;
-    scene: number | null;
-    footswitch: number | null;
-    tag: string | null;
-    nodes: unknown[];
-    footswitches: { label: string }[];
-  }[];
-  restoreListIndex: number | null;
-  onResult?: { onmessage?: (item: unknown) => void };
-}
+type DoctorCheckArgs = CommandArgs<"doctor_check">;
 let lastDoctorArgs: DoctorCheckArgs | null = null;
 
 // A block-acting footswitch with a levelable candidate (the leveling filter's
 // gate) — mirrors LevelView.test.tsx's `SOLO_FOOTSWITCH` fixture.
-const SOLO_FOOTSWITCH = {
+const SOLO_FOOTSWITCH: FootswitchInfo = {
   switch: 3, // → tag FS4
   label: "Solo",
   link_group: null,
@@ -84,7 +64,7 @@ const SOLO_FOOTSWITCH = {
 // An Other-class-only footswitch (no level candidate) — a plain on/off toggle, e.g.
 // a tuner mute. Zero level_params, so `footswitchesPerIndex` (Level's filtered map)
 // drops it entirely; the damage detector must still see it via the unfiltered feed.
-const BARE_FOOTSWITCH = {
+const BARE_FOOTSWITCH: FootswitchInfo = {
   switch: 5,
   label: "Tuner",
   link_group: null,
@@ -100,101 +80,76 @@ function mockOnePreset(
   } = {},
 ) {
   lastDoctorArgs = null;
-  vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
-    switch (command) {
-      case "list_presets":
-        return Promise.resolve([{ slot: 0, name: "Studio Clean" }]);
-      case "get_store":
-        return Promise.resolve({
-          profiles: [],
-          profile_by_slot: {},
-          targets: [{ name: "Rhythm", lufs: -26 }],
-          playback_level: "rehearsal",
-        });
-      case "read_library_via_backup":
-        return Promise.resolve({
-          members: [],
-          db_bytes: 0,
-          total_rows: 1,
-          scene_mode: "test",
-          presets: [
-            {
-              slot: 1, // device slot 1 = list index 0
-              name: "Studio Clean",
-              scene_count: 0,
-              scenes: [],
-              blocks: [],
-              footswitches: [
-                ...(opts.footswitch === true ? [SOLO_FOOTSWITCH] : []),
-                ...(opts.bareFootswitch === true ? [BARE_FOOTSWITCH] : []),
-              ],
-            },
-          ],
-          song_presets: [],
-          songs: [],
-          setlists: [],
-          setlist_songs: [],
-        });
-      case "doctor_check": {
-        const a = args as DoctorCheckArgs;
-        lastDoctorArgs = a;
-        // Hanging run — for the unmount-mid-run cancel test.
-        if (opts.hangCheck === true) {
-          return new Promise(() => {
-            /* never resolves */
-          });
-        }
-        // Stream each sound active → done, then resolve the check result.
-        a.items.forEach((it) => {
-          a.onResult?.onmessage?.({
-            key: it.key,
-            status: "active",
-            message: null,
-          });
-          a.onResult?.onmessage?.({
-            key: it.key,
-            status: "done",
-            message: null,
-          });
-        });
-        return Promise.resolve({
-          presets: [
-            {
-              listIndex: 0,
-              sounds: a.items.map((it) => ({
-                key: it.key,
-                listIndex: it.listIndex,
-                scene: it.scene,
-                footswitch: it.footswitch,
-                label: it.key,
-                tag: it.tag,
-                diags: [],
-                sceneOverrides: [],
-                status: "measured",
-                integratedLufs: -20,
-                tailRatioDb: 0,
-                balanceDb: [],
-                bandLabels: [
-                  "Lows",
-                  "Low-mids",
-                  "Mids",
-                  "High-mids",
-                  "Highs",
-                  "Air",
-                ],
-                error: null,
-                skippedBandCount: 0,
-              })),
-              sceneConsistency: null,
-              levelingDamage: [],
-            },
-          ],
-          stopped: false,
+  mockCommands({
+    list_presets: () => [{ slot: 0, name: "Studio Clean" }],
+    get_store: () =>
+      makeStore({
+        targets: [{ name: "Rhythm", lufs: -26 }],
+        playback_level: "rehearsal",
+      }),
+    read_library_via_backup: () =>
+      makeBackupRead({
+        total_rows: 1,
+        presets: [
+          makeBackupPresetRow({
+            slot: 1, // device slot 1 = list index 0
+            name: "Studio Clean",
+            footswitches: [
+              ...(opts.footswitch === true ? [SOLO_FOOTSWITCH] : []),
+              ...(opts.bareFootswitch === true ? [BARE_FOOTSWITCH] : []),
+            ],
+          }),
+        ],
+      }),
+    doctor_check: (a) => {
+      lastDoctorArgs = a;
+      // Hanging run — for the unmount-mid-run cancel test.
+      if (opts.hangCheck === true) {
+        return new Promise<DoctorCheckResult>(() => {
+          /* never resolves */
         });
       }
-      default:
-        return Promise.resolve(null);
-    }
+      // Stream each sound active → done, then resolve the check result.
+      a.items.forEach((it) => {
+        a.onResult.onmessage({ key: it.key, status: "active", message: null });
+        a.onResult.onmessage({ key: it.key, status: "done", message: null });
+      });
+      return {
+        presets: [
+          {
+            listIndex: 0,
+            sounds: a.items.map((it) => ({
+              key: it.key,
+              listIndex: it.listIndex,
+              scene: it.scene,
+              footswitch: it.footswitch,
+              label: it.key,
+              tag: it.tag,
+              diags: [],
+              sceneOverrides: [],
+              status: "measured" as const,
+              integratedLufs: -20,
+              tailRatioDb: 0,
+              balanceDb: [],
+              bandLabels: [
+                "Lows",
+                "Low-mids",
+                "Mids",
+                "High-mids",
+                "Highs",
+                "Air",
+              ],
+              cutThrough: null,
+              error: null,
+              skippedBandCount: 0,
+            })),
+            sceneConsistency: null,
+            levelingDamage: [],
+          },
+        ],
+        stopped: false,
+      };
+    },
   });
 }
 
@@ -206,7 +161,6 @@ const fired = (command: string) =>
 describe("DoctorView — connection gating", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
-    listeners.clear();
     resetLibraryScan();
     localStorage.clear();
   });
@@ -222,7 +176,6 @@ describe("DoctorView — connection gating", () => {
 describe("DoctorView — select → setup → run → results", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
-    listeners.clear();
     resetLibraryScan();
     localStorage.clear();
     mockOnePreset();

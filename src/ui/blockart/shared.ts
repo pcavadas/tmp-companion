@@ -3,7 +3,7 @@
 // ./sharedTones (chassis-tone palette + tone lookups) and ./sharedCloth (grille
 // cloth + combo livery + luminance helpers) to keep each file cohesive and ≤500
 // lines. Re-export-only, so it stays Fast-Refresh-safe.
-export type { FormId, IconId, ToneId } from "./sharedIds";
+export type { ArtVariant, FormId, IconId, ToneId } from "./sharedIds";
 export {
   formFor,
   AMP_ICONS,

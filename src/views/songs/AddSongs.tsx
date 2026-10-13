@@ -2,6 +2,7 @@
 // the setlist detail (membership is read from the device; ordered global song slots).
 import { useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
 import { Button, Checkbox, SearchInput } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
 import { DASH } from "../../lib/format";
@@ -47,7 +48,14 @@ export function AddSongs({
   };
 
   return (
-    <Menu surface="popover" gap={8} width={320} onClose={onClose}>
+    <Menu
+      role="dialog"
+      label="Add songs from library"
+      surface="popover"
+      gap={8}
+      width={320}
+      onClose={onClose}
+    >
       <div
         style={{
           display: "flex",
@@ -92,18 +100,23 @@ export function AddSongs({
             const on = sel.has(rec.slot);
             const bpm = songBpm(rec);
             return (
-              <div
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={on}
                 key={rec.slot}
                 onClick={() => {
                   toggle(rec.slot);
                 }}
                 style={{
+                  ...plainButton(),
+                  width: "100%",
+                  textAlign: "left",
                   display: "flex",
                   alignItems: "center",
                   gap: t.space5,
                   padding: `${String(t.space4)}px ${String(t.space4)}px`,
                   borderRadius: t.rMd,
-                  cursor: "pointer",
                   background: on ? t.accentSoft : "transparent",
                 }}
                 onMouseEnter={(e) => {
@@ -152,7 +165,7 @@ export function AddSongs({
                 >
                   {bpm != null ? `${String(bpm)} bpm` : DASH}
                 </span>
-              </div>
+              </button>
             );
           })}
           {filtered.length === 0 && (
@@ -198,7 +211,7 @@ export function AddSongs({
             >
               <Button
                 variant="ghost"
-                small
+                size="sm"
                 icon="plus"
                 onClick={() => {
                   setCreating(true);
@@ -208,7 +221,7 @@ export function AddSongs({
               </Button>
               <Button
                 variant="primary"
-                small
+                size="sm"
                 icon="check"
                 disabled={sel.size === 0}
                 onClick={add}

@@ -7,8 +7,7 @@
 // the modal era), a title/sub block with an optional right-aligned slot (the Level
 // stage's live readout), the stage's own body, and the shared `WizardFooter`. Provides
 // its OWN ref as `DialogCardCtx` so the body's Pick-family dropdowns portal into THIS
-// page and position in its coordinate space — same contract `LevelSetupPage` (now
-// folded into this file) already established for Set up alone.
+// page and position in its coordinate space.
 
 import { useRef, type ReactNode } from "react";
 
@@ -115,5 +114,3 @@ export function LevelPage({
     </div>
   );
 }
-
-export default LevelPage;

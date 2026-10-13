@@ -1,16 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { render, within } from "@testing-library/react";
+import { within } from "@testing-library/react";
 
 import { SignalChainView, type StripGraph } from "../views/SignalChainView";
-import { ThemeProvider } from "../theme/ThemeProvider";
+import { renderWithTheme } from "./testKit";
 
 const b = (name: string) => ({ name });
 const text = (graph: StripGraph) =>
-  render(
-    <ThemeProvider>
-      <SignalChainView graph={graph} />
-    </ThemeProvider>,
-  ).container.textContent;
+  renderWithTheme(<SignalChainView graph={graph} />).container.textContent;
 
 function parentOf(el: HTMLElement): HTMLElement {
   const p = el.parentElement;
@@ -31,7 +27,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "gtrSeries",
       {
-        template: "gtrSeries",
         inputType: "guitar",
         outputType: "out",
         stages: [{ kind: "series", blocks: [b("G1"), b("G2")] }],
@@ -42,7 +37,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "gtrParallel1",
       {
-        template: "gtrParallel1",
         stages: [
           { kind: "series", blocks: [b("G1")] },
           { kind: "split", a: [b("G2")], b: [b("G3")] },
@@ -55,7 +49,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "gtrParallel2",
       {
-        template: "gtrParallel2",
         stages: [
           { kind: "split", a: [b("G2")], b: [b("G3")] },
           { kind: "split", a: [b("G5")], b: [b("G6")] },
@@ -67,7 +60,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "micSeries",
       {
-        template: "micSeries",
         inputType: "mic",
         stages: [{ kind: "series", blocks: [b("M1")] }],
       } satisfies StripGraph,
@@ -77,7 +69,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "micParallel1",
       {
-        template: "micParallel1",
         inputType: "mic",
         stages: [
           { kind: "series", blocks: [b("M1")] },
@@ -90,7 +81,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "gtrMicSeries",
       {
-        template: "gtrMicSeries",
         inputs: {
           a: { type: "guitar", blocks: [] },
           b: { type: "mic", blocks: [] },
@@ -103,7 +93,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "gtrMicMix",
       {
-        template: "gtrMicMix",
         inputs: {
           a: { type: "guitar", blocks: [b("G1")] },
           b: { type: "mic", blocks: [b("M1")] },
@@ -116,7 +105,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "gtrMicMix2",
       {
-        template: "gtrMicMix2",
         inputs: {
           a: { type: "guitar", blocks: [b("G1"), b("G2")] },
           b: { type: "mic", blocks: [b("M1")] },
@@ -129,7 +117,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "gtrMicMix3",
       {
-        template: "gtrMicMix3",
         inputs: {
           a: { type: "guitar", blocks: [b("G1")] },
           b: { type: "mic", blocks: [b("M1"), b("M2")] },
@@ -142,7 +129,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "gtrMicParallel",
       {
-        template: "gtrMicParallel",
         lanes: [
           { input: "guitar", output: "out1", blocks: [b("G1")] },
           { input: "mic", output: "out2", blocks: [b("M1")] },
@@ -155,7 +141,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "gtrSplit",
       {
-        template: "gtrSplit",
         stages: [{ kind: "series", blocks: [b("G1")] }],
         outputs: {
           a: { type: "out1", blocks: [b("G2")] },
@@ -168,7 +153,6 @@ describe("SignalChainView — path-template grammar", () => {
     [
       "micSplit",
       {
-        template: "micSplit",
         inputType: "mic",
         stages: [{ kind: "series", blocks: [b("M1")] }],
         outputs: {
@@ -187,7 +171,6 @@ describe("SignalChainView — path-template grammar", () => {
 
   it("keeps sequential split diamonds distinct", () => {
     const rendered = text({
-      template: "gtrParallel2",
       stages: [
         { kind: "split", a: [b("A")], b: [b("B")] },
         { kind: "split", a: [b("C")], b: [b("D")] },
@@ -206,19 +189,16 @@ describe("SignalChainView — path-template grammar", () => {
 // block actually lives inside its OWN lane row, not just in the document.
 describe("SignalChainView — lane-mapping DOM structure", () => {
   it("gtrSplit: out1/out2 lanes only contain their own group's blocks", () => {
-    const { container } = render(
-      <ThemeProvider>
-        <SignalChainView
-          graph={{
-            template: "gtrSplit",
-            stages: [{ kind: "series", blocks: [b("G1")] }],
-            outputs: {
-              a: { type: "out1", blocks: [b("G2"), b("G3")] },
-              b: { type: "out2", blocks: [b("G5")] },
-            },
-          }}
-        />
-      </ThemeProvider>,
+    const { container } = renderWithTheme(
+      <SignalChainView
+        graph={{
+          stages: [{ kind: "series", blocks: [b("G1")] }],
+          outputs: {
+            a: { type: "out1", blocks: [b("G2"), b("G3")] },
+            b: { type: "out2", blocks: [b("G5")] },
+          },
+        }}
+      />,
     );
     const out1Row = laneRowOf(within(container).getByText("OUT 1"));
     const out2Row = laneRowOf(within(container).getByText("OUT 2"));
@@ -231,20 +211,17 @@ describe("SignalChainView — lane-mapping DOM structure", () => {
   });
 
   it("micSplit: out1/out2 lanes only contain their own group's blocks", () => {
-    const { container } = render(
-      <ThemeProvider>
-        <SignalChainView
-          graph={{
-            template: "micSplit",
-            inputType: "mic",
-            stages: [{ kind: "series", blocks: [b("M1")] }],
-            outputs: {
-              a: { type: "out1", blocks: [b("M2")] },
-              b: { type: "out2", blocks: [b("M3a"), b("M3b")] },
-            },
-          }}
-        />
-      </ThemeProvider>,
+    const { container } = renderWithTheme(
+      <SignalChainView
+        graph={{
+          inputType: "mic",
+          stages: [{ kind: "series", blocks: [b("M1")] }],
+          outputs: {
+            a: { type: "out1", blocks: [b("M2")] },
+            b: { type: "out2", blocks: [b("M3a"), b("M3b")] },
+          },
+        }}
+      />,
     );
     const out1Row = laneRowOf(within(container).getByText("OUT 1"));
     const out2Row = laneRowOf(within(container).getByText("OUT 2"));
@@ -257,21 +234,18 @@ describe("SignalChainView — lane-mapping DOM structure", () => {
   });
 
   it("gtrMicParallel: each independent rail pairs its own input/output/blocks", () => {
-    const { container } = render(
-      <ThemeProvider>
-        <SignalChainView
-          graph={{
-            template: "gtrMicParallel",
-            stages: [],
-            // Deliberately out of canonical order (mic first) — the renderer
-            // must not assume index-0-is-guitar.
-            lanes: [
-              { input: "mic", output: "out2", blocks: [b("M1")] },
-              { input: "guitar", output: "out1", blocks: [b("G1")] },
-            ],
-          }}
-        />
-      </ThemeProvider>,
+    const { container } = renderWithTheme(
+      <SignalChainView
+        graph={{
+          stages: [],
+          // Deliberately out of canonical order (mic first) — the renderer
+          // must not assume index-0-is-guitar.
+          lanes: [
+            { input: "mic", output: "out2", blocks: [b("M1")] },
+            { input: "guitar", output: "out1", blocks: [b("G1")] },
+          ],
+        }}
+      />,
     );
     const micRow = laneRowOf(within(container).getByText("MIC/LINE"));
     const gtrRow = laneRowOf(within(container).getByText("GUITAR"));
@@ -284,21 +258,18 @@ describe("SignalChainView — lane-mapping DOM structure", () => {
   });
 
   it("JoinHead (gtrMicSeries): input lanes render in inputs.a/b order, not a hardcoded kind", () => {
-    const { container } = render(
-      <ThemeProvider>
-        <SignalChainView
-          graph={{
-            template: "gtrMicSeries",
-            // Swapped vs. the backend's guitar-first convention — the frontend
-            // must not hardcode which side is which either.
-            inputs: {
-              a: { type: "mic", blocks: [] },
-              b: { type: "guitar", blocks: [] },
-            },
-            stages: [{ kind: "series", blocks: [b("M1"), b("G1")] }],
-          }}
-        />
-      </ThemeProvider>,
+    const { container } = renderWithTheme(
+      <SignalChainView
+        graph={{
+          // Swapped vs. the backend's guitar-first convention — the frontend
+          // must not hardcode which side is which either.
+          inputs: {
+            a: { type: "mic", blocks: [] },
+            b: { type: "guitar", blocks: [] },
+          },
+          stages: [{ kind: "series", blocks: [b("M1"), b("G1")] }],
+        }}
+      />,
     );
     const micRow = laneRowOf(within(container).getByText("MIC/LINE"));
     const gtrRow = laneRowOf(within(container).getByText("GUITAR"));

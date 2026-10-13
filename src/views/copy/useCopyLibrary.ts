@@ -50,8 +50,6 @@ export interface CopyLibrary {
   presets: CopyPreset[];
   /** `presets` keyed by slot for O(1) lookups (same identity as `presets`). */
   bySlot: Map<number, CopyPreset>;
-  /** List read settled. */
-  loaded: boolean;
   /** Backup graph load settled (graphs available). */
   ready: boolean;
   scanning: boolean;
@@ -119,7 +117,6 @@ export function useCopyLibrary(
   return {
     presets,
     bySlot,
-    loaded: phase.kind === "ready",
     ready: lib.ready,
     scanning: lib.scanning,
     // A failed library scan blocks Copy too: without it every graph is empty.

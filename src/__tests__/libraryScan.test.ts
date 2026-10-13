@@ -6,11 +6,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
-import type {
-  ActiveGraph,
-  BackupReadResult,
-  FootswitchInfo,
-} from "../lib/types";
+import type { BackupReadResult, FootswitchInfo } from "../lib/types";
 import {
   ensureLibraryScan,
   getLibraryScan,
@@ -20,54 +16,25 @@ import {
   patchLibraryGraph,
   resetLibraryScan,
 } from "../device/libraryScan";
+import {
+  makeActiveGraph,
+  makeBackupPresetRow,
+  makeBackupRead,
+  mockCommands,
+} from "./commandMocks";
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => undefined),
-}));
-
-const emptyGraph: ActiveGraph = {
-  name: null,
-  slot: null,
-  template: null,
-  split_mix: null,
-  nodes: [],
-  stages: [],
-};
-
-const row = (slot: number, name: string) => ({
-  slot,
-  name,
-  preset_id: null,
-  scene_count: 0,
-  scenes: [],
-  amp_candidates: [],
-  base_active_amp_count: 0,
-  blocks: [],
-  graph: emptyGraph,
-  footswitches: [],
-  silence_hint: null,
-  scene_handles: [],
-  base_handles: [],
-  scene_overrides: [],
-  fs_scene_contexts: [],
-});
+const row = (slot: number, name: string) => makeBackupPresetRow({ slot, name });
 
 // device slots 8 / 58 → list indices 7 / 57; three song→preset bindings.
-const BACKUP: BackupReadResult = {
-  members: [],
-  db_bytes: 0,
+const BACKUP: BackupReadResult = makeBackupRead({
   total_rows: 2,
-  scene_mode: "test",
   presets: [row(8, "Plexi Crunch"), row(58, "Stadium Lead")],
   song_presets: [
     { song_slot: 1, preset_slot: 8 },
     { song_slot: 1, preset_slot: 58 },
     { song_slot: 2, preset_slot: 58 },
   ],
-  songs: [],
-  setlists: [],
-  setlist_songs: [],
-};
+});
 
 describe("libraryScan — songs↔presets axis data", () => {
   beforeEach(() => {
@@ -83,11 +50,7 @@ describe("libraryScan — songs↔presets axis data", () => {
         row(58, "Stadium Lead"),
       ],
     };
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(backup)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => backup });
 
     await ensureLibraryScan();
     const lib = getLibraryScan();
@@ -97,11 +60,7 @@ describe("libraryScan — songs↔presets axis data", () => {
   });
 
   it("derives the preset list + song→preset map from one backup", async () => {
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(BACKUP)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => BACKUP });
 
     await ensureLibraryScan();
     const lib = getLibraryScan();
@@ -129,11 +88,7 @@ describe("libraryScan — songs↔presets axis data", () => {
         { setlist_slot: 1, song_slot: 1, position: 2 },
       ],
     };
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(backup)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => backup });
 
     await ensureLibraryScan();
     const lib = getLibraryScan();
@@ -160,11 +115,7 @@ describe("libraryScan — songs↔presets axis data", () => {
         { setlist_slot: 1, song_slot: 6, position: 3 },
       ],
     };
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(backup)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => backup });
 
     await ensureLibraryScan();
     const lib = getLibraryScan();
@@ -174,17 +125,15 @@ describe("libraryScan — songs↔presets axis data", () => {
   });
 
   it("forgetLibrarySongs drops the Songs seed so the next Songs visit reads live", async () => {
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve({
-            ...BACKUP,
-            songs: [
-              { slot: 1, name: "Intro", notes: "", bpm_active: false, bpm: 0 },
-            ],
-            setlists: [{ slot: 1, name: "Main set" }],
-          })
-        : Promise.resolve(null),
-    );
+    mockCommands({
+      read_library_via_backup: () => ({
+        ...BACKUP,
+        songs: [
+          { slot: 1, name: "Intro", notes: "", bpm_active: false, bpm: 0 },
+        ],
+        setlists: [{ slot: 1, name: "Main set" }],
+      }),
+    });
     await ensureLibraryScan();
     forgetLibrarySongs();
     const lib = getLibraryScan();
@@ -197,13 +146,12 @@ describe("libraryScan — songs↔presets axis data", () => {
     // The Songs tab fell back to a live read and the user edited before the ~22 s
     // backup settled: the backup may predate the edit, so the edit must win.
     let finish: (v: BackupReadResult) => void = () => undefined;
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? new Promise<BackupReadResult>((r) => {
-            finish = r;
-          })
-        : Promise.resolve(null),
-    );
+    mockCommands({
+      read_library_via_backup: () =>
+        new Promise<BackupReadResult>((r) => {
+          finish = r;
+        }),
+    });
     const scan = ensureLibraryScan();
     await vi.waitFor(() => {
       expect(getLibraryScan().scanning).toBe(true);
@@ -224,11 +172,7 @@ describe("libraryScan — songs↔presets axis data", () => {
   });
 
   it("patchLibrarySongs replaces the Songs-tab lists once the scan has settled (#295)", async () => {
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(BACKUP)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => BACKUP });
     await ensureLibraryScan();
     patchLibrarySongs({
       songs: [],
@@ -243,11 +187,7 @@ describe("libraryScan — songs↔presets axis data", () => {
   });
 
   it("invalidates the stale song↔preset join after a slot-shifting CRUD, keeps presets", async () => {
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(BACKUP)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => BACKUP });
     await ensureLibraryScan();
 
     invalidateSongPresetJoin();
@@ -295,11 +235,7 @@ describe("libraryScan — songs↔presets axis data", () => {
         row(58, "Stadium Lead"),
       ],
     };
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(backup)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => backup });
 
     await ensureLibraryScan();
     const lib = getLibraryScan();
@@ -351,11 +287,7 @@ describe("libraryScan — songs↔presets axis data", () => {
         row(58, "Stadium Lead"),
       ],
     };
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(backup)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => backup });
 
     await ensureLibraryScan();
     const lib = getLibraryScan();
@@ -389,9 +321,7 @@ describe("libraryScan — detach mid-scan (generation guard)", () => {
     const pending = new Promise<BackupReadResult>((r) => {
       resolveRead = r;
     });
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup" ? pending : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => pending });
 
     const scan = ensureLibraryScan();
     await flush(); // let it reach `await readLibraryViaBackup()` (past the progress listen)
@@ -409,9 +339,7 @@ describe("libraryScan — detach mid-scan (generation guard)", () => {
     const pending = new Promise<BackupReadResult>((r) => {
       resolveRead = r;
     });
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup" ? pending : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => pending });
     const scan1 = ensureLibraryScan();
     await flush();
     resetLibraryScan();
@@ -420,11 +348,7 @@ describe("libraryScan — detach mid-scan (generation guard)", () => {
     expect(getLibraryScan().ready).toBe(false);
 
     // A new connection scans fresh and settles.
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(BACKUP)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => BACKUP });
     await ensureLibraryScan();
     const lib = getLibraryScan();
     expect(lib.ready).toBe(true);
@@ -455,11 +379,7 @@ describe("libraryScan — Doctor scene overrides", () => {
         row(58, "Stadium Lead"),
       ],
     };
-    vi.mocked(invoke).mockImplementation((cmd: string) =>
-      cmd === "read_library_via_backup"
-        ? Promise.resolve(backup)
-        : Promise.resolve(null),
-    );
+    mockCommands({ read_library_via_backup: () => backup });
 
     await ensureLibraryScan();
     expect(getLibraryScan().sceneOverridesByIndex.get(7)).toEqual([
@@ -469,7 +389,7 @@ describe("libraryScan — Doctor scene overrides", () => {
 
     // A Copy save edits blocks, not scene overlays — the surviving nodes' overlays still
     // apply (an override for a removed node is ignored by `effective_nodes`).
-    patchLibraryGraph(7, emptyGraph);
+    patchLibraryGraph(7, makeActiveGraph());
     expect(getLibraryScan().sceneOverridesByIndex.get(7)).toEqual([
       [override],
       [],

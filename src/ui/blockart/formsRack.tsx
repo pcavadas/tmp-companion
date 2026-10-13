@@ -1,24 +1,24 @@
 // src/ui/blockart/formsRack.tsx — rack / desk / screen / rockbox form-factor
 // renderers, split from ./forms so each file stays ≤500 lines. The treadle +
 // round-fuzz forms live in ./formsPedal. Shared data/helpers live in ./shared.
-import type { PedalTone } from "./shared";
+import type { ArtVariant, PedalTone } from "./shared";
 
 // 19″ rack unit — preamps, with a VU meter (blue or amber) + knob row.
-// 1.8: the Seventy Sixer 2U rack compressor (lab matches "Seventy Sixer" /
-// "76") gets its own face — two big knurled knobs L/R, a lit cream VU meter on
-// the right, and a column of square push-buttons (input/output/ratio bank).
+// 1.8: the Seventy Sixer 2U rack compressor (variant "rack-1176") gets its own
+// face — two big knurled knobs L/R, a lit cream VU meter on the right, and a
+// column of square push-buttons (input/output/ratio bank).
 export function RackBody({
   c,
   g,
-  lab,
+  variant,
 }: {
   c: PedalTone;
   g: string;
-  lab: string;
+  variant?: ArtVariant;
 }) {
   const edge = "rgba(0,0,0,0.42)";
   const vu = g === "racktube" ? "#d39a3a" : (c.jewel ?? "#5b9bd0");
-  if (/SEVENTY ?SIXER|^76\b|1176/i.test(lab)) {
+  if (variant === "rack-1176") {
     // a knurled-rim big knob: outer knurl ring + dark cap + light pointer.
     const bigKnob = (cx: number, cy: number) => (
       <g transform={`translate(${String(cx)},${String(cy)})`}>

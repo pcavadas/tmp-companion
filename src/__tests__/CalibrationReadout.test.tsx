@@ -1,16 +1,16 @@
 // InstrumentRow's post-calibration "what was captured" readout: spread + a
 // per-band coverage dot row + a sparse-take hint. Session-only (CalibrateResult
 // isn't persisted), so it renders right after a successful calibrate_profile call.
-// Mirrors hardeningFixes.test.tsx's InstrumentRow (BUG-6) setup pattern.
+// Mirrors InstrumentRow.test.tsx's setup pattern.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { InstrumentRow } from "../views/settings/InstrumentRow";
 import type { Profile } from "../lib/types";
+import { mockCommands } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 const profile: Profile = {
   id: "tele",
@@ -21,30 +21,26 @@ const profile: Profile = {
 
 describe("InstrumentRow — capture quality readout", () => {
   it("renders spread + covered/uncovered band dots + the sparse-take hint", async () => {
-    vi.mocked(invoke).mockImplementation((command: string) =>
-      command === "calibrate_profile"
-        ? Promise.resolve({
-            lufs: -18.2,
-            clipped: false,
-            stimulus_shortfall_lu: null,
-            spread_lu: 4.7,
-            band_coverage: [true, true, false, false, true, true],
-            band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
-          })
-        : Promise.resolve(null),
-    );
-    render(
-      <ThemeProvider>
-        <InstrumentRow
-          profile={profile}
-          topology={null}
-          connected={true}
-          onCalibrated={vi.fn()}
-          onEdit={vi.fn()}
-          onDelete={vi.fn()}
-          onMove={vi.fn()}
-        />
-      </ThemeProvider>,
+    mockCommands({
+      calibrate_profile: () => ({
+        lufs: -18.2,
+        clipped: false,
+        stimulus_shortfall_lu: null,
+        spread_lu: 4.7,
+        band_coverage: [true, true, false, false, true, true],
+        band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
+      }),
+    });
+    renderWithTheme(
+      <InstrumentRow
+        profile={profile}
+        topology={null}
+        connected={true}
+        onCalibrated={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onMove={vi.fn()}
+      />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /calibrate/i }));
@@ -61,30 +57,26 @@ describe("InstrumentRow — capture quality readout", () => {
   });
 
   it("no sparse-take hint when every band was covered", async () => {
-    vi.mocked(invoke).mockImplementation((command: string) =>
-      command === "calibrate_profile"
-        ? Promise.resolve({
-            lufs: -18.2,
-            clipped: false,
-            stimulus_shortfall_lu: null,
-            spread_lu: 2.1,
-            band_coverage: [true, true, true, true, true, true],
-            band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
-          })
-        : Promise.resolve(null),
-    );
-    render(
-      <ThemeProvider>
-        <InstrumentRow
-          profile={profile}
-          topology={null}
-          connected={true}
-          onCalibrated={vi.fn()}
-          onEdit={vi.fn()}
-          onDelete={vi.fn()}
-          onMove={vi.fn()}
-        />
-      </ThemeProvider>,
+    mockCommands({
+      calibrate_profile: () => ({
+        lufs: -18.2,
+        clipped: false,
+        stimulus_shortfall_lu: null,
+        spread_lu: 2.1,
+        band_coverage: [true, true, true, true, true, true],
+        band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
+      }),
+    });
+    renderWithTheme(
+      <InstrumentRow
+        profile={profile}
+        topology={null}
+        connected={true}
+        onCalibrated={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onMove={vi.fn()}
+      />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /calibrate/i }));
@@ -93,30 +85,26 @@ describe("InstrumentRow — capture quality readout", () => {
   });
 
   it("no sparse-take hint when ONLY Air is uncovered (a passive DI never covers 6–12 kHz)", async () => {
-    vi.mocked(invoke).mockImplementation((command: string) =>
-      command === "calibrate_profile"
-        ? Promise.resolve({
-            lufs: -21.4,
-            clipped: false,
-            stimulus_shortfall_lu: null,
-            spread_lu: 5.2,
-            band_coverage: [true, true, true, true, true, false],
-            band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
-          })
-        : Promise.resolve(null),
-    );
-    render(
-      <ThemeProvider>
-        <InstrumentRow
-          profile={profile}
-          topology={null}
-          connected={true}
-          onCalibrated={vi.fn()}
-          onEdit={vi.fn()}
-          onDelete={vi.fn()}
-          onMove={vi.fn()}
-        />
-      </ThemeProvider>,
+    mockCommands({
+      calibrate_profile: () => ({
+        lufs: -21.4,
+        clipped: false,
+        stimulus_shortfall_lu: null,
+        spread_lu: 5.2,
+        band_coverage: [true, true, true, true, true, false],
+        band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
+      }),
+    });
+    renderWithTheme(
+      <InstrumentRow
+        profile={profile}
+        topology={null}
+        connected={true}
+        onCalibrated={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onMove={vi.fn()}
+      />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /calibrate/i }));

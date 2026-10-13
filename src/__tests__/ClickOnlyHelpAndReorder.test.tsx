@@ -3,13 +3,13 @@
 // being a dead button.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SetlistDetail } from "../views/songs/SetlistDetail";
 import { EmptyState } from "../views/EmptyState";
 import type { SetlistRecord, SongRecord } from "../lib/types";
+import { renderWithTheme } from "./testKit";
 
 describe("SetlistDetail — click-only reorder (#302)", () => {
   const a: SongRecord = { slot: 1, name: "Song A", notes: "", bpm: 0 };
@@ -22,21 +22,19 @@ describe("SetlistDetail — click-only reorder (#302)", () => {
 
   function renderDetail(busy = false) {
     const onReorder = vi.fn();
-    render(
-      <ThemeProvider>
-        <SetlistDetail
-          setlist={setlist}
-          entries={entries}
-          available={[]}
-          busy={busy}
-          onRename={vi.fn()}
-          onDelete={vi.fn()}
-          onRemoveSong={vi.fn()}
-          onReorder={onReorder}
-          onAdd={vi.fn()}
-          onCreateAndAdd={vi.fn()}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <SetlistDetail
+        setlist={setlist}
+        entries={entries}
+        available={[]}
+        busy={busy}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+        onRemoveSong={vi.fn()}
+        onReorder={onReorder}
+        onAdd={vi.fn()}
+        onCreateAndAdd={vi.fn()}
+      />,
     );
     return onReorder;
   }
@@ -66,10 +64,8 @@ describe("SetlistDetail — click-only reorder (#302)", () => {
 
 describe("EmptyState — Connection help works (#304)", () => {
   it("opens the connection help sheet, and Done closes it", async () => {
-    render(
-      <ThemeProvider>
-        <EmptyState title="No unit" body="Connect it." onScan={vi.fn()} />
-      </ThemeProvider>,
+    renderWithTheme(
+      <EmptyState title="No unit" body="Connect it." onScan={vi.fn()} />,
     );
     const user = userEvent.setup();
     await user.click(screen.getByText("Connection help"));
@@ -79,11 +75,7 @@ describe("EmptyState — Connection help works (#304)", () => {
   });
 
   it("renders no Scan button without a handler", () => {
-    render(
-      <ThemeProvider>
-        <EmptyState title="No unit" body="Connect it." />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<EmptyState title="No unit" body="Connect it." />);
     expect(screen.queryByText("Scan for device")).toBeNull();
     expect(screen.getByText("Connection help")).toBeInTheDocument();
   });

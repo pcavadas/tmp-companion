@@ -115,5 +115,3 @@ export function LevelingDamageRow({
     </PresetFindingRow>
   );
 }
-
-export default LevelingDamageRow;

@@ -41,6 +41,7 @@ export function UpdateOverlay({ u }: UpdateOverlayProps) {
       return (
         <Modal
           open
+          label={`TMP Companion ${version}`}
           headline={
             <>
               TMP Companion{" "}

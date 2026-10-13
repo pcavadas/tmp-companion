@@ -17,31 +17,28 @@
 // here instead of needing another by-hand catch.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
-
-const listeners = new Map<string, (e: { payload: unknown }) => void>();
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (name: string, cb: (e: { payload: unknown }) => void) => {
-    listeners.set(name, cb);
-    return Promise.resolve(() => listeners.delete(name));
-  },
-}));
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return { ...actual, isTauri: () => true };
-});
-
-// Imported AFTER the mocks so both views pick up the forced isTauri().
 import { LevelView } from "../views/level";
 import { DoctorView } from "../views/doctor";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import { resetLiveDevice } from "../device/useLiveDevice";
+import type { FootswitchInfo } from "../lib/types";
+import {
+  forceTauri,
+  makeBackupPresetRow,
+  makeBackupRead,
+  makeStore,
+  mockCommands,
+} from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
-const SOLO_FOOTSWITCH = {
+// In-app: the live bridges and the library scan subscribe.
+forceTauri();
+
+const SOLO_FOOTSWITCH: FootswitchInfo = {
   switch: 4, // → tag FS5
   label: "Solo",
   link_group: null,
@@ -60,7 +57,7 @@ const SOLO_FOOTSWITCH = {
 
 // No level_params at all — the real incident's "PHASER" shape, standing in as
 // "Tuner" here (mirrors DoctorView.test.tsx's BARE_FOOTSWITCH fixture).
-const BARE_FOOTSWITCH = {
+const BARE_FOOTSWITCH: FootswitchInfo = {
   switch: 5, // → tag FS6
   label: "Tuner",
   link_group: null,
@@ -69,46 +66,25 @@ const BARE_FOOTSWITCH = {
 };
 
 function mockPresetWithBothFootswitches() {
-  vi.mocked(invoke).mockImplementation((command: string) => {
-    switch (command) {
-      case "list_presets":
-        return Promise.resolve([{ slot: 0, name: "Studio Clean" }]);
-      case "get_store":
-        return Promise.resolve({
-          profiles: [],
-          profile_by_slot: {},
-          targets: [{ name: "Rhythm", lufs: -26 }],
-        });
-      case "read_library_via_backup":
-        return Promise.resolve({
-          members: [],
-          db_bytes: 0,
-          total_rows: 1,
-          scene_mode: "test",
-          presets: [
-            {
-              slot: 1, // device slot 1 = list index 0
-              name: "Studio Clean",
-              scene_count: 0,
-              scenes: [],
-              blocks: [],
-              footswitches: [SOLO_FOOTSWITCH, BARE_FOOTSWITCH],
-            },
-          ],
-          song_presets: [],
-          songs: [],
-          setlists: [],
-          setlist_songs: [],
-        });
-      default:
-        return Promise.resolve(null);
-    }
+  mockCommands({
+    list_presets: () => [{ slot: 0, name: "Studio Clean" }],
+    get_store: () => makeStore({ targets: [{ name: "Rhythm", lufs: -26 }] }),
+    read_library_via_backup: () =>
+      makeBackupRead({
+        total_rows: 1,
+        presets: [
+          makeBackupPresetRow({
+            slot: 1, // device slot 1 = list index 0
+            name: "Studio Clean",
+            footswitches: [SOLO_FOOTSWITCH, BARE_FOOTSWITCH],
+          }),
+        ],
+      }),
   });
 }
 
 function freshConnection() {
   vi.mocked(invoke).mockClear();
-  listeners.clear();
   resetLibraryScan();
   resetLiveDevice();
 }
@@ -118,11 +94,7 @@ describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression gu
     freshConnection();
     mockPresetWithBothFootswitches();
     const user = userEvent.setup();
-    render(
-      <ThemeProvider>
-        <LevelView connected={true} />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<LevelView connected={true} />);
     void ensureLibraryScan();
 
     await screen.findByText("Studio Clean");
@@ -143,20 +115,14 @@ describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression gu
       "Select preset to level",
     )[0];
     await user.click(presetCheckboxWrap);
-    expect(
-      presetCheckboxWrap.querySelector('[role="checkbox"]'),
-    ).toHaveAttribute("aria-checked", "true");
+    expect(presetCheckboxWrap).toHaveAttribute("aria-checked", "true");
   });
 
   it("Doctor's list shows ONLY the levelable switch — the bare one never appears at all", async () => {
     freshConnection();
     mockPresetWithBothFootswitches();
     const user = userEvent.setup();
-    render(
-      <ThemeProvider>
-        <DoctorView connected={true} />
-      </ThemeProvider>,
-    );
+    renderWithTheme(<DoctorView connected={true} />);
     void ensureLibraryScan();
 
     await screen.findByText("Studio Clean");

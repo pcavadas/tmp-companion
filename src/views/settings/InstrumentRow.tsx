@@ -174,8 +174,6 @@ export function InstrumentRow({
             ? t.sevWarn
             : t.good
           : t.sevWarn;
-  const dot = statusColor;
-  const subColor = statusColor;
 
   const sub =
     phase === "countdown"
@@ -212,7 +210,7 @@ export function InstrumentRow({
         gap: t.space7,
         padding: `${String(t.space5)}px ${String(t.space6)}px ${String(t.space5)}px ${String(t.space4)}px`,
         borderRadius: t.rCard,
-        border: `0.5px solid ${phase === "error" ? "rgba(167,70,31,0.4)" : t.hairline}`,
+        border: `0.5px solid ${phase === "error" ? t.warnBorderSoft : t.hairline}`,
         background: t.bg,
         marginBottom: t.space4,
         minHeight: 60,
@@ -233,7 +231,7 @@ export function InstrumentRow({
             width: 7,
             height: 7,
             borderRadius: t.rPill,
-            background: dot,
+            background: statusColor,
             flexShrink: 0,
           }}
         />
@@ -278,7 +276,7 @@ export function InstrumentRow({
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
-              color: subColor,
+              color: statusColor,
             }}
           >
             {sub}
@@ -365,7 +363,7 @@ export function InstrumentRow({
           (connected ? (
             <Button
               variant="ghost"
-              small
+              size="sm"
               icon={calibrated ? "refresh" : "gauge"}
               onClick={startCountdown}
               style={{ whiteSpace: "nowrap" }}
@@ -400,15 +398,15 @@ export function InstrumentRow({
             >
               {count}
             </span>
-            <span
-              role="button"
+            <Button
+              variant="bare"
               aria-label="Cancel"
               onClick={cancel}
               title="Cancel"
-              style={{ cursor: "pointer", display: "inline-flex" }}
+              style={{ display: "inline-flex" }}
             >
               <Icon name="x" size={12} stroke={t.mutedInk} />
-            </span>
+            </Button>
           </span>
         )}
 
@@ -441,19 +439,18 @@ export function InstrumentRow({
                 }}
               />
               Recording {rec.toFixed(1)} / {CALIBRATE_SECS}s
-              <span
-                role="button"
+              <Button
+                variant="bare"
                 aria-label="Cancel"
                 onClick={cancel}
                 title="Cancel"
                 style={{
-                  cursor: "pointer",
                   display: "inline-flex",
                   marginLeft: t.space1,
                 }}
               >
                 <Icon name="x" size={11} stroke={t.mutedInk} />
-              </span>
+              </Button>
             </span>
             <div
               style={{
@@ -481,7 +478,7 @@ export function InstrumentRow({
           (connected ? (
             <Button
               variant="ghost"
-              small
+              size="sm"
               icon="refresh"
               onClick={startCountdown}
             >
@@ -493,13 +490,16 @@ export function InstrumentRow({
 
         {/* per-row menu: edit / reorder / delete */}
         <div style={{ position: "relative", display: "flex" }}>
-          <span
+          <Button
+            variant="bare"
+            aria-label={`More actions for ${profile.name}`}
+            aria-haspopup="menu"
+            aria-expanded={menu}
             onClick={() => {
               setMenu((o) => !o);
             }}
             title="More"
             style={{
-              cursor: "pointer",
               display: "flex",
               color: t.faint,
               padding: t.space1,
@@ -507,7 +507,7 @@ export function InstrumentRow({
             }}
           >
             <Icon name="more" size={16} stroke="currentColor" />
-          </span>
+          </Button>
           {menu && (
             <Menu
               onClose={() => {

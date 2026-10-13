@@ -105,7 +105,7 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
     await expect(page.getByText("Saved to the unit.")).toBeVisible({
       timeout: 30_000,
     });
-    await page.getByRole("button", { name: "Done" }).click();
+    await page.getByRole("button", { name: "Done", exact: true }).click();
 
     // ── Round 2: re-open; P401 reflects round 1 (cache patched, never refetched) ──
     await expect(place).toBeEnabled({ timeout: SCAN_MS });

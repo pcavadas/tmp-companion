@@ -1,15 +1,15 @@
-// src/views/overlays/PickTrigger.tsx — the bordered-pill trigger chrome shared,
-// byte-for-byte, by `BlockLevelPick`'s BLOCK and CONTROL triggers (D2/Part C): a
-// ref'd anchor wrapper, a warn icon (when `warn`), a truncating label, and a
-// chevron that reflects open state. Only the MARKUP is unified here — each
-// dropdown's own warn PREDICATE (`blockStale` / `paramStale`) stays with its
-// owner and is passed in, same as `pickTriggerChrome.ts`'s shared border-color
-// rule leaves every `Pick`-family warn predicate local. `BlockLevelPick` is this
-// component's sole caller.
+// src/views/overlays/PickTrigger.tsx — the bordered-pill trigger chrome of
+// `FlatLevelPick`: a ref'd anchor wrapper, a warn icon (when `warn`), a truncating
+// label, and a chevron that reflects open state. Only the MARKUP lives here — the
+// warn PREDICATE (FlatLevelPick's stale-handle check) stays with its owner and is
+// passed in, same as `pickTriggerChrome.ts`'s shared border-color rule leaves every
+// `Pick`-family warn predicate local. `FlatLevelPick` is this component's sole
+// caller.
 
 import type { MouseEvent, RefObject } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
 import { pickTriggerBorder } from "./pickTriggerChrome";
 
@@ -21,7 +21,7 @@ export interface PickTriggerProps {
   warn: boolean;
   label: string;
   title: string;
-  onClick: (e: MouseEvent) => void;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
 }
 
 export function PickTrigger({
@@ -38,10 +38,16 @@ export function PickTrigger({
       ref={triggerRef}
       style={{ position: "relative", width: "100%", minWidth: 0 }}
     >
-      <div
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
         onClick={onClick}
         title={title}
         style={{
+          ...plainButton(),
+          width: "100%",
+          textAlign: "left",
           display: "flex",
           alignItems: "center",
           gap: t.space3,
@@ -51,7 +57,6 @@ export function PickTrigger({
           border: pickTriggerBorder(t, { open, warn }),
           borderRadius: 6,
           background: t.bg,
-          cursor: "pointer",
           whiteSpace: "nowrap",
           overflow: "hidden",
         }}
@@ -82,9 +87,7 @@ export function PickTrigger({
           size={11}
           stroke={open ? t.accentDeep : t.faint}
         />
-      </div>
+      </button>
     </div>
   );
 }
-
-export default PickTrigger;

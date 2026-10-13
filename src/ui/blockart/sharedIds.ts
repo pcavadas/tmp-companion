@@ -185,6 +185,40 @@ export type ToneId =
   | "lavender"
   | "slatebl";
 
+// Per-model art variant — the explicit token a body renderer branches on for a
+// treatment the icon + tone can't express (the SLO-100's silver faceplate, the EVH
+// 5150 III channel colour, the Vibro-King's 3x10 baffle…). Assigned per FenderId in
+// `models/blockArtCatalog/variants.ts` and threaded through BlockArt as the `variant`
+// prop; renderers never select art by matching the display caption.
+export type ArtVariant =
+  // amps
+  | "slo100-panel" // SLO-100: silver/chrome control faceplate
+  | "bluesjr" // Blues Jr: tweed-layout head + clean-front combo in its own tolex
+  | "bluesjr-ltd" // Blues Jr LTD: tweed-layout head (its combo is tweed-toned anyway)
+  | "bassbreaker" // Bassbreaker: grille-only head/combo with a brushed-alu trim strip
+  | "evh-green" // EVH 5150 III green channel (jewel/accent colour)
+  | "evh-blue" // EVH 5150 III blue channel
+  | "evh-red" // EVH 5150 III red channel
+  | "diezel-petrol" // Diezel VH4 "Petrol": brushed-alu control fascia
+  | "bassman-tv" // Bassman TV (1x15) clean-front combo: uniform square tweed frame
+  | "bassman-59" // '59 Bassman (4x10) clean-front combo: thin uniform tweed frame
+  // cabs
+  | "cab-bogner" // Bogner 4x12: salt-and-pepper grille
+  | "cab-recto-trad" // Mesa Rectifier Traditional 4x12: plain black grille
+  | "cab-swr-210" // SWR Redhead 2x10: white grid on a dark baffle
+  | "cab-silver-grille" // Marshall 1960A V30: silver grille
+  | "cab-evh-112" // EVH 5150 III 1x12: ivory tolex
+  | "cab-vibroking" // Vibro-King 3x10: triangular baffle
+  // rack
+  | "rack-1176" // Seventy Sixer (1176) 2U compressor face
+  // pedals
+  | "glooper" // Glooper: holographic finish
+  | "black-well" // Big Muff NYC / Electric Mistress / Small Stone / Memory Man: black footswitch well
+  | "muff-russian" // Green Russian Big Muff: black pi + black knobs
+  | "muff-rams" // Ram's Head Big Muff: horn curls + black knobs
+  | "gear-green-inset" // gear pedal with a green control inset (Blumes)
+  | "gear-blue-inset"; // gear pedal with a blue control inset (Lightspeed)
+
 export function formFor(g: string): FormId {
   if (AMP_ICONS.has(g)) return "amp";
   if (g === "ir") return "ir"; // user IR — neutral cab + "IR" stamp (IRBody)

@@ -1,12 +1,12 @@
 // src/views/overlays/usePickAnchor.ts — the card-portaled dropdown's shared
 // open/anchor/measure state machine.
 //
-// `Pick`, `FsParamPick` and `SceneLevelPick` each hand-rolled the SAME ~70 lines:
-// an Anchor interface, open/anchor/pos/cardEl state, a triggerRef/menuRef pair, a
-// two-pass `useLayoutEffect` (render hidden to measure, then place — clamped
-// horizontally, flipped ABOVE the trigger when it would overflow the card's fixed
-// bottom edge), and an openMenu/close pair. This hook is the ONE copy; the three
-// pickers now just plug in their own trigger chrome + menu content.
+// `Pick` and `FlatLevelPick` share the SAME state machine: an Anchor interface,
+// open/anchor/pos/cardEl state, a triggerRef/menuRef pair, a two-pass
+// `useLayoutEffect` (render hidden to measure, then place — clamped horizontally,
+// flipped ABOVE the trigger when it would overflow the card's fixed bottom edge), and
+// an openMenu/close pair. This hook is the ONE copy; each picker just plugs in its own
+// trigger chrome + menu content.
 //
 // `.claude/rules/frontend.md`'s legit `useLayoutEffect` DOM-measurement exception
 // (a committed-DOM measure that `setState`s, guarded by a prev-value compare so it
@@ -23,11 +23,27 @@ export interface PickAnchor {
   cardH: number;
 }
 
+/** The ONE placement rule for an anchored floating menu, shared by this hook (in the
+ *  dialog card's coordinate space) and the DS `Menu` (in the viewport's): clamp `left`
+ *  into the frame with an 8px margin, drop BELOW the trigger, and flip ABOVE it (`gap`
+ *  px clear) when the `mw`×`mh` menu would overflow the frame's bottom edge. */
+export function placeAnchored(
+  anchor: PickAnchor,
+  mw: number,
+  mh: number,
+  gap = 4,
+): { left: number; top: number } {
+  const left = Math.min(
+    Math.max(8, anchor.left),
+    Math.max(8, anchor.cardW - mw - 8),
+  );
+  let top = anchor.below;
+  if (top + mh > anchor.cardH - 8) top = Math.max(8, anchor.above - mh - gap);
+  return { left, top };
+}
+
 export interface UsePickAnchorOptions {
-  /** Checked at the top of `openMenu`; returning false suppresses the open
-   *  entirely (FsParamPick's "nothing to choose" guard: `!interactive`). */
-  guard?: () => boolean;
-  /** Fired once the menu has opened (SceneLevelPick's lazy per-preset candidate
+  /** Fired once the menu has opened (FlatLevelPick's lazy per-preset candidate
    *  fetch — idempotent, safe to call on every open). */
   onOpen?: () => void;
   /** A value that changes whenever the menu's CONTENT changes size — included in the
@@ -35,7 +51,7 @@ export interface UsePickAnchorOptions {
    *
    *  Why it exists: the effect measures `menuRef.current.offsetHeight` and depends only
    *  on `[open, anchor]`, both of which are fixed at `openMenu` time. A menu whose body
-   *  arrives AFTER the open — `SceneLevelPick` opens on "Loading controls…" and fires a
+   *  arrives AFTER the open — `FlatLevelPick` opens on "Loading controls…" and fires a
    *  device read (`onOpen`) that lands a moment later with N candidate rows — therefore
    *  keeps the placement computed for the one-line skeleton: the grown menu never
    *  re-clamps and never flips above the trigger, so it renders off the bottom of the
@@ -43,7 +59,7 @@ export interface UsePickAnchorOptions {
    *
    *  Pass something derived from what is rendered (a fetch status plus a row count is
    *  enough; the height need not be known). Omit it for a menu whose content is fixed at
-   *  open time (`Pick`, `FsParamPick`). */
+   *  open time (`Pick`). */
   contentKey?: string | number;
 }
 
@@ -63,11 +79,11 @@ export interface UsePickAnchorResult {
 
 /** `cardRef` is the wizard card to portal/anchor into (`DialogCardCtx`'s value) —
  *  undefined/no-current falls back to `anchor: null`, which `Pick` alone renders
- *  as an inline (non-portaled) menu; `FsParamPick`/`SceneLevelPick` are only ever
- *  mounted inside a card, so that branch is unreached for them in practice. */
+ *  as an inline (non-portaled) menu; `FlatLevelPick` is only ever mounted inside a
+ *  card, so that branch is unreached for it in practice. */
 export function usePickAnchor(
   cardRef: React.RefObject<HTMLDivElement | null> | null | undefined,
-  { guard, onOpen, contentKey }: UsePickAnchorOptions = {},
+  { onOpen, contentKey }: UsePickAnchorOptions = {},
 ): UsePickAnchorResult {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<PickAnchor | null>(null);
@@ -83,19 +99,16 @@ export function usePickAnchor(
   // measured dimension, so a re-run with an unchanged key re-derives the same numbers.
   useLayoutEffect(() => {
     if (!open || !anchor || !menuRef.current) return;
-    const mw = menuRef.current.offsetWidth;
-    const mh = menuRef.current.offsetHeight;
-    const left = Math.min(
-      Math.max(8, anchor.left),
-      Math.max(8, anchor.cardW - mw - 8),
+    setPos(
+      placeAnchored(
+        anchor,
+        menuRef.current.offsetWidth,
+        menuRef.current.offsetHeight,
+      ),
     );
-    let top = anchor.below;
-    if (top + mh > anchor.cardH - 8) top = Math.max(8, anchor.above - mh - 4);
-    setPos({ left, top });
   }, [open, anchor, contentKey]);
 
   const openMenu = (e: React.MouseEvent) => {
-    if (guard && !guard()) return;
     e.stopPropagation();
     const card = cardRef?.current;
     if (!card || !triggerRef.current) {

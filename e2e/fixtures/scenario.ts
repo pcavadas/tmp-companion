@@ -246,7 +246,9 @@ export async function selectPresetsForCheck(
   page: Page,
   presets: Preset[],
 ): Promise<void> {
-  await page.getByRole("button", { name: "Doctor" }).click();
+  // `exact`: the Level list's per-preset "<name> sounds" disclosure (E2E Doctor Oracle)
+  // also contains the word.
+  await page.getByRole("button", { name: "Doctor", exact: true }).click();
   const filter = page.getByPlaceholder(/Filter by name or slot/i);
   for (const p of presets) {
     await filter.fill(p.name);

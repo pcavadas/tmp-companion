@@ -4,26 +4,23 @@
 // timers (repo-wide RTL fake-timer hang gotcha), SetupPage renders synchronously.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SetupPage } from "../views/level/SetupPage";
 import type { SetupOption } from "../views/level/leveling";
 import type { PickOption } from "../views/overlays/Pick";
+import { renderWithTheme } from "./testKit";
+import { makeSetupOption } from "./commandMocks";
 
 const BANNER_TEXT = /Level with your own guitar/;
 
-const baseOpt: SetupOption = {
-  key: "p0",
-  slot: 0,
+const baseOpt: SetupOption = makeSetupOption({
   presetName: "Clean",
-  isBase: true,
-  sceneSlot: null,
   sceneName: "Whole preset",
   tag: null,
   hasScenes: false,
-};
+});
 
 const instrumentOptions: PickOption[] = [
   { id: "none", label: "None" },
@@ -34,19 +31,17 @@ const instrumentOptions: PickOption[] = [
 const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
 
 function renderSetup(defaultInst: string) {
-  return render(
-    <ThemeProvider>
-      <SetupPage
-        options={[baseOpt]}
-        isRelevel={false}
-        instrumentOptions={instrumentOptions}
-        targetOptions={targetOptions}
-        defaultInst={defaultInst}
-        defaultTarget="Rhythm"
-        onCancel={vi.fn()}
-        onStart={vi.fn()}
-      />
-    </ThemeProvider>,
+  return renderWithTheme(
+    <SetupPage
+      options={[baseOpt]}
+      isRelevel={false}
+      instrumentOptions={instrumentOptions}
+      targetOptions={targetOptions}
+      defaultInst={defaultInst}
+      defaultTarget="Rhythm"
+      onCancel={vi.fn()}
+      onStart={vi.fn()}
+    />,
   );
 }
 

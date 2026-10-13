@@ -41,17 +41,17 @@ function LibraryRow({ song, idx, busy, onEdit, onDelete }: LibraryRowProps) {
           }}
         >
           <div style={{ position: "relative", display: "flex" }}>
-            <span
-              onClick={
-                busy
-                  ? undefined
-                  : () => {
-                      setOpen((o) => !o);
-                    }
-              }
+            <Button
+              variant="bare"
+              aria-label={`More actions for ${song.name}`}
+              aria-haspopup="menu"
+              aria-expanded={open}
+              disabled={busy}
+              onClick={() => {
+                setOpen((o) => !o);
+              }}
               title="More"
               style={{
-                cursor: busy ? "default" : "pointer",
                 display: "flex",
                 padding: t.space1,
                 borderRadius: t.rSm,
@@ -59,7 +59,7 @@ function LibraryRow({ song, idx, busy, onEdit, onDelete }: LibraryRowProps) {
               }}
             >
               <Icon name="more" size={16} stroke={t.faint} />
-            </span>
+            </Button>
             {open && (
               <Menu
                 onClose={() => {
@@ -150,7 +150,7 @@ export function SongList({
           <Button
             variant="primary"
             icon="plus"
-            small
+            size="sm"
             disabled={busy}
             onClick={() => {
               setEditingSlot(null);

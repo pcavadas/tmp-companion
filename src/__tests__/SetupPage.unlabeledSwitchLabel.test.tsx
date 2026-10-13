@@ -1,4 +1,4 @@
-// src/__tests__/SetupBodyUnlabeledSwitchLabel.test.tsx — label provenance for an
+// src/__tests__/SetupPage.unlabeledSwitchLabel.test.tsx — label provenance for an
 // UNLABELED footswitch.
 //
 // BUG→GATE. A footswitch row's `sceneName` is the Level list's displayed row name (never
@@ -14,15 +14,15 @@
 // player's own label is theirs, and picking a different knob does not make it wrong.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SetupPage, type SetupChoice } from "../views/level/SetupPage";
 import { WithCard } from "./pickCardTestUtils";
 import type { SetupOption } from "../views/level/leveling";
 import type { LevelParamCandidate } from "../lib/types";
 import type { PickOption } from "../views/overlays/Pick";
+import { renderWithTheme } from "./testKit";
 
 // Two level candidates on DIFFERENT blocks. The Boost is first, so `defaultParamIndex`
 // (first best-ranked hit) makes it the default and the row is born named after it.
@@ -76,24 +76,21 @@ function fsOption(over: Partial<SetupOption> = {}): SetupOption {
 
 async function pickTubeScreamerAndStart(option: SetupOption) {
   const onStart = vi.fn<(c: SetupChoice[]) => void>();
-  render(
-    <ThemeProvider>
-      {/* The picker is card-portaled (`usePickAnchor`), and in production SetupPage
-          always lives inside the wizard's full-page card — supply the same card
-          context. */}
-      <WithCard>
-        <SetupPage
-          options={[option]}
-          isRelevel={false}
-          instrumentOptions={instrumentOptions}
-          targetOptions={targetOptions}
-          defaultInst="none"
-          defaultTarget="Rhythm"
-          onCancel={vi.fn()}
-          onStart={onStart}
-        />
-      </WithCard>
-    </ThemeProvider>,
+  // The picker is card-portaled (`usePickAnchor`), and in production SetupPage always
+  // lives inside the wizard's full-page card — supply the same card context.
+  renderWithTheme(
+    <WithCard>
+      <SetupPage
+        options={[option]}
+        isRelevel={false}
+        instrumentOptions={instrumentOptions}
+        targetOptions={targetOptions}
+        defaultInst="none"
+        defaultTarget="Rhythm"
+        onCancel={vi.fn()}
+        onStart={onStart}
+      />
+    </WithCard>,
   );
   const user = userEvent.setup();
   // Every row levels now (D2 — no "Make level-neutral" opt-in any more). Open the

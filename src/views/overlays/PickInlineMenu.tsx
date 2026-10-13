@@ -16,6 +16,7 @@ export function PickInlineMenu({ onClose, children }: PickInlineMenuProps) {
   return (
     <>
       <div
+        data-backdrop=""
         onClick={(e) => {
           e.stopPropagation();
           onClose();
@@ -23,6 +24,7 @@ export function PickInlineMenu({ onClose, children }: PickInlineMenuProps) {
         style={{ position: "fixed", inset: 0, zIndex: 60 }}
       />
       <div
+        role="listbox"
         style={{
           ...s.menuCard,
           position: "absolute",
@@ -37,5 +39,3 @@ export function PickInlineMenu({ onClose, children }: PickInlineMenuProps) {
     </>
   );
 }
-
-export default PickInlineMenu;

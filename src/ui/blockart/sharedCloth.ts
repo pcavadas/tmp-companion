@@ -4,6 +4,7 @@
 // lives in ./sharedTones; the id vocabularies in ./sharedIds.
 import { CLOTH_BASE } from "./blockColors.generated";
 import type { PedalTone } from "./sharedTones";
+import type { ArtVariant } from "./sharedIds";
 
 // A grille-cloth recipe (one CLOTH entry): a base colour + a tiling stroke weave.
 export interface Cloth {
@@ -373,13 +374,10 @@ export function comboLivery(t: string): ComboLivery {
 // gradient (2-stop "sf-alu"); everything else stays flat per the style system.
 // ============================================================================
 
-// EVH channel-accent colour resolver — the label encodes the 5150 III voicing
-// (green / blue / red), defaulting to green. Drives the channel jewel + accent.
-// EVH 5150 channel accent — keyed off the voicing word OR the single-letter
-// channel suffix in the lab (e.g. "5150C-G"/"5150 H B"/"5150C R" → green/blue/red).
-export function evhAccentColor(lab: string): string {
-  const L = lab.toUpperCase();
-  if (L.includes("BLUE") || /(^|[ -])B($|[ ])/.test(L)) return "#3f78c0";
-  if (L.includes("RED") || /(^|[ -])R($|[ ])/.test(L)) return "#cf3a2e";
-  return "#3f7d4e"; // green (default / "-G")
+// EVH 5150 III channel accent (green / blue / red) from the art variant, defaulting
+// to green. Drives the channel jewel + accent.
+export function evhAccentColor(variant: ArtVariant | undefined): string {
+  if (variant === "evh-blue") return "#3f78c0";
+  if (variant === "evh-red") return "#cf3a2e";
+  return "#3f7d4e"; // green (default / "evh-green")
 }

@@ -11,13 +11,16 @@
 //     toggle — driven entirely off the injected `updater` prop (no invoke calls).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SettingsView } from "../views/settings";
 import type { UpdaterApi } from "../lib/useUpdater";
+import type { CommandName } from "../lib/commands";
+import type { PlaybackLevel } from "../lib/types";
+import { callsOf, makeStore, mockCommands } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 const SEED_TARGETS = [
   { name: "Rhythm", lufs: -26.0 },
@@ -26,17 +29,9 @@ const SEED_TARGETS = [
 ];
 
 // get_store returns the seed targets; everything else keeps the setup.ts empties.
-function mockStore(targets = SEED_TARGETS, playback = "stage") {
-  vi.mocked(invoke).mockImplementation((command: string) => {
-    if (command === "get_store")
-      return Promise.resolve({
-        profiles: [],
-        profile_by_slot: {},
-        targets,
-        playback_level: playback,
-      });
-    if (command === "list_pickup_topologies") return Promise.resolve([]);
-    return Promise.resolve(null);
+function mockStore(targets = SEED_TARGETS, playback: PlaybackLevel = "stage") {
+  mockCommands({
+    get_store: () => makeStore({ targets, playback_level: playback }),
   });
 }
 
@@ -69,13 +64,11 @@ function makeStubUpdater(): UpdaterApi {
 }
 
 function renderView(updaterOverrides: Partial<UpdaterApi> = {}) {
-  render(
-    <ThemeProvider>
-      <SettingsView
-        connected={false}
-        updater={{ ...makeStubUpdater(), ...updaterOverrides }}
-      />
-    </ThemeProvider>,
+  renderWithTheme(
+    <SettingsView
+      connected={false}
+      updater={{ ...makeStubUpdater(), ...updaterOverrides }}
+    />,
   );
 }
 
@@ -89,9 +82,9 @@ async function openCategory(
   await user.click(screen.getByRole("tab", { name: label }));
 }
 
-const lastArgs = (command: string) => {
-  const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === command);
-  return calls.length ? calls[calls.length - 1][1] : undefined;
+const lastArgs = <K extends CommandName>(command: K) => {
+  const calls = callsOf(command);
+  return calls.length ? calls[calls.length - 1] : undefined;
 };
 
 describe("SettingsView — loudness targets", () => {
@@ -121,9 +114,9 @@ describe("SettingsView — loudness targets", () => {
     expect(input).toBeInTheDocument();
 
     // Persisted: a 4th target seeded at −19.0 (PR2 re-baseline), no clamp.
-    const saved = lastArgs("save_targets") as { targets: { lufs: number }[] };
-    expect(saved.targets).toHaveLength(4);
-    expect(saved.targets[3]).toEqual({ name: "New target", lufs: -19.0 });
+    const saved = lastArgs("save_targets");
+    expect(saved?.targets).toHaveLength(4);
+    expect(saved?.targets[3]).toEqual({ name: "New target", lufs: -19.0 });
   });
 
   it("shows the empty state once every target is deleted", async () => {
@@ -136,8 +129,7 @@ describe("SettingsView — loudness targets", () => {
     await user.click(screen.getByText("Delete"));
 
     expect(await screen.findByText(/no targets yet/i)).toBeInTheDocument();
-    const saved = lastArgs("save_targets") as { targets: unknown[] };
-    expect(saved.targets).toHaveLength(0);
+    expect(lastArgs("save_targets")?.targets).toHaveLength(0);
   });
 });
 

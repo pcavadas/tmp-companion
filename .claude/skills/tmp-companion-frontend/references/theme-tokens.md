@@ -1,47 +1,51 @@
 # Theme tokens & composed styles
 
-The companion is **light-only** — `src/theme/tokens.ts` exports ONE token object (`light`, type `ThemeTokens`). `useTheme()` returns `{ t }` where `t` is that object; field names are stable so call-sites read `t.bg`, `t.mutedInk`, `t.serif`, `t.rMd`, etc. directly. This file mirrors `tokens.ts` + `styles.ts` so you don't have to open them for a quick lookup — but `tokens.ts` is the source of truth; if a value here ever disagrees, trust the file.
+The companion is **light-only** — `src/theme/tokens.ts` exports ONE token object (`light`); its type `ThemeTokens` is DERIVED (`typeof light`), so a new token is one keyed entry with its doc comment — never a second hand-written interface line. `useTheme()` returns `{ t }` where `t` is that object; field names are stable so call-sites read `t.bg`, `t.mutedInk`, `t.serif`, `t.rMd`, etc. directly. This file mirrors `tokens.ts` + `styles.ts` so you don't have to open them for a quick lookup — but `tokens.ts` is the source of truth; if a value here ever disagrees, trust the file.
 
 Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styled-components, no Tailwind, no className system — that's deliberate and verified pixel-exact against the design canon.
 
 ## Colors (palette)
 
-| Token                           | Value                                                | Use                                                                   |
-| ------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------- |
-| `bg`                            | `#ffffff`                                            | base surface                                                          |
-| `bgAlt`                         | `#f6f7f9`                                            | alt surface (README `alt`)                                            |
-| `inset`                         | `#eef0f3`                                            | recessed inset wells (rare)                                           |
-| `ink`                           | `#0f1115`                                            | primary text                                                          |
-| `ink2`                          | `#33373f`                                            | secondary text                                                        |
-| `mutedInk`                      | `#6b7280`                                            | muted text (README `muted`)                                           |
-| `faint`                         | `#9aa0a9`                                            | quaternary text / icon strokes                                        |
-| `onInk`                         | `#ffffff`                                            | text/icon on an ink fill (== bg, so primary buttons invert)           |
-| `hairline`                      | `rgba(15,17,21,0.09)`                                | hairline borders (README `hair`)                                      |
-| `hairlineStrong`                | `rgba(15,17,21,0.18)`                                | stronger hairline (README `hairStrong`)                               |
-| `accent`                        | `#d97757`                                            | terracotta — fills                                                    |
-| `accentDeep`                    | `#a7461f`                                            | accent-colored text / counts / kickers                                |
-| `accentSoft`                    | `rgba(217,119,87,0.10)`                              | accent pill background                                                |
-| `accentBadgeSoft`               | `rgba(217,119,87,0.14)`                              | active-scene badge fill                                               |
-| `accentBorder`                  | `rgba(217,119,87,0.45)`                              | accent pill border                                                    |
-| `warn` / `err`                  | `#a7461f`                                            | warning/error text (terracotta)                                       |
-| `warnSoft`                      | `rgba(167,70,31,0.08)`                               | error chip background                                                 |
-| `warnBorder`                    | `rgba(167,70,31,0.45)`                               | error badge border                                                    |
-| `sevWarn`                       | `#b07d1c`                                            | amber "measuring" severity (distinct from `err`)                      |
-| `sevWarnSoft` / `sevWarnBorder` | amber soft / border                                  | measuring pill                                                        |
-| `good`                          | `#3f7d4e`                                            | connected / healthy / ACTIVE / measured (green)                       |
-| `goodSoft`                      | `rgba(63,125,78,0.10)`                               | green chip background (README `okSoft`)                               |
-| `goodBorder`                    | `rgba(63,125,78,0.4)`                                | green badge border                                                    |
-| `danger*`                       | `dangerBorder` / `dangerBorderStrong` / `dangerSoft` | destructive-confirm red (distinct from `warn`)                        |
-| `record`                        | `#c0392b`                                            | recording indicator red (off-palette, audio semantics) + `recordSoft` |
-| `rowSel`                        | `rgba(15,17,21,0.035)`                               | selected-row tint (non-active)                                        |
-| `hover`                         | `rgba(15,17,21,0.05)`                                | row/menu-item hover tint                                              |
-| `track` / `knob` / `knobRing`   | slider track / knob fill / knob ring                 | sliders                                                               |
-| `shadow`                        | `rgba(15,17,21,0.28)`                                | popover drop-shadow base                                              |
-| `badgeStereo` / `badgeConv`     | `#2f6c98` / `#6a4ba0`                                | model badge foregrounds (stereo / convolution)                        |
-| `info`                          | `#6b7280`                                            | == `mutedInk` (severity)                                              |
-| `ok`                            | `#d97757`                                            | == `accent` (severity "ok"; green status uses `good`)                 |
+| Token                           | Value                                                                                 | Use                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `bg`                            | `#ffffff`                                                                             | base surface                                                          |
+| `bgAlt`                         | `#f6f7f9`                                                                             | alt surface (README `alt`)                                            |
+| `inset`                         | `#eef0f3`                                                                             | recessed inset wells (rare)                                           |
+| `ink`                           | `#0f1115`                                                                             | primary text                                                          |
+| `ink2`                          | `#33373f`                                                                             | secondary text                                                        |
+| `mutedInk`                      | `#6b7280`                                                                             | muted text (README `muted`)                                           |
+| `faint`                         | `#9aa0a9`                                                                             | quaternary text / icon strokes                                        |
+| `onInk`                         | `#ffffff`                                                                             | text/icon on an ink fill (== bg, so primary buttons invert)           |
+| `onAccent`                      | `#ffffff`                                                                             | glyph/text/ring on an `accent` fill (checkbox tick, active chip)      |
+| `bgFrost`                       | `rgba(255,255,255,0.92)`                                                              | sticky header wash over a scrolling wall (with a backdrop blur)       |
+| `hairline`                      | `rgba(15,17,21,0.09)`                                                                 | hairline borders (README `hair`)                                      |
+| `hairlineStrong`                | `rgba(15,17,21,0.18)`                                                                 | stronger hairline (README `hairStrong`)                               |
+| `accent`                        | `#d97757`                                                                             | terracotta — fills                                                    |
+| `accentDeep`                    | `#a7461f`                                                                             | accent-colored text / counts / kickers                                |
+| `accentSoft`                    | `rgba(217,119,87,0.10)`                                                               | accent pill background                                                |
+| `accentBadgeSoft`               | `rgba(217,119,87,0.14)`                                                               | active-scene badge fill                                               |
+| `accentBorder`                  | `rgba(217,119,87,0.45)`                                                               | accent pill border                                                    |
+| `accentBorderSoft`              | `rgba(217,119,87,0.3)`                                                                | lighter accent border (Doctor shared-block caption)                   |
+| `warn`                          | `#a7461f`                                                                             | warning/error text (terracotta)                                       |
+| `warnSoft`                      | `rgba(167,70,31,0.08)`                                                                | error chip background                                                 |
+| `warnBorder`                    | `rgba(167,70,31,0.45)`                                                                | error badge border                                                    |
+| `warnBorderSoft`                | `rgba(167,70,31,0.4)`                                                                 | lighter error border (instrument row error phase)                     |
+| `sevWarn`                       | `#b07d1c`                                                                             | amber "measuring" severity (distinct from `warn`)                     |
+| `sevWarnSoft` / `sevWarnBorder` | amber soft / border                                                                   | measuring pill                                                        |
+| `sevWarnChip{Border,Soft}`      | amber 0.4 border / 0.10 fill                                                          | amber filter chip (Copy "only over budget")                           |
+| `good`                          | `#3f7d4e`                                                                             | connected / healthy / ACTIVE / measured (green)                       |
+| `goodSoft`                      | `rgba(63,125,78,0.10)`                                                                | green chip background (README `okSoft`)                               |
+| `goodBorder`                    | `rgba(63,125,78,0.4)`                                                                 | green badge border                                                    |
+| `record`                        | `#c0392b`                                                                             | recording indicator red (off-palette, audio semantics) + `recordSoft` |
+| `rowSel`                        | `rgba(15,17,21,0.035)`                                                                | selected-row tint (non-active)                                        |
+| `hover`                         | `rgba(15,17,21,0.05)`                                                                 | row/menu-item hover tint                                              |
+| `track` / `knob` / `knobRing`   | slider track / knob fill / knob ring                                                  | sliders (`knob` is also the `Toggle` knob)                            |
+| `toggleTrack`                   | `rgba(15,17,21,0.14)`                                                                 | `Toggle` switch track, OFF state                                      |
+| `shadow`                        | `rgba(15,17,21,0.28)`                                                                 | popover drop-shadow base                                              |
+| `badgeStereo` / `badgeConv`     | `#2f6c98` / `#6a4ba0`                                                                 | model badge foregrounds (stereo / convolution)                        |
+| `strip*`                        | `stripWire` / `stripGhost` / `stripInk` / `stripInkSel` / `stripChanged{Border,Soft}` | `SignalChainView` wire, skeleton, caption, Copy-tile selected/changed |
 
-Severity aliases exist so status code can read `t.err` / `t.sevWarn` / `t.info` / `t.ok` semantically. **Handoff green maps to `good`, not `ok`** — see `SKILL.md`'s handoff step 3 (Severity-token trap).
+There are no `err` / `info` / `ok` severity aliases (deleted as unused): error is `warn`, amber is `sevWarn`, muted is `mutedInk`. **Handoff green maps to `good`** — see `SKILL.md`'s handoff step 3 (Severity-token trap).
 
 ## Fonts
 
@@ -53,13 +57,13 @@ Severity aliases exist so status code can read `t.err` / `t.sevWarn` / `t.info` 
 
 ## Type scale (px)
 
-`fsDisplay` 28 · `fsTitle` 24 · `fsSheetLg` 22 · `fsSheet` 21 · `fsSubhead` 19 · `fsCard` 16 · `fsName` 14.5 · `fsName2` 14 · `fsBody2` 13.5 · `fsBody` 13 · `fsControl` 12.5 · `fsUi` 12 · `fsLabel` 11.5 · `fsData` 11 · `fsMeta` 10.5 · `fsData2` 10 · `fsMicro` 9.5 · `fsMicro2` 9 · `fsTag` 8.5
+`fsTitle` 24 · `fsSheet` 21 · `fsSubhead` 19 · `fsCard` 16 · `fsName` 14.5 · `fsName2` 14 · `fsBody2` 13.5 · `fsBody` 13 · `fsControl` 12.5 · `fsUi` 12 · `fsLabel` 11.5 · `fsData` 11 · `fsMeta` 10.5 · `fsData2` 10 · `fsMicro` 9.5 · `fsMicro2` 9 · `fsTag` 8.5
 
 (serif for `fsName*`/`fsTitle`/`fsSubhead`; mono for `fsData*`/`fsMicro*`; sans for the rest.)
 
 ## Radii (px)
 
-`rSm` 3 (chips/tags) · `rMenuItem` 5 (popover row) · `rBtn` 6 (small/icon buttons) · `rMd` 7 (buttons/inputs/fields) · `rCard` 8 (cards/popovers — distinct from `rLg`, do not fold) · `rLg` 9 (cards/rows/modals) · `rWin` 11 (window chrome) · `rPopover` 12 (large pickers) · `rDialog` 14 (the DS `Dialog` card) · `rPill` 999 (pills/switches)
+`rSm` 3 (chips/tags) · `rMenuItem` 5 (popover row) · `rBtn` 6 (small/icon buttons) · `rMd` 7 (buttons/inputs/fields) · `rCard` 8 (cards/popovers — distinct from `rLg`, do not fold) · `rLg` 9 (cards/rows/modals) · `rPopover` 12 (large pickers) · `rDialog` 14 (the DS `Dialog` card) · `rPill` 999 (pills/switches)
 
 ## Spacing (px)
 
@@ -77,11 +81,11 @@ There is no `density` token group. (`Density` in `src/views/CatalogView.tsx` is 
 
 ## Letter-spacing
 
-`lsTight` `-0.01em` (page titles) · `lsMeta` `0.02em` (counts) · `lsCaption` `0.05em` · `lsTag` `0.08em` · `lsLabel` `0.1em` · `lsWide` `0.12em` (popover headers) · `lsKicker` `0.14em` (section kicker)
+`lsTight` `-0.01em` (page titles) · `lsMeta` `0.02em` (counts) · `lsTag` `0.08em` · `lsLabel` `0.1em` · `lsWide` `0.12em` (popover headers) · `lsKicker` `0.14em` (section kicker)
 
 ## Elevation
 
-`shadowWin` (window), `shadowModal` (modals/popovers), `scrim` `rgba(15,17,21,0.32)` (modal backdrop).
+`shadowModal` (modals/popovers), `shadowMenu` (the `s.menuCard` dropdown — lighter, closer), `shadowKnob` (`Toggle` knob), `shadowBadge` (small floating badge), `shadowAccentEdge` (accent edit card's 1px under-edge), `dropShadowStripArt` (a CSS `filter` for strip block art), `scrim` `rgba(15,17,21,0.32)` (modal backdrop).
 
 ## Composed styles — `useStyles()` → `s`
 

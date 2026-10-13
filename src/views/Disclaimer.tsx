@@ -183,7 +183,10 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
           >
             I&apos;ve backed up, continue
           </Button>
-          <div
+          <Button
+            variant="bare"
+            role="checkbox"
+            aria-checked={dontShow}
             onClick={() => {
               setDontShow((v) => !v);
             }}
@@ -191,7 +194,6 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
               display: "inline-flex",
               alignItems: "center",
               gap: t.space4,
-              cursor: "pointer",
               userSelect: "none",
             }}
           >
@@ -201,7 +203,7 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
             >
               Don&apos;t show again
             </span>
-          </div>
+          </Button>
         </div>
       </div>
     </div>

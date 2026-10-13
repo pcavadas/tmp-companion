@@ -41,13 +41,15 @@ export function ConfirmBar({
         gap: t.space7,
       }}
     >
-      <span style={{ fontFamily: t.sans, fontSize: 12.5, color: t.ink2 }}>
+      <span
+        style={{ fontFamily: t.sans, fontSize: t.fsControl, color: t.ink2 }}
+      >
         {message}
       </span>
       <div style={{ display: "flex", gap: t.space4 }}>
         <Button
           variant="ghost"
-          small
+          size="sm"
           onClick={onCancel}
           style={{ height: 30, padding: `0 ${String(t.space6)}px` }}
         >
@@ -55,7 +57,7 @@ export function ConfirmBar({
         </Button>
         <Button
           variant="warn"
-          small
+          size="sm"
           onClick={onConfirm}
           style={{ height: 30, padding: `0 ${String(t.space7)}px` }}
         >

@@ -1,7 +1,7 @@
 // src/ui/blockart/ampsHeadFender.tsx — Fender-lineage amp-HEAD bodies (tweed/Blues
 // Jr, '68 Custom silverface, EVH 5150 III), split from ./amps so each file stays
 // ≤500 lines. Dispatched by AmpBody. Shared data/helpers live in ./shared/./parts.
-import { evhAccentColor, type PedalTone } from "./shared";
+import { evhAccentColor, type ArtVariant, type PedalTone } from "./shared";
 import {
   GrilleCloth,
   ChassisBody,
@@ -158,15 +158,15 @@ export function AmpHeadEvhModern({
   t,
   edge,
   uid,
-  lab,
+  variant,
 }: {
   c: PedalTone;
   t: string;
   edge: string;
   uid: string;
-  lab: string;
+  variant?: ArtVariant;
 }) {
-  const acc = evhAccentColor(lab);
+  const acc = evhAccentColor(variant);
   return (
     <g>
       {/* ivory cabinet */}

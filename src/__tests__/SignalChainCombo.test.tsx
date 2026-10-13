@@ -8,7 +8,6 @@
 // caption text is identical for both, so it can't distinguish them.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render } from "@testing-library/react";
 
 // SignalChainView imports BlockArt + HalfStackArt from this exact path; the mock
 // replaces both for every strip caller (ActiveSignalChainView AND CopyPath).
@@ -26,11 +25,11 @@ vi.mock("../ui/BlockArt", () => ({
 }));
 
 // Imported AFTER the mock so the strips pick up the captured art components.
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { ActiveSignalChainView } from "../views/ActiveSignalChainView";
 import { CopyPath } from "../views/copy/CopyPath";
 import type { ActiveGraph, GraphNode } from "../lib/types";
 import type { EditGraph } from "../views/copy/copyModel";
+import { renderWithTheme } from "./testKit";
 
 const ampNode = (model: string, cabSimId: string): GraphNode => ({
   group_id: "G1",
@@ -81,39 +80,33 @@ describe("signal-chain strip — combo amps render as a single combo tile", () =
   });
 
   it("hero strip: a COMBO amp with a cabsimid → BlockArt combo tile, NOT a half-stack", () => {
-    render(
-      <ThemeProvider>
-        <ActiveSignalChainView
-          graph={heroGraph(
-            ampNode("ACD_TwinReverb65BlondeNoFx", "G1265Creamback"),
-          )}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <ActiveSignalChainView
+        graph={heroGraph(
+          ampNode("ACD_TwinReverb65BlondeNoFx", "G1265Creamback"),
+        )}
+      />,
     );
     expect(halfStackProps).toHaveLength(0); // no synthesized head-over-cab
     expect(blockArtProps.some((p) => p.icon === "combo")).toBe(true);
   });
 
   it("hero strip: a true half-stack (head + baked cab) STILL stacks (no regression)", () => {
-    render(
-      <ThemeProvider>
-        <ActiveSignalChainView
-          graph={heroGraph(
-            ampNode("ACD_HiwattDR103CanModCabIR", "Mar1960aV30Alt"),
-          )}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <ActiveSignalChainView
+        graph={heroGraph(
+          ampNode("ACD_HiwattDR103CanModCabIR", "Mar1960aV30Alt"),
+        )}
+      />,
     );
     expect(halfStackProps.length).toBeGreaterThan(0); // head-over-cab preserved
   });
 
   it("Copy strip: a COMBO amp with a cabsimid → BlockArt combo tile, NOT a half-stack", () => {
-    render(
-      <ThemeProvider>
-        <CopyPath
-          graph={copyGraph("ACD_TwinReverb65BlondeNoFx", "G1265Creamback")}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <CopyPath
+        graph={copyGraph("ACD_TwinReverb65BlondeNoFx", "G1265Creamback")}
+      />,
     );
     expect(halfStackProps).toHaveLength(0);
     expect(blockArtProps.some((p) => p.icon === "combo")).toBe(true);

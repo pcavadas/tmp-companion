@@ -18,19 +18,16 @@ import { useLazySlotCache } from "./useLazySlotCache";
 
 /** One Base-row leveling candidate, normalized from EITHER source
  *  (`baseHandlesByIndex`'s `SceneHandleCandidate` or `list_level_blocks`'s `LevelBlock`) into
- *  one shape `SetupBody` consumes without caring which lane answered — no `live` flag: a
- *  candidate's `value` is display-only now (the current reading shown in the picker),
- *  never forwarded as `LevelJob.block_value` regardless of source (see `BaseHandlePick`'s
- *  doc in `leveling.ts`), so there is nothing left for the two sources to diverge on. */
+ *  one shape `SetupPage` consumes without caring which lane answered. The control's current
+ *  reading is not carried: nothing displays it, and it is never forwarded as
+ *  `LevelJob.block_value` (see `BaseHandlePick`'s doc in `leveling.ts`). */
 export interface BaseCandidate {
   group_id: string;
   node_id: string;
   model_id: string;
   parameter_id: string;
-  /** The control's current reading — display-only (`BlockLevelPick` renders it). */
-  value: number;
   /** Present only for a backup-derived candidate (`list_level_blocks`'s `LevelBlock` wire
-   *  shape carries no class annotation) — `BlockLevelPick`'s rank() already sorts a
+   *  shape carries no class annotation) — `blockLevelGroups`' rank() already sorts a
    *  `undefined` class after every classified one, so the device-fallback arm's
    *  "classless" candidates fall in exactly where they always have; nothing here
    *  re-classifies them frontend-side. */
@@ -49,7 +46,7 @@ export interface UseLevelBlocksResult {
    *  every menu open; only the first call per slot per mount actually resolves. When the
    *  backup scan has NO entry for `slot`, this DOES reach the device (`list_level_blocks`)
    *  — callers doing an eager, provably-device-free warm must gate on `hasBackupData`
-   *  first (see `SetupBody`'s Set-up-render warm effect). */
+   *  first (see `SetupPage`'s Set-up-render warm effect). */
   prefetch: (slot: number) => void;
   /** This preset's block-candidate fetch state, right now. */
   blocksFor: (slot: number) => BaseBlockFetchState;
@@ -72,7 +69,6 @@ async function fetchBaseCandidates(slot: number): Promise<BaseCandidate[]> {
       node_id: c.nodeId,
       model_id: c.fenderId,
       parameter_id: c.parameterId,
-      value: c.current,
       paramClass: c.class,
       headroom: c.headroom,
     }));
@@ -83,7 +79,6 @@ async function fetchBaseCandidates(slot: number): Promise<BaseCandidate[]> {
     node_id: b.node_id,
     model_id: b.model_id,
     parameter_id: b.parameter_id,
-    value: b.value,
   }));
 }
 

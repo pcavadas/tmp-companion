@@ -14,10 +14,17 @@
 // to the signal-chain strip). Logic + grouping ported from the design prototype
 // (catalog-models.jsx); styling reads the app's theme tokens.
 
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  memo,
+  useDeferredValue,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 
 import { useTheme } from "../theme/ThemeContext";
-import type { ThemeTokens } from "../theme/tokens";
+import { plainButton, type ThemeTokens } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { SearchInput } from "../ui/primitives";
 import { Tag } from "../ui/Tag";
@@ -48,6 +55,9 @@ import {
 // Off-state chip fill: white (light-only), matching the prototype's chipBg.
 const chipBgFor = (t: ThemeTokens) => t.bg;
 
+/** Vertical padding of the "No models match" empty wall — off the spacing ramp
+ *  (48 + 6), kept exact so the empty state sits where canon puts it. */
+const EMPTY_WALL_PAD_Y = 54;
 const ICON_SHADOW = "drop-shadow(0 2px 4px rgba(15,17,21,0.2))";
 
 // Relative luminance (Rec. 709) of a #hex color, 0 (black) … 1 (white). Drives
@@ -100,11 +110,8 @@ function artFor(r: ModelRecord) {
 
 function ModelTile({ r, size }: ModelTileProps) {
   const art = artFor(r);
-  // The art's terse caption doubles as the engine's label-keyed dispatch token:
-  // some 1.8 treatments select by `lab` (EVH 5150 III channel accent green/blue/
-  // red, the '65 Twin 15 single 15" speaker, the gear-pedal on-device name print,
-  // the Seventy Sixer compressor face), so the caption — which carries that token
-  // (GREEN/BLUE/RED · 15 · PINIONS · SEVENTY SIXER) — must flow into `lab`.
+  // Per-model art treatments (EVH channel colour, the Seventy Sixer face, …) ride
+  // the explicit `variant`; the caption is display text only.
   const lab = art?.short ?? "";
   if (r.form === "half_stack") {
     const cabBid = r.bid ? HALF_STACK_PAIR[r.bid] : undefined;
@@ -113,7 +120,7 @@ function ModelTile({ r, size }: ModelTileProps) {
       <HalfStackArt
         topIcon={art?.icon}
         topTone={art?.tone}
-        topLab={lab}
+        topVariant={art?.variant}
         cabIcon={cabArt?.icon ?? "cab4"}
         // an unpaired head's cab inherits the HEAD's tone so its grille matches the
         // head/combo (Fender bass/blackface cabs must share the head grille),
@@ -124,7 +131,6 @@ function ModelTile({ r, size }: ModelTileProps) {
           art?.tone ??
           "marshall"
         }
-        cabLab=""
         cabW={size}
       />
     );
@@ -135,6 +141,7 @@ function ModelTile({ r, size }: ModelTileProps) {
         icon={art?.icon}
         tone={art?.tone}
         lab={lab}
+        variant={art?.variant}
         footswitch={art?.footswitch}
         bodyColor={art?.body}
         accentColor={art?.accent}
@@ -191,7 +198,16 @@ interface ModelCardProps {
   onPick: (r: ModelRecord) => void;
 }
 
-function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
+// Memoized: the wall holds every model (~350 procedural-SVG cards), and its props are
+// stable — `t` is the module-constant theme, `onPick` is the `setPick` setter — so a
+// pick re-renders only the cards whose `selected` flipped, not the whole wall.
+const ModelCard = memo(function ModelCard({
+  r,
+  t,
+  selected,
+  icon,
+  onPick,
+}: ModelCardProps) {
   const [hov, setHov] = useState(false);
   const clamp2: CSSProperties = {
     display: "-webkit-box",
@@ -201,7 +217,9 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
     maxWidth: icon + TEXT_PAD,
   };
   return (
-    <div
+    <button
+      type="button"
+      aria-pressed={selected}
       onClick={() => {
         onPick(r);
       }}
@@ -213,6 +231,7 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
       }}
       title={`${displayName(r)} — ${r.real}`}
       style={{
+        ...plainButton(),
         width: icon + CARD_PAD,
         display: "flex",
         flexDirection: "column",
@@ -274,9 +293,9 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
           </div>
         )}
       </div>
-    </div>
+    </button>
   );
-}
+});
 
 // ── detail bar ────────────────────────────────────────────────────────────
 
@@ -488,6 +507,9 @@ export interface CatalogViewProps {
 export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
   const { t } = useTheme();
   const [q, setQ] = useState("");
+  // The wall filters on the DEFERRED query, so each keystroke paints the input
+  // first and the (expensive) card wall catches up at transition priority.
+  const deferredQ = useDeferredValue(q);
   const [sel, setSel] = useState<Sel>({ cat: "all", sub: null });
   const [et, setEt] = useState<string | null>(null);
   const [routing, setRouting] = useState<Routing>("all");
@@ -520,7 +542,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
   }, [sel]);
 
   const shown = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+    const needle = deferredQ.trim().toLowerCase();
     return inScope.filter((r) => {
       if (et && r.et !== et) return false;
       if (routing === "mono" && r.ch !== "mono") return false;
@@ -529,7 +551,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
       if (needle && !r.search.includes(needle)) return false;
       return true;
     });
-  }, [inScope, et, routing, convOnly, q]);
+  }, [inScope, et, routing, convOnly, deferredQ]);
 
   const groups: Group[] = useMemo(() => {
     // CPU sort overrides grouping — one flat, ranked "By CPU usage" wall.
@@ -615,10 +637,26 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
     onClick: () => void,
     opts: { child?: boolean; caret?: boolean; k?: string } = {},
   ) => (
-    <div
+    <button
+      type="button"
       key={opts.k ?? label}
+      aria-current={active ? true : undefined}
+      aria-expanded={opts.caret}
       onClick={onClick}
       style={{
+        // Hand-rolled reset (not `plainButton`): the varying `borderLeft` bar must
+        // not share the style object with a `border` shorthand.
+        appearance: "none",
+        margin: 0,
+        fontFamily: "inherit",
+        fontSize: "inherit",
+        color: "inherit",
+        textAlign: "left",
+        width: "100%",
+        boxSizing: "border-box",
+        borderTop: "none",
+        borderRight: "none",
+        borderBottom: "none",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
@@ -685,7 +723,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
       >
         {count}
       </span>
-    </div>
+    </button>
   );
 
   const facetBtn = (
@@ -694,14 +732,18 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
     onClick: () => void,
     disabled = false,
   ) => (
-    <span
+    <button
+      type="button"
       key={label}
-      onClick={disabled ? undefined : onClick}
+      aria-pressed={on}
+      disabled={disabled}
+      onClick={onClick}
       style={{
+        ...plainButton(),
         fontFamily: t.mono,
         fontSize: t.fsData2,
         letterSpacing: "0.03em",
-        color: disabled ? t.faint : on ? "#fff" : t.ink2,
+        color: disabled ? t.faint : on ? t.onAccent : t.ink2,
         background: on ? t.accent : chipBgFor(t),
         border: `0.5px solid ${on ? t.accent : t.hairlineStrong}`,
         borderRadius: t.rPill,
@@ -713,7 +755,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
       }}
     >
       {label}
-    </span>
+    </button>
   );
 
   return (
@@ -918,14 +960,14 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
           {shown.length === 0 ? (
             <div
               style={{
-                padding: `54px ${String(t.space10)}px`,
+                padding: `${String(EMPTY_WALL_PAD_Y)}px ${String(t.space10)}px`,
                 textAlign: "center",
                 fontFamily: t.sans,
                 fontSize: t.fsBody2,
                 color: t.mutedInk,
               }}
             >
-              No models match {q ? `“${q}”` : "these filters"}.
+              No models match {deferredQ ? `“${deferredQ}”` : "these filters"}.
             </div>
           ) : (
             groups.map((g) => (
@@ -939,7 +981,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
                     alignItems: "baseline",
                     gap: t.space5,
                     padding: `${String(t.space4)}px ${String(t.space8)}px ${String(t.space4)}px`,
-                    background: "rgba(255,255,255,0.92)",
+                    background: t.bgFrost,
                     backdropFilter: "blur(6px)",
                     borderBottom: `0.5px solid ${t.hairline}`,
                   }}

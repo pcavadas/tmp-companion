@@ -6,16 +6,16 @@
 // per-child toggle; inert carets until `ready`.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import {
   PresetList,
   type PresetRow,
   type PresetListProps,
 } from "../views/PresetList";
 import type { ActiveGraph, FootswitchInfo, SceneInfo } from "../lib/types";
+import { renderWithTheme } from "./testKit";
 
 const noop = () => {
   /* no-op */
@@ -111,11 +111,7 @@ function renderList(over: ListOverrides = {}) {
     onToggleAll: noop,
     ...over,
   };
-  return render(
-    <ThemeProvider>
-      <PresetList {...props} />
-    </ThemeProvider>,
-  );
+  return renderWithTheme(<PresetList {...props} />);
 }
 
 describe("PresetList (scene tree)", () => {
@@ -183,26 +179,24 @@ describe("PresetList (scene tree)", () => {
     expect(onToggleExpand).toHaveBeenCalledWith(0);
     // expanded: the Base + FS scene + footswitch sub-rows render.
     rerender(
-      <ThemeProvider>
-        <PresetList
-          rows={ROWS}
-          sel={new Set<string>()}
-          pendingWhole={new Set<number>()}
-          expanded={new Set<number>([0])}
-          ready
-          activeSlot={null}
-          filter=""
-          scan={{ scanning: false }}
-          sceneInfo={SCENES}
-          footswitchInfo={FOOTSWITCHES}
-          graphByIndex={new Map()}
-          onFilterChange={noop}
-          onTogglePreset={noop}
-          onToggleExpand={noop}
-          onToggleKey={noop}
-          onToggleAll={noop}
-        />
-      </ThemeProvider>,
+      <PresetList
+        rows={ROWS}
+        sel={new Set<string>()}
+        pendingWhole={new Set<number>()}
+        expanded={new Set<number>([0])}
+        ready
+        activeSlot={null}
+        filter=""
+        scan={{ scanning: false }}
+        sceneInfo={SCENES}
+        footswitchInfo={FOOTSWITCHES}
+        graphByIndex={new Map()}
+        onFilterChange={noop}
+        onTogglePreset={noop}
+        onToggleExpand={noop}
+        onToggleKey={noop}
+        onToggleAll={noop}
+      />,
     );
     expect(screen.getByText("Base Preset")).toBeTruthy();
     expect(screen.getByText("Bright")).toBeTruthy();

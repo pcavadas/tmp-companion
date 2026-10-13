@@ -9,15 +9,16 @@
 //     instrument row carries no fake drag grip.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { SettingsView } from "../views/settings";
 import { TargetRow } from "../views/settings/TargetRow";
 import type { UpdaterApi } from "../lib/useUpdater";
-import type { Target } from "../lib/types";
+import type { Store, Target } from "../lib/types";
+import { callsOf, makeStore, mockCommands } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 const updater: UpdaterApi = {
   phase: "idle",
@@ -37,26 +38,13 @@ const updater: UpdaterApi = {
   restart: vi.fn(),
 };
 
-const store = (targets: Target[]) => ({
-  profiles: [],
-  profile_by_slot: {},
-  targets,
-  playback_level: "stage",
-});
+const store = (targets: Target[]) => makeStore({ targets });
 
 function renderView() {
-  render(
-    <ThemeProvider>
-      <SettingsView connected={false} updater={updater} />
-    </ThemeProvider>,
-  );
+  renderWithTheme(<SettingsView connected={false} updater={updater} />);
 }
 
-const savedTargets = () =>
-  vi
-    .mocked(invoke)
-    .mock.calls.filter(([c]) => c === "save_targets")
-    .map(([, args]) => (args as { targets: Target[] }).targets);
+const savedTargets = () => callsOf("save_targets").map((a) => a.targets);
 
 describe("SettingsView — load and save are never silent (#300)", () => {
   beforeEach(() => {
@@ -65,13 +53,11 @@ describe("SettingsView — load and save are never silent (#300)", () => {
 
   it("a failed load shows the error with Retry and offers no Add; Retry loads", async () => {
     let fail = true;
-    vi.mocked(invoke).mockImplementation((command: string) => {
-      if (command === "get_store")
-        return fail
-          ? Promise.reject(new Error("store unreadable"))
-          : Promise.resolve(store([{ name: "Rhythm", lufs: -26 }]));
-      if (command === "list_pickup_topologies") return Promise.resolve([]);
-      return Promise.resolve(null);
+    mockCommands({
+      get_store: () => {
+        if (fail) throw new Error("store unreadable");
+        return store([{ name: "Rhythm", lufs: -26 }]);
+      },
     });
     renderView();
 
@@ -90,13 +76,11 @@ describe("SettingsView — load and save are never silent (#300)", () => {
   });
 
   it("a failed save is reported and the list re-reads to what is stored", async () => {
-    vi.mocked(invoke).mockImplementation((command: string) => {
-      if (command === "get_store")
-        return Promise.resolve(store([{ name: "Rhythm", lufs: -26 }]));
-      if (command === "list_pickup_topologies") return Promise.resolve([]);
-      if (command === "save_targets")
-        return Promise.reject(new Error("disk full"));
-      return Promise.resolve(null);
+    mockCommands({
+      get_store: () => store([{ name: "Rhythm", lufs: -26 }]),
+      save_targets: () => {
+        throw new Error("disk full");
+      },
     });
     renderView();
     await screen.findByText("Rhythm");
@@ -118,29 +102,27 @@ describe("SettingsView — load and save are never silent (#300)", () => {
     let releaseRead: () => void = () => undefined;
     let saves = 0;
     let releaseSave: () => void = () => undefined;
-    vi.mocked(invoke).mockImplementation((command: string) => {
-      const stored = store([{ name: "Rhythm", lufs: -26 }]);
-      if (command === "get_store") {
+    const stored = store([{ name: "Rhythm", lufs: -26 }]);
+    mockCommands({
+      get_store: () => {
         reads++;
-        if (reads === 1) return Promise.resolve(stored);
+        if (reads === 1) return stored;
         // The recovery read stays pending until released.
-        return new Promise((res) => {
+        return new Promise<Store>((res) => {
           releaseRead = () => {
             res(stored);
           };
         });
-      }
-      if (command === "list_pickup_topologies") return Promise.resolve([]);
-      if (command === "save_targets") {
+      },
+      save_targets: () => {
         saves++;
-        if (saves === 1) return Promise.reject(new Error("disk full"));
-        return new Promise((res) => {
+        if (saves === 1) throw new Error("disk full");
+        return new Promise<undefined>((res) => {
           releaseSave = () => {
-            res(null);
+            res(undefined);
           };
         });
-      }
-      return Promise.resolve(null);
+      },
     });
     renderView();
     await screen.findByText("Rhythm");
@@ -176,16 +158,12 @@ describe("Settings — click-only reorder and slider cancel (#302)", () => {
   });
 
   it("targets reorder with ⋯ Move down / Move up (no drag needed)", async () => {
-    vi.mocked(invoke).mockImplementation((command: string) => {
-      if (command === "get_store")
-        return Promise.resolve(
-          store([
-            { name: "Rhythm", lufs: -26 },
-            { name: "Lead", lufs: -22 },
-          ]),
-        );
-      if (command === "list_pickup_topologies") return Promise.resolve([]);
-      return Promise.resolve(null);
+    mockCommands({
+      get_store: () =>
+        store([
+          { name: "Rhythm", lufs: -26 },
+          { name: "Lead", lufs: -22 },
+        ]),
     });
     renderView();
     await screen.findByText("Rhythm");
@@ -213,20 +191,18 @@ describe("Settings — click-only reorder and slider cancel (#302)", () => {
   it("the slider's pointercancel ends the drag without committing", () => {
     const onChange = vi.fn();
     const onCommit = vi.fn();
-    render(
-      <ThemeProvider>
-        <TargetRow
-          name="Rhythm"
-          lufs={-21}
-          onRename={vi.fn()}
-          onChange={onChange}
-          onCommit={onCommit}
-          onDelete={vi.fn()}
-          onGrab={vi.fn()}
-          onDropOn={vi.fn()}
-          onDragEnd={vi.fn()}
-        />
-      </ThemeProvider>,
+    renderWithTheme(
+      <TargetRow
+        name="Rhythm"
+        lufs={-21}
+        onRename={vi.fn()}
+        onChange={onChange}
+        onCommit={onCommit}
+        onDelete={vi.fn()}
+        onGrab={vi.fn()}
+        onDropOn={vi.fn()}
+        onDragEnd={vi.fn()}
+      />,
     );
     const track = screen.getByTitle("Drag to set level");
     // A 160 px track: 10 px per LU over the −29…−13 domain.

@@ -18,32 +18,28 @@
 import type {
   BaseBoostSummary,
   FootswitchInfo,
+  FootswitchLevelJobWire,
   LevelJob,
   LevelParamCandidate,
   ParamClass,
   Profile,
+  SceneHandlePick,
   SceneInfo,
   SilenceHint,
 } from "../../lib/types";
 import type { PresetRow } from "../PresetList";
 import type { PickOption } from "../overlays/Pick";
 import type { PresetGroup } from "./PresetGroupRow";
-// `SceneHandlePick` is declared ONCE, as the `levelScenesApplyBatched` wire type in
-// invoke.ts (its `SceneLevelJobWire.handle` field) — re-exported below so
-// `SetupOption`/`RunItem` and the scene-handle-picker wiring can import it from
-// either module without a second, driftable copy.
-import type { SceneHandlePick } from "../../lib/invoke";
 import { blockArtTile, shortFallback } from "../../models/blockArt";
 import { stripNameFor } from "../../models/catalog";
 
+// `SceneHandlePick` is declared ONCE, as the `levelScenesApplyBatched` wire type in
+// lib/types.ts (its `SceneLevelJobWire.handle` field) — re-exported so
+// `SetupOption`/`RunItem` and the scene-handle-picker wiring can import it from
+// either module without a second, driftable copy.
 export type { SceneHandlePick };
 
 // ── selection scene-key helpers (shared by the list + the flow) ─────────────
-
-/** The wire scene slot the device uses for a preset's BASE (a constant, NOT a `scenes[]`
- *  index — mirrors `session::BASE_SCENE_SLOT`). Redistribution levels the base amp at this
- *  slot alongside the FS scenes. Re-exported from the wire mirror so the value can't drift. */
-export { BASE_SCENE_SLOT } from "../../lib/types";
 
 /** The Base scene key for a preset slot (selecting the whole preset includes it). */
 export const baseKey = (slot: number): string => `p${String(slot)}`;
@@ -119,8 +115,8 @@ const CLASS_RANK: Record<ParamClass, number> = {
 };
 
 /** Friendly labels for the technical parameter ids (fallback: capitalize the id).
- *  Shared by `FsParamPick` and `SceneLevelPick` — the two "which block parameter"
- *  pickers — so the dictionary can't drift between them. */
+ *  Read through `paramLabel` by `FlatLevelPick` — the one "which block parameter"
+ *  picker — for both its trigger label and its candidate rows. */
 const PARAM_LABELS: Partial<Record<string, string>> = {
   level: "Level",
   outputLevel: "Output level",
@@ -185,6 +181,24 @@ export function targetFromCandidate(
     levNodeId: c.node_id,
     levParameterId: c.parameter_id,
     sceneContext,
+  };
+}
+
+/** Build one `levelFootswitchesApply` job from a `FootswitchTarget` — the ONE place
+ * that turns the frontend's row shape into the wire's field names. The backend never
+ * creates a footswitch function any more (the assign gate only ever edits an EXISTING
+ * `param` fn or refuses), so no display name rides the wire shape. */
+export function toFootswitchJobWire(
+  target: FootswitchTarget,
+  targetLufs: number,
+): FootswitchLevelJobWire {
+  return {
+    switch: target.switchIndex,
+    levGroupId: target.levGroupId,
+    levNodeId: target.levNodeId,
+    levParameterId: target.levParameterId,
+    targetLufs,
+    sceneContext: target.sceneContext,
   };
 }
 
@@ -338,7 +352,7 @@ export interface SetupOption {
    *
    *  Re-checked at run-start, not just at list-build: `sceneName` is the Level list's row
    *  name (never sent to the backend). If the user picks a different candidate in Set up,
-   *  the row must be RE-NAMED after the block actually being leveled (`SetupBody.start`),
+   *  the row must be RE-NAMED after the block actually being leveled (`SetupPage`'s `start`),
    *  or the DISPLAYED row keeps naming a block the run never touched. A LABELED switch is
    *  never renamed: that string is the player's, not ours. */
   fsUnlabeled?: boolean;
@@ -373,7 +387,7 @@ export interface BaseHandlePick {
   parameterId: string;
 }
 
-/** The e2e-hook identity for a setup row (`PresetOptionRow`'s `data-setup-row`) —
+/** The e2e-hook identity for a setup row (`SetupPage`'s `data-setup-row`) —
  *  DELIBERATELY DISTINCT from `SetupOption.key` (the SELECTION key: `sel`/`rows` Map
  *  lookups and the React list key, unchanged by this function). A footswitch's `key`
  *  is `fswKey`'s POSITION within the levelable-filtered footswitch list, so a fixture
@@ -554,8 +568,7 @@ export function chosenFrom(
 // user's next action: a CLAMPED sound is at the end of its knob and cannot reach target
 // however often it runs, while an UNCONVERGED one still had knob room and simply ran out
 // of measurement captures — running it again improves it. Backed by
-// `FootswitchLevelResult.unconverged` (footswitch rows only today). Folding it into
-// `clamped` would also feed a non-ceiling into `ceilingOf` → the derived common target.
+// `FootswitchLevelResult.unconverged` (footswitch rows only today).
 export type Outcome =
   "done" | "clamped" | "unconverged" | "offbranch" | "skipped";
 
@@ -578,7 +591,7 @@ export interface RunItem {
   targetName: string;
   // live + final:
   status: "queued" | "active" | "result";
-  /** Backend-supplied caption for an active row, rendered two ways by `RunBody`'s
+  /** Backend-supplied caption for an active row, rendered two ways by `RunPage`'s
    *  `rowStatus` depending on whether a capture is streaming:
    *   - streaming -> it is the VERB before the live number. The ceiling prepass sends
    *     "measuring", giving `measuring · −18.9`; a message-less solve row reads `leveling · …`.
@@ -619,18 +632,6 @@ export interface RunItem {
   /** The preset's backup-scan silence hint, stamped at item build — refines the
    *  offbranch row status (see `offbranchStatus`). */
   silenceHint?: SilenceHint;
-  /** The sound's MEASURED raw ceiling (max-reachable LUFS), set on Base rows from the
-   *  result's `constant_c`. Feeds the reachable-common-target derivation (a clamped row's
-   *  ceiling is its measured `value` instead — it sits at max). Undefined until measured. */
-  ceilingLufs?: number | null;
-  /** Set by the reachable-common-target fallback: an explicit numeric target that OVERRIDES
-   *  `targetLufsByName(targetName)` in the run loop's dispatch (pre-offset; the runner adds
-   *  the playback offset). Normal runs never set it. */
-  targetOverrideLufs?: number;
-  /** Set by the reachable-common-target fallback for a row it does NOT re-level (off-branch,
-   *  no ceiling): the run loop leaves the row's existing outcome untouched so it stays
-   *  visible/counted in the Summary without wasting a re-capture on a signal-less sound. */
-  skipRelevel?: boolean;
   /** Base rows only: this row's base-pair BOOST disclosure, carried verbatim from the
    *  result's `base_boost` — see `BaseBoostSummary`'s own doc. `null`/undefined on every
    *  row whose base pair never entered the `Boost` regime (the common case) and on every
@@ -641,25 +642,6 @@ export interface RunItem {
    *  one banner when any row carries it. */
   reampWarning?: string | null;
 }
-
-/** A finished row's MEASURED raw ceiling for the reachable-common-target derivation, or null
- *  when unknown. A CLAMPED row sits at max, so its measured `value` IS its ceiling; a done
- *  row's ceiling is `ceilingLufs` (Base rows carry `constant_c`; done scene/footswitch rows
- *  have none → excluded, their true ceiling is ≥ their reached target so they don't bind).
- *
- *  EXCEPT a clamped FOOTSWITCH row: preset/scene clamps are top-rail only (`LEVEL_MIN` is
- *  0.0 and `ideal = 10^x > 0`, so `ideal < LEVEL_MIN` is unreachable — a preset/scene can
- *  only clamp because it's TOO QUIET to reach target, never too loud), so their clamped
- *  `value` genuinely IS a ceiling. `measure_footswitch`'s clamp is direction-agnostic (a
- *  switch CAN clamp because it's too LOUD), so treating it the same way would feed a FLOOR
- *  into `min(ceiling)` and drag the whole library's derived common target down. Accepted
- *  loss: a genuinely quiet clamped switch stops binding the common target — it still shows
- *  its own clamped outcome, just doesn't drag every OTHER sound's target down with it. */
-export const ceilingOf = (it: RunItem): number | null => {
-  const c =
-    it.outcome === "clamped" && !it.footswitch ? it.value : it.ceilingLufs;
-  return c != null && Number.isFinite(c) ? c : null;
-};
 
 /** Group run items by preset slot, ascending — the shape both Run and Summary render
  *  (one `PresetGroupRow` per preset, its items nested inside). */
@@ -684,14 +666,6 @@ export function offbranchStatus(hint: SilenceHint | undefined): string {
   if (hint === "exp_mute") return "exp pedal may mute";
   return "not on USB 1/2";
 }
-
-/** The LUFS a row is ACTUALLY aiming at. The reachable-common-target fallback stamps an
- *  explicit override that wins over the named target — the run loop's dispatch and the
- *  run table's Target cell must resolve it the same way, so both call this. */
-export const resolvedTargetLufs = (
-  it: RunItem,
-  targetLufsByName: (name: string | null) => number,
-): number => it.targetOverrideLufs ?? targetLufsByName(it.targetName);
 
 /** Turn a checked setup row into a run item with its resolved instrument + target. */
 export function optionToRunItem(

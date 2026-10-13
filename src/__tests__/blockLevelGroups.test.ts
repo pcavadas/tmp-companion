@@ -1,11 +1,9 @@
 // src/__tests__/blockLevelGroups.test.ts — direct unit coverage for the pure
-// grouping/derivation logic behind `BlockLevelPick`'s two-dropdown picker (D2/Part
-// C), split out of the component into `../views/level/blockLevelGroups.ts` so this
-// algorithmic behavior — rank ordering, the DANGER-rule stale resolution, and the
-// "Recommended"/auto-pick candidate — is testable without rendering anything.
-// `src/__tests__/BlockLevelPick.test.tsx` keeps the DOM-level DANGER-guard
-// rendering + click-wiring coverage; this file is the fast, render-free layer
-// underneath it.
+// grouping/derivation logic in `../views/level/blockLevelGroups.ts` behind
+// `FlatLevelPick` and `SetupPage`'s auto-pick, so this algorithmic behavior — rank
+// ordering and the "Recommended"/auto-pick candidate — is testable without rendering
+// anything. `src/__tests__/FlatLevelPick.test.tsx` keeps the DOM-level coverage; this
+// file is the fast, render-free layer underneath it.
 
 import { describe, it, expect } from "vitest";
 
@@ -13,7 +11,6 @@ import {
   groupByBlock,
   bestEnabled,
   recommendedBlock,
-  resolveHandle,
   blockKeyOf,
   type BlockLevelCandidate,
 } from "../views/level/blockLevelGroups";
@@ -140,68 +137,5 @@ describe("recommendedBlock", () => {
 
   it("returns null for an empty candidate list", () => {
     expect(recommendedBlock(groupByBlock([]))).toBeNull();
-  });
-});
-
-describe("resolveHandle — the DANGER-rule stale guard", () => {
-  const blocks = groupByBlock([twinOutputLevel, boostGain, boostToneOther]);
-
-  it("a null handle resolves with no staleness and no block/param match", () => {
-    const r = resolveHandle(blocks, null, true);
-    expect(r).toMatchObject({
-      handleBlockKey: null,
-      blockGroup: undefined,
-      matched: undefined,
-      blockStale: false,
-      paramStale: false,
-    });
-  });
-
-  it("not yet resolved: a carried-forward handle is never flagged stale, even if its block isn't in (the still-empty) `blocks`", () => {
-    const r = resolveHandle(
-      [],
-      { groupId: "G1", nodeId: "amp", parameterId: "outputLevel" },
-      false,
-    );
-    expect(r.blockStale).toBe(false);
-    expect(r.paramStale).toBe(false);
-  });
-
-  it("resolved, block missing from the list entirely: blockStale true, no blockGroup", () => {
-    const r = resolveHandle(
-      blocks,
-      { groupId: "G1", nodeId: "gone", parameterId: "outputLevel" },
-      true,
-    );
-    expect(r.blockStale).toBe(true);
-    expect(r.blockGroup).toBeUndefined();
-    expect(r.paramStale).toBe(false);
-  });
-
-  it("resolved, block present but the stored param is gone: paramStale true, blockGroup found, no match", () => {
-    const r = resolveHandle(
-      blocks,
-      { groupId: "G1", nodeId: "amp", parameterId: "goneParam" },
-      true,
-    );
-    expect(r.blockStale).toBe(false);
-    expect(r.blockGroup).toBeDefined();
-    expect(r.matched).toBeUndefined();
-    expect(r.paramStale).toBe(true);
-  });
-
-  it("resolved, block AND param both present: a clean match, no staleness", () => {
-    const r = resolveHandle(
-      blocks,
-      { groupId: "G1", nodeId: "boost1", parameterId: "gain" },
-      true,
-    );
-    expect(r.blockStale).toBe(false);
-    expect(r.paramStale).toBe(false);
-    expect(r.matched).toBe(boostGain);
-    // Referential identity: `matched` is the SAME object `blockGroup` holds, not a
-    // structurally-equal copy — callers (`BlockLevelPick`'s `controlRow`) rely on
-    // `c === matched` rather than a field-by-field compare.
-    expect(r.blockGroup?.includes(boostGain)).toBe(true);
   });
 });

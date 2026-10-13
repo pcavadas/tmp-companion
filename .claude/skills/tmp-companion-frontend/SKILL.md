@@ -21,7 +21,7 @@ A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prot
 
 1. **Read the whole handoff first**, and enumerate every deliverable it lists.
 2. **Reconcile the design against the codebase before coding.** A handoff may **refine an already-shipped feature**, not add a new one.
-3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/green means GREEN, but this DS's `t.ok`/`t.okSoft` are the terracotta ACCENT — map green→`good`/`goodSoft`/`goodBorder`, amber→`sevWarn` (see Theme tokens below). A literal `t.ok` renders terracotta where green was intended — a silent visual bug.
+3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/`okSoft`/green means GREEN — map it to `good`/`goodSoft`/`goodBorder`, amber→`sevWarn`, error→`warn` (see Theme tokens below). There is no `t.ok`/`t.err`/`t.info` (the old terracotta/grey severity aliases were deleted as unused); never reintroduce an `ok` alias, which read terracotta where green was intended.
 4. **One component per file.** Split a multi-component prototype into focused files under the right feature folder, each re-exported from the folder's `index.ts`.
 5. **A Catalog-tab handoff that changes catalog DATA must keep the test oracles in sync.**
 
@@ -59,7 +59,7 @@ export const listLevelBlocks = (slot: number): Promise<LevelBlock[]> =>
 Two load-bearing rules:
 
 - **Casing:** top-level arg keys passed to `invoke` are **camelCase** (Tauri converts them to the Rust handler's snake_case params), but keys _inside_ a JSON payload struct stay **snake_case** to match `serde` (e.g. `target_lufs`, `topology_id`). Get this wrong and the command silently receives `undefined`.
-- **The type mirror:** `src/lib/types.ts` mirrors the Rust `serde` structs by hand — adding a Rust field without updating it **fails silently** (test mocks are untyped). `invoke.test.ts` asserts the exact wrapper count (`Object.keys(cmd).length`, hardcoded) — update it when you add **or remove** a wrapper IN the `cmd` namespace. Named-export-only wrappers outside `cmd` (the fire-and-forget leveling cancel lane `cancel{Preset,Scene,Footswitch}Leveling`) don't move the count — assert those with their own `expectCall`.
+- **The type mirror + command registry:** `src/lib/types.ts` mirrors the Rust `serde` structs by hand — adding a Rust field without updating it **fails silently**. `src/lib/commands.ts`'s `Commands` interface names every command's `{ args; ret }`; wrappers call the private `invokeCommand<K>`, so a wrong arg key or return type is a `tsc` error. A new command needs its `Commands` entry, its wrapper, its default in `DEFAULT_HANDLERS` (`src/__tests__/commandMocks.ts` — typed total, so `tsc` asks for it) and an `expectCall` in `invoke.test.ts`, whose last test checks the wrappers reach exactly the registry's commands.
 
 If a command doesn't exist yet, that's a backend change — coordinate it, don't fake data. Grep the existing seams before assuming one's missing. Detail: `references/gotchas.md`.
 
@@ -73,16 +73,13 @@ The SAME module-store pattern (not component `useState`) backs `src/device/useLi
 
 Tests are **Vitest + React Testing Library**, jsdom environment, rendered through the theme provider. The full pattern (mock overrides, async `findBy`, asserting an `invoke` was called with the right args) is in `references/testing.md`. The essentials:
 
-- **Render through `<ThemeProvider>`** — `useTheme`/`useStyles` throw outside it:
+- **Render through the theme provider** — `useTheme`/`useStyles` throw outside it. `renderWithTheme` (`src/__tests__/testKit.tsx`) wraps it:
   ```tsx
-  render(
-    <ThemeProvider>
-      <SettingsView connected={false} />
-    </ThemeProvider>,
-  );
+  renderWithTheme(<SettingsView connected={false} />);
   ```
-- **`invoke` is globally mocked** in `src/__tests__/setup.ts` — `emptyResultFor(command)` returns a sensible empty shape per command so any screen mounts. Override per-test with `vi.mocked(invoke).mockImplementation(...)`, then assert against `vi.mocked(invoke).mock.calls` to verify a write happened.
-- **Use REAL timers, not fake ones.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and hang forever polling a frozen clock.
+- **The kit covers the environment:** `forceTauri()` for the in-app paths, `mockLiveEvents()` to push `tmp://` events, the `getBBox` stub is global. Name a test file after its unit; a bug lock is a `describe("regression: …")` inside it.
+- **`invoke` is globally mocked** in `src/__tests__/setup.ts` — every command resolves its typed empty default (`DEFAULT_HANDLERS` in `commandMocks.ts`) so any screen mounts. Override per-test with `mockCommands({ get_store: () => makeStore({ targets }) })` (each handler's return is checked against the registry), then read `callsOf("save_targets")` / `fired(...)` to verify a write happened.
+- **Real timers wherever a test awaits `findBy`/`waitFor`.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and hang forever polling a frozen clock. Fake timers fit only a bare timeout with no DOM wait.
 - After adding a test, run the suite (`bun run test`) — a green `tsc` + build does **not** run your test.
 
 **Full UI journeys** (connect → navigate → edit → save) are covered above Vitest by the dual-mode Playwright e2e harness in `e2e/` (`bun run e2e` offline / `bun run e2e online`) — reach for it when a change spans the click→invoke→device round trip.

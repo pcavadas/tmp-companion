@@ -1,5 +1,5 @@
 // src/views/level/SummaryPage.tsx — the leveling wizard's "Summary" stage (design
-// handoff 1a: full window, one row per preset). Replaces `overlays/SummaryBody.tsx`.
+// handoff 1a: full window, one row per preset).
 //
 // Reports a run's outcome, grouped by PRESET (`PresetGroupRow`) — any preset that came
 // back with a problem opens itself (`useGroupOpen`); the user can override any row on
@@ -292,7 +292,7 @@ export function SummaryPage({
           {clamped.length > 0 && (
             <Button
               variant="ghost"
-              small
+              size="sm"
               icon="refresh"
               onClick={() => {
                 onRelevel(clamped);
@@ -305,7 +305,7 @@ export function SummaryPage({
           {unconverged.length > 0 && (
             <Button
               variant="ghost"
-              small
+              size="sm"
               icon="refresh"
               onClick={() => {
                 onRelevel(unconverged);
@@ -317,7 +317,7 @@ export function SummaryPage({
           )}
           <Button
             variant="primary"
-            small
+            size="sm"
             onClick={onAccept}
             style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
           >
@@ -572,7 +572,8 @@ export function SummaryPage({
                           (it.outcome === "clamped" ||
                             it.outcome === "unconverged" ||
                             it.outcome === "skipped") && (
-                            <span
+                            <Button
+                              variant="bare"
                               onClick={() => {
                                 onRelevel([it]);
                               }}
@@ -581,12 +582,11 @@ export function SummaryPage({
                                 fontFamily: t.sans,
                                 fontSize: 12.5,
                                 color: t.accentDeep,
-                                cursor: "pointer",
                                 whiteSpace: "nowrap",
                               }}
                             >
                               {q.fix}
-                            </span>
+                            </Button>
                           )}
                       </DisclosureRow>
                     )}
@@ -675,5 +675,3 @@ export function SummaryPage({
     </LevelPage>
   );
 }
-
-export default SummaryPage;

@@ -4,16 +4,20 @@
 
 import React from "react";
 import { useTheme } from "../theme/ThemeContext";
+import { plainButton } from "../theme/tokens";
 
-import { BlockArt, HalfStackArt } from "../ui/BlockArt";
+import {
+  BlockArt,
+  HalfStackArt,
+  type ArtVariant,
+  type IconId,
+  type ToneId,
+} from "../ui/BlockArt";
 import type { HalfStackSpec } from "../models/blockArt";
 import { Icon, type IconName } from "../ui/Icon";
 import { Skel } from "../ui/Skeleton";
 
-const MONO = "'JetBrains Mono', ui-monospace, monospace";
 const STRIP_LBL = 18;
-const GHOST_INK = "rgba(15,17,21,0.12)";
-const ACCENT = "#d97757";
 /** Shared bracket/diamond/emptyLine border width — the SPLIT/MIX geometry comments
  *  below rely on these strokes lining up pixel-for-pixel, so they share one constant. */
 const STROKE_W = 1.5;
@@ -25,8 +29,8 @@ const STROKE_W_PX = `${String(STROKE_W)}px`;
 export type TileChange = "added" | "replaced";
 
 export interface StripBlock {
-  icon?: string;
-  tone?: string;
+  icon?: IconId;
+  tone?: ToneId;
   /** ref-derived per-block body color (pedals) — overlays the tone default. */
   body?: string;
   /** ref-derived control-panel color behind the knobs/sliders (EQ/filter pedals). */
@@ -35,7 +39,9 @@ export interface StripBlock {
   footswitch?: "plate" | "metal" | "round";
   /** Fender reverb cream-chassis accent (footswitch-band colour); the 8 reverbs. */
   accent?: string;
-  /** terse caption / 1.8 dispatch token (= art.short) the engine reads. */
+  /** explicit per-model art treatment (= art.variant). */
+  variant?: ArtVariant;
+  /** terse caption (= art.short). */
   lab?: string;
   name: string;
   /** the fuller Pro-Control-style model name, shown on hover (`title`); the tile's
@@ -90,7 +96,6 @@ export interface StripIndependentLane {
 }
 
 export interface StripGraph {
-  template?: string | null;
   inputType?: SourceType;
   outputType?: SinkType;
   inputs?: { a: StripInputLane; b: StripInputLane } | null;
@@ -172,37 +177,26 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
         borderRadius: 9,
         transition: "border-color .12s, background .12s",
         border: selected
-          ? `2px solid ${ACCENT}`
+          ? `2px solid ${t.accent}`
           : changed
-            ? "1.5px solid rgba(217,119,87,0.55)"
-            : "1px solid rgba(15,17,21,0.12)",
+            ? `1.5px solid ${t.stripChangedBorder}`
+            : `1px solid ${t.stripGhost}`,
         background: selected
-          ? "rgba(217,119,87,0.10)"
+          ? t.accentSoft
           : changed
-            ? "rgba(217,119,87,0.06)"
+            ? t.stripChangedSoft
             : "transparent",
       };
 
-  return (
-    <div
-      role={interactive ? "button" : undefined}
-      // e2e hook: a stable selector for an interactive (Copy-path) block tile, carrying the
-      // block's MODEL id so a test can match it model-exactly against candidates (the
-      // display label differs between the tile and the candidate chip). Absent on the
-      // non-interactive Level strip (no behavior/appearance change).
-      data-block-tile={interactive ? (b.model ?? b.name) : undefined}
-      // Hover shows the fuller Pro-Control model name; the visible caption stays terse.
-      title={b.fullName}
-      onClick={b.onClick}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        width: dims.w,
-        flexShrink: 0,
-        opacity: byp ? 0.34 : 1,
-        cursor: interactive ? "pointer" : undefined,
-      }}
-    >
+  const tileStyle: React.CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    width: dims.w,
+    flexShrink: 0,
+    opacity: byp ? 0.34 : 1,
+  };
+  const content = (
+    <>
       <div
         style={{
           flex: 1,
@@ -231,7 +225,7 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              filter: "drop-shadow(0 2px 3px rgba(15,17,21,0.18))",
+              filter: t.dropShadowStripArt,
             }}
           >
             {b.halfStack ? (
@@ -241,10 +235,9 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
               <HalfStackArt
                 topIcon={b.halfStack.topIcon}
                 topTone={b.halfStack.topTone}
-                topLab={b.halfStack.topLab}
+                topVariant={b.halfStack.topVariant}
                 cabIcon={b.halfStack.cabIcon}
                 cabTone={b.halfStack.cabTone}
-                cabLab=""
                 cabW={Math.round(dims.art * 0.62)}
               />
             ) : (
@@ -252,6 +245,7 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
                 icon={b.icon}
                 tone={b.tone}
                 lab={b.lab}
+                variant={b.variant}
                 footswitch={b.footswitch}
                 bodyColor={b.body}
                 accentColor={b.accent}
@@ -274,7 +268,7 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
                   style={{
                     width: "92%",
                     height: 1.6,
-                    background: "#33373f",
+                    background: t.ink2,
                     transform: "rotate(-28deg)",
                     borderRadius: 2,
                   }}
@@ -293,18 +287,18 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
                 width: 15,
                 height: 15,
                 borderRadius: 999,
-                background: ACCENT,
-                border: "1px solid #fff",
+                background: t.accent,
+                border: `1px solid ${t.onAccent}`,
                 display: "inline-flex",
                 alignItems: "center",
                 justifyContent: "center",
-                boxShadow: "0 1px 2px rgba(15,17,21,0.2)",
+                boxShadow: t.shadowBadge,
               }}
             >
               <Icon
                 name={b.change === "replaced" ? "refresh" : "plus"}
                 size={b.change === "replaced" ? 10 : 9}
-                stroke="#fff"
+                stroke={t.onAccent}
                 strokeWidth={2.4}
               />
             </span>
@@ -322,10 +316,10 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
       >
         <span
           style={{
-            fontFamily: MONO,
+            fontFamily: t.mono,
             fontSize: dims.font,
             letterSpacing: "0.04em",
-            color: selected ? "#a5421b" : "var(--strip-ink, #5b554a)",
+            color: selected ? t.stripInkSel : t.stripInk,
             lineHeight: 1,
             textTransform: "uppercase",
             whiteSpace: "nowrap",
@@ -334,6 +328,28 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
           {b.name}
         </span>
       </div>
+    </>
+  );
+  // Interactive (Copy) tiles are real buttons; the Level strip's tiles stay plain divs.
+  // e2e hook: `data-block-tile` is a stable selector for an interactive (Copy-path) block
+  // tile, carrying the block's MODEL id so a test can match it model-exactly against
+  // candidates (the display label differs between the tile and the candidate chip). Absent
+  // on the non-interactive Level strip (no behavior/appearance change). Hover (`title`)
+  // shows the fuller Pro-Control model name; the visible caption stays terse.
+  return b.onClick ? (
+    <button
+      type="button"
+      data-block-tile={b.model ?? b.name}
+      title={b.fullName}
+      aria-pressed={selected}
+      onClick={b.onClick}
+      style={plainButton(tileStyle)}
+    >
+      {content}
+    </button>
+  ) : (
+    <div title={b.fullName} style={tileStyle}>
+      {content}
     </div>
   );
 }
@@ -511,10 +527,10 @@ function EndpointNode({
       >
         <span
           style={{
-            fontFamily: MONO,
+            fontFamily: t.mono,
             fontSize: fs,
             letterSpacing: "0.1em",
-            color: "var(--strip-ink,#5b554a)",
+            color: t.stripInk,
             lineHeight: 1,
             whiteSpace: "nowrap",
           }}
@@ -533,6 +549,7 @@ interface DiamondNodeProps {
 }
 
 function DiamondNode({ kind, ink, skeleton }: DiamondNodeProps) {
+  const { t } = useTheme();
   const label = kind === "split" ? "SPLIT" : kind === "mix" ? "MIX" : "JOIN";
   return (
     <div
@@ -575,10 +592,10 @@ function DiamondNode({ kind, ink, skeleton }: DiamondNodeProps) {
               left: -16,
               right: -16,
               textAlign: "center",
-              fontFamily: MONO,
+              fontFamily: t.mono,
               fontSize: 7.5,
               letterSpacing: "0.1em",
-              color: "var(--strip-ink,#5b554a)",
+              color: t.stripInk,
               lineHeight: 1,
               whiteSpace: "nowrap",
             }}
@@ -625,11 +642,9 @@ function EmptyLane({ size }: { size: Size }) {
 // left a visible gap once a gtrSplit/micSplit preset had a different block
 // count per output lane). Used by SplitGroup (two-sided, in-line splits like
 // gtrParallel1/2) and ForkTail/JoinHead (one-sided, split-output/dual-input
-// lanes) alike. Each caller runs its OWN `useLayoutEffect` calling this
-// function (refs created via useRef in the SAME component) rather than a
-// shared hook, so eslint's exhaustive-deps can see the refs are useRef-stable
-// instead of flagging them as effect dependencies. This helper is the shared
-// MATH only (not a hook itself — no eslint hook rules apply to it).
+// lanes) alike, all through `useLaneBracket` below, whose ONE `useLayoutEffect`
+// calls this function. This helper is the shared MATH only (not a hook itself —
+// no eslint hook rules apply to it).
 function measureLaneBracket(
   colRef: React.RefObject<HTMLDivElement | null>,
   aRef: React.RefObject<HTMLDivElement | null>,
@@ -699,7 +714,7 @@ function LaneBracketCap({ brk, side, ink }: LaneBracketCapProps) {
 // JoinHead each used to duplicate. Refs are created HERE (inside the hook),
 // not passed in as parameters, so eslint's exhaustive-deps still sees them as
 // useRef-stable and doesn't flag them as effect dependencies (the reason a
-// shared plain function alone wasn't enough — see `measureLaneBracket`).
+// shared plain function alone wasn't enough).
 function useLaneBracket(aLen: number, bLen: number) {
   const colRef = React.useRef<HTMLDivElement>(null);
   const aRef = React.useRef<HTMLDivElement>(null);
@@ -949,8 +964,7 @@ function SignalChainViewImpl({
   skeleton,
 }: SignalChainViewProps) {
   const { t } = useTheme();
-  const ink = skeleton ? GHOST_INK : "rgba(15,17,21,0.34)";
-  const stripInk = "#5b554a";
+  const ink = skeleton ? t.stripGhost : t.stripWire;
   const laneGap = 10;
 
   const tile = (b: StripBlock, key: React.Key) => (
@@ -988,7 +1002,6 @@ function SignalChainViewImpl({
   // of its own so its overflow-y stays `visible` and the Copy edit badge (top:-7) paints
   // freely above series tiles.
   const stripStyle: React.CSSProperties = {
-    ["--strip-ink" as string]: stripInk,
     display: "flex",
     // Each block is its own column (art + an 18px label zone). `center` keeps every
     // column at its natural height so each label hugs its own block; `stretch` grew
@@ -1135,5 +1148,3 @@ function SignalChainViewImpl({
 }
 
 export const SignalChainView = React.memo(SignalChainViewImpl);
-
-export default SignalChainView;

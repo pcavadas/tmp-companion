@@ -13,12 +13,13 @@
 // Real timers (RTL's waitFor/findBy hang under vitest fake timers here).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
 import { BugReportDialog } from "../views/BugReportDialog";
+import { mockCommands } from "./commandMocks";
+import { renderWithTheme } from "./testKit";
 
 // The real endpoint is a placeholder empty string pre-deploy; stub a non-empty
 // one here so the success/failure send tests actually reach `fetch`.
@@ -28,14 +29,8 @@ vi.mock("../lib/reportEndpoint", () => ({
 }));
 
 function renderDialog(connected = false, onClose = vi.fn()) {
-  render(
-    <ThemeProvider>
-      <BugReportDialog
-        connected={connected}
-        firmware={null}
-        onClose={onClose}
-      />
-    </ThemeProvider>,
+  renderWithTheme(
+    <BugReportDialog connected={connected} firmware={null} onClose={onClose} />,
   );
   return onClose;
 }
@@ -70,7 +65,7 @@ describe("BugReportDialog", () => {
   it("saves a bundle and shows the returned path", async () => {
     const user = userEvent.setup();
     const path = "/Users/x/Downloads/tmp-companion-report-20260719-120000.tar";
-    vi.mocked(invoke).mockResolvedValueOnce({ path });
+    mockCommands({ save_support_bundle: () => ({ path }) });
     renderDialog(false);
 
     await user.click(screen.getByRole("button", { name: /save bundle/i }));
@@ -87,7 +82,11 @@ describe("BugReportDialog", () => {
 
   it("shows an inline error when the save fails", async () => {
     const user = userEvent.setup();
-    vi.mocked(invoke).mockRejectedValueOnce(new Error("disk full"));
+    mockCommands({
+      save_support_bundle: () => {
+        throw new Error("disk full");
+      },
+    });
     renderDialog(false);
 
     await user.click(screen.getByRole("button", { name: /save bundle/i }));
@@ -104,8 +103,8 @@ describe("BugReportDialog", () => {
         json: () => Promise.resolve({ reportId: 42 }),
       }),
     );
-    // Call order inside send(): build_support_bundle only (meta is prop-fed).
-    vi.mocked(invoke).mockResolvedValueOnce(new ArrayBuffer(8));
+    // send() calls build_support_bundle only (meta is prop-fed).
+    mockCommands({ build_support_bundle: () => new ArrayBuffer(8) });
     renderDialog(false);
 
     await user.type(
@@ -131,11 +130,12 @@ describe("BugReportDialog", () => {
       vi.fn().mockRejectedValueOnce(new Error("network down")),
     );
     const path = "/Users/x/Downloads/tmp-companion-report-20260719-120000.tar";
-    // Call order inside send(): build_support_bundle → (fetch throws) → the
-    // local-save fallback's save_support_bundle.
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(new ArrayBuffer(8))
-      .mockResolvedValueOnce({ path });
+    // send(): build_support_bundle → (fetch throws) → the local-save fallback's
+    // save_support_bundle.
+    mockCommands({
+      build_support_bundle: () => new ArrayBuffer(8),
+      save_support_bundle: () => ({ path }),
+    });
     renderDialog(false);
 
     await user.type(
@@ -160,9 +160,10 @@ describe("BugReportDialog", () => {
       }),
     );
     const path = "/Users/x/Downloads/tmp-companion-report-20260719-120000.tar";
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(new ArrayBuffer(8)) // send()'s build_support_bundle
-      .mockResolvedValueOnce({ path }); // save()'s save_support_bundle
+    mockCommands({
+      build_support_bundle: () => new ArrayBuffer(8), // send()
+      save_support_bundle: () => ({ path }), // save()
+    });
     renderDialog(false);
 
     await user.type(

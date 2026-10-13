@@ -300,7 +300,7 @@ export function BugReportDialog({
       <DialogFooter>
         <Button
           variant="ghost"
-          small
+          size="sm"
           disabled={busy != null}
           onClick={() => {
             void save();
@@ -311,7 +311,7 @@ export function BugReportDialog({
         {REPORT_ENDPOINT !== "" && (
           <Button
             variant="primary"
-            small
+            size="sm"
             disabled={busy != null || description.trim().length === 0}
             onClick={() => {
               void send();
@@ -324,5 +324,3 @@ export function BugReportDialog({
     </Dialog>
   );
 }
-
-export default BugReportDialog;

@@ -17,6 +17,7 @@
 // copied-in styling; `nodeId === null` marks an inserted (not-yet-on-device) block.
 
 import { resolveBlockArt, shortFallback } from "../../models/blockArt";
+import type { ArtVariant, IconId, ToneId } from "../../ui/BlockArt";
 import { chargedTotal, cpuForBid } from "../../models/cpu";
 import type {
   ActiveGraph,
@@ -114,8 +115,8 @@ export interface OriginBlock {
   model: string;
   /** Full model name (chip label). */
   name: string;
-  icon: string | undefined;
-  tone: string | undefined;
+  icon: IconId | undefined;
+  tone: ToneId | undefined;
   footswitch: "plate" | "metal" | "round" | undefined;
   /** ref-derived per-block body color (pedals) — overlays the tone default. */
   body: string | undefined;
@@ -123,7 +124,9 @@ export interface OriginBlock {
   panel: string | undefined;
   /** Fender reverb cream-chassis accent (footswitch-band colour); the 8 reverbs. */
   accent: string | undefined;
-  /** terse caption / 1.8 dispatch token (= art.short) the engine reads. */
+  /** explicit per-model art treatment (= art.variant). */
+  variant: ArtVariant | undefined;
+  /** terse caption (= art.short). */
   lab: string | undefined;
   /** Real DSP cost (% of budget), or null when the id is uncosted. */
   cpu: number | null;
@@ -482,6 +485,7 @@ export function originBlocks(graph: ActiveGraph): OriginBlock[] {
       body: art?.body,
       panel: art?.panel,
       accent: art?.accent,
+      variant: art?.variant,
       lab: art?.short,
       cpu: cpuForBid(n.model),
     });

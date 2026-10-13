@@ -1,10 +1,10 @@
 // src/views/doctor/DoctorSetup.tsx — the Doctor "Set up" page (full-page body swap).
 //
 // Doctor listens differently for a bass than a bright single-coil, so this step
-// sets the INSTRUMENT context per sound before the check. Mirrors the leveling
-// SetupBody's apply-to brush (bulk Pick + per-row tick scoping + "Clear ticks")
-// and its full-page chrome (LevelSetupPage): the page provides its OWN ref as
-// DialogCardCtx so the Pick dropdowns portal into THIS page's coordinate space.
+// sets the INSTRUMENT context per sound before the check, with an apply-to brush
+// (bulk Pick + per-row tick scoping + "Clear ticks") and full-page chrome like the
+// Level wizard's `LevelPage`: the page provides its OWN ref as DialogCardCtx so the
+// Pick dropdowns portal into THIS page's coordinate space.
 //
 // Everything picked in the list WILL be checked — this step never re-gates it.
 // Per-row default = the slot's saved profile → the last-used instrument → None.
@@ -159,19 +159,19 @@ export function DoctorSetup({
           background: t.bgAlt,
         }}
       >
-        <span
+        <Button
+          variant="bare"
           onClick={onBack}
           style={{
             fontFamily: t.sans,
             fontSize: t.fsLabel,
             color: t.mutedInk,
-            cursor: "pointer",
             whiteSpace: "nowrap",
             flexShrink: 0,
           }}
         >
           Back
-        </span>
+        </Button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <StepRail current={0} steps={DOCTOR_STEPS} />
         </div>
@@ -290,7 +290,7 @@ export function DoctorSetup({
           right={
             <Button
               variant="primary"
-              small
+              size="sm"
               icon="wave"
               disabled={total === 0}
               onClick={run}
@@ -304,5 +304,3 @@ export function DoctorSetup({
     </div>
   );
 }
-
-export default DoctorSetup;

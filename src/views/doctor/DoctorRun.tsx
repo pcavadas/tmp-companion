@@ -8,7 +8,7 @@
 // (no CTA competing with the auto-advance) — a manual Stop is confirm-gated, flips
 // the footer to "finishing current item…" immediately (the in-flight ~9s capture
 // still finishes), and shows a clickable "See results" once it lands. Mirrors
-// RunBody.tsx's stopping/done footer states. A check that FAILS (the command
+// the Level wizard's RunPage stopping/done footer states. A check that FAILS (the command
 // rejected) says so here, with Try again / Back — it never reads as a Stop.
 
 import { useEffect, useState } from "react";
@@ -154,7 +154,12 @@ export function DoctorRun({
   };
 
   return (
-    <WizardShell current={1} height={560} steps={DOCTOR_STEPS}>
+    <WizardShell
+      current={1}
+      height={560}
+      steps={DOCTOR_STEPS}
+      label="Doctor run"
+    >
       <div
         style={{
           flexShrink: 0,
@@ -275,7 +280,7 @@ export function DoctorRun({
             failed ? (
               <Button
                 variant="ghost"
-                small
+                size="sm"
                 onClick={onBack}
                 style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
               >
@@ -289,7 +294,7 @@ export function DoctorRun({
             failed ? (
               <Button
                 variant="primary"
-                small
+                size="sm"
                 icon="refresh"
                 onClick={onRetry}
                 style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
@@ -301,7 +306,7 @@ export function DoctorRun({
               // same thing, so this is the one clickable CTA.
               <Button
                 variant="primary"
-                small
+                size="sm"
                 onClick={onComplete}
                 style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
               >
@@ -341,7 +346,7 @@ export function DoctorRun({
             ) : (
               <Button
                 variant="ghost"
-                small
+                size="sm"
                 onClick={() => {
                   setConfirm(true);
                 }}
@@ -356,5 +361,3 @@ export function DoctorRun({
     </WizardShell>
   );
 }
-
-export default DoctorRun;

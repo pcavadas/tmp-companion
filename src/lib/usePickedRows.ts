@@ -1,9 +1,8 @@
-// src/lib/usePickedRows.ts — bulk-pick bookkeeping shared by the two setup steps.
+// src/lib/usePickedRows.ts — bulk-pick bookkeeping for the Doctor DoctorSetup step.
 //
-// The Leveling SetupBody and the Doctor DoctorSetup both carry a byte-identical
-// "which rows are ticked for the apply-to brush" selection: a Set of row keys, a
+// "Which rows are ticked for the apply-to brush" selection: a Set of row keys, a
 // toggle, a clear, the somePicked flag, the bulk-target key list (ticked rows, or
-// ALL rows when none are ticked), and the scope label. Lifted here verbatim.
+// ALL rows when none are ticked), and the scope label.
 
 import { useState } from "react";
 

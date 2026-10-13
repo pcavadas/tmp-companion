@@ -1,11 +1,12 @@
 // Shared Copy-journey test fixtures: the 3-block series preset + its backup row, used by
 // every test that drives the real Copy flow through a mocked invoke bridge (the full happy
-// path in CopyHappyPath.test.tsx and the BUG-2 hero-patch lock in hardeningFixes.test.tsx).
+// path in CopyHappyPath.test.tsx and the BUG-2 hero-patch lock in CopyView.test.tsx).
 // The captions ("DYNCMP"/"65TWN"/"SM-HALL") and origin chip names ("DYNAMIC COMPRESSOR" /
 // "FENDER '65 TWIN REVERB" / "SMALL HALL REVERB") come from the real blockArt catalog, so
 // the UI resolves them faithfully.
 
-import type { ActiveGraph, GraphNode } from "../lib/types";
+import type { ActiveGraph, BackupPresetRow, GraphNode } from "../lib/types";
+import { makeBackupPresetRow } from "./commandMocks";
 
 export const graphNode = (
   group: string,
@@ -42,9 +43,9 @@ export function seriesGraph(
 
 /** One `read_library_via_backup` preset row. The backup keys each row at the 1-based DEVICE
  *  slot (listIndex + 1) — useCopyLibrary maps slot−1 back. */
-export function backupRow(listIndex: number, name: string) {
+export function backupRow(listIndex: number, name: string): BackupPresetRow {
   const g = seriesGraph(name);
-  return {
+  return makeBackupPresetRow({
     slot: listIndex + 1,
     name,
     scene_count: 1,
@@ -56,6 +57,5 @@ export function backupRow(listIndex: number, name: string) {
       fender_id: n.model,
     })),
     graph: g,
-    footswitches: [],
-  };
+  });
 }

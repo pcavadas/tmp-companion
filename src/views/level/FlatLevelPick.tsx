@@ -1,26 +1,22 @@
 // src/views/level/FlatLevelPick.tsx — the Set up step's ONE-DROPDOWN leveling-handle
-// picker (D2). Replaces `BlockLevelPick`'s two-dropdown (block, then control) picker
-// with a single flattened list — the design-1a redesign's "Knob" control — while
-// keeping BlockLevelPick's full any-block/any-param capability: every candidate
-// `../level/blockLevelGroups.ts` would ever offer still shows up here, with the same
-// rank order, the same "Recommended" / "may change the tone" / "can only lower" /
-// disabled-with-reason notes, and the same DANGER-rule stale-handle guard (a stored
-// pick the candidate list doesn't cover renders VERBATIM + a warning, never a silent
+// picker (D2) — the design-1a redesign's "Knob" control — with full any-block/any-param
+// capability: every candidate `blockLevelGroups.ts` offers shows up here, in rank
+// order, with the "Recommended" / "may change the tone" / "can only lower" /
+// disabled-with-reason notes, and the DANGER-rule stale-handle guard (a stored pick
+// the candidate list doesn't cover renders VERBATIM + a warning, never a silent
 // fallback to the pseudo-option or the first row).
 //
 // One row per CANDIDATE (not per block), grouped by block with a small mono header
-// when a preset carries more than one leveling-relevant block — flattening the two
-// dropdowns back into one reintroduces the "list grows long" pressure that motivated
-// the split in the first place (see `BlockLevelPick.tsx`'s own header comment), so the
-// header keeps a many-block preset's list scannable without a second click-through.
+// when a preset carries more than one leveling-relevant block, so a many-block
+// preset's list stays scannable without a second click-through.
 //
-// Reuses the same portaled-menu machinery as `BlockLevelPick` (`usePickAnchor`,
-// `PickTrigger`, `PickPortalMenu`, `PickWarnNote`) and the same row chrome
-// (`BlockParamRow`) — only the grouping/rendering shape is new.
+// Built on the portaled-menu machinery (`usePickAnchor`, `PickTrigger`,
+// `PickPortalMenu`, `PickWarnNote`) and the `BlockParamRow` row chrome.
 
 import { useContext } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { blockArtTile } from "../../models/blockArt";
@@ -174,19 +170,24 @@ export function FlatLevelPick({
           onClose={close}
         >
           {pseudoLabel != null && (
-            <div
+            <button
+              type="button"
+              role="option"
+              aria-selected={handle == null}
               onClick={(e) => {
                 e.stopPropagation();
                 onHandleChange(null);
                 close();
               }}
               style={{
+                ...plainButton(),
+                width: "100%",
+                textAlign: "left",
                 display: "flex",
                 alignItems: "center",
                 gap: t.space5,
                 padding: `${String(t.space3)}px ${String(t.space4)}px`,
                 borderRadius: 5,
-                cursor: "pointer",
                 background: handle == null ? t.accentSoft : "transparent",
               }}
               onMouseEnter={(e) => {
@@ -216,7 +217,7 @@ export function FlatLevelPick({
                   />
                 </span>
               )}
-            </div>
+            </button>
           )}
 
           {candidates.status === "loading" && (
@@ -248,7 +249,11 @@ export function FlatLevelPick({
             if (!first) return null;
             const art = blockArtTile(first.fenderId);
             return (
-              <div key={blockKeyOf(first)}>
+              <div
+                key={blockKeyOf(first)}
+                role="group"
+                aria-label={art.fullName ?? art.name}
+              >
                 {blocks.length > 1 && (
                   <div
                     style={{
@@ -280,5 +285,3 @@ export function FlatLevelPick({
     </div>
   );
 }
-
-export default FlatLevelPick;

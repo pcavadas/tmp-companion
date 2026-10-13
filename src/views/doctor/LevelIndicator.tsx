@@ -230,5 +230,3 @@ export function LevelIndicator({
     </span>
   );
 }
-
-export default LevelIndicator;

@@ -19,7 +19,7 @@ import { useTheme } from "../theme/ThemeContext";
 import { Spinner } from "../ui/Spinner";
 import { Skel, SkelStatus } from "../ui/Skeleton";
 import { ProgressBar } from "../ui/ProgressBar";
-import { Checkbox, SearchInput } from "../ui/primitives";
+import { Button, Checkbox, SearchInput } from "../ui/primitives";
 import { PresetRow as PresetRowComponent } from "./level/PresetRow";
 import { childKeys } from "./level/leveling";
 import { presetCpu } from "../models/cpu";
@@ -178,11 +178,15 @@ export function PresetList(props: PresetListProps) {
     return m;
   }, [rows, graphByIndex]);
 
-  // The rendered rows, memoized — rebuilding ~500 rows is work. Only a real change
-  // (filter / selection / expansion / active row / scenes landing / ready)
-  // recomputes the list. The backup's ~59 progress ticks never reach this
-  // component at all: only the strip's ScanPercentText / ScanProgressBar read the
-  // percent store.
+  // The rendered rows, memoized — only a real change (filter / selection / expansion /
+  // active row / scenes landing / ready) recomputes the list. Every per-row prop is
+  // either a row-scoped primitive (`active`, `expanded`, `pendingWhole`, `cpu`), a
+  // per-slot value that keeps its identity (`row`, `scenes`, `footswitches`) or a
+  // stable callback; the list-wide `sel` Set is compared by `PresetRow`'s memo on the
+  // row's OWN keys only. So a tick rebuilds this array of cheap elements, but React
+  // re-renders just the one row whose selection changed — not all ~500. The backup's
+  // ~59 progress ticks never reach this component at all: only the strip's
+  // ScanPercentText / ScanProgressBar read the percent store.
   const renderedRows = useMemo(
     () =>
       filteredRows.map((r) => {
@@ -333,18 +337,21 @@ export function PresetList(props: PresetListProps) {
           flexShrink: 0,
         }}
       >
-        <div
+        <Button
+          variant="bare"
+          role="checkbox"
+          aria-checked={allSel ? true : someSel ? "mixed" : false}
+          aria-label="Select all presets"
           onClick={onToggleAll}
           title={allSel ? "Clear selection" : "Select all"}
           style={{
             display: "flex",
             alignItems: "center",
             height: "100%",
-            cursor: "pointer",
           }}
         >
           <Checkbox checked={allSel} indeterminate={!allSel && someSel} />
-        </div>
+        </Button>
         <span />
         <span>slot</span>
         <span>preset</span>
@@ -362,8 +369,6 @@ export function PresetList(props: PresetListProps) {
     </div>
   );
 }
-
-export default PresetList;
 
 // The scan strip's two percent readouts. Only these subscribe to the progress store,
 // so a tick repaints them and nothing else.

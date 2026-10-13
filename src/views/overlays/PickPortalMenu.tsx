@@ -45,11 +45,13 @@ export function PickPortalMenu({
     <>
       <div
         onClick={onClose}
+        data-backdrop=""
         data-pick-backdrop=""
         style={{ position: "absolute", inset: 0, zIndex: 60 }}
       />
       <div
         ref={menuRef}
+        role="listbox"
         style={{
           ...s.menuCard,
           position: "absolute",
@@ -67,5 +69,3 @@ export function PickPortalMenu({
     cardEl,
   );
 }
-
-export default PickPortalMenu;

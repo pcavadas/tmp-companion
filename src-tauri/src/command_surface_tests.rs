@@ -4,7 +4,7 @@
 //! - `app_commands.rs`: every command the app registers;
 //! - `capabilities/default.json`: the `allow-<command>` grants, i.e. what the webview may
 //!   actually invoke (everything else is denied since `build.rs` declares the app manifest);
-//! - `src/lib/invoke.ts`: the frontend's typed wrappers, one `invoke("<command>")` each.
+//! - `src/lib/invoke.ts`: the frontend's typed wrappers, one `invokeCommand("<command>")` each.
 //!
 //! The rule: a command is granted exactly when the frontend calls it. A registered command
 //! the frontend never calls is denied and must be listed in [`UNWIRED`], so adding one is a
@@ -83,14 +83,16 @@ const UNWIRED: &[&str] = &[
     "stop_live_sync",
 ];
 
-/// The command names `invoke.ts` calls: every `invoke("<name>"` / `invoke<T>("<name>"`.
+/// The command names `invoke.ts` calls: every `invokeCommand("<name>"` (with or without a
+/// type argument). Every wrapper goes through `invokeCommand`, so this is the full set.
 fn frontend_commands() -> BTreeSet<String> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/invoke.ts");
     let src = std::fs::read_to_string(path).expect("read src/lib/invoke.ts");
     let mut out = BTreeSet::new();
     let mut rest = src.as_str();
-    while let Some(i) = rest.find("invoke") {
-        rest = &rest[i + "invoke".len()..];
+    const CALL: &str = "invokeCommand";
+    while let Some(i) = rest.find(CALL) {
+        rest = &rest[i + CALL.len()..];
         let mut tail = rest;
         if let Some(t) = tail.strip_prefix('<') {
             // Skip a type argument, nested `<…>` included.
@@ -167,7 +169,7 @@ fn the_parser_finds_the_frontend_commands() {
     );
     assert!(
         fe.len() > 30,
-        "only {} invoke() calls found: {fe:?}",
+        "only {} invokeCommand() calls found: {fe:?}",
         fe.len()
     );
 }

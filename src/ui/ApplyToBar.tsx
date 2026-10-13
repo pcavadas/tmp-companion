@@ -2,7 +2,7 @@
 //
 // The tinted header band above a setup list: a mono kicker label (kickerWide), a
 // "Clear ticks" affordance shown only while some rows are ticked, and the bulk
-// pickers as children. Shared by the Leveling SetupBody and the Doctor DoctorSetup.
+// pickers as children. Used by the Doctor DoctorSetup.
 //
 // The kicker color and the Clear affordance both key off `somePicked` (the frozen
 // {label,onClear,children} shape can't carry the conditional color/visibility, so
@@ -11,6 +11,7 @@
 import type { ReactNode } from "react";
 
 import { useTheme, useStyles } from "../theme/ThemeContext";
+import { Button } from "./primitives";
 
 export interface ApplyToBarProps {
   /** Full kicker text ("Apply to all 3 sounds" / "Instrument for the 2 ticked"). */
@@ -51,20 +52,20 @@ export function ApplyToBar({
           {label}
         </span>
         {somePicked && (
-          <span
+          <Button
+            variant="bare"
             onClick={onClear}
             style={{
               fontFamily: t.sans,
               fontSize: t.fsLabel,
               color: t.accentDeep,
-              cursor: "pointer",
               whiteSpace: "nowrap",
               flexShrink: 0,
               paddingLeft: t.space6,
             }}
           >
             Clear ticks
-          </span>
+          </Button>
         )}
       </div>
       {children}

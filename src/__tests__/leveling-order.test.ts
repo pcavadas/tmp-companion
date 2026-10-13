@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   baseKey,
-  ceilingOf,
   chosenFrom,
   defaultParamIndex,
   footswitchName,
@@ -17,7 +16,6 @@ import {
   sortRunItems,
   targetFromCandidate,
 } from "../views/level/leveling";
-import type { RunItem } from "../views/level/leveling";
 import type { PresetRow } from "../views/PresetList";
 import type {
   FootswitchInfo,
@@ -447,57 +445,5 @@ describe("runRank / sortRunItems — the run's dependency order", () => {
     };
     expect(runRank(unresolved)).toBe(1);
     expect(runRank(sceneZero)).toBe(3);
-  });
-});
-
-describe("ceilingOf", () => {
-  function baseRunItem(over: Partial<RunItem>): RunItem {
-    return {
-      key: "p0",
-      slot: 0,
-      presetName: "Test",
-      isBase: true,
-      sceneSlot: null,
-      sceneName: "Base Preset",
-      tag: null,
-      instId: "",
-      targetName: "Rhythm",
-      status: "result",
-      ...over,
-    };
-  }
-
-  // Preset/scene clamps are top-rail only (LEVEL_MIN=0, ideal=10^x>0 is always
-  // reachable from below) — a clamped row's measured value genuinely IS its ceiling.
-  it("a clamped Base row's value is its ceiling", () => {
-    const it_ = baseRunItem({ outcome: "clamped", value: -18.5 });
-    expect(ceilingOf(it_)).toBe(-18.5);
-  });
-
-  // measure_footswitch's clamp is direction-agnostic (a switch can clamp because
-  // it's too LOUD, not just too quiet) — treating its value as a ceiling would feed
-  // a FLOOR into min(ceiling) and drag the whole library's common target down. A
-  // clamped footswitch row falls back to ceilingLufs instead (undefined here → null).
-  it("a clamped FOOTSWITCH row does NOT use value as its ceiling", () => {
-    const it_ = baseRunItem({
-      isBase: false,
-      footswitch: {
-        switchIndex: 0,
-        levGroupId: "G1",
-        levNodeId: "N0",
-        levParameterId: "loudness",
-        sceneContext: null,
-      },
-      outcome: "clamped",
-      value: -6.0, // e.g. clamped because it's too LOUD
-      ceilingLufs: -14,
-    });
-    expect(ceilingOf(it_)).toBe(-14);
-  });
-
-  // A done row (not clamped) always reads ceilingLufs, footswitch or not.
-  it("a done row reads ceilingLufs regardless of footswitch", () => {
-    const it_ = baseRunItem({ outcome: "done", value: -22, ceilingLufs: -14 });
-    expect(ceilingOf(it_)).toBe(-14);
   });
 });
