@@ -2593,4 +2593,191 @@ mod tests {
         assert_eq!(streams.len(), 1);
         assert_eq!(streams[0].body, b"ABCD");
     }
+
+    // ─── property tests (#278) ───────────────────────────────────────────────
+    // The golden vectors above pin known exchanges; these feed the decoders arbitrary
+    // bytes, since every one of them reads device- or file-supplied input.
+
+    use proptest::prelude::*;
+
+    /// Any field the codec can write: a field number its tag can carry, and any value.
+    fn arb_field() -> impl Strategy<Value = (u32, Val)> {
+        let val = prop_oneof![
+            any::<u64>().prop_map(Val::Varint),
+            any::<[u8; 4]>().prop_map(Val::Fixed32),
+            any::<[u8; 8]>().prop_map(Val::Fixed64),
+            proptest::collection::vec(any::<u8>(), 0..80).prop_map(Val::Bytes),
+        ];
+        (1u32..(1 << 29), val)
+    }
+
+    /// Encode fields with the builders' own writers (fixed64 has no builder, so it is
+    /// written by hand; `field_f32` is bit-exact, NaN payloads included).
+    fn encode(fields: &[(u32, Val)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (f, v) in fields {
+            match v {
+                Val::Varint(n) => field_varint(&mut out, *f, *n),
+                Val::Fixed32(b) => field_f32(&mut out, *f, f32::from_le_bytes(*b)),
+                Val::Fixed64(b) => {
+                    put_varint(&mut out, tag(*f, 1));
+                    out.extend_from_slice(b);
+                }
+                Val::Bytes(b) => field_bytes(&mut out, *f, b),
+            }
+        }
+        out
+    }
+
+    /// Output frames as the device's input reports: the report-id `0x00` the host
+    /// prepends, then the frame.
+    fn as_reports(frames: &[[u8; 63]]) -> Vec<Vec<u8>> {
+        frames
+            .iter()
+            .map(|f| std::iter::once(0x00).chain(f.iter().copied()).collect())
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn parse_never_panics(buf in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let _ = parse(&buf);
+        }
+
+        #[test]
+        fn parse_strict_never_panics(buf in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let _ = parse_strict(&buf);
+        }
+
+        /// Whatever `parse_strict` accepts, the tolerant `parse` reads the same way.
+        #[test]
+        fn parse_agrees_with_parse_strict_where_strict_accepts(
+            buf in proptest::collection::vec(any::<u8>(), 0..256),
+        ) {
+            if let Ok(strict) = parse_strict(&buf) {
+                prop_assert_eq!(parse(&buf), strict);
+            }
+        }
+
+        #[test]
+        fn read_varint_never_reads_past_the_buffer(
+            buf in proptest::collection::vec(any::<u8>(), 0..24),
+            start in 0usize..24,
+        ) {
+            let mut pos = start.min(buf.len());
+            let _ = read_varint(&buf, &mut pos);
+            prop_assert!(pos <= buf.len());
+        }
+
+        #[test]
+        fn varint_round_trips(n in any::<u64>()) {
+            let mut buf = Vec::new();
+            put_varint(&mut buf, n);
+            let mut pos = 0;
+            prop_assert_eq!(read_varint(&buf, &mut pos), Some(n));
+            prop_assert_eq!(pos, buf.len());
+        }
+
+        #[test]
+        fn parse_strict_round_trips_encoded_fields(
+            fields in proptest::collection::vec(arb_field(), 0..12),
+        ) {
+            let body = encode(&fields);
+            prop_assert_eq!(parse_strict(&body), Ok(fields.clone()));
+            prop_assert_eq!(parse(&body), fields);
+        }
+
+        /// A real builder: `changeParameter`'s strings and float come back out intact.
+        #[test]
+        fn change_parameter_round_trips(
+            group in ".{0,8}",
+            node in ".{0,16}",
+            param in ".{0,16}",
+            value in any::<u32>(),
+        ) {
+            let value = f32::from_bits(value);
+            let top = parse_strict(&change_parameter(&group, &node, &param, value)).unwrap();
+            let pm = parse_strict(first_bytes(&top, 2).unwrap()).unwrap();
+            let cp = parse_strict(first_bytes(&pm, 12).unwrap()).unwrap();
+            prop_assert_eq!(first_bytes(&cp, 1), Some(group.as_bytes()));
+            prop_assert_eq!(first_bytes(&cp, 2), Some(node.as_bytes()));
+            prop_assert_eq!(first_bytes(&cp, 3), Some(param.as_bytes()));
+            prop_assert_eq!(
+                first_f32(&cp, 5).map(f32::to_bits),
+                Some(value.to_bits())
+            );
+        }
+
+        #[test]
+        fn load_scene_round_trips(slot in any::<u64>()) {
+            let top = parse_strict(&load_scene(slot)).unwrap();
+            let pm = parse_strict(first_bytes(&top, 2).unwrap()).unwrap();
+            let ls = parse_strict(first_bytes(&pm, 101).unwrap()).unwrap();
+            prop_assert_eq!(first_varint(&ls, 1), Some(slot));
+        }
+
+        #[test]
+        fn lz4_block_decompress_never_panics(
+            src in proptest::collection::vec(any::<u8>(), 0..256),
+        ) {
+            let _ = lz4_block_decompress(&src);
+        }
+
+        #[test]
+        fn lz4_stored_block_round_trips(data in proptest::collection::vec(any::<u8>(), 0..600)) {
+            prop_assert_eq!(lz4_block_decompress(&lz4_block_compress_stored(&data)), Ok(data));
+        }
+
+        #[test]
+        fn reassembly_never_panics_on_any_reports(
+            reports in proptest::collection::vec(
+                proptest::collection::vec(any::<u8>(), 0..70),
+                0..12,
+            ),
+        ) {
+            let _ = reassemble_streams(&reports);
+            let _ = reassemble_streams_final(&reports);
+        }
+
+        /// A body split into frames comes back whole from the final-frame reassembler,
+        /// fed all at once or one report at a time.
+        #[test]
+        fn split_then_framed_body_reassembles_final(
+            body in proptest::collection::vec(any::<u8>(), 0..400),
+        ) {
+            let reports = as_reports(&make_chunked_envelopes(&body));
+            let streams = reassemble_streams_final(&reports);
+            prop_assert_eq!(streams.len(), 1);
+            prop_assert_eq!(&streams[0].body, &body);
+
+            let mut r = FinalReassembler::default();
+            let mut closed = Vec::new();
+            for rep in &reports {
+                r.push(rep, &mut closed);
+            }
+            prop_assert_eq!(r.pending_len(), 0);
+            prop_assert_eq!(closed.len(), 1);
+            prop_assert_eq!(&closed[0].body, &body);
+        }
+
+        /// The global reassembler keeps a `0x35` frame as its own stream (see its doc),
+        /// so a multi-frame body comes back as the open stream plus the final frame.
+        #[test]
+        fn split_then_framed_body_reassembles_global(
+            body in proptest::collection::vec(any::<u8>(), 0..400),
+        ) {
+            let streams = reassemble_streams(&as_reports(&make_chunked_envelopes(&body)));
+            if body.len() <= MAX_BODY {
+                prop_assert_eq!(streams.len(), 1);
+                prop_assert_eq!(&streams[0].body, &body);
+            } else {
+                prop_assert_eq!(streams.len(), 2);
+                let mut joined = streams[1].body.clone();
+                joined.extend_from_slice(&streams[0].body);
+                prop_assert_eq!(joined, body);
+            }
+        }
+    }
 }

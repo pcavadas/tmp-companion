@@ -448,10 +448,28 @@ struct BackupEntries {
     settings_bytes: Option<Vec<u8>>,
 }
 
+/// Ceiling on the DECOMPRESSED archive (the tar stream the LZ4 frame expands to). The
+/// archive is device- or file-supplied, and an LZ4 frame can expand ~250× (a run of
+/// zeros), so a few MiB of crafted input could otherwise ask for gigabytes. A real
+/// backup is far below this: a 25-preset library came off the wire as 2.2 MiB, mostly
+/// `acdDefaultsBackup` and user IR files rather than presets (`notes/gotchas.md`, the
+/// backup-stream entry), and the whole tar plus its extracted entries sits in memory at
+/// once. 256 MiB leaves two orders of magnitude for a full library and a full IR store,
+/// while keeping the worst case a fraction of a machine's RAM.
+const MAX_BACKUP_BYTES: u64 = 256 * 1024 * 1024;
+
 /// The tar/LZ4 half of a backup read: blob → the user-preset DB on a temp path. Shared
 /// by the whole-library [`read_backup_archive`] and the single-slot
 /// [`preset_json_from_backup`], so both see the same archive shape and the same errors.
 fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
+    extract_backup_entries_capped(blob, MAX_BACKUP_BYTES)
+}
+
+/// [`extract_backup_entries`] with the decompression ceiling as a parameter, so a test
+/// can reach the cap without building a 256 MiB archive. An archive whose tar stream
+/// REACHES `cap` is refused, not truncated: a cut tar would still list its members and
+/// could hand back a DB missing its tail.
+fn extract_backup_entries_capped(blob: &[u8], cap: u64) -> Result<BackupEntries, String> {
     use std::io::Read;
 
     if blob.is_empty() {
@@ -479,6 +497,7 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
     };
     let mut tar_bytes = Vec::new();
     lz4_flex::frame::FrameDecoder::new(std::io::Cursor::new(&blob[frame_off..]))
+        .take(cap)
         .read_to_end(&mut tar_bytes)
         .map_err(|e| {
             format!(
@@ -486,6 +505,11 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
                 head.join(" ")
             )
         })?;
+    if tar_bytes.len() as u64 >= cap {
+        return Err(format!(
+            "backup archive decompresses to {cap} bytes or more, past the cap; refusing it"
+        ));
+    }
 
     // Untar in memory; pull out the DB entry, list the members. The user-preset DB
     // is stored under the logical tar entry name `databaseBackup` (firmware names
@@ -501,15 +525,9 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         if path == "databaseBackup" || path.ends_with("normalDb.db3") {
-            let mut buf = Vec::with_capacity(e.size() as usize);
-            e.read_to_end(&mut buf)
-                .map_err(|e| format!("tar extract db: {e}"))?;
-            db_bytes = Some(buf);
+            db_bytes = Some(read_tar_entry(&mut e, &path, tar_bytes.len(), "db")?);
         } else if path == "settingsBackup" {
-            let mut buf = Vec::with_capacity(e.size() as usize);
-            e.read_to_end(&mut buf)
-                .map_err(|e| format!("tar extract settings: {e}"))?;
-            settings_bytes = Some(buf);
+            settings_bytes = Some(read_tar_entry(&mut e, &path, tar_bytes.len(), "settings")?);
         }
         members.push((path, e.size())); // move (read above happens first)
     }
@@ -531,6 +549,29 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
         db_len: db_bytes.len(),
         settings_bytes,
     })
+}
+
+/// Read one extracted tar entry. Its size comes from the header, i.e. from the input, so
+/// it is checked against the decompressed archive it sits in (`tar_len`, itself under
+/// [`MAX_BACKUP_BYTES`]) and never used unchecked as an allocation size.
+fn read_tar_entry<R: std::io::Read>(
+    e: &mut tar::Entry<'_, R>,
+    path: &str,
+    tar_len: usize,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+
+    let claimed = e.size();
+    if claimed > tar_len as u64 {
+        return Err(format!(
+            "tar entry {path} claims {claimed} bytes, more than the whole {tar_len}-byte archive"
+        ));
+    }
+    let mut buf = Vec::with_capacity(claimed as usize);
+    e.read_to_end(&mut buf)
+        .map_err(|e| format!("tar extract {what}: {e}"))?;
+    Ok(buf)
 }
 
 /// The COMPLETE saved `presetJson` for ONE user slot, off a device backup — the

@@ -37,6 +37,12 @@ strip = "debuginfo"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# Property tests for the decoders that take device or file bytes (`proto`, `backup`,
+# `backup_read`). `std` only: the default `fork`/`timeout` features add a subprocess
+# runner the in-process properties don't need.
+[dev-dependencies]
+proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
+
 [dependencies]
 tauri = { version = "2", features = ["image-png"] }
 serde = { version = "1", features = ["derive"] }

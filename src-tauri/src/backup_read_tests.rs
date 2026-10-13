@@ -1040,3 +1040,167 @@ fn typed_rows_refuse_negative_and_null_slots() {
         .unwrap();
     assert_eq!(null.unwrap_err(), "slot is NULL");
 }
+
+// ─── archive decode error paths and the decompression cap (#278) ─────────────
+
+const LZ4_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
+
+/// The error of an extract that must fail (`BackupEntries` has no `Debug`).
+fn extract_err(r: Result<BackupEntries, String>) -> String {
+    match r {
+        Ok(e) => panic!("expected an error, got members {:?}", e.members),
+        Err(e) => e,
+    }
+}
+
+fn lz4_frame(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut out = Vec::new();
+    let mut enc = lz4_flex::frame::FrameEncoder::new(&mut out);
+    enc.write_all(bytes).expect("lz4 write");
+    enc.finish().expect("lz4 finish");
+    out
+}
+
+/// A tar of `(name, data)` entries, written by the real header writer.
+fn tar_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut tar_bytes = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        for (name, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name, std::io::Cursor::new(data))
+                .expect("tar append");
+        }
+        builder.finish().expect("tar finish");
+    }
+    tar_bytes
+}
+
+#[test]
+fn an_empty_archive_is_refused() {
+    let err = extract_err(extract_backup_entries(&[]));
+    assert_eq!(err, "backup archive is empty");
+}
+
+#[test]
+fn an_archive_without_lz4_magic_is_refused() {
+    let err = extract_err(extract_backup_entries(b"not a backup archive at all"));
+    assert!(
+        err.starts_with("no LZ4 frame magic in archive head"),
+        "{err}"
+    );
+}
+
+/// The stray-leading-bytes skip looks at the first 64 window positions only: junk up to
+/// 63 bytes long is skipped and the archive decodes, a magic any later is not found.
+#[test]
+fn stray_leading_bytes_are_skipped_only_within_the_head_window() {
+    let archive = lz4_frame(&tar_of(&[("databaseBackup", b"db bytes")]));
+    for junk in [1usize, 3, 63] {
+        let mut blob = vec![0xaa; junk];
+        blob.extend_from_slice(&archive);
+        let entries = extract_backup_entries(&blob).expect("decodes past the junk");
+        assert_eq!(entries.db_len, 8, "junk {junk}");
+        assert_eq!(entries.members, vec![("databaseBackup".to_string(), 8)]);
+    }
+    let mut blob = vec![0xaa; 64];
+    blob.extend_from_slice(&archive);
+    let err = extract_err(extract_backup_entries(&blob));
+    assert!(err.starts_with("no LZ4 frame magic"), "{err}");
+}
+
+#[test]
+fn a_corrupt_lz4_frame_is_refused() {
+    let mut blob = LZ4_MAGIC.to_vec();
+    blob.extend_from_slice(&[0xff; 16]);
+    let err = extract_err(extract_backup_entries(&blob));
+    assert!(err.starts_with("LZ4-frame decode failed"), "{err}");
+}
+
+#[test]
+fn a_frame_that_does_not_hold_a_tar_is_refused() {
+    let err = extract_err(extract_backup_entries(&lz4_frame(&[0x41; 1024])));
+    assert!(err.starts_with("tar entry: "), "{err}");
+}
+
+#[test]
+fn an_archive_without_a_database_entry_is_refused_naming_its_members() {
+    let blob = lz4_frame(&tar_of(&[("settingsBackup", b"{}"), ("other", b"x")]));
+    let err = extract_err(extract_backup_entries(&blob));
+    assert_eq!(
+        err,
+        "databaseBackup entry not found; members: settingsBackup, other"
+    );
+}
+
+/// A frame that decompresses to nothing, and a tar with no entries, both lack the DB.
+#[test]
+fn an_archive_with_no_entries_is_refused() {
+    for tar_bytes in [Vec::new(), tar_of(&[])] {
+        let err = extract_err(extract_backup_entries(&lz4_frame(&tar_bytes)));
+        assert_eq!(err, "databaseBackup entry not found; members: ");
+    }
+}
+
+/// The cap is on the DECOMPRESSED stream: an archive whose tar reaches it is refused
+/// (a run of zeros is the cheap way to make a small frame expand), one byte of headroom
+/// decodes. Production uses [`MAX_BACKUP_BYTES`]; this exercises the same code at a cap
+/// a test can reach.
+#[test]
+fn an_archive_that_decompresses_to_the_cap_is_refused() {
+    let tar_bytes = tar_of(&[("databaseBackup", &vec![0u8; 64 * 1024])]);
+    let blob = lz4_frame(&tar_bytes);
+    assert!(blob.len() * 20 < tar_bytes.len(), "the frame expands");
+    let tar_len = tar_bytes.len() as u64;
+
+    for cap in [1024, tar_len - 1, tar_len] {
+        let err = extract_err(extract_backup_entries_capped(&blob, cap));
+        assert!(err.contains("past the cap"), "cap {cap}: {err}");
+    }
+    let entries = extract_backup_entries_capped(&blob, tar_len + 1).expect("under the cap");
+    assert_eq!(entries.db_len, 64 * 1024);
+    assert!(tar_len < MAX_BACKUP_BYTES);
+}
+
+/// A tar header is input too: an entry that claims more bytes than the whole
+/// decompressed archive is refused instead of sizing an allocation from the claim.
+#[test]
+fn an_entry_claiming_more_than_the_archive_is_refused() {
+    for name in ["databaseBackup", "settingsBackup"] {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).expect("path");
+        header.set_size(1 << 40);
+        header.set_mode(0o644);
+        header.set_cksum();
+        let mut tar_bytes = header.as_bytes().to_vec();
+        tar_bytes.extend_from_slice(&[0x55; 512]);
+        tar_bytes.extend_from_slice(&[0; 1024]);
+        let err = extract_err(extract_backup_entries(&lz4_frame(&tar_bytes)));
+        assert_eq!(
+            err,
+            format!(
+                "tar entry {name} claims 1099511627776 bytes, more than the whole 2048-byte archive"
+            )
+        );
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+
+    /// Arbitrary bytes behind the frame magic reach the LZ4 and tar decoders and come
+    /// back as an error (or, vanishingly rarely, a decode), never a panic.
+    #[test]
+    fn extract_never_panics_on_bytes_after_the_magic(
+        tail in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512),
+    ) {
+        let mut blob = LZ4_MAGIC.to_vec();
+        blob.extend_from_slice(&tail);
+        let _ = extract_backup_entries(&blob);
+    }
+}

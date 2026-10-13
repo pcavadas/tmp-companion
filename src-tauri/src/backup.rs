@@ -367,4 +367,18 @@ mod tests {
         assert_eq!(odd.source, SnapshotSource::Unknown);
         assert!(restore_bytes(&odd).is_err());
     }
+
+    // #278: the `.preset` codec is self-inverse on ANY bytes, not only on JSON, and keeps
+    // the length (a `.preset` file is exactly as long as its JSON).
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+        #[test]
+        fn xor_jld_is_its_own_inverse(
+            data in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512),
+        ) {
+            let encoded = xor_jld(&data);
+            proptest::prop_assert_eq!(encoded.len(), data.len());
+            proptest::prop_assert_eq!(xor_jld(&encoded), data);
+        }
+    }
 }
