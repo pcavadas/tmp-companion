@@ -79,6 +79,10 @@ PROBE_LOG="$LOG_DIR/probe.log"
 SERVER_PID=""
 
 [ -f dist/index.html ] || { mkdir -p dist; printf '<!doctype html><title>e2e</title>' > dist/index.html; }
+# A stale node_modules surfaces only as Vite's error overlay, so every spec would sit out
+# its full timeout on the first click. Install from the lockfile first (a no-op when current).
+bun install --frozen-lockfile >/dev/null 2>&1 || {
+  err "bun install --frozen-lockfile failed — fix the frontend deps before the twin lane"; exit 1; }
 
 kill_port() {
   for pid in $(lsof -ti "tcp:$1" 2>/dev/null || true); do
