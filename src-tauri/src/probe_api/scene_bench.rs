@@ -1,16 +1,31 @@
 //! Probe entry point: batched-live per-scene leveling benchmark harness.
+//!
+//! It also holds the retired live-batched runner ([`level_scenes_live_batched`]) and its
+//! live controllers ([`SceneLevelStrategy`]): kept only for `probe --bench-scene-leveling`
+//! and for the tests that show why the hybrid controller won, and moved here out of the
+//! production `leveller` module. The app levels scenes with
+//! `leveller::level_scenes_oneshot`.
 
 use super::level::filter_amp_candidates;
 use super::scene_jobs::build_scene_jobs;
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
-use crate::leveller;
+use crate::audio;
+use crate::error::LevelError;
+use crate::leveller::{
+    coord_to_knob, knob_search_space, knob_to_coord, load_preset_isolated, measure_processed,
+    reamp_off_fresh, restore_after_unsaved_error, restore_saved_preset, secant_step, set_knob,
+    set_knob_value_only, BatchedSceneOutcome, CancelMode, Flatness, KnobTarget, SceneJob,
+    Verification, BATCH_TRUST_DB, KNOB_TOL_LU, RATE, SETTLE_AFTER_REAMP_MS, SETTLE_AFTER_SET_MS,
+};
 use crate::proto;
 use crate::session;
 use crate::session::Session;
 use crate::slot::ListIndex;
 use crate::SCENE_LEVEL_CANCEL;
+use serde::Serialize;
 use std::sync::atomic::Ordering::SeqCst;
+use std::time::Duration;
 
 pub fn probe_bench_scene_leveling(
     slots: Vec<ListIndex>,
@@ -45,11 +60,11 @@ pub fn probe_bench_scene_leveling(
     // proportional stalls on compressed knobs, full jumps overshoot steep ones).
     // BatchedLive amortizes ONE session + ONE re-amp engage across a preset's
     // scenes with trust-region slope jumps — the <10 s/scene candidate.
-    let mut rows = Vec::<leveller::SceneLevelBenchmarkRow>::new();
+    let mut rows = Vec::<SceneLevelBenchmarkRow>::new();
     // Stream each row to disk as it lands (an OOM reboot lost a full 40-minute
     // run that only wrote at the end).
     let jsonl_path = format!("{out_path}.jsonl");
-    let emit = |row: &leveller::SceneLevelBenchmarkRow| {
+    let emit = |row: &SceneLevelBenchmarkRow| {
         if let Ok(line) = serde_json::to_string(row) {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -159,12 +174,12 @@ pub fn probe_bench_scene_leveling(
                     "[bench] preset {:03}: intel session failed: {e}",
                     slot.device_slot()
                 );
-                let row = leveller::SceneLevelBenchmarkRow {
+                let row = SceneLevelBenchmarkRow {
                     preset_slot: slot,
                     ui_label: format!("{:03}", slot.device_slot()),
                     scene_slot: session::BASE_SCENE_SLOT,
                     scene_name: "Base".to_string(),
-                    strategy: leveller::SceneLevelStrategy::BatchedLive,
+                    strategy: SceneLevelStrategy::BatchedLive,
                     elapsed_ms: 0,
                     capture_windows: 0,
                     parameter_writes: 0,
@@ -201,12 +216,12 @@ pub fn probe_bench_scene_leveling(
             );
         }
         if scene_rows.is_empty() {
-            let row = leveller::SceneLevelBenchmarkRow {
+            let row = SceneLevelBenchmarkRow {
                 preset_slot: slot,
                 ui_label: format!("{:03}", slot.device_slot()),
                 scene_slot: session::BASE_SCENE_SLOT,
                 scene_name: "Base".to_string(),
-                strategy: leveller::SceneLevelStrategy::BatchedLive,
+                strategy: SceneLevelStrategy::BatchedLive,
                 elapsed_ms: 0,
                 capture_windows: 0,
                 parameter_writes: 0,
@@ -225,12 +240,12 @@ pub fn probe_bench_scene_leveling(
         let candidates = filter_amp_candidates(discovered);
         if candidates.is_empty() {
             for (scene_slot, scene_name) in &scene_rows {
-                let row = leveller::SceneLevelBenchmarkRow {
+                let row = SceneLevelBenchmarkRow {
                     preset_slot: slot,
                     ui_label: format!("{:03}", slot.device_slot()),
                     scene_slot: *scene_slot,
                     scene_name: scene_name.clone(),
-                    strategy: leveller::SceneLevelStrategy::BatchedLive,
+                    strategy: SceneLevelStrategy::BatchedLive,
                     elapsed_ms: 0,
                     capture_windows: 0,
                     parameter_writes: 0,
@@ -262,12 +277,12 @@ pub fn probe_bench_scene_leveling(
                 Ok(jobs) => jobs,
                 Err(e) => {
                     for (scene_slot, scene_name) in &scene_rows {
-                        let row = leveller::SceneLevelBenchmarkRow {
+                        let row = SceneLevelBenchmarkRow {
                             preset_slot: slot,
                             ui_label: format!("{:03}", slot.device_slot()),
                             scene_slot: *scene_slot,
                             scene_name: scene_name.clone(),
-                            strategy: leveller::SceneLevelStrategy::BatchedLive,
+                            strategy: SceneLevelStrategy::BatchedLive,
                             elapsed_ms: 0,
                             capture_windows: 0,
                             parameter_writes: 0,
@@ -285,7 +300,7 @@ pub fn probe_bench_scene_leveling(
                 }
             };
         let t0 = std::time::Instant::now();
-        let outcome = leveller::level_scenes_live_batched(
+        let outcome = level_scenes_live_batched(
             slot,
             &jobs,
             &stim,
@@ -320,12 +335,12 @@ pub fn probe_bench_scene_leveling(
                             o.failure.as_deref().unwrap_or("?"),
                         ),
                     }
-                    let row = leveller::SceneLevelBenchmarkRow {
+                    let row = SceneLevelBenchmarkRow {
                         preset_slot: slot,
                         ui_label: format!("{:03}", slot.device_slot()),
                         scene_slot: o.scene_slot,
                         scene_name: name,
-                        strategy: leveller::SceneLevelStrategy::BatchedLive,
+                        strategy: SceneLevelStrategy::BatchedLive,
                         elapsed_ms: o.elapsed_ms,
                         capture_windows: o.windows,
                         parameter_writes: o.writes,
@@ -350,12 +365,12 @@ pub fn probe_bench_scene_leveling(
                     "[bench] preset {:03}: batched-live run FAILED: {e}",
                     slot.device_slot()
                 );
-                let row = leveller::SceneLevelBenchmarkRow {
+                let row = SceneLevelBenchmarkRow {
                     preset_slot: slot,
                     ui_label: format!("{:03}", slot.device_slot()),
                     scene_slot: session::BASE_SCENE_SLOT,
                     scene_name: "Base".to_string(),
-                    strategy: leveller::SceneLevelStrategy::BatchedLive,
+                    strategy: SceneLevelStrategy::BatchedLive,
                     elapsed_ms: t0.elapsed().as_millis(),
                     capture_windows: 0,
                     parameter_writes: 0,
@@ -390,5 +405,458 @@ pub(crate) fn knob_bounds(current: f32) -> (f32, f32) {
         (0.0, 1.0)
     } else {
         (current - 18.0, (current + 6.0).min(0.0))
+    }
+}
+
+// ───────────────── The retired live-batched runner (bench only) ─────────────────
+
+const LIVE_SETTLE_MS: u64 = 350;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "retired controller, kept for the tests that show why hybrid won"
+    )
+)]
+const LIVE_MAX_ITERS: u32 = 5;
+
+/// Live-controller flavors. Only `LiveHybrid` ships (the batched runner's
+/// controller — the benchmark winner); the others remain as
+/// `next_live_coord` branches exercised by the unit tests, documenting WHY
+/// hybrid won (secant is noise-fragile, fixed-gain proportional stalls on
+/// compressed responses, Fractal-style full meter-match jumps overshoot —
+/// Fractal itself ships no auto-leveler, just a ~300 ms VU meter the player
+/// matches manually, FM9 manual p.62). `BatchedLive` labels the shipped
+/// whole-preset runner in benchmark rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum SceneLevelStrategy {
+    LiveSecant,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retired controller, kept for the tests that show why hybrid won"
+        )
+    )]
+    LiveProportional,
+    LiveHybrid,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retired controller, kept for the tests that show why hybrid won"
+        )
+    )]
+    FractalStyle,
+    /// One preset load + one stream pair per preset; one re-amp engage per
+    /// scene; trust-region slope jumps (`level_scenes_live_batched`).
+    BatchedLive,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SceneLevelBenchmarkRow {
+    pub preset_slot: ListIndex,
+    pub ui_label: String,
+    pub scene_slot: u32,
+    pub scene_name: String,
+    pub strategy: SceneLevelStrategy,
+    pub elapsed_ms: u128,
+    pub capture_windows: u32,
+    pub parameter_writes: u32,
+    pub final_lufs: Option<f64>,
+    pub error_lu: Option<f64>,
+    pub final_output_level: Option<f32>,
+    pub clamped: bool,
+    pub saved: bool,
+    pub failure: Option<String>,
+}
+
+fn live_window_lufs(live: &audio::LiveReamp, window_ms: u64) -> Result<f64, LevelError> {
+    let cap = live.recent_capture(window_ms)?;
+    let lufs = measure_processed(&cap)?.integrated_lufs;
+    if lufs.is_finite() {
+        Ok(lufs)
+    } else {
+        Err(LevelError::from("no finite live LUFS measurement"))
+    }
+}
+
+/// Pure live-controller step: from the current point `(coord, measured)` (c-space
+/// knob coordinate → measured LUFS), the PREVIOUS distinct point (`None` on the
+/// first step), and the target, return the next c-space coordinate, clamped to
+/// `[c_lo, c_hi]`. Pure so each strategy is unit-testable against a fake
+/// loudness source (see `tests::simulate_live`).
+///
+/// - `LiveHybrid`: one-shot predicted jump first (slope ≈ 1 dB per dB of knob in
+///   c-space — the validated amplitude model), then secant trims from the two
+///   real measured points.
+/// - `LiveSecant`: conservative half-error probe first so the secant gets a real
+///   local slope estimate, then pure secant.
+/// - `LiveProportional`: bounded-gain (0.75) nudges toward the target.
+/// - `FractalStyle`: full meter-match jump every step — paired with the SHORT
+///   capture window in `live_window_ms()` (Fractal's fast-meter posture).
+fn next_live_coord(
+    strategy: SceneLevelStrategy,
+    iter: u32,
+    current: (f32, f64),
+    prev: Option<(f32, f64)>,
+    target: f64,
+    (c_lo, c_hi): (f32, f32),
+) -> f32 {
+    let (coord, measured) = current;
+    let err = (target - measured) as f32;
+    let full = coord + err;
+    let stepped = match strategy {
+        SceneLevelStrategy::LiveHybrid | SceneLevelStrategy::LiveSecant => match prev {
+            Some((pa, py)) if iter > 0 => {
+                secant_step((pa, py), (coord, measured), target, Flatness::Knob, None)
+                    .unwrap_or(full)
+            }
+            _ if strategy == SceneLevelStrategy::LiveSecant => coord + 0.5 * err,
+            _ => full,
+        },
+        SceneLevelStrategy::LiveProportional => coord + 0.75 * err,
+        _ => full, // FractalStyle (and the defensive default): meter-match jump
+    };
+    stepped.clamp(c_lo, c_hi)
+}
+
+/// Per-scene capture window for the BATCHED live runner. Shorter than
+/// `LIVE_WINDOW_MS`: the batched run amortizes session + engage ceremony, so
+/// the window is the dominant per-trim cost; 2 s of the looped stimulus is the
+/// speed/accuracy compromise (final accuracy still gated at `KNOB_TOL_LU`).
+const BATCH_WINDOW_MS: u64 = 2000;
+const BATCH_MAX_TRIMS: u32 = 4;
+
+/// The single knob for the single-knob paths; errors if `job` is a multi-knob (parallel)
+/// job or a skip job, which this probe-only runner can't solve.
+fn solo(job: &SceneJob) -> Result<&KnobTarget, LevelError> {
+    if let Some(reason) = &job.skip {
+        return Err(LevelError::from(reason.clone()));
+    }
+    match job.knobs.as_slice() {
+        [one] => Ok(one),
+        n => Err(LevelError::Device(format!(
+            "this leveling path supports a single amp knob per scene, got {} \
+             (a parallel-merged scene needs the joint-k runner)",
+            n.len()
+        ))),
+    }
+}
+
+/// BATCHED live scene leveling — the fast path. The preset loads ONCE and the
+/// stimulus/capture streams run ONCE for the whole preset; each scene then gets
+/// a lean engage connection: `set_knob` (scene recall + Scene Edit + start
+/// value) → engage re-amp → measure on the shared stream → trust-region slope
+/// jumps via live `changeParameter` (audible mid-engage, HW-proven) → re-amp
+/// OFF → drop. One ENGAGE PER SCENE is mandatory: re-amp latches the ACTIVE
+/// SCENE at engage — `loadScene` mid-engage is inaudible (HW: all 9
+/// scenes of an 8-scene preset measured the identical audio on one engage).
+///
+/// `jobs` come from the caller's un-engaged pre-pass (live doc per scene →
+/// knob + bounds + that scene's current value). `save` persists once at the
+/// end; otherwise the stored preset is reloaded.
+fn level_scenes_live_batched(
+    slot: ListIndex,
+    jobs: &[SceneJob],
+    stimulus: &[f32],
+    save: bool,
+    saved: Option<&serde_json::Value>,
+    mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<Vec<BatchedSceneOutcome>, LevelError> {
+    let result = (|| {
+        // Load in its own connection (set-after-load override + engage latch).
+        load_preset_isolated(slot, CancelMode::Cleanup)?;
+
+        // ONE pair of CoreAudio streams for the whole preset (between engages
+        // they just carry silence). Rebuilding streams per scene both wasted
+        // ~0.5 s/scene and churned coreaudiod.
+        let live = audio::LiveReamp::start(stimulus, RATE)?;
+
+        let mut outcomes = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            if cancelled() {
+                return Err(LevelError::Cancelled);
+            }
+            on_scene(job.scene_slot, None);
+            let t0 = std::time::Instant::now();
+            let mut windows = 0u32;
+            let mut writes = 0u32;
+
+            let scene_result = (|windows: &mut u32,
+                                 writes: &mut u32|
+             -> Result<(f64, f32, bool), LevelError> {
+                // This closed-loop runner is single-knob only (probe benchmark path);
+                // a parallel-merged scene must use the joint-k `level_scenes_oneshot`.
+                let kt = solo(job)?;
+                // Fresh engage connection per scene: scene recall + Scene Edit
+                // + start value ride `set_knob` BEFORE the engage (latch rule).
+                let mut s = Session::connect()?;
+                set_knob(&mut s, &kt.knob, kt.current.clamp(kt.lo, kt.hi), saved)?;
+                *writes += 1;
+                crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+                let _ = s.set_reamp_mode(true)?;
+                crate::settle(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
+
+                let (log_space, c_lo, c_hi) = knob_search_space(kt.lo, kt.hi);
+                let mut coord =
+                    knob_to_coord(kt.current.clamp(kt.lo, kt.hi), log_space).clamp(c_lo, c_hi);
+                crate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                let mut measured = live_window_lufs(&live, BATCH_WINDOW_MS)?;
+                *windows += 1;
+                let mut best = (coord, measured);
+                let mut prev: Option<(f32, f64)> = None;
+
+                for iter in 0..BATCH_MAX_TRIMS {
+                    if cancelled() {
+                        return Err(LevelError::Cancelled);
+                    }
+                    if (best.1 - job.target_lufs).abs() <= KNOB_TOL_LU {
+                        break;
+                    }
+                    let raw_next = next_live_coord(
+                        SceneLevelStrategy::LiveHybrid,
+                        iter,
+                        (coord, measured),
+                        prev,
+                        job.target_lufs,
+                        (c_lo, c_hi),
+                    );
+                    // Trust region: bound each move (full computed jumps
+                    // overshot steep knobs by ~6 LU on HW).
+                    let next = (coord + (raw_next - coord).clamp(-BATCH_TRUST_DB, BATCH_TRUST_DB))
+                        .clamp(c_lo, c_hi);
+                    if (next - coord).abs() < 1e-3 {
+                        break;
+                    }
+                    let next_value = coord_to_knob(next, log_space, kt.lo, kt.hi);
+                    set_knob_value_only(&mut s, &kt.knob, next_value)?;
+                    *writes += 1;
+                    crate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                    let lufs = live_window_lufs(&live, BATCH_WINDOW_MS)?;
+                    *windows += 1;
+                    if (lufs - job.target_lufs).abs() < (best.1 - job.target_lufs).abs() {
+                        best = (next, lufs);
+                    }
+                    prev = Some((coord, measured));
+                    coord = next;
+                    measured = lufs;
+                }
+
+                // Land on the best point if the loop ended elsewhere.
+                let best_value = coord_to_knob(best.0, log_space, kt.lo, kt.hi);
+                if (best.0 - coord).abs() > 1e-4 {
+                    set_knob_value_only(&mut s, &kt.knob, best_value)?;
+                    *writes += 1;
+                    crate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                    best.1 = live_window_lufs(&live, BATCH_WINDOW_MS)?;
+                    *windows += 1;
+                }
+                let _ = s.set_reamp_mode(false);
+                Ok((
+                    best.1,
+                    best_value,
+                    (best.1 - job.target_lufs).abs() > KNOB_TOL_LU,
+                ))
+            })(&mut windows, &mut writes);
+
+            let outcome = match scene_result {
+                Ok((lufs, level, clamped)) => BatchedSceneOutcome {
+                    scene_slot: job.scene_slot,
+                    target_lufs: job.target_lufs,
+                    final_lufs: Some(lufs),
+                    final_level: Some(level),
+                    clamped,
+                    windows,
+                    writes,
+                    elapsed_ms: t0.elapsed().as_millis(),
+                    failure: None,
+                    dynamic_spread_lu: None, // live windows carry no full-capture meter
+                    clamp_reason: None,
+                    verify_by_ear: false,
+                    persist_mismatch: None,
+                    // The probe-only bench runner reports no taxonomy: it has no
+                    // `clamp_reason`/wet-floor inputs to derive one from.
+                    clamp_kind: None,
+                    // Its result IS a live-window measurement of the written value.
+                    verification: Verification::Verified,
+                },
+                Err(e) if e.is_cancelled() => return Err(e),
+                Err(e) => BatchedSceneOutcome {
+                    scene_slot: job.scene_slot,
+                    target_lufs: job.target_lufs,
+                    final_lufs: None,
+                    final_level: None,
+                    clamped: false,
+                    windows,
+                    writes,
+                    elapsed_ms: t0.elapsed().as_millis(),
+                    failure: Some(e.to_string()),
+                    ..Default::default()
+                },
+            };
+            on_scene(job.scene_slot, Some(&outcome));
+            outcomes.push(outcome);
+        }
+
+        drop(live);
+        if save {
+            let mut s = Session::connect()?;
+            s.save_current_preset(slot)?;
+        } else {
+            restore_saved_preset(slot)?;
+        }
+        Ok(outcomes)
+    })();
+    // Guaranteed fresh OFF — interrupted live streams can strand re-amp even if
+    // the in-session OFF was sent.
+    reamp_off_fresh("level_scenes_live_batched");
+    restore_after_unsaved_error(slot, save, result)
+}
+
+#[cfg(test)]
+mod live_controller_tests {
+    use super::*;
+    use crate::leveller::KNOB_TOL_LU;
+
+    // ---- live-controller (next_live_coord) against a fake loudness source ----
+
+    /// Drive `next_live_coord` against a fake device response `respond(coord) →
+    /// LUFS` exactly the way `level_preset_block_live` does (same best-tracking,
+    /// same stop conditions). Returns (measurement steps after the seed, best
+    /// LUFS, best coord).
+    fn simulate_live(
+        strategy: SceneLevelStrategy,
+        respond: impl Fn(f32) -> f64,
+        start_coord: f32,
+        target: f64,
+        c_lo: f32,
+        c_hi: f32,
+    ) -> (u32, f64, f32) {
+        let mut coord = start_coord.clamp(c_lo, c_hi);
+        let mut measured = respond(coord);
+        let mut best = (coord, measured);
+        let mut prev: Option<(f32, f64)> = None;
+        let mut steps = 0u32;
+        for iter in 0..LIVE_MAX_ITERS {
+            if (best.1 - target).abs() <= KNOB_TOL_LU {
+                break;
+            }
+            let next = next_live_coord(
+                strategy,
+                iter,
+                (coord, measured),
+                prev,
+                target,
+                (c_lo, c_hi),
+            );
+            if (next - coord).abs() < 1e-3 {
+                break;
+            }
+            let y = respond(next);
+            steps += 1;
+            if (y - target).abs() < (best.1 - target).abs() {
+                best = (next, y);
+            }
+            prev = Some((coord, measured));
+            coord = next;
+            measured = y;
+        }
+        (steps, best.1, best.0)
+    }
+
+    /// Ideal amplitude knob (the validated `20·log10` model): LUFS = coord + C.
+    /// Hybrid's one-shot jump and FractalStyle's meter-match both land in ONE step.
+    #[test]
+    fn live_hybrid_and_fractal_converge_in_one_step_on_unit_gain() {
+        let plant = |c: f32| c as f64 - 26.0; // C = -26 at coord 0
+        for strategy in [
+            SceneLevelStrategy::LiveHybrid,
+            SceneLevelStrategy::FractalStyle,
+        ] {
+            let (steps, lufs, _) = simulate_live(strategy, plant, -6.0, -28.0, -60.0, 0.0);
+            assert_eq!(steps, 1, "{strategy:?}");
+            assert!(
+                (lufs - (-28.0)).abs() <= KNOB_TOL_LU,
+                "{strategy:?} lufs={lufs}"
+            );
+        }
+    }
+
+    /// Compressive response (0.5 LU per dB of knob — e.g. leveling through a
+    /// limiter-ish chain): the secant-based strategies recover the real slope and
+    /// converge; pure proportional's bounded gain (0.75·err on a 0.5 slope ⇒
+    /// residual ×0.625/step) cannot reach the ±0.3 LU gate within the cap.
+    #[test]
+    fn live_secant_strategies_beat_proportional_on_compressive_response() {
+        let plant = |c: f32| 0.5 * c as f64 - 26.0;
+        for strategy in [
+            SceneLevelStrategy::LiveHybrid,
+            SceneLevelStrategy::LiveSecant,
+        ] {
+            let (steps, lufs, _) = simulate_live(strategy, plant, 0.0, -22.0, -60.0, 30.0);
+            assert!(steps <= 3, "{strategy:?} steps={steps}");
+            assert!(
+                (lufs - (-22.0)).abs() <= KNOB_TOL_LU,
+                "{strategy:?} lufs={lufs}"
+            );
+        }
+        let (_, lufs_prop, _) = simulate_live(
+            SceneLevelStrategy::LiveProportional,
+            plant,
+            0.0,
+            -22.0,
+            -60.0,
+            30.0,
+        );
+        assert!(
+            (lufs_prop - (-22.0)).abs() > KNOB_TOL_LU,
+            "proportional unexpectedly converged: {lufs_prop}"
+        );
+    }
+
+    /// LiveSecant's first move is the conservative half-error probe (NOT the full
+    /// jump) — the seed point that distinguishes it from LiveHybrid.
+    #[test]
+    fn live_secant_first_step_is_half_gain_probe() {
+        let next = next_live_coord(
+            SceneLevelStrategy::LiveSecant,
+            0,
+            (-10.0, -28.0),
+            None,
+            -22.0,
+            (-60.0, 0.0),
+        );
+        assert!((next - (-7.0)).abs() < 1e-4, "next={next}"); // -10 + 0.5·6
+        let hybrid = next_live_coord(
+            SceneLevelStrategy::LiveHybrid,
+            0,
+            (-10.0, -28.0),
+            None,
+            -22.0,
+            (-60.0, 0.0),
+        );
+        assert!((hybrid - (-4.0)).abs() < 1e-4, "hybrid={hybrid}"); // full jump
+    }
+
+    /// Unreachable target: every strategy pins at the top bound and stops (the
+    /// equal-coord break), leaving the best point at the ceiling — the `clamped`
+    /// signal upstream.
+    #[test]
+    fn live_strategies_clamp_at_unreachable_ceiling() {
+        let plant = |c: f32| c as f64 - 26.0; // ceiling at coord 0 → -26 LUFS max
+        for strategy in [
+            SceneLevelStrategy::LiveHybrid,
+            SceneLevelStrategy::LiveSecant,
+            SceneLevelStrategy::LiveProportional,
+            SceneLevelStrategy::FractalStyle,
+        ] {
+            let (steps, lufs, coord) = simulate_live(strategy, plant, -6.0, -20.0, -60.0, 0.0);
+            assert!(steps <= LIVE_MAX_ITERS, "{strategy:?}");
+            assert!((coord - 0.0).abs() < 1e-3, "{strategy:?} coord={coord}");
+            assert!((lufs - (-26.0)).abs() < 1e-6, "{strategy:?} lufs={lufs}");
+        }
     }
 }

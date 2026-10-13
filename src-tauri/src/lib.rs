@@ -61,7 +61,7 @@ mod footswitch;
 // Crash-safe writes for user data (`write_atomic`), and the app config dir for the CLI.
 mod fsutil;
 // Benefit-aware headroom trade + the clamp-error taxonomy (pure; the device half is in
-// `leveller.rs`).
+// `leveller::trade`).
 mod headroom_trade;
 mod hid;
 mod ir;

@@ -69,7 +69,7 @@ ALL4="doctor.online level.online songs copy"
 
 diff_of src-tauri/src/commands/songs.rs
 check "songs.rs → songs" "songs" "$(required)"
-for f in src-tauri/src/leveller.rs src-tauri/src/commands/doctor.rs src-tauri/src/probe_api/scene_jobs.rs; do
+for f in src-tauri/src/leveller/mod.rs src-tauri/src/leveller/scene.rs src-tauri/src/commands/doctor.rs src-tauri/src/probe_api/scene_jobs.rs; do
   diff_of "$f"
   check "$f → doctor.online level.online" "doctor.online level.online" "$(required)"
 done
@@ -102,8 +102,8 @@ done
 diff_of src-tauri/src/foo.rs
 check "unmapped src-tauri/src/foo.rs → all four" "$ALL4" "$(required)"
 check "unmapped file is named as unclassified" 1 "$(required_err | grep -c 'unclassified: src-tauri/src/foo.rs')"
-diff_of src-tauri/src/commands/songs.rs src-tauri/src/leveller.rs
-check "songs.rs + leveller.rs → canonical order" "doctor.online level.online songs" "$(required)"
+diff_of src-tauri/src/commands/songs.rs src-tauri/src/leveller/mod.rs
+check "songs.rs + leveller/mod.rs → canonical order" "doctor.online level.online songs" "$(required)"
 diff_of src-tauri/src/commands/bulk_replace.rs
 check "unexercised file → ANY" "ANY" "$(required)"
 check "unexercised file prints an advisory" 1 "$(required_err | grep -c 'advisory (unexercised)')"

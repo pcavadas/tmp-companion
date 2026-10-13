@@ -28,7 +28,7 @@
 //! real solve then pins at [`BASE_FADER_FLOOR`] anyway, that is reported at RUN time as
 //! [`ClampKind::TradeFloor`], not predicted here.
 //!
-//! Everything in this module is pure. The device-facing half lives in `leveller.rs`.
+//! Everything in this module is pure. The device-facing half lives in `leveller::trade`.
 
 /// The lowest base amp `outputLevel` the trade may solve down to. `outputLevel = 0` is DEEP
 /// DIGITAL SILENCE on the real TMP (`danger.md`) and `loudest_loudness` errors on a silent
@@ -1020,7 +1020,7 @@ mod tests {
     // scene-0 leveling) is enforced at the Phase-2 call site that decides WHICH amp
     // candidates ever reach this planner -- `plan_level_pair` is pure arithmetic over whatever
     // `sounds`/levels it is handed and has no way to see "how many amps" produced them. See
-    // leveller.rs's Base-arm derivation for that guard.
+    // the `leveller` Base-arm derivation for that guard.
 
     // U9. `LevelPairPlan::preset_level` must be EXACTLY what `raised_preset_level` computes
     // from the SAME `dp_db` -- two call sites (the plan and the eventual write) must never be
