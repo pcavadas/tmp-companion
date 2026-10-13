@@ -39,12 +39,13 @@
 //! `EACCES` into the udev command that fixes that.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::error::LevelError;
 use crate::lufs::IncrementalLoudness;
+use crate::profiles::PlaybackChannels;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Data, Device, SampleFormat, SupportedStreamConfig};
@@ -305,6 +306,103 @@ impl Capture {
                 .collect(),
         )
     }
+
+    /// [`Self::processed_stereo`] as the loudness meter HEARS it under the
+    /// Settings playback-channels choice (`profiles::PlaybackChannels`): see
+    /// [`metered_frame`] for the per-mode shape. `None` for a genuinely
+    /// 1-channel capture, exactly like `processed_stereo` — there is no pair to
+    /// choose from, so every mode falls back to the mono measure on channel 0.
+    pub fn metered_pair(&self, mode: PlaybackChannels) -> Option<Vec<f32>> {
+        if self.channels < 2 {
+            return None;
+        }
+        Some(
+            self.interleaved
+                .chunks(self.channels)
+                .flat_map(|f| {
+                    metered_frame(
+                        f.first().copied().unwrap_or(0.0),
+                        f.get(1).copied().unwrap_or(0.0),
+                        mode,
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+/// One processed-pair frame `(l, r)` as the 2-ch BS.1770 meter hears it.
+///
+/// - `Stereo`: `[l, r]` — today's 2-ch power sum.
+/// - `MonoSum`: `[m, m]` with `m = (l + r) / 2` — a mono summing playback rig.
+/// - `LeftOnly`: `[l, l]` — only output 1 is connected.
+///
+/// The mono modes put the ONE signal the rig plays on BOTH meter channels, which is
+/// exactly "metered as mono, plus 10·log10(2) ≈ 3.0103 dB" (BS.1770 sums channel
+/// powers), with the −70 LUFS absolute and −10 LU relative gates applied on that same
+/// shifted scale. So a DUAL-MONO capture (`l == r`) produces the bit-identical meter
+/// input in all three modes — `(a + a) * 0.5 == a` in IEEE arithmetic — and reads
+/// identically; only decorrelated stereo tells the modes apart.
+#[inline]
+fn metered_frame(l: f32, r: f32, mode: PlaybackChannels) -> [f32; 2] {
+    match mode {
+        PlaybackChannels::Stereo => [l, r],
+        PlaybackChannels::MonoSum => {
+            let m = (l + r) * 0.5;
+            [m, m]
+        }
+        PlaybackChannels::LeftOnly => [l, l],
+    }
+}
+
+// ── Playback-channels meter mode ─────────────────────────────────────────────
+// Which output(s) the user's rig actually plays (Settings → Playback → Output), read by
+// every OUTPUT-side measurement hub: `leveller::measure_processed` and the live-LUFS
+// readout below (plus the adaptive `reamp_measure`). Process-global like the live sink
+// above, for the same reason: the hubs sit under dozens of callers with no store access.
+// The persisted value lives in the profiles store; `sync_meter_channels` copies it here at
+// startup and the Settings setter after every successful save. Default Stereo, so an
+// unset process (probe CLI, unit tests) meters exactly as before the setting existed.
+#[cfg(not(test))]
+static METER_CHANNELS: AtomicU8 = AtomicU8::new(0);
+
+// Under `cargo test` the mode is per TEST THREAD: a test that sets a non-stereo mode to
+// prove the hubs read it must not re-meter a parallel test's decorrelated fixture.
+#[cfg(test)]
+thread_local! {
+    static METER_CHANNELS: AtomicU8 = const { AtomicU8::new(0) };
+}
+
+#[cfg(not(test))]
+fn meter_channels_cell<T>(f: impl FnOnce(&AtomicU8) -> T) -> T {
+    f(&METER_CHANNELS)
+}
+
+#[cfg(test)]
+fn meter_channels_cell<T>(f: impl FnOnce(&AtomicU8) -> T) -> T {
+    METER_CHANNELS.with(f)
+}
+
+fn meter_channels_code(mode: PlaybackChannels) -> u8 {
+    match mode {
+        PlaybackChannels::Stereo => 0,
+        PlaybackChannels::MonoSum => 1,
+        PlaybackChannels::LeftOnly => 2,
+    }
+}
+
+/// Set the process-wide playback-channels meter mode (see the section comment).
+pub fn set_meter_channels(mode: PlaybackChannels) {
+    meter_channels_cell(|c| c.store(meter_channels_code(mode), Ordering::SeqCst));
+}
+
+/// The process-wide playback-channels meter mode every output-side hub meters with.
+pub fn meter_channels() -> PlaybackChannels {
+    match meter_channels_cell(|c| c.load(Ordering::SeqCst)) {
+        1 => PlaybackChannels::MonoSum,
+        2 => PlaybackChannels::LeftOnly,
+        _ => PlaybackChannels::Stereo,
+    }
 }
 
 // ── Advisory live-LUFS sink ──────────────────────────────────────────────────
@@ -364,17 +462,25 @@ fn emit_live_lufs(integrated: f64, momentary: f64) {
 /// (`reamp_measure`) so both feed [`IncrementalLoudness`] the SAME
 /// stereo-or-mono-fallback view [`Capture::processed_stereo`] uses for a full
 /// capture — the converging readout must match the final number.
-fn processed_pair_or_mono(new_interleaved: &[f32], in_ch: usize) -> Vec<f32> {
+///
+/// `mode` is the playback-channels meter mode ([`metered_frame`]), so the converging
+/// readout hears the same signal [`Capture::metered_pair`] gives the final measure.
+fn processed_pair_or_mono(
+    new_interleaved: &[f32],
+    in_ch: usize,
+    mode: PlaybackChannels,
+) -> Vec<f32> {
     if in_ch < 2 {
         return new_interleaved.to_vec();
     }
     new_interleaved
         .chunks(in_ch)
         .flat_map(|f| {
-            [
+            metered_frame(
                 f.first().copied().unwrap_or(0.0),
                 f.get(1).copied().unwrap_or(0.0),
-            ]
+                mode,
+            )
         })
         .collect()
 }
@@ -386,6 +492,42 @@ fn incremental_loudness_for(in_ch: usize, sample_rate: u32) -> Result<Incrementa
         IncrementalLoudness::new_stereo(sample_rate)
     } else {
         IncrementalLoudness::new(sample_rate)
+    }
+}
+
+/// The streaming output-side meter both hop loops feed (the live-LUFS readout in
+/// `reamp_capture_real` and the adaptive `reamp_measure`): an [`IncrementalLoudness`]
+/// fed through [`processed_pair_or_mono`] under the playback-channels meter mode, read
+/// ONCE at [`Self::start`] so one capture is never metered under two modes.
+pub(crate) struct PairMeter {
+    inner: IncrementalLoudness,
+    in_ch: usize,
+    mode: PlaybackChannels,
+}
+
+impl PairMeter {
+    /// A fresh meter for an `in_ch`-channel capture at the process-wide
+    /// [`meter_channels`] mode.
+    pub(crate) fn start(in_ch: usize, sample_rate: u32) -> Result<Self, String> {
+        Ok(PairMeter {
+            inner: incremental_loudness_for(in_ch, sample_rate)?,
+            in_ch,
+            mode: meter_channels(),
+        })
+    }
+
+    /// Feed raw `in_ch`-channel interleaved frames.
+    pub(crate) fn add(&mut self, new_interleaved: &[f32]) -> Result<(), String> {
+        self.inner.add(&processed_pair_or_mono(
+            new_interleaved,
+            self.in_ch,
+            self.mode,
+        ))
+    }
+
+    /// The converging gated-integrated loudness so far.
+    pub(crate) fn integrated(&self) -> Result<f64, String> {
+        self.inner.integrated()
     }
 }
 
@@ -1278,7 +1420,7 @@ pub(crate) fn reamp_capture_real(
         let live = live_lufs_active();
         let deadline = Instant::now() + Duration::from_millis(total_ms);
         let mut loud_ch: Option<usize> = None;
-        let mut meter: Option<IncrementalLoudness> = None;
+        let mut meter: Option<PairMeter> = None;
         let mut consumed_frames = 0usize;
         // Decorative per-hop momentary level (plain RMS dB, NOT K-weighted) for the live VU
         // bars — an empty hop re-emits the previous value (the floor before any audio).
@@ -1312,8 +1454,8 @@ pub(crate) fn reamp_capture_real(
                         // meter itself always gets the processed pair (or the mono
                         // fallback), never a single argmax-picked channel.
                         let ch = pick.loudest_channel().0;
-                        if let Ok(mut m) = incremental_loudness_for(in_ch, sample_rate) {
-                            let _ = m.add(&processed_pair_or_mono(&new_interleaved, in_ch));
+                        if let Ok(mut m) = PairMeter::start(in_ch, sample_rate) {
+                            let _ = m.add(&new_interleaved);
                             loud_ch = Some(ch);
                             meter = Some(m);
                             consumed_frames = total_frames;
@@ -1334,7 +1476,7 @@ pub(crate) fn reamp_capture_real(
                         MOMENTARY_FLOOR_DB
                     };
                     if let Some(m) = meter.as_mut() {
-                        let _ = m.add(&processed_pair_or_mono(&new_interleaved, in_ch));
+                        let _ = m.add(&new_interleaved);
                     }
                 }
                 Some(_) => {}
@@ -1541,7 +1683,7 @@ pub fn reamp_measure(
     let preroll_off = (captured.published() / in_ch) * in_ch;
 
     let mut loud_ch: Option<usize> = None;
-    let mut meter: Option<IncrementalLoudness> = None;
+    let mut meter: Option<PairMeter> = None;
     let mut consumed_frames = 0usize;
     let mut tracker = ConvergenceTracker::new(opts.eps_lu, opts.stable_k);
     // Only a run that went the whole window is frame-count checked: a convergence
@@ -1575,8 +1717,8 @@ pub fn reamp_measure(
                         sample_rate,
                     };
                     let ch = pick.loudest_channel().0;
-                    let mut m = incremental_loudness_for(in_ch, sample_rate)?;
-                    m.add(&processed_pair_or_mono(&new_interleaved, in_ch))?; // feed everything captured up to the pick
+                    let mut m = PairMeter::start(in_ch, sample_rate)?;
+                    m.add(&new_interleaved)?; // feed everything captured up to the pick
                     loud_ch = Some(ch);
                     meter = Some(m);
                     consumed_frames = total_frames;
@@ -1588,10 +1730,7 @@ pub fn reamp_measure(
             }
             Some(_) if !new_interleaved.is_empty() => {
                 consumed_frames = total_frames;
-                meter
-                    .as_mut()
-                    .unwrap()
-                    .add(&processed_pair_or_mono(&new_interleaved, in_ch))?;
+                meter.as_mut().unwrap().add(&new_interleaved)?;
             }
             Some(_) => {}
         }

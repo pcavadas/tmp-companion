@@ -35,6 +35,7 @@ import type {
   CalibrateResult,
   Target,
   Store,
+  PlaybackChannels,
   PlaybackLevel,
   TopologyInfo,
   ActiveGraph,
@@ -271,6 +272,11 @@ export const saveTargets = (targets: Target[]): Promise<void> =>
 /** Settings — persist the playback level leveling compensates for. */
 export const setPlaybackLevel = (level: PlaybackLevel): Promise<void> =>
   invokeCommand("set_playback_level", { level });
+
+/** Settings — persist which output(s) the rig plays (the leveling meter follows). */
+export const setPlaybackChannels = (
+  channels: PlaybackChannels,
+): Promise<void> => invokeCommand("set_playback_channels", { channels });
 
 /** Settings — persist the auto-install-updates preference. */
 export const setAutoInstallUpdates = (on: boolean): Promise<void> =>

@@ -504,6 +504,12 @@ export interface Target {
  * get a hotter target (Fletcher–Munson compensation). */
 export type PlaybackLevel = "quiet" | "rehearsal" | "stage";
 
+/** Which output(s) the rig plays — the loudness meter hears the same (mirrors
+ * profiles::PlaybackChannels). Stereo = 2-ch BS.1770 over USB 1/2; mono_sum =
+ * (L+R)/2 as mono +3.0103 dB; left_only = L as mono +3.0103 dB. A dual-mono
+ * preset reads the same in all three. */
+export type PlaybackChannels = "stereo" | "mono_sum" | "left_only";
+
 /** The persisted profile/target store (mirrors profiles::Store). */
 export interface Store {
   profiles: Profile[];
@@ -513,6 +519,8 @@ export interface Store {
   targets: Target[];
   /** Playback loudness the leveling targets are compensated for. */
   playback_level: PlaybackLevel;
+  /** Which output(s) the rig plays; the leveling meter follows it. */
+  playback_channels: PlaybackChannels;
   /** Download + install app updates automatically (Settings toggle). */
   auto_install_updates: boolean;
   /** Meter convention `targets` are expressed in (mirrors

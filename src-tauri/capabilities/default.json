@@ -48,6 +48,7 @@
     "allow-save-support-bundle",
     "allow-save-targets",
     "allow-set-auto-install-updates",
+    "allow-set-playback-channels",
     "allow-set-playback-level",
     "allow-update-song-full"
   ]

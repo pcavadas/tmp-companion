@@ -147,6 +147,41 @@ arm (`probe --doctor`) reports the legacy mono-on-mixdown loudness by design
 measure as the override and does. Don't read the probe arm's unshifted number as a
 regression.
 
+### Playback outputs: stereo / mono (summed) / left output only
+
+The meter above hears both outputs as a stereo pair. A rig that plays the TMP in mono
+(one cab or a mono PA fed L+R) or from output 1 alone hears a different signal whenever a
+preset is genuinely stereo — a ping-pong delay, a wide reverb, a stereo split — so
+Settings → Playback → **Outputs** (`profiles::Store::playback_channels`, default
+`stereo`; a store without the field loads as `stereo`) picks what the leveling meter
+hears:
+
+| Mode        | Meter (`audio::metered_frame`)                                        |
+| ----------- | --------------------------------------------------------------------- |
+| `stereo`    | 2-ch BS.1770 power sum over USB 1/2 — the convention above, unchanged |
+| `mono_sum`  | `(L+R)/2` metered as mono, **+3.0103 dB**                             |
+| `left_only` | `L` metered as mono, **+3.0103 dB**                                   |
+
+The +3.0103 dB is the same `10·log10(2)` as the re-baseline, and it is applied by putting
+the one signal on BOTH meter channels, so the gates run on the same shifted scale. That
+makes a **dual-mono capture read bit-identically in all three modes**: the default and
+every mirrored-mono preset change nothing, and targets mean the same loudness in every
+mode. Only decorrelated stereo differs — uncorrelated equal-power L/R reads 3.01 dB lower
+summed than in stereo, and left-only reads the left side's own level (louder than stereo
+for a left-heavy preset, quieter for a right-heavy one).
+
+The choice is process-wide (`audio::meter_channels`, synced from the store at startup and
+by `set_playback_channels`) and reaches every output-side hub: `leveller::measure_processed`
+(every full-capture leveling measurement) and the streaming `audio::PairMeter` behind the
+live-LUFS readout and the adaptive `reamp_measure`. The external-validation WAV dump
+(`validate_log`, `probe --dump-wav`) writes the pair as the meter heard it, so the ffmpeg
+judge grades the same signal. **The Doctor is unaffected:** its analysis capture pins the
+stereo meter (`leveller::doctor_capture_with_loudness`), and its band/PSD analysis stays on
+the averaged mixdown. The input side (stimulus spread, calibration) never used this meter.
+Gates: `leveller::playback_channels_meter_tests`, `profiles::tests::
+playback_channels_default_stereo_and_round_trip`, `SettingsView.test.tsx` ("playback
+outputs").
+
 ### Parity harness (dev-only, optional)
 
 `scripts/meter-parity.sh` ground-truths the metering convention above against an

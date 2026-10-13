@@ -52,6 +52,7 @@ const storeWith = (auto: boolean): Store => ({
   profile_by_slot: {},
   targets: [],
   playback_level: "stage",
+  playback_channels: "stereo",
   auto_install_updates: auto,
   meter_convention: 1,
 });

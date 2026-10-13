@@ -211,6 +211,8 @@ pub fn run_e2e_server() {
         ))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build e2e mock app");
+    // Same startup sync as `bootstrap::run`: the stored playback-channels meter mode.
+    crate::profiles::sync_meter_channels(app.handle());
     crate::e2e_ui_bridge::listen_events(&app);
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
         .build()

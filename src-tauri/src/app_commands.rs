@@ -28,6 +28,7 @@ macro_rules! with_app_commands {
             settings::save_profiles,
             settings::save_targets,
             settings::set_playback_level,
+            settings::set_playback_channels,
             settings::set_auto_install_updates,
             level_preset::calibrate_profile,
             level_preset::level_preset,

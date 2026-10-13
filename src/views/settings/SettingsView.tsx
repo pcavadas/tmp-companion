@@ -1,10 +1,11 @@
 // src/views/settings/SettingsView.tsx — the Settings tab (loudness targets +
-// playback level + instrument profiles + Tier-2 calibration). The single Settings
+// playback level and outputs + instrument profiles + Tier-2 calibration). The single Settings
 // surface (the old standalone #settings WebviewWindow was removed). Wired to the
 // real backend (no invented commands):
-//   • getStore() → { profiles, targets, playback_level } on mount;
+//   • getStore() → { profiles, targets, playback_level, playback_channels } on mount;
 //     listPickupTopologies() for the Type/Pickup chips + per-row caption.
-//   • saveTargets(next) / saveProfiles(next) / setPlaybackLevel(level) to persist.
+//   • saveTargets(next) / saveProfiles(next) / setPlaybackLevel(level) /
+//     setPlaybackChannels(channels) to persist.
 //   • calibrateProfile(profileId, 8) for the real Tier-2 calibration (the backend
 //     clamps 2..30 and returns the measured K-weighted LUFS). On resolve we re-read
 //     getStore() so the persisted calibration_lufs refreshes the row.
@@ -13,7 +14,7 @@
 // renders only the category rail + detail pane (no AppNav/TabBar here). Layout
 // per design_handoff_settings_rework (direction 1a, macOS System Settings
 // style): a 210px rail of four categories — Loudness targets · Instruments ·
-// Playback level · About & updates — and a right pane showing one category at
+// Playback · About & updates — and a right pane showing one category at
 // a time that scrolls on its own, so a growing list can never push the other
 // sections off-screen.
 //
@@ -30,8 +31,8 @@
 // shows what is actually stored.
 //
 // Split into ./useSettingsStore (load + persistence), ./useTargets, ./TargetsPane,
-// ./InstrumentsPane (+ ./useProfiles), ./PlaybackLevelSection, ./AppUpdatesSection
-// and ./settingsCategories.
+// ./InstrumentsPane (+ ./useProfiles), ./PlaybackLevelSection,
+// ./PlaybackChannelsSection, ./AppUpdatesSection and ./settingsCategories.
 
 import { useState } from "react";
 
@@ -42,6 +43,7 @@ import { ActionBar } from "../../ui/ActionBar";
 import { AlertBanner, Button } from "../../ui/primitives";
 import type { UpdaterApi } from "../../lib/useUpdater";
 import { PlaybackLevelSection } from "./PlaybackLevelSection";
+import { PlaybackChannelsSection } from "./PlaybackChannelsSection";
 import { AppUpdatesSection } from "./AppUpdatesSection";
 import { EmptyHint } from "./EmptyHint";
 import { InstrumentsPane } from "./InstrumentsPane";
@@ -238,6 +240,14 @@ export function SettingsView({
                   Your ears hear less bass at low volume. So at quiet and
                   rehearsal levels, bass presets get a small boost to sound as
                   full as they do on stage.
+                </div>
+                <div style={{ marginTop: t.space12 }}>
+                  <PlaybackChannelsSection
+                    value={store.channels}
+                    onChange={(next) => {
+                      void store.persistChannels(next);
+                    }}
+                  />
                 </div>
               </div>
             )}

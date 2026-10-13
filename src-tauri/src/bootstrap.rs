@@ -302,6 +302,9 @@ pub fn run() {
             // via the pause-then-ack protocol inside `lock_device_op`, and only opens
             // HID while `AppState.session` is None.
             monitor::spawn(app.handle().clone(), session);
+            // The persisted playback-channels choice → the meter every output-side
+            // measurement hub reads (Settings updates it on change).
+            crate::profiles::sync_meter_channels(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())

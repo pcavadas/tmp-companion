@@ -1,5 +1,6 @@
 // src/views/settings/useSettingsStore.ts — the Settings tab's persisted data: the
-// store (profiles, loudness targets, playback level) and the pickup topologies.
+// store (profiles, loudness targets, playback level and outputs) and the pickup
+// topologies.
 //
 // Load and save are never silent. The store and the pickup topologies load together
 // into a loading | error | ready state: nothing that edits a list is offered until it
@@ -16,10 +17,12 @@ import {
   listPickupTopologies,
   saveProfiles,
   saveTargets,
+  setPlaybackChannels,
   setPlaybackLevel,
 } from "../../lib/invoke";
 import { errMsg } from "../../lib/format";
 import type {
+  PlaybackChannels,
   PlaybackLevel,
   Profile,
   Store,
@@ -49,6 +52,7 @@ export interface SettingsStore {
   profiles: Profile[];
   targets: UiTarget[];
   playback: PlaybackLevel;
+  channels: PlaybackChannels;
   topologies: TopologyInfo[];
   /** A fresh transient target uid. Call it from an event handler, never in render. */
   newUid: () => string;
@@ -57,6 +61,7 @@ export interface SettingsStore {
   persistTargets: (next: UiTarget[]) => Promise<void>;
   persistProfiles: (next: Profile[]) => Promise<void>;
   persistPlayback: (level: PlaybackLevel) => Promise<void>;
+  persistChannels: (next: PlaybackChannels) => Promise<void>;
   /** Re-read the profiles after a calibration (its result is already saved). */
   refreshFromStore: () => Promise<void>;
 }
@@ -65,6 +70,7 @@ export function useSettingsStore(): SettingsStore {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [targets, setTargets] = useState<UiTarget[]>([]);
   const [playback, setPlayback] = useState<PlaybackLevel>("stage");
+  const [channels, setChannels] = useState<PlaybackChannels>("stereo");
   const [topologies, setTopologies] = useState<TopologyInfo[]>([]);
   const [load, setLoad] = useState<LoadState>({ kind: "loading" });
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -102,6 +108,7 @@ export function useSettingsStore(): SettingsStore {
           })),
         );
         setPlayback(store.playback_level);
+        setChannels(store.playback_channels);
         setTopologies(tp);
         setLoad({ kind: "ready" });
       })
@@ -162,6 +169,17 @@ export function useSettingsStore(): SettingsStore {
     }
   }
 
+  async function persistChannels(next: PlaybackChannels) {
+    setChannels(next);
+    saveSeqRef.current++;
+    try {
+      await setPlaybackChannels(next);
+      setSaveError(null);
+    } catch (e) {
+      saveFailed("outputs", e);
+    }
+  }
+
   // After a real calibration resolves, re-read the store so the persisted
   // calibration_lufs shows on the row. A failed re-read keeps the current rows:
   // the calibration itself already succeeded and was saved by the backend.
@@ -182,12 +200,14 @@ export function useSettingsStore(): SettingsStore {
     profiles,
     targets,
     playback,
+    channels,
     topologies,
     newUid,
     setTargets,
     persistTargets,
     persistProfiles,
     persistPlayback,
+    persistChannels,
     refreshFromStore,
   };
 }

@@ -42,6 +42,7 @@ import {
   getStore,
   saveProfiles,
   saveTargets,
+  setPlaybackChannels,
   setPlaybackLevel,
   listPickupTopologies,
   readActivePreset,
@@ -516,7 +517,7 @@ describe("the remaining wrappers", () => {
     expectCall("list_level_blocks", { slot: 7 });
   });
 
-  it("save_profiles / save_targets / set_playback_level wrap their payload", async () => {
+  it("save_profiles / save_targets / set_playback_level / set_playback_channels wrap their payload", async () => {
     const profiles = [
       { id: "p1", name: "Strat", topology_id: "sc", calibration_lufs: null },
     ];
@@ -529,6 +530,9 @@ describe("the remaining wrappers", () => {
     invokeMock.mockClear();
     await setPlaybackLevel("quiet");
     expectCall("set_playback_level", { level: "quiet" });
+    invokeMock.mockClear();
+    await setPlaybackChannels("mono_sum");
+    expectCall("set_playback_channels", { channels: "mono_sum" });
   });
 
   it("copy_apply passes jobs + save with a progress channel", async () => {

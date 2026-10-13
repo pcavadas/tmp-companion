@@ -130,18 +130,34 @@ fn write_wav(
 /// call with the same slot/scene (the same caller-built label) OVERWRITES the prior
 /// dump. A caller wanting to keep every take (e.g. a same-day A/B) must vary `label`
 /// itself (a timestamp suffix).
+///
+/// The pair is written as the meter HEARD it (`Capture::metered_pair` under the
+/// process-wide playback-channels mode, `audio::meter_channels` — stereo by default),
+/// so an external 2-ch judge grades exactly the signal `leveller::measure_processed`
+/// measured; [`dump_metered_capture`] takes the mode explicitly.
 pub(crate) fn dump_processed_capture(
     cap: &audio::Capture,
     dir: &str,
     label: &str,
+) -> Result<String, String> {
+    dump_metered_capture(cap, dir, label, audio::meter_channels())
+}
+
+/// [`dump_processed_capture`] under an explicit playback-channels `mode` (the Doctor's
+/// seam pins `Stereo`, matching its own pinned meter).
+pub(crate) fn dump_metered_capture(
+    cap: &audio::Capture,
+    dir: &str,
+    label: &str,
+    mode: crate::profiles::PlaybackChannels,
 ) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create dir {dir}: {e}"))?;
     let path = std::path::Path::new(dir)
         .join(format!("{label}.wav"))
         .to_string_lossy()
         .into_owned();
-    match cap.processed_stereo() {
-        Some(stereo) => write_wav_stereo(&path, &stereo, cap.sample_rate)?,
+    match cap.metered_pair(mode) {
+        Some(pair) => write_wav_stereo(&path, &pair, cap.sample_rate)?,
         None => write_wav_mono(&path, &cap.channel(0), cap.sample_rate)?,
     }
     Ok(path)
@@ -1518,8 +1534,9 @@ mod measure_wav_auto_tests {
 
 #[cfg(test)]
 mod dump_processed_capture_tests {
-    use super::dump_processed_capture;
+    use super::{dump_metered_capture, dump_processed_capture};
     use crate::audio::Capture;
+    use crate::profiles::PlaybackChannels;
 
     #[test]
     fn stereo_capture_dumps_the_processed_pair_and_drops_the_dry_channel() {
@@ -1542,6 +1559,32 @@ mod dump_processed_capture_tests {
         assert!((samples[1] - 0.4).abs() < 1e-6);
         assert!((samples[2] - 0.5).abs() < 1e-6);
         assert!((samples[3] - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dump_writes_the_pair_as_the_meter_heard_it() {
+        // The external judge must grade the signal `measure_processed` metered: under a
+        // mono playback mode the dump carries that mono signal on both channels.
+        let cap = Capture {
+            interleaved: vec![1.0, 0.4, 0.0, 0.5, 0.2, 0.0],
+            channels: 3,
+            sample_rate: 48_000,
+        };
+        let dir = std::env::temp_dir()
+            .join(format!("tmp-dump-metered-{}", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        let mono = dump_metered_capture(&cap, &dir, "mono", PlaybackChannels::MonoSum).unwrap();
+        let left = dump_metered_capture(&cap, &dir, "left", PlaybackChannels::LeftOnly).unwrap();
+        let (m, _, mch) = super::read_wav_interleaved(&mono).unwrap();
+        let (l, _, lch) = super::read_wav_interleaved(&left).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!((mch, lch), (2, 2));
+        assert_eq!(m.len(), 4);
+        for (got, want) in m.iter().zip([0.7, 0.7, 0.35, 0.35]) {
+            assert!((got - want).abs() < 1e-6, "mono-sum dump {m:?}");
+        }
+        assert_eq!(l, vec![1.0, 1.0, 0.5, 0.5]);
     }
 
     #[test]

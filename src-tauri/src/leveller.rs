@@ -1148,7 +1148,9 @@ pub fn doctor_capture_with_loudness(
     )?;
     let samples = cap.stereo_mix();
     let sample_rate = cap.sample_rate;
-    let loudness = measure_processed(&cap)?;
+    // The Doctor diagnoses the preset's own stereo output: pinned to the stereo meter,
+    // whatever the Settings playback-channels choice (that choice is a LEVELING meter).
+    let loudness = measure_processed_as(&cap, crate::profiles::PlaybackChannels::Stereo)?;
     if let Some(row) = validate {
         crate::validate_log::emit_doctor(row, &cap, &loudness);
     }
@@ -2861,19 +2863,147 @@ pub(crate) fn is_engaged(l: &lufs::Loudness) -> bool {
 }
 
 /// The metering convention shared by every OUTPUT-side measurement hub in this
-/// module: 2-ch BS.1770 over the processed USB pair (`Capture::processed_stereo`),
-/// falling back to [`lufs::measure_mono`] on channel 0 for a genuinely 1-channel
-/// capture (never duplicating it into fake dual-mono — see `processed_stereo`'s
-/// doc). The INPUT/stimulus side (`stimulus_spread_lu`, calibration, etc.) never
-/// calls this — it stays on `measure_mono` directly. `pub(crate)` so a probe
-/// diagnostic headline can share the exact production convention instead of a
-/// parallel per-channel re-check (`probe_api::level::probe_measure_current_lufs`).
+/// module: 2-ch BS.1770 over the processed USB pair as the user's rig plays it
+/// (`Capture::metered_pair` under the Settings playback-channels choice,
+/// `audio::meter_channels` — stereo by default), falling back to
+/// [`lufs::measure_mono`] on channel 0 for a genuinely 1-channel capture (never
+/// duplicating it into fake dual-mono — see `processed_stereo`'s doc). The
+/// INPUT/stimulus side (`stimulus_spread_lu`, calibration, etc.) never calls this —
+/// it stays on `measure_mono` directly. `pub(crate)` so a probe diagnostic headline
+/// can share the exact production convention instead of a parallel per-channel
+/// re-check (`probe_api::level::probe_measure_current_lufs`).
 pub(crate) fn measure_processed(cap: &audio::Capture) -> Result<lufs::Loudness, LevelError> {
+    measure_processed_as(cap, audio::meter_channels())
+}
+
+/// [`measure_processed`] under an explicit playback-channels mode — for the one
+/// caller that must NOT follow the setting (the Doctor's analysis capture pins
+/// `Stereo`) and for tests.
+pub(crate) fn measure_processed_as(
+    cap: &audio::Capture,
+    mode: crate::profiles::PlaybackChannels,
+) -> Result<lufs::Loudness, LevelError> {
     let sample_rate = cap.sample_rate;
-    Ok(match cap.processed_stereo() {
-        Some(stereo) => lufs::measure_stereo(&stereo, sample_rate),
+    Ok(match cap.metered_pair(mode) {
+        Some(pair) => lufs::measure_stereo(&pair, sample_rate),
         None => lufs::measure_mono(&cap.channel(0), sample_rate),
     }?)
+}
+
+#[cfg(test)]
+mod playback_channels_meter_tests {
+    use super::*;
+    use crate::profiles::PlaybackChannels::{self, LeftOnly, MonoSum, Stereo};
+
+    const SR: u32 = 48_000;
+
+    /// A 4-channel TMP-shaped capture (USB-Out 1/2 processed, 3 = dry DI, 4 = idle)
+    /// of `secs` of `l(i)`/`r(i)`, with a loud dry channel the meter must ignore.
+    fn capture(secs: f32, l: impl Fn(f32) -> f32, r: impl Fn(f32) -> f32) -> audio::Capture {
+        let n = (secs * SR as f32) as usize;
+        let mut interleaved = Vec::with_capacity(n * 4);
+        for i in 0..n {
+            let t = i as f32 / SR as f32;
+            interleaved.extend_from_slice(&[l(t), r(t), 0.9, 0.0]);
+        }
+        audio::Capture {
+            interleaved,
+            channels: 4,
+            sample_rate: SR,
+        }
+    }
+
+    /// A plucked-ish 220 Hz note train: decaying bursts, so the gates and the momentary
+    /// spread see real dynamics, not a stationary tone.
+    fn plucks(t: f32) -> f32 {
+        let phase = t % 0.5;
+        0.3 * (-6.0 * phase).exp() * (std::f32::consts::TAU * 220.0 * t).sin()
+    }
+
+    fn lufs_of(cap: &audio::Capture, mode: PlaybackChannels) -> f64 {
+        measure_processed_as(cap, mode).unwrap().integrated_lufs
+    }
+
+    #[test]
+    fn dual_mono_reads_identically_in_every_mode() {
+        let cap = capture(4.0, plucks, plucks);
+        let stereo = measure_processed_as(&cap, Stereo).unwrap();
+        for mode in [MonoSum, LeftOnly] {
+            let m = measure_processed_as(&cap, mode).unwrap();
+            assert_eq!(m.integrated_lufs, stereo.integrated_lufs, "{mode:?}");
+            assert_eq!(
+                m.momentary_spread_lu, stereo.momentary_spread_lu,
+                "{mode:?}"
+            );
+        }
+        // …and each mono mode is exactly "L metered as mono, +3.0103 dB".
+        let mono = lufs::measure_mono(&cap.channel(0), SR)
+            .unwrap()
+            .integrated_lufs;
+        assert!((stereo.integrated_lufs - (mono + 3.0103)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn decorrelated_stereo_shows_the_mono_sum_and_left_only_differences() {
+        // L and R in QUADRATURE at one frequency: orthogonal (zero correlation), same
+        // K-weighting gain, steady — so the expected offsets are closed-form.
+        // stereo ∝ a² + b²; mono sum ∝ 2·((a² + b²)/4); left only ∝ 2·a².
+        let (a, b) = (0.2_f32, 0.1_f32);
+        let w = std::f32::consts::TAU * 1000.0;
+        let cap = capture(4.0, |t| a * (w * t).sin(), |t| b * (w * t).cos());
+        let stereo = lufs_of(&cap, Stereo);
+        let mono_sum = lufs_of(&cap, MonoSum);
+        let left = lufs_of(&cap, LeftOnly);
+        let (a2, b2) = (f64::from(a * a), f64::from(b * b));
+        assert!(
+            (mono_sum - (stereo - 3.0103)).abs() < 0.02,
+            "uncorrelated L/R lose 3 dB when summed: stereo {stereo:.3}, mono sum {mono_sum:.3}"
+        );
+        let want_left = stereo + 10.0 * (2.0 * a2 / (a2 + b2)).log10(); // +2.04 dB
+        assert!(
+            (left - want_left).abs() < 0.02,
+            "left only {left:.3}, want {want_left:.3} (stereo {stereo:.3})"
+        );
+        // A right-heavy preset reads QUIETER left-only than in stereo.
+        let swapped = capture(4.0, |t| b * (w * t).cos(), |t| a * (w * t).sin());
+        assert!(lufs_of(&swapped, LeftOnly) < lufs_of(&swapped, Stereo) - 3.0);
+    }
+
+    #[test]
+    fn the_stored_setting_reaches_both_output_side_hubs() {
+        // Ping-pong-ish: the note on the left, a quieter copy delayed on the right.
+        let cap = capture(4.0, plucks, |t| 0.4 * plucks((t - 0.25).max(0.0)));
+        let mut store = crate::profiles::Store::default();
+        assert_eq!(store.playback_channels, Stereo, "default is stereo");
+        for mode in [Stereo, MonoSum, LeftOnly] {
+            store.playback_channels = mode;
+            crate::profiles::apply_meter_channels(&store);
+            assert_eq!(audio::meter_channels(), mode);
+            let want = lufs_of(&cap, mode);
+            // Hub 1: the full-capture leveling meter.
+            assert_eq!(
+                measure_processed(&cap).unwrap().integrated_lufs,
+                want,
+                "{mode:?}"
+            );
+            // Hub 2: the streaming meter behind the live-LUFS readout (and the adaptive
+            // measure), fed the RAW 4-channel frames in hops as the capture loop does.
+            let mut live = audio::PairMeter::start(4, SR).unwrap();
+            for hop in cap.interleaved.chunks(4 * SR as usize / 5) {
+                live.add(hop).unwrap();
+            }
+            let got = live.integrated().unwrap();
+            assert!(
+                (got - want).abs() < 0.01,
+                "{mode:?}: live {got:.4} vs full {want:.4}"
+            );
+        }
+        // The three modes really differ on this capture, so the checks above can fail.
+        assert!((lufs_of(&cap, Stereo) - lufs_of(&cap, MonoSum)).abs() > 0.3);
+        assert!((lufs_of(&cap, Stereo) - lufs_of(&cap, LeftOnly)).abs() > 0.3);
+        crate::profiles::apply_meter_channels(&crate::profiles::Store::default());
+        assert_eq!(audio::meter_channels(), Stereo);
+    }
 }
 
 /// Engage re-amp on `s` (latching the already-set knob/scene), settle, capture the
