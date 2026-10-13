@@ -299,8 +299,11 @@ pub enum SimEvent {
 }
 
 /// Every request kind (`(tms, inner)`) the offline suite sends that the fake answers with
-/// nothing — the census. A kind outside it is REPORTED (`/sim/state`'s `unhandled_new`),
-/// not failed. Each entry names why it is unanswered and who models it.
+/// nothing — the census. A kind outside it is listed on `/sim/state` (`unhandled_new`) and
+/// FAILS the test that sent it (#279): the Playwright `page` fixture's teardown and the
+/// `e2e_server_tests` `serial()` guard both check, so a new request production starts
+/// sending is either modelled here or added to this list with its reason. A test that
+/// sends one on purpose opts in for that kind alone (`Serial::allow_unmodeled`).
 pub(crate) const UNHANDLED_CENSUS: &[(u32, u32)] = &[
     // Handshake burst (`Session::connect`) requests the fake does not model.
     (4, 1),  // connectionRequest
@@ -2400,6 +2403,26 @@ static LIVE: Mutex<Option<SimDevice>> = Mutex::new(None);
 #[cfg(feature = "e2e")]
 pub fn set_live(dev: &SimDevice) {
     *LIVE.lock().expect("sim live lock") = Some(dev.clone());
+}
+
+/// The kinds the current fake answered with nothing that are outside
+/// [`UNHANDLED_CENSUS`], deduplicated, in first-seen order (empty when no fake is installed).
+#[cfg(all(test, feature = "e2e"))]
+pub fn live_unmodeled() -> Vec<(u32, u32)> {
+    let live = LIVE.lock().expect("sim live lock");
+    let Some(dev) = live.as_ref() else {
+        return Vec::new();
+    };
+    let st = dev.state.lock().expect("sim lock");
+    let mut out = Vec::new();
+    for e in &st.unhandled {
+        if let SimEvent::Unhandled { tms, inner, .. } = *e {
+            if !in_census(tms, inner) && !out.contains(&(tms, inner)) {
+                out.push((tms, inner));
+            }
+        }
+    }
+    out
 }
 
 /// The current fake's ordered event log (empty when no fake is installed).
@@ -5229,6 +5252,26 @@ mod oracle_and_census_tests {
             .iter()
             .skip(before.len())
             .any(|e| matches!(e, SimEvent::Unhandled { .. })));
+    }
+
+    #[test]
+    fn an_unknown_preset_field_is_recorded_as_unhandled_and_is_outside_the_census() {
+        let sim = SimDevice::new();
+        // presetMessage(2) carrying a field no handler knows: the final preset fallback.
+        let body = proto::len_delimited(2, &proto::len_delimited(999, &[]));
+        assert!(
+            sim.receive(&body).is_empty(),
+            "an unmodelled request gets no reply"
+        );
+        assert_eq!(
+            sim.unhandled(),
+            vec![SimEvent::Unhandled {
+                tms: 2,
+                inner: 999,
+                batch: None
+            }]
+        );
+        assert!(!in_census(2, 999));
     }
 
     #[test]

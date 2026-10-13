@@ -1,4 +1,4 @@
-import { test as base } from "@playwright/test";
+import { expect, test as base } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import { PARALLEL_INDEX, PORT, SERVER } from "./port";
 
@@ -34,7 +34,22 @@ export const test = base.extend({
     await page.addInitScript(`window.__E2E_PORT__ = ${JSON.stringify(PORT)};`);
     await page.addInitScript({ path: BRIDGE });
     await use(page);
+    // #279: a request the offline fake does not model is answered with nothing, so a new
+    // product request would otherwise pass here without ever being exercised. Every kind
+    // outside the fake's census fails the test that sent it (online: nothing to check).
+    const res = await fetch(`${SERVER}/sim/state`).catch(() => null);
+    if (res?.ok !== true) return;
+    const state = (await res.json()) as {
+      online?: boolean;
+      unhandled_new?: string[];
+    };
+    if (state.online === true) return;
+    expect(
+      state.unhandled_new ?? [],
+      "the offline fake answered request kinds it does not model (tms.inner); model them " +
+        "in sim_device.rs or add them to UNHANDLED_CENSUS with the reason",
+    ).toEqual([]);
   },
 });
 
-export { expect } from "@playwright/test";
+export { expect };
