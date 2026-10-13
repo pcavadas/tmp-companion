@@ -241,6 +241,27 @@ test.describe("Doctor apply/save/discard — one-off HW validation", () => {
       ids(afterSave.filter((n) => n.model !== EQ)),
       "the save changed nothing but the inserted EQ",
     ).toEqual(ids(saved1));
+    // ...and every one of those blocks kept its bypass state and every parameter value
+    // (a float tolerance, since the stored row round-trips each value through the device).
+    afterSave
+      .filter((n) => n.model !== EQ)
+      .forEach((n, i) => {
+        const was = saved1[i];
+        const where = `${n.group_id}/${n.node_id}`;
+        expect(n.bypassed, `${where}: bypass unchanged by the save`).toBe(
+          was.bypassed,
+        );
+        expect(
+          Object.keys(n.params).sort(),
+          `${where}: the same parameters after the save`,
+        ).toEqual(Object.keys(was.params).sort());
+        for (const [k, v] of Object.entries(was.params)) {
+          expect(
+            n.params[k],
+            `${where}.${k} unchanged by the save`,
+          ).toBeCloseTo(v, 4);
+        }
+      });
 
     // (3) APPLY on t2, then DISCARD: the working copy goes back to the pre-apply stored
     // chain, and the stored row never changed.

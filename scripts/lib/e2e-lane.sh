@@ -134,7 +134,7 @@ lane_external_validation() {
     fail="$rows expectation row(s) were emitted, expected exactly $want_rows"
   fi
   for l in $labels; do
-    if ! grep -q "\"label\":\"$l\"" "$log" 2>/dev/null; then
+    if ! grep -qF "\"label\":\"$l\"" "$log" 2>/dev/null; then
       fail="${fail:+$fail; }no expectation row for $l (its re-measure emitted nothing)"
     fi
   done
