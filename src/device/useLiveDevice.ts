@@ -21,21 +21,9 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
-import {
-  onLivePreset,
-  onLiveScene,
-  onSceneList,
-  onSignalChain,
-  onSync,
-} from "../lib/liveEvents";
+import { onLive } from "../lib/liveEvents";
 import { isTauri } from "../lib/invoke";
-import type {
-  ActiveGraph,
-  LivePresetEvent,
-  LiveSceneEvent,
-  SceneListRow,
-  SyncEvent,
-} from "../lib/types";
+import type { ActiveGraph, SceneListRow } from "../lib/types";
 
 /** The active preset's live scene, classified base-vs-FS by the backend. `key` is
  * `"base"` (the preset default) or the FS-scene index; `name` may be null when the
@@ -137,7 +125,7 @@ function startBridgeOnce(): void {
   if (bridgeStarted || !isTauri()) return; // inert under Vitest/jsdom (no bridge)
   bridgeStarted = true;
   bridgeUnlisten = [
-    onLivePreset((e: LivePresetEvent) => {
+    onLive("livePreset", (e) => {
       setLive({
         ...liveState,
         activeListIndex: e.listIndex,
@@ -147,20 +135,20 @@ function startBridgeOnce(): void {
         presetNonce: liveState.presetNonce + 1,
       });
     }),
-    onLiveScene((e: LiveSceneEvent) => {
+    onLive("liveScene", (e) => {
       setLive({
         ...liveState,
         liveScene: { key: e.key, name: e.name },
         sceneNonce: liveState.sceneNonce + 1,
       });
     }),
-    onSceneList((e) => {
+    onLive("sceneList", (e) => {
       setLive({ ...liveState, scenes: e.scenes });
     }),
-    onSignalChain((g) => {
+    onLive("signalChain", (g) => {
       setLive({ ...liveState, graph: g });
     }),
-    onSync((e: SyncEvent) => {
+    onLive("sync", (e) => {
       setLive({ ...liveState, syncing: e.syncing });
     }),
   ];

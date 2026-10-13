@@ -2,14 +2,14 @@
 //
 // Doctor listens differently for a bass than a bright single-coil, so this step
 // sets the INSTRUMENT context per sound before the check, with an apply-to brush
-// (bulk Pick + per-row tick scoping + "Clear ticks") and full-page chrome like the
-// Level wizard's `LevelPage`: the page provides its OWN ref as DialogCardCtx so the
-// Pick dropdowns portal into THIS page's coordinate space.
+// (bulk Pick + per-row tick scoping + "Clear ticks") on the shared full-page frame
+// (`WizardPage`, Doctor rail + Back): the page provides its OWN ref as DialogCardCtx
+// so the Pick dropdowns portal into THIS page's coordinate space.
 //
 // Everything picked in the list WILL be checked — this step never re-gates it.
 // Per-row default = the slot's saved profile → the last-used instrument → None.
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
@@ -17,8 +17,8 @@ import { SetupGroupHeader } from "../../ui/SetupGroupHeader";
 import { PresetOptionRow } from "../../ui/PresetOptionRow";
 import { ApplyToBar } from "../../ui/ApplyToBar";
 import { usePickedRows } from "../../lib/usePickedRows";
-import { StepRail, WizardFooter, WizTitle } from "../overlays/WizardShell";
-import { DialogCardCtx } from "../overlays/wizardContext";
+import { WizardFooter, WizTitle } from "../overlays/WizardShell";
+import { WizardPage } from "../overlays/WizardPage";
 import { Pick, type PickOption } from "../overlays/Pick";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
 import { NO_INSTRUMENT, type SetupOption } from "../level/leveling";
@@ -65,7 +65,6 @@ export function DoctorSetup({
   onRun,
 }: DoctorSetupProps) {
   const { t } = useTheme();
-  const pageRef = useRef<HTMLDivElement>(null);
 
   const groups = useMemo(() => {
     const by = new Map<
@@ -134,173 +133,129 @@ export function DoctorSetup({
   };
 
   return (
-    <div
-      ref={pageRef}
-      style={{
-        position: "absolute",
-        inset: 0,
-        zIndex: 40,
-        display: "flex",
-        flexDirection: "column",
-        background: t.bg,
-        color: t.ink,
-        fontFamily: t.sans,
-      }}
-    >
-      {/* slim step-rail header — Back link + the Doctor rail (current 0) */}
+    <WizardPage steps={DOCTOR_STEPS} current={0} back={onBack}>
+      {/* title block */}
       <div
         style={{
           flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          gap: t.space8,
-          padding: `${String(t.space6)}px ${String(t.space10)}px`,
+          padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space7)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
-          background: t.bgAlt,
         }}
       >
-        <Button
-          variant="bare"
-          onClick={onBack}
+        <WizTitle>What are you playing?</WizTitle>
+        <div
           style={{
             fontFamily: t.sans,
-            fontSize: t.fsLabel,
+            fontSize: t.fsBody2,
+            lineHeight: 1.5,
             color: t.mutedInk,
-            whiteSpace: "nowrap",
-            flexShrink: 0,
+            marginTop: t.space4,
+            maxWidth: 620,
           }}
         >
-          Back
-        </Button>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <StepRail current={0} steps={DOCTOR_STEPS} />
+          Pick the instrument for each sound so the check is accurate — {total}{" "}
+          sound
+          {total === 1 ? "" : "s"} · {presetCount} preset
+          {presetCount === 1 ? "" : "s"}.
         </div>
       </div>
 
-      <DialogCardCtx.Provider value={pageRef}>
-        {/* title block */}
-        <div
-          style={{
-            flexShrink: 0,
-            padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space7)}px`,
-            borderBottom: `0.5px solid ${t.hairline}`,
-          }}
-        >
-          <WizTitle>What are you playing?</WizTitle>
+      {/* apply-to bar — writes to all rows, or to the ticked rows */}
+      <ApplyToBar
+        label={`Instrument for ${scopeLabel}`}
+        somePicked={somePicked}
+        onClear={clearPicked}
+      >
+        <div style={{ maxWidth: 260 }}>
+          <Pick
+            grow
+            value={bulkInst}
+            options={instrumentOptions}
+            onChange={applyBulkInst}
+          />
+        </div>
+      </ApplyToBar>
+
+      {/* every sound that will be checked — set any row directly, or tick for bulk */}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          padding: `${String(t.space3)}px 0`,
+        }}
+      >
+        {groups.map((g) => (
           <div
+            key={g.slot}
+            style={{
+              padding: `${String(t.space5)}px ${String(t.space10)}px ${String(t.space6)}px`,
+            }}
+          >
+            <SetupGroupHeader slot={g.slot} name={g.name} />
+            {g.opts.map((o) => {
+              const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
+              // `chosenFrom` already resolves the base row's own label to "Base
+              // Preset" (hasScenes) or "Whole preset" (a scene-less preset) — a
+              // hardcoded "Whole preset" here silently relabeled every multi-scene
+              // preset's base row (issue 2, BUG→GATE).
+              const nameLabel = o.sceneName;
+              return (
+                <PresetOptionRow
+                  key={o.key}
+                  name={nameLabel}
+                  tag={tag ?? undefined}
+                  isBase={o.isBase}
+                  isPicked={picked.has(o.key)}
+                  onTogglePick={() => {
+                    togglePick(o.key);
+                  }}
+                  title="Tick this row to set it from the bar above"
+                  columns="200px"
+                >
+                  <Pick
+                    grow
+                    tid={`inst:${o.key}`}
+                    value={rowInst[o.key] ?? NO_INSTRUMENT}
+                    options={instrumentOptions}
+                    onChange={(v) => {
+                      setOneInst(o.key, v);
+                    }}
+                  />
+                </PresetOptionRow>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      <WizardFooter
+        left={
+          <span
             style={{
               fontFamily: t.sans,
               fontSize: t.fsBody2,
-              lineHeight: 1.5,
-              color: t.mutedInk,
-              marginTop: t.space4,
-              maxWidth: 620,
+              color: anyNone ? t.mutedInk : t.good,
             }}
           >
-            Pick the instrument for each sound so the check is accurate —{" "}
-            {total} sound
-            {total === 1 ? "" : "s"} · {presetCount} preset
-            {presetCount === 1 ? "" : "s"}.
-          </div>
-        </div>
-
-        {/* apply-to bar — writes to all rows, or to the ticked rows */}
-        <ApplyToBar
-          label={`Instrument for ${scopeLabel}`}
-          somePicked={somePicked}
-          onClear={clearPicked}
-        >
-          <div style={{ maxWidth: 260 }}>
-            <Pick
-              grow
-              value={bulkInst}
-              options={instrumentOptions}
-              onChange={applyBulkInst}
-            />
-          </div>
-        </ApplyToBar>
-
-        {/* every sound that will be checked — set any row directly, or tick for bulk */}
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: "auto",
-            padding: `${String(t.space3)}px 0`,
-          }}
-        >
-          {groups.map((g) => (
-            <div
-              key={g.slot}
-              style={{
-                padding: `${String(t.space5)}px ${String(t.space10)}px ${String(t.space6)}px`,
-              }}
-            >
-              <SetupGroupHeader slot={g.slot} name={g.name} />
-              {g.opts.map((o) => {
-                const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
-                // `chosenFrom` already resolves the base row's own label to "Base
-                // Preset" (hasScenes) or "Whole preset" (a scene-less preset) — a
-                // hardcoded "Whole preset" here silently relabeled every multi-scene
-                // preset's base row (issue 2, BUG→GATE).
-                const nameLabel = o.sceneName;
-                return (
-                  <PresetOptionRow
-                    key={o.key}
-                    name={nameLabel}
-                    tag={tag ?? undefined}
-                    isBase={o.isBase}
-                    isPicked={picked.has(o.key)}
-                    onTogglePick={() => {
-                      togglePick(o.key);
-                    }}
-                    title="Tick this row to set it from the bar above"
-                    columns="200px"
-                  >
-                    <Pick
-                      grow
-                      tid={`inst:${o.key}`}
-                      value={rowInst[o.key] ?? NO_INSTRUMENT}
-                      options={instrumentOptions}
-                      onChange={(v) => {
-                        setOneInst(o.key, v);
-                      }}
-                    />
-                  </PresetOptionRow>
-                );
-              })}
-            </div>
-          ))}
-        </div>
-
-        <WizardFooter
-          left={
-            <span
-              style={{
-                fontFamily: t.sans,
-                fontSize: t.fsBody2,
-                color: anyNone ? t.mutedInk : t.good,
-              }}
-            >
-              {anyNone
-                ? "Set an instrument for a better check."
-                : `Ready to check ${String(total)} sound${total === 1 ? "" : "s"}.`}
-            </span>
-          }
-          right={
-            <Button
-              variant="primary"
-              size="sm"
-              icon="wave"
-              disabled={total === 0}
-              onClick={run}
-              style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
-            >
-              {`Run check on ${String(total)} sound${total === 1 ? "" : "s"}`}
-            </Button>
-          }
-        />
-      </DialogCardCtx.Provider>
-    </div>
+            {anyNone
+              ? "Set an instrument for a better check."
+              : `Ready to check ${String(total)} sound${total === 1 ? "" : "s"}.`}
+          </span>
+        }
+        right={
+          <Button
+            variant="primary"
+            size="sm"
+            icon="wave"
+            disabled={total === 0}
+            onClick={run}
+            style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
+          >
+            {`Run check on ${String(total)} sound${total === 1 ? "" : "s"}`}
+          </Button>
+        }
+      />
+    </WizardPage>
   );
 }

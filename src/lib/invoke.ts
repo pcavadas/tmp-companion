@@ -315,7 +315,7 @@ export const currentGraph = (): Promise<ActiveGraph | null> =>
 /** Presets two-phase load — read the WHOLE user library (every preset + its scenes)
  * from one device backup (~22 s). DEVICE READ, non-destructive, persists nothing
  * (archive in RAM, temp DB dropped). Emits `tmp://backup-progress` as it streams
- * (subscribe via `onBackupProgress` to drive the scan strip). */
+ * (subscribe via `onLive("backupProgress", …)` to drive the scan strip). */
 export const readLibraryViaBackup = (): Promise<BackupReadResult> =>
   invokeCommand("read_library_via_backup");
 

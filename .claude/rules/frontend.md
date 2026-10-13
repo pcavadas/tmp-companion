@@ -26,7 +26,7 @@ Serialized Rust structs have hand-written TS mirrors in `src/lib/types.ts`, and 
 
 - Adding/removing a command = its `Commands` entry + its wrapper + its `DEFAULT_HANDLERS` default (typed total, so `tsc` demands it) + an `expectCall` in `invoke.test.ts`. That file's last test checks the commands its wrappers reached equal the registry's keys.
 - New tests mock commands with `mockCommands({ … })` and the `make*()` factories, not a raw `vi.mocked(invoke).mockImplementation(...)` — that untyped override is the drift this layout removes.
-- `liveEvents.test.ts` asserts the WHOLE `LIVE_EVENT` registry via an exact `toEqual` — adding a `tmp://` event (registry entry + `onXxx` wrapper + `types.ts` payload mirror) must extend that `toEqual` too.
+- `liveEvents.test.ts` asserts the WHOLE `LIVE_EVENT` registry via an exact `toEqual` — adding a `tmp://` event (`LIVE_EVENT` entry + `LiveEventMap` payload entry — `satisfies` keeps the two keyed alike — + `types.ts` payload mirror; callers subscribe with `onLive(key, cb)`) must extend that `toEqual` too.
 
 ## Platform and framework traps
 

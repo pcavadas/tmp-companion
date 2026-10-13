@@ -25,7 +25,7 @@ import {
   levelFootswitchesApply,
   cancelFootswitchLeveling,
 } from "../../lib/invoke";
-import { onLevelingLufs } from "../../lib/liveEvents";
+import { onLive } from "../../lib/liveEvents";
 import { sortRunItems, type RunItem, type SetupOption } from "./leveling";
 import { applyPatches, runEngine, type EngineStep } from "./runEngine";
 import { IDLE_METER, pushLiveMeter, setLiveMeter } from "./liveMeterStore";
@@ -232,7 +232,7 @@ export async function runLeveling(
   const isCancelled = () => cancelRequested;
 
   // The live meter follows THIS run only: subscribed here, dropped in the finally.
-  const unlistenLufs = onLevelingLufs((e) => {
+  const unlistenLufs = onLive("levelingLufs", (e) => {
     if (live()) pushLiveMeter(e.lufs, e.momentary);
   });
 

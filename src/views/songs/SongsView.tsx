@@ -36,7 +36,6 @@ import {
 } from "react";
 import type { CSSProperties } from "react";
 import { useTheme } from "../../theme/ThemeContext";
-import { Icon } from "../../ui/Icon";
 import { Rail, RailItem, RailLabel } from "../../ui/Rail";
 import { LoadErrorPane } from "../LoadErrorPane";
 import { Button, Modal, SegmentedControl, Toast } from "../../ui/primitives";
@@ -59,7 +58,7 @@ import {
 import { DASH, errMsg } from "../../lib/format";
 import { useDeviceLoad } from "../../lib/useDeviceLoad";
 import type { SongRecord, SetlistRecord } from "../../lib/types";
-import { plainInput } from "../../theme/tokens";
+import { InlineEdit } from "../../ui/InlineEdit";
 import {
   songBpm,
   shiftMembershipAfterDelete,
@@ -125,7 +124,6 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   // ONE startup backup scan (App drives it on connect) — no live device read here.
   const lib = useSyncExternalStore(subscribeLibraryScan, getLibraryScan);
   const [creatingList, setCreatingList] = useState(false);
-  const [draftList, setDraftList] = useState("");
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [toast, setToast] = useState<{
     message: string;
@@ -491,11 +489,9 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
     [runDeviceOp, warnBpm, setlists],
   );
 
-  const commitList = () => {
-    const n = draftList.trim();
-    if (n) addSetlist(n);
+  const commitList = (name: string) => {
+    if (name) addSetlist(name);
     setCreatingList(false);
-    setDraftList("");
   };
 
   const current =
@@ -648,8 +644,23 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
               </div>
               <div style={{ paddingTop: t.space4 }}>
                 {creatingList ? (
-                  <div
+                  <InlineEdit
+                    initial=""
+                    placeholder="Name this setlist"
+                    // The ✓ / ✕ beside the field are its click path, so a blur
+                    // (e.g. onto ✕) must not create the setlist.
+                    commitOnBlur={false}
+                    onCommit={commitList}
+                    onCancel={() => {
+                      setCreatingList(false);
+                    }}
                     style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontFamily: t.serif,
+                      fontSize: t.fsBody2,
+                    }}
+                    wrapStyle={{
                       display: "flex",
                       alignItems: "center",
                       gap: t.space3,
@@ -658,50 +669,8 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
                       padding: `${String(t.space2)}px ${String(t.space3)}px ${String(t.space2)}px ${String(t.space4)}px`,
                       background: t.bg,
                     }}
-                  >
-                    <input
-                      autoFocus
-                      value={draftList}
-                      onChange={(e) => {
-                        setDraftList(e.target.value);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") commitList();
-                        if (e.key === "Escape") {
-                          setCreatingList(false);
-                          setDraftList("");
-                        }
-                      }}
-                      placeholder="Name this setlist"
-                      style={plainInput(t, {
-                        flex: 1,
-                        minWidth: 0,
-                        fontFamily: t.serif,
-                        fontSize: t.fsBody2,
-                      })}
-                    />
-                    <Button
-                      variant="bare"
-                      aria-label="Create"
-                      onClick={commitList}
-                      title="Create"
-                      style={{ display: "flex" }}
-                    >
-                      <Icon name="check" size={14} stroke={t.accentDeep} />
-                    </Button>
-                    <Button
-                      variant="bare"
-                      onClick={() => {
-                        setCreatingList(false);
-                        setDraftList("");
-                      }}
-                      aria-label="Cancel"
-                      title="Cancel"
-                      style={{ display: "flex" }}
-                    >
-                      <Icon name="x" size={13} stroke={t.faint} />
-                    </Button>
-                  </div>
+                    commitLabel="Create"
+                  />
                 ) : (
                   <Button
                     variant="ghost"

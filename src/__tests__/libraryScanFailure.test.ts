@@ -10,15 +10,26 @@ import { invoke } from "@tauri-apps/api/core";
 import { renderHook } from "@testing-library/react";
 
 import type { BackupProgress, BackupReadResult } from "../lib/types";
+import type { LiveEventMap } from "../lib/liveEvents";
 
 const h = vi.hoisted(() => ({
   onBackupProgress:
     vi.fn<(cb: (p: BackupProgress) => void) => Promise<() => void>>(),
 }));
 
+// Route the `backupProgress` key of the ONE typed subscriber to the controllable
+// listen; every other key keeps the real `onLive`.
 vi.mock("../lib/liveEvents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/liveEvents")>();
-  return { ...actual, onBackupProgress: h.onBackupProgress };
+  function onLive<K extends keyof LiveEventMap>(
+    key: K,
+    cb: (payload: LiveEventMap[K]) => void,
+  ): Promise<() => void> {
+    if (key === "backupProgress")
+      return h.onBackupProgress(cb as (p: BackupProgress) => void);
+    return actual.onLive(key, cb);
+  }
+  return { ...actual, onLive };
 });
 
 // Imported AFTER the mock so the store picks up the controllable listen.

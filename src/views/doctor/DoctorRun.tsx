@@ -21,6 +21,7 @@ import { Dot } from "../../ui/Dot";
 import { ProgressBar } from "../../ui/ProgressBar";
 import { ConfirmBar } from "../../ui/ConfirmBar";
 import { RunRow } from "../../ui/RunRow";
+import { RunFooterStatus } from "../../ui/RunFooterStatus";
 import { WizardShell, WizardFooter, WizTitle } from "../overlays/WizardShell";
 import {
   DOCTOR_STEPS,
@@ -301,59 +302,42 @@ export function DoctorRun({
               >
                 Try again
               </Button>
-            ) : stopped ? (
-              // A manual stop landed — "See results" and Close would do the
-              // same thing, so this is the one clickable CTA.
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={onComplete}
-                style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
-              >
-                See results
-              </Button>
-            ) : done ? (
-              // Natural finish — a static marker, not a button: useAutoAdvance
-              // is already navigating to Results a beat later, so a live CTA
-              // here would just be a flash that does the same thing on its own.
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: t.space4,
-                  fontFamily: t.mono,
-                  fontSize: 10.5,
-                  letterSpacing: "0.04em",
-                  color: t.mutedInk,
-                }}
-              >
-                <Icon name="check" size={13} stroke={t.good} strokeWidth={2} />
-                done
-              </span>
-            ) : stopping ? (
-              // Stop already requested — show the wind-down state, not a
-              // second Stop button.
-              <span
-                style={{
-                  fontFamily: t.mono,
-                  fontSize: 10.5,
-                  letterSpacing: "0.04em",
-                  color: t.mutedInk,
-                }}
-              >
-                finishing current item…
-              </span>
             ) : (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setConfirm(true);
-                }}
-                style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
-              >
-                Stop
-              </Button>
+              // A manual stop → the one "See results" CTA; a natural finish → the
+              // static done marker (useAutoAdvance is already moving on).
+              <RunFooterStatus
+                stopped={stopped}
+                done={done}
+                ctaLabel="See results"
+                onCta={onComplete}
+                running={
+                  stopping ? (
+                    // Stop already requested — show the wind-down state, not a
+                    // second Stop button.
+                    <span
+                      style={{
+                        fontFamily: t.mono,
+                        fontSize: 10.5,
+                        letterSpacing: "0.04em",
+                        color: t.mutedInk,
+                      }}
+                    >
+                      finishing current item…
+                    </span>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setConfirm(true);
+                      }}
+                      style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
+                    >
+                      Stop
+                    </Button>
+                  )
+                }
+              />
             )
           }
         />

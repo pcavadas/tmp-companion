@@ -9,5 +9,7 @@ export { LevelingWizard } from "./LevelingWizard";
 export type { LevelingWizardProps } from "./LevelingWizard";
 export { WizardShell, WizardFooter, WizTitle, StepRail } from "./WizardShell";
 export type { Stage, WizardShellProps, WizardFooterProps } from "./WizardShell";
+export { WizardPage } from "./WizardPage";
+export type { WizardPageProps } from "./WizardPage";
 export { Pick } from "./Pick";
 export type { PickOption, PickProps } from "./Pick";

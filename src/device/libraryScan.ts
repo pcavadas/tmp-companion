@@ -22,7 +22,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import { readLibraryViaBackup } from "../lib/invoke";
 import { errMsg } from "../lib/format";
-import { onBackupProgress } from "../lib/liveEvents";
+import { onLive } from "../lib/liveEvents";
 import type {
   ActiveGraph,
   AmpCandidate,
@@ -222,7 +222,7 @@ export async function ensureLibraryScan(): Promise<void> {
     // Progress is cosmetic: a listen that fails leaves the bar at 0 % and the scan
     // runs anyway. Inside the try so it can never strand `inFlight`.
     try {
-      const unlisten = await onBackupProgress((p) => {
+      const unlisten = await onLive("backupProgress", (p) => {
         if (gen === generation) setPercent(p.percent);
       });
       // A reset (detach) during the listen await → clean up this listener and bail
