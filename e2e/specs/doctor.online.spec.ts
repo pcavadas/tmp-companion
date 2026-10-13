@@ -16,7 +16,7 @@ import {
 // ONLINE Doctor consolidation (8-file → 4-file suite shrink). Two oracles that both need
 // the real device, merged into one file so the online run pays ONE Playwright boot/rest
 // for Doctor instead of three (doctor.spec.ts's online half + doctor-oracle.online.spec.ts +
-// doctor-apply.online.spec.ts, which is separately demoted to on-demand — see its own header).
+// doctor-apply.online.spec.ts, which stays its own spec — see its own header).
 //
 // (a) is doctor-oracle.online.spec.ts moved here UNCHANGED (including the 4 wire-seam-only
 //     rows) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks

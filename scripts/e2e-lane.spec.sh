@@ -11,6 +11,10 @@ set -euo pipefail
 # A git hook (e.g. pre-push from a linked worktree) exports GIT_DIR and friends; left set,
 # the scratch repo's `git init` / `git config` / `checkout` act on the CALLER's repository.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+# ...and the rest of the repo-local set git itself clears for a subprocess (GIT_CONFIG,
+# GIT_CONFIG_PARAMETERS, GIT_ALTERNATE_OBJECT_DIRECTORIES, ...). Word-split on purpose.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/e2e-lane.sh disable=SC1091
@@ -138,6 +142,72 @@ check "fw from the ready line" 1.8.58 \
 check "fw unknown without it" unknown \
   "$(printf 'e2e_server: ONLINE — seeded snapshot from the real device\n' | lane_fw_from_log)"
 
+# ── external validation: the real level-validate.sh against a fake ffmpeg ──────────
+# The fake reads each "WAV" as a text file holding its own integrated loudness and reports
+# it stereo, so the judge's verdicts are exercised on any box, ffmpeg installed or not.
+fake="$work/fakebin"
+mkdir -p "$fake"
+cat > "$fake/ffmpeg" <<'FAKE'
+#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = -i ] && f="$2"; shift; done
+printf 'Stream #0:0: Audio: pcm_f32le, 48000 Hz, stereo, flt, 3072 kb/s\n'
+printf 'lavfi.r128.I=%s\n' "$(cat "$f")"
+FAKE
+printf '#!/bin/sh\necho 2\n' > "$fake/ffprobe"
+chmod +x "$fake/ffmpeg" "$fake/ffprobe"
+judge="$script_dir/level-validate.sh"
+vw="$work/validate"
+mkdir -p "$vw"
+# <log> <label> <wav lufs> <target> <persist_mismatch> <clamped> — append one emitter row.
+vrow() {
+  local wav
+  wav="$vw/$(printf '%s' "$2" | tr ':' '_').wav"
+  printf '%s\n' "$3" > "$wav"
+  printf '{"label":"%s","slot":410,"scene_slot":null,"switch":null,"target_lufs":%s,"tol_lu":null,"clamped":%s,"persist_mismatch":%s,"wav":"%s","wav_error":null,"engaged":"engaged"}\n' \
+    "$2" "$4" "$6" "$5" "$wav" >> "$1"
+}
+six="a:1 a:2 a:3 a:4 a:5 a:6"
+ext() { PATH="$fake:$PATH" lane_external_validation "$judge" "$@" 2>/dev/null; }
+judge_rc() { rc=0; PATH="$fake:$PATH" bash "$judge" --expectations "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+
+l="$vw/six.jsonl"
+for x in $six; do vrow "$l" "$x" -17.0 -17.0 null false; done
+check "six passing rows, cap 40 → validated" validated "$(ext "$l" "$vw/w1" 40 6 "$six")"
+check "six rows, cap 1, passing first row → NOT validated" unverified \
+  "$(ext "$l" "$vw/w2" 1 6 "$six" | cut -d: -f1)"
+check "the capped verdict names the dropped rows" 1 \
+  "$(ext "$l" "$vw/w3" 1 6 "$six" | grep -c 'dropped 5 of 6')"
+
+l="$vw/persist.jsonl"
+vrow "$l" a:1 -17.0 -17.0 null false
+vrow "$l" a:2 -17.0 -17.0 true false
+check "one pass + one persist mismatch → the judge FAILs (exit 1)" 1 "$(judge_rc "$l")"
+check "one pass + one persist mismatch → lane fail" fail "$(ext "$l" "$vw/w4" 40 2 "a:1 a:2" | cut -d: -f1)"
+
+l="$vw/skipped.jsonl"
+for x in $six; do vrow "$l" "$x" -30.0 -17.0 null true; done
+check "every row clamped → the judge is vacuous (exit 4)" 4 "$(judge_rc "$l")"
+check "every row clamped → NOT validated" unverified "$(ext "$l" "$vw/w5" 40 6 "$six" | cut -d: -f1)"
+check "every row clamped, no required labels → still NOT validated" unverified \
+  "$(ext "$l" "$vw/w6" 40 "" "" | cut -d: -f1)"
+
+l="$vw/oneclamped.jsonl"
+for x in a:1 a:2 a:3 a:4 a:5; do vrow "$l" "$x" -17.0 -17.0 null false; done
+vrow "$l" a:6 -30.0 -17.0 null true
+check "a required sound skipped (clamped) → NOT validated" 1 \
+  "$(ext "$l" "$vw/w7" 40 6 "$six" | grep -c '^unverified: a:6 was not measured and passed$')"
+
+l="$vw/dupe.jsonl"
+for x in a:1 a:2 a:3 a:4 a:5 a:5; do vrow "$l" "$x" -17.0 -17.0 null false; done
+check "a duplicate masking a missing sound → fail" 1 \
+  "$(ext "$l" "$vw/w8" 40 6 "$six" | grep -c '^fail: no expectation row for a:6')"
+
+l="$vw/miss.jsonl"
+vrow "$l" a:1 -12.0 -17.0 null false
+check "a target miss → fail" fail "$(ext "$l" "$vw/w9" 40 "" "" | cut -d: -f1)"
+check "nothing emitted, nothing required → none" none "$(ext "$vw/absent.jsonl" "$vw/w10" 40 "" "")"
+check "nothing emitted, rows required → fail" fail "$(ext "$vw/absent.jsonl" "$vw/w11" 40 6 "$six" | cut -d: -f1)"
+
 # ── merging stamps: a scratch repo with this checkout's gates.sh ─────────────────
 r="$work/repo"
 mkdir -p "$r/scripts"
@@ -182,7 +252,9 @@ cp "$script_dir/../e2e/specs/level.online.spec.ts" "$a/e2e/specs/"
   git init -q
   git config user.email spec@example.invalid
   git config user.name spec
-  git checkout -q -b main
+  # Name the unborn branch directly: `checkout -b main` fails where init.defaultBranch is
+  # already main, so the fixture must not depend on the caller's global default.
+  git symbolic-ref HEAD refs/heads/main
   git add -A
   git commit -qm base
   git checkout -q -b docs
@@ -215,6 +287,24 @@ rel_out="$(cd "$a" && TMPDIR="$work/tmpdir" TMP_DEVICE_LOCK_DIR="$work/lock" \
 check "online release, prose since the tag → exit 0" 0 "$rel_rc"
 check "online release says nothing is required" 1 "$(printf '%s\n' "$rel_out" | grep -c 'online release: requires no online spec')"
 check "online release never took the device lock" no "$([ -e "$work/lock" ] && echo yes || echo no)"
+
+# ── offline: builds only the e2e_server, runs Playwright, then the advisory budget check ──
+# A fake cargo and bun record what the runner asks of them; nothing is compiled or run.
+fb="$work/fakebuild"
+mkdir -p "$fb"
+printf '#!/bin/sh\nprintf "cargo %%s\\n" "$*" >> "%s/calls"\n' "$fb" > "$fb/cargo"
+printf '#!/bin/sh\nprintf "bun %%s\\n" "$*" >> "%s/calls"\n' "$fb" > "$fb/bun"
+chmod +x "$fb/cargo" "$fb/bun"
+off_rc=0
+# A port band nothing else uses: the runner sweeps stale e2e_servers there first.
+(cd "$a" && PATH="$fb:$PATH" TMPDIR="$work/tmpdir" TMP_E2E_PORT=65520 TMP_E2E_VITE_PORT=65530 \
+  /bin/bash scripts/e2e.sh >/dev/null 2>&1) || off_rc=$?
+check "offline run → exit 0" 0 "$off_rc"
+check "offline prebuild builds the e2e_server" 1 "$(grep -c '^cargo build .*--bin e2e_server' "$fb/calls")"
+check "offline prebuild never builds probe" 0 "$(grep -c -e '--bin probe' "$fb/calls")"
+check "offline runs Playwright, then the budget check" \
+  "bun x playwright test|bun $a/scripts/e2e-budgets.mjs" \
+  "$(grep '^bun ' "$fb/calls" | sed 's/ --config.*//; s/\(e2e-budgets.mjs\) .*/\1/' | tr '\n' '|' | sed 's/|$//')"
 
 if [ "$fail" -ne 0 ]; then
   printf 'e2e-lane spec: FAILED\n' >&2

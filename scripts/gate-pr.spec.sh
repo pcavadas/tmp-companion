@@ -16,6 +16,10 @@ set -euo pipefail
 # A git hook (e.g. pre-push from a linked worktree) exports GIT_DIR and friends; left set,
 # the scratch repo's `git init` / `git config` / `checkout` act on the CALLER's repository.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+# ...and the rest of the repo-local set git itself clears for a subprocess (GIT_CONFIG,
+# GIT_CONFIG_PARAMETERS, GIT_ALTERNATE_OBJECT_DIRECTORIES, ...). Word-split on purpose.
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 payloads="$script_dir/gate-pr.spec"
@@ -32,7 +36,9 @@ chmod +x "$r/scripts/gates.sh"
   git init -q
   git config user.email spec@example.invalid
   git config user.name spec
-  git checkout -q -b main
+  # Name the unborn branch directly: `checkout -b main` fails where init.defaultBranch is
+  # already main, so the fixture must not depend on the caller's global default.
+  git symbolic-ref HEAD refs/heads/main
   git add -A
   git commit -qm base
 ) >/dev/null
@@ -65,19 +71,26 @@ diff_of() {
 required() { (cd "$r" && /bin/bash scripts/gates.sh --required-online 2>/dev/null) | tr '\n' ' ' | sed 's/ $//'; }
 required_err() { (cd "$r" && /bin/bash scripts/gates.sh --required-online 3>&1 1>/dev/null 2>&3); }
 
-ALL4="doctor.online level.online songs copy"
+ALL="doctor.online level.online songs copy doctor-apply.online"
 
 diff_of src-tauri/src/commands/songs.rs
 check "songs.rs → songs" "songs" "$(required)"
-for f in src-tauri/src/leveller.rs src-tauri/src/commands/doctor.rs src-tauri/src/probe_api/scene_jobs.rs; do
+for f in src-tauri/src/doctor.rs src-tauri/src/probe_api/scene_jobs.rs; do
   diff_of "$f"
   check "$f → doctor.online level.online" "doctor.online level.online" "$(required)"
+done
+# Doctor persistence (apply/save/discard, and the restore they share) also needs the one
+# spec that reads a save and a discard back from the device.
+for f in src-tauri/src/commands/doctor.rs src-tauri/src/leveller.rs e2e/specs/doctor-apply.online.spec.ts; do
+  diff_of "$f"
+  check "$f → doctor.online level.online doctor-apply.online" \
+    "doctor.online level.online doctor-apply.online" "$(required)"
 done
 for f in src-tauri/src/session/mod.rs src-tauri/src/session/link.rs src-tauri/src/session/timing.rs \
   src-tauri/src/session/preset.rs src-tauri/src/session/songs.rs src-tauri/src/blockcaps.rs src-tauri/src/hid/write_completion.rs \
   e2e/fixtures/scenario.ts scripts/e2e.sh scripts/lib/e2e-lane.sh; do
   diff_of "$f"
-  check "$f → all four" "$ALL4" "$(required)"
+  check "$f → all five" "$ALL" "$(required)"
 done
 diff_of src-tauri/src/session/structural.rs
 check "session/structural.rs → copy" "copy" "$(required)"
@@ -86,7 +99,7 @@ check "session/ftsw.rs → doctor.online level.online" "doctor.online level.onli
 # A session command module that touches a wait primitive or a window const is transport.
 diff_of src-tauri/src/session/ftsw.rs
 printf '        self.pump_silent(LIVE_BEAT_MS)?;\n' >> "$r/src-tauri/src/session/ftsw.rs"
-check "session/ftsw.rs touching a pump → all four" "$ALL4" "$(required)"
+check "session/ftsw.rs touching a pump → all five" "$ALL" "$(required)"
 check "the timing escalation names the file" 1 "$(required_err | grep -c 'advisory: src-tauri/src/session/ftsw.rs touches session timing')"
 for f in src-tauri/src/session/tests.rs src-tauri/src/session/boundary_tests.rs src-tauri/src/session/wire_golden.txt; do
   diff_of "$f"
@@ -100,15 +113,15 @@ for f in notes/e2e-test-plan.md scripts/gate-map.tsv scripts/gates.sh .github/wo
   check "$f → nothing" "" "$(required)"
 done
 diff_of src-tauri/src/foo.rs
-check "unmapped src-tauri/src/foo.rs → all four" "$ALL4" "$(required)"
+check "unmapped src-tauri/src/foo.rs → all five" "$ALL" "$(required)"
 check "unmapped file is named as unclassified" 1 "$(required_err | grep -c 'unclassified: src-tauri/src/foo.rs')"
 diff_of src-tauri/src/commands/songs.rs src-tauri/src/leveller.rs
-check "songs.rs + leveller.rs → canonical order" "doctor.online level.online songs" "$(required)"
+check "songs.rs + leveller.rs → canonical order" "doctor.online level.online songs doctor-apply.online" "$(required)"
 diff_of src-tauri/src/commands/bulk_replace.rs
 check "unexercised file → ANY" "ANY" "$(required)"
 check "unexercised file prints an advisory" 1 "$(required_err | grep -c 'advisory (unexercised)')"
-diff_of e2e/specs/doctor-apply.online.spec.ts
-check "on-demand spec → nothing, with an advisory" "|1" "$(required)|$(required_err | grep -c 'advisory (on-demand)')"
+diff_of scripts/hw-e2e.sh
+check "on-demand script → nothing, with an advisory" "|1" "$(required)|$(required_err | grep -c 'advisory (on-demand)')"
 
 # ── the PR hook, fed payloads ────────────────────────────────────────────────────
 stamp_dir() { (cd "$r" && printf '%s/tmp-gates' "$(git rev-parse --absolute-git-dir)"); }

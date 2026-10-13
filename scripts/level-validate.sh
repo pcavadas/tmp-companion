@@ -36,9 +36,11 @@
 #           carried no processed PAIR, refusing to fake dual-mono; the leveler solved
 #           against a 2-ch BS.1770 target, so a mono read is ~3 LU adrift by convention.
 #           A convention mismatch, not a level miss.
+#   FAIL  — `persist_mismatch` is true: the saved preset does not hold the value the run
+#           reported. That is a failed save, the very regression this judge exists to
+#           catch, so it is never skipped; the WAV is not graded (its number describes a
+#           value the device does not hold).
 #   SKIP  — `clamped` (the target was never reachable, so asserting it is a false red).
-#   SKIP  — `persist_mismatch` (the saved preset does not hold the value the run
-#           reported, so the number under test is meaningless).
 #
 # EXIT CODES — both callers (`scripts/e2e.sh`, `scripts/validate-hbe.sh`) branch on all
 # four explicitly, so a mid-run skip — or a vacuous pass — can never be reported as a
@@ -49,10 +51,13 @@
 #   3  ffmpeg is not on PATH — nothing was checked. A DISTINCT code so "skipped" is
 #      never mistaken for "checked and passed"; a silent skip that looks like a pass is
 #      worse than a red failure.
-#   4  VACUOUS — every row was SKIPped (clamped / persist_mismatch), so ZERO rows were
-#      independently measured. Distinct from 0 on purpose: this is precisely the shape a
-#      persist regression takes (every row persist-mismatches, none FAILs), so a
-#      caller that treats it as a plain pass would certify a run that verified nothing.
+#   4  VACUOUS — every row was SKIPped (clamped), so ZERO rows were independently
+#      measured. Distinct from 0 on purpose: a caller that treats it as a plain pass would
+#      certify a run that verified nothing.
+#
+# `--summary <file>` (any mode) also appends one `<VERDICT>\t<label>` line per
+# row (VERDICT is PASS, FAIL or SKIP), so a caller can check WHICH sounds were measured and
+# passed — not only how many lines it handed over (`lane_external_validation`).
 #
 # TOLERANCE defaults to 1.0 LU, NOT the solve's own acceptance band. `level.online.spec.
 # ts` documents the arithmetic: the footswitch lane accepts a solve within KNOB_TOL_LU
@@ -101,7 +106,7 @@ DEFAULT_DEVICE="${TMP_E2E_AVF_DEVICE:-:0}"
 usage() {
   cat >&2 <<'USAGE'
 usage:
-  level-validate.sh --expectations <file.jsonl>
+  level-validate.sh --expectations <file.jsonl> [--summary <file>]
   level-validate.sh --wav <path> --label L --target T [--tol T] [--probe-log <file>]
   level-validate.sh --live <seconds> --label L --target T [--tol T] [--device ID]
 
@@ -137,6 +142,9 @@ row_header() {
 row_out() { # label measured target tol delta verdict
   row_header
   printf '%-34s %12s %12s %8s %8s   %s\n' "$1" "$2" "$3" "$4" "$5" "$6"
+  if [ -n "$SUMMARY" ]; then
+    printf '%s\t%s\n' "${6%% *}" "$1" >> "$SUMMARY"
+  fi
 }
 row_fail() { # label target tol verdict
   row_out "$1" "N/A" "$2" "$3" "N/A" "$4"
@@ -238,6 +246,7 @@ LABEL=""
 TARGET=""
 TOL="$DEFAULT_TOL"
 DEVICE="$DEFAULT_DEVICE"
+SUMMARY=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -249,6 +258,7 @@ while [ $# -gt 0 ]; do
     --target) TARGET="${2:-}"; shift 2 ;;
     --tol) TOL="${2:-}"; shift 2 ;;
     --device) DEVICE="${2:-}"; shift 2 ;;
+    --summary) SUMMARY="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) err "unrecognized argument: $1"; usage ;;
   esac
@@ -285,17 +295,17 @@ case "$MODE" in
         continue
       fi
       [ -n "$line_tol" ] || line_tol="$TOL"
-      # SKIP before FAIL: a clamped row was never able to reach its target, and a row
-      # whose save did not verify is describing a value the device does not hold —
-      # asserting either against the target is a guaranteed false red.
+      # A row whose save did not verify FAILs before anything else: the run reported a
+      # value the device does not hold. A clamped row SKIPs — it was never able to reach
+      # its target, so asserting it is a guaranteed false red.
+      if [ "$line_persist" = "true" ]; then
+        row_fail "$line_label" "$line_target" "$line_tol" \
+          "FAIL (persist_mismatch — the saved preset does not hold this value)"
+        continue
+      fi
       if [ "$line_clamped" = "true" ]; then
         row_skip "$line_label" "$line_target" "$line_tol" \
           "SKIP (clamped — target unreachable, nothing to validate against)"
-        continue
-      fi
-      if [ "$line_persist" = "true" ]; then
-        row_skip "$line_label" "$line_target" "$line_tol" \
-          "SKIP (persist_mismatch — the saved preset does not hold this value)"
         continue
       fi
       if [ -n "$line_wav_err" ]; then
@@ -307,11 +317,11 @@ case "$MODE" in
     done < "$EXPECTATIONS"
     ;;
   single)
-    [ -n "$WAV_PATH" ] && [ -n "$LABEL" ] && [ -n "$TARGET" ] || usage
+    if [ -z "$WAV_PATH" ] || [ -z "$LABEL" ] || [ -z "$TARGET" ]; then usage; fi
     measure_row "$LABEL" "$WAV_PATH" "$TARGET" "$TOL" "" "$PROBE_LOG"
     ;;
   live)
-    [ -n "$LIVE_SECS" ] && [ -n "$LABEL" ] && [ -n "$TARGET" ] || usage
+    if [ -z "$LIVE_SECS" ] || [ -z "$LABEL" ] || [ -z "$TARGET" ]; then usage; fi
     TMP_WAV="$(mktemp "${TMPDIR:-/tmp}/level-validate-live.XXXXXX").wav"
     trap 'rm -f "$TMP_WAV"' EXIT
     log "capturing ${LIVE_SECS}s live from avfoundation $DEVICE (ATTENDED — no engage-proof)…"
@@ -325,11 +335,10 @@ esac
 
 echo
 if [ "$ROW_FAILED" -eq 0 ]; then
-  # A pass over zero measured rows is vacuous — every row skipped (clamped / persist
-  # mismatch) means ffmpeg graded NOTHING. Legitimate (a skip is a real verdict, not an
-  # error) but it must never read — or exit — as "the levels were verified": this is
-  # exactly the shape a persist regression takes (every row persist-mismatches), so
-  # it gets its OWN exit code rather than folding into the plain-pass 0.
+  # A pass over zero measured rows is vacuous — every row skipped (clamped) means ffmpeg
+  # graded NOTHING. Legitimate (a skip is a real verdict, not an error) but it must never
+  # read — or exit — as "the levels were verified", so it gets its OWN exit code rather
+  # than folding into the plain-pass 0. (A persist mismatch is a FAIL, never a skip.)
   if [ "$ROWS_SEEN" -eq 0 ]; then
     warn "VACUOUS (exit 4) — no row was measurable, so NOTHING was independently verified"
     exit 4

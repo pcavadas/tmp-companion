@@ -2187,8 +2187,9 @@ mod fixture_gates {
         // On-demand-only BY DESIGN, not by accident: each entry here must already be
         // documented at its own exclusion site in `scripts/e2e.sh` (a "run it explicitly
         // with…" note) and in its own spec file's header. Adding an entry here is how a
-        // future spec opts OUT of the default online sweep — do so deliberately.
-        const ON_DEMAND_ONLINE_SPECS: &[&str] = &["doctor-apply.online"];
+        // future spec opts OUT of the default online sweep — do so deliberately. Empty:
+        // `doctor-apply.online` rejoined the default set once Doctor persistence required it.
+        const ON_DEMAND_ONLINE_SPECS: &[&str] = &[];
 
         let sh = std::fs::read_to_string("../scripts/e2e.sh").expect("read scripts/e2e.sh");
         let default_specs = parse_e2e_default_online_specs(&sh);

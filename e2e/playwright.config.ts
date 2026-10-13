@@ -27,6 +27,12 @@ const VITE = process.env.TMP_E2E_VITE_PORT ?? "1421";
 // processes convert directly into wall-clock.
 const WORKERS = Number(process.env.TMP_E2E_WORKERS ?? "3");
 
+// Per-test timings (Playwright's JSON report). `scripts/e2e.sh` exports the path; a bare
+// `bunx playwright test` writes the same default.
+const TIMINGS_JSON =
+  process.env.TMP_E2E_TIMINGS_JSON ??
+  path.join(ROOT, "e2e", "test-results", "e2e-timings.json");
+
 // SOTA dual-mode e2e: the same specs drive the REAL React UI in Chromium against the
 // real Rust backend. Offline (here) fakes only the USB transport (SimDevice) + the
 // startup snapshot via the windowless `e2e_server`. Online (Slice 2) points the bridge
@@ -54,7 +60,12 @@ export default defineConfig({
   fullyParallel: false,
   workers: WORKERS,
   forbidOnly: !!process.env.CI,
-  reporter: process.env.CI ? "line" : [["list"]],
+  // The JSON report is the machine-readable per-test timing record (in the gitignored
+  // output dir); `scripts/e2e.sh` checks it against `scripts/e2e-budgets.tsv`.
+  reporter: [
+    process.env.CI ? ["line"] : ["list"],
+    ["json", { outputFile: TIMINGS_JSON }],
+  ],
   // The default per-test timeout is 30 s, but the songs/level CRUD flows run ~20-25 s locally
   // and comfortably exceed 30 s on a loaded CI runner (2-4x slower), so the whole test is
   // killed mid-flight ("Test timeout of 30000ms exceeded") even though every assertion set a

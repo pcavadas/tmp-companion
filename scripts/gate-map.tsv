@@ -7,7 +7,7 @@
 #
 # Gated roots: src-tauri/src, src-tauri/resources/samples, e2e/specs, e2e/fixtures. A file
 # under a gated root that matches no row is UNCLASSIFIED: `gates.sh --required-online`
-# requires all four specs for it (fail closed), and the Rust gate
+# requires every canonical online spec for it (fail closed), and the Rust gate
 # `every_gated_file_matches_a_gate_map_row` (lib.rs) fails naming it. A file elsewhere that
 # matches no row is class none. A row that matches no file yet is legal.
 
@@ -107,8 +107,14 @@ src-tauri/src/probe_api/seed_scenario.rs	lane
 # ── probe-entry: online runs only its --seed-scenario arm ──
 src-tauri/src/bin/probe.rs	probe-entry
 
+# ── doctor-persist: the Doctor apply/save/discard commands, and the restore both use ──
+# Doctor and leveling share captures, so both level specs run, plus the one spec that reads
+# a Doctor save and discard back from the device.
+src-tauri/src/commands/doctor.rs	doctor-persist
+src-tauri/src/leveller.rs	doctor-persist
+e2e/specs/doctor-apply.online.spec.ts	doctor-persist
+
 # ── level: Doctor and leveling share captures, so both specs run ──
-src-tauri/src/leveller.rs	level
 src-tauri/src/doctor.rs	level
 src-tauri/src/headroom_trade.rs	level
 src-tauri/src/lufs.rs	level
@@ -118,7 +124,6 @@ src-tauri/src/profiles.rs	level
 # Atomic writes of user data; its device-run reach is the settings store a level run saves.
 src-tauri/src/fsutil.rs	level
 src-tauri/src/topologies.rs	level
-src-tauri/src/commands/doctor.rs	level
 src-tauri/src/commands/level_preset.rs	level
 src-tauri/src/session/ftsw.rs	level
 src-tauri/src/commands/level_scenes.rs	level
@@ -154,7 +159,6 @@ src-tauri/src/watcher/*	unexercised
 src-tauri/src/bootstrap.rs	unexercised
 
 # ── on-demand: run it explicitly ──
-e2e/specs/doctor-apply.online.spec.ts	on-demand
 scripts/hw-e2e.sh	on-demand
 scripts/validate-hbe.sh	on-demand
 scripts/replay-user-leveling.sh	on-demand

@@ -131,7 +131,7 @@ compute_key() {
 # default-spec literal (the two are separate mirrors on purpose — see that
 # gate's doc comment — this line is what it diffs against). Consumed here by
 # --check-online (which specs a stamp must cover) and --online-spec-set.
-ONLINE_SPEC_SET="doctor.online level.online songs copy"
+ONLINE_SPEC_SET="doctor.online level.online songs copy doctor-apply.online"
 online_spec_set() {
   # shellcheck disable=SC2086  # deliberate word-split: one spec name per printf line
   printf '%s\n' $ONLINE_SPEC_SET
@@ -242,9 +242,6 @@ required_online() {
     class="$(escalate_session_timing "$f" "$class")"
     adv="$(policy_advisory "$class")"
     if [ -n "$adv" ]; then printf 'gates: advisory (%s): %s — %s\n' "$class" "$f" "$adv" >&2; fi
-    if [ "$f" = src-tauri/src/commands/doctor.rs ]; then
-      printf 'gates: advisory: %s — if doctor_apply, doctor_save or doctor_discard changed, also run scripts/e2e.sh online doctor-apply.online\n' "$f" >&2
-    fi
     for tok in $(policy_tokens "$class"); do
       case "$tok" in
         ALL) need="$need $ONLINE_SPEC_SET" ;;

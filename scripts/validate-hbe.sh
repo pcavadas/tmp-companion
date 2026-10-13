@@ -75,8 +75,8 @@
 #       leveling step failed, a row FAILed or CLAMPED, or an expectation row was never
 #       emitted (MISSING) · 2 = usage/precondition error · 3 = validation SKIPPED (ffmpeg absent —
 #       nothing was independently checked; the leveling itself still ran) · 4 = validation
-#       VACUOUS (every emitted row was clamped/persist-mismatched — nothing was
-#       independently verified; the leveling itself still ran and is saved).
+#       VACUOUS (every emitted row was clamped — nothing was independently verified;
+#       the leveling itself still ran and is saved). A persist-mismatched row FAILs (1).
 #
 # BSD userland only (macOS system /bin/bash 3.2): no `timeout(1)`, no GNU flags, no
 # `mapfile`/associative arrays — plain indexed arrays only, guarded per `.claude/rules/
@@ -517,9 +517,8 @@ case "$EXT_RC" in
     exit 3
     ;;
   4)
-    err "validate-hbe: VACUOUS — every emitted row was SKIPped (clamped or persist-"
-    err "                        mismatched), so NOTHING was independently verified —"
-    err "                        this is the shape a persist regression takes. The"
+    err "validate-hbe: VACUOUS — every emitted row was SKIPped (clamped), so"
+    err "                        NOTHING was independently verified. The"
     err "                        leveling itself ran and is saved; see the per-row"
     err "                        verdicts above and the logs in $OUT_DIR"
     exit 4
