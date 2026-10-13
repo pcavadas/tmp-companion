@@ -80,6 +80,9 @@ mod proto;
 mod psd;
 mod rename;
 mod replace_inplace;
+mod rig;
+#[cfg(test)]
+mod rig_tests;
 mod saved_blocks;
 mod scenes;
 mod search;

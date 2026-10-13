@@ -41,8 +41,15 @@ pub(crate) fn request_op_abort() {
     OP_ABORT.store(true, SeqCst);
 }
 
-/// Has an abort been requested? Polled inside the re-amp capture window.
+/// Has an abort been requested for the work on this thread's rig (`crate::rig`)? Polled
+/// inside the re-amp capture window and by every abortable settle. The device rig reads the
+/// process's [`OP_ABORT`]; a test's own rig reads its own flag.
 pub(crate) fn op_aborted() -> bool {
+    crate::rig::aborted()
+}
+
+/// The process's Stop flag ([`OP_ABORT`]) — what the device rig's abort check reads.
+pub(crate) fn op_abort_requested() -> bool {
     OP_ABORT.load(SeqCst)
 }
 
@@ -67,12 +74,10 @@ pub(crate) fn settle_ms(ms: u64) -> u64 {
     applied
 }
 
+/// The wait this thread's rig (`crate::rig`) applies: `ms` on the device, zero on the
+/// offline e2e fake (see `sim_device::LiveSimRig`) and on a test's own SimDevice rig.
 fn applied_settle_ms(ms: u64) -> u64 {
-    #[cfg(feature = "e2e")]
-    if crate::e2e_offline_fake() && std::env::var_os("TMP_E2E_KEEP_SETTLES").is_none() {
-        return 0;
-    }
-    ms
+    crate::rig::settle_ms(ms)
 }
 
 /// [`settle_ms`] as a blocking sleep. Takes a `Duration` rather than millis so the ~80

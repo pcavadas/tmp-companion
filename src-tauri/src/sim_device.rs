@@ -572,6 +572,11 @@ struct SimState {
     /// overrides it for a test that needs a specific pre-edit roster (e.g. to exercise
     /// an over-cap refusal).
     preset_json: String,
+    /// Whether a field-8 (SAVED document) read of a non-scenario slot answers with
+    /// [`SimState::preset_json`] verbatim ([`SimDevice::with_saved_preset_json`]). Off, such a
+    /// read answers nothing, as before. Never persists a save: the body stays the one the test
+    /// configured.
+    saved_preset_json: bool,
     /// Lazy cache of a parsed [`SimState::scene_render_json_source`], shared by
     /// `overlay_is_full_shaped` (every scene-context `changeParameter` on the live dispatch
     /// path) and the two `#[cfg(test)]` renderers — each used to clone the source string and
@@ -780,6 +785,7 @@ impl Default for SimState {
                 {"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{"bypass":false}}
             ]}}}"#
                 .to_string(),
+            saved_preset_json: false,
             parsed_preset_cache: None,
             current_slot: 0,
             loaded_identity: None,
@@ -1390,6 +1396,16 @@ impl SimDevice {
         self
     }
 
+    /// [`SimDevice::with_preset_json`], and also serve `json` as every non-scenario slot's
+    /// SAVED document (the field-8 read), so a test can drive a batch whose first step is
+    /// that read (`run_footswitch_batch`) in either build. A save does not change it.
+    #[cfg(test)]
+    pub fn with_saved_preset_json(self, json: &str) -> SimDevice {
+        let dev = self.with_preset_json(json);
+        dev.state.lock().expect("sim lock").saved_preset_json = true;
+        dev
+    }
+
     /// `cut_before` = the first amp node id drops every amp, and — `BTreeMap` keys, `guitarNodes`
     /// before `template` — that scene's routing template with them.
     #[cfg(all(test, feature = "e2e"))]
@@ -1448,6 +1464,23 @@ impl SimDevice {
     #[cfg(any(test, feature = "e2e"))]
     pub fn events(&self) -> Vec<SimEvent> {
         self.state.lock().expect("sim lock").events.clone()
+    }
+
+    /// The request kinds this fake answered with nothing that are outside
+    /// [`UNHANDLED_CENSUS`], deduplicated, in first-seen order — the #279 gate's question,
+    /// asked of one fake.
+    #[cfg(test)]
+    pub(crate) fn unmodeled(&self) -> Vec<(u32, u32)> {
+        let st = self.state.lock().expect("sim lock");
+        let mut out = Vec::new();
+        for e in &st.unhandled {
+            if let SimEvent::Unhandled { tms, inner, .. } = *e {
+                if !in_census(tms, inner) && !out.contains(&(tms, inner)) {
+                    out.push((tms, inner));
+                }
+            }
+        }
+        out
     }
 
     /// The [`SimEvent::Unhandled`] log, in order (the census; never part of [`Self::events`]).
@@ -2409,20 +2442,11 @@ pub fn set_live(dev: &SimDevice) {
 /// [`UNHANDLED_CENSUS`], deduplicated, in first-seen order (empty when no fake is installed).
 #[cfg(all(test, feature = "e2e"))]
 pub fn live_unmodeled() -> Vec<(u32, u32)> {
-    let live = LIVE.lock().expect("sim live lock");
-    let Some(dev) = live.as_ref() else {
-        return Vec::new();
-    };
-    let st = dev.state.lock().expect("sim lock");
-    let mut out = Vec::new();
-    for e in &st.unhandled {
-        if let SimEvent::Unhandled { tms, inner, .. } = *e {
-            if !in_census(tms, inner) && !out.contains(&(tms, inner)) {
-                out.push((tms, inner));
-            }
-        }
-    }
-    out
+    LIVE.lock()
+        .expect("sim live lock")
+        .as_ref()
+        .map(SimDevice::unmodeled)
+        .unwrap_or_default()
 }
 
 /// The current fake's ordered event log (empty when no fake is installed).
@@ -2437,8 +2461,9 @@ pub fn live_events() -> Vec<SimEvent> {
 
 // ─── offline physics-faithful capture model (`--features e2e`) ──────────────────────
 //
-// The single injection point is `audio::reamp_capture`'s offline branch. Instead of
-// returning the stimulus verbatim (which made loudness bugs invisible offline), it drives
+// The single injection point is [`LiveSimRig`]'s capture (`audio::reamp_capture` on the
+// offline e2e rig). Instead of returning the stimulus verbatim (which made loudness bugs
+// invisible offline), it drives
 // the real loudness law the leveller assumes — `captured_LUFS = 20·log10(presetLevel) + C`
 // — plus a scene-relative `outputLevel` term, so the offline e2e suite becomes a genuine
 // oracle. The model is DETERMINISTIC (no noise): a scaled copy of the fixed stimulus whose
@@ -2582,12 +2607,169 @@ pub fn set_capture_delay(ms: u64) {
     }
 }
 
+/// The e2e build's OFFLINE rig (`crate::rig`'s default when `TMP_E2E_ONLINE` is not `1`):
+/// every session opens the transport factory's shared SimDevice (the real [`Hid`] when no
+/// factory is installed), every capture runs the physics model over the [`set_live`] fake,
+/// and the settles collapse once `e2e_install_offline_fake` has armed the offline regime.
+///
+/// [`Hid`]: crate::hid::Hid
+#[cfg(feature = "e2e")]
+pub(crate) struct LiveSimRig;
+
+#[cfg(feature = "e2e")]
+impl crate::rig::Rig for LiveSimRig {
+    fn open_transport(&self) -> Result<Box<dyn HidTransport>, crate::error::DeviceError> {
+        if let Some(t) = crate::session::e2e_transport::take() {
+            return crate::trace::open(crate::trace::Backend::Sim, || Ok(t));
+        }
+        crate::rig::DeviceRig.open_transport()
+    }
+
+    /// Offline: drive the physics-faithful capture model (the real loudness law + a
+    /// scene-relative outputLevel term), reading the installed SimDevice's DSP state, so the
+    /// offline suite is a genuine loudness oracle. `tail_ms` unused (the model is
+    /// deterministic, no decay tail to integrate).
+    fn capture(
+        &self,
+        stimulus: &[f32],
+        rate: u32,
+        tail_ms: u64,
+    ) -> Result<crate::audio::Capture, crate::error::LevelError> {
+        crate::trace::capture(crate::trace::Backend::Sim, stimulus, rate, tail_ms, || {
+            e2e_capture(stimulus, rate)
+        })
+    }
+
+    /// Zero once the offline fake is installed in this process (`TMP_E2E_KEEP_SETTLES=1`
+    /// keeps them); full length otherwise — see `device_gate::settle_ms`.
+    fn settle_ms(&self, ms: u64) -> u64 {
+        if crate::e2e_offline_fake() && std::env::var_os("TMP_E2E_KEEP_SETTLES").is_none() {
+            return 0;
+        }
+        ms
+    }
+
+    fn aborted(&self) -> bool {
+        crate::device_gate::op_abort_requested()
+    }
+}
+
+/// What a [`SimRig`] capture model reads: the fake's state as a capture renders it —
+/// `presetLevel`, and every param and bypass as the active scene renders it (its writes over
+/// the preset JSON's overlay over base).
+#[cfg(test)]
+pub(crate) struct Rendered<'a> {
+    st: &'a mut SimState,
+}
+
+#[cfg(test)]
+impl Rendered<'_> {
+    /// The last `setPresetLevel`.
+    pub(crate) fn preset_level(&self) -> f32 {
+        self.st.preset_level
+    }
+
+    /// `(group, node, param)` as the active scene renders it.
+    pub(crate) fn param(&mut self, group: &str, node: &str, param: &str) -> Option<f64> {
+        self.st.rendered_param(group, node, param)
+    }
+
+    /// `(group, node)`'s bypass as the active scene renders it.
+    pub(crate) fn bypassed(&mut self, group: &str, node: &str) -> Option<bool> {
+        self.st.rendered_bypass(group, node)
+    }
+}
+
+/// A [`SimRig`]'s capture model: the modeled integrated LUFS, `None` for silence.
+#[cfg(test)]
+type CaptureModel = dyn Fn(&mut Rendered) -> Option<f64>;
+
+/// A unit test's own rig (`crate::rig::scoped`): a private [`SimDevice`] for every session,
+/// a capture model the test writes, settles collapsed to zero, and a Stop flag of its own.
+/// Nothing here is process-global, so tests on separate rigs run in parallel.
+///
+/// A capture is silent while re-amp is OFF (the unit routes no USB return) and when the
+/// model answers `None` (a muted sound); otherwise it is the stimulus scaled so it measures
+/// exactly the modeled integrated LUFS.
+#[cfg(test)]
+pub(crate) struct SimRig {
+    dev: SimDevice,
+    model: Box<CaptureModel>,
+    abort: std::sync::atomic::AtomicBool,
+    captures: std::sync::atomic::AtomicU32,
+}
+
+#[cfg(test)]
+impl SimRig {
+    /// A rig over `dev` whose captures measure `model`'s LUFS.
+    pub(crate) fn new(
+        dev: SimDevice,
+        model: impl Fn(&mut Rendered) -> Option<f64> + 'static,
+    ) -> Self {
+        SimRig {
+            dev,
+            model: Box::new(model),
+            abort: std::sync::atomic::AtomicBool::new(false),
+            captures: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// Press Stop on this rig only.
+    pub(crate) fn request_abort(&self) {
+        self.abort.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many captures this rig has taken.
+    pub(crate) fn captures(&self) -> u32 {
+        self.captures.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+impl crate::rig::Rig for SimRig {
+    fn open_transport(&self) -> Result<Box<dyn HidTransport>, crate::error::DeviceError> {
+        let dev = self.dev.clone();
+        crate::trace::open(crate::trace::Backend::Sim, || Ok(Box::new(dev)))
+    }
+
+    fn capture(
+        &self,
+        stimulus: &[f32],
+        rate: u32,
+        tail_ms: u64,
+    ) -> Result<crate::audio::Capture, crate::error::LevelError> {
+        crate::trace::capture(crate::trace::Backend::Sim, stimulus, rate, tail_ms, || {
+            if self.aborted() {
+                return Err(crate::error::LevelError::Cancelled);
+            }
+            self.captures
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut st = self.dev.state.lock().expect("sim lock");
+            if !st.reamp_on {
+                return Ok(silent_capture(stimulus.len(), rate));
+            }
+            Ok(match (self.model)(&mut Rendered { st: &mut st }) {
+                Some(lufs) => scale_stimulus(stimulus, rate, lufs),
+                None => silent_capture(stimulus.len(), rate),
+            })
+        })
+    }
+
+    fn settle_ms(&self, _ms: u64) -> u64 {
+        0
+    }
+
+    fn aborted(&self) -> bool {
+        self.abort.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// Offline re-amp capture: read the installed fake's DSP state, compute the modeled
 /// loudness, and return a stimulus scaled to hit it. Falls back to the stimulus
 /// passthrough (the pre-physics behavior) when no fake is installed — a direct Rust
 /// leveller test that did not call [`set_live`], or the showcase tour (which injects
-/// Doctor profiles rather than measuring). The runtime online guard in
-/// `audio::reamp_capture` means this is never reached online.
+/// Doctor profiles rather than measuring). [`LiveSimRig`] is only the default rig offline,
+/// so this is never reached online.
 #[cfg(feature = "e2e")]
 pub fn e2e_capture(
     stimulus: &[f32],
@@ -2797,14 +2979,12 @@ fn leveled_contribution(st: &mut SimState, lp: &LeveledParam) -> Option<Contribu
 /// blocks integrate — cannot change; see `lufs.rs::dual_mono_stereo_reads_3_01_over_mono`).
 /// Ground-truthed against an external BS.1770 stereo meter (dual-mono +3.01 LU
 /// over mono on the same clip, matching ffmpeg's independent `ebur128` to 0.02 LU).
-#[cfg(feature = "e2e")]
 const DUAL_MONO_GAIN_LU: f64 = 3.0103;
 
 /// Duplicate a mono buffer onto both channels — the offline model of the TMP's
 /// mirrored USB-Out 1/2. Dual-mono is the only stereo shape the offline sim ever
 /// needs to emit: the fixture C-table models a single amp signal, never
 /// independent L/R.
-#[cfg(feature = "e2e")]
 fn to_dual_mono(mono: &[f32], rate: u32) -> crate::audio::Capture {
     let mut interleaved = Vec::with_capacity(mono.len() * 2);
     for &s in mono {
@@ -2829,7 +3009,6 @@ fn to_dual_mono(mono: &[f32], rate: u32) -> crate::audio::Capture {
 /// through the PRODUCTION measure path, not a hand-rolled stereo re-check).
 /// Deterministic. A silent stimulus (non-finite `l_stim`) can't be modeled →
 /// returned verbatim (still dual-mono).
-#[cfg(feature = "e2e")]
 fn scale_stimulus(stimulus: &[f32], rate: u32, l_model: f64) -> crate::audio::Capture {
     // ponytail: re-measure L_stim per capture — ebur128 over the fixed ~3 s WAV is sub-ms
     // and replaces a multi-second real capture, so caching it (keyed by stimulus identity,
@@ -2847,7 +3026,6 @@ fn scale_stimulus(stimulus: &[f32], rate: u32, l_model: f64) -> crate::audio::Ca
 
 /// The stimulus, dual-mono — the pre-physics fallback (no live SimDevice /
 /// unmodeled `l_stim`). Mirrors the real TMP's mirrored USB-Out (D1).
-#[cfg(feature = "e2e")]
 fn passthrough(stimulus: &[f32], rate: u32) -> crate::audio::Capture {
     to_dual_mono(stimulus, rate)
 }
@@ -2855,7 +3033,6 @@ fn passthrough(stimulus: &[f32], rate: u32) -> crate::audio::Capture {
 /// `n` samples of silence, dual-mono — `processed_loudness` reports "no signal
 /// captured" on it, exactly as a real silent USB return does, driving the
 /// leveller's no-signal / off-branch verdict.
-#[cfg(feature = "e2e")]
 fn silent_capture(n: usize, rate: u32) -> crate::audio::Capture {
     to_dual_mono(&vec![0.0; n.max(1)], rate)
 }
@@ -3398,29 +3575,28 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
 
 /// The field-8 (`presetDataChanged`) read body for `slot0` — the slot's static scenario
 /// JSON with `presetLevel` PLUS any baked footswitch param patched to the slot's saved doc
-/// (module header). `None` for a non-scenario slot / a non-e2e build, exactly as
-/// [`saved_slot_json`] alone.
-fn saved_slot_json_body(
-    #[cfg_attr(not(feature = "e2e"), allow(unused_variables))] st: &mut SimState,
-    slot0: u32,
-) -> Option<String> {
+/// (module header). A non-scenario slot / a non-e2e build answers
+/// [`SimState::preset_json`] verbatim when a test opted in
+/// ([`SimDevice::with_saved_preset_json`]), else `None`, exactly as [`saved_slot_json`] alone.
+fn saved_slot_json_body(st: &mut SimState, slot0: u32) -> Option<String> {
     #[cfg(feature = "e2e")]
-    {
+    if let Some(j) = saved_slot_json(slot0) {
         let doc = st.saved_doc(slot0).clone();
         // NO working copy here: field-8 is the SAVED document, so an unsaved `ftsw` edit must
         // be invisible to it (that asymmetry against the field-3 render above is the point —
         // `verify_fs_persisted_writes` reads this to decide whether the assign PERSISTED).
         let edits = st.saved_edits.get(&slot0).cloned().unwrap_or_default();
-        saved_slot_json(slot0).map(|j| {
-            let graph = with_working_edits(j.to_string(), &edits);
-            with_ftsw(&with_patched_doc(&graph, &doc), doc.ftsw.as_ref())
-        })
+        let graph = with_working_edits(j.to_string(), &edits);
+        return Some(with_ftsw(
+            &with_patched_doc(&graph, &doc),
+            doc.ftsw.as_ref(),
+        ));
     }
     #[cfg(not(feature = "e2e"))]
-    {
-        let _ = st;
-        saved_slot_json(slot0).map(str::to_string)
+    if let Some(j) = saved_slot_json(slot0) {
+        return Some(j.to_string());
     }
+    st.saved_preset_json.then(|| st.preset_json.clone())
 }
 
 /// The committed scenario preset JSON for a 0-based list index, cached (the seed module owns

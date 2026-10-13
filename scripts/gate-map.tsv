@@ -41,6 +41,8 @@ src-tauri/src/hid/*	transport
 src-tauri/src/audio.rs	transport
 src-tauri/src/audio/*	transport
 src-tauri/src/device_gate.rs	transport
+# The device-and-capture seam every session open, re-amp capture, settle and Stop goes through.
+src-tauri/src/rig.rs	transport
 # The typed errors whose kinds steer the connect, open-retry and cancel paths.
 src-tauri/src/error.rs	transport
 src-tauri/src/trace/*	transport

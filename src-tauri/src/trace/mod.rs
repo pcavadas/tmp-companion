@@ -18,10 +18,11 @@
 //! | `TMP_TRACE_WAV=pair` | write each capture's processed pair as a WAV |
 //! | `TMP_TRACE_FW_FILE` | where a device session's firmware version is written |
 //!
-//! THE SEAMS. [`open`] is the one hook in `session::open_transport`, so every session
-//! (command lane, monitor lane, probe) is recorded below `TrackedHid` and its
-//! auto-reopens are on the wire record too. [`settle`] is called from
-//! `device_gate::settle_ms`; [`capture`] wraps `audio::reamp_capture`; [`record_field8`]
+//! THE SEAMS. [`open`] wraps every rig's transport open (`rig::Rig::open_transport`, the
+//! one path `session::open_transport` takes), so every session (command lane, monitor lane,
+//! probe) is recorded below `TrackedHid` and its auto-reopens are on the wire record too.
+//! [`settle`] is called from `device_gate::settle_ms`; [`capture`] wraps every rig's
+//! capture (`audio::reamp_capture`); [`record_field8`]
 //! follows the seed's field-8 reads; [`record_cmd`] is for the e2e server's `/invoke`
 //! route. The event table and file layout are in `notes/e2e-test-plan.md` ("Recording").
 //!

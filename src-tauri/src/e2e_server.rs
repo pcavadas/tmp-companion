@@ -9,7 +9,8 @@
 //! UI bridge (`e2e_ui_bridge`, polled at `GET /ui/events`), in both tiers.
 //! The one source of truth for the e2e mode: `TMP_E2E_ONLINE=1` ⇒ drive the REAL device
 //! (no SimDevice factory, real re-amp, real device backup); anything else ⇒ the
-//! offline fake. Read by `run_e2e_server`, the `/sim/reset` guard, and `audio::reamp_capture`.
+//! offline fake. Read by `run_e2e_server`, the `/sim/reset` guard, and `rig`'s default-rig pick
+//! (`sim_device::LiveSimRig` offline, the real device online).
 
 use crate::*;
 
@@ -28,7 +29,7 @@ pub fn e2e_online() -> bool {
 /// in-process `SimDevice` call, so the hardware settle sleeps and the monitor pause-ack
 /// wait have nothing to wait for. Armed ONLY by the two installers below.
 ///
-/// Deliberately NOT `!e2e_online()` (what `audio::reamp_capture` uses). That predicate is
+/// Deliberately NOT `!e2e_online()` (what picks `rig`'s offline default rig). That predicate is
 /// true in ANY `--features e2e` build with `TMP_E2E_ONLINE` unset — including
 /// `cargo test --lib --features e2e`, where it would zero the settles for the whole test
 /// binary. The unit tests install their fake through raw `set_factory`/`set_live`, never

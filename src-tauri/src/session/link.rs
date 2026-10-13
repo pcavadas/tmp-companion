@@ -12,7 +12,7 @@ use super::*;
 /// → `connect_inner`) — route through [`open_transport`], so ONE installed factory covers
 /// every session. Pass a closure that clones one shared `SimDevice` and every session
 /// shares the same fake (no divergent state, no second-open seize race). Production never
-/// compiles this and always opens the real seized [`Hid`].
+/// compiles this and always opens the real seized [`Hid`](crate::hid::Hid).
 #[cfg(feature = "e2e")]
 pub mod e2e_transport {
     use crate::hid::HidTransport;
@@ -42,16 +42,13 @@ pub mod e2e_transport {
     }
 }
 
-/// Open the device transport: the e2e fake when a factory is installed (`--features e2e`,
-/// offline UI tests), else the real seized [`Hid`]. Single chokepoint for both the command
-/// lane and the monitor lane, and so the one place the trace recorder (`crate::trace`)
-/// hooks in, below `TrackedHid`; each branch names its own backend.
+/// Open the device transport on this thread's rig (`crate::rig`): the real seized
+/// [`Hid`](crate::hid::Hid) in production, the e2e factory's fake when one is installed
+/// (`--features e2e`, offline), a test's own SimDevice under `rig::scoped`. Single
+/// chokepoint for both the command lane and the monitor lane; each rig records its open
+/// (`crate::trace`) under its own backend, below `TrackedHid`.
 pub(super) fn open_transport() -> Result<Box<dyn HidTransport>, DeviceError> {
-    #[cfg(feature = "e2e")]
-    if let Some(t) = e2e_transport::take() {
-        return crate::trace::open(crate::trace::Backend::Sim, || Ok(t));
-    }
-    crate::trace::open(crate::trace::Backend::Device, || Ok(Box::new(Hid::open()?)))
+    crate::rig::open_transport()
 }
 
 /// The transport plus how long the HOST has been silent (see [`HID_INACTIVITY_DROP_MS`]):

@@ -1201,44 +1201,23 @@ fn build_capture_input_stream(
 /// This is the FULL-CLIP capture (the whole waveform is returned) — used by the
 /// spectrum/audit/calibration paths that need the samples. Leveling MEASUREMENTS
 /// use [`reamp_measure`], which exits as soon as integrated LUFS converges.
-/// Re-amp capture dispatcher. Production AND the ONLINE e2e tier (`TMP_E2E_ONLINE=1`) drive
-/// the REAL device audio I/O; only the OFFLINE e2e tier (no audio hardware) substitutes the
-/// deterministic fake. The runtime gate — rather than a compile-time `#[cfg]` — is what lets
-/// the single `--features e2e` `e2e_server` binary run BOTH tiers: offline against SimDevice
-/// and online against the plugged-in unit.
+///
+/// Runs on this thread's rig (`crate::rig`): the real device audio I/O in
+/// production and on the ONLINE e2e tier; the e2e server's physics model offline; a test's
+/// own SimDevice model under `rig::scoped`. Each rig records the capture
+/// (`crate::trace`, inert unless armed) under the backend that actually ran.
 pub fn reamp_capture(
     stimulus_mono: &[f32],
     sample_rate: u32,
     tail_ms: u64,
 ) -> Result<Capture, LevelError> {
-    // Both branches are recorded (`crate::trace`, inert unless armed) with the backend
-    // that actually ran.
-    #[cfg(feature = "e2e")]
-    if !crate::e2e_online() {
-        // Offline: drive the physics-faithful capture model (the real loudness law +
-        // a scene-relative outputLevel term), reading the installed SimDevice's DSP
-        // state, so the offline suite is a genuine loudness oracle. `tail_ms` unused
-        // (the model is deterministic, no decay tail to integrate).
-        return crate::trace::capture(
-            crate::trace::Backend::Sim,
-            stimulus_mono,
-            sample_rate,
-            tail_ms,
-            || crate::sim_device::e2e_capture(stimulus_mono, sample_rate),
-        );
-    }
-    crate::trace::capture(
-        crate::trace::Backend::Device,
-        stimulus_mono,
-        sample_rate,
-        tail_ms,
-        || reamp_capture_real(stimulus_mono, sample_rate, tail_ms),
-    )
+    crate::rig::capture(stimulus_mono, sample_rate, tail_ms)
 }
 
 /// Real re-amp capture over the device's USB audio I/O (the production path; also used by
-/// the online e2e tier). Plays the stimulus into USB-In and records the processed USB-Out.
-fn reamp_capture_real(
+/// the online e2e tier) — [`crate::rig::DeviceRig`]'s capture. Plays the stimulus into
+/// USB-In and records the processed USB-Out.
+pub(crate) fn reamp_capture_real(
     stimulus_mono: &[f32],
     sample_rate: u32,
     tail_ms: u64,
