@@ -82,6 +82,9 @@ const LABELS_7: [&str; 7] = [
 /// `fizzy` rule's [`FIZZY_MIN_FLATNESS`] gate, not a second threshold table. A
 /// DI-specific recalibration of these values is an explicit follow-up (the R5
 /// attended sweep). Any recalibration pass edits values here and nowhere else.
+/// (`benchmark.rs`'s leave-one-out re-derives a held-out copy in memory to
+/// estimate these values' false-positive rate; it never ships one.)
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thresholds {
     /// Low-mid excess ⇒ muddy.
     pub muddy_db: f64,
@@ -792,8 +795,34 @@ pub fn target_curve(family: Family) -> &'static [f64] {
 /// A length mismatch (should not happen — `band_db` always follows `family`'s
 /// layout) truncates to the shorter of the two via `zip`.
 pub fn deviations(band_db: &[f64], family: Family) -> Vec<f64> {
-    let target = target_curve(family);
+    deviations_from(band_db, target_curve(family))
+}
+
+/// [`deviations`] against an explicit `target` instead of the family's
+/// authored curve — the seam [`Calibration`] diagnoses through.
+pub(crate) fn deviations_from(band_db: &[f64], target: &[f64]) -> Vec<f64> {
     band_db.iter().zip(target).map(|(&d, &t)| d - t).collect()
+}
+
+/// A target curve plus a threshold table to diagnose against. Production
+/// always uses [`Calibration::shipped`] (the authored [`target_curve`] and
+/// [`Family::thresholds`]); the held-out benchmark (`benchmark.rs`) builds
+/// re-derived ones to estimate how the shipped values behave on sounds they
+/// were not derived from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Calibration {
+    pub target: Vec<f64>,
+    pub thresholds: Thresholds,
+}
+
+impl Calibration {
+    /// The family's shipped target curve and threshold table.
+    pub fn shipped(family: Family) -> Self {
+        Calibration {
+            target: target_curve(family).to_vec(),
+            thresholds: *family.thresholds(),
+        }
+    }
 }
 
 /// The stimulus's OWN band-dB reference for a family — the shape its authored
@@ -801,7 +830,7 @@ pub fn deviations(band_db: &[f64], family: Family) -> Vec<f64> {
 /// factory sweeps' reference stimulus is undocumented, so anchoring them would
 /// subtract an unknown, and their targets are already provisional single/two-
 /// preset anchors. `None` disables anchoring (unchanged deviations).
-fn stim_ref(family: Family) -> Option<&'static [f64]> {
+pub(crate) fn stim_ref(family: Family) -> Option<&'static [f64]> {
     match family {
         Family::Guitar => Some(&GUITAR_STIM_REF),
         Family::Bass | Family::BassVi => None,
@@ -2271,9 +2300,10 @@ fn compute_rule_metrics(
     nodes: Option<&[DoctorNode]>,
     instrument: Family,
     coverage: Option<&[bool]>,
+    target: &[f64],
 ) -> RuleMetrics {
     let bdb = band_db(&profile.bands);
-    let dev = deviations(&bdb, instrument);
+    let dev = deviations_from(&bdb, target);
     // Re-anchor to the capture's OWN stimulus transfer (guitar-only) so a
     // non-humbucker stimulus's spectral skew doesn't leak into the tilt/band
     // verdicts. Exactly 0 when the stimulus IS guitar-humbucker.wav; a no-op
@@ -2321,9 +2351,46 @@ pub fn diagnose_kind(
     coverage: Option<&[bool]>,
     offsets: PlaybackOffsets,
 ) -> Vec<Diag> {
-    let metrics = compute_rule_metrics(profile, nodes, instrument, coverage);
+    let metrics = compute_rule_metrics(
+        profile,
+        nodes,
+        instrument,
+        coverage,
+        target_curve(instrument),
+    );
     apply_thresholds(
-        &metrics, profile, nodes, instrument, kind, coverage, offsets,
+        &metrics,
+        profile,
+        nodes,
+        instrument,
+        kind,
+        coverage,
+        offsets,
+        instrument.thresholds(),
+    )
+}
+
+/// [`diagnose_kind`] against an explicit [`Calibration`] (no graph, no
+/// playback offset) — the benchmark's entry point. With
+/// `Calibration::shipped(instrument)` it returns exactly what `diagnose_kind`
+/// returns for the same graph-less inputs.
+pub fn diagnose_calibrated(
+    profile: &SoundProfile,
+    instrument: Family,
+    kind: StimulusKind,
+    coverage: Option<&[bool]>,
+    cal: &Calibration,
+) -> Vec<Diag> {
+    let metrics = compute_rule_metrics(profile, None, instrument, coverage, &cal.target);
+    apply_thresholds(
+        &metrics,
+        profile,
+        None,
+        instrument,
+        kind,
+        coverage,
+        PlaybackOffsets::NONE,
+        &cal.thresholds,
     )
 }
 
@@ -2333,6 +2400,7 @@ pub fn diagnose_kind(
 /// behavioral split of the old single-function body — driven once directly by
 /// `diagnose_kind`, and three times (over one shared `RuleMetrics`) by
 /// `diagnose_levels`.
+#[allow(clippy::too_many_arguments)]
 fn apply_thresholds(
     metrics: &RuleMetrics,
     profile: &SoundProfile,
@@ -2341,8 +2409,8 @@ fn apply_thresholds(
     kind: StimulusKind,
     coverage: Option<&[bool]>,
     offsets: PlaybackOffsets,
+    t: &Thresholds,
 ) -> Vec<Diag> {
-    let t = instrument.thresholds();
     // A rule keyed on band `i` fires only when the coverage source excited it.
     let covered = |i: usize| band_covered(coverage, i);
     let bdb = &metrics.bdb;
@@ -2778,7 +2846,13 @@ pub fn diagnose_levels(
         PlaybackLevel::Rehearsal,
         PlaybackLevel::Stage,
     ];
-    let metrics = compute_rule_metrics(profile, nodes, instrument, coverage);
+    let metrics = compute_rule_metrics(
+        profile,
+        nodes,
+        instrument,
+        coverage,
+        target_curve(instrument),
+    );
     let mut out: Vec<LeveledDiag> = Vec::new();
     for level in levels {
         let diags = apply_thresholds(
@@ -2789,6 +2863,7 @@ pub fn diagnose_levels(
             kind,
             coverage,
             playback_offsets(level),
+            instrument.thresholds(),
         );
         for diag in diags {
             if !out.iter().any(|d| d.diag.key == diag.key) {
@@ -5240,7 +5315,7 @@ mod tests {
     /// rules directly — the oracle tests lock the machinery so the next
     /// calibration round starts from proven code.
     fn localized_for(p: &SoundProfile, nodes: Option<&[DoctorNode]>) -> Vec<Diag> {
-        let metrics = compute_rule_metrics(p, nodes, Family::Guitar, None);
+        let metrics = compute_rule_metrics(p, nodes, Family::Guitar, None, &GUITAR_TARGET);
         localized_diags(p, &metrics, Family::Guitar, nodes, &|_| true)
     }
 

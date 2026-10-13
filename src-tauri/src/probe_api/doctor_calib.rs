@@ -10,8 +10,10 @@
 //! recalibration of that shared table.
 //!
 //! Output is a DETERMINISTIC JSON report (no timestamps; the operator names the
-//! `--out` file) plus a human markdown summary on stdout. READ-ONLY on the unit:
-//! loads + captures, never saves; the sweep ends re-amp OFF.
+//! `--out` file) plus a human markdown summary on stdout. Each row carries a
+//! `replay` profile, the input `probe --doctor-loo` re-diagnoses offline.
+//! READ-ONLY on the unit: loads + captures, never saves; the sweep ends re-amp
+//! OFF.
 //!
 //! Usage:
 //! ```text
@@ -225,6 +227,17 @@ fn peaks_json(profile: &doctor::SoundProfile) -> serde_json::Value {
     )
 }
 
+/// Everything the engine reads from this row, so `probe --doctor-loo` and the
+/// held-out benchmark (`benchmark.rs`) can re-diagnose the sweep offline under
+/// a re-derived calibration without another capture.
+fn replay_json(r: &Row) -> serde_json::Value {
+    serde_json::to_value(crate::benchmark::ReplayProfile::from_profile(
+        &r.profile,
+        Some(&r.coverage),
+    ))
+    .unwrap_or(serde_json::Value::Null)
+}
+
 /// One measured slot in the sweep.
 struct Row {
     slot: ListIndex,
@@ -421,6 +434,7 @@ pub fn probe_doctor_calib(
                 "tiltDbPerOct": slope,
                 "verdicts": row_verdicts(&r.profile, &r.coverage, family),
                 "peaks": peaks_json(&r.profile),
+                "replay": replay_json(r),
             })
         })
         .collect();
@@ -648,6 +662,7 @@ pub fn probe_doctor_calib_factory(
                 "tiltDbPerOct": slope,
                 "verdicts": row_verdicts(&r.profile, &r.coverage, family),
                 "peaks": peaks_json(&r.profile),
+                "replay": replay_json(r),
             })
         })
         .collect();

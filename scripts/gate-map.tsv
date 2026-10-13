@@ -184,6 +184,8 @@ src-tauri/src/presetmeta.rs	none
 src-tauri/src/variants.rs	none
 src-tauri/src/ir.rs	none
 src-tauri/src/spectrum.rs	none
+src-tauri/src/benchmark.rs	none
+src-tauri/src/probe_api/benchmark.rs	none
 src-tauri/src/blocklib.rs	none
 src-tauri/src/saved_blocks.rs	none
 src-tauri/src/migration.rs	none
