@@ -53,8 +53,8 @@ export default defineConfig({
       url: `http://127.0.0.1:${PORT}/health`,
       reuseExistingServer: true,
       timeout: 180_000,
-      // A blank TMP_E2E_TWIN beats any ambient twin address (blank is no twin).
-      env: { TMP_E2E_ONLINE: "1", TMP_E2E_TWIN: "" },
+      // A blank TMP_E2E_TWIN(_AUDIO) beats any ambient twin address (blank is none).
+      env: { TMP_E2E_ONLINE: "1", TMP_E2E_TWIN: "", TMP_E2E_TWIN_AUDIO: "" },
     },
   ],
 });

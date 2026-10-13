@@ -107,11 +107,12 @@ export default defineConfig({
     ...Array.from({ length: WORKERS }, (_, i) => ({
       command: `"${E2E_SERVER}"`,
       // "0" beats any ambient TMP_E2E_ONLINE=1 (the server parses `=1` strictly), and a
-      // blank TMP_E2E_TWIN any ambient twin address (blank is no twin).
+      // blank TMP_E2E_TWIN(_AUDIO) any ambient twin address (blank is none).
       env: {
         TMP_E2E_PORT: String(PORT + i),
         TMP_E2E_ONLINE: "0",
         TMP_E2E_TWIN: "",
+        TMP_E2E_TWIN_AUDIO: "",
       },
       url: `http://127.0.0.1:${String(PORT + i)}/health`,
       reuseExistingServer: !process.env.CI,

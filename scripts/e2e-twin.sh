@@ -4,6 +4,8 @@
 #
 #   TMP_E2E_TWIN=tcp:127.0.0.1:11600 scripts/e2e-twin.sh [spec …]    (default: songs copy)
 #   TMP_E2E_TWIN=… scripts/e2e-twin.sh --seed-only    stop after step 3, before any spec
+#   TMP_E2E_TWIN=… TMP_E2E_TWIN_AUDIO=tcp:127.0.0.1:11700 scripts/e2e-twin.sh level
+#                                       with the twin's re-amp audio: offline leveling
 #
 # --seed-only leaves the twin holding the pristine scenario: snapshot it there. A snapshot
 # taken after a run holds what the specs saved (copy.spec saves edits into 401/402), so
@@ -22,9 +24,11 @@
 #   5. runs Playwright with e2e/playwright.twin.config.ts, which only adopts that server;
 #   6. tears down: re-amp OFF, stray sweep, recall preset 001, server stopped.
 #
-# The twin has no re-amp audio: a spec that captures fails with "the twin has no re-amp
-# audio", never a faked number. The lane proves the control plane against the real
-# firmware; it is not device evidence and writes no stamp.
+# Re-amp captures go to the twin's own audio when TMP_E2E_TWIN_AUDIO is set beside the
+# twin's address (`twin_audio`: the twin's DSP, resampled to and from its 44.1 kHz). Without
+# it a spec that captures fails with "the twin has no re-amp audio here", never a faked
+# number. Either way the lane runs against the real firmware offline; it is not device
+# evidence (twin levels are not calibrated against the unit) and writes no stamp.
 #
 # Ports: bridge 12000 + offset*8, Vite 1821 + offset — disjoint from offline (7800-9399 /
 # 1421-1620), online (9400-10999 / 1621-1820) and the twin harness's default 11600.
@@ -52,7 +56,7 @@ SPECS=()
 SEED_ONLY=0
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
     --seed-only) SEED_ONLY=1 ;;
     *) SPECS+=("$a") ;;
   esac
@@ -63,7 +67,10 @@ for s in "${SPECS[@]}"; do
   f="e2e/specs/${s%.spec.ts}.spec.ts"
   [ -f "$f" ] || { err "no spec $f"; exit 2; }
   case "$s" in
-    level*|doctor*) log "note: $s captures audio — the twin refuses captures, expect it to fail" ;;
+    level*|doctor*)
+      if [ -z "${TMP_E2E_TWIN_AUDIO:-}" ]; then
+        log "note: $s captures audio and TMP_E2E_TWIN_AUDIO is unset — the twin refuses captures, expect it to fail"
+      fi ;;
   esac
   SPEC_FILES+=("$f")
 done
@@ -142,7 +149,7 @@ trap cleanup EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-log "twin lane: $TMP_E2E_TWIN · bridge :$PORT · vite :$VITE_PORT · target $TARGET"
+log "twin lane: $TMP_E2E_TWIN · audio ${TMP_E2E_TWIN_AUDIO:-none} · bridge :$PORT · vite :$VITE_PORT · target $TARGET"
 log "building e2e_server + probe (--features e2e, separate target dir)…"
 CARGO_TARGET_DIR="$TARGET" cargo build -q --manifest-path src-tauri/Cargo.toml \
   --features e2e --bin e2e_server --bin probe
@@ -203,11 +210,18 @@ SERVER_PID=$!
 disown "$SERVER_PID" 2>/dev/null || true
 ready=0
 for _ in $(seq 1 240); do
-  if grep -q "twin handshake failed" "$SERVER_LOG" 2>/dev/null; then
-    err "$(grep "twin handshake failed" "$SERVER_LOG" | tail -1)"; exit 1
+  if grep -q "twin handshake failed\|REFUSING TO START" "$SERVER_LOG" 2>/dev/null; then
+    err "$(grep "twin handshake failed\|REFUSING TO START" "$SERVER_LOG" | tail -1)"; exit 1
   fi
-  if grep -q "TWIN — seeded snapshot from the twin" "$SERVER_LOG" 2>/dev/null \
-     && curl -fsS -m 5 "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q '"twin":true'; then
+  if grep -q "TWIN — seeded snapshot from the twin" "$SERVER_LOG" 2>/dev/null; then
+    health="$(curl -fsS -m 5 "http://127.0.0.1:$PORT/health" 2>/dev/null || true)"
+    case "$health" in *'"twin":true'*) ;; *) sleep 1; continue ;; esac
+    if [ -n "${TMP_E2E_TWIN_AUDIO:-}" ]; then
+      case "$health" in
+        *'"twinAudio":true'*) ;;
+        *) err "the twin e2e_server is up without the twin's audio: $health"; exit 1 ;;
+      esac
+    fi
     ready=1; break
   fi
   sleep 1

@@ -4940,6 +4940,22 @@ fn twin_from_refuses_a_bad_address_and_a_twin_beside_online() {
     assert_eq!(twin_from(Some("1"), None), Ok(None));
 }
 
+/// The twin's audio: blank is none (captures refused), an address needs a twin beside it, and
+/// a scheme-less one is refused like the twin's own.
+#[test]
+fn twin_audio_from_needs_a_twin_and_a_scheme() {
+    use crate::e2e_server::twin_audio_from;
+    use crate::hid::twin::TwinAddr;
+    assert_eq!(twin_audio_from(true, None), Ok(None));
+    assert_eq!(twin_audio_from(false, Some(" ")), Ok(None));
+    assert_eq!(
+        twin_audio_from(true, Some("tcp:127.0.0.1:11700")),
+        Ok(Some(TwinAddr::Tcp("127.0.0.1:11700".into())))
+    );
+    assert!(twin_audio_from(false, Some("tcp:127.0.0.1:11700")).is_err());
+    assert!(twin_audio_from(true, Some("127.0.0.1:11700")).is_err());
+}
+
 /// The side lane: every `cancel_*` invoke and the counter and timing reads skip the serial queue, and
 /// a run command does not. Queued, a Stop only lands after the run it targets returned.
 #[test]
@@ -5039,6 +5055,11 @@ fn health_reports_twin_beside_online() {
     assert_eq!(v["online"], serde_json::json!(false));
     assert_eq!(
         v["twin"],
+        serde_json::json!(false),
+        "the key must be present: {v}"
+    );
+    assert_eq!(
+        v["twinAudio"],
         serde_json::json!(false),
         "the key must be present: {v}"
     );

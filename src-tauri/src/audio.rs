@@ -1041,15 +1041,16 @@ fn stream_error(what: &str, err: &str, linux: bool) -> String {
     base
 }
 
-/// The `twin` e2e tier (`TMP_E2E_TWIN`) has no audio: its device commands go to the twin,
-/// so a real stream opened here would play into or record whatever unit is plugged in.
-/// Every real stream open refuses under it, whichever caller (the rig, `probe`) asked.
+/// Under the `twin` e2e tier (`TMP_E2E_TWIN`) the device commands go to the twin, so a real
+/// stream opened here would play into or record whatever unit is plugged in. Every real
+/// stream open refuses under it, whichever caller (the rig, `probe`) asked; the twin's own
+/// captures go over `twin_audio` instead (`rig::TwinRig`), and the live paths have none.
 fn refuse_under_twin() -> Result<(), String> {
     #[cfg(feature = "e2e")]
     if crate::e2e_twin().is_some() {
         return Err(
-            "TMP_E2E_TWIN is set: the twin has no audio, and the host's streams \
-                    belong to the unit"
+            "TMP_E2E_TWIN is set: the twin's captures go over its own audio link \
+                    (TMP_E2E_TWIN_AUDIO), and the host's streams belong to the unit"
                 .into(),
         );
     }

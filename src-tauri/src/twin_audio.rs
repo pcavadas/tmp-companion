@@ -1,0 +1,749 @@
+//! `TwinAudio`: re-amp captures on an offline twin of the unit, for the `twin` e2e tier
+//! (`--features e2e`, `TMP_E2E_TWIN_AUDIO=<addr>` beside `TMP_E2E_TWIN`). The twin's audio is
+//! the unit's own DSP running with the twin, so a capture is the firmware's rendering of the
+//! stimulus through the loaded preset. It is offline and self-consistent, never device
+//! evidence: its levels are not calibrated against the unit.
+//!
+//! WIRE. One capture job per connection (TCP, or a Unix stream socket), little-endian:
+//! - request: `TWA1`, u16 version 1, u16 header length 20, u32 rate (44 100), u32 S, u32 R,
+//!   then S stimulus samples for the re-amp input as i32, 24-bit signed (full scale ±2^23);
+//! - reply: `TWA1`, i32 status, u32 channels, u32 frames, nine u32 diagnostics, then on OK
+//!   `frames × channels` i32 samples in the same format: USB-Out 1/2 for R frames, from the
+//!   block the stimulus started in.
+//!
+//! The far end may refuse a request before reading its stimulus and close, so a failed send
+//! still reads for the refusal. Hanging up cancels a running job: that is how a Stop lands,
+//! so every wait here polls the Stop flag and drops the link on it.
+//!
+//! RATE. The twin's audio runs at 44.1 kHz. The caller's stimulus is resampled down and the
+//! capture back up with a band-limited FFT resampler ([`resample`]), so the leveller sees the
+//! capture shape the unit's host streams return: two channels at the caller's rate, covering
+//! the stimulus plus the tail.
+
+use std::io::ErrorKind;
+use std::time::{Duration, Instant};
+
+use realfft::num_complex::Complex;
+use realfft::RealFftPlanner;
+
+use crate::audio::Capture;
+use crate::error::LevelError;
+use crate::hid::twin::{Stream, TwinAddr};
+
+/// The twin's audio rate.
+pub(crate) const TWIN_RATE: u32 = 44_100;
+const MAGIC: &[u8; 4] = b"TWA1";
+const VERSION: u16 = 1;
+const REQUEST_HEADER: u16 = 20;
+const DIAG: usize = 9;
+const REPLY_HEADER: usize = 16 + 4 * DIAG;
+/// The far end's longest job, either way (30 s at 44.1 kHz).
+const MAX_FRAMES: u32 = 30 * TWIN_RATE;
+/// 24-bit full scale.
+const FULL_SCALE: f32 = 8_388_608.0;
+/// How often a send or a wait for the reply looks at the Stop flag.
+const POLL: Duration = Duration::from_millis(100);
+/// How long the stimulus may take to go out.
+const SEND_BUDGET: Duration = Duration::from_secs(10);
+/// Past the capture's own length: how long the twin may take to answer.
+const REPLY_SLACK: Duration = Duration::from_secs(15);
+/// After a failed send, how long to wait for the refusal the far end sent instead.
+const REFUSAL_WAIT: Duration = Duration::from_secs(2);
+/// Twin-rate frames captured past the caller's window, so the resampler's edge stays outside it.
+const EDGE_FRAMES: u32 = 256;
+
+/// A job's outcome, as the far end reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Status {
+    Ok,
+    Busy,
+    BadRequest,
+    NoAudio,
+    Stalled,
+    Cancelled,
+    Poisoned,
+    Unknown(i32),
+}
+
+impl Status {
+    fn from_wire(v: i32) -> Status {
+        match v {
+            0 => Status::Ok,
+            1 => Status::Busy,
+            2 => Status::BadRequest,
+            3 => Status::NoAudio,
+            4 => Status::Stalled,
+            5 => Status::Cancelled,
+            6 => Status::Poisoned,
+            v => Status::Unknown(v),
+        }
+    }
+
+    fn error(self) -> String {
+        match self {
+            Status::Ok => "twin capture: ok".into(),
+            Status::Busy => "twin capture: the twin is running another capture".into(),
+            Status::BadRequest => {
+                "twin capture: the twin refused the request (malformed or too long)".into()
+            }
+            Status::NoAudio => "twin capture: the twin's audio loop is not running".into(),
+            Status::Stalled => "twin capture: the twin's audio stalled mid-capture".into(),
+            Status::Cancelled => "twin capture: the twin cancelled the capture".into(),
+            Status::Poisoned => "twin capture: the twin's audio retired itself after a cancel \
+                                 that did not complete; restart the twin"
+                .into(),
+            Status::Unknown(v) => format!("twin capture: unknown status {v} from the twin"),
+        }
+    }
+}
+
+/// One job's reply. `samples` is empty unless the status is [`Status::Ok`].
+#[derive(Debug)]
+pub(crate) struct Reply {
+    pub status: Status,
+    pub channels: u32,
+    pub frames: u32,
+    /// injected, recorded, late blocks, max lateness (µs), slips, PCM events, two reserved,
+    /// non-zero return samples.
+    pub diag: [u32; DIAG],
+    pub samples: Vec<i32>,
+}
+
+/// A float sample in 24-bit signed full scale, clamped.
+pub(crate) fn to_s24(x: f32) -> i32 {
+    (x * FULL_SCALE)
+        .round()
+        .clamp(-(FULL_SCALE - 1.0), FULL_SCALE - 1.0) as i32
+}
+
+/// A 24-bit signed sample in the low bits of an i32 (sign-extended or not) as a float.
+pub(crate) fn from_s24(v: i32) -> f32 {
+    ((v << 8) >> 8) as f32 / FULL_SCALE
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+/// The smallest number at least `n` with no prime factor above 7: a fast FFT length.
+fn smooth_at_least(n: usize) -> usize {
+    (n.max(1)..)
+        .find(|&v| {
+            let mut v = v;
+            for f in [2, 3, 5, 7] {
+                while v % f == 0 {
+                    v /= f;
+                }
+            }
+            v == 1
+        })
+        .unwrap_or(n)
+}
+
+/// Band-limited resampling of `x` from `from` Hz to `to` Hz: the whole signal's spectrum, cut
+/// or zero-extended to the new length, so content below both Nyquists comes through exactly
+/// and nothing above the lower one folds back. The signal is padded with 20 ms of silence
+/// first, so the transform's wrap-around stays out of it. The result has
+/// `round(len · to / from)` samples.
+pub(crate) fn resample(x: &[f32], from: u32, to: u32) -> Result<Vec<f32>, String> {
+    if from == 0 || to == 0 {
+        return Err(format!("resample {from} Hz -> {to} Hz: a rate is zero"));
+    }
+    if from == to || x.is_empty() {
+        return Ok(x.to_vec());
+    }
+    let g = gcd(from, to);
+    let (p, q) = ((from / g) as usize, (to / g) as usize);
+    let out_len = ((x.len() as u64 * to as u64 + from as u64 / 2) / from as u64) as usize;
+    let guard = from as usize / 50;
+    let k = smooth_at_least((x.len() + guard).div_ceil(p));
+    let (n, m) = (k * p, k * q);
+
+    let mut planner = RealFftPlanner::<f64>::new();
+    let forward = planner.plan_fft_forward(n);
+    let inverse = planner.plan_fft_inverse(m);
+    let mut buf: Vec<f64> = x.iter().map(|&v| f64::from(v)).collect();
+    buf.resize(n, 0.0);
+    let mut spectrum = forward.make_output_vec();
+    forward
+        .process(&mut buf, &mut spectrum)
+        .map_err(|e| format!("resample: forward FFT: {e}"))?;
+
+    let mut out_spectrum = inverse.make_input_vec();
+    let keep = spectrum.len().min(out_spectrum.len());
+    out_spectrum[..keep].copy_from_slice(&spectrum[..keep]);
+    // The top kept bin sits at the lower Nyquist: drop it, since a real signal's Nyquist bin
+    // must be real and this one is a single bin at the band edge either way.
+    if keep > 1 {
+        out_spectrum[keep - 1] = Complex::new(0.0, 0.0);
+    }
+    out_spectrum[0].im = 0.0;
+    let mut y = inverse.make_output_vec();
+    inverse
+        .process(&mut out_spectrum, &mut y)
+        .map_err(|e| format!("resample: inverse FFT: {e}"))?;
+    let scale = 1.0 / n as f64;
+    Ok(y.iter()
+        .take(out_len)
+        .map(|&v| (v * scale) as f32)
+        .collect())
+}
+
+fn request(stim: &[i32], frames: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(REQUEST_HEADER as usize + 4 * stim.len());
+    b.extend_from_slice(MAGIC);
+    b.extend_from_slice(&VERSION.to_le_bytes());
+    b.extend_from_slice(&REQUEST_HEADER.to_le_bytes());
+    b.extend_from_slice(&TWIN_RATE.to_le_bytes());
+    b.extend_from_slice(&(stim.len() as u32).to_le_bytes());
+    b.extend_from_slice(&frames.to_le_bytes());
+    for s in stim {
+        b.extend_from_slice(&s.to_le_bytes());
+    }
+    b
+}
+
+fn u32_at(b: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+}
+
+/// The job link; dropping it hangs up, which cancels a job the twin is still running.
+struct Link(Stream);
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
+}
+
+fn is_timeout(e: &std::io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+}
+
+/// Send the request, polling `aborted`. `Err` carries why the send failed.
+fn send(link: &Link, mut req: &[u8], aborted: &dyn Fn() -> bool) -> Result<(), SendFail> {
+    let deadline = Instant::now() + SEND_BUDGET;
+    link.0
+        .set_write_timeout(POLL)
+        .map_err(|e| SendFail::Io(e.to_string()))?;
+    while !req.is_empty() {
+        if aborted() {
+            return Err(SendFail::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(SendFail::Io(format!(
+                "the twin took no stimulus for {} s",
+                SEND_BUDGET.as_secs()
+            )));
+        }
+        match link.0.write(req) {
+            Ok(0) => return Err(SendFail::Io("the link closed".into())),
+            Ok(n) => req = &req[n..],
+            Err(e) if e.kind() == ErrorKind::Interrupted || is_timeout(&e) => {}
+            Err(e) => return Err(SendFail::Io(e.to_string())),
+        }
+    }
+    Ok(())
+}
+
+enum SendFail {
+    Cancelled,
+    Io(String),
+}
+
+/// Run one capture job: `stim` into the re-amp input, `frames` frames back, at the twin's
+/// rate. A Stop (`aborted`) hangs up and returns [`LevelError::Cancelled`].
+pub(crate) fn run_job(
+    addr: &TwinAddr,
+    stim: &[i32],
+    frames: u32,
+    aborted: &dyn Fn() -> bool,
+) -> Result<Reply, LevelError> {
+    if stim.len() > MAX_FRAMES as usize || frames == 0 || frames > MAX_FRAMES {
+        return Err(LevelError::Device(format!(
+            "twin capture: {} frames in, {frames} out; the twin takes 1 to {MAX_FRAMES}",
+            stim.len()
+        )));
+    }
+    let link = Link(Stream::connect(addr).map_err(|e| {
+        LevelError::Device(format!(
+            "twin capture: no twin audio listening at {addr} ({e})"
+        ))
+    })?);
+    let sent = match send(&link, &request(stim, frames), aborted) {
+        Ok(()) => Ok(()),
+        Err(SendFail::Cancelled) => return Err(LevelError::Cancelled),
+        Err(SendFail::Io(e)) => Err(e),
+    };
+    let budget = match sent {
+        Ok(()) => Duration::from_secs_f64(f64::from(frames) / f64::from(TWIN_RATE)) + REPLY_SLACK,
+        Err(_) => REFUSAL_WAIT,
+    };
+    let failed = |what: String| {
+        LevelError::Device(match &sent {
+            Ok(()) => format!("twin capture: {what}"),
+            Err(e) => format!("twin capture: sending the stimulus failed ({e}), then {what}"),
+        })
+    };
+
+    let deadline = Instant::now() + budget;
+    let mut buf: Vec<u8> = Vec::with_capacity(REPLY_HEADER);
+    let mut need = REPLY_HEADER;
+    let mut head: Option<(Status, u32, u32, [u32; DIAG])> = None;
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        if buf.len() >= need {
+            if head.is_some() {
+                break;
+            }
+            if &buf[..4] != MAGIC {
+                return Err(failed("the reply is not a twin audio reply".into()));
+            }
+            let status = Status::from_wire(u32_at(&buf, 4) as i32);
+            let (channels, got) = (u32_at(&buf, 8), u32_at(&buf, 12));
+            let mut diag = [0u32; DIAG];
+            for (i, d) in diag.iter_mut().enumerate() {
+                *d = u32_at(&buf, 16 + 4 * i);
+            }
+            if status != Status::Ok {
+                return Ok(Reply {
+                    status,
+                    channels,
+                    frames: got,
+                    diag,
+                    samples: Vec::new(),
+                });
+            }
+            if channels != 2 || got != frames {
+                return Err(failed(format!(
+                    "the twin answered {channels} channel(s) x {got} frames, not 2 x {frames}"
+                )));
+            }
+            need = REPLY_HEADER + 4 * 2 * frames as usize;
+            head = Some((status, channels, got, diag));
+            continue;
+        }
+        if aborted() {
+            return Err(LevelError::Cancelled);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(failed(format!(
+                "no reply within {:.1} s",
+                budget.as_secs_f64()
+            )));
+        }
+        if let Err(e) = link.0.set_read_timeout(POLL.min(left)) {
+            return Err(failed(format!("read: {e}")));
+        }
+        let want = (need - buf.len()).min(chunk.len());
+        match link.0.read(&mut chunk[..want]) {
+            Ok(0) => {
+                return Err(failed(format!(
+                    "the twin closed the link after {} of {need} reply bytes",
+                    buf.len()
+                )))
+            }
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted || is_timeout(&e) => {}
+            Err(e) => return Err(failed(format!("read: {e}"))),
+        }
+    }
+    let Some((status, channels, frames, diag)) = head else {
+        return Err(failed("no reply header".into()));
+    };
+    let samples = buf[REPLY_HEADER..]
+        .chunks_exact(4)
+        .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    Ok(Reply {
+        status,
+        channels,
+        frames,
+        diag,
+        samples,
+    })
+}
+
+/// Play `stimulus` (mono, `rate` Hz) into the twin's re-amp input and return its USB-Out 1/2
+/// for the stimulus plus `tail_ms`, at `rate`. Re-amp is already ON (the caller's job).
+pub(crate) fn capture(
+    addr: &TwinAddr,
+    stimulus: &[f32],
+    rate: u32,
+    tail_ms: u64,
+    aborted: &dyn Fn() -> bool,
+) -> Result<Capture, LevelError> {
+    if aborted() {
+        return Err(LevelError::Cancelled);
+    }
+    if rate == 0 {
+        return Err(LevelError::Device("twin capture: sample rate 0".into()));
+    }
+    let want = stimulus.len() + (tail_ms as usize).saturating_mul(rate as usize) / 1000;
+    let stim: Vec<i32> = resample(stimulus, rate, TWIN_RATE)
+        .map_err(LevelError::Device)?
+        .into_iter()
+        .map(to_s24)
+        .collect();
+    let frames = u32::try_from((want as u64 * u64::from(TWIN_RATE)).div_ceil(u64::from(rate)))
+        .unwrap_or(u32::MAX)
+        .saturating_add(EDGE_FRAMES);
+    let reply = run_job(addr, &stim, frames, aborted)?;
+    if reply.status != Status::Ok {
+        return Err(LevelError::Device(reply.status.error()));
+    }
+    let [injected, recorded, late, max_late_us, slips, pcm_events, _, _, nonzero] = reply.diag;
+    log::debug!(
+        "twin capture: {injected} frames in, {recorded} out ({} x {}), {nonzero} non-zero; \
+         late blocks {late} (max {max_late_us} us), slips {slips}, PCM events {pcm_events}",
+        reply.channels,
+        reply.frames
+    );
+    let channel = |c: usize| -> Result<Vec<f32>, LevelError> {
+        let twin: Vec<f32> = reply.samples[c..]
+            .iter()
+            .step_by(2)
+            .map(|&v| from_s24(v))
+            .collect();
+        resample(&twin, TWIN_RATE, rate).map_err(LevelError::Device)
+    };
+    let (left, right) = (channel(0)?, channel(1)?);
+    let mut interleaved = Vec::with_capacity(want * 2);
+    for i in 0..want {
+        interleaved.push(left.get(i).copied().unwrap_or(0.0));
+        interleaved.push(right.get(i).copied().unwrap_or(0.0));
+    }
+    Ok(Capture {
+        interleaved,
+        channels: 2,
+        sample_rate: rate,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
+
+    fn sine(rate: u32, hz: f64, secs: f64, amp: f64) -> Vec<f32> {
+        (0..(secs * f64::from(rate)) as usize)
+            .map(|k| {
+                (amp * (2.0 * std::f64::consts::PI * hz * k as f64 / f64::from(rate)).sin()) as f32
+            })
+            .collect()
+    }
+
+    fn rms_db(x: &[f32]) -> f64 {
+        let ms = x.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>() / x.len() as f64;
+        10.0 * ms.log10()
+    }
+
+    fn never() -> bool {
+        false
+    }
+
+    #[test]
+    fn resample_keeps_the_rounded_length() {
+        for (len, from, to, want) in [
+            (48_000, 48_000, 44_100, 44_100),
+            (1000, 48_000, 44_100, 919),
+            (44_100, 44_100, 48_000, 48_000),
+            (7, 44_100, 48_000, 8),
+        ] {
+            let y = resample(&vec![0.0; len], from, to).unwrap();
+            assert_eq!(y.len(), want, "{len} samples {from} -> {to}");
+        }
+        assert_eq!(
+            resample(&[0.5, -0.5], 48_000, 48_000).unwrap(),
+            vec![0.5, -0.5]
+        );
+        assert!(resample(&[0.5], 0, 48_000).is_err());
+    }
+
+    #[test]
+    fn resample_matches_the_tone_at_the_new_rate() {
+        // A 1 kHz tone at 48 kHz, resampled to 44.1 kHz, is the same tone sampled at 44.1 kHz
+        // away from the edges (where the burst's own start and stop ring).
+        let y = resample(&sine(48_000, 1000.0, 1.0, 0.5), 48_000, 44_100).unwrap();
+        let want = sine(44_100, 1000.0, 1.0, 0.5);
+        let worst = (4410..39_690)
+            .map(|k| (y[k] - want[k]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-3, "worst error {worst}");
+    }
+
+    #[test]
+    fn resample_round_trip_keeps_the_level() {
+        let x = sine(48_000, 997.0, 2.0, 0.25);
+        let there = resample(&x, 48_000, 44_100).unwrap();
+        let back = resample(&there, 44_100, 48_000).unwrap();
+        assert_eq!(back.len(), x.len());
+        let mid = 9600..86_400;
+        let delta = rms_db(&back[mid.clone()]) - rms_db(&x[mid]);
+        assert!(delta.abs() < 0.001, "round trip moved the level {delta} dB");
+    }
+
+    #[test]
+    fn resample_drops_content_above_the_lower_nyquist() {
+        // 23 kHz is legal at 48 kHz and above 44.1 kHz's Nyquist: it must vanish, not fold.
+        let y = resample(&sine(48_000, 23_000.0, 1.0, 0.5), 48_000, 44_100).unwrap();
+        let level = rms_db(&y[4410..39_690]);
+        assert!(level < -80.0, "23 kHz came through at {level} dBFS");
+    }
+
+    #[test]
+    fn s24_codec_round_trips_clamps_and_sign_extends() {
+        assert_eq!(to_s24(0.5), 4_194_304);
+        assert_eq!(to_s24(1.0), 8_388_607);
+        assert_eq!(to_s24(-2.0), -8_388_607);
+        assert_eq!(to_s24(f32::NAN), 0);
+        assert_eq!(from_s24(-1), -1.0 / FULL_SCALE);
+        assert_eq!(
+            from_s24(0x00FF_FFFF),
+            -1.0 / FULL_SCALE,
+            "low 24 bits, not sign-extended"
+        );
+        assert_eq!(from_s24(4_194_304), 0.5);
+        for x in [0.0f32, 0.25, -0.75, 0.999] {
+            assert!((from_s24(to_s24(x)) - x).abs() <= 1.0 / FULL_SCALE);
+        }
+    }
+
+    /// What a fake far end saw of one request.
+    struct Seen {
+        rate: u32,
+        frames: u32,
+        stim: Vec<i32>,
+    }
+
+    fn read_request(s: &mut TcpStream) -> Seen {
+        let mut h = [0u8; 20];
+        s.read_exact(&mut h).unwrap();
+        assert_eq!(&h[..4], MAGIC);
+        assert_eq!(u16::from_le_bytes([h[4], h[5]]), VERSION);
+        assert_eq!(u16::from_le_bytes([h[6], h[7]]), REQUEST_HEADER);
+        let (rate, n, frames) = (u32_at(&h, 8), u32_at(&h, 12), u32_at(&h, 16));
+        let mut body = vec![0u8; 4 * n as usize];
+        s.read_exact(&mut body).unwrap();
+        let stim = body
+            .chunks_exact(4)
+            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        Seen { rate, frames, stim }
+    }
+
+    fn reply_header(status: i32, channels: u32, frames: u32) -> Vec<u8> {
+        let mut r = MAGIC.to_vec();
+        r.extend_from_slice(&status.to_le_bytes());
+        r.extend_from_slice(&channels.to_le_bytes());
+        r.extend_from_slice(&frames.to_le_bytes());
+        r.extend_from_slice(&[0u8; 4 * DIAG]);
+        r
+    }
+
+    /// A far end on an ephemeral port, running `peer` on the one connection it accepts.
+    fn far_end(peer: impl FnOnce(TcpStream) + Send + 'static) -> TwinAddr {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = TwinAddr::Tcp(l.local_addr().unwrap().to_string());
+        std::thread::spawn(move || {
+            if let Ok((s, _)) = l.accept() {
+                peer(s);
+            }
+        });
+        addr
+    }
+
+    /// The far end as the twin answers a static chain: the stimulus back on both channels,
+    /// one 32-frame block late, then silence.
+    fn identity(seen: mpsc::Sender<(u32, u32, usize)>) -> impl FnOnce(TcpStream) + Send {
+        move |mut s| {
+            let req = read_request(&mut s);
+            let mut out = reply_header(0, 2, req.frames);
+            for k in 0..req.frames as usize {
+                let v = k
+                    .checked_sub(32)
+                    .and_then(|i| req.stim.get(i))
+                    .copied()
+                    .unwrap_or(0);
+                out.extend_from_slice(&v.to_le_bytes());
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            s.write_all(&out).unwrap();
+            let _ = seen.send((req.rate, req.frames, req.stim.len()));
+        }
+    }
+
+    #[test]
+    fn a_capture_comes_back_at_the_callers_rate_with_the_stimulus_level() {
+        let (tx, rx) = mpsc::channel();
+        let addr = far_end(identity(tx));
+        let stim = sine(48_000, 1000.0, 1.0, 0.25);
+        let cap = capture(&addr, &stim, 48_000, 200, &never).unwrap();
+        assert_eq!((cap.channels, cap.sample_rate), (2, 48_000));
+        assert_eq!(cap.interleaved.len(), 2 * (48_000 + 9600));
+        let (rate, frames, sent) = rx.recv().unwrap();
+        assert_eq!(rate, TWIN_RATE);
+        assert_eq!(sent, 44_100, "the stimulus went over at 44.1 kHz");
+        assert_eq!(
+            frames,
+            52_920 + EDGE_FRAMES,
+            "stimulus + tail at 44.1 kHz, plus the edge"
+        );
+        // Dual mono through the production meter reads the mono stimulus + 3.01 LU, as the
+        // unit's mirrored USB-Out does. The reference carries the same silent tail: gated
+        // blocks that straddle it count toward the integrated level.
+        let mut padded = stim.clone();
+        padded.resize(stim.len() + 9600, 0.0);
+        let stim_lufs = crate::lufs::measure_mono(&padded, 48_000)
+            .unwrap()
+            .integrated_lufs;
+        let got = crate::leveller::processed_lufs(Ok(cap)).unwrap();
+        let delta = got - (stim_lufs + 3.01);
+        assert!(
+            delta.abs() < 0.02,
+            "capture read {got}, stimulus {stim_lufs}: off by {delta}"
+        );
+    }
+
+    // The leveling stimulus itself (broadband, the full 6 s + 0.8 s window): the resampling
+    // both ways must not move its integrated level.
+    #[test]
+    fn the_leveling_stimulus_keeps_its_level_through_the_twin_rate() {
+        let (tx, _rx) = mpsc::channel();
+        let addr = far_end(identity(tx));
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/resources/samples/guitar-humbucker.wav"
+        );
+        let stim = crate::read_stimulus_calibrated(path, None).unwrap();
+        let cap = capture(&addr, &stim, 48_000, 800, &never).unwrap();
+        let mut padded = stim.clone();
+        padded.resize(stim.len() + 38_400, 0.0);
+        let stim_lufs = crate::lufs::measure_mono(&padded, 48_000)
+            .unwrap()
+            .integrated_lufs;
+        let got = crate::leveller::processed_lufs(Ok(cap)).unwrap();
+        let delta = got - (stim_lufs + 3.01);
+        assert!(
+            delta.abs() < 0.02,
+            "capture read {got}, stimulus {stim_lufs}: off by {delta}"
+        );
+    }
+
+    #[test]
+    fn a_status_comes_back_as_its_reply() {
+        let addr = far_end(|mut s| {
+            let _ = read_request(&mut s);
+            s.write_all(&reply_header(3, 2, 0)).unwrap();
+        });
+        let reply = run_job(&addr, &[1, 2, 3], 100, &never).unwrap();
+        assert_eq!(reply.status, Status::NoAudio);
+        assert!(reply.samples.is_empty());
+        let addr = far_end(|mut s| {
+            let _ = read_request(&mut s);
+            s.write_all(&reply_header(3, 2, 0)).unwrap();
+        });
+        let Err(err) = capture(&addr, &[0.1; 480], 48_000, 0, &never) else {
+            panic!("a NO_AUDIO reply must not be a capture");
+        };
+        assert!(
+            err.to_string().contains("audio loop is not running"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_short_or_malformed_reply_is_an_error() {
+        let addr = far_end(|mut s| {
+            let req = read_request(&mut s);
+            let mut out = reply_header(0, 2, req.frames);
+            out.extend_from_slice(&[0u8; 40]);
+            s.write_all(&out).unwrap();
+        });
+        let err = run_job(&addr, &[0; 10], 100, &never).unwrap_err();
+        assert!(err.to_string().contains("closed the link after"), "{err}");
+
+        let addr = far_end(|mut s| {
+            let req = read_request(&mut s);
+            s.write_all(&reply_header(0, 4, req.frames)).unwrap();
+        });
+        let err = run_job(&addr, &[0; 10], 100, &never).unwrap_err();
+        assert!(err.to_string().contains("not 2 x 100"), "{err}");
+
+        let addr = far_end(|mut s| {
+            let _ = read_request(&mut s);
+            let mut out = reply_header(0, 2, 100);
+            out[..4].copy_from_slice(b"HTTP");
+            s.write_all(&out).unwrap();
+        });
+        let err = run_job(&addr, &[0; 10], 100, &never).unwrap_err();
+        assert!(err.to_string().contains("not a twin audio reply"), "{err}");
+    }
+
+    #[test]
+    fn a_stop_hangs_up_and_cancels() {
+        let (tx, rx) = mpsc::channel();
+        let addr = far_end(move |mut s| {
+            let _ = read_request(&mut s);
+            // Never answer: wait for the hang-up, as the twin does while a job runs.
+            let mut b = [0u8; 1];
+            let _ = tx.send(matches!(s.read(&mut b), Ok(0)));
+        });
+        let t0 = Instant::now();
+        let stop = move || t0.elapsed() > Duration::from_millis(300);
+        let err = run_job(&addr, &[0; 4410], 44_100, &stop).unwrap_err();
+        assert!(err.is_cancelled(), "{err}");
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "the Stop took {:?}",
+            t0.elapsed()
+        );
+        assert!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "the far end saw the hang-up"
+        );
+    }
+
+    #[test]
+    fn no_listener_and_an_oversized_job_are_refused() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = TwinAddr::Tcp(l.local_addr().unwrap().to_string());
+        drop(l);
+        let err = run_job(&addr, &[0; 10], 100, &never).unwrap_err();
+        assert!(err.to_string().contains("no twin audio listening"), "{err}");
+        let err = run_job(&addr, &[0; 10], MAX_FRAMES + 1, &never).unwrap_err();
+        assert!(err.to_string().contains("the twin takes 1 to"), "{err}");
+    }
+
+    // The far end refuses before reading the stimulus and closes: the send fails, and the
+    // refusal is still read. A Unix socket keeps the refusal readable after the far end's
+    // close (a TCP reset could discard it), as the twin's own audio socket does.
+    #[cfg(unix)]
+    #[test]
+    fn a_refusal_before_the_stimulus_is_still_read() {
+        use std::os::unix::net::UnixListener;
+        let dir = std::env::temp_dir().join(format!("twin-audio-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("refuse.sock");
+        let _ = std::fs::remove_file(&path);
+        let l = UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let mut h = [0u8; 20];
+                s.read_exact(&mut h).unwrap();
+                s.write_all(&reply_header(1, 2, 0)).unwrap();
+            }
+        });
+        let addr = TwinAddr::Unix(path.clone());
+        let reply = run_job(&addr, &vec![0; 30 * 44_100], 100, &never).unwrap();
+        assert_eq!(reply.status, Status::Busy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

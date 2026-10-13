@@ -109,6 +109,9 @@ pub mod topologies;
 // Lossless device traces for online e2e runs; inert unless `TMP_TRACE_DIR` is set.
 // Most of it is reached only from the e2e server and the seed, so default builds see it unused.
 mod trace;
+// The twin tier's re-amp audio client (`TMP_E2E_TWIN_AUDIO`): e2e builds and tests only.
+#[cfg(any(feature = "e2e", test))]
+mod twin_audio;
 // P5 external validation: the JSON-lines expectation log the measurement seams append
 // to when `TMP_E2E_VALIDATE_LOG` is set. Inert (and unallocating) otherwise.
 mod validate_log;
@@ -254,9 +257,11 @@ pub(crate) use e2e_server::e2e_showcase;
 #[cfg(feature = "e2e")]
 pub(crate) use e2e_server::e2e_twin;
 #[cfg(feature = "e2e")]
+pub(crate) use e2e_server::e2e_twin_audio;
+#[cfg(feature = "e2e")]
 pub use e2e_server::run_e2e_server;
 #[cfg(feature = "e2e")]
-pub use e2e_server::{e2e_mode_refusal, e2e_twin_label};
+pub use e2e_server::{e2e_mode_refusal, e2e_twin_audio_label, e2e_twin_label};
 
 /// Fixture invariants that must hold regardless of build features.
 ///

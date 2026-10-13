@@ -6,8 +6,9 @@ import { fileURLToPath } from "node:url";
 // unit's firmware (`TMP_E2E_TWIN`, `hid::twin`). Run it through `scripts/e2e-twin.sh`, which
 // builds, empties the twin's scratch zone, seeds, and starts the e2e_server this config only
 // ADOPTS: its e2e_server entry refuses to start one itself, so a run can never fall back to
-// a server of another mode. The twin has no re-amp audio, so only control-plane specs pass
-// (the runner's default set); this lane never stamps.
+// a server of another mode. Re-amp captures go to the twin's own audio when
+// TMP_E2E_TWIN_AUDIO is set beside the twin's address; without it they are refused, and only
+// the control-plane specs pass (the runner's default set). This lane never stamps.
 const PORT = process.env.TMP_E2E_PORT ?? "12000";
 const VITE = process.env.TMP_E2E_VITE_PORT ?? "1821";
 
@@ -18,6 +19,7 @@ export default defineConfig({
   metadata: {
     expectOnline: true,
     expectTwin: true,
+    expectTwinAudio: Boolean(process.env.TMP_E2E_TWIN_AUDIO?.trim()),
     healthUrls: [`http://127.0.0.1:${PORT}/health`],
   },
   fullyParallel: false,

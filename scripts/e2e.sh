@@ -228,10 +228,11 @@ done
 
 # This script drives the SimDevice or the unit, never a twin: an ambient twin address would
 # point the seed probe at the twin while the online server refuses to start beside it.
-if [ -n "${TMP_E2E_TWIN:-}" ]; then
-  printf 'e2e.sh: ignoring TMP_E2E_TWIN=%s (this script never drives a twin)\n' "$TMP_E2E_TWIN" >&2
+if [ -n "${TMP_E2E_TWIN:-}${TMP_E2E_TWIN_AUDIO:-}" ]; then
+  printf 'e2e.sh: ignoring TMP_E2E_TWIN=%s TMP_E2E_TWIN_AUDIO=%s (this script never drives a twin)\n' \
+    "${TMP_E2E_TWIN:-}" "${TMP_E2E_TWIN_AUDIO:-}" >&2
 fi
-unset TMP_E2E_TWIN
+unset TMP_E2E_TWIN TMP_E2E_TWIN_AUDIO
 
 # ── `online auto` / `online release`: resolve the spec set from the diff (auto) or from
 #    everything since the last release tag (release) BEFORE anything builds, locks or seeds,

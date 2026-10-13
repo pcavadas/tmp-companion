@@ -12,8 +12,9 @@
 //! - production and the ONLINE e2e tier (`TMP_E2E_ONLINE=1`): [`DeviceRig`], the real
 //!   seized HID and Core Audio / ALSA / WASAPI streams;
 //! - an e2e build with `TMP_E2E_TWIN`: [`TwinRig`], the twin over `hid::twin::TwinHid`
-//!   (captures refused, settles at full length). The twin counts as online everywhere
-//!   else (`e2e_online`), since its state is real firmware state;
+//!   (captures over `twin_audio` when `TMP_E2E_TWIN_AUDIO` is set, refused otherwise;
+//!   settles at full length). The twin counts as online everywhere else (`e2e_online`),
+//!   since its state is real firmware state;
 //! - an e2e build OFFLINE: `sim_device::LiveSimRig`, the e2e server's shared SimDevice
 //!   (the transport factory, the physics capture model, collapsed settles).
 //!
@@ -101,8 +102,9 @@ pub(crate) fn scoped<T>(rig: Rc<dyn Rig>, f: impl FnOnce() -> T) -> T {
 }
 
 /// The `twin` e2e tier (`TMP_E2E_TWIN`): the unit's firmware off the device, reached over
-/// `hid::twin::TwinHid`. Control plane only: it has no re-amp audio yet, so a capture is
-/// refused rather than faked, and settles run at the unit's real length.
+/// `hid::twin::TwinHid`. Its captures are the twin's own DSP over `twin_audio`
+/// (`TMP_E2E_TWIN_AUDIO`); with no audio address a capture is refused rather than faked.
+/// Settles run at the unit's real length.
 #[cfg(feature = "e2e")]
 pub(crate) struct TwinRig;
 
@@ -116,10 +118,17 @@ impl Rig for TwinRig {
         })
     }
 
-    fn capture(&self, _: &[f32], _: u32, _: u64) -> Result<Capture, LevelError> {
-        Err(LevelError::Device(
-            "the twin has no re-amp audio: captures need the unit".into(),
-        ))
+    fn capture(&self, stimulus: &[f32], rate: u32, tail_ms: u64) -> Result<Capture, LevelError> {
+        crate::trace::capture(crate::trace::Backend::Twin, stimulus, rate, tail_ms, || {
+            let addr = crate::e2e_twin_audio().ok_or_else(|| {
+                LevelError::Device(
+                    "the twin has no re-amp audio here: set TMP_E2E_TWIN_AUDIO to its \
+                         audio address"
+                        .into(),
+                )
+            })?;
+            crate::twin_audio::capture(&addr, stimulus, rate, tail_ms, &|| self.aborted())
+        })
     }
 
     fn settle_ms(&self, ms: u64) -> u64 {

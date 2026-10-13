@@ -102,14 +102,37 @@ fn held() -> std::sync::MutexGuard<'static, Option<HashSet<String>>> {
     HELD.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-enum Stream {
+/// A connected byte stream to a twin address; `twin_audio` opens its job links with it too.
+pub(crate) enum Stream {
     Tcp(std::net::TcpStream),
     #[cfg(unix)]
     Unix(std::os::unix::net::UnixStream),
 }
 
 impl Stream {
-    fn set_read_timeout(&self, d: Duration) -> std::io::Result<()> {
+    pub(crate) fn connect(addr: &TwinAddr) -> std::io::Result<Stream> {
+        match addr {
+            TwinAddr::Tcp(hp) => std::net::TcpStream::connect(hp.as_str()).map(|s| {
+                // Records are small and latency-bound, like interrupt reports.
+                let _ = s.set_nodelay(true);
+                Stream::Tcp(s)
+            }),
+            #[cfg(unix)]
+            TwinAddr::Unix(p) => std::os::unix::net::UnixStream::connect(p).map(Stream::Unix),
+        }
+    }
+    pub(crate) fn shutdown(&self) {
+        match self {
+            Stream::Tcp(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            #[cfg(unix)]
+            Stream::Unix(s) => {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+        }
+    }
+    pub(crate) fn set_read_timeout(&self, d: Duration) -> std::io::Result<()> {
         // A zero timeout is an error on both socket types: clamp to the smallest wait.
         let d = Some(d.max(Duration::from_millis(1)));
         match self {
@@ -118,14 +141,29 @@ impl Stream {
             Stream::Unix(s) => s.set_read_timeout(d),
         }
     }
-    fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+    pub(crate) fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
             Stream::Tcp(s) => (&*s).read(buf),
             #[cfg(unix)]
             Stream::Unix(s) => (&*s).read(buf),
         }
     }
-    fn write_all(&self, buf: &[u8]) -> std::io::Result<()> {
+    pub(crate) fn set_write_timeout(&self, d: Duration) -> std::io::Result<()> {
+        let d = Some(d.max(Duration::from_millis(1)));
+        match self {
+            Stream::Tcp(s) => s.set_write_timeout(d),
+            #[cfg(unix)]
+            Stream::Unix(s) => s.set_write_timeout(d),
+        }
+    }
+    pub(crate) fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Tcp(s) => (&*s).write(buf),
+            #[cfg(unix)]
+            Stream::Unix(s) => (&*s).write(buf),
+        }
+    }
+    pub(crate) fn write_all(&self, buf: &[u8]) -> std::io::Result<()> {
         match self {
             Stream::Tcp(s) => (&*s).write_all(buf),
             #[cfg(unix)]
@@ -159,16 +197,7 @@ impl TwinHid {
             }
             e
         };
-        let stream = match addr {
-            TwinAddr::Tcp(hp) => std::net::TcpStream::connect(hp.as_str()).map(|s| {
-                // Records are small and latency-bound, like interrupt reports.
-                let _ = s.set_nodelay(true);
-                Stream::Tcp(s)
-            }),
-            #[cfg(unix)]
-            TwinAddr::Unix(p) => std::os::unix::net::UnixStream::connect(p).map(Stream::Unix),
-        }
-        .map_err(|e| {
+        let stream = Stream::connect(addr).map_err(|e| {
             release(DeviceError::NotFound(format!(
                 "no twin listening at {key} ({e})"
             )))
@@ -266,15 +295,7 @@ impl Drop for TwinHid {
     fn drop(&mut self) {
         // Close the link BEFORE releasing the seize, as the hardware transports close the
         // device before their handle count drops: the next open must find the old link gone.
-        match &self.stream {
-            Stream::Tcp(s) => {
-                let _ = s.shutdown(std::net::Shutdown::Both);
-            }
-            #[cfg(unix)]
-            Stream::Unix(s) => {
-                let _ = s.shutdown(std::net::Shutdown::Both);
-            }
-        }
+        self.stream.shutdown();
         if let Some(set) = held().as_mut() {
             set.remove(&self.key);
         }

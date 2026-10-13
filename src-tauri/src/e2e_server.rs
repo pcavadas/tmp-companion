@@ -9,8 +9,10 @@
 //! UI bridge (`e2e_ui_bridge`, polled at `GET /ui/events`), in both tiers.
 //! The one source of truth for the e2e mode: `TMP_E2E_ONLINE=1` ⇒ drive the REAL device
 //! (no SimDevice factory, real re-amp, real device backup); `TMP_E2E_TWIN=<addr>` ⇒ the
-//! same real-firmware paths against an offline twin of the unit (`hid::twin`; control
-//! plane only, no re-amp audio); anything else ⇒ the offline fake. Setting both is refused.
+//! same real-firmware paths against an offline twin of the unit (`hid::twin`; its re-amp
+//! audio over `twin_audio` when `TMP_E2E_TWIN_AUDIO=<addr>` is set beside it, captures
+//! refused otherwise); anything else ⇒ the offline fake. Setting online and twin together is
+//! refused, as is a twin audio address without a twin.
 //! Read by `run_e2e_server`, the `/sim/reset` guard, and `rig`'s default-rig pick
 //! (`sim_device::LiveSimRig` offline, `rig::TwinRig` on a twin, the real device online).
 
@@ -42,6 +44,23 @@ pub(crate) fn twin_from(
     }
 }
 
+/// Parse of `TMP_E2E_TWIN_AUDIO` (the twin's re-amp audio, `twin_audio`): unset or blank is
+/// none, and the twin then refuses captures; set, it needs a twin beside it, so a stale value
+/// fails a unit or offline run instead of riding along unread.
+pub(crate) fn twin_audio_from(
+    twin: bool,
+    audio: Option<&str>,
+) -> Result<Option<crate::hid::twin::TwinAddr>, String> {
+    match audio.map(str::trim).filter(|a| !a.is_empty()) {
+        None => Ok(None),
+        Some(_) if !twin => Err(
+            "TMP_E2E_TWIN_AUDIO is set without TMP_E2E_TWIN: the twin's audio needs its twin"
+                .into(),
+        ),
+        Some(a) => crate::hid::twin::TwinAddr::parse(a).map(Some),
+    }
+}
+
 /// The twin tier's address, or why the env is refused. See [`twin_from`].
 #[cfg(feature = "e2e")]
 pub(crate) fn e2e_twin_mode() -> Result<Option<crate::hid::twin::TwinAddr>, String> {
@@ -55,22 +74,49 @@ pub(crate) fn e2e_twin_mode() -> Result<Option<crate::hid::twin::TwinAddr>, Stri
 }
 
 /// The twin this process drives, if any. A refused env reads as none here; the server and
-/// `probe` check [`e2e_twin_mode`] at startup and exit on it.
+/// `probe` check [`e2e_mode_refusal`] at startup and exit on it.
 #[cfg(feature = "e2e")]
 pub(crate) fn e2e_twin() -> Option<crate::hid::twin::TwinAddr> {
     e2e_twin_mode().ok().flatten()
 }
 
-/// Why this process's e2e env is refused, if it is (see [`twin_from`]), for `probe`.
+/// The twin's audio address, or why the env is refused (the twin's own refusal first). See
+/// [`twin_audio_from`].
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_twin_audio_mode() -> Result<Option<crate::hid::twin::TwinAddr>, String> {
+    if cfg!(test) {
+        return Ok(None);
+    }
+    let twin = e2e_twin_mode()?;
+    twin_audio_from(
+        twin.is_some(),
+        std::env::var("TMP_E2E_TWIN_AUDIO").ok().as_deref(),
+    )
+}
+
+/// The twin audio this process captures from, if any. A refused env reads as none here.
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_twin_audio() -> Option<crate::hid::twin::TwinAddr> {
+    e2e_twin_audio_mode().ok().flatten()
+}
+
+/// Why this process's e2e env is refused, if it is (see [`twin_from`] and
+/// [`twin_audio_from`]): the server and `probe` exit on it at startup.
 #[cfg(feature = "e2e")]
 pub fn e2e_mode_refusal() -> Option<String> {
-    e2e_twin_mode().err()
+    e2e_twin_audio_mode().err()
 }
 
 /// The twin's address as text, for `probe`'s banner.
 #[cfg(feature = "e2e")]
 pub fn e2e_twin_label() -> Option<String> {
     e2e_twin().map(|a| a.to_string())
+}
+
+/// The twin's audio address as text, for `probe`'s banner.
+#[cfg(feature = "e2e")]
+pub fn e2e_twin_audio_label() -> Option<String> {
+    e2e_twin_audio().map(|a| a.to_string())
 }
 
 /// The device is real firmware, the unit or its twin: its state is the device's own, so
@@ -229,13 +275,11 @@ pub fn run_e2e_server() {
         log::set_max_level(log::LevelFilter::Info);
     }
 
-    let twin = match e2e_twin_mode() {
-        Ok(twin) => twin,
-        Err(e) => {
-            eprintln!("e2e_server: REFUSING TO START: {e}");
-            std::process::exit(2);
-        }
-    };
+    if let Some(e) = e2e_mode_refusal() {
+        eprintln!("e2e_server: REFUSING TO START: {e}");
+        std::process::exit(2);
+    }
+    let twin = e2e_twin();
     let online = e2e_online();
     // OFFLINE only: default the backup fixture so `read_library_via_backup` decodes it
     // through the real backup path. ONLINE must stream the REAL device backup, so the var
@@ -273,8 +317,9 @@ pub fn run_e2e_server() {
     if let Some(addr) = &twin {
         match e2e_seed_online_snapshot() {
             Ok(fw) => eprintln!(
-                "e2e_server: TWIN — seeded snapshot from the twin at {addr} fw={}",
-                fw.as_deref().unwrap_or("unknown")
+                "e2e_server: TWIN — seeded snapshot from the twin at {addr} fw={} audio={}",
+                fw.as_deref().unwrap_or("unknown"),
+                e2e_twin_audio_label().unwrap_or_else(|| "none (captures refused)".into())
             ),
             Err(e) => eprintln!("e2e_server: TWIN — twin handshake failed at {addr}: {e}"),
         }
@@ -1027,9 +1072,12 @@ fn e2e_route(
         // tell it from the unit.
         ("GET", "/health") => (
             "200 OK",
-            serde_json::to_vec(
-                &json!({ "ok": true, "online": e2e_online(), "twin": e2e_twin().is_some() }),
-            )
+            serde_json::to_vec(&json!({
+                "ok": true,
+                "online": e2e_online(),
+                "twin": e2e_twin().is_some(),
+                "twinAudio": e2e_twin_audio().is_some(),
+            }))
             .unwrap_or_default(),
         ),
         ("GET", "/reamp/counters") => {

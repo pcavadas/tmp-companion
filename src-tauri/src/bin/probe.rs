@@ -1060,17 +1060,27 @@ fn main() {
             .get(1)
             .is_some_and(|arg| arg == "--seed-scenario" || arg == "--audio-devices");
     // A stale TMP_E2E_TWIN beside TMP_E2E_ONLINE=1 would leave which device this run
-    // touches to a precedence rule: refuse instead.
+    // touches to a precedence rule, and a TMP_E2E_TWIN_AUDIO without a twin would ride
+    // along unread: refuse both.
     #[cfg(feature = "e2e")]
     if let Some(e) = tmp_companion_lib::e2e_mode_refusal() {
         eprintln!("[probe] REFUSING TO RUN: {e}");
         std::process::exit(3);
     }
-    // A twin run must never read as a unit run. Its audio arms refuse at the stream open
+    // A twin run must never read as a unit run. Its re-amp captures go to the twin's audio
+    // (`twin_audio`) or refuse; every host stream refuses at the open
     // (`audio::refuse_under_twin`); everything else talks to the twin.
     #[cfg(feature = "e2e")]
     if let Some(addr) = tmp_companion_lib::e2e_twin_label() {
         eprintln!("[probe] TWIN: every device op goes to the twin at {addr}, not the unit");
+        match tmp_companion_lib::e2e_twin_audio_label() {
+            Some(audio) => {
+                eprintln!("[probe] TWIN: re-amp captures go to the twin's audio at {audio}")
+            }
+            None => {
+                eprintln!("[probe] TWIN: no TMP_E2E_TWIN_AUDIO, so every re-amp capture is refused")
+            }
+        }
     }
     #[cfg(feature = "e2e")]
     if !tmp_companion_lib::e2e_online() && !capture_free_only {
