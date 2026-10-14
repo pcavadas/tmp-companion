@@ -4091,7 +4091,7 @@ fn a_mid_batch_failure_keeps_every_surviving_scenes_identity_and_emits_its_row()
         {"sceneSlot": 1, "targetLufs": -23.0,
          "handle": {"groupId": "G2", "nodeId": "ampA", "parameterId": "drive"}},
         {"sceneSlot": 2, "targetLufs": -23.0},
-        // Ceiling ≈ -15.9 LUFS (sidecar C -6 + the 0.32 presetLevel term) with the amps already
+        // Ceiling ≈ -18.9 LUFS (sidecar C -9 + the 0.32 presetLevel term) with the amps already
         // at 1.0: -12 is out of reach, so this row is the HEADROOM clamp, signal present.
         {"sceneSlot": 3, "targetLufs": -12.0}
     ]);
