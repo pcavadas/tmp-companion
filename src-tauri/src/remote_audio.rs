@@ -484,8 +484,10 @@ pub(crate) fn run_job(
         return Err(failed("no reply header".into()));
     };
     let samples = buf[REPLY_HEADER..]
-        .chunks_exact(4)
-        .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| i32::from_le_bytes(*b))
         .collect();
     Ok(Reply {
         status,
@@ -670,8 +672,10 @@ mod tests {
         let mut body = vec![0u8; 4 * n as usize];
         s.read_exact(&mut body).unwrap();
         let stim = body
-            .chunks_exact(4)
-            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| i32::from_le_bytes(*b))
             .collect();
         Seen { rate, frames, stim }
     }

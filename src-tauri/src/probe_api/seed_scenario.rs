@@ -128,9 +128,17 @@ fn manifest_file_name(remote: Option<&str>) -> String {
     match remote {
         None => "seeded-slots.json".into(),
         Some(addr) => {
+            // Injective: every byte but an ASCII letter or digit becomes `_` plus its hex,
+            // so two addresses never share a manifest (`a-b` and `a_b` stay apart).
             let safe: String = addr
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() {
+                        char::from(b).to_string()
+                    } else {
+                        format!("_{b:02x}")
+                    }
+                })
                 .collect();
             format!("seeded-slots.remote-{safe}.json")
         }
@@ -865,9 +873,14 @@ mod tests {
         assert_eq!(manifest_file_name(None), "seeded-slots.json");
         let a = manifest_file_name(Some("tcp:127.0.0.1:11600"));
         let b = manifest_file_name(Some("tcp:127.0.0.1:11608"));
-        assert_eq!(a, "seeded-slots.remote-tcp_127_0_0_1_11600.json");
+        assert_eq!(a, "seeded-slots.remote-tcp_3a127_2e0_2e0_2e1_3a11600.json");
         assert_ne!(a, b);
         assert!(!manifest_file_name(Some("unix:/tmp/t.sock")).contains('/'));
+        // Addresses that differ only in punctuation keep separate manifests.
+        assert_ne!(
+            manifest_file_name(Some("unix:/tmp/a-b")),
+            manifest_file_name(Some("unix:/tmp/a_b"))
+        );
     }
 
     /// The stranding bug (HW 2026-07-25): once `level.spec.ts` levels and SAVES

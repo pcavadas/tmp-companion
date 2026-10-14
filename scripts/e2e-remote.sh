@@ -149,12 +149,14 @@ cleanup() {
   if [ "$code" -eq 0 ] && [ "$SEED_ONLY" = 1 ]; then
     log "remote seeded (--seed-only): the scenario is pristine on the remote device — snapshot it now"
   elif [ "$code" -eq 0 ]; then
-    log "remote lane PASSED (${SPECS[*]}) — control plane only; no stamp written"
+    log "remote lane PASSED (${SPECS[*]}) — $PASS_NOTE; no stamp written"
   else
     err "remote lane FAILED (exit $code) — server log: $SERVER_LOG, probe log: $PROBE_LOG"
   fi
   exit "$code"
 }
+# What a passing run covered: the control plane, unless step 6 counts captures.
+PASS_NOTE="control plane only"
 trap cleanup EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
@@ -253,12 +255,15 @@ verdict=$spec_rc
 if [ -n "${TMP_E2E_REMOTE_AUDIO:-}" ]; then
   stats="$(curl -fsS -m 10 "http://127.0.0.1:$PORT/remote/audio" 2>/dev/null || true)"
   log "remote captures: ${stats:-unreadable}"
+  jobs="$(printf '%s' "$stats" | sed -n 's/.*"jobs":\([0-9][0-9]*\).*/\1/p')"
   failed="$(printf '%s' "$stats" | sed -n 's/.*"failed":\([0-9][0-9]*\).*/\1/p')"
-  if [ -z "$failed" ]; then
+  if [ -z "$jobs" ] || [ -z "$failed" ]; then
     err "could not read the remote device's capture counters"; verdict=1
   elif [ "$failed" != 0 ]; then
     err "$failed remote capture job(s) failed (not engaged, mixed, stalled or refused): see lastError above"
     verdict=1
+  elif [ "$jobs" != 0 ]; then
+    PASS_NOTE="$jobs re-amp capture(s), every one engaged"
   fi
 fi
 

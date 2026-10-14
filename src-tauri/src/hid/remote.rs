@@ -37,6 +37,11 @@ use super::{fold_frame_open, HidTransport, EAGER_QUIET_MS, EAGER_SLICE_MS, LIVE_
 use crate::error::DeviceError;
 use crate::proto;
 
+/// How long one connect attempt to a TCP address may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long one send may block on a peer that has stopped reading.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// One record on the remote link, both directions.
 pub(crate) const RECORD_LEN: usize = 64;
 
@@ -112,11 +117,24 @@ pub(crate) enum Stream {
 impl Stream {
     pub(crate) fn connect(addr: &RemoteAddr) -> std::io::Result<Stream> {
         match addr {
-            RemoteAddr::Tcp(hp) => std::net::TcpStream::connect(hp.as_str()).map(|s| {
-                // Records are small and latency-bound, like interrupt reports.
-                let _ = s.set_nodelay(true);
-                Stream::Tcp(s)
-            }),
+            RemoteAddr::Tcp(hp) => {
+                // Bounded: an address that drops the connect fails in CONNECT_TIMEOUT per
+                // resolved address, not after the OS's own minutes-long timeout.
+                let mut last = None;
+                for sa in std::net::ToSocketAddrs::to_socket_addrs(hp.as_str())? {
+                    match std::net::TcpStream::connect_timeout(&sa, CONNECT_TIMEOUT) {
+                        Ok(s) => {
+                            // Records are small and latency-bound, like interrupt reports.
+                            let _ = s.set_nodelay(true);
+                            return Ok(Stream::Tcp(s));
+                        }
+                        Err(e) => last = Some(e),
+                    }
+                }
+                Err(last.unwrap_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no address resolved")
+                }))
+            }
             #[cfg(unix)]
             RemoteAddr::Unix(p) => std::os::unix::net::UnixStream::connect(p).map(Stream::Unix),
         }
@@ -202,6 +220,9 @@ impl RemoteHid {
                 "no remote device listening at {key} ({e})"
             )))
         })?;
+        // Bounded writes: a peer that stops reading fails the send (and closes the link)
+        // instead of holding the device-op lock forever.
+        let _ = stream.set_write_timeout(WRITE_TIMEOUT);
         LIVE_HANDLES.fetch_add(1, Ordering::SeqCst);
         Ok(RemoteHid {
             stream,

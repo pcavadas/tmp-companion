@@ -64,7 +64,7 @@ EOF
 fi
 
 if [ "$status" -ne 0 ]; then
-  printf '\nRefusing: private firmware-emulator content must not enter the public repo.\n' >&2
+  printf '\nRefusing: private tooling content must not enter the public repo.\n' >&2
   printf 'If this is a genuine false positive, tighten the pattern in %s.\n' "$self" >&2
   exit 1
 fi
