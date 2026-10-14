@@ -770,15 +770,15 @@ fn run_doctor_check(
 struct DoctorStim {
     samples: Vec<f32>,
     spread: f64,
-    /// `psd::welch_psd` at [`leveller::RATE`]; a capture at another rate recomputes
-    /// its own (see [`DoctorStim::psd_at`]).
+    /// `leveller::stim_body_psd` at [`leveller::RATE`]; a capture at another rate
+    /// recomputes its own (see [`DoctorStim::psd_at`]).
     psd: crate::psd::Psd,
 }
 
 impl DoctorStim {
     fn new(samples: Vec<f32>) -> Self {
         let spread = leveller::stimulus_momentary_spread(&samples);
-        let psd = crate::psd::welch_psd(&samples, leveller::RATE as f32);
+        let psd = leveller::stim_body_psd(&samples, leveller::RATE);
         DoctorStim {
             samples,
             spread,
@@ -793,7 +793,7 @@ impl DoctorStim {
         if rate == leveller::RATE {
             std::borrow::Cow::Borrowed(&self.psd)
         } else {
-            std::borrow::Cow::Owned(crate::psd::welch_psd(&self.samples, rate as f32))
+            std::borrow::Cow::Owned(leveller::stim_body_psd(&self.samples, rate))
         }
     }
 }
@@ -934,7 +934,7 @@ fn capture_profile_with_floor_retry(
 ) -> Result<(doctor::SoundProfile, Vec<bool>), LevelError> {
     let stim_spread = stim.spread;
     let first = doctor_capture_profile(item, iso, stim, skip_load)?;
-    let Some(suspect) = first.suspect(stim_spread) else {
+    let Some(suspect) = suspect_of(&first, stim_spread) else {
         return Ok((first.profile, first.coverage));
     };
     // A floor read, a missing onset or a truncated capture: the reading can't be
@@ -947,7 +947,7 @@ fn capture_profile_with_floor_retry(
     );
     crate::settle_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
     let second = doctor_capture_profile(item, iso, stim, false)?;
-    match second.suspect(stim_spread) {
+    match suspect_of(&second, stim_spread) {
         None => Ok((second.profile, second.coverage)),
         Some(suspect) => {
             log::warn!(
@@ -959,23 +959,17 @@ fn capture_profile_with_floor_retry(
     }
 }
 
-/// One capture attempt's profile, coverage and the facts [`capture_suspect`] judges.
-struct DoctorCaptureProfile {
-    profile: doctor::SoundProfile,
-    coverage: Vec<bool>,
-    onset: leveller::DoctorOnset,
-    has_tail: bool,
-}
+/// One analysed Doctor capture (see [`leveller::ProfiledCapture`]).
+type DoctorCaptureProfile = leveller::ProfiledCapture;
 
-impl DoctorCaptureProfile {
-    fn suspect(&self, stim_spread: f64) -> Option<CaptureSuspect> {
-        capture_suspect(
-            self.onset.confident(),
-            self.has_tail,
-            self.profile.momentary_spread_lu,
-            stim_spread,
-        )
-    }
+/// [`capture_suspect`] on one analysed capture.
+fn suspect_of(p: &DoctorCaptureProfile, stim_spread: f64) -> Option<CaptureSuspect> {
+    capture_suspect(
+        p.onset.confident(),
+        p.has_tail,
+        p.profile.momentary_spread_lu,
+        stim_spread,
+    )
 }
 
 /// One capture + profile attempt, `skip_load` threaded through (the retry
@@ -1025,68 +1019,31 @@ fn doctor_capture_profile(
     )?)
 }
 
-/// Profile one Doctor capture's mixdown `samples`: onset split, body PSD, the
-/// [`doctor::SoundProfile`] (with `stereo_loudness` as its loudness and the
-/// stimulus-transfer anchor set), the output coverage, and the facts
-/// [`capture_suspect`] judges. Shared by the diagnosis captures and both A/B clips
-/// of an apply ([`ab_side`]), so the before → after check measures in exactly the
-/// diagnosis's space.
+/// Profile one Doctor capture: [`leveller::analyze_capture`] (the one
+/// measurement space, shared with the calibration sweeps) with `stereo_loudness`
+/// as its loudness and the cached stimulus PSD. Shared by the diagnosis captures
+/// and both A/B clips of an apply ([`ab_side`]), so the before → after check
+/// measures in exactly the diagnosis's space. An un-aligned onset is refused by
+/// the caller ([`capture_suspect`]), never diagnosed — `doctor_onset` already
+/// WARNs naming the fallback.
 fn profile_capture(
-    samples: &[f32],
+    sig: &leveller::DoctorSignal,
     rate: u32,
     stereo_loudness: crate::lufs::Loudness,
     stim_cache: &DoctorStim,
     family: doctor::Instrument,
     tail_ms_u32: u32,
 ) -> Result<DoctorCaptureProfile, String> {
-    let stim = stim_cache.samples.as_slice();
-    // Align the body/tail split to where the stimulus actually starts
-    // (I/O latency); the energy step is primary, falling back to the
-    // correlator and then the legacy un-aligned split — see
-    // `leveller::doctor_onset`'s doc for why the correlator alone
-    // can't be trusted here (a peakless correlation curve on a
-    // washed/reverb chain).
-    // An un-aligned onset is refused by the caller ([`capture_suspect`]), never
-    // diagnosed — `doctor_onset` already WARNs naming the fallback.
-    let onset = leveller::doctor_onset(stim, samples, rate);
-    let has_tail = samples.len() > onset.body_end();
-    // ONE shared post-onset body PSD for this capture — read by both the
-    // profile's band powers/air-flatness and the output-coverage SNR
-    // gate below, instead of each computing its own (disagreeing) space.
-    let body_psd = doctor::body_psd(samples, rate, onset.signal_start);
-    // The STIMULUS's own PSD — the reference the localized
-    // resonant/boxy rules diff against (`Psd::transfer_db`), so
-    // the stimulus's spectral ridges can't read as chain
-    // resonances. Cached per stimulus (`DoctorStim`), not per capture.
     let stim_psd = stim_cache.psd_at(rate);
-    let mut profile = doctor::SoundProfile::from_capture_with_psd_loudness(
-        samples,
+    leveller::analyze_capture(
+        sig,
         rate,
-        onset.body_len,
-        onset.body_start,
-        tail_ms_u32,
+        &stim_cache.samples,
+        &stim_psd,
         family,
-        &body_psd,
-        Some(&*stim_psd),
+        tail_ms_u32,
         Some(stereo_loudness),
-    )?;
-    // The re-amp stimulus's own band powers — the stimulus-transfer
-    // anchor `compute_rule_metrics` subtracts so a non-humbucker
-    // stimulus (single-coil, DI capture) can't skew the tilt/band
-    // verdicts. THE ONLY production write of this field.
-    profile.stim_bands = Some(stim_psd.band_powers(family.bands()));
-    // The CAPTURED OUTPUT's own band coverage (family layout) — gates on
-    // what the device actually produced, not what the input stimulus
-    // carried, so amp-created HF (fizz/harsh distortion) isn't gated out
-    // just because the DI input never had it.
-    let cov =
-        doctor::output_coverage_with_body(samples, rate, onset.signal_start, family, &body_psd);
-    Ok(DoctorCaptureProfile {
-        profile,
-        coverage: cov,
-        onset,
-        has_tail,
-    })
+    )
 }
 
 /// One prescription's apply job (camelCase wire — the frontend echoes the ops it
@@ -1270,7 +1227,14 @@ fn ab_side(
         .map(|l| l.integrated_lufs)
         .filter(|l| l.is_finite());
     let measured = loudness.and_then(|l| {
-        match profile_capture(&cap.stereo_mix(), rate, l, stim, family, tail_ms) {
+        match profile_capture(
+            &leveller::DoctorSignal::from_capture(cap),
+            rate,
+            l,
+            stim,
+            family,
+            tail_ms,
+        ) {
             Ok(p) if p.onset.confident() && p.has_tail => Some((p.profile, p.coverage)),
             Ok(_) => None,
             Err(e) => {

@@ -47,8 +47,8 @@ pub(super) fn measure_at_level(
 /// hard saturation (a harsher compressor than any library preset) still read ≥ 0.67 LU.
 pub(crate) const FLOOR_TRIP_LU: f64 = 0.4;
 /// A stimulus whose own momentary spread is at or below this can't discriminate a floor
-/// from a live capture — skip the trip. The shipped stimuli read 5.9–6.2 LU (Doctor
-/// slice 5.8–6.5 LU).
+/// from a live capture — skip the trip. The shipped stimuli read 7.3–10.6 LU (Doctor
+/// slice 6.7–11.7 LU).
 pub(crate) const STATIONARY_STIM_LU: f64 = 2.0;
 /// Quiet gap before the guard's retry — 5 s recovered 9/9 flagged rows on HW
 /// (`probe --stim-ab`).
@@ -1323,20 +1323,25 @@ mod floor_guard_tests {
     }
 
     // BUG→GATE (#175): `is_engaged` used the short-term spread (> 0.5 LU), which a healthy
-    // capture of the stationary leveling stimulus never reaches, so the external judge
+    // capture of the old stationary leveling stimulus never reached, so the external judge
     // stamped `floor_suspect` on every row. A healthy capture of each shipped stimulus at
-    // leveling loudness must read engaged.
+    // leveling loudness must read engaged, and so must one whose short-term spread sits
+    // under the old 0.5 LU arm (the gate stays live on the pitched-pluck stimuli, most of
+    // which already read under it).
     #[test]
     fn a_healthy_capture_of_every_shipped_stimulus_reads_engaged() {
+        let mut under_old_arm = 0;
         for (name, stim) in shipped_stimuli() {
             let l = lufs::measure_mono(&at_lufs(&stim, -23.0), RATE).unwrap();
-            assert!(
-                l.spread_lu() < 0.5,
-                "{name}: the old arm would have passed this one ({:.2} LU) — fixture drifted",
-                l.spread_lu()
-            );
+            if l.spread_lu() < 0.5 {
+                under_old_arm += 1;
+            }
             assert!(is_engaged(&l), "{name}: healthy capture not engaged: {l:?}");
         }
+        assert!(
+            under_old_arm > 0,
+            "no shipped stimulus reads under the old 0.5 LU short-term arm — the gate went vacuous"
+        );
     }
 
     // BUG→GATE (#239): a flat-topped capture reads LOW, so no lane may solve from it.

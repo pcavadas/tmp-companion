@@ -58,43 +58,41 @@ pub(crate) struct DoctorRead {
 /// differs.
 pub(crate) fn analyze_capture(
     stim: &[f32],
-    samples: &[f32],
+    sig: &leveller::DoctorSignal,
     rate: u32,
     family: doctor::Family,
     pad_aware: bool,
     tail_ms: u32,
 ) -> Result<DoctorRead, String> {
-    let (confident, psd_onset, body_len, body_start) = if pad_aware {
-        let onset = leveller::doctor_onset(stim, samples, rate);
-        (
-            onset.confident(),
-            onset.signal_start,
-            onset.body_len,
-            onset.body_start,
-        )
+    // `pad_aware`: the production measurement space, exactly as `doctor_check`
+    // analyses a capture (`leveller::analyze_capture`).
+    let (profile, coverage, confident) = if pad_aware {
+        let stim_psd = leveller::stim_body_psd(stim, rate);
+        let p = leveller::analyze_capture(sig, rate, stim, &stim_psd, family, tail_ms, None)?;
+        (p.profile, p.coverage, p.onset.confident())
     } else {
+        let samples = sig.mix.as_slice();
         let (onset, confident) = audio::estimate_onset(stim, samples, rate);
-        (confident, onset, stim.len(), onset)
+        let body_psd = doctor::body_psd(samples, rate, onset);
+        let stim_psd = crate::psd::welch_psd(stim, rate as f32);
+        let profile = doctor::SoundProfile::from_capture_with_psd(
+            samples,
+            rate,
+            stim.len(),
+            onset,
+            tail_ms,
+            family,
+            &body_psd,
+            Some(&stim_psd),
+        )?;
+        // The CAPTURED OUTPUT's own coverage (mirrors the production gate) —
+        // without it, low-energy bands skip the 30 dB confidence gate and can
+        // false-fire.
+        let coverage = doctor::output_coverage_with_body(samples, rate, onset, family, &body_psd);
+        (profile, coverage, confident)
     };
-    let body_psd = doctor::body_psd(samples, rate, psd_onset);
-    let stim_psd = crate::psd::welch_psd(stim, rate as f32);
-    let profile = doctor::SoundProfile::from_capture_with_psd(
-        samples,
-        rate,
-        body_len,
-        body_start,
-        tail_ms,
-        family,
-        &body_psd,
-        Some(&stim_psd),
-    )?;
     let band_db = doctor::band_db(&profile.bands);
     let deviations = doctor::deviations(&band_db, family);
-    // The CAPTURED OUTPUT's own coverage (mirrors `commands/doctor.rs`'s production
-    // gate) — without it, low-energy bands skip the 30 dB confidence gate and can
-    // false-fire. Computed before `tilt_split` so the REPORTED tilt/locals match
-    // what `diagnose_kind` actually fires verdicts from, not an uncovered fit.
-    let coverage = doctor::output_coverage_with_body(samples, rate, psd_onset, family, &body_psd);
     let (tilt_slope, locals) = doctor::tilt_split(&deviations, family, Some(&coverage));
     let verdicts: Vec<&'static str> = doctor::diagnose_kind(
         &profile,

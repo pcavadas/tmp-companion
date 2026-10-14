@@ -5,10 +5,13 @@
 //!
 //! ```text
 //! probe --doctor-loo <factory_report.json> [--kind synthetic|capture] [--out <loo.json>]
+//! probe --doctor-derive <factory_report.json> [--slots <csv>]
 //! probe --benchmark <corpus.json> [--thresholds <thresholds.json>] --out <result.json>
 //! ```
 //! `--doctor-loo` reads a `probe --doctor-calib-factory` report whose rows carry
-//! `replay` profiles. `--benchmark` exits non-zero when a threshold is violated.
+//! `replay` profiles. `--doctor-derive` reads the same report, taken through a
+//! new reference stimulus, and prints the constants to paste into `doctor.rs`.
+//! `--benchmark` exits non-zero when a threshold is violated.
 
 use crate::benchmark::{self, Corpus, ReplayProfile, Thresholds};
 use crate::doctor::StimulusKind;
@@ -36,22 +39,18 @@ fn fmt_rate(r: &benchmark::FpRate) -> String {
     }
 }
 
-/// Leave-one-out false-positive estimate over a factory sweep report.
-pub fn probe_doctor_loo(
-    report_path: &str,
-    kind: &str,
-    out_path: Option<&str>,
-) -> Result<String, String> {
-    let kind = match kind {
-        "synthetic" => StimulusKind::Synthetic,
-        "capture" => StimulusKind::Capture,
-        other => return Err(format!("unknown --kind {other:?} (synthetic | capture)")),
-    };
+/// A factory sweep report: its family id, the family, and each row's id and
+/// replay profile.
+type Sweep = (String, crate::doctor::Family, Vec<(String, ReplayProfile)>);
+
+/// Read a factory sweep report's family and its rows' replay profiles.
+fn read_sweep(report_path: &str) -> Result<Sweep, String> {
     let report = read_json(report_path)?;
     let family_id = report["family"]
         .as_str()
-        .ok_or("the report has no `family`")?;
-    let family = super::parse_family_arg(family_id)?;
+        .ok_or("the report has no `family`")?
+        .to_string();
+    let family = super::parse_family_arg(&family_id)?;
     let rows = report["rows"]
         .as_array()
         .ok_or("the report has no `rows`")?;
@@ -67,6 +66,66 @@ pub fn probe_doctor_loo(
             serde_json::from_value(replay.clone()).map_err(|e| format!("row {id}: {e}"))?;
         sounds.push((id, replay));
     }
+    Ok((family_id, family, sounds))
+}
+
+/// Re-derive the Doctor's shipped constants from a factory sweep taken through
+/// a new reference stimulus (#235): prints `GUITAR_STIM_REF`, the target, the
+/// max-plus-margin gates and `FACTORY_CONTRAST_DB`. Paste `GUITAR_STIM_REF`
+/// from `print_guitar_stim_ref` instead (bit-exact from the WAV); this arm's
+/// copy went through JSON and may differ in the last ulp.
+///
+/// `slots`: a comma-separated subset of the report's rows (their `slot`
+/// values) to derive from — the 25-slot flagship set the shipped constants
+/// came from, say — or every row when `None`.
+pub fn probe_doctor_derive(report_path: &str, slots: Option<&str>) -> Result<String, String> {
+    let (family_id, family, mut sounds) = read_sweep(report_path)?;
+    if let Some(csv) = slots {
+        let keep: Vec<&str> = csv.split(',').map(str::trim).collect();
+        sounds.retain(|(id, _)| keep.contains(&id.as_str()));
+        if sounds.len() != keep.len() {
+            return Err(format!(
+                "--slots named {} rows, the report has {} of them",
+                keep.len(),
+                sounds.len()
+            ));
+        }
+    }
+    let rows: Vec<&ReplayProfile> = sounds.iter().map(|(_, r)| r).collect();
+    let d = benchmark::derive_constants(&rows, family)?;
+    let fmt = |xs: &[f64]| {
+        xs.iter()
+            .map(|x| format!("{x:.2}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    Ok(format!(
+        "doctor constants from {} {family_id} sounds through one stimulus:\n\
+         \x20 stim ref (band dB): [{}]\n\
+         \x20 target:             [{}]\n\
+         \x20 contrasts ({}):     [{}]\n\
+         \x20 gates (max + margin): {:#?}\n",
+        sounds.len(),
+        fmt(&d.stim_ref),
+        fmt(&d.calibration.target),
+        d.contrasts.len(),
+        fmt(&d.contrasts),
+        d.calibration.thresholds,
+    ))
+}
+
+/// Leave-one-out false-positive estimate over a factory sweep report.
+pub fn probe_doctor_loo(
+    report_path: &str,
+    kind: &str,
+    out_path: Option<&str>,
+) -> Result<String, String> {
+    let kind = match kind {
+        "synthetic" => StimulusKind::Synthetic,
+        "capture" => StimulusKind::Capture,
+        other => return Err(format!("unknown --kind {other:?} (synthetic | capture)")),
+    };
+    let (family_id, family, sounds) = read_sweep(report_path)?;
     let loo = benchmark::doctor_leave_one_out(&sounds, family, kind)?;
     if let Some(out) = out_path {
         write_json(out, &loo)?;

@@ -16,6 +16,14 @@
 //! topology) — alias ids are NOT WAV stems; `canonical_id` resolves them first.
 
 /// One pickup topology: display metadata + the deterministic synth recipe.
+///
+/// The recipe is a plucked-string model (`bin/gen_samples.rs`): Karplus–Strong
+/// strings play a fixed musical phrase for the instrument, and the summed
+/// string signal goes through a resonant 2nd-order low-pass — the pickup's
+/// loaded electrical resonance (coil inductance against cable + pot
+/// capacitance). A real pickup is a low-pass with a resonant hump, not a
+/// band-pass: the old band-passed-noise recipe put far too much energy above
+/// 2.5 kHz and mis-levelled bright presets (hardware A/B against real DIs).
 #[derive(Debug, Clone, Copy)]
 pub struct Topology {
     /// Stable id == WAV file stem == profile reference key, for CANONICAL
@@ -24,136 +32,123 @@ pub struct Topology {
     pub id: &'static str,
     /// UI display label.
     pub label: &'static str,
-    /// "guitar" | "bass" — groups the dropdown.
+    /// "guitar" | "bass" | "bass-vi" — groups the dropdown and picks the
+    /// phrase the generator plays.
     pub instrument: &'static str,
     /// Deterministic PRNG seed → reproducible committed WAV.
     pub seed: u64,
-    /// Spectral-peak frequency (Hz) of the stimulus template. For the guitar rows
-    /// this approximates the pickup's loaded electrical resonance; the bass rows
-    /// sit ~2 octaves below any real bass-pickup resonance (~2–3.5 kHz loaded) —
-    /// there it is a low-mid energy centroid shaping bass program material, not
-    /// pickup physics.
+    /// Loaded resonance (Hz) of the pickup low-pass. Passive guitar values are
+    /// typical measured loaded resonances (humbucker ~2.8 kHz, single-coil
+    /// ~4.5 kHz); active and piezo pickups are low-impedance, so their corner
+    /// sits high and flat.
     pub freq: f32,
-    /// Resonance Q — high = peaky (passive), low = flat/broad (active/acoustic).
+    /// Resonance Q of the pickup low-pass — high = peaky (passive), ≤0.707 =
+    /// no hump (active/piezo).
     pub q: f32,
     /// Output level as **input drive**: stimulus peak amplitude (0..1).
     pub peak: f32,
-    /// Mix of the resonant bandpass voice (passive pickups ≈ 0.8).
-    pub bp_mix: f32,
-    /// Mix of the low-passed "body" voice (active/acoustic lean higher → flatter).
-    pub body_mix: f32,
-    /// Pluck attack ramp (ms) — short = percussive (acoustic), long = round (bass).
-    pub attack_ms: f32,
+    /// Pick softness: the one-pole pole applied (twice) to each string's
+    /// excitation. Higher = a rounder attack with less top end.
+    pub pick_softness: f32,
 }
 
 /// The shipped catalog — **one stimulus per pickup character**. The output-level
 /// axis (low/med/high) was removed once Tier-2 calibration began measuring real
 /// output directly: calibration sets *level*, so a topology only needs to set
-/// *spectrum*. `peak` is now a single per-character default that drives the amp
+/// *spectrum*. `peak` is a single per-character default that drives the amp
 /// for UNcalibrated profiles; a calibrated profile overrides it (see
 /// `read_stimulus_calibrated`).
+///
+/// The passive guitar rows and the bass humbucker are the hardware-checked
+/// recipes; the active, acoustic, other bass and Bass VI rows extrapolate the
+/// same model from each pickup's electrical character.
 pub const TOPOLOGIES: &[Topology] = &[
     // ── Guitar ─────────────────────────────────────────────────────────────
     Topology {
         id: "guitar-singlecoil",
         label: "Single-coil",
         instrument: "guitar",
-        seed: 0x1111_0002_0000_0002,
-        freq: 5500.0,
-        q: 2.0,
+        seed: 0x1111_0003_0000_0003,
+        freq: 4500.0,
+        q: 2.8,
         peak: 0.50,
-        bp_mix: 0.80,
-        body_mix: 0.35,
-        attack_ms: 4.0,
+        pick_softness: 0.93,
     },
     Topology {
         id: "guitar-humbucker",
         label: "Humbucker",
         instrument: "guitar",
-        seed: 0x2222_0002_0000_0002,
-        freq: 3000.0,
-        q: 2.5,
+        seed: 0x2222_0003_0000_0003,
+        freq: 2800.0,
+        q: 2.0,
         peak: 0.55,
-        bp_mix: 0.80,
-        body_mix: 0.40,
-        attack_ms: 4.0,
+        pick_softness: 0.93,
     },
     Topology {
         id: "guitar-active",
         label: "Active (EMG/Fluence)",
         instrument: "guitar",
-        seed: 0x3333_0001_0000_0001,
-        freq: 3500.0,
-        q: 1.2,
+        seed: 0x3333_0002_0000_0002,
+        freq: 6000.0,
+        q: 0.9,
         peak: 0.85,
-        bp_mix: 0.45,
-        body_mix: 0.60,
-        attack_ms: 3.0,
+        pick_softness: 0.93,
     },
     Topology {
         id: "guitar-acoustic",
         label: "Acoustic / piezo",
         instrument: "guitar",
-        seed: 0x4444_0001_0000_0001,
-        freq: 4000.0,
-        q: 0.8,
+        seed: 0x4444_0002_0000_0002,
+        freq: 9000.0,
+        q: 0.7,
         peak: 0.60,
-        bp_mix: 0.50,
-        body_mix: 0.50,
-        attack_ms: 1.5,
+        pick_softness: 0.88,
     },
     // ── Bass ───────────────────────────────────────────────────────────────
     Topology {
         id: "bass-singlecoil",
         label: "Bass single-coil",
         instrument: "bass",
-        seed: 0x5555_0002_0000_0002,
-        freq: 700.0,
-        q: 2.0,
+        seed: 0x5555_0003_0000_0003,
+        freq: 3200.0,
+        q: 2.2,
         peak: 0.55,
-        bp_mix: 0.80,
-        body_mix: 0.40,
-        attack_ms: 5.0,
+        pick_softness: 0.93,
     },
     Topology {
         id: "bass-humbucker",
         label: "Bass humbucker",
         instrument: "bass",
-        seed: 0x6666_0002_0000_0002,
-        freq: 550.0,
-        q: 2.2,
+        seed: 0x6666_0003_0000_0003,
+        freq: 2500.0,
+        q: 1.8,
         peak: 0.60,
-        bp_mix: 0.80,
-        body_mix: 0.45,
-        attack_ms: 5.0,
+        pick_softness: 0.93,
     },
     Topology {
         id: "bass-active",
         label: "Bass active",
         instrument: "bass",
-        seed: 0x7777_0001_0000_0001,
-        freq: 800.0,
-        q: 1.0,
+        seed: 0x7777_0002_0000_0002,
+        freq: 5000.0,
+        q: 0.8,
         peak: 0.85,
-        bp_mix: 0.45,
-        body_mix: 0.60,
-        attack_ms: 4.0,
+        pick_softness: 0.93,
     },
     // ── Bass VI ──────────────────────────────────────────────────────────────
-    // A baritone six-string (E1..E4) with bright Jaguar-style single coils.
-    // PROVISIONAL synth recipe — a calibrated profile overrides it; the doctor
-    // side gives it its own 7-band layout (a Sub band) for the sub-60 Hz octave.
+    // A baritone six-string (E1..E4) with bright Jaguar-style single coils: the
+    // guitar phrase an octave down through a single-coil-like pickup.
+    // PROVISIONAL — a calibrated profile overrides it; the doctor side gives it
+    // its own 7-band layout (a Sub band) for the sub-60 Hz octave.
     Topology {
         id: "bass-vi",
         label: "Bass VI",
         instrument: "bass-vi",
-        seed: 0x8888_0002_0000_0002,
-        freq: 3200.0,
-        q: 2.0,
+        seed: 0x8888_0003_0000_0003,
+        freq: 4000.0,
+        q: 2.4,
         peak: 0.55,
-        bp_mix: 0.80,
-        body_mix: 0.45,
-        attack_ms: 4.0,
+        pick_softness: 0.93,
     },
 ];
 
@@ -253,6 +248,44 @@ mod tests {
         }
         // A non-alias id passes through canonical_id untouched.
         assert_eq!(canonical_id(DEFAULT_TOPOLOGY_ID), DEFAULT_TOPOLOGY_ID);
+    }
+
+    /// Long-term band shares (% of power) of a committed stimulus WAV.
+    fn band_shares(id: &str) -> [f64; 4] {
+        let path = format!("{}/resources/samples/{id}.wav", env!("CARGO_MANIFEST_DIR"));
+        let s = crate::stimulus::read_stimulus_48k(&path).expect("read stimulus");
+        let p = crate::psd::welch_psd(&s, 48_000.0).band_powers(&[
+            (20.0, 320.0),
+            (320.0, 1250.0),
+            (1250.0, 2500.0),
+            (2500.0, 20_000.0),
+        ]);
+        let tot: f64 = p.iter().sum();
+        [0, 1, 2, 3].map(|i| p[i] / tot * 100.0)
+    }
+
+    /// The committed stimuli must keep a real pickup's spectral balance: most
+    /// power below 1.25 kHz and only a trace above 2.5 kHz. Real humbucker and
+    /// single-coil DIs carry ≲1 % above 2.5 kHz; the old band-passed-noise WAVs
+    /// carried 50–90 % there, which mis-levelled bright presets on hardware.
+    #[test]
+    fn every_stimulus_has_a_pickup_like_spectrum() {
+        for t in TOPOLOGIES {
+            let [low, low_mid, _, high] = band_shares(t.id);
+            assert!(high < 3.0, "{}: {high:.2}% above 2.5 kHz", t.id);
+            assert!(
+                low + low_mid > 85.0,
+                "{}: {:.1}% below 1.25 kHz",
+                t.id,
+                low + low_mid
+            );
+            let low_range = if t.instrument == "guitar" {
+                10.0..50.0
+            } else {
+                35.0..80.0
+            };
+            assert!(low_range.contains(&low), "{}: {low:.1}% below 320 Hz", t.id);
+        }
     }
 
     /// Each catalog id must have a committed WAV (run `cargo run --bin gen_samples`

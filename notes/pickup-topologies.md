@@ -7,17 +7,27 @@ pickup data (2026-07).
 ## What a template encodes
 
 A topology is a synth recipe for the leveling stimulus (`gen_samples`), NOT a
-pickup model. Three parameters matter for assignment:
+pickup model. Every stimulus plays the same musical phrase for its instrument
+(open chords and single-note runs for guitar, an eighth-note line for bass, the
+guitar phrase an octave down for Bass VI) on Karplus–Strong plucked strings,
+then passes it through a resonant 2nd-order low-pass, the pickup's loaded
+resonance (#235). Four parameters matter for assignment:
 
-- **`freq`** — the stimulus's spectral peak. For the **guitar** rows it
-  approximates the pickup's _loaded_ electrical resonance (coil L + cable/pot C);
-  for the **bass** rows it is a low-mid energy centroid shaping bass program
-  material — real loaded bass-pickup resonance is ~2–3.5 kHz, nowhere near the
-  rows' 550–800 Hz. Don't "correct" the bass rows: the WAVs are shipped and
-  HW-validated.
-- **`q`** — resonance width. Note the shipped values are template voicing, not
-  physics (a real Strat coil has _higher_ loaded Q than a covered humbucker).
+- **`freq`** — the low-pass corner, the pickup's _loaded_ electrical resonance
+  (coil L + cable/pot C): humbucker 2.8 kHz, single-coil 4.5 kHz, bass
+  humbucker 2.5 kHz (the hardware-checked rows); active and piezo pickups are
+  low-impedance, so their corner sits high (6–9 kHz) with no hump.
+- **`q`** — resonance height: 2–2.8 for passive coils, ≤0.9 for active and piezo.
+- **`pick_softness`** — the one-pole pole on each string's excitation; a
+  higher value rounds the attack.
 - **`peak`** — output as **amp-input drive** for uncalibrated profiles.
+
+The old recipe band-passed noise around `freq`, which put 50–90 % of the
+stimulus's power above 2.5 kHz where a real DI carries ≲1 %; on hardware that
+mis-levelled bright and high-gain presets against real playing by up to
+6.5/10.6 LU spread (humbucker/single-coil), against 1.8/1.2 LU for the pitched
+plucks. `every_stimulus_has_a_pickup_like_spectrum` keeps every committed WAV
+under 3 % above 2.5 kHz.
 
 Hum-cancelling appears nowhere. Construction (single-coil vs humbucker) and
 voicing are independent axes; **templates follow voicing**.
@@ -37,8 +47,8 @@ Three measured facts from this repo's own probes set the error budget:
    ignorable. (Calibration does NOT "absorb" them — it replaces the stimulus
    entirely; templates only ever serve uncalibrated profiles.)
 
-So an alias only has to land the gross **brightness class** (bright-SC ~5.5 kHz
-vs dark-HB ~3 kHz vs flat-active), judged by **measured inductance → loaded
+So an alias only has to land the gross **brightness class** (bright-SC ~4.5 kHz
+vs dark-HB ~2.8 kHz vs flat-active), judged by **measured inductance → loaded
 resonance**, never by construction taxonomy or tonal folklore (which is usually
 confounded by pickup _position_). Loading shifts every candidate's f0 down
 together (√C), so rankings — and therefore assignments — are robust to cable

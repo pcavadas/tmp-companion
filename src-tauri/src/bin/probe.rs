@@ -864,6 +864,11 @@ const ARMS: &[Arm] = &[
         run: arm_doctor_loo,
     },
     Arm {
+        flags: &["--doctor-derive"],
+        usage: r#"--doctor-derive <factory_report.json> [--slots <csv>]"#,
+        run: arm_doctor_derive,
+    },
+    Arm {
         flags: &["--benchmark"],
         usage: r#"--benchmark <corpus.json> [--thresholds <thresholds.json>] --out <result.json>"#,
         run: arm_benchmark,
@@ -3448,6 +3453,29 @@ fn arm_doctor_calib(args: &[String]) -> bool {
         ));
     }
 
+    false
+}
+
+fn arm_doctor_derive(args: &[String]) -> bool {
+    if let Some(i) = args.iter().position(|a| a == "--doctor-derive") {
+        // --doctor-derive <factory_report.json> [--slots <csv>]
+        // OFFLINE: re-derives the Doctor constants from a sweep through a new stimulus.
+        let Some(report) = args.get(i + 1).filter(|a| !a.starts_with("--")).cloned() else {
+            eprintln!("usage: probe --doctor-derive <factory_report.json> [--slots <csv>]");
+            std::process::exit(2);
+        };
+        let slots = flag_arg(args, "--slots");
+        match tmp_companion_lib::probe_doctor_derive(&report, slots.as_deref()) {
+            Ok(r) => {
+                print!("{r}");
+                return true;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     false
 }
 

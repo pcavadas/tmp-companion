@@ -368,6 +368,73 @@ pub fn derive_calibration(
     }
 }
 
+// ─── re-deriving the shipped constants ──────────────────────────────────────
+
+/// Every constant a factory sweep through a NEW reference stimulus re-derives
+/// at once: the stimulus reference, the target curve, the max-plus-margin
+/// gates and the factory presence-contrast population (#235, #247).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DerivedConstants {
+    /// The sweep's own stimulus band dB — the new `GUITAR_STIM_REF`.
+    pub stim_ref: Vec<f64>,
+    /// The new target curve and gates.
+    pub calibration: Calibration,
+    /// Sorted presence contrasts (dB, 0.01 dB) — the new `FACTORY_CONTRAST_DB`.
+    pub contrasts: Vec<f64>,
+}
+
+/// Re-derive the shipped constants from a sweep whose every row was captured
+/// through ONE stimulus, which becomes the new reference. Anchoring each row
+/// to its own stimulus is then a no-op, so the rows are derived un-anchored:
+/// exactly what anchoring against the new reference would give, without
+/// depending on the shipped one. Refuses a sweep that mixed stimuli or
+/// recorded none.
+pub fn derive_constants(
+    rows: &[&ReplayProfile],
+    family: Family,
+) -> Result<DerivedConstants, String> {
+    let first = rows
+        .first()
+        .ok_or("the sweep has no rows")?
+        .stim_bands
+        .clone()
+        .ok_or("the sweep recorded no stimulus bands")?;
+    let stim_ref = doctor::band_db(&first);
+    for r in rows {
+        let bands = r
+            .stim_bands
+            .as_deref()
+            .ok_or("a row recorded no stimulus bands")?;
+        let same = doctor::band_db(bands)
+            .iter()
+            .zip(&stim_ref)
+            .all(|(a, b)| (a - b).abs() < 1e-6);
+        if !same {
+            return Err("the sweep mixed stimuli; derive from one stimulus".to_string());
+        }
+    }
+    let own: Vec<ReplayProfile> = rows
+        .iter()
+        .map(|r| ReplayProfile {
+            stim_bands: None,
+            ..(*r).clone()
+        })
+        .collect();
+    let own_refs: Vec<&ReplayProfile> = own.iter().collect();
+    let calibration = derive_calibration(&own_refs, family, GatePolicy::MaxPlusMargin);
+    let mut contrasts: Vec<f64> = own
+        .iter()
+        .filter_map(|r| doctor::cut_through(&r.to_profile(), family))
+        .map(|c| (c.contrast_db * 100.0).round() / 100.0)
+        .collect();
+    contrasts.sort_by(f64::total_cmp);
+    Ok(DerivedConstants {
+        stim_ref,
+        calibration,
+        contrasts,
+    })
+}
+
 // ─── leave-one-out ─────────────────────────────────────────────────────────
 
 /// False-positive tally for one rule over a healthy population.
@@ -982,6 +1049,35 @@ mod tests {
                 (format!("s{i}"), replay(shape, -40.0 + i as f64))
             })
             .collect()
+    }
+
+    #[test]
+    fn derived_constants_take_the_sweep_stimulus_as_the_reference() {
+        let stim = vec![1e-4, 2e-4, 1e-5, 3e-3, 4e-3, 1e-4];
+        let pop: Vec<ReplayProfile> = healthy_population(9)
+            .into_iter()
+            .map(|(_, mut r)| {
+                r.stim_bands = Some(stim.clone());
+                r
+            })
+            .collect();
+        let rows: Vec<&ReplayProfile> = pop.iter().collect();
+        let d = derive_constants(&rows, Family::Guitar).unwrap();
+        assert_eq!(d.stim_ref, doctor::band_db(&stim));
+        // The rows sit on the shipped target shape, so it comes back as the target.
+        let plain: Vec<ReplayProfile> = healthy_population(9).into_iter().map(|(_, r)| r).collect();
+        let plain_rows: Vec<&ReplayProfile> = plain.iter().collect();
+        assert_eq!(
+            d.calibration,
+            derive_calibration(&plain_rows, Family::Guitar, GatePolicy::MaxPlusMargin)
+        );
+        assert_eq!(d.contrasts.len(), 9);
+        assert!(d.contrasts.windows(2).all(|w| w[0] <= w[1]));
+
+        let mut mixed = pop.clone();
+        mixed[3].stim_bands = Some(vec![1e-4; 6]);
+        let mixed_rows: Vec<&ReplayProfile> = mixed.iter().collect();
+        assert!(derive_constants(&mixed_rows, Family::Guitar).is_err());
     }
 
     #[test]

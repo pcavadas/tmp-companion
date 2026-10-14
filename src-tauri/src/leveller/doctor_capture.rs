@@ -83,8 +83,10 @@ pub struct DoctorOnset {
     /// Where REAL signal begins (after the played pad) — the body PSD and the
     /// coverage gate's floor window start here.
     pub signal_start: usize,
-    /// Where the PADDED stimulus aligns — the pad stays IN the body (matches
-    /// the historical aligned split, so the R4/R5 tail-window budget holds).
+    /// Where the body window starts: [`Self::signal_start`] on a confident split,
+    /// so the played pad's silence stays OUT of the body RMS that
+    /// [`crate::doctor::tail_energy_ratio`] reads (#259 — it used to sit inside
+    /// and read the body 0.28 dB low); 0 on the un-aligned fallback.
     pub body_start: usize,
     /// Body length in samples: `body_start + body_len` is the tail split point
     /// ([`crate::doctor::tail_energy_ratio`]'s `body_start`/`body_len`).
@@ -145,12 +147,10 @@ pub fn doctor_onset(stim_padded: &[f32], samples: &[f32], rate: u32) -> DoctorOn
     if let Some(signal_start) = audio::estimate_signal_start(samples, rate) {
         let latency_ms = (signal_start as i64 - pad as i64) * 1000 / i64::from(rate.max(1));
         if (DOCTOR_ONSET_MIN_LATENCY_MS..=DOCTOR_ONSET_MAX_LATENCY_MS).contains(&latency_ms) {
-            let body_start = signal_start.saturating_sub(pad);
-            let body_end = signal_start.saturating_add(body_len_full);
             return DoctorOnset {
                 signal_start,
-                body_start,
-                body_len: body_end.saturating_sub(body_start),
+                body_start: signal_start,
+                body_len: body_len_full,
                 source: OnsetSource::Energy,
             };
         }
@@ -162,8 +162,8 @@ pub fn doctor_onset(stim_padded: &[f32], samples: &[f32], rate: u32) -> DoctorOn
     if confident {
         return DoctorOnset {
             signal_start: onset + pad,
-            body_start: onset,
-            body_len: stim_padded.len(),
+            body_start: onset + pad,
+            body_len: body_len_full,
             source: OnsetSource::Correlator,
         };
     }
@@ -206,8 +206,8 @@ pub fn doctor_capture(
     ref_level: Option<f32>,
     tail_ms: u64,
     skip_load: bool,
-) -> Result<(Vec<f32>, u32), LevelError> {
-    Ok(to_stereo(doctor_capture_raw(
+) -> Result<(DoctorSignal, u32), LevelError> {
+    Ok(to_signal(doctor_capture_raw(
         slot,
         scene,
         force_bypass,
@@ -274,7 +274,7 @@ pub fn doctor_capture_with_loudness(
     tail_ms: u64,
     skip_load: bool,
     validate: Option<&crate::validate_log::ValidationRow>,
-) -> Result<(Vec<f32>, u32, lufs::Loudness), LevelError> {
+) -> Result<(DoctorSignal, u32, lufs::Loudness), LevelError> {
     let cap = capture_full_at_params(
         slot,
         scene,
@@ -285,7 +285,7 @@ pub fn doctor_capture_with_loudness(
         tail_ms,
         skip_load,
     )?;
-    let samples = cap.stereo_mix();
+    let samples = DoctorSignal::from_capture(&cap);
     let sample_rate = cap.sample_rate;
     // The Doctor diagnoses the preset's own stereo output: pinned to the stereo meter,
     // whatever the Settings playback-channels choice (that choice is a LEVELING meter).
@@ -296,15 +296,133 @@ pub fn doctor_capture_with_loudness(
     Ok((samples, sample_rate, loudness))
 }
 
-/// Deterministic stereo mixdown (`Capture::stereo_mix` — average of USB-Out 1/2;
-/// an argmax pick, `Capture::loudest_channel`, can flip L/R across runs on a
-/// stereo preset and flip spectral verdicts with it) — the shared tail of every
-/// Doctor capture seam that needs band/PSD `samples`, not the leveling LUFS
-/// metric (a 2-ch BS.1770 SUM over the un-mixed pair — see
-/// [`doctor_capture_with_loudness`]).
-pub(super) fn to_stereo(cap: audio::Capture) -> (Vec<f32>, u32) {
+/// The processed pair one Doctor capture is analysed from (#250).
+///
+/// - `channels`: USB-Out 1/2 (or the one channel of a mono capture). Spectra
+///   and energies combine these in the POWER domain
+///   ([`crate::doctor::body_psd_span`], [`crate::doctor::tail_energy_ratio_ch`],
+///   [`crate::doctor::output_coverage_ch`]): a mono chain reads exactly as
+///   before, a decorrelated stereo tail keeps its full power, and partly
+///   correlated stereo no longer comb-filters into notches the player never
+///   hears.
+/// - `mix`: the deterministic sample average (`Capture::stereo_mix`), kept for
+///   the onset detector and the single-signal dev harnesses. An argmax pick
+///   (`Capture::loudest_channel`) can flip L/R across runs, so neither path
+///   uses one.
+///
+/// Not the leveling LUFS metric, which is a 2-ch BS.1770 SUM over the
+/// un-mixed pair (see [`doctor_capture_with_loudness`]).
+#[derive(Debug, Clone)]
+pub struct DoctorSignal {
+    pub channels: Vec<Vec<f32>>,
+    pub mix: Vec<f32>,
+}
+
+impl DoctorSignal {
+    /// The processed pair of `cap` (dry channel 2+ excluded) and its average.
+    pub fn from_capture(cap: &audio::Capture) -> Self {
+        let channels = if cap.channels < 2 {
+            vec![cap.channel(0)]
+        } else {
+            vec![cap.channel(0), cap.channel(1)]
+        };
+        DoctorSignal {
+            channels,
+            mix: cap.stereo_mix(),
+        }
+    }
+
+    /// A one-channel signal (fixtures).
+    #[cfg(test)]
+    pub fn mono(samples: Vec<f32>) -> Self {
+        DoctorSignal {
+            channels: vec![samples.clone()],
+            mix: samples,
+        }
+    }
+
+    /// The channels as slices, for the `_ch` analysis functions.
+    pub fn slices(&self) -> Vec<&[f32]> {
+        self.channels.iter().map(Vec::as_slice).collect()
+    }
+}
+
+/// The shared tail of every Doctor capture seam: the capture's [`DoctorSignal`]
+/// and its rate.
+pub(super) fn to_signal(cap: audio::Capture) -> (DoctorSignal, u32) {
     let sr = cap.sample_rate;
-    (cap.stereo_mix(), sr)
+    (DoctorSignal::from_capture(&cap), sr)
+}
+
+/// The stimulus PSD a Doctor capture's transfer is taken against: the padded
+/// Doctor stimulus WITHOUT its pad (#249), so it spans exactly the body window
+/// [`crate::doctor::body_psd_span`] reads (`[signal_start, body_end)`) and both
+/// sit on one Welch grid — the stimulus's fine structure then cancels in
+/// [`crate::psd::Psd::transfer_db`] instead of leaving up to ~2 dB of ripple.
+pub fn stim_body_psd(stim_padded: &[f32], rate: u32) -> crate::psd::Psd {
+    let pad = doctor_pad_samples().min(stim_padded.len());
+    crate::psd::welch_psd(&stim_padded[pad..], rate as f32)
+}
+
+/// One analysed Doctor capture: its profile, its output coverage and the onset
+/// split they came from.
+#[derive(Debug, Clone)]
+pub struct ProfiledCapture {
+    pub profile: crate::doctor::SoundProfile,
+    pub coverage: Vec<bool>,
+    pub onset: DoctorOnset,
+    /// Whether the capture runs past the body end (a tail window exists).
+    pub has_tail: bool,
+}
+
+/// Analyse one Doctor capture — THE measurement space, shared by the
+/// production check, its apply A/B and the calibration sweeps that derive the
+/// target and thresholds, so none of them can drift apart:
+///
+/// - onset split from the average (`doctor_onset`);
+/// - body PSD over `[signal_start, body_end)` of every channel, power-combined
+///   ([`crate::doctor::body_psd_span`]);
+/// - the profile (`stereo_loudness` as its loudness when given, else the mono
+///   measure over the average), with the stimulus-transfer anchor set from
+///   `stim_psd` ([`stim_body_psd`] of `stim_padded` at `rate`);
+/// - the captured output's own coverage.
+pub fn analyze_capture(
+    sig: &DoctorSignal,
+    rate: u32,
+    stim_padded: &[f32],
+    stim_psd: &crate::psd::Psd,
+    family: crate::doctor::Family,
+    tail_ms: u32,
+    stereo_loudness: Option<lufs::Loudness>,
+) -> Result<ProfiledCapture, String> {
+    let onset = doctor_onset(stim_padded, &sig.mix, rate);
+    let chans = sig.slices();
+    let has_tail = sig.mix.len() > onset.body_end();
+    let body_psd = crate::doctor::body_psd_span(&chans, rate, onset.signal_start, onset.body_end());
+    let loudness = match stereo_loudness {
+        Some(l) => l,
+        None => lufs::measure_mono(&sig.mix, rate)?,
+    };
+    let mut profile = crate::doctor::SoundProfile::from_channels(
+        &chans,
+        rate,
+        onset.body_len,
+        onset.body_start,
+        tail_ms,
+        family,
+        &body_psd,
+        Some(stim_psd),
+        Some(loudness),
+    )?;
+    profile.stim_bands = Some(stim_psd.band_powers(family.bands()));
+    let coverage =
+        crate::doctor::output_coverage_ch(&chans, rate, onset.signal_start, family, &body_psd);
+    Ok(ProfiledCapture {
+        profile,
+        coverage,
+        onset,
+        has_tail,
+    })
 }
 
 /// Doctor A/B AFTER-clip seam: capture the CURRENT live edit-buffer state WITHOUT
@@ -331,8 +449,8 @@ pub fn doctor_capture_current(
     force_bypass: &[(String, String, bool)],
     ref_level: Option<f32>,
     tail_ms: u64,
-) -> Result<(Vec<f32>, u32), LevelError> {
-    Ok(to_stereo(capture_full_at(
+) -> Result<(DoctorSignal, u32), LevelError> {
+    Ok(to_signal(capture_full_at(
         ListIndex::default(), // slot unused: skip_load
         scene,
         force_bypass,
@@ -391,6 +509,135 @@ mod onset_gate {
         doctor_stim_slice(plucky(6.0))
     }
 
+    /// A wire chain: the padded stimulus delayed by `lag` samples, then a
+    /// silent tail of `tail` samples.
+    fn wire(stim: &[f32], lag: usize, tail: usize) -> Vec<f32> {
+        let mut cap = vec![0.0f32; lag];
+        cap.extend_from_slice(stim);
+        cap.extend(std::iter::repeat_n(0.0, tail));
+        cap
+    }
+
+    // BUG→GATE (#249): the body PSD spanned the tail and the stimulus PSD the
+    // pad, so the two Welch grids sat 2.34 hops apart and a wire chain's
+    // transfer rippled by up to ±1.9 dB. On one span and one grid it is flat.
+    #[test]
+    fn a_wire_chain_transfer_is_flat_across_the_scan_range() {
+        let stim = synthetic_padded_stim();
+        // 32 ms latency (the HW-measured inject latency) and a 300 ms dry tail.
+        let cap = wire(&stim, SR as usize * 32 / 1000, SR as usize * 3 / 10);
+        let onset = doctor_onset(&stim, &cap, SR);
+        assert_eq!(onset.source, OnsetSource::Energy);
+        let body = doctor::body_psd_span(&[&cap], SR, onset.signal_start, onset.body_end());
+        let t = body
+            .transfer_db(&stim_body_psd(&stim, SR))
+            .expect("one grid");
+        let bin_hz = f64::from(SR) / ((t.len() - 1) * 2) as f64;
+        let worst = t
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| (200.0..8000.0).contains(&(*k as f64 * bin_hz)))
+            .map(|(_, v)| v.abs())
+            .fold(0.0f64, f64::max);
+        assert!(worst < 0.05, "wire-chain transfer ripples {worst:.3} dB");
+    }
+
+    // BUG→GATE (#259): the played pad sat inside the body RMS (3 s of signal
+    // averaged over 3.2 s), reading the body 0.28 dB low and the tail that
+    // much wetter. The body window now starts at the signal.
+    #[test]
+    fn the_pad_stays_out_of_the_body_window() {
+        let stim = synthetic_padded_stim();
+        let cap = wire(&stim, SR as usize * 32 / 1000, SR as usize * 3 / 10);
+        let onset = doctor_onset(&stim, &cap, SR);
+        assert_eq!(onset.body_start, onset.signal_start);
+        assert_eq!(onset.body_len, stim.len() - doctor_pad_samples());
+        assert_eq!(onset.body_end(), SR as usize * 32 / 1000 + stim.len());
+    }
+
+    /// The production analysis of `sig` against the synthetic stimulus.
+    fn analyse(sig: &DoctorSignal, stim: &[f32]) -> ProfiledCapture {
+        analyze_capture(
+            sig,
+            SR,
+            stim,
+            &stim_body_psd(stim, SR),
+            doctor::Family::Guitar,
+            DOCTOR_TAIL_MS,
+            None,
+        )
+        .expect("profile")
+    }
+
+    // BUG→GATE (#250): the Doctor analysed the sample average of L and R, so a
+    // dual-mono chain read right but a decorrelated stereo tail lost 3 dB.
+    // Spectra and energies now combine the channels in the power domain:
+    // dual mono is bit-identical to mono, and a decorrelated tail keeps its
+    // full power.
+    #[test]
+    fn stereo_combines_in_power_and_dual_mono_is_unchanged() {
+        let stim = synthetic_padded_stim();
+        let lag = SR as usize * 32 / 1000;
+        let tail_n = SR as usize * DOCTOR_TAIL_MS as usize / 1000;
+        let mut cap = wire(&stim, lag, tail_n);
+        // A reverb-like tail: decaying noise, independent per channel.
+        let tail_start = lag + stim.len();
+        let noise = |seed: u64| -> Vec<f32> {
+            let mut x = seed;
+            (0..tail_n)
+                .map(|i| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    let u = (x >> 11) as f32 / (1u64 << 53) as f32 * 2.0 - 1.0;
+                    0.05 * u * (-(i as f32) / (0.4 * SR as f32)).exp()
+                })
+                .collect()
+        };
+        let (nl, nr) = (noise(0x9E37_79B9_7F4A_7C15), noise(0xD1B5_4A32_D192_ED03));
+        let mut left = cap.clone();
+        let mut right = cap.clone();
+        for i in 0..tail_n {
+            left[tail_start + i] += nl[i];
+            right[tail_start + i] += nr[i];
+            cap[tail_start + i] += nl[i];
+        }
+
+        let mono = analyse(&DoctorSignal::mono(cap.clone()), &stim);
+        let dual = analyse(
+            &DoctorSignal {
+                channels: vec![cap.clone(), cap.clone()],
+                mix: cap.clone(),
+            },
+            &stim,
+        );
+        assert_eq!(mono.profile.bands, dual.profile.bands);
+        assert_eq!(
+            mono.profile.tail_ratio_db.to_bits(),
+            dual.profile.tail_ratio_db.to_bits()
+        );
+        assert_eq!(mono.coverage, dual.coverage);
+
+        let mix: Vec<f32> = left
+            .iter()
+            .zip(&right)
+            .map(|(l, r)| (l + r) / 2.0)
+            .collect();
+        let stereo = analyse(
+            &DoctorSignal {
+                channels: vec![left.clone(), right.clone()],
+                mix: mix.clone(),
+            },
+            &stim,
+        );
+        let averaged = analyse(&DoctorSignal::mono(mix), &stim);
+        let wetter = stereo.profile.tail_ratio_db - averaged.profile.tail_ratio_db;
+        assert!(
+            (2.5..3.5).contains(&wetter),
+            "a decorrelated tail must read ~3 dB wetter than the average, got {wetter:.2} dB"
+        );
+    }
+
     /// G0 — behavioral: the production composition (`doctor_onset` ->
     /// `tail_energy_ratio`) must land on the pinned-tail aligned ground truth
     /// the fixture's header records (`fixtures/fs13_wash_envelope_2ms.txt`),
@@ -411,10 +658,13 @@ mod onset_gate {
             onset.body_start,
             DOCTOR_TAIL_MS,
         );
+        // The fixture's pinned-tail ground truth (-9.54 dB) averaged the body
+        // over the played pad too; with the pad out of the body (#259) the body
+        // reads 10·log10(3.2/3.0) = 0.28 dB hotter and the ratio that much drier.
         assert!(
-            (ratio - (-9.54)).abs() < 0.2,
+            (ratio - (-9.82)).abs() < 0.2,
             "doctor_onset -> tail_energy_ratio should land within 0.2 dB of the \
-             pinned-tail aligned ground truth (-9.54 dB); got {ratio:.2} \
+             pinned-tail aligned ground truth less the pad (-9.82 dB); got {ratio:.2} \
              (source={:?} confident={} signal_start={} body_start={} body_len={})",
             onset.source,
             onset.confident(),
@@ -502,9 +752,8 @@ mod onset_gate {
             "signal_start {} vs expected {signal_start_samples}",
             onset.signal_start
         );
-        // The pad is truncated (clipped to 0), so body_start clips to 0 rather
-        // than going negative.
-        assert_eq!(onset.body_start, 0);
+        // The body starts at the signal, not at the (truncated) pad.
+        assert_eq!(onset.body_start, onset.signal_start);
         assert_eq!(
             onset.body_end(),
             onset.signal_start + body_len_full,
@@ -634,19 +883,23 @@ mod onset_gate {
         );
         let (corr_onset, corr_confident) = audio::estimate_onset(&stim_padded, &capture, SR);
         assert!(corr_confident);
-        assert_eq!(onset.body_start, corr_onset);
+        assert_eq!(onset.body_start, corr_onset + doctor_pad_samples());
     }
 
     /// Offline e2e passthrough (`sim_device::e2e_capture`): a scaled copy of
-    /// the padded stimulus with zero latency and no extra tail. `body_start`
-    /// must land at 0 and the tail (nothing past the body) must floor at -80,
-    /// exactly as before this change.
+    /// the padded stimulus with zero latency and no extra tail. The body must
+    /// start right after the pad, and the tail (nothing past the body) must
+    /// floor at -80.
     #[test]
-    fn sim_passthrough_zero_latency_no_tail_keeps_body_start_zero_and_floors_the_tail() {
+    fn sim_passthrough_zero_latency_no_tail_starts_the_body_after_the_pad_and_floors_the_tail() {
         let stim_padded = doctor_stim_slice(plucky(3.0));
         let capture: Vec<f32> = stim_padded.iter().map(|&x| x * 0.7).collect();
         let onset = doctor_onset(&stim_padded, &capture, SR);
-        assert_eq!(onset.body_start, 0);
+        assert!(onset.body_start.abs_diff(doctor_pad_samples()) <= HOP);
+        assert_eq!(
+            onset.body_end(),
+            onset.body_start + stim_padded.len() - doctor_pad_samples()
+        );
         let ratio = doctor::tail_energy_ratio(
             &capture,
             SR,

@@ -51,6 +51,28 @@ corroborate in it) abstains (#192). The metric is fully DETERMINISTIC per sound:
 depends only on that sound's own measurements, never on which other sounds ran
 in the same check.
 
+### Re-deriving on the pitched-pluck stimulus (pending a device run)
+
+The leveling stimuli are the pitched-pluck WAVs (#235), but the Doctor's
+constants (`GUITAR_TARGET`, the `GUITAR` gates, `GUITAR_STIM_REF`,
+`FACTORY_CONTRAST_DB`) still come from the factory sweep through the old
+band-passed-noise humbucker. Until they are re-derived, `GUITAR_STIM_REF` is
+FROZEN to that stimulus (kept outside the bundle at
+`resources/reference/guitar-humbucker-v1.wav`) and every shipped stimulus is
+anchored back onto it. Against it the new humbucker corrects by
++1/+13/+22/−5/−22/−41 dB across the six guitar bands: exact for a linear
+chain, badly wrong for a driven one (distortion fills the bands the new
+stimulus leaves empty), so the Doctor must not ship on the new stimulus with
+the frozen constants. The re-derivation:
+
+1. `probe --doctor-calib-factory 0..254 --stim resources/samples/guitar-humbucker.wav --family guitar --out <report.json>` (~37 min, through `leveller::analyze_capture`).
+2. `probe --doctor-derive <report.json> --slots <the 25 flagship slots>` prints the target, the gates and the contrast population; paste `GUITAR_STIM_REF` from `print_guitar_stim_ref` pointed at the new humbucker.
+3. `probe --doctor-loo <report.json>` for the false-positive rate on the new constants, then the defects suite (7/7) and factory silence.
+4. Gate #247: a wire-chain passthrough through `diagnose_levels` draws no finding.
+
+The bass and Bass VI anchors (user slots 21 and 8–9) need re-capturing on the
+new bass stimuli the same way.
+
 ## Diagnoses (12)
 
 - **Band rules** (consensus, above): muddy / boomy / harsh / lost / thin /
@@ -175,14 +197,30 @@ Window: a **3 s stimulus slice + 200 ms silent preamble pad**
 a time-based block (the wash rule needs the decay), 0.3 s dry
 (`doctor::doctor_tail_ms`). HW-A/B'd against the original 6 s + 2.5 s oracle
 (`probe --doctor-window-ab`): 0 verdict flips. Capture runs ~4.7 s/sound
-(pad + tail included). Band/PSD analysis (bands, air-flatness, localized
-peaks) runs on the **stereo mix** of USB-out 1/2 (`Capture::stereo_mix`, the
-per-sample AVERAGE — Doctor seams only, unaffected by the PR2 metering
-re-baseline: it never switched average→sum). The reported `integrated_lufs`
-is the exception — it adopts the same 2-ch BS.1770 SUM every other
-output-side measurement uses now (`leveller::doctor_capture_with_loudness`),
-so a Doctor sound's displayed loudness matches Companion's own Level-tab
-number rather than the `stereo_mix` average's mono-equivalent reading.
+(pad + tail included). Every capture is analysed through ONE seam,
+`leveller::analyze_capture`, which the production check, its apply A/B and the
+calibration sweeps all call, so the shipped constants are derived in exactly
+the space they are applied in:
+
+- **Stereo combines in power (#250).** Band powers, air-flatness, localized
+  peaks, the coverage floor and the tail ratio take USB-out 1/2 separately
+  (`leveller::DoctorSignal`) and average their PSDs and RMS², not their
+  waveforms. A mono chain reads bit-identically to before; a decorrelated
+  stereo reverb tail keeps its full power (the sample average lost 3 dB of
+  it, a large share of the `washed` gate's margin), and chorus or doublers no
+  longer comb-filter into notches the player never hears. The onset detector
+  still reads the per-sample average (`DoctorSignal::mix`). The reported
+  `integrated_lufs` is the 2-ch BS.1770 SUM every other output-side
+  measurement uses (`leveller::doctor_capture_with_loudness`).
+- **The body excludes the tail and the pad (#249, #259).** The body PSD spans
+  `[signal_start, body_end)` (`doctor::body_psd_span`), and the stimulus PSD
+  spans the stimulus without its pad (`leveller::stim_body_psd`): same length,
+  same Welch grid, so a wire chain's transfer is flat to <0.05 dB instead of
+  rippling ±1.9 dB, and a wet preset's decay no longer mixes into its band
+  powers. The tail ratio's body RMS starts at the signal too, so the 200 ms
+  pad no longer reads the body 0.28 dB low.
+- **Band edges are half-open (#259)** (`[lo, hi)`), so a 3 or 6 kHz edge that
+  lands exactly on a bin counts once.
 
 The body/tail split is onset-aligned: `leveller::doctor_onset` locates the
 stimulus in the capture via a floor-relative energy step first, falling back

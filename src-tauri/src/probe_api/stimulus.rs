@@ -102,14 +102,14 @@ pub fn probe_tail_decay(
     let stim = read_stimulus_48k(stimulus_wav)?;
     let (samples, rate) =
         leveller::doctor_capture(slot, scene, &[], &[], &stim, Some(0.5), tail_ms, false)?;
-    write_wav_mono(out, &samples, rate)?;
+    write_wav_mono(out, &samples.mix, rate)?;
     // The stimulus is 48 kHz by construction (`read_stimulus_48k`); `rate` is the
     // CAPTURE rate `doctor_capture` returns and need not match it — using `rate`
     // here would misreport the stimulus duration by their ratio if they differ.
     let stim_ms = stim.len() as u64 * 1000 / 48_000;
     Ok(format!(
         "captured slot {slot} scene {scene:?}: {stim_ms}ms stimulus + {tail_ms}ms tail = {} samples @ {rate} Hz → {out}\n",
-        samples.len()
+        samples.mix.len()
     ))
 }
 
@@ -459,41 +459,30 @@ pub fn probe_doctor(
             false,
         ) {
             Ok((samples, rate)) => {
-                let onset = leveller::doctor_onset(&stim, &samples, rate);
-                if !onset.confident() {
-                    eprintln!(
-                        "[probe] slot {slot}: onset not confidently found ({:?}) — un-aligned split",
-                        onset.source
-                    );
-                }
-                // Share ONE body PSD between the profile and the coverage gate
-                // (mirrors `analyze_capture` / production `doctor_check`) so this
-                // calibration sweep's printed verdicts match what the app would
-                // actually fire, instead of the gate-free `diagnose` shim.
-                let body_psd = doctor::body_psd(&samples, rate, onset.signal_start);
-                let stim_psd = crate::psd::welch_psd(&stim, rate as f32);
+                // The production measurement space (`leveller::analyze_capture`)
+                // so this calibration sweep's printed verdicts match what the app
+                // would actually fire, instead of the gate-free `diagnose` shim.
+                let stim_psd = leveller::stim_body_psd(&stim, rate);
                 // Skip-and-continue like the capture-failure arm below — a `?`
                 // here (e.g. one silent-inject slot) would discard the whole
                 // sweep, including every slot already captured.
-                match doctor::SoundProfile::from_capture_with_psd(
+                match leveller::analyze_capture(
                     &samples,
                     rate,
-                    onset.body_len,
-                    onset.body_start,
-                    leveller::DOCTOR_TAIL_MS,
+                    &stim,
+                    &stim_psd,
                     instrument,
-                    &body_psd,
-                    Some(&stim_psd),
+                    leveller::DOCTOR_TAIL_MS,
+                    None,
                 ) {
-                    Ok(profile) => {
-                        let coverage = doctor::output_coverage_with_body(
-                            &samples,
-                            rate,
-                            onset.signal_start,
-                            instrument,
-                            &body_psd,
-                        );
-                        sounds.push((slot, scene, profile, nodes, coverage));
+                    Ok(p) => {
+                        if !p.onset.confident() {
+                            eprintln!(
+                                "[probe] slot {slot}: onset not confidently found ({:?}) — un-aligned split",
+                                p.onset.source
+                            );
+                        }
+                        sounds.push((slot, scene, p.profile, nodes, p.coverage));
                     }
                     Err(e) => eprintln!("[probe] slot {slot}: profile failed: {e} (skipping)"),
                 }

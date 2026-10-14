@@ -430,10 +430,39 @@ impl SoundProfile {
         stim_psd: Option<&crate::psd::Psd>,
         stereo_loudness: Option<crate::lufs::Loudness>,
     ) -> Result<SoundProfile, String> {
+        Self::from_channels(
+            &[samples],
+            rate,
+            body_len,
+            body_start,
+            tail_ms,
+            family,
+            body_psd,
+            stim_psd,
+            stereo_loudness,
+        )
+    }
+
+    /// [`Self::from_capture_with_psd_loudness`] over every channel of a
+    /// capture: the tail ratio combines the channels in the power domain
+    /// (#250). With no `stereo_loudness`, loudness falls back to the mono
+    /// measure over the first channel (a 1-channel capture's only one).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_channels(
+        channels: &[&[f32]],
+        rate: u32,
+        body_len: usize,
+        body_start: usize,
+        tail_ms: u32,
+        family: Family,
+        body_psd: &crate::psd::Psd,
+        stim_psd: Option<&crate::psd::Psd>,
+        stereo_loudness: Option<crate::lufs::Loudness>,
+    ) -> Result<SoundProfile, String> {
         let bands = body_psd.band_powers(family.bands());
         let loudness = match stereo_loudness {
             Some(l) => l,
-            None => crate::lufs::measure_mono(samples, rate)?,
+            None => crate::lufs::measure_mono(channels.first().copied().unwrap_or(&[]), rate)?,
         };
         let integrated_lufs = loudness.integrated_lufs;
         // A silent capture measures −inf — route the sound to the errors lane
@@ -447,7 +476,7 @@ impl SoundProfile {
             integrated_lufs,
             spread_lu: loudness.spread_lu(),
             momentary_spread_lu: loudness.momentary_spread_lu,
-            tail_ratio_db: tail_energy_ratio(samples, rate, body_len, body_start, tail_ms),
+            tail_ratio_db: tail_energy_ratio_ch(channels, rate, body_len, body_start, tail_ms),
             air_flatness: body_psd.flatness(6000.0, 12000.0),
             // Localization runs on the TRANSFER (capture − stimulus, dB) so
             // the deterministic stimulus's own spectral ridges cancel — raw
@@ -484,14 +513,41 @@ impl SoundProfile {
 /// synthetic-stimulus call site passes 0, `welch_psd` handles a short slice by
 /// falling back to a smaller segment length, no extra guard needed here).
 pub fn body_psd(samples: &[f32], rate: u32, onset: usize) -> crate::psd::Psd {
+    body_psd_span(&[samples], rate, onset, samples.len())
+}
+
+/// The body PSD over `[start, end)` of every channel, combined in the power
+/// domain — the space every production and sweep capture is analysed in.
+///
+/// - `end` is the body end (#249): the post-stimulus tail stays out of the
+///   spectrum, so a wet preset's decay no longer mixes into its band powers
+///   in proportion to how wet it is, and the body spans exactly the
+///   stimulus's own unpadded length, on the same Welch grid as
+///   [`crate::leveller::stim_body_psd`] — so the stimulus's fine structure
+///   cancels in [`crate::psd::Psd::transfer_db`].
+/// - The channels' PSDs are averaged, not their waveforms (#250): a mono
+///   chain reads the same, while decorrelated stereo keeps its full power and
+///   partly correlated stereo (chorus, doublers) no longer comb-filters.
+///
+/// An out-of-range `start` (an un-aligned onset, 0) falls back to the whole
+/// buffer, as [`body_psd`] always has.
+pub fn body_psd_span(channels: &[&[f32]], rate: u32, start: usize, end: usize) -> crate::psd::Psd {
     // Low-variance Welch PSD (Stage 1) replaces the noisy single-bin Goertzel
     // probes — true integrated band power over each layout band, plus the
     // top-octave flatness the capture-space fizzy gate reads.
-    if onset > 0 && onset < samples.len() {
-        crate::psd::welch_psd(&samples[onset..], rate as f32)
-    } else {
-        crate::psd::welch_psd(samples, rate as f32)
-    }
+    crate::psd::Psd::power_mean(
+        channels
+            .iter()
+            .map(|c| {
+                let end = end.min(c.len());
+                if start > 0 && start < end {
+                    crate::psd::welch_psd(&c[start..end], rate as f32)
+                } else {
+                    crate::psd::welch_psd(c, rate as f32)
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Curated Doctor `SoundProfile`s for the marketing-screenshot showcase
@@ -752,30 +808,37 @@ const GUITAR_TARGET: [f64; 6] = [-5.0, -2.0, -5.0, 13.0, 13.5, -14.5];
 const BASS_TARGET: [f64; 6] = [1.5, 6.5, 9.5, 5.0, 1.5, -24.0];
 const BASS_VI_TARGET: [f64; 7] = [-18.0, 1.5, 2.0, -5.0, 14.0, 15.0, -9.0];
 
-/// The humbucker synthetic stimulus's OWN per-band level (`band_db` space,
-/// guitar layout) — the reference [`GUITAR_TARGET`] was derived through. The
+/// The reference stimulus's OWN per-band level (`band_db` space, guitar
+/// layout) — the stimulus [`GUITAR_TARGET`] was derived through. The
 /// stimulus-transfer anchor ([`anchor_deviations`]) subtracts each capture's
-/// stimulus deviation FROM this reference, so a humbucker capture (the
-/// majority topology, and the one the factory sweep used) gets exactly zero
-/// correction while a single-coil / DI stimulus's differing spectral shape no
-/// longer skews the tilt/band verdicts.
+/// stimulus deviation FROM this reference, so a capture through the reference
+/// gets exactly zero correction while any other stimulus's differing spectral
+/// shape no longer skews the tilt/band verdicts.
 ///
-/// Derived once from `resources/samples/guitar-humbucker.wav` through the EXACT
+/// FROZEN to the pre-#235 humbucker (band-passed noise), kept at
+/// `resources/reference/guitar-humbucker-v1.wav` outside the bundle: the target,
+/// the thresholds and [`FACTORY_CONTRAST_DB`] all came from a factory sweep
+/// through it, so until a sweep through the pitched-pluck stimuli re-derives
+/// them, the shipped stimuli are anchored back onto it like any other pickup.
+/// That correction is exact for a linear chain and approximate for a driven
+/// one (a drive stage responds to the input spectrum, not just passes it).
+///
+/// Derived once from that WAV through the EXACT
 /// runtime capture path (`read_stimulus_calibrated(_, None)` →
-/// `leveller::doctor_stim_slice` → `psd::welch_psd` → `.band_powers` →
-/// `band_db`), printed verbatim by the `#[ignore]` `print_guitar_stim_ref`
+/// `leveller::doctor_stim_slice` → `leveller::stim_body_psd` → `.band_powers`
+/// → `band_db`), printed verbatim by the `#[ignore]` `print_guitar_stim_ref`
 /// test. The slice length sets the Welch resolution, so the runtime slicing is
 /// load-bearing — a bare full-file welch gives a different shape. `{:?}`
 /// (shortest round-trippable f64) so the runtime recompute is bit-identical and
-/// the humbucker correction is exactly 0; `stim_ref_matches_committed_wav`
-/// guards against `gen_samples` regen drift.
+/// the reference correction is exactly 0; `stim_ref_matches_committed_wav`
+/// guards the pairing.
 const GUITAR_STIM_REF: [f64; 6] = [
-    -43.966380408069206,
-    -42.32926787561062,
-    -49.74813365041292,
-    -26.625639842835717,
-    -24.725860853333863,
-    -32.997969517289086,
+    -44.02337308370499,
+    -42.172232216507126,
+    -49.662975561860144,
+    -26.6598989212791,
+    -24.67472470364622,
+    -32.97753377216802,
 ];
 
 /// The authored target curve for a family (length = its band count) — see
@@ -1175,6 +1238,22 @@ pub fn cut_through(profile: &SoundProfile, family: Family) -> Option<CutThrough>
 /// RMS of a sample window, in f64 (0.0 for an empty window). The ONE copy of the
 /// formula shared by [`tail_energy_ratio`] and the `--doctor-calib` noise-floor
 /// metric — a precision/edge-case fix must not drift between them.
+/// RMS of `[start, end)` across `channels`, combined in the power domain (the
+/// square root of the channels' mean RMS²). One channel is exactly [`rms_f64`].
+fn rms_power_mean(channels: &[&[f32]], start: usize, end: usize) -> f64 {
+    match channels {
+        [one] => rms_f64(&one[start..end]),
+        _ => {
+            let ms = channels
+                .iter()
+                .map(|c| rms_f64(&c[start..end]).powi(2))
+                .sum::<f64>()
+                / channels.len().max(1) as f64;
+            ms.sqrt()
+        }
+    }
+}
+
 pub(crate) fn rms_f64(samples: &[f32]) -> f64 {
     if samples.is_empty() {
         return 0.0;
@@ -1230,10 +1309,24 @@ pub fn output_coverage_with_body(
     family: Family,
     body_psd: &crate::psd::Psd,
 ) -> Vec<bool> {
+    output_coverage_ch(&[samples], rate, signal_start, family, body_psd)
+}
+
+/// [`output_coverage_with_body`] over every channel of a capture: the floor
+/// PSD is the power mean of the channels' floors (#250), matching a body PSD
+/// from [`body_psd_span`].
+pub fn output_coverage_ch(
+    channels: &[&[f32]],
+    rate: u32,
+    signal_start: usize,
+    family: Family,
+    body_psd: &crate::psd::Psd,
+) -> Vec<bool> {
     /// Minimum pre-signal window for a stable Welch floor estimate.
     const MIN_FLOOR_SAMPLES: usize = 2048;
     let bands = family.bands();
-    if signal_start < MIN_FLOOR_SAMPLES || signal_start >= samples.len() {
+    let len = channels.iter().map(|c| c.len()).min().unwrap_or(0);
+    if signal_start < MIN_FLOOR_SAMPLES || signal_start >= len {
         return vec![true; bands.len()];
     }
     // The floor window (~11,100 samples behind the 200 ms pad) fits only one
@@ -1241,7 +1334,12 @@ pub fn output_coverage_with_body(
     // bands' floor by 1.5–2.5 dB run to run (#258); the floor estimator averages
     // short segments instead. The two PSDs then sit on different grids, so the
     // bands compare by mean density (equal to the band-power ratio on one grid).
-    let floor = crate::psd::welch_psd_floor(&samples[..signal_start], rate as f32);
+    let floor = crate::psd::Psd::power_mean(
+        channels
+            .iter()
+            .map(|c| crate::psd::welch_psd_floor(&c[..signal_start], rate as f32))
+            .collect(),
+    );
     let margin = 10f64.powf(OUTPUT_SNR_MARGIN_DB / 10.0);
     bands
         .iter()
@@ -1274,6 +1372,7 @@ pub fn output_coverage_with_body(
 /// the RECIPE's tail (whatever `tail_ms` the caller captured with), so a
 /// longer oracle capture measures its own longer tail rather than being
 /// clipped to a shorter production pin.
+#[cfg(test)]
 pub fn tail_energy_ratio(
     samples: &[f32],
     rate: u32,
@@ -1281,14 +1380,30 @@ pub fn tail_energy_ratio(
     body_start: usize,
     tail_ms: u32,
 ) -> f64 {
+    tail_energy_ratio_ch(&[samples], rate, body_len, body_start, tail_ms)
+}
+
+/// [`tail_energy_ratio`] over every channel of a capture, combined in the
+/// POWER domain (#250): each window's RMS² is the mean of the channels' RMS²,
+/// so a decorrelated stereo tail keeps its full energy instead of losing 3 dB
+/// to a sample-wise average. One channel (or dual mono) reads exactly as the
+/// mono form.
+pub fn tail_energy_ratio_ch(
+    channels: &[&[f32]],
+    rate: u32,
+    body_len: usize,
+    body_start: usize,
+    tail_ms: u32,
+) -> f64 {
+    let len = channels.iter().map(|c| c.len()).min().unwrap_or(0);
     let body_end = body_start.saturating_add(body_len);
-    if samples.len() <= body_end || body_len == 0 {
+    if len <= body_end || body_len == 0 {
         return -80.0;
     }
-    let body = rms_f64(&samples[body_start..body_end]);
+    let body = rms_power_mean(channels, body_start, body_end);
     let tail_window = (rate as usize / 1000) * tail_ms as usize;
-    let tail_end = body_end.saturating_add(tail_window).min(samples.len());
-    let tail = rms_f64(&samples[body_end..tail_end]);
+    let tail_end = body_end.saturating_add(tail_window).min(len);
+    let tail = rms_power_mean(channels, body_end, tail_end);
     if body <= 0.0 {
         return -80.0;
     }
@@ -3875,7 +3990,7 @@ mod tests {
     fn reference_stimulus_gets_no_fizz_or_cut_through_correction() {
         // The humbucker IS the reference: corrected == raw, bit for bit, on an
         // arbitrary capture. Fixtures without stimulus bands are uncorrected.
-        let stim = runtime_stim_bands("guitar-humbucker");
+        let stim = stim_bands_at(REFERENCE_STIM);
         let bdb = [-3.0, 1.0, -7.0, 12.0, 15.0, -9.5];
         let mut p = oracle_profile(&bdb);
         let raw_fizz = bdb[5] - bdb[4];
@@ -3904,36 +4019,43 @@ mod tests {
 
     /// A committed stimulus WAV's guitar-layout band powers via the EXACT
     /// runtime path (`read_stimulus_calibrated(_, None)` →
-    /// `doctor_stim_slice` → `welch_psd` → `band_powers`) — the linear vector
+    /// `doctor_stim_slice` → `stim_body_psd` → `band_powers`) — the linear vector
     /// production stores in `SoundProfile::stim_bands`. `stem` = the file stem
     /// under resources/samples (e.g. "guitar-humbucker").
     fn runtime_stim_bands(stem: &str) -> Vec<f64> {
-        let path = format!(
-            "{}/resources/samples/{stem}.wav",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        stim_bands_at(&format!("samples/{stem}"))
+    }
+
+    /// The stimulus [`GUITAR_STIM_REF`] was derived through, relative to
+    /// `resources/`: the pre-#235 humbucker WAV, kept out of the bundle.
+    const REFERENCE_STIM: &str = "reference/guitar-humbucker-v1";
+
+    /// [`runtime_stim_bands`] for any WAV under `resources/` (`rel` without
+    /// the `.wav`).
+    fn stim_bands_at(rel: &str) -> Vec<f64> {
+        let path = format!("{}/resources/{rel}.wav", env!("CARGO_MANIFEST_DIR"));
         let raw = crate::read_stimulus_calibrated(&path, None).expect("read stimulus");
         let stim = crate::leveller::doctor_stim_slice(raw);
         // 48 kHz: the committed WAVs match the device clock (read_stimulus_48k),
-        // the same rate production feeds welch_psd for the stimulus PSD.
-        crate::psd::welch_psd(&stim, 48_000.0).band_powers(Family::Guitar.bands())
+        // the rate production computes the stimulus PSD at.
+        crate::leveller::stim_body_psd(&stim, 48_000).band_powers(Family::Guitar.bands())
     }
 
-    /// Prints `GUITAR_STIM_REF` from the committed humbucker WAV via the runtime
-    /// path. `{:?}` (shortest round-trippable f64) so the runtime recompute is
-    /// bit-identical → zero humbucker correction. Re-run + paste on a
-    /// `gen_samples` regen: `cargo test --lib print_guitar_stim_ref --
-    /// --ignored --nocapture`.
+    /// Prints `GUITAR_STIM_REF` from the reference WAV via the runtime path.
+    /// `{:?}` (shortest round-trippable f64) so the runtime recompute is
+    /// bit-identical → zero correction for that stimulus. Re-run + paste when
+    /// the target is re-derived through a new reference: `cargo test --lib
+    /// print_guitar_stim_ref -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn print_guitar_stim_ref() {
-        let bdb = band_db(&runtime_stim_bands("guitar-humbucker"));
+        let bdb = band_db(&stim_bands_at(REFERENCE_STIM));
         println!("GUITAR_STIM_REF = {bdb:?}");
     }
 
     #[test]
     fn stim_ref_matches_committed_wav() {
-        let bdb = band_db(&runtime_stim_bands("guitar-humbucker"));
+        let bdb = band_db(&stim_bands_at(REFERENCE_STIM));
         assert_eq!(bdb.len(), GUITAR_STIM_REF.len());
         for (i, (&got, &want)) in bdb.iter().zip(&GUITAR_STIM_REF).enumerate() {
             assert!(
@@ -3944,8 +4066,8 @@ mod tests {
     }
 
     #[test]
-    fn guitar_humbucker_correction_is_flat() {
-        let stim_bands = runtime_stim_bands("guitar-humbucker");
+    fn reference_stimulus_correction_is_flat() {
+        let stim_bands = stim_bands_at(REFERENCE_STIM);
         // The correction the anchor subtracts is `band_db(stim_bands) − REF`.
         // For the reference stimulus it is exactly 0 in every band.
         let corr: Vec<f64> = band_db(&stim_bands)

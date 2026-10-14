@@ -35,7 +35,7 @@ use crate::stimulus::read_stimulus_48k;
 pub(crate) fn measure(
     stim: &[f32],
     label: &str,
-    capture: Result<(Vec<f32>, u32), String>,
+    capture: Result<(leveller::DoctorSignal, u32), String>,
     tail_ms: u32,
 ) -> Result<(DoctorRead, String), String> {
     let (samples, rate) = capture?;

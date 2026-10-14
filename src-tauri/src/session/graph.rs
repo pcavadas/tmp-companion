@@ -42,7 +42,9 @@ pub struct GraphNode {
     pub cab_sim2_enabled: Option<bool>,
     /// ALLOWLISTED current `dspUnitParameters` values for Doctor's value-aware
     /// prescriptions: the reverb wet/dry mix names (`mix`, `wetdrymix`), the cab
-    /// low/high cut (`hpf`, `lpf`), and the EQ-10 `gain*hz` band gains. Empty for
+    /// low/high cut (`hpf`, `lpf`), the EQ-10 `gain*hz` band gains, and the
+    /// Five-Band Parametric EQ's `filterN{frequency,gaindb,q,type,bypass}`
+    /// fields (`type`/`bypass` as numbers, booleans as 1/0). Empty for
     /// every other param/node — the full param map would bloat every snapshot/
     /// backup row for nothing.
     pub params: std::collections::HashMap<String, f64>,

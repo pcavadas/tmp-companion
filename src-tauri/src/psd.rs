@@ -156,18 +156,50 @@ impl Psd {
         k as f64 * self.bin_hz
     }
 
-    /// The `(freq, psd)` pairs whose bin centre frequency falls in the inclusive
-    /// `[lo, hi]` range — the one range-walk shared by [`Psd::band_power`] and
-    /// [`Psd::flatness`].
+    /// The `(freq, psd)` pairs whose bin centre frequency falls in the half-open
+    /// `[lo, hi)` range — the one range-walk shared by [`Psd::band_power`] and
+    /// [`Psd::flatness`]. Half-open so adjacent bands sharing an edge that lands
+    /// exactly on a bin (3 and 6 kHz at 48 kHz / 8192 points) count it once (#259).
     fn bins_in(&self, lo: f64, hi: f64) -> impl Iterator<Item = (f64, f64)> + '_ {
         self.psd.iter().enumerate().filter_map(move |(k, &p)| {
             let f = self.freq(k);
-            (f >= lo && f <= hi).then_some((f, p))
+            (f >= lo && f < hi).then_some((f, p))
         })
     }
 
-    /// True band power over `[lo, hi]` = `Σ psd[bin]·bin_hz` for bins whose centre
-    /// frequency falls in the (inclusive) range.
+    /// The power-domain mean of PSDs on one grid — how the Doctor combines the
+    /// channels of a capture (#250). One PSD comes back unchanged; an empty list
+    /// gives an empty PSD. Every PSD must share the first one's grid (the
+    /// channels of one capture always do); a mismatched one is skipped.
+    pub fn power_mean(mut psds: Vec<Psd>) -> Psd {
+        if psds.len() <= 1 {
+            return psds.pop().unwrap_or(Psd {
+                psd: Vec::new(),
+                bin_hz: 0.0,
+            });
+        }
+        let first = psds.swap_remove(0);
+        let mut sum = first.psd;
+        let mut n = 1.0;
+        for p in &psds {
+            if p.psd.len() == sum.len() && p.bin_hz == first.bin_hz {
+                for (s, v) in sum.iter_mut().zip(&p.psd) {
+                    *s += v;
+                }
+                n += 1.0;
+            }
+        }
+        for s in &mut sum {
+            *s /= n;
+        }
+        Psd {
+            psd: sum,
+            bin_hz: first.bin_hz,
+        }
+    }
+
+    /// True band power over `[lo, hi)` = `Σ psd[bin]·bin_hz` for bins whose centre
+    /// frequency falls in the (half-open) range.
     pub fn band_power(&self, lo: f32, hi: f32) -> f64 {
         if self.bin_hz <= 0.0 {
             return 0.0;
@@ -177,7 +209,7 @@ impl Psd {
             .sum()
     }
 
-    /// Mean density over the bins whose centre falls in `[lo, hi]` (0 when none do).
+    /// Mean density over the bins whose centre falls in `[lo, hi)` (0 when none do).
     /// Unlike [`Psd::band_power`] it doesn't depend on how many bin centres the band
     /// edges happen to catch, so it compares bands across PSDs on DIFFERENT grids.
     /// On one grid the ratio of two PSDs' mean densities equals the ratio of their
@@ -201,7 +233,7 @@ impl Psd {
             .collect()
     }
 
-    /// Spectral flatness (SFM) over `[lo, hi]` = geometric-mean / arithmetic-mean of the
+    /// Spectral flatness (SFM) over `[lo, hi)` = geometric-mean / arithmetic-mean of the
     /// in-range PSD bins, in `[0, 1]` (1 = perfectly flat, →0 = tonal).
     pub fn flatness(&self, lo: f32, hi: f32) -> f64 {
         let mut sum_ln = 0.0;
@@ -555,6 +587,39 @@ mod tests {
     fn white_noise(n: usize, seed: u64) -> Vec<f32> {
         let mut rng = Lcg::new(seed);
         (0..n).map(|_| rng.next_bipolar()).collect()
+    }
+
+    // BUG→GATE (#259): band edges that land exactly on a bin (3 and 6 kHz at
+    // 48 kHz / 8192 points) were counted in both adjacent bands. Contiguous
+    // half-open bands now sum to the full-range power, every bin once.
+    #[test]
+    fn contiguous_bands_count_every_bin_once() {
+        let p = welch_psd(&white_noise(48_000, 9), RATE);
+        let edges = [
+            0.0f32, 250.0, 750.0, 1500.0, 3000.0, 6000.0, 12_000.0, 24_001.0,
+        ];
+        let bands: Vec<(f32, f32)> = edges.windows(2).map(|w| (w[0], w[1])).collect();
+        let sum: f64 = p.band_powers(&bands).iter().sum();
+        let full: f64 = p.psd.iter().map(|v| v * p.bin_hz).sum();
+        assert!(
+            (sum - full).abs() <= full * 1e-12,
+            "bands {sum} vs full {full}"
+        );
+        assert_eq!(p.freq(512), 3000.0, "3 kHz must sit exactly on a bin");
+    }
+
+    // #250: the power mean keeps one PSD unchanged and leaves dual mono
+    // bit-identical; it averages two different channels bin by bin.
+    #[test]
+    fn power_mean_is_exact_on_one_or_identical_channels() {
+        let a = welch_psd(&white_noise(16_384, 3), RATE);
+        let b = welch_psd(&white_noise(16_384, 4), RATE);
+        assert_eq!(Psd::power_mean(vec![a.clone()]).psd, a.psd);
+        assert_eq!(Psd::power_mean(vec![a.clone(), a.clone()]).psd, a.psd);
+        let m = Psd::power_mean(vec![a.clone(), b.clone()]);
+        for k in [10, 200, 3000] {
+            assert!((m.psd[k] - (a.psd[k] + b.psd[k]) / 2.0).abs() <= 1e-15 * m.psd[k].max(1.0));
+        }
     }
 
     fn sine(freq: f32, amp: f32, n: usize) -> Vec<f32> {

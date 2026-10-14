@@ -249,56 +249,26 @@ struct Row {
     noise_floor_db: Option<f64>,
 }
 
-/// One capture's `SoundProfile` + its CAPTURED OUTPUT's own coverage (mirrors
-/// production's `output_coverage_with_body` gate — a stimulus-only coverage
-/// would read a preset-suppressed band as "covered" and put this sweep's
-/// metrics/verdicts in a different space than the shipped engine), off ONE
-/// shared post-onset body PSD. Shared by both sweeps below.
-fn profile_and_coverage(
-    samples: &[f32],
-    rate: u32,
-    stim: &[f32],
-    onset: &leveller::DoctorOnset,
-    tail_ms: u32,
-    family: doctor::Family,
-) -> Result<(doctor::SoundProfile, Vec<bool>, usize), String> {
-    let body_psd = doctor::body_psd(samples, rate, onset.signal_start);
-    let stim_psd = crate::psd::welch_psd(stim, rate as f32);
-    let mut profile = doctor::SoundProfile::from_capture_with_psd(
-        samples,
-        rate,
-        onset.body_len,
-        onset.body_start,
-        tail_ms,
-        family,
-        &body_psd,
-        Some(&stim_psd),
-    )?;
-    // Mirror production's stimulus-transfer anchor (shared by both
-    // --doctor-calib and --doctor-calib-factory) so the sweep derives
-    // thresholds/targets in the same anchored space the engine diagnoses in.
-    profile.stim_bands = Some(stim_psd.band_powers(family.bands()));
-    let coverage =
-        doctor::output_coverage_with_body(samples, rate, onset.signal_start, family, &body_psd);
-    Ok((profile, coverage, onset.signal_start))
-}
-
-/// `profile_and_coverage`, sweep-flavored: log + `None` on failure so callers
-/// `let … else { continue }` — one bad slot never ends a sweep, and no `?` can
-/// return past the sweep's re-amp OFF cleanup. `label` distinguishes the user
-/// and factory sweeps' log lines.
+/// One capture's `SoundProfile` + its CAPTURED OUTPUT's own coverage, in the
+/// EXACT production measurement space (`leveller::analyze_capture`, the seam
+/// `doctor_check` itself runs) — a sweep in any other space would derive
+/// thresholds and targets the shipped engine never measures in. Shared by both
+/// sweeps below; logs + `None` on failure so callers `let … else { continue }` —
+/// one bad slot never ends a sweep, and no `?` can return past the sweep's
+/// re-amp OFF cleanup. `label` distinguishes the user and factory sweeps' log
+/// lines.
 #[allow(clippy::too_many_arguments)]
 fn profile_or_skip(
     label: &str,
     slot: ListIndex,
-    samples: &[f32],
+    sig: &leveller::DoctorSignal,
     rate: u32,
     stim: &[f32],
-    onset: &leveller::DoctorOnset,
     tail_ms: u32,
     family: doctor::Family,
-) -> Option<(doctor::SoundProfile, Vec<bool>, usize)> {
-    match profile_and_coverage(samples, rate, stim, onset, tail_ms, family) {
+) -> Option<leveller::ProfiledCapture> {
+    let stim_psd = leveller::stim_body_psd(stim, rate);
+    match leveller::analyze_capture(sig, rate, stim, &stim_psd, family, tail_ms, None) {
         Ok(v) => Some(v),
         Err(e) => {
             eprintln!("[probe] {label}slot {slot}: profile failed: {e} (skipping)");
@@ -367,24 +337,20 @@ pub fn probe_doctor_calib(
         };
         match leveller::doctor_capture(slot, None, &fb, &[], &stim, Some(0.5), tail_ms, false) {
             Ok((samples, rate)) => {
-                let onset = leveller::doctor_onset(&stim, &samples, rate);
-                let Some((profile, coverage, signal_start)) = profile_or_skip(
-                    "",
-                    slot,
-                    &samples,
-                    rate,
-                    &stim,
-                    &onset,
-                    tail_ms as u32,
-                    family,
-                ) else {
+                let Some(leveller::ProfiledCapture {
+                    profile,
+                    coverage,
+                    onset,
+                    ..
+                }) = profile_or_skip("", slot, &samples, rate, &stim, tail_ms as u32, family)
+                else {
                     continue;
                 };
                 // the floor window ends at the pad-shifted start.
                 let noise_floor_db = noise_floor_db(
-                    &samples,
+                    &samples.mix,
                     rate,
-                    signal_start,
+                    onset.signal_start,
                     onset.confident(),
                     onset.body_end(),
                 );
@@ -623,17 +589,18 @@ pub fn probe_doctor_calib_factory(
         }
         match leveller::doctor_capture_current(&stim, None, &[], Some(0.5), tail_ms) {
             Ok((samples, rate)) => {
-                let onset = leveller::doctor_onset(&stim, &samples, rate);
-                let Some((profile, coverage, _)) = profile_or_skip(
+                let Some(leveller::ProfiledCapture {
+                    profile, coverage, ..
+                }) = profile_or_skip(
                     "factory ",
                     slot,
                     &samples,
                     rate,
                     &stim,
-                    &onset,
                     tail_ms as u32,
                     family,
-                ) else {
+                )
+                else {
                     continue;
                 };
                 rows.push(Row {
