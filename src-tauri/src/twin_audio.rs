@@ -5,11 +5,20 @@
 //! evidence: its levels are not calibrated against the unit.
 //!
 //! WIRE. One capture job per connection (TCP, or a Unix stream socket), little-endian:
-//! - request: `TWA1`, u16 version 1, u16 header length 20, u32 rate (44 100), u32 S, u32 R,
-//!   then S stimulus samples for the re-amp input as i32, 24-bit signed (full scale ±2^23);
+//! - request: `TWA1`, u16 version 1, u16 header length 24, u32 rate (44 100), u32 S, u32 R,
+//!   u32 flags, then S stimulus samples for the re-amp input as i32, 24-bit signed (full scale
+//!   ±2^23);
 //! - reply: `TWA1`, i32 status, u32 channels, u32 frames, nine u32 diagnostics, then on OK
 //!   `frames × channels` i32 samples in the same format: USB-Out 1/2 for R frames, from the
 //!   block the stimulus started in.
+//!
+//! ENGAGEMENT. Every job asks for the twin's engagement verdict ([`FLAGS`]): the twin drives a
+//! marker into the guitar inputs while the job runs and watches the dry instrument sends
+//! (USB-Out 3/4), which re-amp leaves unwritten. A job whose dry sends carried the marker ran
+//! without re-amp engaged, and comes back [`Status::NotEngaged`] (or [`Status::Mixed`] when
+//! re-amp changed mid-job) with no samples, so a failed engage is a loud error here, never a
+//! silent capture. With re-amp engaged no guitar input reaches the DSP, so the marker leaves
+//! the capture untouched.
 //!
 //! The far end may refuse a request before reading its stimulus and close, so a failed send
 //! still reads for the refusal. Hanging up cancels a running job: that is how a Stop lands,
@@ -18,9 +27,15 @@
 //! RATE. The twin's audio runs at 44.1 kHz. The caller's stimulus is resampled down and the
 //! capture back up with a band-limited FFT resampler ([`resample`]), so the leveller sees the
 //! capture shape the unit's host streams return: two channels at the caller's rate, covering
-//! the stimulus plus the tail.
+//! the stimulus plus the tail. The stimulus goes over behind [`LEAD_IN_MS`] of silence, the
+//! unit's inject latency, so it lands where it does in a unit capture.
+//!
+//! STATS. Every job is counted in [`STATS`], served at the e2e server's `/twin/audio`; the twin
+//! lane fails a run that had any failed job.
 
 use std::io::ErrorKind;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use realfft::num_complex::Complex;
@@ -34,7 +49,12 @@ use crate::hid::twin::{Stream, TwinAddr};
 pub(crate) const TWIN_RATE: u32 = 44_100;
 const MAGIC: &[u8; 4] = b"TWA1";
 const VERSION: u16 = 1;
-const REQUEST_HEADER: u16 = 20;
+const REQUEST_HEADER: u16 = 24;
+/// Request flags: the marker in the guitar inputs (2) and the engagement verdict (4).
+pub(crate) const FLAGS: u32 = 2 | 4;
+/// Silence ahead of the stimulus: the unit's re-amp inject latency (~32 ms over USB,
+/// `doctor_capture`'s `DOCTOR_PAD_MS` note), which the twin does not have.
+pub(crate) const LEAD_IN_MS: u32 = 31;
 const DIAG: usize = 9;
 const REPLY_HEADER: usize = 16 + 4 * DIAG;
 /// The far end's longest job, either way (30 s at 44.1 kHz).
@@ -62,6 +82,8 @@ pub(crate) enum Status {
     Stalled,
     Cancelled,
     Poisoned,
+    NotEngaged,
+    Mixed,
     Unknown(i32),
 }
 
@@ -75,6 +97,8 @@ impl Status {
             4 => Status::Stalled,
             5 => Status::Cancelled,
             6 => Status::Poisoned,
+            7 => Status::NotEngaged,
+            8 => Status::Mixed,
             v => Status::Unknown(v),
         }
     }
@@ -92,8 +116,96 @@ impl Status {
             Status::Poisoned => "twin capture: the twin's audio retired itself after a cancel \
                                  that did not complete; restart the twin"
                 .into(),
+            Status::NotEngaged => "twin capture: re-amp was not engaged (the guitar inputs \
+                                   reached the return)"
+                .into(),
+            Status::Mixed => "twin capture: re-amp changed mid-capture".into(),
             Status::Unknown(v) => format!("twin capture: unknown status {v} from the twin"),
         }
+    }
+}
+
+/// This process's twin capture counters (see STATS in the module doc).
+pub(crate) struct Stats {
+    jobs: AtomicU64,
+    ok: AtomicU64,
+    failed: AtomicU64,
+    cancelled: AtomicU64,
+    not_engaged: AtomicU64,
+    mixed: AtomicU64,
+    late_blocks: AtomicU64,
+    slips: AtomicU64,
+    max_late_us: AtomicU64,
+    last_error: Mutex<Option<String>>,
+}
+
+pub(crate) static STATS: Stats = Stats {
+    jobs: AtomicU64::new(0),
+    ok: AtomicU64::new(0),
+    failed: AtomicU64::new(0),
+    cancelled: AtomicU64::new(0),
+    not_engaged: AtomicU64::new(0),
+    mixed: AtomicU64::new(0),
+    late_blocks: AtomicU64::new(0),
+    slips: AtomicU64::new(0),
+    max_late_us: AtomicU64::new(0),
+    last_error: Mutex::new(None),
+};
+
+impl Stats {
+    fn note(&self, outcome: &Result<Reply, LevelError>) {
+        self.jobs.fetch_add(1, Ordering::Relaxed);
+        let failure = match outcome {
+            Ok(r) if r.status == Status::Ok => {
+                self.ok.fetch_add(1, Ordering::Relaxed);
+                let [_, _, late, max_late_us, slips, ..] = r.diag;
+                self.late_blocks
+                    .fetch_add(u64::from(late), Ordering::Relaxed);
+                self.slips.fetch_add(u64::from(slips), Ordering::Relaxed);
+                self.max_late_us
+                    .fetch_max(u64::from(max_late_us), Ordering::Relaxed);
+                return;
+            }
+            Ok(r) => {
+                match r.status {
+                    Status::NotEngaged => self.not_engaged.fetch_add(1, Ordering::Relaxed),
+                    Status::Mixed => self.mixed.fetch_add(1, Ordering::Relaxed),
+                    _ => 0,
+                };
+                r.status.error()
+            }
+            Err(e) if e.is_cancelled() => {
+                self.cancelled.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            Err(e) => e.to_string(),
+        };
+        self.failed.fetch_add(1, Ordering::Relaxed);
+        *self
+            .last_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(failure);
+    }
+
+    /// The counters as the e2e server's `/twin/audio` serves them.
+    pub(crate) fn json(&self) -> serde_json::Value {
+        let n = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        serde_json::json!({
+            "jobs": n(&self.jobs),
+            "ok": n(&self.ok),
+            "failed": n(&self.failed),
+            "cancelled": n(&self.cancelled),
+            "notEngaged": n(&self.not_engaged),
+            "mixed": n(&self.mixed),
+            "lateBlocks": n(&self.late_blocks),
+            "slips": n(&self.slips),
+            "maxLateUs": n(&self.max_late_us),
+            "lastError": self
+                .last_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        })
     }
 }
 
@@ -103,8 +215,8 @@ pub(crate) struct Reply {
     pub status: Status,
     pub channels: u32,
     pub frames: u32,
-    /// injected, recorded, late blocks, max lateness (µs), slips, PCM events, two reserved,
-    /// non-zero return samples.
+    /// injected, recorded, late blocks, max lateness (µs), slips, PCM events, marker frames,
+    /// live dry-send blocks, non-zero return samples.
     pub diag: [u32; DIAG],
     pub samples: Vec<i32>,
 }
@@ -201,6 +313,7 @@ fn request(stim: &[i32], frames: u32) -> Vec<u8> {
     b.extend_from_slice(&TWIN_RATE.to_le_bytes());
     b.extend_from_slice(&(stim.len() as u32).to_le_bytes());
     b.extend_from_slice(&frames.to_le_bytes());
+    b.extend_from_slice(&FLAGS.to_le_bytes());
     for s in stim {
         b.extend_from_slice(&s.to_le_bytes());
     }
@@ -385,15 +498,20 @@ pub(crate) fn capture(
         return Err(LevelError::Device("twin capture: sample rate 0".into()));
     }
     let want = stimulus.len() + (tail_ms as usize).saturating_mul(rate as usize) / 1000;
-    let stim: Vec<i32> = resample(stimulus, rate, TWIN_RATE)
-        .map_err(LevelError::Device)?
-        .into_iter()
-        .map(to_s24)
-        .collect();
+    let lead = (TWIN_RATE * LEAD_IN_MS / 1000) as usize;
+    let mut stim = vec![0i32; lead];
+    stim.extend(
+        resample(stimulus, rate, TWIN_RATE)
+            .map_err(LevelError::Device)?
+            .into_iter()
+            .map(to_s24),
+    );
     let frames = u32::try_from((want as u64 * u64::from(TWIN_RATE)).div_ceil(u64::from(rate)))
         .unwrap_or(u32::MAX)
         .saturating_add(EDGE_FRAMES);
-    let reply = run_job(addr, &stim, frames, aborted)?;
+    let outcome = run_job(addr, &stim, frames, aborted);
+    STATS.note(&outcome);
+    let reply = outcome?;
     if reply.status != Status::Ok {
         return Err(LevelError::Device(reply.status.error()));
     }
@@ -524,11 +642,16 @@ mod tests {
     }
 
     fn read_request(s: &mut TcpStream) -> Seen {
-        let mut h = [0u8; 20];
+        let mut h = [0u8; 24];
         s.read_exact(&mut h).unwrap();
         assert_eq!(&h[..4], MAGIC);
         assert_eq!(u16::from_le_bytes([h[4], h[5]]), VERSION);
         assert_eq!(u16::from_le_bytes([h[6], h[7]]), REQUEST_HEADER);
+        assert_eq!(
+            u32_at(&h, 20),
+            FLAGS,
+            "every job asks for the engagement verdict"
+        );
         let (rate, n, frames) = (u32_at(&h, 8), u32_at(&h, 12), u32_at(&h, 16));
         let mut body = vec![0u8; 4 * n as usize];
         s.read_exact(&mut body).unwrap();
@@ -580,6 +703,15 @@ mod tests {
         }
     }
 
+    /// What an identity twin returns, at the caller's rate: the lead-in, the stimulus, then
+    /// silence, cut to the capture window.
+    fn reference(stim: &[f32], rate: u32, window: usize) -> Vec<f32> {
+        let mut r = vec![0.0; (rate * LEAD_IN_MS / 1000) as usize];
+        r.extend_from_slice(stim);
+        r.resize(window, 0.0);
+        r
+    }
+
     #[test]
     fn a_capture_comes_back_at_the_callers_rate_with_the_stimulus_level() {
         let (tx, rx) = mpsc::channel();
@@ -590,17 +722,23 @@ mod tests {
         assert_eq!(cap.interleaved.len(), 2 * (48_000 + 9600));
         let (rate, frames, sent) = rx.recv().unwrap();
         assert_eq!(rate, TWIN_RATE);
-        assert_eq!(sent, 44_100, "the stimulus went over at 44.1 kHz");
+        assert_eq!(
+            sent,
+            1367 + 44_100,
+            "the lead-in, then the stimulus at 44.1 kHz"
+        );
         assert_eq!(
             frames,
             52_920 + EDGE_FRAMES,
             "stimulus + tail at 44.1 kHz, plus the edge"
         );
+        // Nothing comes back before the lead-in has passed.
+        let lead = (48 * LEAD_IN_MS) as usize;
+        assert!(cap.channel(0)[..lead - 48].iter().all(|v| v.abs() < 1e-4));
         // Dual mono through the production meter reads the mono stimulus + 3.01 LU, as the
-        // unit's mirrored USB-Out does. The reference carries the same silent tail: gated
-        // blocks that straddle it count toward the integrated level.
-        let mut padded = stim.clone();
-        padded.resize(stim.len() + 9600, 0.0);
+        // unit's mirrored USB-Out does. The reference carries the same lead-in and silent
+        // tail: gated blocks that straddle them count toward the integrated level.
+        let padded = reference(&stim, 48_000, stim.len() + 9600);
         let stim_lufs = crate::lufs::measure_mono(&padded, 48_000)
             .unwrap()
             .integrated_lufs;
@@ -624,8 +762,7 @@ mod tests {
         );
         let stim = crate::read_stimulus_calibrated(path, None).unwrap();
         let cap = capture(&addr, &stim, 48_000, 800, &never).unwrap();
-        let mut padded = stim.clone();
-        padded.resize(stim.len() + 38_400, 0.0);
+        let padded = reference(&stim, 48_000, stim.len() + 38_400);
         let stim_lufs = crate::lufs::measure_mono(&padded, 48_000)
             .unwrap()
             .integrated_lufs;
@@ -657,6 +794,28 @@ mod tests {
             err.to_string().contains("audio loop is not running"),
             "{err}"
         );
+    }
+
+    // The engagement verdict: a job the twin ran without re-amp engaged is a loud error, and
+    // both outcomes are counted for the twin lane.
+    #[test]
+    fn a_job_without_re_amp_engaged_is_an_error_and_is_counted() {
+        let before = STATS.json();
+        for (status, want) in [(7, "re-amp was not engaged"), (8, "changed mid-capture")] {
+            let addr = far_end(move |mut s| {
+                let _ = read_request(&mut s);
+                s.write_all(&reply_header(status, 2, 0)).unwrap();
+            });
+            let Err(err) = capture(&addr, &[0.1; 4800], 48_000, 100, &never) else {
+                panic!("status {status} must not be a capture");
+            };
+            assert!(err.to_string().contains(want), "{err}");
+        }
+        let after = STATS.json();
+        let grew = |k: &str| after[k].as_u64().unwrap() - before[k].as_u64().unwrap();
+        assert!(grew("notEngaged") >= 1 && grew("mixed") >= 1, "{after}");
+        assert!(grew("failed") >= 2 && grew("jobs") >= 2, "{after}");
+        assert!(after["lastError"].is_string(), "{after}");
     }
 
     #[test]

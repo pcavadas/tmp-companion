@@ -411,6 +411,7 @@ fn e2e_is_side_lane(req: &E2eRequest) -> bool {
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/reamp/counters") => true,
         ("GET", "/timing") => true,
+        ("GET", "/twin/audio") => true,
         ("GET", p) if p == "/ui/events" || p.starts_with("/ui/events?") => true,
         ("POST", "/invoke") => serde_json::from_slice::<serde_json::Value>(&req.body)
             .ok()
@@ -1089,6 +1090,12 @@ fn e2e_route(
                 serde_json::to_vec(&json!({ "on": on, "off": off })).unwrap_or_default(),
             )
         }
+        // The twin's capture counters (`twin_audio::STATS`): jobs, failures by kind, pacing.
+        // The twin lane reads it after its specs and fails a run that had any failed job.
+        ("GET", "/twin/audio") => (
+            "200 OK",
+            serde_json::to_vec(&crate::twin_audio::STATS.json()).unwrap_or_default(),
+        ),
         // The process's hardware-wait totals (`rig::WAITS`, #198): settles requested and
         // applied, and wall time inside re-amp captures. Monotonic — the online lane reads it
         // around each spec and records the difference beside the spec's wall time.

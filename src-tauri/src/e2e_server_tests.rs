@@ -4977,6 +4977,7 @@ fn side_lane_takes_cancels_and_counters_only() {
         );
     }
     assert!(super::e2e_is_side_lane(&req("GET", "/reamp/counters", "")));
+    assert!(super::e2e_is_side_lane(&req("GET", "/twin/audio", "")));
     assert!(super::e2e_is_side_lane(&req("GET", "/timing", "")));
     assert!(super::e2e_is_side_lane(&req(
         "GET",
@@ -5063,6 +5064,19 @@ fn health_reports_twin_beside_online() {
         serde_json::json!(false),
         "the key must be present: {v}"
     );
+}
+
+/// The twin lane's job counters are served whatever the mode (zero offline), with the keys
+/// `scripts/e2e-twin.sh` reads.
+#[test]
+fn twin_audio_stats_are_served() {
+    let _g = serial();
+    let (_app, webview) = reamp_webview();
+    let (status, v) = route_json(&webview, "GET", "/twin/audio", serde_json::json!({}));
+    assert_eq!(status, "200 OK");
+    for key in ["jobs", "ok", "failed", "notEngaged", "mixed", "slips"] {
+        assert!(v[key].is_u64(), "{key} missing: {v}");
+    }
 }
 
 /// The re-amp oracle reads the latch the way the device answers: with the latch ON, both

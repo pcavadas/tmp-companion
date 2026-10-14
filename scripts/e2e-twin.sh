@@ -22,7 +22,9 @@
 #   3. seeds the scenario presets (`probe --seed-scenario`, a fresh process, as online);
 #   4. starts the e2e_server and waits for its TWIN phrase, never the online one;
 #   5. runs Playwright with e2e/playwright.twin.config.ts, which only adopts that server;
-#   6. tears down: re-amp OFF, stray sweep, recall preset 001, server stopped.
+#   6. with the twin's audio, fails the run if any capture job failed (`/twin/audio`): a job
+#      the twin ran without re-amp engaged, or one it could not finish;
+#   7. tears down: re-amp OFF, stray sweep, recall preset 001, server stopped.
 #
 # Re-amp captures go to the twin's own audio when TMP_E2E_TWIN_AUDIO is set beside the
 # twin's address (`twin_audio`: the twin's DSP, resampled to and from its 44.1 kHz). Without
@@ -56,7 +58,7 @@ SPECS=()
 SEED_ONLY=0
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
     --seed-only) SEED_ONLY=1 ;;
     *) SPECS+=("$a") ;;
   esac
@@ -234,3 +236,17 @@ log "twin connected — snapshot includes the seeded presets"
 
 # ── 5. the specs ──
 bunx playwright test --config e2e/playwright.twin.config.ts "${SPEC_FILES[@]}"
+
+# ── 6. the twin's captures: any failed job fails the lane, whatever the specs made of it ──
+if [ -n "${TMP_E2E_TWIN_AUDIO:-}" ]; then
+  stats="$(curl -fsS -m 10 "http://127.0.0.1:$PORT/twin/audio" 2>/dev/null || true)"
+  log "twin captures: ${stats:-unreadable}"
+  failed="$(printf '%s' "$stats" | sed -n 's/.*"failed":\([0-9][0-9]*\).*/\1/p')"
+  if [ -z "$failed" ]; then
+    err "could not read the twin's capture counters"; exit 1
+  fi
+  if [ "$failed" != 0 ]; then
+    err "$failed twin capture job(s) failed (not engaged, mixed, stalled or refused): see lastError above"
+    exit 1
+  fi
+fi
