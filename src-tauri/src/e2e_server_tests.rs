@@ -5132,6 +5132,24 @@ fn remote_audio_from_needs_a_remote_and_a_scheme() {
     assert!(remote_audio_from(true, Some("127.0.0.1:11700")).is_err());
 }
 
+/// The remote device's time scale: blank is real time, a value needs a remote device beside it
+/// and must lie in 1 to 64, so neither a stale nor a mistyped scale rides along unread.
+#[test]
+fn remote_time_scale_needs_a_remote_and_a_sane_value() {
+    use crate::e2e_server::remote_time_scale_from;
+    assert_eq!(remote_time_scale_from(true, None), Ok(1.0));
+    assert_eq!(remote_time_scale_from(false, Some(" ")), Ok(1.0));
+    assert_eq!(remote_time_scale_from(true, Some("8")), Ok(8.0));
+    assert_eq!(remote_time_scale_from(true, Some(" 1.5 ")), Ok(1.5));
+    assert!(remote_time_scale_from(false, Some("8")).is_err());
+    for bad in ["0.5", "0", "65", "-2", "eight", "NaN", "inf"] {
+        assert!(
+            remote_time_scale_from(true, Some(bad)).is_err(),
+            "{bad} must be refused"
+        );
+    }
+}
+
 /// The side lane: every `cancel_*` invoke and the counter and timing reads skip the serial queue, and
 /// a run command does not. Queued, a Stop only lands after the run it targets returned.
 #[test]

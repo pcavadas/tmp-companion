@@ -62,6 +62,32 @@ pub(crate) fn remote_audio_from(
     }
 }
 
+/// The slowest time scale a remote device may run at (see [`remote_time_scale_from`]).
+pub(crate) const MAX_REMOTE_TIME_SCALE: f64 = 64.0;
+
+/// Parse of `TMP_E2E_REMOTE_TIME_SCALE`: how many times slower than real time the remote
+/// device's audio clock runs (1 to [`MAX_REMOTE_TIME_SCALE`]); unset or blank is 1. A slower
+/// device renders the same audio, so its captures wait longer and its settles run longer, by the
+/// same factor. Set without a remote device, or out of range, it is refused, so a stale value
+/// fails the run instead of riding along unread.
+pub(crate) fn remote_time_scale_from(remote: bool, scale: Option<&str>) -> Result<f64, String> {
+    let Some(s) = scale.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(1.0);
+    };
+    if !remote {
+        return Err(
+            "TMP_E2E_REMOTE_TIME_SCALE is set without TMP_E2E_REMOTE: it describes a remote device"
+                .into(),
+        );
+    }
+    match s.parse::<f64>() {
+        Ok(v) if (1.0..=MAX_REMOTE_TIME_SCALE).contains(&v) => Ok(v),
+        _ => Err(format!(
+            "TMP_E2E_REMOTE_TIME_SCALE={s:?}: expected a number from 1 to {MAX_REMOTE_TIME_SCALE}"
+        )),
+    }
+}
+
 /// The remote tier's address, or why the env is refused. See [`remote_from`].
 #[cfg(feature = "e2e")]
 pub(crate) fn e2e_remote_mode() -> Result<Option<crate::hid::remote::RemoteAddr>, String> {
@@ -95,6 +121,26 @@ pub(crate) fn e2e_remote_audio_mode() -> Result<Option<crate::hid::remote::Remot
     )
 }
 
+/// The remote device's time scale, or why the env is refused. See [`remote_time_scale_from`].
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_remote_time_scale_mode() -> Result<f64, String> {
+    if cfg!(test) {
+        return Ok(1.0);
+    }
+    let remote = e2e_remote_mode()?;
+    remote_time_scale_from(
+        remote.is_some(),
+        std::env::var("TMP_E2E_REMOTE_TIME_SCALE").ok().as_deref(),
+    )
+}
+
+/// How many times slower than real time the remote device's audio runs: 1 unless
+/// `TMP_E2E_REMOTE_TIME_SCALE` says otherwise. A refused env reads as 1 here.
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_remote_time_scale() -> f64 {
+    e2e_remote_time_scale_mode().unwrap_or(1.0)
+}
+
 /// The remote device audio this process captures from, if any. A refused env reads as none here.
 #[cfg(feature = "e2e")]
 pub(crate) fn e2e_remote_audio() -> Option<crate::hid::remote::RemoteAddr> {
@@ -105,7 +151,16 @@ pub(crate) fn e2e_remote_audio() -> Option<crate::hid::remote::RemoteAddr> {
 /// [`remote_audio_from`]): the server and `probe` exit on it at startup.
 #[cfg(feature = "e2e")]
 pub fn e2e_mode_refusal() -> Option<String> {
-    e2e_remote_audio_mode().err()
+    e2e_remote_audio_mode()
+        .err()
+        .or_else(|| e2e_remote_time_scale_mode().err())
+}
+
+/// The remote device's time scale, for `probe`'s banner: `None` at real time.
+#[cfg(feature = "e2e")]
+pub fn e2e_remote_time_scale_label() -> Option<f64> {
+    let s = e2e_remote_time_scale();
+    (s != 1.0).then_some(s)
 }
 
 /// The remote device's address as text, for `probe`'s banner.

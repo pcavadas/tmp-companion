@@ -1087,6 +1087,11 @@ fn main() {
                 )
             }
         }
+        if let Some(scale) = tmp_companion_lib::e2e_remote_time_scale_label() {
+            eprintln!(
+                "[probe] REMOTE: its audio runs {scale}x slower than real time; captures and settles stretch to match"
+            );
+        }
     }
     #[cfg(feature = "e2e")]
     if !tmp_companion_lib::e2e_online() && !capture_free_only {

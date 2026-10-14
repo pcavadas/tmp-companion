@@ -257,6 +257,10 @@ pub(crate) use e2e_server::e2e_remote;
 #[cfg(feature = "e2e")]
 pub(crate) use e2e_server::e2e_remote_audio;
 #[cfg(feature = "e2e")]
+pub(crate) use e2e_server::e2e_remote_time_scale;
+#[cfg(feature = "e2e")]
+pub use e2e_server::e2e_remote_time_scale_label;
+#[cfg(feature = "e2e")]
 pub(crate) use e2e_server::e2e_showcase;
 #[cfg(feature = "e2e")]
 pub use e2e_server::run_e2e_server;

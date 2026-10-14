@@ -104,7 +104,9 @@ pub(crate) fn scoped<T>(rig: Rc<dyn Rig>, f: impl FnOnce() -> T) -> T {
 /// The `remote` e2e tier (`TMP_E2E_REMOTE`): a remote device reached over
 /// `hid::remote::RemoteHid`. Its captures are the remote device's own audio over `remote_audio`
 /// (`TMP_E2E_REMOTE_AUDIO`); with no audio address a capture is refused rather than faked.
-/// Settles run at the unit's real length.
+/// Settles run at the unit's real length, stretched by the device's time scale
+/// (`TMP_E2E_REMOTE_TIME_SCALE`): the device's DSP settles in audio time, which a slower
+/// device spends more wall time on.
 #[cfg(feature = "e2e")]
 pub(crate) struct RemoteRig;
 
@@ -138,7 +140,7 @@ impl Rig for RemoteRig {
     }
 
     fn settle_ms(&self, ms: u64) -> u64 {
-        ms
+        (ms as f64 * crate::e2e_remote_time_scale()).round() as u64
     }
 
     fn aborted(&self) -> bool {
