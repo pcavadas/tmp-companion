@@ -567,41 +567,6 @@ pub(crate) fn guarded_clear(list_index: ListIndex, expect_name: &str) -> Result<
     Session::connect()?.clear_user_preset(list_index) // the session derives the device slot
 }
 
-/// The guard for a reorder: both list indices must still hold the presets the caller
-/// picked. Pure, over one `list_my_presets` read, in the same list-index space the move
-/// takes (the session derives both device slots). A row missing from a truncated list
-/// refuses (fail-closed).
-pub(crate) fn check_move_mapping(
-    list: &[crate::PresetEntry],
-    from: ListIndex,
-    expect_from: &str,
-    to: ListIndex,
-    expect_to: &str,
-) -> Result<(), String> {
-    for (idx, expect) in [(from, expect_from), (to, expect_to)] {
-        let cur = list.iter().find(|p| p.slot == idx).map(|p| p.name.as_str());
-        if cur != Some(expect) {
-            return Err(format!(
-                "guarded move refused: list index {idx} reads {cur:?}, expected {expect:?}"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Reorder `from` → `to` only after a non-destructive read confirms both still hold the
-/// expected presets (a list that changed since the UI read it must not move another preset).
-pub(crate) fn guarded_move(
-    from: ListIndex,
-    expect_from: &str,
-    to: ListIndex,
-    expect_to: &str,
-) -> Result<(), String> {
-    let list = Session::connect()?.list_my_presets()?;
-    check_move_mapping(&list, from, expect_from, to, expect_to)?;
-    Session::connect()?.move_user_preset(from, to)
-}
-
 /// Probe (AC5): restore a backup snapshot to the device IN PLACE — onto the
 /// snapshot's original slot, preserving its Song link. Reads the snapshot JSON,
 /// validates it is a faithful offline backup (refuses `usb-partial` — re-importing
@@ -666,25 +631,6 @@ mod tests {
     fn file_name_reads_the_display_name() {
         assert_eq!(file_name(&row(ID, "Mine")).unwrap(), "Mine");
         assert!(file_name(&json!({"info": {}})).is_err());
-    }
-
-    #[test]
-    fn a_move_is_refused_unless_both_indices_hold_the_expected_presets() {
-        let list: Vec<crate::PresetEntry> = ["Clean", "Lead", "--"]
-            .iter()
-            .enumerate()
-            .map(|(i, n)| crate::PresetEntry {
-                slot: ListIndex(i as u32),
-                name: (*n).to_string(),
-            })
-            .collect();
-        let (a, b, c) = (ListIndex(0), ListIndex(1), ListIndex(2));
-        assert!(check_move_mapping(&list, a, "Clean", c, "--").is_ok());
-        // The list shifted since the caller read it: either side's name no longer matches.
-        assert!(check_move_mapping(&list, a, "Lead", c, "--").is_err());
-        assert!(check_move_mapping(&list, a, "Clean", b, "--").is_err());
-        // A row a truncated read left out refuses (fail-closed).
-        assert!(check_move_mapping(&list, a, "Clean", ListIndex(9), "--").is_err());
     }
 
     fn body(id: &str) -> serde_json::Value {

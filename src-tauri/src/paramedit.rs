@@ -89,9 +89,6 @@ pub struct ParamEditOp {
     pub max: f64,
 }
 impl crate::bulkrun::Operation for ParamEditOp {
-    fn label(&self) -> String {
-        format!("edit {}.{} ({:?})", self.model, self.param, self.mode)
-    }
     fn transform(&self, t: &crate::bulkrun::PresetTarget) -> Result<Option<String>, String> {
         let mut v: Value =
             serde_json::from_str(&t.before_json).map_err(|e| format!("parse: {e}"))?;

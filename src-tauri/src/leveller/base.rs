@@ -254,46 +254,6 @@ pub(crate) fn scene_bearing_for_boost_gate(
         })
 }
 
-#[cfg(test)]
-mod scene_bearing_for_boost_gate_tests {
-    use super::*;
-
-    // The bug this gate exists to close: a field-8 read truncated before the (alphabetically
-    // last) `scenes` key leaves the doc with NO `scenes` field at all — indistinguishable from
-    // a genuinely scene-less preset by a bare doc check — but the read's own `has_fs_scenes`
-    // flag is fail-safe `true` for exactly this "unknown" case, so the gate must still treat
-    // it as scene-bearing.
-    #[test]
-    fn a_scenes_key_missing_from_a_truncated_read_still_gates_as_scene_bearing() {
-        let truncated_doc = serde_json::json!({ "audioGraph": {} });
-        assert!(scene_bearing_for_boost_gate(true, Some(&truncated_doc)));
-    }
-
-    // A COMPLETE read whose `scenes` array is genuinely empty is the one case that must NOT
-    // gate — this is what lets a truly scene-less preset take the applied boost at all.
-    #[test]
-    fn a_confirmed_empty_scenes_array_is_not_scene_bearing() {
-        let doc = serde_json::json!({ "scenes": [] });
-        assert!(!scene_bearing_for_boost_gate(false, Some(&doc)));
-    }
-
-    // Defense in depth: even if a caller's `has_fs_scenes` were wrong (or absent, `None`
-    // `saved`-less callers aside), a doc that actually carries `scenes[]` rows still gates.
-    #[test]
-    fn a_populated_scenes_array_gates_even_when_the_flag_says_otherwise() {
-        let doc = serde_json::json!({ "scenes": [{ "sceneName": "Clean" }] });
-        assert!(scene_bearing_for_boost_gate(false, Some(&doc)));
-    }
-
-    // No saved doc and no flag (the default `BoostContext`, every non-base caller) must not
-    // gate — those callers never reach the boost-plan branch anyway (`base_amp` is always
-    // `None` there), but the signal itself should still answer honestly.
-    #[test]
-    fn no_saved_doc_and_no_flag_is_not_scene_bearing() {
-        assert!(!scene_bearing_for_boost_gate(false, None));
-    }
-}
-
 /// Level one preset to `target_lufs`. Self-contained: opens its own fresh
 /// connections (load → measure → set), so the caller must NOT hold a competing
 /// device seize while this runs. Composes the `measure_c` → `solve_level` →
@@ -807,102 +767,42 @@ pub(super) fn apply_base_boost(
     })
 }
 
-/// One entry in a setlist leveling pass: the preset slot + its already-loaded
-/// instrument stimulus.
-pub struct SetlistEntry<'a> {
-    pub slot: ListIndex,
-    pub stimulus: &'a [f32],
-    /// Fletcher–Munson playback compensation (LU) added to this entry's target
-    /// (see `profiles::playback_offset_lu`). 0 = level at the common target as-is.
-    pub offset_lu: f64,
-}
+#[cfg(test)]
+mod scene_bearing_for_boost_gate_tests {
+    use super::*;
 
-/// The result of leveling a whole setlist to one common target.
-#[derive(Debug, Clone, Serialize)]
-pub struct SetlistResult {
-    /// The common target chosen = min(C across entries) − `headroom_lu`.
-    pub target_lufs: f64,
-    pub results: Vec<LevelResult>,
-}
-
-/// Level a whole setlist so every (preset, instrument) pair lands at one common
-/// loudness — the goal being no on-stage jump when switching presets/guitars.
-///
-/// Two passes (each entry's stimulus is its instrument's): pass 1 measures `C`
-/// for every entry; the common target `T = min(C − offset) − headroom_lu` is the
-/// loudest level every preset can still reach AT ITS OWN effective target
-/// `T + offset_lu` (the per-instrument Fletcher–Munson compensation —
-/// presetLevel only attenuates, so an effective target above any preset's `C`
-/// would clamp → a residual jump, surfaced per row). Pass 2 applies each entry's
-/// effective target (reloading the preset, since measuring others moved the
-/// "current" preset). Verify is forced off for speed across many presets.
-pub fn level_setlist(
-    entries: &[SetlistEntry<'_>],
-    headroom_lu: f64,
-    ref_level: f32,
-    save: bool,
-) -> Result<SetlistResult, LevelError> {
-    if entries.is_empty() {
-        return Err(LevelError::from("no presets to level"));
-    }
-    let ref_level = ref_level.clamp(0.05, 1.0);
-
-    // Pass 1 — measure C for every entry (C is intrinsic, independent of target).
-    let mut measured: Vec<MeasuredC> = Vec::with_capacity(entries.len());
-    for e in entries {
-        measured.push(measure_c(e.slot, e.stimulus, ref_level, &[])?);
+    // The bug this gate exists to close: a field-8 read truncated before the (alphabetically
+    // last) `scenes` key leaves the doc with NO `scenes` field at all — indistinguishable from
+    // a genuinely scene-less preset by a bare doc check — but the read's own `has_fs_scenes`
+    // flag is fail-safe `true` for exactly this "unknown" case, so the gate must still treat
+    // it as scene-bearing.
+    #[test]
+    fn a_scenes_key_missing_from_a_truncated_read_still_gates_as_scene_bearing() {
+        let truncated_doc = serde_json::json!({ "audioGraph": {} });
+        assert!(scene_bearing_for_boost_gate(true, Some(&truncated_doc)));
     }
 
-    // Common target: just below the quietest-capable preset's ceiling, in
-    // OFFSET-ADJUSTED space (an entry leveled `offset_lu` hotter eats into its
-    // own ceiling by exactly that much, so its constraint is `C − offset`).
-    let cs: Vec<f64> = measured
-        .iter()
-        .zip(entries)
-        .map(|(m, e)| m.c - e.offset_lu)
-        .collect();
-    let target_lufs = common_target(&cs, headroom_lu).ok_or("no presets to level")?;
-
-    // Pass 2 — apply each entry's effective target (reload: measuring moved current).
-    let opts = LevelOptions {
-        save,
-        verify: false,
-        ref_level,
-        ..Default::default()
-    };
-    let mut results = Vec::with_capacity(entries.len());
-    for (e, m) in entries.iter().zip(measured.iter()) {
-        let entry_target = target_lufs + e.offset_lu;
-        let (final_level, clamped, predicted) = solve_level(m.c, entry_target);
-        let (saved, verify_lufs) = apply_level(
-            e.slot,
-            e.stimulus,
-            &LevelKnob::PresetLevel,
-            final_level,
-            opts,
-            true,
-        )?;
-        results.push(LevelResult {
-            slot: e.slot,
-            scene_slot: None,
-            ref_level,
-            measured_lufs: m.measured_lufs,
-            constant_c: m.c,
-            final_level,
-            target_lufs: entry_target,
-            predicted_lufs: predicted,
-            clamped,
-            saved,
-            verify_lufs,
-            iterations: 1,
-            dynamic_spread_lu: Some(m.dynamic_spread_lu),
-            clamp_kind: crate::headroom_trade::ClampKind::from_flags(clamped, false, None),
-            ..Default::default()
-        });
+    // A COMPLETE read whose `scenes` array is genuinely empty is the one case that must NOT
+    // gate — this is what lets a truly scene-less preset take the applied boost at all.
+    #[test]
+    fn a_confirmed_empty_scenes_array_is_not_scene_bearing() {
+        let doc = serde_json::json!({ "scenes": [] });
+        assert!(!scene_bearing_for_boost_gate(false, Some(&doc)));
     }
 
-    Ok(SetlistResult {
-        target_lufs,
-        results,
-    })
+    // Defense in depth: even if a caller's `has_fs_scenes` were wrong (or absent, `None`
+    // `saved`-less callers aside), a doc that actually carries `scenes[]` rows still gates.
+    #[test]
+    fn a_populated_scenes_array_gates_even_when_the_flag_says_otherwise() {
+        let doc = serde_json::json!({ "scenes": [{ "sceneName": "Clean" }] });
+        assert!(scene_bearing_for_boost_gate(false, Some(&doc)));
+    }
+
+    // No saved doc and no flag (the default `BoostContext`, every non-base caller) must not
+    // gate — those callers never reach the boost-plan branch anyway (`base_amp` is always
+    // `None` there), but the signal itself should still answer honestly.
+    #[test]
+    fn no_saved_doc_and_no_flag_is_not_scene_bearing() {
+        assert!(!scene_bearing_for_boost_gate(false, None));
+    }
 }

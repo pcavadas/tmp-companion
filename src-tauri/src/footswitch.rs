@@ -1083,9 +1083,6 @@ pub struct FootswitchLayoutOp {
     pub exp: Option<Value>,
 }
 impl crate::bulkrun::Operation for FootswitchLayoutOp {
-    fn label(&self) -> String {
-        "apply footswitch layout".into()
-    }
     fn transform(&self, t: &crate::bulkrun::PresetTarget) -> Result<Option<String>, String> {
         let mut v: Value =
             serde_json::from_str(&t.before_json).map_err(|e| format!("parse: {e}"))?;

@@ -195,25 +195,13 @@ pub struct CopyApplyItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph: Option<session::ActiveGraph>,
 }
-/// Cooperative cancel for [`copy_apply`] — set by `cancel_copy_apply` (the Copy
-/// wizard's Stop), checked between presets so the held-session run stops WRITING the
-/// remaining presets. Presets already saved stay changed; the rest are untouched.
-static COPY_APPLY_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Stop an in-flight [`copy_apply`] run after the current preset. Lightweight (just
-/// sets the flag) so it does NOT take the device-op lock — it must run while the run
-/// holds it.
-#[tauri::command]
-pub(crate) fn cancel_copy_apply() {
-    COPY_APPLY_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
-}
 
 /// "Copy blocks between presets" — apply an ORDERED list of structural ops
 /// (replace / insert / remove) to EACH target preset, live, then save that preset in
-/// place (only when every op confirmed AND `save`). Mirrors [`bulk_replace_live`]'s
-/// architecture exactly: ONE held re-armed session per preset (`copy_apply_one`), the
-/// same DEVICE_OP_LOCK / monitor-pause bookend (`with_released_seize`), streamed
-/// `CopyApplyItem`s, and a cooperative cancel (`cancel_copy_apply`). DEVICE WRITE —
+/// place (only when every op confirmed AND `save`). Mirrors [`replace_many_held`]'s
+/// architecture: ONE held re-armed session per preset (`copy_apply_one`), the
+/// DEVICE_OP_LOCK / monitor-pause bookend (`with_released_seize`) and streamed
+/// `CopyApplyItem`s. There is no cancel (the Copy tab has no Stop button). DEVICE WRITE —
 /// gated behind the UI's backup acknowledgment. A per-preset failure degrades to an
 /// `error`/`skipped`/`rejected` row and the run CONTINUES; an empty `ops` list →
 /// `skipped`.
@@ -224,7 +212,6 @@ pub(crate) async fn copy_apply(
     save: bool,
     on_result: tauri::ipc::Channel<CopyApplyItem>,
 ) -> Result<Vec<CopyApplyItem>, String> {
-    COPY_APPLY_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
     with_released_seize(state.session.clone(), move || {
         // ONE held session for the whole run (the E1 architecture): connect once, warm
         // the live-controller heartbeat once (`begin_live_edit`), then `copy_apply_one`
@@ -234,9 +221,6 @@ pub(crate) async fn copy_apply(
         s.begin_live_edit()?;
         let mut out = Vec::with_capacity(jobs.len());
         for job in &jobs {
-            if COPY_APPLY_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
-                break; // Stop pressed — leave the remaining presets untouched.
-            }
             let item = copy_apply_one(&mut s, job, save).unwrap_or_else(|e| CopyApplyItem {
                 slot: job.list_index,
                 name: job.name.clone(),

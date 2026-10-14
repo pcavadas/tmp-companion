@@ -2189,8 +2189,7 @@ fn offline_songs_crud_through_real_backend() {
         .invoke_handler(tauri::generate_handler![
             list_songs,
             read_setlists,
-            add_song,
-            rename_song,
+            create_song_full,
             remove_song
         ])
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -2216,12 +2215,12 @@ fn offline_songs_crud_through_real_backend() {
     // Add → read-back reflects it.
     let after_add = invoke(
         &webview,
-        "add_song",
+        "create_song_full",
         serde_json::json!({ "name": "Soundcheck" }),
     )
-    .expect("add_song");
+    .expect("create_song_full");
     assert_eq!(
-        after_add.as_array().map(|a| a.len()),
+        after_add["songs"].as_array().map(|a| a.len()),
         Some(3),
         "after add: {after_add}"
     );
@@ -2366,10 +2365,6 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
             move_setlist_song,
             create_song_full,
             update_song_full,
-            rename_song,
-            set_song_notes,
-            set_song_bpm,
-            add_setlist_song,
             list_setlist_songs,
             read_setlists
         ])
@@ -2427,38 +2422,11 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
         "update_song_full",
         serde_json::json!({ "slot": 1, "expectName": "Beta", "expectList": ["Alpha", "Beta", "Gamma"], "name": "X" }),
     );
-    // The granular commands carry the same guard.
-    refused(
-        "rename_song",
-        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectList": ["Alpha", "Beta", "Gamma"], "name": "X" }),
-    );
-    refused(
-        "set_song_notes",
-        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectList": ["Alpha", "Beta", "Gamma"], "notes": "X" }),
-    );
-    refused(
-        "set_song_bpm",
-        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectList": ["Alpha", "Beta", "Gamma"], "bpm": 120.0 }),
-    );
-    refused(
-        "add_setlist_song",
-        serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set B", "expectList": ["Set A", "Set B", "Set C"],
-            "songSlot": 1, "expectSongName": "Alpha", "expectSongList": ["Alpha", "Beta", "Gamma"]
-        }),
-    );
-    refused(
-        "add_setlist_song",
-        serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set C", "expectList": ["Set A", "Set C"],
-            "songSlot": 1, "expectSongName": "Beta", "expectSongList": ["Alpha", "Beta", "Gamma"]
-        }),
-    );
     // A name that still matches at the slot is not enough when the list changed since
     // the UI read it: with repeated names, a delete plus an add can put ANOTHER song or
     // setlist of that name there while the slot's name and the list size stay the same.
     refused(
-        "rename_song",
+        "update_song_full",
         serde_json::json!({ "slot": 1, "expectName": "Alpha", "expectList": ["Alpha", "Beta", "Beta"], "name": "X" }),
     );
     refused(

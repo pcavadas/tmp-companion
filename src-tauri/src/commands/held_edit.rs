@@ -2,7 +2,7 @@
 use crate::{
     blockcaps_advance, blockcaps_check, blockcaps_pre_edit_roster, blockcaps_replaced,
     confirm_plan_identity, error_item, proto, repl_arg_fender_id, BulkReplaceItem, ItemOutcome,
-    ReplArg, ReplacePlan, Session, BULK_REPLACE_CANCEL,
+    ReplArg, ReplacePlan, Session,
 };
 #[cfg(test)]
 use crate::{plan_identity_verdict, ListIndex};
@@ -138,9 +138,6 @@ pub(crate) fn replace_many_held(
     s.begin_live_edit()?;
     let mut out = Vec::with_capacity(plans.len());
     for plan in plans {
-        if BULK_REPLACE_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
-            break; // Stop pressed — leave the remaining presets untouched.
-        }
         let item = held_replace_one(&mut s, plan, repl, save).unwrap_or_else(|e| BulkReplaceItem {
             slot: plan.list_index,
             name: plan.name.clone(),

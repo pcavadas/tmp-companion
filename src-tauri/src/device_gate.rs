@@ -276,19 +276,6 @@ where
         .map_err(|e| format!("device task failed: {e}"))?
 }
 
-/// Run blocking work that does NOT touch the device (a library scan, a file decode, a
-/// bounded monitor wait) on the blocking pool instead of an async worker or the main
-/// thread (#271). The device-driving counterpart is [`with_released_seize`].
-pub(crate) async fn blocking<T, F>(work: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, String> + Send + 'static,
-{
-    tauri::async_runtime::spawn_blocking(work)
-        .await
-        .map_err(|e| format!("background task failed: {e}"))?
-}
-
 /// Blocking core of [`with_released_seize`] — split out so commands that try the
 /// monitor's live command lane first (`monitor::try_live_op`) can fall back to the
 /// release→work→reconnect bookend inside their own `spawn_blocking`.

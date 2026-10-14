@@ -4,21 +4,6 @@
 
 use super::*;
 
-/// The common leveling target for a set of preset ceilings `cs`: the
-/// loudest level *every* preset can still reach, with `headroom_lu` of margin —
-/// `min(C) − headroom`. `None` if `cs` is empty. Leveling all presets to this target
-/// means no loudness jump when switching presets/instruments on stage.
-pub fn common_target(cs: &[f64], headroom_lu: f64) -> Option<f64> {
-    // Ignore non-finite ceilings (a failed/silent capture yields NaN); an all-NaN
-    // slice returns None so the caller errors out rather than solving against NaN and
-    // writing a garbage presetLevel.
-    cs.iter()
-        .copied()
-        .filter(|c| c.is_finite())
-        .reduce(f64::min)
-        .map(|min_c| min_c - headroom_lu)
-}
-
 /// Amp `outputLevel` a redistribution-compensated knob must stay above — never write a
 /// compensating value toward deep digital silence (`outputLevel = 0` reads as silence).
 pub const REDIST_MIN_KNOB: f32 = 0.05;

@@ -7,14 +7,12 @@
 //! live in `lib.rs` with `AppState` + `with_released_seize`; this module is the pure,
 //! unit-tested core they call.
 
-use std::collections::HashMap;
-
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::audiograph::BulkBypassOp;
 use crate::blocklib::{ApplyBlockOp, BlockTemplate};
-use crate::bulkrun::{Operation, RunReport};
+use crate::bulkrun::Operation;
 use crate::footswitch::FootswitchLayoutOp;
 use crate::ir::{RelinkIrOp, SetSicOp};
 use crate::paramedit::{ParamEditOp, ParamMode};
@@ -143,33 +141,6 @@ pub fn build_operation(spec: &OpSpec) -> Result<Box<dyn Operation>, String> {
 
 // ─── run registry ──────────────────────────────────────────────────────────────
 
-/// A completed run kept so `bulk_revert` can restore it. Records the io path so
-/// revert rebuilds the same adapter.
-#[derive(Debug, Clone)]
-pub struct StoredRun {
-    pub report: RunReport,
-    /// Human label of the op that ran — surfaced in the run-history UI (Phase 1).
-    #[expect(dead_code, reason = "for the run-history UI, which is not built yet")]
-    pub op_label: String,
-}
-
-/// In-memory `run_id → StoredRun`. Lives in `AppState`. (Snapshots also persist on
-/// disk under `backups/`, so a disk-backed revert across app restarts is a possible
-/// follow-up; the registry covers the within-session case.)
-#[derive(Debug, Default)]
-pub struct RunRegistry {
-    runs: HashMap<String, StoredRun>,
-}
-
-impl RunRegistry {
-    pub fn insert(&mut self, run_id: String, run: StoredRun) {
-        self.runs.insert(run_id, run);
-    }
-    pub fn get(&self, run_id: &str) -> Option<&StoredRun> {
-        self.runs.get(run_id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,8 +155,7 @@ mod tests {
             r#"{"type":"ParamEdit","model":"ACD_Amp","param":"gain","mode":{"mode":"offset","value":-0.1},"min":0.0,"max":1.0}"#,
         );
         assert_eq!(spec.io_path(), IoPath::Live);
-        let op = build_operation(&spec).unwrap();
-        assert!(op.label().to_lowercase().contains("gain"));
+        build_operation(&spec).unwrap();
     }
 
     #[test]
@@ -194,8 +164,7 @@ mod tests {
         assert_eq!(bypass.io_path(), IoPath::Offline);
         build_operation(&bypass).unwrap();
         let bpm = from_json(r#"{"type":"SetBpm","bpm":120.0}"#);
-        let op = build_operation(&bpm).unwrap();
-        assert!(op.label().contains("120"));
+        build_operation(&bpm).unwrap();
     }
 
     #[test]
@@ -205,19 +174,5 @@ mod tests {
         ))
         .unwrap();
         build_operation(&from_json(r#"{"type":"SetSic","sicid":"sic-1"}"#)).unwrap();
-    }
-
-    #[test]
-    fn registry_round_trips() {
-        let mut reg = RunRegistry::default();
-        reg.insert(
-            "run-1".into(),
-            StoredRun {
-                report: RunReport::default(),
-                op_label: "x".into(),
-            },
-        );
-        assert!(reg.get("run-1").is_some());
-        assert!(reg.get("nope").is_none());
     }
 }

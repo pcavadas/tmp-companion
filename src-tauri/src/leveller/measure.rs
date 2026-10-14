@@ -624,36 +624,6 @@ pub fn measure_sound_asis_strict(
     Ok(measured)
 }
 
-/// MEASURE seam for scene leveling: load `slot`, then for each scene in
-/// `0..scene_count` activate it (`loadScene`) and capture its ceiling loudness at
-/// `presetLevel = 1.0`. Returns per-scene loudness (LUFS) — feed to
-/// `scenes::normalize_scene_targets` for the per-scene gain offsets. The scene is
-/// re-asserted on the CAPTURE connection immediately before `set_knob` (same
-/// connect→load_scene→set→engage ordering as `measure_scene_asis`) — a scene
-/// loaded on the earlier preset-load connection does not reliably survive the
-/// reconnect.
-pub fn capture_scene_ceilings(
-    slot: ListIndex,
-    scene_count: u32,
-    stimulus: &[f32],
-) -> Result<Vec<f64>, LevelError> {
-    let mut cs = Vec::with_capacity(scene_count as usize);
-    // Scenes are 0-based `scenes[]` indices on the wire (base is the constant slot 8)
-    // — HW-proven by the `--loadscene 1` → scenes[1] activegraph diff. Slot 0 IS
-    // addressable because `proto::load_scene` now emits the field explicitly even
-    // for 0 (the device ignores an empty LoadScene{} — HW-found).
-    for scene in 0..scene_count {
-        load_preset_isolated(slot, CancelMode::Cleanup)?;
-        let mut s = Session::connect_lean()?;
-        s.load_scene(scene)?;
-        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
-        set_knob(&mut s, &LevelKnob::PresetLevel, 1.0, None)?;
-        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
-        cs.push(engage_measure_disengage(&mut s, stimulus)?.integrated_lufs);
-    }
-    Ok(cs)
-}
-
 /// Fresh-connect, load `scene_slot`, engage re-amp, capture — measure the scene's
 /// loudness AS-IS without writing ANY parameter (no `set_knob`, no Scene Edit). Lets
 /// the one-shot runner decide whether a scene already sits at target before touching

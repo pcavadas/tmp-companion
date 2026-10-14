@@ -126,7 +126,7 @@ The firmware itself rewrites Song→preset and setlist→song bindings to follow
 
 `session.move_user_preset` is **fire-and-forget and emits no `presetError`**, and a `list_my_presets` issued on the **same connection** afterwards serves the **pre-move** state — so a same-connection verify reports "the reorder did not land" for a reorder that landed.
 
-Anything that reorders presets and then verifies (or reports success to the user) must **drop the connection and reconnect** before reading back. `commands/presets.rs`'s `move_preset` command confirms both slots' names first (`guarded_move`) but has no read-back afterwards, so a dropped reorder would surface as nothing. (It has no UI caller, and the webview is denied it.)
+Anything that reorders presets and then verifies (or reports success to the user) must **drop the connection and reconnect** before reading back. The app has no reorder command (the unwired `move_preset` was deleted); the rule stands for any that is added.
 
 **MIDI PC mappings** (preset addressed by bank + program number) were **not** tested and remain unknown.
 

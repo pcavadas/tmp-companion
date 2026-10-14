@@ -38,9 +38,6 @@ pub struct SetBpmOp {
 }
 
 impl crate::bulkrun::Operation for SetBpmOp {
-    fn label(&self) -> String {
-        format!("set bpm = {:.2}", self.bpm)
-    }
     fn transform(&self, t: &crate::bulkrun::PresetTarget) -> Result<Option<String>, String> {
         let mut v: Value =
             serde_json::from_str(&t.before_json).map_err(|e| format!("parse: {e}"))?;
@@ -58,9 +55,6 @@ pub struct SetOnLoadMidiOp {
 }
 
 impl crate::bulkrun::Operation for SetOnLoadMidiOp {
-    fn label(&self) -> String {
-        format!("set {} on-load MIDI msg(s)", self.msgs.len())
-    }
     fn transform(&self, t: &crate::bulkrun::PresetTarget) -> Result<Option<String>, String> {
         let mut v: Value =
             serde_json::from_str(&t.before_json).map_err(|e| format!("parse: {e}"))?;

@@ -909,51 +909,6 @@ pub fn assign_song_preset(
     len_delimited(11, &len_delimited(14, &inner))
 }
 
-/// SongMessage.moveSongPreset — reorder a Song row. Field **15**;
-/// `MoveSongPreset{ songSlot=1, oldSongPresetSlot=2, newSongPresetSlot=3 }`. Setter.
-pub fn move_song_preset(song_slot: u64, old_slot: u64, new_slot: u64) -> Vec<u8> {
-    let mut inner = Vec::new();
-    if song_slot != 0 {
-        field_varint(&mut inner, 1, song_slot);
-    }
-    if old_slot != 0 {
-        field_varint(&mut inner, 2, old_slot);
-    }
-    if new_slot != 0 {
-        field_varint(&mut inner, 3, new_slot);
-    }
-    len_delimited(11, &len_delimited(15, &inner))
-}
-
-/// SongMessage.swapSongPreset — swap two Song rows. Field **16**;
-/// `SwapSongPreset{ songSlot=1, songPresetSlotA=2, songPresetSlotB=3 }`. Setter.
-pub fn swap_song_preset(song_slot: u64, slot_a: u64, slot_b: u64) -> Vec<u8> {
-    let mut inner = Vec::new();
-    if song_slot != 0 {
-        field_varint(&mut inner, 1, song_slot);
-    }
-    if slot_a != 0 {
-        field_varint(&mut inner, 2, slot_a);
-    }
-    if slot_b != 0 {
-        field_varint(&mut inner, 3, slot_b);
-    }
-    len_delimited(11, &len_delimited(16, &inner))
-}
-
-/// SongMessage.clearSongPreset — empty a Song row. Field **17**;
-/// `ClearSongPreset{ songSlot=1, songPresetSlot=2 }`. Setter.
-pub fn clear_song_preset(song_slot: u64, song_preset_slot: u64) -> Vec<u8> {
-    let mut inner = Vec::new();
-    if song_slot != 0 {
-        field_varint(&mut inner, 1, song_slot);
-    }
-    if song_preset_slot != 0 {
-        field_varint(&mut inner, 2, song_preset_slot);
-    }
-    len_delimited(11, &len_delimited(17, &inner))
-}
-
 /// PresetMessage.loadScene{ sceneSlot } — activate a scene within the current preset
 /// (enables per-scene re-amp capture). PresetMessage is TMS field **2**;
 /// inner `loadScene` is field **101**; `LoadScene{ sceneSlot=1 }`. A setter → NO
@@ -2450,52 +2405,6 @@ mod tests {
         assert!(dropped
             .iter()
             .all(|s| preset_list_records_strict(&s.body).is_none()));
-    }
-
-    // song-write setters encode into SongMessage[11]{ <14|15|16|17> }.
-    #[test]
-    fn song_write_setters_encode() {
-        // assignSongPreset[14]{ songSlot=1, songPresetSlot=2, userPresetSlot=3,
-        //   footswitchLabel="Lead", footswitchColor=7, presetSceneSlot=4,
-        //   footswitchColorInactive=5 }
-        let body = assign_song_preset(1, 2, 3, "Lead", 7, 4, 5);
-        let inner = parse(first_bytes(&parse(&body), 11).unwrap());
-        let assign = parse(first_bytes(&inner, 14).unwrap());
-        assert_eq!(first_varint(&assign, 1), Some(1));
-        assert_eq!(first_varint(&assign, 2), Some(2));
-        assert_eq!(first_varint(&assign, 3), Some(3));
-        assert_eq!(first_bytes(&assign, 4), Some(b"Lead".as_ref()));
-        assert_eq!(first_varint(&assign, 5), Some(7));
-        assert_eq!(first_varint(&assign, 6), Some(4));
-        assert_eq!(first_varint(&assign, 7), Some(5));
-        // Zero/empty values are still sent: the firmware stores an omitted field as
-        // "" / OFF over the row's real label and colours.
-        let zeros =
-            parse(first_bytes(&parse(&assign_song_preset(1, 2, 3, "", 0, 0, 0)), 11).unwrap());
-        let zeros = parse(first_bytes(&zeros, 14).unwrap());
-        for f in 4..=7 {
-            assert!(zeros.iter().any(|(n, _)| *n == f), "field {f} omitted");
-        }
-
-        // move[15], swap[16], clear[17]
-        let mv = parse(first_bytes(&parse(&move_song_preset(1, 2, 0)), 11).unwrap());
-        let mv = parse(first_bytes(&mv, 15).unwrap());
-        assert_eq!(
-            (first_varint(&mv, 1), first_varint(&mv, 2)),
-            (Some(1), Some(2))
-        );
-        let sw = parse(first_bytes(&parse(&swap_song_preset(1, 2, 3)), 11).unwrap());
-        let sw = parse(first_bytes(&sw, 16).unwrap());
-        assert_eq!(
-            (first_varint(&sw, 2), first_varint(&sw, 3)),
-            (Some(2), Some(3))
-        );
-        let cl = parse(first_bytes(&parse(&clear_song_preset(1, 2)), 11).unwrap());
-        let cl = parse(first_bytes(&cl, 17).unwrap());
-        assert_eq!(
-            (first_varint(&cl, 1), first_varint(&cl, 2)),
-            (Some(1), Some(2))
-        );
     }
 
     // setFootswitchAssignment[54]{ footswitchAddress, functionIndex, functionJson, swap }

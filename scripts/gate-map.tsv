@@ -169,9 +169,7 @@ e2e/specs/songs.spec.ts	songs
 
 # ── unexercised: device-facing, but no online spec reaches it ──
 src-tauri/src/commands/bulk_replace.rs	unexercised
-src-tauri/src/commands/edit_tools.rs	unexercised
 src-tauri/src/commands/library.rs	unexercised
-src-tauri/src/commands/migration.rs	unexercised
 src-tauri/src/commands/media.rs	unexercised
 src-tauri/src/watcher.rs	unexercised
 src-tauri/src/watcher/*	unexercised
@@ -202,19 +200,13 @@ e2e/fixtures/calibration/*	offline-oracle
 # src-tauri/src/e2e_sim_routes.rs	offline-oracle
 
 # ── none: offline backend modules (their //! headers say offline; no device call) ──
-src-tauri/src/audition.rs	none
 src-tauri/src/dock.rs	none
-src-tauri/src/lint.rs	none
-src-tauri/src/rename.rs	none
 src-tauri/src/presetmeta.rs	none
-src-tauri/src/variants.rs	none
 src-tauri/src/ir.rs	none
-src-tauri/src/spectrum.rs	none
 src-tauri/src/benchmark.rs	none
 src-tauri/src/probe_api/benchmark.rs	none
 src-tauri/src/blocklib.rs	none
 src-tauri/src/saved_blocks.rs	none
-src-tauri/src/migration.rs	none
 src-tauri/src/bulk_cmd.rs	none
 src-tauri/src/bulkrun.rs	none
 src-tauri/src/paramedit.rs	none

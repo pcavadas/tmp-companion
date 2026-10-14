@@ -20,7 +20,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::backup;
-use crate::search::{self, CategoryMap, Facets, PresetRecord};
+use crate::search::{self, CategoryMap, Facets};
 use crate::session::{self, PresetEntry};
 
 /// Decode a `.preset` file's raw bytes to its JSON string via the XOR codec.
@@ -100,16 +100,6 @@ impl LibraryRecord {
             source: crate::backup::SnapshotSource::OfflineFile,
             before_json: self.decoded_json.clone(),
         })
-    }
-
-    /// The search-engine view (list_index + facets) for filtering. Uses
-    /// `list_index = u32::MAX` sentinel when unmatched so it still indexes for search
-    /// (search is read-only; selection-for-write re-checks `list_index.is_some()`).
-    pub fn search_record(&self) -> PresetRecord {
-        PresetRecord {
-            list_index: self.list_index.unwrap_or(ListIndex(u32::MAX)),
-            facets: self.facets.clone(),
-        }
     }
 }
 

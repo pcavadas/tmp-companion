@@ -176,20 +176,6 @@ transact 100 22040a020801
 transact 200 1204220208015003
 pump 350 
 # list_my_presets_strict -> err
-transact 350 1205f207020801
-send 0 220422020801
-pump 350 
-send 0 220422020801
-pump 350 
-send 0 220422020801
-pump 350 
-send 0 220422020801
-pump 350 
-send 0 220422020801
-pump 350 
-send 0 220422020801
-pump 350 
-# request_scene_list -> err
 send 0 220422020801
 # heartbeat -> ok
 eager 300 120752050801309103
@@ -430,12 +416,6 @@ pump 250
 send 0 220422020801
 pump 250 
 # assign_song_preset -> err
-transact 300 5a047a021801
-# move_song_preset -> ok
-transact 300 5a058201021801
-# swap_song_preset -> ok
-transact 300 5a038a0100
-# clear_song_preset -> ok
 transact 400 120752050805309003
 # load_song -> ok
 transact 300 1a0962070d0000f0421001

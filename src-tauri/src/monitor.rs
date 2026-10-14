@@ -20,8 +20,6 @@
 //! `MONITOR_ENABLED` still gates the monitor:
 //!   * `connect_device` sets it and clears `AppState.session`, making the monitor the
 //!     sole startup/list/live owner.
-//!   * `stop_live_sync` is retained for diagnostics/settings paths; it clears the flag,
-//!     the monitor drops its `Session`, and the persistent UI session is re-established.
 //!   * The monitor opens HID ONLY when `MONITOR_ENABLED` is set AND
 //!     `AppState.session == None` — it never retry-spams against a held UI seize.
 //!
@@ -50,10 +48,9 @@
 //! seize-recycle race on reconnect.
 
 use crate::slot::{DeviceSlot, ListIndex};
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crossbeam_channel::{Receiver, Sender};
 use serde::Serialize;
 
 use crate::error::DeviceError;
@@ -175,182 +172,6 @@ pub(crate) fn refresh_snapshot_graph(graph: ActiveGraph) {
 fn store_connect_error(error: DeviceError) {
     *crate::lock_ok(snapshot_slot()) = None;
     *crate::lock_ok(error_slot()) = Some(error);
-}
-
-// ─── Live command lane ─────────────────────────────────────────────────────────
-//
-// While live-sync is active the monitor holds the ONLY open session — and a tiny
-// device send (LoadPreset / LoadScene) doesn't need a connection of its own: Pro
-// Control fires these on its one persistent session in ~100 ms. So commands can
-// hand such an op to the monitor, which executes it on its live session between
-// pumps (the `probe --scenes-load` precedent: `send_and_collect`, NOT
-// `session::load_preset`, so the resulting pushes stay in the accumulator and the
-// normal pump-loop decode turns them into `tmp://live-*` events). This skips the
-// whole pause → release → fresh-handshake → reconnect bookend (~2 s → ~0.2 s).
-//
-// Safety: the lane is OPPORTUNISTIC. The sender checks `MONITOR_SESSION_LIVE`
-// first; every monitor state that is NOT actively pumping a healthy session
-// drains the queue with `NotLive`, and the caller then falls back to the classic
-// `with_released_seize` path (which serializes on `DEVICE_OP_LOCK` as before).
-// A live op never touches `DEVICE_OP_LOCK` — it doesn't release or acquire any
-// seize, and a paused monitor (a command holds the gate) replies `NotLive`, so
-// command serialization is preserved.
-
-/// A device op the monitor can execute on its live session. Deliberately limited
-/// to the proven-on-a-live-heartbeat-session sends (the scene-scan precedent);
-/// anything needing its own connection semantics stays on the classic path.
-pub(crate) enum LiveOp {
-    /// `loadPreset` — 0-based My-Presets list index (the +1 wire translation
-    /// happens here, mirroring `session::load_preset`).
-    LoadPreset(ListIndex),
-    /// `loadScene` — 0-based wire `scenes[]` slot ([`session::BASE_SCENE_SLOT`]
-    /// recalls base). Only valid for the ACTIVE preset (the proto has no preset
-    /// addressing of its own).
-    LoadScene(u32),
-}
-
-/// Reply from the monitor for a [`LiveCmd`]. `NotLive` = not executed (caller
-/// must fall back to the classic path); `Done` = executed on the live session.
-pub(crate) enum LiveReply {
-    Done(Result<(), String>),
-    NotLive,
-}
-
-pub(crate) struct LiveCmd {
-    op: LiveOp,
-    reply: Sender<LiveReply>,
-}
-
-pub(crate) struct MetadataReadCmd {
-    list_index: ListIndex,
-    reply: Sender<MetadataReadReply>,
-}
-
-pub(crate) enum MetadataReadReply {
-    Done(Result<Option<Vec<u8>>, String>),
-    NotLive,
-}
-
-/// Sender half of the live command lane, installed once by [`spawn`]. Unset on
-/// non-macOS (no monitor thread) — `try_live_op` then returns `None`.
-static LIVE_CMD_TX: OnceLock<Sender<LiveCmd>> = OnceLock::new();
-static METADATA_READ_TX: OnceLock<Sender<MetadataReadCmd>> = OnceLock::new();
-
-/// True exactly while [`pump_loop`] is pumping a healthy session — the sender-side
-/// gate for the live lane. Cleared (via RAII guard) on every pump-loop exit:
-/// pause, disable, or device error.
-static MONITOR_SESSION_LIVE: AtomicBool = AtomicBool::new(false);
-
-/// Pump window (ms) after a live-lane send — just enough to flush the send and
-/// catch the first echo; the surrounding pump loop keeps collecting the rest of
-/// the push burst as usual.
-const LIVE_OP_PUMP_MS: u64 = 60;
-
-/// Try to execute `op` on the monitor's live session. Returns `None` when the
-/// lane isn't available (live-sync off, monitor paused/reconnecting, non-macOS)
-/// — the caller falls back to the classic `with_released_seize` path. Blocks up
-/// to a few seconds (the monitor consumes the queue every pump, ≤ ~0.5 s).
-pub(crate) fn try_live_op(op: LiveOp) -> Option<Result<(), String>> {
-    if !MONITOR_ENABLED.load(SeqCst) || !MONITOR_SESSION_LIVE.load(SeqCst) {
-        return None;
-    }
-    let tx = LIVE_CMD_TX.get()?;
-    let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
-    tx.send(LiveCmd {
-        op,
-        reply: reply_tx,
-    })
-    .ok()?;
-    match reply_rx.recv_timeout(std::time::Duration::from_secs(3)) {
-        Ok(LiveReply::Done(r)) => Some(r),
-        // Raced a pause/disable between the gate check and consumption — fall back.
-        Ok(LiveReply::NotLive) => None,
-        // The monitor consumes or drains the queue every pump iteration, so a
-        // timeout means the monitor thread is wedged — surface it rather than
-        // double-executing via a fallback.
-        Err(_) => Some(Err("live command lane timed out".into())),
-    }
-}
-
-/// Opportunistically read one preset's plaintext field-8 JSON on the monitor's
-/// open session. Returns `None` when the monitor is not actively pumping; callers
-/// must fall back to the classic pause + fresh-session path.
-pub(crate) fn try_metadata_read(list_index: ListIndex) -> Option<Result<Option<Vec<u8>>, String>> {
-    if !MONITOR_ENABLED.load(SeqCst) || !MONITOR_SESSION_LIVE.load(SeqCst) {
-        return None;
-    }
-    let tx = METADATA_READ_TX.get()?;
-    let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
-    tx.send(MetadataReadCmd {
-        list_index,
-        reply: reply_tx,
-    })
-    .ok()?;
-    match reply_rx.recv_timeout(std::time::Duration::from_secs(4)) {
-        Ok(MetadataReadReply::Done(r)) => Some(r),
-        Ok(MetadataReadReply::NotLive) => None,
-        Err(_) => Some(Err("metadata read lane timed out".into())),
-    }
-}
-
-/// Reply `NotLive` to every queued live command — called from every monitor state
-/// that can't execute on a healthy session, so senders never hang and fall back
-/// to the classic path promptly.
-fn drain_not_live(rx: &Receiver<LiveCmd>) {
-    while let Ok(cmd) = rx.try_recv() {
-        let _ = cmd.reply.send(LiveReply::NotLive);
-    }
-}
-
-fn drain_metadata_not_live(rx: &Receiver<MetadataReadCmd>) {
-    while let Ok(cmd) = rx.try_recv() {
-        let _ = cmd.reply.send(MetadataReadReply::NotLive);
-    }
-}
-
-/// Execute one live op on the monitor's session — `send_and_collect` (accumulator
-/// preserved) so the triggered pushes (`PresetLoaded`, field-3, `SceneLoaded`) are
-/// decoded by the normal pump-loop pass right after.
-fn exec_live(session: &mut Session, op: &LiveOp) -> Result<(), String> {
-    match op {
-        // Same wire form as `session::load_preset` / the scene-scan precedent:
-        // device slot = list index + 1, tabEnum 1 = My Presets.
-        LiveOp::LoadPreset(idx) => session.send_and_collect(
-            &crate::proto::load_my_preset(idx.device_slot()),
-            LIVE_OP_PUMP_MS,
-        ),
-        // Explicit slot emit even for 0 (the device ignores an empty LoadScene{}).
-        LiveOp::LoadScene(slot) => {
-            session.send_and_collect(&crate::proto::load_scene(*slot as u64), LIVE_OP_PUMP_MS)
-        }
-    }
-}
-
-fn exec_metadata_read(
-    session: &mut Session,
-    cmd: &MetadataReadCmd,
-) -> Result<Option<Vec<u8>>, String> {
-    // Live-controller session: skip the `connection_request` re-arm (the session
-    // is already armed by its dense heartbeat — re-arming draws a `connectionError`)
-    // and keep that heartbeat alive through the harvest.
-    session.read_slot_preset_json_live(cmd.list_index.device_slot())
-}
-
-/// RAII guard for [`MONITOR_SESSION_LIVE`]: constructed when [`pump_loop`] starts
-/// pumping a healthy session, cleared on every exit path (incl. panics).
-struct LiveFlagGuard;
-
-impl LiveFlagGuard {
-    fn arm() -> Self {
-        MONITOR_SESSION_LIVE.store(true, SeqCst);
-        LiveFlagGuard
-    }
-}
-
-impl Drop for LiveFlagGuard {
-    fn drop(&mut self) {
-        MONITOR_SESSION_LIVE.store(false, SeqCst);
-    }
 }
 
 /// Event names the frontend listens for (`@tauri-apps/api/event`), mirroring
@@ -486,15 +307,9 @@ const SCENE_DOC_FRESH_MS: u128 = 1000;
 /// it can own the seize, and never holds it across an open (it owns its OWN `Session`).
 /// Idle until app-level `connect_device` sets `MONITOR_ENABLED`.
 pub fn spawn(app: tauri::AppHandle, session: Arc<Mutex<Option<Session>>>) {
-    // Install the live command lane before the thread starts so `try_live_op`
-    // can never observe a live flag without a sender.
-    let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<LiveCmd>();
-    let (metadata_tx, metadata_rx) = crossbeam_channel::unbounded::<MetadataReadCmd>();
-    let _ = LIVE_CMD_TX.set(cmd_tx);
-    let _ = METADATA_READ_TX.set(metadata_tx);
     std::thread::Builder::new()
         .name("tmp-device-monitor".into())
-        .spawn(move || monitor_loop(app, session, cmd_rx, metadata_rx))
+        .spawn(move || monitor_loop(app, session))
         .expect("spawn tmp-device-monitor");
     // A thread now exists to answer a pause request — see `MONITOR_SPAWNED`. Set AFTER the
     // spawn succeeds (it panics on failure, so reaching here means the thread is live).
@@ -535,12 +350,7 @@ enum PumpExit {
     Error,
 }
 
-fn monitor_loop(
-    app: tauri::AppHandle,
-    session_arc: Arc<Mutex<Option<Session>>>,
-    live_rx: Receiver<LiveCmd>,
-    metadata_rx: Receiver<MetadataReadCmd>,
-) {
+fn monitor_loop(app: tauri::AppHandle, session_arc: Arc<Mutex<Option<Session>>>) {
     let cache = Arc::new(Mutex::new(LiveCache::default()));
     let mut last_block = "";
     let mut log_block = |b: &'static str| {
@@ -562,8 +372,6 @@ fn monitor_loop(
                 &app,
                 &session_arc,
                 &cache,
-                &live_rx,
-                &metadata_rx,
                 &mut graph_retries,
                 &mut log_block,
             );
@@ -586,16 +394,12 @@ fn run_monitor_iteration(
     app: &tauri::AppHandle,
     session_arc: &Arc<Mutex<Option<Session>>>,
     cache: &Arc<Mutex<LiveCache>>,
-    live_rx: &Receiver<LiveCmd>,
-    metadata_rx: &Receiver<MetadataReadCmd>,
     graph_retries: &mut u32,
     log_block: &mut impl FnMut(&'static str),
 ) {
     // Disabled (default): live-sync not started. Idle-poll; do nothing.
     if !MONITOR_ENABLED.load(SeqCst) {
         log_block("disabled");
-        drain_not_live(live_rx);
-        drain_metadata_not_live(metadata_rx);
         sleep(DISABLED_POLL_MS);
         return;
     }
@@ -603,7 +407,7 @@ fn run_monitor_iteration(
     // park until the request clears. (Re-checked at the top of every reconnect.)
     if MONITOR_PAUSE_REQ.load(SeqCst) {
         log_block("paused");
-        park_while_paused(app, live_rx, metadata_rx);
+        park_while_paused(app);
         return;
     }
     // Opportunistic ownership: only open HID when no persistent UI session is
@@ -611,8 +415,6 @@ fn run_monitor_iteration(
     // but a diagnostic stop/reconnect or command bookend can momentarily re-take it.
     if crate::lock_ok(session_arc).is_some() {
         log_block("ui-session-held");
-        drain_not_live(live_rx);
-        drain_metadata_not_live(metadata_rx);
         sleep(RECONNECT_BACKOFF_MS);
         return;
     }
@@ -624,8 +426,6 @@ fn run_monitor_iteration(
     // running wins, and this iteration parks on its pause at the top of the next one.
     let Some(connect_hold) = crate::device_gate::try_hold_for_monitor_connect() else {
         log_block("command-running");
-        drain_not_live(live_rx);
-        drain_metadata_not_live(metadata_rx);
         sleep(PAUSE_WAIT_STEP);
         return;
     };
@@ -645,8 +445,6 @@ fn run_monitor_iteration(
             // watcher remains the authoritative attach/detach signal for the UI.)
             log::warn!("monitor: connect failed ({e}) — backing off");
             store_connect_error(e);
-            drain_not_live(live_rx);
-            drain_metadata_not_live(metadata_rx);
             sleep(RECONNECT_BACKOFF_MS);
             return;
         }
@@ -695,8 +493,6 @@ fn run_monitor_iteration(
                 drop(session);
                 drop(connect_hold);
                 emit_sync(app, false);
-                drain_not_live(live_rx);
-                drain_metadata_not_live(metadata_rx);
                 sleep(GRAPH_RETRY_BACKOFF_MS);
                 return;
             }
@@ -717,7 +513,7 @@ fn run_monitor_iteration(
     // From here the pump loop polls the pause request every ~120 ms and yields on it.
     drop(connect_hold);
 
-    match pump_loop(app, session, cache, seen, live_rx, metadata_rx) {
+    match pump_loop(app, session, cache, seen) {
         PumpExit::Disabled => clear_startup_snapshot(),
         PumpExit::Paused => {
             // A deliberate op cycle reconnects next — fresh retry budget.
@@ -731,18 +527,11 @@ fn run_monitor_iteration(
 
 /// Drop any held Session, ack the pause, show the neutral state, and park until the
 /// command's guard clears `MONITOR_PAUSE_REQ`. (No Session is held here — the caller
-/// already dropped it — but we still ack so the command isn't stranded.) Keeps the
-/// live command lane drained so a raced sender falls back instead of hanging.
-fn park_while_paused(
-    app: &tauri::AppHandle,
-    live_rx: &Receiver<LiveCmd>,
-    metadata_rx: &Receiver<MetadataReadCmd>,
-) {
+/// already dropped it — but we still ack so the command isn't stranded.)
+fn park_while_paused(app: &tauri::AppHandle) {
     emit_sync(app, true);
     MONITOR_PAUSED_ACK.store(true, SeqCst);
     while MONITOR_PAUSE_REQ.load(SeqCst) {
-        drain_not_live(live_rx);
-        drain_metadata_not_live(metadata_rx);
         sleep(PAUSE_WAIT_STEP);
     }
     MONITOR_PAUSED_ACK.store(false, SeqCst);
@@ -839,11 +628,7 @@ fn pump_loop(
     mut session: Session,
     cache: &Arc<Mutex<LiveCache>>,
     seen: usize,
-    live_rx: &Receiver<LiveCmd>,
-    metadata_rx: &Receiver<MetadataReadCmd>,
 ) -> PumpExit {
-    // Sender-side gate for the live command lane.
-    let _live = LiveFlagGuard::arm();
     // First heartbeat due at once: the startup read before this loop may already have
     // used most of the device's host-silence budget (`session::HID_INACTIVITY_DROP_MS`).
     let mut last_hb = std::time::Instant::now()
@@ -864,11 +649,11 @@ fn pump_loop(
         }
         *skip = skip.saturating_sub(closed.len());
     };
-    // Drain the handshake/snapshot reports before any live op can clear `raw`.
+    // Drain the handshake/snapshot reports before the first pump.
     decode_closed(&mut session, &mut skip);
     loop {
-        // Live-sync stopped: drop our Session (free the seize) so `stop_live_sync` can
-        // re-establish the persistent UI session. Return to the (disabled) outer loop.
+        // Live-sync stopped: drop our Session (free the seize). Return to the (disabled)
+        // outer loop.
         if !MONITOR_ENABLED.load(SeqCst) {
             drop(session);
             return PumpExit::Disabled;
@@ -877,30 +662,8 @@ fn pump_loop(
         // return to the outer loop which parks until the command's guard clears.
         if MONITOR_PAUSE_REQ.load(SeqCst) {
             drop(session);
-            // Clear the live gate BEFORE parking so senders racing the park see it.
-            drop(_live);
-            park_while_paused(app, live_rx, metadata_rx);
+            park_while_paused(app);
             return PumpExit::Paused;
-        }
-        // Execute queued live-lane ops on the healthy session (between pumps — the
-        // pushes they trigger land in the same accumulator and are decoded below).
-        while let Ok(cmd) = live_rx.try_recv() {
-            let r = exec_live(&mut session, &cmd.op);
-            let failed = r.is_err();
-            let _ = cmd.reply.send(LiveReply::Done(r));
-            if failed {
-                return PumpExit::Error; // device error — reconnect from the top (guard clears the gate)
-            }
-        }
-        while let Ok(cmd) = metadata_rx.try_recv() {
-            let r = exec_metadata_read(&mut session, &cmd);
-            let failed = r.is_err();
-            let _ = cmd.reply.send(MetadataReadReply::Done(r));
-            // `read_slot_preset_json` clears the accumulator before harvesting field-9; every
-            // report before it was already drained into `pushes`, so nothing is lost.
-            if failed {
-                return PumpExit::Error;
-            }
         }
         if session.pump_silent(PUMP_MS).is_err() {
             return PumpExit::Error; // device gone / seize lost — reconnect from the top
