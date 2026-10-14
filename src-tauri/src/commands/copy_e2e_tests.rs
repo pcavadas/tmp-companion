@@ -476,7 +476,7 @@ mod copy_level_e2e_tests {
     // ── Pre-save working-copy read-back: adopted only when it shows the acked edit ──
 
     /// The fake's default two-node graph, padded past the session reader's documented tail
-    /// loss: `best_json_payload` reassembles with `reassemble_streams`, which drops the LAST
+    /// loss: `latest_json_payload` reassembles with `reassemble_streams`, which drops the LAST
     /// ≤60 B of a multi-frame push (see the `ftsw` render tests' note), and in the unpadded
     /// default document that tail cuts the second node out of BOTH the load-time roster and
     /// the post-save push. `with_ftsw` re-serializes with sorted keys, so a key sorting after

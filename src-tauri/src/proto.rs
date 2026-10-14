@@ -746,7 +746,7 @@ pub fn export_preset_request(list_enum: u64, preset_slot: u64, batch: Option<u64
 /// PresetMessage.presetDataRequest{ listEnum, presetSlot } — the *slot-addressed*
 /// full-preset read (field **8**), distinct from `exportPresetRequest` (115).
 /// The device replies with `presetDataChanged` (field 9) carrying `presetJson`.
-/// This is the carrier `best_json_payload` already harvests as `(9, 3)`, so it
+/// This is the carrier `latest_json_payload` already harvests as `(9, 3)`, so it
 /// is the most likely full-read path. Same optional-batch + proto3-zero-omission
 /// rules as `export_preset_request`.
 pub fn preset_data_request(list_enum: u64, preset_slot: u64, batch: Option<u64>) -> Vec<u8> {

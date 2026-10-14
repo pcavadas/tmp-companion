@@ -3,27 +3,36 @@
 
 use super::*;
 
-/// [`Session::best_json_payload`]'s body, split into a free function over raw reports so it
+/// [`Session::latest_json_payload`]'s body, split into a free function over raw reports so it
 /// is unit-testable without a live `Session` (mirrors `best_preset_list_from_reports`). See
-/// that method's doc for the three carriers and the longest-wins rule.
+/// that method's doc for the three carriers and the latest-wins rule.
+///
+/// LATEST, never longest: a session opened within the device's inactivity drop of the
+/// previous one inherits the rest of that session's queued replies, AHEAD of its own
+/// (HW 2026-10-14, fw 1.8.58: the unit keeps sending its queue while no host is open, and
+/// what it has not sent yet reaches the next session first). The previous handshake's own
+/// field-3 reply ends that queue, so it is the working copy as it was BEFORE the previous
+/// session's loads — and an unsaved insert makes it the longer document. Longest-wins read
+/// that stale copy after a Doctor discard (3/3 at a 100 ms settle; carriers 2871 stale →
+/// 2451 → 2691 → 2691). A latest copy cut short is the caller's error to retry, never a
+/// reason to fall back to an older one.
 ///
 /// DANGER: carrier `(9, 3)` is the field-8 slot-read reply's own payload. If a session's
-/// accumulated reports ever carry BOTH a fresh field-3 live push and a stray field-9 reply,
-/// "longest wins" can pick the field-9 content over the fresh push — a caller harvesting the
-/// LOADED document must clear `raw` first and issue no field-8 read on that session
-/// ([`Session::rich_load_collect`] does the former);
-/// `session/tests.rs::best_json_payload_from_reports_can_prefer_a_stale_field9_reply` proves the hazard
-/// exists at this layer.
-pub(super) fn best_json_payload_from_reports(reports: &[Vec<u8>]) -> Vec<u8> {
+/// accumulated reports carry a field-3 live push AND a later stray field-9 reply, the
+/// field-9 content wins — a caller harvesting the LOADED document must clear `raw` first and
+/// issue no field-8 read on that session ([`Session::rich_load_collect`] does the former);
+/// `session/tests.rs::latest_json_payload_from_reports_takes_a_later_field9_reply` proves the
+/// hazard exists at this layer.
+pub(super) fn latest_json_payload_from_reports(reports: &[Vec<u8>]) -> Vec<u8> {
     json_payloads_from_reports(reports)
         .into_iter()
         .map(|(_, payload)| payload)
-        .max_by_key(Vec::len)
+        .next_back()
         .unwrap_or_default()
 }
 
 /// Every `presetJson` payload in `reports`, tagged with the PresetMessage carrier field it
-/// rode in on (3 / 79 / 9 — see [`best_json_payload_from_reports`]), in stream order.
+/// rode in on (3 / 79 / 9 — see [`latest_json_payload_from_reports`]), in stream order.
 pub(super) fn json_payloads_from_reports(reports: &[Vec<u8>]) -> Vec<(u32, Vec<u8>)> {
     pub(super) const CARRIERS: [(u32, u32); 3] = [(3, 1), (79, 1), (9, 3)];
     proto::reassemble_streams(reports)
@@ -169,8 +178,8 @@ impl Session {
     }
 
     /// Load list-index `slot` for a field-3 harvest: clear `raw` first (this session must
-    /// never carry an older stream into the harvest — `best_json_payload` prefers the
-    /// LONGEST of its carriers, so leftovers can shadow the fresh push), send `LoadPreset`
+    /// never carry an older stream into the harvest — `latest_json_payload` takes the
+    /// LATEST of its carriers, so a leftover arriving late can shadow the fresh push), send `LoadPreset`
     /// via [`Session::send_and_collect`] (NOT [`Session::load_preset`], whose
     /// `transact_eager` discards the reports the field-3 push rides on), then keep pumping
     /// past the 125 hit so the multi-packet push finishes arriving.
@@ -187,16 +196,17 @@ impl Session {
     /// Byte length of the presetJson carrier [`Self::current_preset_value`] would parse —
     /// how much of a field-3 reply has landed so far (the growth-stability gate).
     pub(crate) fn json_payload_len(&self) -> usize {
-        self.best_json_payload().len()
+        self.latest_json_payload().len()
     }
 
-    /// The largest reassembled `presetJson` payload found in the accumulated
-    /// streams, across all three carriers (presetMessage submessage field →
-    /// presetJson inner field): currentPresetDataChanged 3→1,
-    /// currentPresetDataJsonResponse 79→1, and presetDataChanged 9→3 (the
-    /// slot-addressed reply). Largest wins so a complete stream beats a stray.
-    pub(super) fn best_json_payload(&self) -> Vec<u8> {
-        best_json_payload_from_reports(&self.raw)
+    /// The LATEST reassembled `presetJson` payload in the accumulated streams, across
+    /// all three carriers (presetMessage submessage field → presetJson inner field):
+    /// currentPresetDataChanged 3→1, currentPresetDataJsonResponse 79→1, and
+    /// presetDataChanged 9→3 (the slot-addressed reply). Latest wins, not longest: an
+    /// earlier stream can be the previous session's queued reply (see
+    /// [`latest_json_payload_from_reports`]).
+    pub(super) fn latest_json_payload(&self) -> Vec<u8> {
+        latest_json_payload_from_reports(&self.raw)
     }
 
     /// Diagnostic: every `presetJson` carrier in the accumulated reports as
@@ -234,7 +244,7 @@ impl Session {
             self.heartbeat()?;
             self.pump_silent(CAPTURE_SETTLE_STEP_MS)?;
         }
-        let payload = self.best_json_payload();
+        let payload = self.latest_json_payload();
         if payload.is_empty() {
             return Err(
                 "no currentPresetDataChanged (field 3) payload captured — is a preset loaded?"
@@ -254,7 +264,7 @@ impl Session {
 
     /// The buffered `currentPresetDataChanged` (field 3) document, decoded but unparsed.
     pub(super) fn buffered_preset_text(&self) -> Result<String, String> {
-        decode_preset_json(&self.best_json_payload()).ok_or_else(|| {
+        decode_preset_json(&self.latest_json_payload()).ok_or_else(|| {
             "no preset JSON in handshake — currentPresetDataChanged absent (is a preset loaded?)"
                 .to_string()
         })
@@ -297,7 +307,7 @@ impl Session {
     /// fields the strip needs to draw series vs parallel. `name`/`slot` come from
     /// `info` when present (usually absent in the truncated partial → `None`).
     pub fn current_audio_graph(&self) -> Result<ActiveGraph, String> {
-        let payload = self.best_json_payload();
+        let payload = self.latest_json_payload();
         let text = decode_preset_json(&payload).ok_or_else(|| {
             "no preset JSON in handshake — currentPresetDataChanged absent (is a preset loaded?)"
                 .to_string()

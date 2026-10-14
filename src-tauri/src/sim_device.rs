@@ -349,6 +349,12 @@ pub(crate) enum Injection {
     /// The NEXT real `loadPreset` rejects the stored body: the working copy becomes the
     /// empty template under the preset's name and the load answers `presetError` 6.
     RejectNextLoad,
+    /// The unit's reply queue, timed: a handshake's field-3 reply (its batch-3
+    /// `currentPresetDataRequest`) lands [`FLOOD_DRAIN_MS`] of session time after it was
+    /// asked, every reply after it queues behind it, a new connection inside the drop
+    /// receives what is left FIRST, and [`crate::session::HID_INACTIVITY_DROP_MS`] of host
+    /// silence discards it. See [`SimFlood`].
+    QueuedHandshakeFlood,
     /// While scene `scene` is active, field-3 pushes are cut at the first byte of
     /// `cut_before`, with a proper final frame and the session still live.
     #[cfg(feature = "e2e")]
@@ -370,6 +376,11 @@ impl Injection {
     /// - `not-device-shaped`: the server never truncates a push; a lapse cuts frames with no
     ///   final, and every later message draws `ConnectionError` (device-confirmed).
     ///
+    /// `queued-handshake-flood` is `reachable`: the unit keeps sending its queue at its
+    /// ~2.1 ms frame cadence while no host is open, the next session inside the drop gets
+    /// the rest of it ahead of its own replies, and 0.75 s of host silence discards it
+    /// (device-confirmed 2026-10-14, fw 1.8.58: reopens 0–500 ms after a close, 3 each).
+    ///
     /// `reject-next-load` is `reachable`: fw 1.8.58 substitutes the empty template for a
     /// body it rejects at its first real load and answers that load `presetError` 6
     /// (device-confirmed; e.g. a param footswitch with no `valueType`).
@@ -385,7 +396,8 @@ impl Injection {
             Injection::LoseFirstConfirm
             | Injection::RejectReplace { .. }
             | Injection::DropNextReampOff
-            | Injection::RejectNextLoad => "reachable",
+            | Injection::RejectNextLoad
+            | Injection::QueuedHandshakeFlood => "reachable",
             Injection::DropFirstStructural | Injection::BareConfirms => "unreachable",
             Injection::StalePushAfterSave | Injection::ReampOffNeverLands => "unverified",
             #[cfg(feature = "e2e")]
@@ -417,6 +429,7 @@ impl Injection {
             "drop-next-reamp-off" => Injection::DropNextReampOff,
             "reamp-off-never-lands" => Injection::ReampOffNeverLands,
             "reject-next-load" => Injection::RejectNextLoad,
+            "queued-handshake-flood" => Injection::QueuedHandshakeFlood,
             "truncated-scene-push" => Injection::TruncatedScenePush {
                 scene: u32_arg("scene")?,
                 cut_before: v
@@ -512,6 +525,25 @@ enum WorkingEdit {
     },
 }
 
+/// How long after a handshake's batch-3 request the unit's field-3 reply finishes arriving:
+/// the drain is ~567 frames at 2.143 ms (HW, fw 1.8.58), and the field-3 copy ends it.
+const FLOOD_DRAIN_MS: u64 = 1_200;
+
+/// [`Injection::QueuedHandshakeFlood`]'s reply queue: what the unit has not sent yet. Every
+/// transport call spends its window from `remaining_ms` and adds it to `silent_ms`, a write
+/// zeroes `silent_ms`; the queue is handed over whole once `remaining_ms` is spent, handed
+/// to a new connection at its `connectionRequest`, or discarded once `silent_ms` reaches
+/// [`crate::session::HID_INACTIVITY_DROP_MS`] — the three outcomes the unit showed
+/// (2026-10-14: reopened 0–500 ms after a close, the next session got the rest of the
+/// queue first; after 0.75 s of host silence, nothing). Whole, not per frame: the queue's
+/// field-3 copy is last, and the products read whole documents.
+#[derive(Debug)]
+struct SimFlood {
+    reports: Vec<Vec<u8>>,
+    remaining_ms: u64,
+    silent_ms: u64,
+}
+
 struct SimState {
     events: Vec<SimEvent>,
     /// [`SimEvent::Unhandled`] records, in order — the census log, apart from `events`.
@@ -558,6 +590,14 @@ struct SimState {
     /// Device-initiated pushes waiting for the next `pump` (replies to a send are delivered
     /// synchronously from the send instead).
     pending_pushes: Vec<Vec<u8>>,
+    /// [`Injection::QueuedHandshakeFlood`] armed.
+    queued_flood: bool,
+    /// Under it: the reply queue still draining, device state like the real one, so it
+    /// outlives the connection that asked.
+    flood: Option<SimFlood>,
+    /// Under it: a `connectionRequest` opened a handshake whose batch-3 field-3 request has
+    /// not been answered yet — the one request whose reply starts a flood.
+    in_handshake: bool,
     /// Songs (slot = index + 1) and setlist names, mutated by the CRUD setters so a
     /// read-back-after-write reflects the change — the Songs tab's contract.
     songs: Vec<SimSong>,
@@ -775,6 +815,9 @@ impl Default for SimState {
             saved_edits: HashMap::new(),
             string_params: std::collections::BTreeMap::new(),
             pending_pushes: Vec::new(),
+            queued_flood: false,
+            flood: None,
+            in_handshake: false,
             songs: vec![SimSong::new("Opening Set"), SimSong::new("Encore")],
             setlists: vec![SimSetlist::new("Saturday Night")],
             active_song: None,
@@ -1483,6 +1526,7 @@ impl SimDevice {
             Injection::DropNextReampOff => st.drop_next_reamp_off = true,
             Injection::ReampOffNeverLands => st.reamp_off_never_lands = true,
             Injection::RejectNextLoad => st.reject_next_load = true,
+            Injection::QueuedHandshakeFlood => st.queued_flood = true,
             #[cfg(feature = "e2e")]
             Injection::TruncatedScenePush { scene, cut_before } => {
                 st.truncated_scene_push = Some((*scene, cut_before.clone()));
@@ -1649,7 +1693,27 @@ impl SimDevice {
                     st.batch_queue.push(body.to_vec());
                     std::mem::take(&mut st.batch_queue)
                 };
-                queued.iter().flat_map(|b| self.handle(b)).collect()
+                let Some((last, earlier)) = queued.split_last() else {
+                    return Vec::new();
+                };
+                let mut out: Vec<Vec<u8>> = earlier.iter().flat_map(|b| self.handle(b)).collect();
+                let reply = self.handle(last);
+                let mut st = lock();
+                if st.queued_flood && st.in_handshake && is_working_copy_request(last) {
+                    // The handshake's field-3 reply starts the queue; whatever an older
+                    // one still holds stays ahead of it.
+                    st.in_handshake = false;
+                    let flood = st.flood.get_or_insert(SimFlood {
+                        reports: Vec::new(),
+                        remaining_ms: 0,
+                        silent_ms: 0,
+                    });
+                    flood.reports.extend(reply);
+                    flood.remaining_ms = FLOOD_DRAIN_MS;
+                } else {
+                    out.extend(reply);
+                }
+                out
             }
             n => {
                 lock().events.push(SimEvent::BatchDropped(n));
@@ -3892,33 +3956,103 @@ fn structural_reply(st: &mut SimState, confirm_field: u32, payload: &[u8]) -> (V
     (frame_multi(&preset_message(confirm_field, payload)), true)
 }
 
+/// Whether `body` is a `connectionRequest` — what opens a connection (or re-arms a lapsed one).
+fn is_connection_request(body: &[u8]) -> bool {
+    proto::first_bytes(&proto::parse(body), 4)
+        .is_some_and(|c| proto::first_bytes(&proto::parse(c), 1).is_some())
+}
+
+/// Whether `body` is a `currentPresetDataRequest` — the request a field-3 copy answers.
+fn is_working_copy_request(body: &[u8]) -> bool {
+    proto::first_bytes(&proto::parse(body), TMS_PRESET).is_some_and(|pm| {
+        proto::first_bytes(&proto::parse(pm), F_CURRENT_PRESET_DATA_REQUEST).is_some()
+    })
+}
+
+impl SimDevice {
+    /// [`SimFlood`]'s clock, run on every transport call: its write (`None` for a pump), its
+    /// window and the replies it produced. A no-op unless [`Injection::QueuedHandshakeFlood`]
+    /// is armed.
+    fn through_flood(&self, write: Option<&[u8]>, ms: u64, replies: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        let mut st = self.state.lock().expect("sim lock");
+        if !st.queued_flood {
+            return replies;
+        }
+        let opens = write.is_some_and(is_connection_request);
+        if opens {
+            st.in_handshake = true;
+        }
+        let Some(mut flood) = st.flood.take() else {
+            return replies;
+        };
+        if opens {
+            // A connection opened inside the drop: the rest of the queue lands first.
+            flood.reports.extend(replies);
+            return flood.reports;
+        }
+        if write.is_some() {
+            flood.silent_ms = 0;
+        }
+        flood.reports.extend(replies);
+        flood.silent_ms += ms;
+        if flood.remaining_ms <= ms {
+            return flood.reports;
+        }
+        flood.remaining_ms -= ms;
+        if flood.silent_ms < crate::session::HID_INACTIVITY_DROP_MS {
+            st.flood = Some(flood);
+        }
+        Vec::new()
+    }
+
+    /// The reports [`Injection::QueuedHandshakeFlood`]'s queue still holds (`None` = no
+    /// queue): what the next connection would receive ahead of its own replies.
+    #[cfg(test)]
+    pub(crate) fn queued_flood_reports(&self) -> Option<usize> {
+        let st = self.state.lock().expect("sim lock");
+        st.flood.as_ref().map(|f| f.reports.len())
+    }
+}
+
 impl HidTransport for SimDevice {
     fn send(&self, body: &[u8]) -> Result<(), String> {
-        let mut st = self.state.lock().expect("sim lock");
-        alive(&st)?;
-        st.events.push(SimEvent::Heartbeat);
-        // Unanswered, so it joins the census too: an allow-list of silent kinds needs it.
-        record_unhandled(&mut st, body);
-        Ok(()) // fire-and-forget (heartbeat) — no reply
+        {
+            let mut st = self.state.lock().expect("sim lock");
+            alive(&st)?;
+            st.events.push(SimEvent::Heartbeat);
+            // Unanswered, so it joins the census too: an allow-list of silent kinds needs it.
+            record_unhandled(&mut st, body);
+        }
+        // Fire-and-forget (heartbeat) — no reply, but a write for the flood's silence clock;
+        // anything it hands over waits for the next pump, as a device push does.
+        let landed = self.through_flood(Some(body), 0, Vec::new());
+        self.state
+            .lock()
+            .expect("sim lock")
+            .pending_pushes
+            .extend(landed);
+        Ok(())
     }
-    fn transact(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+    fn transact(&self, body: &[u8], pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
         alive(&self.state.lock().expect("sim lock"))?;
-        Ok(self.receive(body))
+        let replies = self.receive(body);
+        Ok(self.through_flood(Some(body), pump_ms, replies))
     }
-    fn transact_chunked(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+    fn transact_chunked(&self, body: &[u8], pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
         alive(&self.state.lock().expect("sim lock"))?;
-        Ok(self.receive(body))
+        let replies = self.receive(body);
+        Ok(self.through_flood(Some(body), pump_ms, replies))
     }
-    fn pump(&self, _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+    fn pump(&self, pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
         // Replies are delivered synchronously from the send; only a queued device push
-        // (`with_stale_push_after_save`) arrives here.
-        Ok(std::mem::take(
-            &mut self.state.lock().expect("sim lock").pending_pushes,
-        ))
+        // (`with_stale_push_after_save`, a heartbeat's flood hand-over) arrives here.
+        let pushes = std::mem::take(&mut self.state.lock().expect("sim lock").pending_pushes);
+        Ok(self.through_flood(None, pump_ms, pushes))
     }
-    fn transact_eager(&self, body: &[u8], _max_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+    fn transact_eager(&self, body: &[u8], max_ms: u64) -> Result<Vec<Vec<u8>>, String> {
         alive(&self.state.lock().expect("sim lock"))?;
-        Ok(self.receive(body))
+        let replies = self.receive(body);
+        Ok(self.through_flood(Some(body), max_ms, replies))
     }
     fn template_mark(&self) -> Arc<crate::hid::TemplateMark> {
         self.template_mark.clone()
@@ -3985,7 +4119,7 @@ fn preset_loaded(dev_slot: u64) -> Vec<u8> {
 /// `currentPresetDataChanged`(3) — `presetJson`(1) = LZ4("stored"/uncompressed-block)
 /// of the preset JSON. Mirrors the wire shape `session/tests.rs`'s own fixtures build
 /// (`decode_current_preset_data_yields_active_graph_with_known_template`) and what
-/// `Session::current_preset_value` (`best_json_payload`'s `(3, 1)` carrier) reads back.
+/// `Session::current_preset_value` (`latest_json_payload`'s `(3, 1)` carrier) reads back.
 const F_CURRENT_PRESET_DATA_CHANGED: u32 = 3;
 
 fn current_preset_data_changed(json: &[u8]) -> Vec<u8> {
@@ -5026,7 +5160,7 @@ mod scene_context_tests {
 // `Session` test sees.
 //
 // They assert on the RENDERED field-3 body rather than through `Session::live_ftsw`, and that
-// is deliberate. `best_json_payload` reassembles with `proto::reassemble_streams`, which by
+// is deliberate. `latest_json_payload` reassembles with `proto::reassemble_streams`, which by
 // design does NOT close the stream on the trailing `0x35` frame (an interleaved single-frame
 // must not truncate a large push), so the LAST ≤60 B of every field-3 document are dropped —
 // the "systematic tail truncation" `reassemble_streams_final`'s doc describes. `serde_json`'s

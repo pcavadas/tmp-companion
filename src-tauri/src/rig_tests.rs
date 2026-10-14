@@ -15,7 +15,8 @@ use crate::commands::level_footswitch::{run_footswitch_batch, FootswitchLevelJob
 use crate::commands::ProgressStatus;
 use crate::leveller::{self, KnobTarget, LevelKnob, LevelOptions, SceneJob};
 use crate::rig;
-use crate::sim_device::{Rendered, SimDevice, SimEvent, SimRig};
+use crate::session::Session;
+use crate::sim_device::{Injection, Rendered, SimDevice, SimEvent, SimRig};
 use crate::slot::ListIndex;
 
 /// A non-scenario slot: the e2e build's scenario echo never claims it.
@@ -406,4 +407,93 @@ fn the_footswitch_batch_solves_its_row_on_a_private_rig() {
     assert!(progress.iter().all(|p| p.switch == 2));
     assert!(progress[2].result.is_some());
     assert_run_ended_clean(&dev);
+}
+
+/// The working copy's chain as `group/node/model`, read the way the UI's "now playing" strip
+/// and the Doctor's live-node check read it.
+fn live_chain() -> Vec<String> {
+    let (graph, _) = crate::discover_active_graph().expect("discover_active_graph");
+    graph
+        .nodes
+        .iter()
+        .map(|n| format!("{}/{}/{}", n.group_id, n.node_id, n.model))
+        .collect()
+}
+
+/// BUG→GATE (online e2e `doctor-apply.online.spec.ts`, the post-discard read; HW 2026-10-14,
+/// fw 1.8.58, 3/3 at a 100 ms settle): a Doctor discard read back the block it had just
+/// thrown away. The unit keeps sending a session's queued replies after the host closes it
+/// and hands what is left to the next session inside the 0.75 s drop, ahead of that
+/// session's own; the restore's lean session closed before its handshake copy of the DIRTY
+/// working copy was sent, so the next read got it first and longest-wins kept it. Both
+/// fixes are pinned: every restore and isolated load now ends with a lapse, so the unit
+/// discards that queue (`queued_flood_reports` is empty), and the read takes the latest
+/// copy (`latest_json_payload_reads_past_a_longer_inherited_copy`).
+#[test]
+fn a_discarded_edit_never_reads_back_from_the_queued_handshake_copy() {
+    let (dev, rig) = rig();
+    assert_eq!(dev.arm(Injection::QueuedHandshakeFlood), "reachable");
+    let (saved, applied, restored) = rig::scoped(rig.clone(), || {
+        leveller::make_current(SLOT).expect("make_current");
+        let saved = live_chain();
+        let mut s = Session::connect().expect("connect");
+        assert!(
+            s.insert_node("G1", None, "ACD_TenBandEQStereo")
+                .expect("insert_node"),
+            "the fake confirms the insert"
+        );
+        drop(s);
+        let applied = live_chain();
+        leveller::restore_saved_preset(SLOT).expect("restore_saved_preset");
+        assert_eq!(
+            dev.queued_flood_reports(),
+            None,
+            "the restore must leave no queued replies for the next session"
+        );
+        (saved, applied, live_chain())
+    });
+    assert_eq!(
+        applied.len(),
+        saved.len() + 1,
+        "the applied block reads back before the discard: {applied:?}"
+    );
+    assert_eq!(restored, saved, "the discard restores the saved chain");
+}
+
+/// The injection's own contract, so the gate above cannot pass on a fake that never queues:
+/// a lean session closed straight after its handshake leaves its field-3 copy queued, the
+/// next connection receives it ahead of its own replies, and a lapse instead discards it.
+#[test]
+fn the_queued_handshake_copy_reaches_the_next_session_unless_it_lapses() {
+    let (dev, rig) = rig();
+    dev.arm(Injection::QueuedHandshakeFlood);
+    rig::scoped(rig.clone(), || {
+        drop(Session::connect_lean().expect("connect_lean"));
+        assert!(
+            dev.queued_flood_reports().is_some_and(|n| n > 0),
+            "a lean session's field-3 copy is still queued when it closes"
+        );
+        // The next connection gets it with its very first reply.
+        let s = Session::connect_lean().expect("connect_lean");
+        assert!(
+            s.json_payload_len() > 0,
+            "the inherited copy lands on the next session's handshake"
+        );
+        drop(s);
+        let mut s = Session::connect_lean().expect("connect_lean");
+        s.lapse().expect("lapse");
+        drop(s);
+        assert_eq!(
+            dev.queued_flood_reports(),
+            None,
+            "a lapse past the drop leaves nothing for the next session"
+        );
+        leveller::load_preset_isolated(SLOT, leveller::CancelMode::Cleanup)
+            .expect("load_preset_isolated");
+        assert_eq!(
+            dev.queued_flood_reports(),
+            None,
+            "an isolated load ends with the lapse too"
+        );
+    });
 }

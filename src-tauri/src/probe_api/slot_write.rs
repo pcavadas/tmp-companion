@@ -58,7 +58,7 @@ pub fn probe_set_scene_change_behavior(value: u64) -> Result<String, String> {
 ///
 /// Deliberately does ONE thing per invocation. An earlier attempt drove the whole
 /// C2 experiment (read → edit → scene round trip → re-read) inside a single
-/// connection and could not be trusted: `best_json_payload` returns the best
+/// connection and could not be trusted: `latest_json_payload` returns a
 /// payload accumulated so far, so a second read in the same session can serve the
 /// handshake's snapshot rather than live state — which would silently compare a
 /// value against itself.

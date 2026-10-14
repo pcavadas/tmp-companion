@@ -13,12 +13,19 @@ use super::*;
 /// (HW 2026-10-10, `probe --restore-check`), but a clear flag can still hide a stale
 /// working copy, and reading `isDirty` costs ~1.1 s. So the restore always loads a
 /// neighbour slot first, which forces the reload (+0.34 s on HW: 1.67 s vs 1.33 s).
+///
+/// It ends with [`Session::lapse`] for the reason [`load_preset_isolated`] does, and here
+/// the queued copy is the one the restore exists to discard: without it a Doctor discard
+/// read back the applied block (online e2e, 3/3 at a 100 ms settle, HW 2026-10-14).
 pub(crate) fn restore_saved_preset(slot: ListIndex) -> Result<(), String> {
     // NOT `sleep_or_cancel`: this runs AFTER a cancel to clean up. Bailing here would leave
     // the edit buffer dirty at the measurement level — the whole point of the restore.
     let mut s = Session::connect_lean()?;
     let via = reload_stored_on(&mut s, slot)?;
     crate::settle(Duration::from_millis(settle_after_load_ms()));
+    // The handshake's own field-3 reply (the DIRTY working copy this restore discards) is
+    // still queued behind its ~1.2 s drain, and the next session would read it first.
+    s.lapse()?;
     log::info!("restored stored preset slot={slot} after unsaved measurement (via {via})");
     Ok(())
 }
@@ -37,7 +44,7 @@ pub(super) fn reload_stored_on(s: &mut Session, slot: ListIndex) -> Result<ListI
 }
 
 /// Load `slot` on its own lean connection so it is the device's current preset. A rich
-/// harvest (`discover_blocks_rich`, `prepass_scene_docs`) keeps the LONGEST preset push it
+/// harvest (`discover_blocks_rich`, `prepass_scene_docs`) keeps the LATEST preset push it
 /// collects, and a push of the previously-current preset can still land after its buffer
 /// clear: online e2e (2026-10-10, fw 1.8.58) slot 410's block discovery, run right after a
 /// save on another slot, returned that slot's blocks. With the target already current,
@@ -59,12 +66,23 @@ pub(crate) enum CancelMode {
 }
 
 /// THE latch-rule load: open a lean connection, load `slot`, settle
-/// [`settle_after_load_ms`], and drop the connection. `danger.md`: a `set_preset_level`
+/// [`settle_after_load_ms`], let the session lapse, and drop the connection. `danger.md`: a `set_preset_level`
 /// after a load on the same connection is overridden by the load's own level-apply, and a
 /// load + engage on one connection captured silence (fw 1.8.45), so every leveling path
 /// loads in its own connection and measures or writes on a fresh one; the device keeps the
 /// loaded preset current across reconnects. One home so the settle length and the
 /// connection shape change in one place.
+///
+/// Every session that ends here ends with [`Session::lapse`]: a lean session is shorter
+/// than the device's ~1.2 s handshake drain, and the unit keeps sending a queue across a
+/// reconnect inside its inactivity drop, so the next session would receive the rest of
+/// this one's replies ahead of its own — last of all, this handshake's field-3 copy of the
+/// PRE-load working copy (HW 2026-10-14, fw 1.8.58: a reopen 0–500 ms after the close got
+/// it every time; after 0.75 s of host silence the unit had discarded the queue). Host
+/// silence past the drop is what makes the unit discard it, so the lapse IS the fix; it
+/// costs the part of [`HID_INACTIVITY_DROP_MS`] + 100 ms the settle has not already spent.
+///
+/// [`HID_INACTIVITY_DROP_MS`]: crate::session::HID_INACTIVITY_DROP_MS
 pub(crate) fn load_preset_isolated(slot: ListIndex, mode: CancelMode) -> Result<(), LevelError> {
     // The connection is held through the settle and dropped after it, as every inline
     // copy of this sequence did.
@@ -74,6 +92,7 @@ pub(crate) fn load_preset_isolated(slot: ListIndex, mode: CancelMode) -> Result<
         CancelMode::Abortable => settle_or_cancel(settle_after_load_ms())?,
         CancelMode::Cleanup => crate::settle(Duration::from_millis(settle_after_load_ms())),
     }
+    s.lapse()?;
     drop(s);
     Ok(())
 }

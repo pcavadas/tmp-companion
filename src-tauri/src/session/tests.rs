@@ -1054,44 +1054,74 @@ fn best_preset_list_ignores_a_longer_factory_response() {
 }
 
 // The field-9-polluted rig a load harvest must never create: carrier (9, 3) is the
-// field-8 slot-read reply's OWN payload, and `best_json_payload` picks the LONGEST of its
-// three carriers with no other tiebreak. A session whose accumulated reports carry BOTH a
-// fresh field-3 live push and a stray, longer field-9 reply will silently prefer the
-// field-9 content — why `rich_load_collect` clears `raw` before every harvest.
+// field-8 slot-read reply's OWN payload, and `latest_json_payload` takes the LATEST of its
+// three carriers with no other tiebreak. A session whose accumulated reports carry a fresh
+// field-3 live push and a stray field-9 reply after it will silently read the field-9
+// content — why `rich_load_collect` clears `raw` before every harvest.
+fn len_delim(field: u32, inner: &[u8]) -> Vec<u8> {
+    let mut o = Vec::new();
+    o.push(((field << 3) | 2) as u8);
+    o.push(inner.len() as u8);
+    o.extend_from_slice(inner);
+    o
+}
+fn json_report(body: &[u8]) -> Vec<u8> {
+    let mut r = vec![0x00, 0x35, 0x00, body.len() as u8];
+    r.extend_from_slice(body);
+    r
+}
+/// A `currentPresetDataChanged`(3) → presetJson(1) push of `json`, as one report.
+fn field3_push(json: &[u8]) -> Vec<u8> {
+    json_report(&len_delim(TMS_PRESET, &len_delim(3, &len_delim(1, json))))
+}
+
 #[test]
-fn best_json_payload_from_reports_can_prefer_a_stale_field9_reply() {
-    fn ld(field: u32, inner: &[u8]) -> Vec<u8> {
-        let mut o = Vec::new();
-        o.push(((field << 3) | 2) as u8);
-        o.push(inner.len() as u8);
-        o.extend_from_slice(inner);
-        o
-    }
-    fn report(body: &[u8]) -> Vec<u8> {
-        let mut r = vec![0x00, 0x35, 0x00, body.len() as u8];
-        r.extend_from_slice(body);
-        r
-    }
+fn latest_json_payload_from_reports_takes_a_later_field9_reply() {
     let fresh_json = b"FRESH_LIVE_PUSH".to_vec();
-    let stale_json = b"STALE_FIELD9_SLOT_READ_REPLY_PADDED_LONGER".to_vec();
-    assert!(
-        stale_json.len() > fresh_json.len(),
-        "test fixture invariant"
-    );
+    let stray_json = b"STRAY_FIELD9".to_vec();
     // Healthy session: only the fresh currentPresetDataChanged(3)->presetJson(1) push.
-    let clean = vec![report(&ld(TMS_PRESET, &ld(3, &ld(1, &fresh_json))))];
-    assert_eq!(best_json_payload_from_reports(&clean), fresh_json);
-    // Polluted session: the same fresh push PLUS a stray presetDataChanged(9)->…(3) reply
-    // (the field-8 carrier) that happens to be longer.
+    let clean = vec![field3_push(&fresh_json)];
+    assert_eq!(latest_json_payload_from_reports(&clean), fresh_json);
+    // Polluted session: the same fresh push, THEN a stray presetDataChanged(9)->…(3) reply
+    // (the field-8 carrier) — shorter, and it still wins.
     let polluted = vec![
-        report(&ld(TMS_PRESET, &ld(3, &ld(1, &fresh_json)))),
-        report(&ld(TMS_PRESET, &ld(9, &ld(3, &stale_json)))),
+        field3_push(&fresh_json),
+        json_report(&len_delim(
+            TMS_PRESET,
+            &len_delim(9, &len_delim(3, &stray_json)),
+        )),
     ];
     assert_eq!(
-        best_json_payload_from_reports(&polluted),
-        stale_json,
-        "longest-wins picked the stale field-9 reply over the fresh field-3 push"
+        latest_json_payload_from_reports(&polluted),
+        stray_json,
+        "latest-wins picked the stray field-9 reply over the earlier field-3 push"
     );
+}
+
+/// BUG→GATE (online e2e `doctor-apply.online.spec.ts`, the post-discard working-copy read;
+/// HW 2026-10-14, fw 1.8.58, 3/3 at a 100 ms settle): a session opened inside the device's
+/// inactivity drop receives the previous session's queued replies FIRST — last of them that
+/// session's handshake copy of the working copy BEFORE its loads, here the applied block a
+/// Doctor discard had just thrown away. The unit's carrier sizes were 2871 (stale, one block
+/// more) → 2451 (the restore's neighbour) → 2691 → 2691 (the restored copy). Longest-wins
+/// read the stale one; the latest copy is the restored one.
+#[test]
+fn latest_json_payload_reads_past_a_longer_inherited_copy() {
+    let stale = b"STALE_WORKING_COPY_WITH_THE_APPLIED_EQ".to_vec();
+    let neighbour = b"NEIGHBOUR_SLOT".to_vec();
+    let restored = b"RESTORED_COPY".to_vec();
+    assert!(stale.len() > restored.len() && stale.len() > neighbour.len());
+    let reports = vec![
+        field3_push(&stale),
+        field3_push(&neighbour),
+        field3_push(&restored),
+        field3_push(&restored),
+    ];
+    assert_eq!(latest_json_payload_from_reports(&reports), restored);
+    // A heartbeat reply after the push carries no preset JSON and changes nothing.
+    let mut with_beat = reports.clone();
+    with_beat.push(json_report(&len_delim(4, &len_delim(5, b""))));
+    assert_eq!(latest_json_payload_from_reports(&with_beat), restored);
 }
 
 // The Factory harvest gates on listEnum == 4: it must pick the Factory reply
