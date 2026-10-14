@@ -501,7 +501,7 @@ when the stored value already measured within tolerance of target`,
 
     // ── Footswitch skip-branch (410's own TubeScreamer row only — the carried-over
     // UniVibe row belongs to T1′'s modulated-solve coverage, not this idempotency proof) ──
-    const wroteInLane2 = fs.filter((r) => r.saved).map((r) => r.switch);
+    const firstRun = fs.map((r) => r.switch);
     const fs2 = (await invoke(
       page,
       "level_footswitches_apply",
@@ -527,11 +527,13 @@ when the stored value already measured within tolerance of target`,
 
     const fsTarget410Narrowed = fsTarget410;
     assertFsSolved(fs2, () => fsTarget410Narrowed, ACCEPT_TOL_LU);
+    // Every switch the arc test leveled is on target now, whether it wrote a value there or
+    // skipped as already within ACCEPT_TOL_LU, so the re-run at the same target writes nothing.
     for (const r2 of fs2) {
-      if (wroteInLane2.includes(r2.switch)) {
+      if (firstRun.includes(r2.switch)) {
         expect(
           r2.saved,
-          `switch ${String(r2.switch)} wrote a real value at target in the arc test → this re-run at the same target must skip the write`,
+          `switch ${String(r2.switch)} is on target after the arc test (written there or already within tolerance) → this re-run at the same target must skip the write`,
         ).toBe(false);
       }
     }
