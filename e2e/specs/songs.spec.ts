@@ -97,7 +97,9 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     });
 
     // CREATE setlist → read-back.
-    await page.getByRole("button", { name: "New setlist" }).click();
+    await page
+      .getByRole("button", { name: "New setlist", exact: true })
+      .click();
     await page.getByPlaceholder("Name this setlist").fill(SETLIST);
     await page.getByTitle("Create").click();
     await expect(page.getByText(SETLIST, { exact: true })).toBeVisible({
@@ -145,7 +147,9 @@ test.describe("Songs — edits survive a tab switch (self-cleaning)", () => {
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
     await page.getByRole("button", { name: "Songs", exact: true }).click();
 
-    await page.getByRole("button", { name: "New setlist" }).click();
+    await page
+      .getByRole("button", { name: "New setlist", exact: true })
+      .click();
     await page.getByPlaceholder("Name this setlist").fill(SETLIST);
     await page.getByTitle("Create").click();
     await expect(page.getByText(SETLIST, { exact: true })).toBeVisible({

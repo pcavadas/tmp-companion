@@ -99,10 +99,16 @@ const ids = (nodes: GraphNode[]): string[] =>
 const eqs = (nodes: GraphNode[]): GraphNode[] =>
   nodes.filter((n) => n.model === EQ);
 
+/** Bytes 2..16 of every KSDATAFORMAT_SUBTYPE_* GUID (WAVE_FORMAT_EXTENSIBLE). */
+const KSDATAFORMAT_TAIL = "000000001000800000aa00389b71";
+
 /** Decode a `data:audio/wav;base64,` clip and check it is real audio: a RIFF/WAVE
  *  header, a `fmt ` and a `data` chunk, at least 1 s of samples, and a signal above
  *  -60 dBFS RMS (a failed inject captures the device's floor). Returns the samples'
- *  bytes for the A/B comparison. `wav_bytes` writes mono 32-bit float. */
+ *  bytes for the A/B comparison. `wav_bytes` writes 32-bit float, which hound
+ *  tags WAVE_FORMAT_EXTENSIBLE (0xFFFE) with the float subformat GUID, as it
+ *  does for every sample size above 16 bits; a plain 3 (IEEE float) is accepted
+ *  too. */
 function decodeClip(label: string, url: string): Buffer {
   const prefix = "data:audio/wav;base64,";
   expect(url.startsWith(prefix), `${label} is a WAV data URL`).toBe(true);
@@ -120,8 +126,15 @@ function decodeClip(label: string, url: string): Buffer {
     const id = b.toString("ascii", o, o + 4);
     const size = b.readUInt32LE(o + 4);
     if (id === "fmt ") {
+      const tag = b.readUInt16LE(o + 8);
+      // EXTENSIBLE: the real format is the first two bytes of the SubFormat GUID
+      // (offset 24 in the chunk body), the rest being the standard KSDATAFORMAT tail.
+      const extensible =
+        tag === 0xfffe &&
+        size >= 40 &&
+        b.toString("hex", o + 34, o + 48) === KSDATAFORMAT_TAIL;
       fmt = {
-        format: b.readUInt16LE(o + 8),
+        format: extensible ? b.readUInt16LE(o + 32) : tag,
         channels: b.readUInt16LE(o + 10),
         rate: b.readUInt32LE(o + 12),
         bits: b.readUInt16LE(o + 22),
