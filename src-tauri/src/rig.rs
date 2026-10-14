@@ -204,10 +204,11 @@ pub(crate) struct Waits {
     captures: std::sync::atomic::AtomicU64,
 }
 
-/// One reading of [`WAITS`].
+/// One reading of [`WAITS`]. `allow`, not `expect`: rustc 1.97 reports this struct dead
+/// when [`Waits::totals`] is, rustc 1.96 does not, and an unfulfilled `expect` fails the build.
 #[cfg_attr(
     not(any(test, feature = "e2e")),
-    expect(
+    allow(
         dead_code,
         reason = "only the e2e server's /timing route reads the totals"
     )
