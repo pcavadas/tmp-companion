@@ -460,8 +460,12 @@ pub(crate) fn run_job(
                 budget.as_secs_f64()
             )));
         }
+        // macOS refuses the timeout with EINVAL once the far end has closed its side; a read
+        // then cannot block (it returns the buffered reply or end-of-stream), so go on to it.
         if let Err(e) = link.0.set_read_timeout(POLL.min(left)) {
-            return Err(failed(format!("read: {e}")));
+            if e.kind() != ErrorKind::InvalidInput {
+                return Err(failed(format!("read: {e}")));
+            }
         }
         let want = (need - buf.len()).min(chunk.len());
         match link.0.read(&mut chunk[..want]) {
