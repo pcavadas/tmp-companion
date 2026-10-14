@@ -4,8 +4,12 @@
 #
 #   TMP_E2E_TWIN=tcp:127.0.0.1:11600 scripts/e2e-twin.sh [spec …]    (default: songs copy)
 #   TMP_E2E_TWIN=… scripts/e2e-twin.sh --seed-only    stop after step 3, before any spec
-#   TMP_E2E_TWIN=… TMP_E2E_TWIN_AUDIO=tcp:127.0.0.1:11700 scripts/e2e-twin.sh level
+#   TMP_E2E_TWIN=… TMP_E2E_TWIN_AUDIO=tcp:127.0.0.1:11700 scripts/e2e-twin.sh level.online
 #                                       with the twin's re-amp audio: offline leveling
+#
+# The twin counts as online, so pick the `*.online` specs for anything they cover: a dual-mode
+# spec that skips online (level.spec.ts, for one) skips here too, and a run in which no test
+# ran fails rather than passing green.
 #
 # --seed-only leaves the twin holding the pristine scenario: snapshot it there. A snapshot
 # taken after a run holds what the specs saved (copy.spec saves edits into 401/402), so
@@ -58,7 +62,7 @@ SPECS=()
 SEED_ONLY=0
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
     --seed-only) SEED_ONLY=1 ;;
     *) SPECS+=("$a") ;;
   esac
@@ -92,6 +96,8 @@ mkdir -p "$LOG_DIR"
 SERVER_LOG="$LOG_DIR/e2e_server.log"
 PROBE_LOG="$LOG_DIR/probe.log"
 : > "$PROBE_LOG"
+export TMP_E2E_TWIN_REPORT="$LOG_DIR/report.json"
+rm -f "$TMP_E2E_TWIN_REPORT"
 SERVER_PID=""
 
 [ -f dist/index.html ] || { mkdir -p dist; printf '<!doctype html><title>e2e</title>' > dist/index.html; }
@@ -236,6 +242,17 @@ log "twin connected — snapshot includes the seeded presets"
 
 # ── 5. the specs ──
 bunx playwright test --config e2e/playwright.twin.config.ts "${SPEC_FILES[@]}"
+# Playwright exits 0 when every selected test skipped: count the tests that actually ran.
+ran="$(bun -e '
+  const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).stats ?? {};
+  console.log((s.expected ?? 0) + (s.flaky ?? 0) + " " + (s.skipped ?? 0));
+' "$TMP_E2E_TWIN_REPORT" 2>/dev/null || true)"
+case "$ran" in
+  ""|"0 "*)
+    err "no test ran on the twin (${ran#* } skipped, or no report): the selected specs skip in this mode — pick *.online specs"
+    exit 1 ;;
+esac
+log "twin specs: ${ran% *} ran, ${ran#* } skipped"
 
 # ── 6. the twin's captures: any failed job fails the lane, whatever the specs made of it ──
 if [ -n "${TMP_E2E_TWIN_AUDIO:-}" ]; then

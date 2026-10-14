@@ -25,7 +25,22 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1, // one twin, one exclusive seize
   forbidOnly: true,
-  reporter: [["list"]],
+  // The JSON report lets `scripts/e2e-twin.sh` fail a run in which no test ran: a dual-mode
+  // spec that skips online skips here too, and Playwright exits 0 when every test skipped.
+  reporter: [
+    ["list"],
+    [
+      "json",
+      {
+        outputFile:
+          process.env.TMP_E2E_TWIN_REPORT ??
+          path.join(
+            process.env.TMPDIR ?? "/tmp",
+            "tmp-companion-twin-report.json",
+          ),
+      },
+    ],
+  ],
   // Equal to the other configs' caps: one spec set, written for the slowest mode.
   timeout: 300_000,
   use: {
