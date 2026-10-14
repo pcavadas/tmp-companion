@@ -175,6 +175,8 @@ impl PresetIo for LiveIo {
         {
             let mut s = Session::connect()?;
             s.load_preset(target.list_index)?;
+            // Let the unit discard this connection's queued replies (#177).
+            s.lapse()?;
         }
         // conn2: fresh handshake re-attaches to the now-current preset. CONFIRM it is the
         // target before mutating+saving (a dropped load = wrong-preset save = data loss),
@@ -182,8 +184,7 @@ impl PresetIo for LiveIo {
         // controller. changeParameter is fire-and-forget (no ack), so there is no
         // per-edit confirm to gate on — the pre-edit confirm + the identity guard are the
         // safety net. session/preset.rs translates the 0-based list index to the 1-based userSlot.
-        let mut s = Session::connect()?;
-        s.confirm_active(target.list_index, Some(&target.display_name))?;
+        let mut s = Session::connect_confirmed(target.list_index, Some(&target.display_name))?;
         s.begin_live_edit()?;
         for c in &changes {
             s.change_parameter(&c.group_id, &c.node_id, &c.param, c.value)?;

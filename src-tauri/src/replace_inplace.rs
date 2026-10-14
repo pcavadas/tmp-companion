@@ -205,13 +205,20 @@ pub(crate) fn replace_inplace_with(
     // holding the file's blocks, BEFORE saving it over the (real, irreplaceable) original.
     // A dropped load leaves a DIFFERENT preset current, and a body rejected at load an EMPTY
     // one under the scratch's name; saving either over orig_list_index is silent data loss.
-    // On failure ABORT before the save (and before the clear), leaving the scratch import on
-    // the device for manual recovery. The session layer translates these 0-based list
-    // indices to the device's 1-based userSlot (HW-confirmed 1.7.75).
+    // On failure ABORT before the save, and take the scratch back off the unit only through
+    // its stored-row proof (#177): a scratch left behind shares the file's name and id with
+    // the original, so the next import of that preset would land next to it. The session
+    // layer translates these 0-based list indices to the device's 1-based userSlot
+    // (HW-confirmed 1.7.75).
     let mut save_conn = load_and_prove(scratch_slot, &scratch_name, &proof).map_err(|e| {
+        let cleanup = match rollback_scratch(&stored, scratch_slot, &scratch_name) {
+            Ok(()) => "the scratch import was cleared".to_string(),
+            Err(c) => format!(
+                "the scratch import was LEFT at list index {scratch_slot} ({scratch_name:?}): {c}"
+            ),
+        };
         format!(
-            "{}. Left the scratch import at list index {scratch_slot} ({scratch_name:?}); \
-             the original slot {orig_list_index} was NOT modified.",
+            "{}. The original slot {orig_list_index} was NOT modified; {cleanup}.",
             e.message()
         )
     })?;
@@ -433,22 +440,26 @@ impl ProofError {
     }
 }
 
-/// Load `list_index` on its own connection, then on a FRESH one (its handshake re-attaches
-/// to the now-current preset) confirm it is the active preset named `name` and that its
-/// working copy passes `proof`. Returns that confirmed session, so a save can follow on
-/// the SAME connection as its guards. A load of the already-current slot is skipped
-/// device-side unless dirty; the working copy then still comes from a real load, since an
-/// import over the current slot reloads it (fw 1.8.58 static RE).
+/// Load `list_index` on its own connection, lapse it, then on a FRESH one (its handshake
+/// re-attaches to the now-current preset) confirm it is the active preset named `name`
+/// ([`Session::connect_confirmed`]) and that its working copy passes `proof`. Returns that
+/// confirmed session, so a save can follow on the SAME connection as its guards. The lapse
+/// lets the unit discard the load connection's queued replies, which a session opened
+/// inside its 0.75 s drop would otherwise receive ahead of its own (#177). A load of the
+/// already-current slot is skipped device-side unless dirty; the working copy then still
+/// comes from a real load, since an import over the current slot reloads it (fw 1.8.58
+/// static RE).
 pub(crate) fn load_and_prove(
     list_index: ListIndex,
     name: &str,
     proof: &LoadProof,
 ) -> Result<Session, ProofError> {
     let mut s = Session::connect()
-        .and_then(|mut s| s.load_preset(list_index))
-        .and_then(|()| Session::connect())
-        .map_err(ProofError::Unverified)?;
-    s.confirm_active(list_index, Some(name))
+        .and_then(|mut s| {
+            s.load_preset(list_index)?;
+            s.lapse()
+        })
+        .and_then(|()| Session::connect_confirmed(list_index, Some(name)))
         .map_err(ProofError::Unverified)?;
     let mut rejected = false;
     s.confirm_loaded_body(|roster, doc| proof.check(roster, doc).inspect_err(|_| rejected = true))
@@ -543,6 +554,21 @@ fn run_replace_inplace(
         o.songs_before,
         o.songs_after,
     ))
+}
+
+/// Take a scratch import back off the unit after its save was refused: re-prove from the
+/// stored row that `scratch_slot` is the one the import landed in and still holds the
+/// file ([`StoredProof::after`]), then clear it through [`guarded_clear`]. Never by name
+/// alone: the scratch, the original and any older leftover share a name and `preset_id`,
+/// and only the landing proof (the template before the import, the file after it) ties
+/// this slot to this import.
+fn rollback_scratch(
+    stored: &StoredProof,
+    scratch_slot: ListIndex,
+    name: &str,
+) -> Result<(), String> {
+    stored.after(scratch_slot)?;
+    guarded_clear(scratch_slot, name)
 }
 
 /// Clear the user preset at LIST index `list_index`, but only if that list entry
