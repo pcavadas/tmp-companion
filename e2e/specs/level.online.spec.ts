@@ -60,6 +60,10 @@ const DELTA_FS = 1.0; // footswitch re-measure: KNOB_TOL_LU (0.3, leveller.rs) +
 // The footswitch SOLVE's own acceptance band (not a re-measure) — matches leveller.rs's
 // KNOB_TOL_LU exactly, no extra margin needed since this checks the solver's own report.
 const KNOB_TOL_LU = 0.3;
+// "On target" in every lane (leveller::ACCEPT_TOL_LU): the band inside which the footswitch
+// solver accepts a reading and an idempotent re-run skips its write. About 2 sigma of the
+// ~0.12 LU capture noise; the old 0.1 band sat below it.
+const ACCEPT_TOL_LU = 0.25;
 
 interface LevelResult {
   saved: boolean;
@@ -471,7 +475,7 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
           Math.abs(r.predicted_lufs - fsTarget410),
           `switch ${String(r.switch)} skipped its save on the first run, legitimate only \
 when the stored value already measured within tolerance of target`,
-        ).toBeLessThanOrEqual(0.11);
+        ).toBeLessThanOrEqual(ACCEPT_TOL_LU);
       }
     }
 
@@ -522,7 +526,7 @@ when the stored value already measured within tolerance of target`,
     )) as FootswitchLevelResult[];
 
     const fsTarget410Narrowed = fsTarget410;
-    assertFsSolved(fs2, () => fsTarget410Narrowed, 0.11);
+    assertFsSolved(fs2, () => fsTarget410Narrowed, ACCEPT_TOL_LU);
     for (const r2 of fs2) {
       if (wroteInLane2.includes(r2.switch)) {
         expect(
