@@ -37,6 +37,11 @@
 # number. Either way it is not device
 # evidence (remote levels are not calibrated against the unit) and writes no stamp.
 #
+# A remote device whose audio clock runs D times slower than real time (a host that cannot
+# render its DSP in real time) takes TMP_E2E_REMOTE_TIME_SCALE=D (1 to 64): captures wait and
+# settles run D times as long. The specs' own Playwright timeouts are not scaled, so a
+# capture-heavy spec can outrun them at a large D; the control-plane specs take no captures.
+#
 # Ports: bridge 12000 + offset*8, Vite 1821 + offset — disjoint from offline (7800-9399 /
 # 1421-1620), online (9400-10999 / 1621-1820) and the remote device harness's default 11600.
 #

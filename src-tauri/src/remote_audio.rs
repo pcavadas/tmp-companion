@@ -71,6 +71,17 @@ const REFUSAL_WAIT: Duration = Duration::from_secs(2);
 /// Remote-rate frames captured past the caller's window, so the resampler's edge stays outside it.
 const EDGE_FRAMES: u32 = 256;
 
+/// How many times slower than real time the remote device's audio runs (1 in tests, where the
+/// env is never read, and in a build without the e2e server).
+#[cfg(feature = "e2e")]
+fn time_scale() -> f64 {
+    crate::e2e_remote_time_scale()
+}
+#[cfg(not(feature = "e2e"))]
+fn time_scale() -> f64 {
+    1.0
+}
+
 /// A job's outcome, as the far end reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Status {
@@ -401,7 +412,10 @@ pub(crate) fn run_job(
         Err(SendFail::Io(e)) => Err(e),
     };
     let budget = match sent {
-        Ok(()) => Duration::from_secs_f64(f64::from(frames) / f64::from(REMOTE_RATE)) + REPLY_SLACK,
+        // A device whose audio clock runs D times slower takes D times as long, slack included.
+        Ok(()) => (Duration::from_secs_f64(f64::from(frames) / f64::from(REMOTE_RATE))
+            + REPLY_SLACK)
+            .mul_f64(time_scale()),
         Err(_) => REFUSAL_WAIT,
     };
     let failed = |what: String| {
