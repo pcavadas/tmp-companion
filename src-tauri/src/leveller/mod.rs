@@ -419,6 +419,14 @@ const REBALANCE_BLEED_MARGIN_DB: f64 = 28.0;
 /// solo-above-floor margin is huge (→ no verify-by-ear flag) instead of failing the scene.
 const MUTE_FLOOR_SILENT_LUFS: f64 = -120.0;
 
+/// THE routing clamp's `clamp_reason`: the sound's as-is (first) capture was SILENT, so its
+/// output is not reaching USB 1/2. Every lane that converts a silent first capture into the
+/// [`crate::headroom_trade::ClampKind::NoAuthority`] clamp — the base lane
+/// (`level_preset_impl`), the footswitch lane's first seed (`solve_param_secant`) and the
+/// scene lanes' as-is prologue ([`scene::no_signal_scene_solve`]) — reports exactly this
+/// string, which `.claude/rules/leveling-dsp.md` pins as `clamp_reason`'s documented value.
+const NO_SIGNAL_REASON: &str = "no signal on USB 1/2";
+
 /// A silent capture PAST THE FIRST SEED is DATA (the knob's quiet extreme), not a routing
 /// failure — `solve_footswitch` converts it into a pseudo point at this LUFS for the
 /// second-seed / bracket-expansion-probe / correction-loop's internal GEOMETRY only (never

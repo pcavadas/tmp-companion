@@ -1102,7 +1102,7 @@ pub(super) fn solve_param_secant(
                     predicted_lufs: MUTE_FLOOR_SILENT_LUFS,
                     clamped: true,
                     unconverged: false,
-                    clamp_reason: Some("no signal on USB 1/2".into()),
+                    clamp_reason: Some(NO_SIGNAL_REASON.into()),
                     wet_floor: false,
                     spread_lu: None,
                     iterations: 1,

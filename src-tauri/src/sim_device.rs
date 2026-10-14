@@ -994,6 +994,55 @@ impl SimState {
             .and_then(|v| v.as_bool())
     }
 
+    /// True when the sound under measurement renders EVERY engaged amp at `outputLevel` 0 —
+    /// DEEP DIGITAL SILENCE on the real unit (`danger.md`: the measurement errors "no signal
+    /// captured" on it). Each amp is resolved exactly as a `loadScene` recall renders it
+    /// ([`SimState::rendered_param`] / [`SimState::rendered_bypass`]: a write for the active
+    /// scene, else that scene's own stored overlay, else base), so a scene SAVED with its amps
+    /// at zero (403 "Clean") is silent from its very first as-is capture, and so is a run that
+    /// writes every amp to zero (the rebalance mute floor — HW: both lanes muted is digital
+    /// silence).
+    ///
+    /// "Amp" is the [`stored_from_preset`] proxy: a base-graph node carrying an
+    /// `outputLevel`. ALL engaged amps must be at zero, the parallel-lane rule (one live lane
+    /// still sounds — a rebalance lane solo); a bypassed amp passes signal, so it neither
+    /// silences nor sounds here. The fixtures keep every amp of one sound at the same value
+    /// (`fixture_gates`), so the series case, where one zero amp would already silence the
+    /// chain, never disagrees with this rule. No amp at all → not silent.
+    #[cfg(feature = "e2e")]
+    fn amps_render_silent(&mut self) -> bool {
+        let amps: Vec<(String, String)> = self
+            .parsed_preset()
+            .and_then(|doc| doc.get("audioGraph")?.get("guitarNodes")?.as_object())
+            .map(|groups| {
+                groups
+                    .iter()
+                    .filter_map(|(g, nodes)| Some((g, nodes.as_array()?)))
+                    .flat_map(|(g, nodes)| {
+                        nodes.iter().filter_map(move |n| {
+                            n.get("dspUnitParameters")?.get("outputLevel")?;
+                            Some((g.clone(), n.get("nodeId")?.as_str()?.to_string()))
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut engaged = 0usize;
+        for (group, node) in &amps {
+            if self.rendered_bypass(group, node) == Some(true) {
+                continue;
+            }
+            engaged += 1;
+            if self
+                .rendered_param(group, node, "outputLevel")
+                .is_none_or(|v| v > 0.0)
+            {
+                return false;
+            }
+        }
+        engaged > 0
+    }
+
     /// The value `(group, node, param)` is AUTHORED at for the sound under measurement —
     /// [`SimState::rendered_param`] with the `param_writes` steps removed: the active
     /// scene's own overlay, else base's static value. This is the value the sidecar's C was
@@ -2017,11 +2066,12 @@ impl SimDevice {
             }
             // Push `currentPresetDataChanged`(3) so the un-engaged scene-leveling PRE-PASS can
             // classify each scene's routing (the real device pushes the scene graph on a scene
-            // CHANGE). The sim carries one graph, and the physics model reads the written
-            // `outputLevel` node-agnostically, so re-serving the same graph per scene is enough
-            // for the amp pick to resolve — without it, the pre-pass harvests nothing and every
-            // scene fails to classify ("read failed").
-            let json = load_echo_json(&mut st, current_slot, true);
+            // CHANGE) — RENDERED for the recalled scene: its stored overlay applied over base
+            // (`scene_recall_echo_json`), so the live doc carries the values the recall
+            // actually sounds (403 "Clean"'s amps at `outputLevel` 0), not base's. Without the
+            // push the pre-pass harvests nothing and every scene fails to classify ("read
+            // failed").
+            let json = scene_recall_echo_json(&mut st, current_slot);
             return frame_multi(&current_preset_data_changed(&json));
         }
         if let Some(cp) = proto::first_bytes(&f, F_CHANGE_PARAMETER) {
@@ -2854,8 +2904,9 @@ impl SimState {
 }
 
 /// The modeled captured LUFS: `C[slot, scene] + 20·log10(presetLevel) +
-/// 20·log10(outputLevel_written / outputLevel_stored)`. `None` = off-branch (silence): an
-/// engaged switch has bypassed the sidecar's routed amp node. Pure — the caller supplies
+/// 20·log10(outputLevel_written / outputLevel_stored)`. `None` = silence: an engaged switch
+/// has bypassed the sidecar's routed amp node (off-branch), or every engaged amp renders at
+/// `outputLevel` 0 ([`SimState::amps_render_silent`] — deep digital silence on the unit). Pure — the caller supplies
 /// the sidecar C table and the presetJson-derived stored knob map.
 #[cfg(feature = "e2e")]
 fn model_lufs(
@@ -2881,6 +2932,11 @@ fn model_lufs(
         if st.bypass_writes.get(node).copied() == Some(false) {
             return None;
         }
+    }
+    // An amp `outputLevel` of 0 is deep digital silence on the real unit (`danger.md`), not a
+    // fixed 0 dB term: every engaged amp rendered at zero → no signal on USB 1/2.
+    if st.amps_render_silent() {
+        return None;
     }
     // Leveled-param response: the declared block's OWN knob drives loudness, but only while
     // that block is ENGAGED for the sound under measurement. Two shapes count as engaged,
@@ -3269,8 +3325,9 @@ fn load_stored_levels() -> Option<std::collections::HashMap<u32, StoredLevels>> 
 /// unaffected (its amp is the first `outputLevel` anywhere), but a `gtrParallel*` fixture
 /// puts its amps in the split LANES, and a `G1`-only probe silently fell back to `1.0` for
 /// those — which desyncs written-over-stored and, worse, hid a scene deliberately saved
-/// with the amp output at ZERO (the routing-clamp case: with `stored_ol == 0` the model's
-/// `ol_term` collapses to 0, so the knob provably has no authority over the capture).
+/// with the amp output at ZERO (the routing-clamp case: an amp rendered at `outputLevel` 0
+/// is silence — [`SimState::amps_render_silent`] — so the scene's as-is capture reads no
+/// signal on USB 1/2).
 /// `serde_json::Map` is a BTreeMap here, so the group order is the sorted key order and the
 /// pick is deterministic; the fixtures additionally keep every amp in one sound at the SAME
 /// `outputLevel` (pinned by `fixture_gates`), so WHICH amp is picked cannot matter.
@@ -3352,6 +3409,32 @@ fn truncate_scene_push(_st: &SimState, json: Vec<u8>) -> Vec<u8> {
 /// stale post-save push). An edit-free working copy is byte-identical to the load echo.
 fn load_echo_json(st: &mut SimState, slot0: u32, working: bool) -> Vec<u8> {
     let json = render_json(st, slot0, working);
+    truncate_scene_push(st, json.into_bytes())
+}
+
+/// The field-3 graph a `loadScene` recall pushes: the WORKING-COPY render
+/// ([`render_json`]) with the active scene's stored overlay applied over the base
+/// `audioGraph` — a scene's overlay applies over base on recall — through the production
+/// renderer (`scene_jobs::overlay_scene_onto_graph`, the same one the saved-overlay prepass
+/// derives its docs with), so the two prepass paths read one rendering. Base (no active
+/// scene), a scene-less document and an out-of-range index echo the render unchanged. Forced
+/// bypasses are re-applied over the overlay: they are live writes, which win over a scene's
+/// stored `bypass` exactly as [`SimState::rendered_bypass`] resolves them.
+fn scene_recall_echo_json(st: &mut SimState, slot0: u32) -> Vec<u8> {
+    let json = render_json(st, slot0, true);
+    let rendered = st.current_scene.and_then(|scene| {
+        let mut doc: serde_json::Value = serde_json::from_str(&json).ok()?;
+        let overlay = doc.get("scenes")?.get(scene as usize)?.clone();
+        crate::scene_jobs::overlay_scene_onto_graph(doc.get_mut("audioGraph")?, &overlay);
+        serde_json::to_string(&doc).ok()
+    });
+    let json = match rendered {
+        #[cfg(feature = "e2e")]
+        Some(j) => with_bypass_writes(j, &st.bypass_writes),
+        #[cfg(not(feature = "e2e"))]
+        Some(j) => j,
+        None => json,
+    };
     truncate_scene_push(st, json.into_bytes())
 }
 
@@ -4296,6 +4379,75 @@ mod physics_tests {
         assert!((model_lufs(&mut st, &sc, &stored).unwrap() - (-10.0)).abs() < 1e-6);
     }
 
+    /// An amp `outputLevel` of 0 is DEEP DIGITAL SILENCE on the real unit (`danger.md`), not a
+    /// fixed 0 dB term: a scene SAVED with every engaged amp at zero (403 "Clean") is silent
+    /// from its first as-is capture, a run that writes every amp to zero (the rebalance mute
+    /// floor) is silent, while one live parallel lane, or a zeroed amp that is bypassed,
+    /// still sounds.
+    #[test]
+    fn model_lufs_reads_every_engaged_amp_at_output_level_zero_as_silence() {
+        let sc = Sidecar {
+            slots: std::collections::HashMap::new(),
+            default: -18.0,
+        };
+        let stored = std::collections::HashMap::new();
+        let mut st = SimState {
+            current_slot: 999,
+            preset_level: 1.0,
+            ..Default::default()
+        };
+        st.preset_json = serde_json::json!({
+            "audioGraph": { "guitarNodes": {
+                "G2": [{ "FenderId": "ACD_JC120", "nodeId": "ampA", "dspUnitParameters": { "bypass": false, "outputLevel": 1.0 } }],
+                "G3": [{ "FenderId": "ACD_MarshallPlexi", "nodeId": "ampB", "dspUnitParameters": { "bypass": false, "outputLevel": 1.0 } }]
+            } },
+            "scenes": [
+                { "guitarNodes": {
+                    "G2": { "ampA": { "dspUnitParameters": { "bypass": false, "outputLevel": 0.0 } } },
+                    "G3": { "ampB": { "dspUnitParameters": { "bypass": false, "outputLevel": 0.0 } } }
+                } },
+                { "guitarNodes": {
+                    "G2": { "ampA": { "dspUnitParameters": { "bypass": true, "outputLevel": 0.0 } } }
+                } }
+            ]
+        })
+        .to_string();
+        st.parsed_preset_cache = None;
+        let w = |scene: i64, node: &str, group: &str| {
+            (
+                scene,
+                group.to_string(),
+                node.to_string(),
+                "outputLevel".to_string(),
+            )
+        };
+
+        assert!(model_lufs(&mut st, &sc, &stored).is_some(), "base sounds");
+        st.current_scene = Some(0);
+        assert!(
+            model_lufs(&mut st, &sc, &stored).is_none(),
+            "a scene saved with every amp at outputLevel 0 is silent"
+        );
+        st.param_writes.insert(w(0, "ampA", "G2"), 0.5);
+        assert!(
+            model_lufs(&mut st, &sc, &stored).is_some(),
+            "one live parallel lane still sounds"
+        );
+        st.current_scene = Some(1);
+        st.param_writes.clear();
+        assert!(
+            model_lufs(&mut st, &sc, &stored).is_some(),
+            "a zeroed amp that is BYPASSED passes signal"
+        );
+        st.current_scene = None;
+        st.param_writes.insert(w(SCENE_BASE, "ampA", "G2"), 0.0);
+        st.param_writes.insert(w(SCENE_BASE, "ampB", "G3"), 0.0);
+        assert!(
+            model_lufs(&mut st, &sc, &stored).is_none(),
+            "every amp WRITTEN to zero (the rebalance mute floor) is silent"
+        );
+    }
+
     /// The ASSIGN arm of the activation predicate plus the `wetMix` curve's two guarantees,
     /// on one sidecar: a block ENGAGED IN BASE with NO bypass write (an Assign row's
     /// isolation forces only siblings off) activates the branch, an UNSWEPT capture still
@@ -4654,6 +4806,38 @@ mod scene_context_tests {
             sim.rendered_param("G1", "amp", "gain"),
             Some(2.5),
             "a bypass-only overlay must render BASE for gain (2.5), not retain scene 0's 5.0"
+        );
+    }
+
+    // A `loadScene` push renders the RECALLED scene: its stored overlay applied over base
+    // (a scene's overlay applies over the base on recall), through the production renderer —
+    // so the live prepass reads a scene's own knob values, never base's. Base (no active
+    // scene) echoes the base graph.
+    #[test]
+    fn a_scene_recall_push_renders_that_scenes_stored_overlay_over_base() {
+        let mut st = SimState {
+            preset_json: PER_PARAM_OVERLAY_FIXTURE.to_string(),
+            current_slot: 6,
+            ..Default::default()
+        };
+        let pushed_gain = |st: &mut SimState| -> Option<f64> {
+            let v: serde_json::Value =
+                serde_json::from_slice(&scene_recall_echo_json(st, 6)).expect("json push");
+            v["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["gain"].as_f64()
+        };
+        st.current_scene = Some(0);
+        assert_eq!(pushed_gain(&mut st), Some(5.0), "scene 0's Full overlay");
+        st.current_scene = Some(1);
+        assert_eq!(
+            pushed_gain(&mut st),
+            Some(2.5),
+            "a bypass-only overlay carries no gain, so base's shows through"
+        );
+        st.current_scene = None;
+        assert_eq!(
+            pushed_gain(&mut st),
+            Some(2.5),
+            "base echoes the base graph"
         );
     }
 

@@ -223,6 +223,16 @@ pub fn prepass_scene_ceilings(
                 stopped = true;
                 break;
             }
+            // A SILENT scene (no signal on USB 1/2 — e.g. an amp saved at `outputLevel` 0,
+            // deep digital silence on the unit) has no ceiling to give the trade, so it is
+            // left unmeasured like any failed row: its solve re-captures, and a second silent
+            // read becomes the routing clamp there (`scene_prologue_or_silent`) — one report
+            // path, and a transiently silent inject gets a second chance before the verdict.
+            Err(e) if e.is_no_signal() => log::info!(
+                "prepass ceiling for scene {}: silent capture (no signal on USB 1/2); its \
+                 solve will re-measure and report the routing clamp if it stays silent",
+                job.scene_slot
+            ),
             Err(e) => log::warn!(
                 "prepass ceiling for scene {} failed ({e}); its solve will re-measure",
                 job.scene_slot
@@ -896,6 +906,69 @@ pub(super) fn scene_prologue(
     Ok(Prologue { asis, spread })
 }
 
+/// The scene lanes' routing clamp: the as-is capture was SILENT (`LevelError::NoSignal`), so
+/// the scene's output is not reaching USB 1/2 — the same conversion, sentinel and wording the
+/// base lane (`level_preset_impl`) and the footswitch lane's first seed (`solve_param_secant`)
+/// already make, so a silent scene is the honest
+/// [`crate::headroom_trade::ClampKind::NoAuthority`] clamp ("no signal on USB 1/2", the UI's
+/// off-branch outcome) rather than a failed row.
+///
+/// The commonest cause is an authored one: a scene saved with its amp `outputLevel` at 0,
+/// which is DEEP DIGITAL SILENCE on the real unit (`danger.md`), so no knob value read from
+/// the as-is capture exists to solve from. It is also what a scene routed off USB 1/2 reads
+/// as. Either way nothing is written (`writes: 0`, every knob keeps its authored `current`),
+/// so the batch's deferred save has nothing of this scene's to persist and no restore is
+/// owed: the as-is capture is a pure measurement.
+///
+/// Only the AS-IS capture converts. A silence later in a solve (a verify or correction
+/// capture) keeps its own handling — that reading follows a write the solve chose.
+pub(super) fn no_signal_scene_solve(levels: Vec<f32>) -> SceneSolve {
+    let clamp_reason = Some(NO_SIGNAL_REASON.to_string());
+    SceneSolve {
+        lufs: MUTE_FLOOR_SILENT_LUFS,
+        levels,
+        clamped: true,
+        clamp_kind: crate::headroom_trade::ClampKind::from_flags(
+            true,
+            false,
+            clamp_reason.as_deref(),
+        ),
+        pinned: None,
+        // A silent capture has no dynamics to report.
+        spread: 0.0,
+        writes: 0,
+        clamp_reason,
+        verify_by_ear: false,
+        // The sentinel is not a reading of a level the scene can hold: say so, exactly as the
+        // handle lane's own routing clamp does.
+        verification: Verification::Predicted,
+    }
+}
+
+/// [`scene_prologue`] with the silent as-is capture converted to the routing clamp
+/// ([`no_signal_scene_solve`]): `Ok(Err(solve))` is the scene's finished outcome, `Ok(Ok(_))`
+/// the reading to solve from. Shared by BOTH per-scene lanes so they cannot word or shape the
+/// clamp two ways. `levels` is what the device holds (each knob's authored `current`).
+pub(super) fn scene_prologue_or_silent(
+    job: &SceneJob,
+    stimulus: &[f32],
+    intended_preset_level: Option<f32>,
+    levels: impl FnOnce() -> Vec<f32>,
+) -> Result<Result<Prologue, SceneSolve>, LevelError> {
+    match scene_prologue(job, stimulus, intended_preset_level) {
+        Ok(p) => Ok(Ok(p)),
+        Err(e) if e.is_no_signal() => {
+            log::info!(
+                "scene {}: as-is capture is silent — no signal on USB 1/2, reporting the \
+                 routing clamp (nothing written)",
+                job.scene_slot
+            );
+            Ok(Err(no_signal_scene_solve(levels())))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 impl Prologue {
     /// The scene is already at its target: report the as-is reading and leave every knob
     /// untouched (`writes: 0`). `levels` is what the device already holds — each knob's
@@ -948,7 +1021,12 @@ pub(super) fn jointk_one_scene(
     // on the job, not a parallel parameter chain).
     intended_preset_level: Option<f32>,
 ) -> Result<SceneSolve, LevelError> {
-    let prologue = scene_prologue(job, stimulus, intended_preset_level)?;
+    let prologue = match scene_prologue_or_silent(job, stimulus, intended_preset_level, || {
+        job.knobs.iter().map(|kt| kt.current).collect()
+    })? {
+        Ok(p) => p,
+        Err(silent) => return Ok(silent),
+    };
     let (measured, spread) = (prologue.asis, prologue.spread);
     let JointK {
         levels,
@@ -1308,7 +1386,12 @@ pub(super) fn handle_one_scene(
             )))
         }
     };
-    let prologue = scene_prologue(job, stimulus, intended_preset_level)?;
+    let prologue = match scene_prologue_or_silent(job, stimulus, intended_preset_level, || {
+        vec![kt.current]
+    })? {
+        Ok(p) => p,
+        Err(silent) => return Ok(silent),
+    };
     let (asis, spread) = (prologue.asis, prologue.spread);
     // Already there → leave the handle untouched (the scene lane's `scene_at_target` rule,
     // on its own acceptance band). No closed-form solve runs here, so there is no clamp flag
@@ -1793,6 +1876,31 @@ pub(super) fn failed_scene_outcome(
         dynamic_spread_lu: None,
         // A FAILED row is not a clamped row: it never produced a verdict to name.
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod no_signal_scene_solve_tests {
+    use super::*;
+
+    /// A silent as-is scene capture is the SAME routing clamp the base and footswitch lanes
+    /// report: the shared "no signal on USB 1/2" reason, kind `NoAuthority`, the silent
+    /// sentinel, nothing written, and every knob left at its authored value.
+    #[test]
+    fn a_silent_scene_is_the_shared_routing_clamp_and_writes_nothing() {
+        let s = no_signal_scene_solve(vec![0.0, 0.0]);
+        assert!(s.clamped);
+        assert_eq!(s.clamp_reason.as_deref(), Some("no signal on USB 1/2"));
+        assert_eq!(s.clamp_reason.as_deref(), Some(NO_SIGNAL_REASON));
+        assert_eq!(
+            s.clamp_kind,
+            Some(crate::headroom_trade::ClampKind::NoAuthority)
+        );
+        assert_eq!(s.lufs, MUTE_FLOOR_SILENT_LUFS);
+        assert_eq!(s.levels, vec![0.0, 0.0]);
+        assert_eq!(s.writes, 0);
+        assert_eq!(s.verification, Verification::Predicted);
+        assert!(s.pinned.is_none() && !s.verify_by_ear);
     }
 }
 

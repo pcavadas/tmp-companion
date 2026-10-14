@@ -898,18 +898,17 @@ impl SceneBatch<'_> {
         // `restore_scene` = the preset's original active scene: the batch-end
         // single save recalls it first so the preset persists in the same
         // base/scene/footswitch state it was loaded in.
-        // LIVE prepass. The saved-overlay path (`true`: docs derived from the complete
-        // `saved` read above plus its own-connection `load_preset`, validated by
-        // `probe --overlay-ab`, 76/76 scene-amp pairs, 0 bypass mismatches) is
-        // adoption-ready — `prepass_scene_docs_via`'s doc — but flipping it is blocked
-        // OFFLINE: SimDevice answers every `loadScene` with the ONE base graph, and the
-        // slot-403 'Clean' gates (`level_defaults_403_scenes_solve_and_offbranch`, the
-        // #187 verify-retry gate) depend on that base-graph doc. The overlay reads the
-        // scene's real stored amp `outputLevel` 0.0 instead, and the row no longer
-        // reaches the routing clamp. Flip once the sim renders scene overlays and the 403
-        // fixture is re-derived.
+        // SAVED-OVERLAY prepass (#176): each scene's doc is derived from the complete
+        // `saved` read above (its stored overlay applied over base) plus the prepass's own-
+        // connection `load_preset` — no scene-hopping on the unit. Validated against the live
+        // prepass by `probe --overlay-ab` (76/76 scene-amp pairs, 0 bypass mismatches); it
+        // falls back to the live walk only when the saved document cannot answer
+        // (`prepass_scene_docs_via`'s doc). A scene whose stored amp `outputLevel` is 0 now
+        // reads as what it is — deep digital silence on the unit — and its as-is capture
+        // becomes the "no signal on USB 1/2" routing clamp (`scene_prologue_or_silent`), the
+        // conversion the base and footswitch lanes already make.
         let (docs, restore_scene) =
-            prepass_scene_docs_via(slot, self.scene_slots, false, self.saved)?;
+            prepass_scene_docs_via(slot, self.scene_slots, true, self.saved)?;
         // `build_scene_jobs` stamps a base target on every job; override each with its
         // OWN wire job's offset-adjusted target (match by scene slot) so a mixed-target
         // preset levels in this ONE batch. `jobs` is non-empty (guarded above).

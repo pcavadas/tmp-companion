@@ -377,7 +377,7 @@ pub(crate) fn level_preset_impl(
                     iterations: 1,
                     dynamic_spread_lu: None,
                     clamp_kind: Some(crate::headroom_trade::ClampKind::NoAuthority),
-                    clamp_reason: Some("no signal on USB 1/2".into()),
+                    clamp_reason: Some(NO_SIGNAL_REASON.into()),
                     ..Default::default()
                 });
             }

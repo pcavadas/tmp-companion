@@ -1901,10 +1901,10 @@ fn a_truncated_swap_scene_levels_its_own_amp_not_the_base_one() {
 /// outcomes on the command's RETURN value instead. At the shipped default target (-23,
 /// PR2 re-baseline: +3 from the mono-era -26) the 4 scenes produce the level-defaults outcome
 /// set: 3 SOLVABLE (amp `outputLevel` converged to ~-23) + 1 OFF-BRANCH ("Clean", saved with
-/// BOTH lane amps' output at zero → no
-/// authority over the USB capture → the routing clamp). Proves the graph-echo fix (the prepass
-/// classifies gtrParallel1 and picks BOTH lane amps for the joint-k solve) AND the sidecar
-/// scene C authoring.
+/// BOTH lane amps' output at zero → deep digital silence on the unit, so its as-is capture
+/// is silent → the "no signal on USB 1/2" routing clamp, `ClampKind::NoAuthority`). Proves the
+/// saved-overlay prepass (it classifies gtrParallel1 and picks BOTH lane amps for the joint-k
+/// solve) AND the sidecar scene C authoring.
 #[test]
 fn level_defaults_403_scenes_solve_and_offbranch() {
     let _serial = serial();
@@ -1959,8 +1959,12 @@ fn level_defaults_403_scenes_solve_and_offbranch() {
     assert!(
         offbranch[0]["clamp_reason"]
             .as_str()
-            .is_some_and(|s| s.contains("route it to USB 1/2")),
+            .is_some_and(|s| s == "no signal on USB 1/2"),
         "off-branch carries the routing clamp reason: {rows:?}"
+    );
+    assert_eq!(
+        offbranch[0]["clamp_kind"], "no_authority",
+        "the silent scene names the routing cause: {rows:?}"
     );
     for r in solvable {
         let lufs = r["measured_lufs"].as_f64().expect("lufs");
@@ -2035,11 +2039,19 @@ fn a_failed_scene_verify_is_retried_and_never_reported_as_verified() {
         assert!(r["verify_lufs"].is_f64(), "{r}");
     }
 
-    // Retry exhaustion: every verify fails, so no row may claim a measured result. (The
-    // off-branch scene loses its no-authority verdict too — that verdict needs a reading.)
+    // Retry exhaustion: every verify fails, so no row may claim a measured result. The
+    // silent 'Clean' scene keeps its routing clamp: that verdict comes from its as-is
+    // capture, before any write or verify.
     let rows = level_403_with_verify_faults(u32::MAX);
     let failed = solvable(&rows);
-    assert!(failed.len() >= 3, "{rows:?}");
+    assert_eq!(failed.len(), 3, "{rows:?}");
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r["clamp_reason"] == "no signal on USB 1/2")
+            .count(),
+        1,
+        "the silent scene's routing clamp needs no verify: {rows:?}"
+    );
     for r in &failed {
         assert_eq!(r["verification"], "verify_failed", "{r}");
         assert!(
@@ -3910,6 +3922,9 @@ fn every_rebalance_capture_asserts_the_run_preset_level() {
 // Scene 1 is given a HANDLE naming a param the classifier refuses, which is the documented
 // per-row skip path (`scene_jobs::handle_scene_job` → `skip_scene_job` → a failed outcome
 // the command filters out) — a genuine mid-batch failure driven purely from wire args.
+// Scene 3 is asked for a target above its ceiling, so it is the AUDIBLE clamped row: "Clean"
+// is deep digital silence (amps at `outputLevel` 0, as on the unit), so its re-measure has
+// no capture to emit, and a clamped row that IS emitted needs a sound with signal.
 #[test]
 fn a_mid_batch_failure_keeps_every_surviving_scenes_identity_and_emits_its_row() {
     let _serial = serial();
@@ -3941,7 +3956,9 @@ fn a_mid_batch_failure_keeps_every_surviving_scenes_identity_and_emits_its_row()
         {"sceneSlot": 1, "targetLufs": -23.0,
          "handle": {"groupId": "G2", "nodeId": "ampA", "parameterId": "drive"}},
         {"sceneSlot": 2, "targetLufs": -23.0},
-        {"sceneSlot": 3, "targetLufs": -23.0}
+        // Ceiling ≈ -15.9 LUFS (sidecar C -6 + the 0.32 presetLevel term) with the amps already
+        // at 1.0: -12 is out of reach, so this row is the HEADROOM clamp, signal present.
+        {"sceneSlot": 3, "targetLufs": -12.0}
     ]);
     let res = invoke(
         &webview,
@@ -3990,7 +4007,7 @@ fn a_mid_batch_failure_keeps_every_surviving_scenes_identity_and_emits_its_row()
     for r in &rows {
         let scene = r["scene_slot"].as_u64().expect("scene_slot");
         let clamped = r["clamped"].as_bool().unwrap_or(false);
-        invoke(
+        let measured = invoke(
             &webview,
             "e2e_measure_sound",
             serde_json::json!({
@@ -4005,16 +4022,30 @@ fn a_mid_batch_failure_keeps_every_surviving_scenes_identity_and_emits_its_row()
                     "persistMismatch": r["persist_mismatch"],
                 },
             }),
-        )
-        .unwrap_or_else(|e| panic!("e2e_measure_sound scene {scene}: {e:?}"));
+        );
+        if scene == 2 {
+            // The silent "Clean" scene: a strict re-measure of deep digital silence has no
+            // loudness to report and no capture to emit — it fails, exactly as on the unit.
+            let err = measured.expect_err("the silent scene's re-measure must not read a number");
+            assert!(
+                format!("{err:?}").contains("no signal captured"),
+                "the silent scene's re-measure fails as silence: {err:?}"
+            );
+        } else {
+            measured.unwrap_or_else(|e| panic!("e2e_measure_sound scene {scene}: {e:?}"));
+        }
     }
     std::env::remove_var("TMP_E2E_VALIDATE_LOG");
     std::env::remove_var("TMP_E2E_VALIDATE_WAV_DIR");
 
     let body = std::fs::read_to_string(&log).expect("validation log written");
     let lines: Vec<&str> = body.lines().filter(|l| !l.is_empty()).collect();
-    assert_eq!(lines.len(), 3, "one row per surviving scene: {body}");
-    for scene in [0u64, 2, 3] {
+    assert_eq!(
+        lines.len(),
+        2,
+        "one row per surviving AUDIBLE scene: {body}"
+    );
+    for scene in [0u64, 3] {
         assert!(
             body.contains(&format!("\"scene_slot\":{scene}")),
             "scene {scene} emitted its own row: {body}"
@@ -4028,16 +4059,24 @@ fn a_mid_batch_failure_keeps_every_surviving_scenes_identity_and_emits_its_row()
         !body.contains("\"scene_slot\":1"),
         "the FAILED scene must emit no row at all — there is nothing saved to validate: {body}"
     );
-    // The off-branch "Clean" scene clamps, and its row MUST still be emitted with the flag
+    assert!(
+        !body.contains("\"scene_slot\":2"),
+        "the SILENT scene has no capture to emit: {body}"
+    );
+    // The headroom-clamped scene 3 clamps, and its row MUST still be emitted with the flag
     // set: the consumer reports it SKIP, never a target miss against an unreachable number.
-    let clamped_rows = rows
+    let clamped: Vec<u64> = rows
         .iter()
         .filter(|r| r["clamped"] == serde_json::Value::Bool(true))
-        .count();
+        .filter_map(|r| r["scene_slot"].as_u64())
+        .collect();
     assert_eq!(
-        clamped_rows, 1,
-        "fixture premise: exactly one scene is the amp-at-zero off-branch clamp: {rows:?}"
+        clamped.len(),
+        2,
+        "fixture premise: the amp-at-zero routing clamp plus the over-ceiling headroom clamp: \
+         {rows:?}"
     );
+    assert!(clamped.contains(&2) && clamped.contains(&3), "{rows:?}");
     assert_eq!(
         body.matches("\"clamped\":true").count(),
         1,
@@ -4054,13 +4093,15 @@ fn a_mid_batch_failure_keeps_every_surviving_scenes_identity_and_emits_its_row()
 // `outputLevel` independently of base, so the compensating fader drop misses it, and the
 // authored C table puts it 14 LU below base, far under any shipped target.
 //
-// WHY 404 SCENE 3 AND NOT 400 SCENE 2 (the obvious "Ceiling" candidate). The fake serves ONE
-// graph for every scene recall, so the live prepass reads every scene's knob as BASE's value —
-// which is what `classify_scene_knobs` takes as the row's `current`, hence what
-// `scene_ceiling_lufs` extrapolates from. On 400 that reads scene 2's knob as 0.35 when the
-// preset authors it at 1.0, inventing 9 dB of headroom the sound does not have, and nothing
-// ever clamps. 404's scene 3 authors the SAME `outputLevel` as base (0.69), so the plan and the
-// capture model agree about that row and its clamp is real.
+// WHY 404 SCENE 3 AND NOT 400 SCENE 2 (the obvious "Ceiling" candidate). Historical: when the
+// batch ran the LIVE prepass, the fake served ONE (base) graph for every scene recall, so every
+// scene's knob read as BASE's value — which is what `classify_scene_knobs` takes as the row's
+// `current`, hence what `scene_ceiling_lufs` extrapolates from. On 400 that read scene 2's knob
+// as 0.35 when the preset authors it at 1.0, inventing 9 dB of headroom the sound does not
+// have, and nothing ever clamped. Since #176 the docs come from the saved overlay (and the
+// fake's recall push renders the scene's overlay too), so that distortion is gone; 404's
+// scene 3 stays the fixture because it authors the SAME `outputLevel` as base (0.69), so the
+// plan and the capture model agree about that row either way and its clamp is real.
 
 /// Reset the SCENE LANE'S CANCEL FLAG when the test ends, INCLUDING on a panicking assert.
 /// It is process-global and cleared only at a scene command's own entry, so a leaked `true`

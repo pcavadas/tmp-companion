@@ -835,7 +835,7 @@ pub(crate) fn prepass_scene_docs(
 /// carries `<graph>.<group>.<nodeId>.dspUnitParameters`, those keys win over the
 /// cloned node's `dspUnitParameters` (base keys the overlay omits survive). A `splitMix`
 /// overlay merges key-level onto the cloned `audioGraph.splitMix`.
-fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::Value) {
+pub(crate) fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::Value) {
     for key in crate::audiograph::GRAPHS {
         let overlay_groups = scene.get(key).and_then(|g| g.as_object());
         let Some(groups) = graph.get_mut(key).and_then(|g| g.as_object_mut()) else {
@@ -1552,8 +1552,8 @@ pub(crate) fn scenes_restating_base(
 /// guarded helper, so a scene-less preset never hands the save an empty-template recall.
 ///
 /// Overlay agreement validated against the live prepass by `probe --overlay-ab` (76/76
-/// scene-amp pairs, 0 bypass mismatches). Adoption-ready but not yet the production
-/// default — see the call site in `commands::level_scenes` and `prepass_scene_docs_via`.
+/// scene-amp pairs, 0 bypass mismatches). The production scene-doc source since #176 — see
+/// the call site in `commands::level_scenes` and `prepass_scene_docs_via`.
 pub(crate) fn scene_docs_from_saved(
     preset: &serde_json::Value,
     scene_slots: &[u32],

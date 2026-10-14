@@ -634,8 +634,9 @@ mod fixture_gates {
             );
         }
         for s in 0..4 {
-            // Scene 2 "Clean" is saved with BOTH amps' output at ZERO — no authority over
-            // the USB capture, so its job returns the ROUTING clamp, not a headroom one.
+            // Scene 2 "Clean" is saved with BOTH amps' output at ZERO — deep digital silence
+            // on the unit, so its as-is capture is silent and its job returns the "no signal
+            // on USB 1/2" ROUTING clamp (`NoAuthority`), not a headroom one.
             let want = if s == 2 { 0.0 } else { 1.0 };
             for (g, node) in [("G2", "ampA"), ("G3", "ampB")] {
                 assert_eq!(

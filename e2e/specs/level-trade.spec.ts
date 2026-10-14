@@ -311,8 +311,9 @@ test.describe("Level — headroom trade (batched scene run, raw invoke)", () => 
 });
 
 // COVERAGE row 7 — scene routing clamp (zero authority): 403's scene 2 "Clean" pins BOTH
-// lane amps' `outputLevel` overlay at 0.0, so the knob has no authority over the USB 1/2
-// capture at all — a routing-class clamp, not a headroom one, and `ClampKind::NoAuthority`
+// lane amps' `outputLevel` overlay at 0.0 — deep digital silence on the unit, so the scene's
+// as-is capture is silent ("no signal on USB 1/2") and the amp knob has no authority over the
+// USB 1/2 capture at all — a routing-class clamp, not a headroom one, and `ClampKind::NoAuthority`
 // is the ONE member of the taxonomy the trade spec above cannot reach (the trade fixture's
 // amp always has signal). Closes this row's own "candidate for a follow-up raw-invoke spec"
 // note in COVERAGE.md.
@@ -391,7 +392,7 @@ test.describe("Level — scene clamp taxonomy: zero-authority routing clamp (raw
         row.clamp_reason,
         "the routing-clamp free-text field must also be set (leveling-dsp.md's " +
           "clamp_reason contract: 'no signal on USB 1/2')",
-      ).not.toBeNull();
+      ).toBe("no signal on USB 1/2");
     }
   });
 });
