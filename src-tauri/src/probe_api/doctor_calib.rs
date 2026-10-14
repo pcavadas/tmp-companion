@@ -175,9 +175,12 @@ fn rule_metrics(
     // The row's own coverage, matching `diagnose_kind`'s call — thresholds must
     // be derived in the SAME coverage-gated metric space the verdict path reads.
     let (slope, locals) = doctor::tilt_split(&dev, family, Some(coverage));
-    let centered = doctor::centered_deviations(&dev, family);
-    let (lows, low_mids, mids, high_mids, highs, air) = family.semantic_bands();
-    let fizzy = bdb[air] - bdb[highs];
+    // NaN where too few body bands are covered to center on (the engine's
+    // consensus rules abstain there), so the report shows the gap.
+    let centered = doctor::centered_deviations(&dev, family, Some(coverage))
+        .unwrap_or_else(|| vec![f64::NAN; dev.len()]);
+    let (lows, low_mids, mids, high_mids, _highs, _air) = family.semantic_bands();
+    let fizzy = doctor::fizzy_metric(&bdb, profile.stim_bands.as_deref(), family);
     (
         slope,
         vec![

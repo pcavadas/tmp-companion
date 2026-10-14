@@ -124,6 +124,17 @@ Equal-LUFS is equal-loudness only near one SPL. The store carries a playback lev
 
 The capture window (≈6 s stimulus + 0.8 s tail) is load-bearing: TMP presets are not stationary under gated-integrated LUFS (delay/reverb buildup + tail), so trimming the window shifts the measured value. The leveling default uses the full capture.
 
+**Steady state was tested and rejected (#244, 2026-10-14, fw 1.8.58).** The A/B ran 12 library presets (4 long ambient ones) on three arms: the current window, a steady-state window (stimulus looped to 6.8 s, the first 2 s discarded, 4.8 s measured), and a real-DI continuous-playing reference measured the same way; integrated LUFS by ffmpeg `ebur128`, errors centered on the cross-preset median. The agreed rule was to switch only if steady state cut the median error by ≥ 0.2 LU or the worst ambient-preset error by ≥ 0.5 LU. It did neither, on the shipped stimulus or on a pitched prototype:
+
+| Arm                               | Median abs. error | Worst ambient |
+| --------------------------------- | ----------------- | ------------- |
+| shipped, current window           | 1.50 LU           | 3.30 LU       |
+| shipped, steady state             | 1.60 LU           | 3.40 LU       |
+| pitched prototype, current window | 0.20 LU           | 2.05 LU       |
+| pitched prototype, steady state   | 0.25 LU           | 1.70 LU       |
+
+The window stays. The stimulus spectrum moves the error ten times more than the window does (#235).
+
 ## Metering convention (PR2 re-baseline)
 
 **Companion now measures the processed USB pair as standard 2-channel BS.1770** (`lufs::measure_stereo`, energy sum over capture channels 0/1 — dry channel 2+ excluded), matching an external BS.1770 stereo meter to within 0.009 LU (ground-truthed against ffmpeg's independent `ebur128` at full metadata precision, 2026-08-04). This SUPERSEDES the mono-era "loudest single channel" convention this section used to describe: on the TMP's mirrored dual-mono USB output the two conventions differ by a fixed **+3.0103 dB** (`10·log10(2)`, algebraically exact for identical channels), so every shipped default target, the `TargetRow` slider domain, and every previously-saved user target shifted +3 LU together (`profiles::Store::meter_convention`, one-shot migration) to keep producing the SAME audible loudness. Relative quantities — spreads, deltas, the `presetLevel` solve itself — are invariant to this convention change; only ABSOLUTE reported numbers moved. The INPUT/stimulus side (self-measurement, dry-DI calibration, the floor-guard spread) still uses `lufs::measure_mono` and did not change. **Every other absolute LUFS/dB figure elsewhere in this document (the Klon `-9.610`/`-6.96` HW measurements, the preset-024 saturated-amp response's `-20 → -17` plateau and `-29.2`/`+12.35`/`+8.72`/`+6.88` figures, the `-17.4` channel-forensics reading, etc.) is a HISTORICAL hardware measurement taken under the mono-era single-channel convention and is preserved as recorded — not restated to the new convention.**

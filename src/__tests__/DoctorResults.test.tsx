@@ -95,6 +95,7 @@ function fixture(): DoctorCheckResult {
                 label: "Muddy",
                 sev: "high",
                 severity: 4.2,
+                z: 10.5,
                 bands: [1],
                 detail: "+4.2 dB around 250 Hz",
                 fromLevel: "rehearsal",
@@ -156,6 +157,7 @@ function fixture(): DoctorCheckResult {
                 label: "Washed out",
                 sev: "med",
                 severity: 6,
+                z: 15,
                 bands: [],
                 detail: "tail 6 dB over dry",
                 fromLevel: "quiet",
@@ -564,6 +566,7 @@ describe("DoctorResults — healthy collapse", () => {
       label: "Muddy",
       sev: "high",
       severity: 4,
+      z: 10,
       bands: [1],
       detail: "+4 dB around 250 Hz",
       fromLevel: "quiet",
@@ -1214,6 +1217,7 @@ describe("DoctorResults — shared-block caption", () => {
       label: key === "muddy" ? "Muddy" : "Harsh",
       sev: "high",
       severity: 4,
+      z: 10,
       bands: [1],
       detail: "+4 dB around 250 Hz",
       fromLevel: "quiet",
@@ -1428,13 +1432,14 @@ describe("DoctorResults — severity (possible verdicts)", () => {
 
   // One sound with two equal-sev-tint diagnoses so severity is the ONLY
   // differentiator: a confidently-past-threshold finding (3.0) and a
-  // near-threshold one (0.4, below POSSIBLE_MAX_SEVERITY).
+  // near-threshold one (0.4 dB = 1σ, below POSSIBLE_MAX_Z).
   function severityFixture(): DoctorCheckResult {
     const mk = (key: string, label: string, severity: number): DoctorDiag => ({
       key,
       label,
       sev: "med",
       severity,
+      z: severity / 0.4,
       bands: [],
       detail: `${label} detail`,
       fromLevel: "quiet",
@@ -1492,7 +1497,7 @@ describe("DoctorResults — severity (possible verdicts)", () => {
 
   it("mutes a low-severity finding as 'Possible …' and leaves a confident one plain", () => {
     renderResults(severityFixture());
-    // Low severity (0.4 < POSSIBLE_MAX_SEVERITY) → the "possible" chip treatment.
+    // Low confidence (1σ < POSSIBLE_MAX_Z) → the "possible" chip treatment.
     expect(screen.getByText("Possible Fizzy")).toBeInTheDocument();
     // High severity (3.0) → the plain label, no "Possible" prefix.
     expect(screen.getByText("Harsh")).toBeInTheDocument();

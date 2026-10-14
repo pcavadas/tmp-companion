@@ -2073,3 +2073,23 @@ fn final_reassembler_matches_the_batch_reassembly() {
     }
     assert_eq!(r.pending_len(), batch.last().unwrap().body.len());
 }
+
+#[test]
+fn doctor_params_keep_the_parametric_eq_filters_with_bools_as_numbers() {
+    let v = serde_json::json!({
+        "filter2frequency": 2600.0, "filter2gaindb": 0.0, "filter2q": 0.707,
+        "filter2type": 2, "filter2bypass": false, "filter5bypass": true,
+        "bypass": true, "filterbypass": true, "filter2colour": 1.0, "mix": 0.3
+    });
+    let got = doctor_params(v.as_object());
+    assert_eq!(got.get("filter2frequency"), Some(&2600.0));
+    assert_eq!(got.get("filter2type"), Some(&2.0));
+    assert_eq!(got.get("filter2bypass"), Some(&0.0));
+    assert_eq!(got.get("filter5bypass"), Some(&1.0));
+    assert_eq!(got.get("mix"), Some(&0.3));
+    // The node's own bypass, a filter field with no band number and an unknown
+    // filter field stay out.
+    for k in ["bypass", "filterbypass", "filter2colour"] {
+        assert!(!got.contains_key(k), "{k}");
+    }
+}

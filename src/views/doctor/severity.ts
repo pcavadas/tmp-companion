@@ -51,15 +51,15 @@ export function sevRank(sev: Sev): number {
   return RANK[sev];
 }
 
-/** A fired card within this many units of its threshold (severity = margin past
- *  threshold, in the rule's own dB/LU unit) is a near-threshold "possible"
- *  verdict (muted, ranked lower). No backend confidence anymore — this is a
- *  pure severity threshold. */
-export const POSSIBLE_MAX_SEVERITY = 1.0;
+/** A fired card fewer than this many run-to-run standard deviations past its
+ *  threshold (`DoctorDiag.z`, unit-free so it reads the same for dB, dB/oct
+ *  and peak-height rules) is a near-threshold "possible" verdict (muted,
+ *  ranked lower). 2.5σ keeps a band rule's old 1.0 dB cutoff (σ 0.4 dB). */
+export const POSSIBLE_MAX_Z = 2.5;
 
-/** True when a diagnosis is a low-severity "possible" verdict. */
+/** True when a diagnosis is a low-confidence "possible" verdict. */
 export function isPossible(diag: DoctorDiag): boolean {
-  return diag.severity < POSSIBLE_MAX_SEVERITY;
+  return diag.z < POSSIBLE_MAX_Z;
 }
 
 /** The label as shown in the UI: "Possible X" when `isPossible`, else the bare
@@ -70,13 +70,13 @@ export function possibleLabel(diag: DoctorDiag): string {
 }
 
 /** A sound's diagnoses worst-first: severity tint (high before med) is the
- *  primary key, raw severity magnitude (descending) the tiebreaker — so
+ *  primary key, confidence `z` (descending) the tiebreaker — so
  *  confidently-past-threshold findings sort above near-threshold "possible"
- *  ones. */
+ *  ones, whatever unit each rule measures in. */
 export function sortedDiags(diags: DoctorDiag[]): DoctorDiag[] {
   return [...diags].sort((a, b) => {
     const r = sevRank(b.sev) - sevRank(a.sev);
-    return r !== 0 ? r : b.severity - a.severity;
+    return r !== 0 ? r : b.z - a.z;
   });
 }
 

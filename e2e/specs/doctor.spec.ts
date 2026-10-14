@@ -26,7 +26,7 @@ import {
 //
 // ONLINE e2e suite consolidation (8→4 files): this file's first test below now runs
 // OFFLINE ONLY (test.skip'd online) — its online-specific assertions (the E2E Edge
-// EQ-ring chip + "cut the 2 kHz band" prescription, plus the cross-card ring-chip
+// EQ-ring chip + "notch it out" prescription, plus the cross-card ring-chip
 // scoping proof on the other two presets) moved to `doctor.online.spec.ts`, which runs
 // the same 3-preset selection online — see that file's own header for why. The offline
 // FLOW proof here (select → check → run → Results, three presets' cards render) is

@@ -266,18 +266,26 @@ pub(crate) fn extract_level_candidates(v: &serde_json::Value) -> Vec<LevelBlock>
 }
 
 /// Doctor's param allowlist (see the [`GraphNode::params`] doc): the reverb wet/dry mix
-/// names, the cab low/high cut, and the EQ-10 band gains. The ONE definition — the base
-/// graph and every per-sound override (`doctor::NodeOverride`) filter through it, so a
-/// sound's effective graph can never carry a param its base graph would have dropped.
+/// names, the cab low/high cut, the EQ-10 band gains, and the parametric EQ's per-filter
+/// `filterN{frequency,gaindb,q,type,bypass}` (the narrow-ring notch reuses a free band,
+/// #252). The ONE definition — the base graph and every per-sound override
+/// (`doctor::NodeOverride`) filter through it, so a sound's effective graph can never
+/// carry a param its base graph would have dropped.
 pub(crate) fn doctor_param_kept(k: &str) -> bool {
     k == "mix"
         || k == "wetdrymix"
         || k == "hpf"
         || k == "lpf"
         || (k.starts_with("gain") && k.ends_with("hz"))
+        || k.strip_prefix("filter").is_some_and(|rest| {
+            let field = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+            field.len() < rest.len()
+                && matches!(field, "frequency" | "gaindb" | "q" | "type" | "bypass")
+        })
 }
 
-/// A `dspUnitParameters` object narrowed to [`doctor_param_kept`] keys with numeric values.
+/// A `dspUnitParameters` object narrowed to [`doctor_param_kept`] keys with numeric
+/// values. A boolean (a ParamEQ filter's `bypass`) is kept as 1.0 / 0.0.
 pub(crate) fn doctor_params(
     params: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> std::collections::HashMap<String, f64> {
@@ -285,7 +293,11 @@ pub(crate) fn doctor_params(
         .map(|o| {
             o.iter()
                 .filter(|(k, _)| doctor_param_kept(k))
-                .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
+                .filter_map(|(k, v)| {
+                    v.as_f64()
+                        .or_else(|| v.as_bool().map(|b| if b { 1.0 } else { 0.0 }))
+                        .map(|f| (k.clone(), f))
+                })
                 .collect()
         })
         .unwrap_or_default()

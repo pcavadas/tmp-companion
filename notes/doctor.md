@@ -34,11 +34,20 @@ TILT (the dark/bright/thin lean) and per-band LOCALS — and every band rule
 (muddy/boomy/harsh/lost/thin/buried) fires only on a **two-space consensus**:
 the tilt-split local AND the median-centered deviation
 (`centered_deviations`) must each clear their own gate; severity is the
-smaller margin. Why two spaces: HW defect injection (`probe --doctor-inject`)
+smaller margin. Severity stays in the rule's own unit (dB, dB/oct) for
+display; hedging and ranking read `Diag::z` = severity ÷ the rule's
+run-to-run σ (`doctor::rule_sigma`: band rules and fizzy 0.4 dB, tilt
+0.05 dB/oct, peak height 0.3 dB, tail ratio 0.3 dB), and the UI calls a
+finding "Possible" below 2.5σ (`severity.ts::POSSIBLE_MAX_Z`), which keeps a
+band rule's old 1.0 dB cutoff (#253). Why two spaces: HW defect injection (`probe --doctor-inject`)
 showed the tilt-split alone misattributes a skirted single-band defect (+12 dB
 @250 Hz read as false "thin"), while the centered space alone is contaminated
 by healthy tilt at the endpoint bands — the false-positive control lives in
-the intersection. The metric is fully DETERMINISTIC per sound: a verdict
+the intersection. The centered space centers on the median of the COVERED
+body bands only, so a band the capture never excited can't move a covered
+band's verdict; with fewer than 3 covered body bands (`MIN_CENTERING_BANDS`)
+it is unknown and every consensus rule (and the localized rules, which
+corroborate in it) abstains (#192). The metric is fully DETERMINISTIC per sound: a verdict
 depends only on that sound's own measurements, never on which other sounds ran
 in the same check.
 
@@ -50,7 +59,12 @@ in the same check.
 - **fizzy** — self-relative (Air vs own presence band; the Air band is bimodal
   across a library, so a target-relative rule flagged every open preset),
   gated on top-octave spectral flatness under `StimulusKind::Capture` (noise
-  hash fires, a bright cab's harmonic top doesn't).
+  hash fires, a bright cab's harmonic top doesn't). The metric is corrected
+  for the stimulus like the band rules (`fizzy_metric`, #248): the stimulus's
+  own Air − Highs minus the humbucker reference's is subtracted, so the
+  pickup chosen in Settings no longer decides whether it fires. The
+  cut-through contrast gets the same correction. Both are exact no-ops for
+  the humbucker and for fixtures without stimulus bands.
 - **washed** — post-stimulus tail-RMS rule (onset-aligned split, tail window
   pinned to `DOCTOR_TAIL_MS`). The split's onset now comes from a
   floor-relative energy step first (`leveller::doctor_onset`), falling back to
@@ -93,13 +107,33 @@ in the same check.
   via the BAND rules (thin + the mid meter) by physics; the defects suite
   pins this (`resonant_wah` must NOT fire resonant) plus calibrated
   positives (`resonant_peq`: stacked 2×12 dB Q14 @ 2.6 kHz → resonant;
-  `boxy_peq`: stacked 2×12 dB Q8 @ 420 Hz → boxy; 7/7 HIT). Q is measured
-  pessimistically as max(±20-bin parabola-fit bandwidth, above-floor run
-  width) — a first-crossing −3 dB walk reads estimate noise, not bandwidth.
-  An octave-wide graphic-EQ lift keeps Q < 2 and never reads resonant
-  (HW-verified). Their Rx is a cut on the log-nearest EQ-10 band naming the
-  MEASURED frequency — generated inline (not via `generate_rx`, whose
-  key-only signature can't carry the peak).
+  `boxy_peq`: stacked 2×12 dB Q8 @ 420 Hz → boxy; 7/7 HIT). Q (#251) is
+  `f0 / (f_hi − f_lo)` between the two HALF-HEIGHT points (the RBJ peaking
+  filter's own bandwidth definition, so it reads the filter's true Q),
+  with height taken over a baseline through the median levels of two flanks
+  1–1.5 octaves out (a line in log frequency); the detection envelope is not
+  used for width because it rides a wide bump's skirt. A crossing needs two
+  bins in a row at or below half height, so one bin of Welch scatter can't
+  end the walk. On white noise through a +12 dB peaking filter it reads true
+  Q 2–12 at 300 Hz–3.5 kHz within 14% (`psd::peak_q_tracks_true_q_across_frequency`);
+  the old fixed ±20-bin parabola fit plus above-floor run width read Q 2–12
+  as 4.6–7.5 at 300 Hz and Q 8 as 15.5 at 3.5 kHz. A single-bin line still
+  reads q > 85 (the needle class). `RESONANT_MIN_Q`/`MAX_Q` stay at 2/40: the
+  min now does the job it was written for (an octave-wide graphic-EQ lift is
+  Q < 2), and the max still clears the matrix's flagrant rings. The defects
+  suite (7/7) and factory silence need re-checking on the unit with the new
+  estimator. Their Rx (#252) is a PARAMETRIC cut right on the MEASURED
+  frequency (depth `min(height/2, 6 dB)` for resonant, 4 dB for boxy, Q =
+  the measured Q clamped to 2–12): a free band (a known 0 dB, unbypassed
+  peak among bands 2–4) of an existing `ACD_FiveBandParamEQ` as a one-click,
+  an advisory when it has none, otherwise an `ACD_FiveBandParamEQ` insert
+  after the cab writing band 2's frequency/gain/Q only (the same float
+  controls the HW-verified defect recipes write on a fresh insert); an
+  insert that fails the caps falls back to the log-nearest EQ-10 band.
+  Generated inline (not via `generate_rx`, whose key-only signature can't
+  carry the peak). The AFTER capture on the `resonant_peq`/`boxy_peq`
+  recipes (peak reduced, no octave-wide dip) is still to be checked on the
+  unit.
 
 Thresholds are constants in `doctor.rs`, ONE table per family — Guitar /
 Bass / **BassVi** (7-band layout with a (30,60) Sub band — measured and

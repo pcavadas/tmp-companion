@@ -291,10 +291,12 @@ fn population_metrics(
             family,
         );
         let (slope, locals) = doctor::tilt_split(&dev, family, r.coverage.as_deref());
-        let centered = doctor::centered_deviations(&dev, family);
+        let centered = doctor::centered_deviations(&dev, family, r.coverage.as_deref());
         let covered = |i: usize| r.coverage.as_ref().is_none_or(|c| c[i]);
         let mut push = |key: &'static str, band: usize, sign: f64| {
-            if covered(band) {
+            // A row with too few covered body bands has no centered value, so
+            // it cannot fire a consensus rule and sets no consensus gate.
+            if let (true, Some(centered)) = (covered(band), centered.as_ref()) {
                 let e = consensus.entry(key).or_default();
                 e.0.push(sign * locals[band]);
                 e.1.push(sign * centered[band]);
@@ -306,7 +308,7 @@ fn population_metrics(
         push("lost", mids, -1.0);
         push("thin", lows, -1.0);
         if covered(air) && covered(highs) {
-            fizzy.push(bdb[air] - bdb[highs]);
+            fizzy.push(doctor::fizzy_metric(&bdb, r.stim_bands.as_deref(), family));
         }
         if let Some(s) = slope {
             tilt_abs.push(s.abs());

@@ -25,7 +25,7 @@ import {
 // (b) is doctor.spec.ts's online UI run, moved here selecting all three fixtures exactly as
 //     that run used to (E2E Rig 400 + E2E Pedalboard 401 + E2E Edge 402). Edge alone carries
 //     the 2.6 kHz EQ-ring assertions (the chip must fire on every one of Edge's played
-//     sounds, and opening a ringing row must surface the "cut the 2 kHz band" prescription);
+//     sounds, and opening a ringing row must surface the "notch it out" prescription);
 //     Rig and Pedalboard carry the CROSS-CARD scoping proof (zero ring chips leak onto a
 //     sibling's card). That scoping proof is a UI property distinct from (a)'s base/CONTROL
 //     "healthy content never rings" property on a DIFFERENT fixture (407) — (a) proves the
@@ -288,7 +288,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
 
     await expect(page.getByText(EDGE.name).first()).toBeVisible();
 
-    // Hedged accepted too: severity < 1.0 renders "Possible Rings at N kHz" via
+    // Hedged accepted too: z < 2.5 (0.75 dB of peak height) renders "Possible Rings at N kHz" via
     // possibleLabel() (severity.ts), and TubeScreamer-engaged Edge rows can erode the
     // margin into hedge territory — a hedged detection is still a detection.
     const ringChip = /^(?:Possible )?Rings at 2\.\d kHz$/;
@@ -324,11 +324,11 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     const edgeRingRow = edgeCard.locator("[data-sound-row]").first();
     await edgeRingRow.getByText(EDGE.name).first().click();
     await expect(
-      page.getByText(/Rings at 2\.\d kHz — cut the 2 kHz band/).first(),
+      page.getByText(/Rings at 2\.\d kHz — notch it out/).first(),
     ).toBeVisible();
     await edgeRingRow.getByText(EDGE.name).first().click(); // collapse
     await expect(
-      page.getByText(/Rings at 2\.\d kHz — cut the 2 kHz band/),
+      page.getByText(/Rings at 2\.\d kHz — notch it out/),
     ).toHaveCount(0);
 
     await expectReampBalanced(page, reampBase);

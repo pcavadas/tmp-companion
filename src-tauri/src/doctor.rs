@@ -862,6 +862,34 @@ pub(crate) fn anchor_deviations(
         .collect()
 }
 
+/// The capture's own Air − Highs dB (the `fizzy` metric), corrected for the
+/// stimulus the same way [`anchor_deviations`] corrects the band rules (#248):
+/// `(bdb[air] − bdb[highs]) − ((stim air − highs) − (ref air − highs))`. A
+/// brighter pickup's stimulus therefore no longer reads as fizz. Exactly the
+/// raw difference when the stimulus IS the reference, when `stim_bands` is
+/// `None` (curated fixtures) and for families with no [`stim_ref`].
+pub(crate) fn fizzy_metric(bdb: &[f64], stim_bands: Option<&[f64]>, family: Family) -> f64 {
+    let (_, _, _, _, highs, air) = family.semantic_bands();
+    let raw = bdb[air] - bdb[highs];
+    match (stim_bands, stim_ref(family)) {
+        (Some(bands), Some(reference)) if bands.len() > air && reference.len() > air => {
+            let stim = band_db(bands);
+            raw - ((stim[air] - stim[highs]) - (reference[air] - reference[highs]))
+        }
+        _ => raw,
+    }
+}
+
+/// Presence contrast in dB from LINEAR band powers — see [`cut_through`].
+/// `None` when a band is missing or the ratio is not finite (a silent band).
+fn contrast_db(bands: &[f64], family: Family) -> Option<f64> {
+    let (lows, low_mids, mids, high_mids, highs, _air) = family.semantic_bands();
+    let low = *bands.get(lows)? + *bands.get(low_mids)? + *bands.get(mids)?;
+    let presence = *bands.get(high_mids)? + *bands.get(highs)?;
+    let c = 10.0 * (presence / low).log10();
+    c.is_finite().then_some(c)
+}
+
 /// The one shared median: `xs` (sorted internally) — the middle value for an
 /// odd count, the mean of the two middles for an even count. `f64::total_cmp`
 /// keeps the sort NaN-safe (a failed loudness measure won't panic) and — so
@@ -899,8 +927,11 @@ pub(crate) fn rule_judgeable(
 ) -> bool {
     let covered = |i: usize| band_covered(coverage, i);
     let (lows, low_mids, mids, high_mids, highs, air) = instrument.semantic_bands();
-    // `tilt_split` determines a slope only from ≥3 covered body bands.
-    let slope_known = (lows..=highs).filter(|&i| covered(i)).count() >= 3;
+    // `tilt_split` determines a slope only from ≥3 covered body bands, and
+    // `centered_deviations` centers only on as many (the consensus rules).
+    let covered_body = (lows..=highs).filter(|&i| covered(i)).count();
+    let slope_known = covered_body >= 3;
+    let centering_known = covered_body >= MIN_CENTERING_BANDS;
     // A localized peak needs a covered band in its scan range to corroborate.
     let range_covered = |lo: f64, hi: f64| {
         instrument
@@ -910,19 +941,27 @@ pub(crate) fn rule_judgeable(
             .any(|(i, &(b_lo, b_hi))| f64::from(b_lo) <= hi && f64::from(b_hi) >= lo && covered(i))
     };
     match rule {
-        "muddy" => covered(low_mids),
-        "boomy" => covered(lows),
-        "harsh" => covered(high_mids),
-        "lost" => covered(mids),
+        "muddy" => centering_known && covered(low_mids),
+        "boomy" => centering_known && covered(lows),
+        "harsh" => centering_known && covered(high_mids),
+        "lost" => centering_known && covered(mids),
         "fizzy" => covered(air) && covered(highs),
         "dark" | "bright" => slope_known,
         "thin" => instrument == Family::Guitar && slope_known && covered(lows),
         // `buried` needs the graph's drive fact; with no graph it never fires.
         "buried" => {
-            matches!(instrument, Family::Bass | Family::BassVi) && graph_known && covered(lows)
+            matches!(instrument, Family::Bass | Family::BassVi)
+                && graph_known
+                && centering_known
+                && covered(lows)
         }
-        "boxy" => LOCALIZED_RULES_ENABLED && range_covered(BOXY_LO_HZ, BOXY_HI_HZ),
-        "resonant" => LOCALIZED_RULES_ENABLED && range_covered(0.0, RESONANT_MAX_FREQ_HZ),
+        // Both corroborate a peak in the centered space too.
+        "boxy" => {
+            LOCALIZED_RULES_ENABLED && centering_known && range_covered(BOXY_LO_HZ, BOXY_HI_HZ)
+        }
+        "resonant" => {
+            LOCALIZED_RULES_ENABLED && centering_known && range_covered(0.0, RESONANT_MAX_FREQ_HZ)
+        }
         _ => true,
     }
 }
@@ -977,21 +1016,44 @@ pub fn tilt_split(
     (slope, locals)
 }
 
-/// Median-centered deviations: `dev[i] − median(dev[body bands])`. Level-robust
-/// (median of ≥5 body bands ignores ≤2 defect-inflated ones) and — unlike the
-/// tilt-split locals — immune to a skirted bump dragging the slope estimate.
-/// NOT tilt-invariant (healthy tilt leaks ± a few dB into the endpoint bands),
-/// which is why band rules demand consensus WITH the tilt-split local instead
-/// of replacing it (see [`Thresholds`]'s doc). Body bands = the semantic
-/// `lows..=highs` range ([`Family::semantic_bands`]) — Guitar/Bass indices
-/// 0..=4, Bass VI 0..=5 (Sub excluded, same convention `tilt_split`'s fit
-/// uses). Returns one value per band in `dev` (Sub/Air included, centered
-/// against the same body median — extrapolated/display there, like
-/// `tilt_split`'s locals). `median` is the shared odd/even-safe helper.
-pub fn centered_deviations(dev: &[f64], family: Family) -> Vec<f64> {
+/// Fewest COVERED body bands [`centered_deviations`] centers on — the same
+/// minimum [`tilt_split`] needs for a slope. Below it there is no reliable
+/// consensus level, so the centered space is unknown and every consensus band
+/// rule abstains (the insufficient-evidence policy, #192).
+pub const MIN_CENTERING_BANDS: usize = 3;
+
+/// Median-centered deviations: `dev[i] − median(dev[covered body bands])`.
+/// Level-robust (median of ≥5 body bands ignores ≤2 defect-inflated ones) and
+/// — unlike the tilt-split locals — immune to a skirted bump dragging the
+/// slope estimate. NOT tilt-invariant (healthy tilt leaks ± a few dB into the
+/// endpoint bands), which is why band rules demand consensus WITH the
+/// tilt-split local instead of replacing it (see [`Thresholds`]'s doc). Body
+/// bands = the semantic `lows..=highs` range ([`Family::semantic_bands`]) —
+/// Guitar/Bass indices 0..=4, Bass VI 0..=5 (Sub excluded, same convention
+/// `tilt_split`'s fit uses).
+///
+/// Only COVERED body bands (`covered`, `None` = all covered) set the median, so
+/// a band the stimulus never excited cannot move a covered band's verdict
+/// (#192). With fewer than [`MIN_CENTERING_BANDS`] covered body bands the
+/// result is `None`. Otherwise one value per band in `dev` (Sub/Air and
+/// uncovered bands included, centered against the same median — display only
+/// there, like `tilt_split`'s locals). `median` is the shared odd/even-safe
+/// helper.
+pub fn centered_deviations(
+    dev: &[f64],
+    family: Family,
+    covered: Option<&[bool]>,
+) -> Option<Vec<f64>> {
     let (lows, _, _, _, highs, _) = family.semantic_bands();
-    let m = median(dev[lows..=highs].to_vec());
-    dev.iter().map(|&d| d - m).collect()
+    let body: Vec<f64> = (lows..=highs)
+        .filter(|&i| band_covered(covered, i))
+        .map(|i| dev[i])
+        .collect();
+    if body.len() < MIN_CENTERING_BANDS {
+        return None;
+    }
+    let m = median(body);
+    Some(dev.iter().map(|&d| d - m).collect())
 }
 
 // ─── cut-through estimate ─────────────────────────────────────────────────
@@ -1075,14 +1137,26 @@ fn factory_percentile(contrast_db: f64) -> f64 {
 /// the resulting ratio is non-finite (a zero-power band — an empty/silent
 /// capture).
 pub fn cut_through(profile: &SoundProfile, family: Family) -> Option<CutThrough> {
-    let (lows, low_mids, mids, high_mids, highs, _air) = family.semantic_bands();
-    let low_power =
-        *profile.bands.get(lows)? + *profile.bands.get(low_mids)? + *profile.bands.get(mids)?;
-    let presence_power = *profile.bands.get(high_mids)? + *profile.bands.get(highs)?;
-    let contrast_db = 10.0 * (presence_power / low_power).log10();
-    if !contrast_db.is_finite() {
-        return None;
-    }
+    let raw = contrast_db(&profile.bands, family)?;
+    // Stimulus correction (#248), as `fizzy_metric` does for fizz: a brighter
+    // pickup's own presence contrast is not the preset's.
+    let correction = match (profile.stim_bands.as_deref(), stim_ref(family)) {
+        (Some(bands), Some(reference)) => {
+            // Both through the same dB → linear round trip, so a stimulus that
+            // IS the reference corrects by exactly 0 (byte-identical results).
+            let lin =
+                |db: &[f64]| -> Vec<f64> { db.iter().map(|d| 10f64.powf(d / 10.0)).collect() };
+            match (
+                contrast_db(&lin(&band_db(bands)), family),
+                contrast_db(&lin(reference), family),
+            ) {
+                (Some(stim), Some(r)) => stim - r,
+                _ => 0.0,
+            }
+        }
+        _ => 0.0,
+    };
+    let contrast_db = raw - correction;
     let (percentile, advisory) = if family == Family::Guitar {
         (
             Some(factory_percentile(contrast_db)),
@@ -1221,6 +1295,33 @@ pub fn tail_energy_ratio(
     (20.0 * (tail / body).max(1e-4).log10()).max(-80.0)
 }
 
+/// Run-to-run σ of the band rules' metrics (dB): the R4 repeatability
+/// figure behind the 1.2 dB (3σ) band margin ([`GUITAR`]'s doc). `fizzy` is a
+/// difference of two band levels and uses the same figure.
+pub const BAND_SIGMA_DB: f64 = 0.4;
+/// Run-to-run σ of the broadband tilt (dB/oct), from the same R4 runs.
+pub const TILT_SIGMA_DB_PER_OCT: f64 = 0.05;
+/// Run-to-run σ of a localized peak's height (dB) — see
+/// [`RESONANT_MIN_HEIGHT_DB`]'s doc.
+pub const PEAK_SIGMA_DB: f64 = 0.3;
+/// Run-to-run σ of the tail ratio (dB). Five warm runs of the wash fixture
+/// spread σ ≈ 0.05 dB, but the first capture after other device activity
+/// reads about 0.3 dB off (`notes/gotchas.md`, the 2026-08-25 wash fixture
+/// re-seed), so the cold offset sets it.
+pub const WASH_SIGMA_DB: f64 = 0.3;
+
+/// The run-to-run σ of `key`'s metric, in the rule's own unit — what
+/// [`Diag::z`] divides the margin by so every rule hedges and ranks on one
+/// scale (#253). An unknown key falls back to the band figure.
+pub fn rule_sigma(key: &str) -> f64 {
+    match key {
+        "dark" | "bright" => TILT_SIGMA_DB_PER_OCT,
+        "resonant" | "boxy" => PEAK_SIGMA_DB,
+        "washed" => WASH_SIGMA_DB,
+        _ => BAND_SIGMA_DB,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Sev {
@@ -1238,16 +1339,18 @@ pub struct Diag {
     pub label: String,
     /// Coarse tint (High/Med).
     pub sev: Sev,
-    /// Magnitude PAST threshold in the rule's natural unit (dB for the
-    /// band/fizzy/washed rules) — `metric − threshold`, always ≥ 0
-    /// for a fired card. Playback offsets shift the threshold, so they shift this.
-    /// The frontend's `isPossible` (a near-threshold "possible" verdict, rendered
-    /// muted) reads this directly — see `severity.ts::POSSIBLE_MAX_SEVERITY`. The
-    /// UI renders a fired card as "possible" when `severity < 1.0` — a flat
-    /// provisional cutoff applied uniformly across every rule's own unit, not a
-    /// per-rule-calibrated one; the R5 calibration sweep is expected to refine it
-    /// per rule.
+    /// Magnitude PAST threshold in the rule's natural unit (dB for the band,
+    /// fizzy, washed and peak rules, dB/oct for dark/bright) — `metric −
+    /// threshold`, always ≥ 0 for a fired card. Playback offsets shift the
+    /// threshold, so they shift this. Display only: units differ by rule, so
+    /// hedging and ranking read [`Diag::z`] instead (#253).
     pub severity: f64,
+    /// `severity` over the rule's run-to-run σ ([`rule_sigma`]): how many
+    /// standard deviations of measurement noise the finding sits past its
+    /// gate. Unit-free, so it compares across rules. The frontend's
+    /// `isPossible` (`severity.ts::POSSIBLE_MAX_Z`) hedges a card as "Possible"
+    /// below 2.5, and sorts by it.
+    pub z: f64,
     /// Indices into the sound's family band layout ([`Family::bands`]) that
     /// light up in the UI; empty = a time-domain finding (washed / buried).
     pub bands: Vec<usize>,
@@ -1468,6 +1571,11 @@ const OTHER_EQ_IDS: [&str; 4] = [
     "ACD_MustangPEQ",
 ];
 const HIGH_LOW_PASS: &str = "ACD_HighLowPass";
+/// The five-band parametric EQ the narrow-ring notch uses (#252). Live
+/// controlIds `filterN{frequency,gaindb,q}` are HW write-verified (1 kHz/+12 dB/Q8
+/// in → 1008 Hz/q 7.5 measured, `notes/doctor-calibration.md` 2026-07-17); band
+/// 1 defaults to a high-pass, bands 2–4 to peaks, so only 2–4 carry a notch.
+const PARAM_EQ: &str = "ACD_FiveBandParamEQ";
 const COMPRESSOR: &str = "ACD_DynaComp"; // classic 2-knob pedal comp, schema-verified
 
 /// EQ-10 band gain range (dB). ponytail: ±12 is the graphic-EQ standard; the
@@ -1577,6 +1685,9 @@ struct GraphFacts {
     /// mono 10-band — [`OTHER_EQ_IDS`]) is already ACTIVE in the chain. Gates the
     /// EQ moves to an advisory (use the one you have) instead of a second EQ.
     eq_other: bool,
+    /// First active parametric EQ ([`PARAM_EQ`]): (group, node_id, its
+    /// allowlisted `filterN…` params). The narrow-ring notch reuses a free band.
+    peq: Option<(String, String, HashMap<String, f64>)>,
     /// First reverb with a real mix param: (group, node_id, mix_param, current
     /// mix value when the graph carried it).
     reverb_mix: Option<(String, String, String, Option<f64>)>,
@@ -1669,6 +1780,9 @@ fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
             f.eq10 = Some((n.group_id.clone(), n.node_id.clone(), n.params.clone()));
         } else if OTHER_EQ_IDS.contains(&n.model.as_str()) {
             f.eq_other = true;
+        }
+        if n.model == PARAM_EQ && f.peq.is_none() {
+            f.peq = Some((n.group_id.clone(), n.node_id.clone(), n.params.clone()));
         }
         if f.reverb_mix.is_none() {
             if let Some((_, Some(p))) = REVERB_MIX.iter().find(|(id, _)| *id == n.model) {
@@ -1799,6 +1913,9 @@ struct EqCopy<'a> {
     insert_detail: &'a str,
     /// Advisory detail when a non-drivable EQ is already present.
     advise_detail: &'a str,
+    /// Title of the parametric notch ([`localized_cut_rx`]); empty for the
+    /// graphic-EQ moves that never notch.
+    notch_title: &'a str,
 }
 
 /// The muddy/harsh EQ move, in priority order:
@@ -1960,15 +2077,42 @@ fn band_index_for_freq(instrument: Family, freq_hz: f64) -> Option<usize> {
         .position(|&(lo, hi)| freq_hz >= f64::from(lo) && freq_hz <= f64::from(hi))
 }
 
-/// The resonant/boxy Rx: a cut of `−min(max_cut_db, height_db/2)` (rounded to
-/// the nearest 0.5) on `band_id`, via the SAME value-aware reuse/insert/
-/// advisory machinery [`eq_move`] gives every other EQ move. `nodes`/`facts`
-/// absent (no graph) → no Rx, same as every other graph-dependent
+/// The parametric bands a notch may use: bands 2–4 default to peaks; band 1
+/// defaults to a high-pass and band 5 is left alone too.
+const PEQ_NOTCH_BANDS: [u8; 3] = [2, 3, 4];
+
+/// The notch's Q range: the measured ring Q (#251), clamped so a misread can
+/// neither widen the cut toward the octave-wide band it replaces nor narrow it
+/// past the ring's own width.
+const NOTCH_Q_RANGE: (f64, f64) = (2.0, 12.0);
+
+/// The resonant/boxy Rx (#252): a PARAMETRIC peak cut of
+/// `−min(max_cut_db, height_db/2)` (rounded to 0.5 dB) at the MEASURED
+/// frequency, with the measured Q ([`NOTCH_Q_RANGE`]) — instead of an
+/// octave-wide graphic-EQ band that removes about an octave of tone to treat
+/// a tenth of one, and lands off-centre when the ring sits between bands.
+///
+/// 1. An active parametric EQ already in the chain: a one-click retune of its
+///    first FREE band among 2–4 — a known peak (`type` 2), not bypassed, at
+///    0 dB, so moving it changes nothing else. Only the float controls are
+///    written (frequency, gain, Q). No free band, or unknown values → an
+///    advisory to use that EQ.
+/// 2. Otherwise insert a parametric EQ right after the cab (the same anchor
+///    and `blockcaps` gate as [`eq_move`]) with band 2 set to the cut. That
+///    insert writes the same three controls the HW-verified defect recipes
+///    (`probe_api/doctor_defects.rs`) write on a fresh one.
+/// 3. An insert that fails the caps falls back to the graphic-EQ band cut
+///    ([`eq_move`] on `eq10_band`).
+///
+/// `nodes`/`facts` absent (no graph) → no Rx, like every other graph-dependent
 /// prescription in this file.
+#[allow(clippy::too_many_arguments)]
 fn localized_cut_rx(
     nodes: Option<&[DoctorNode]>,
     facts: &Option<GraphFacts>,
-    band_id: &'static str,
+    freq_hz: f64,
+    q: f64,
+    eq10_band: &'static str,
     max_cut_db: f64,
     height_db: f64,
     copy: &EqCopy,
@@ -1977,7 +2121,78 @@ fn localized_cut_rx(
         return Vec::new();
     };
     let gain = round_to_half(-(height_db / 2.0).min(max_cut_db));
-    eq_move(nodes, facts, copy, &[(band_id, gain)])
+    let freq = freq_hz.round();
+    let q = round_to_half(q.clamp(NOTCH_Q_RANGE.0, NOTCH_Q_RANGE.1));
+    let band_params = |n: u8| {
+        vec![
+            (format!("filter{n}frequency"), freq),
+            (format!("filter{n}gaindb"), gain),
+            (format!("filter{n}q"), q),
+        ]
+    };
+    let freq_text = measured_freq_label(freq_hz);
+    if let Some((group, node, params)) = &facts.peq {
+        let free = PEQ_NOTCH_BANDS.into_iter().find(|n| {
+            params.get(&format!("filter{n}type")) == Some(&2.0)
+                && params.get(&format!("filter{n}bypass")) == Some(&0.0)
+                && params.get(&format!("filter{n}gaindb")) == Some(&0.0)
+        });
+        return vec![match free {
+            Some(n) => Rx {
+                kind: RxKind::OneClick,
+                title: copy.notch_title.to_string(),
+                detail: format!(
+                    "Uses a free band of your parametric EQ: {} dB at {freq_text}, Q {q}.",
+                    db_amount(gain)
+                ),
+                cpu_note: "no CPU change".to_string(),
+                ops: band_params(n)
+                    .into_iter()
+                    .map(|(param, value)| DoctorOp::Param {
+                        group_id: group.clone(),
+                        node_id: node.clone(),
+                        param,
+                        value,
+                    })
+                    .collect(),
+                chain: None,
+            },
+            None => advisory(
+                copy.notch_title,
+                &format!(
+                    "Your chain already runs a parametric EQ — set one of its bands to {} dB at {freq_text}, Q {q}, rather than adding a second EQ.",
+                    db_amount(gain)
+                ),
+            ),
+        }];
+    }
+    let anchor = match after_cab_anchor(nodes, facts) {
+        Some(a) => Some(a),
+        None => facts.front.as_ref().map(|(g, _)| CabAnchor {
+            group: g.clone(),
+            before: None,
+            at: nodes.len(),
+        }),
+    };
+    if let (Some(anchor), Some(cpu_note)) = (anchor, insert_cpu_note(nodes, PARAM_EQ)) {
+        return vec![Rx {
+            kind: RxKind::Chain,
+            title: copy.notch_title.to_string(),
+            detail: format!(
+                "Puts a parametric EQ after the cab with one narrow cut right on the measured {freq_text}: {} dB, Q {q}.",
+                db_amount(gain)
+            ),
+            cpu_note,
+            ops: vec![DoctorOp::InsertNode {
+                group_id: anchor.group,
+                before_node_id: anchor.before,
+                fender_id: PARAM_EQ.to_string(),
+                params: band_params(2),
+            }],
+            chain: Some(chain_preview(nodes, "after · +EQ", PARAM_EQ, anchor.at)),
+        }];
+    }
+    eq_move(nodes, facts, copy, &[(eq10_band, gain)])
         .into_iter()
         .collect()
 }
@@ -2156,6 +2371,7 @@ pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -
                     insert_title: &format!("Add a 10-band EQ and cut {amount} dB around 300 Hz"),
                     insert_detail: "Puts a graphic EQ after the cab and dips the muddy low-mids — the note stays, the mud goes.",
                     advise_detail: &format!("Your chain already runs a graphic EQ — pull its band nearest 300 Hz down about {amount} dB, rather than adding a second EQ."),
+                    notch_title: "",
                 },
                 &[("gain250hz", -cut)],
             ) {
@@ -2206,6 +2422,7 @@ pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -
                     insert_title: &title,
                     insert_detail: "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
                     advise_detail: &format!("Your chain already runs a graphic EQ — pull its 1–3 kHz bands down about {amount} dB, rather than adding a second EQ."),
+                    notch_title: "",
                 },
                 &[("gain1khz", -cut), ("gain2khz", -cut)],
             ) {
@@ -2372,7 +2589,8 @@ struct RuleMetrics {
     bdb: Vec<f64>,
     slope: Option<f64>,
     locals: Vec<f64>,
-    centered: Vec<f64>,
+    /// `None` when too few body bands are covered to center on (#192).
+    centered: Option<Vec<f64>>,
     facts: Option<GraphFacts>,
 }
 
@@ -2403,7 +2621,7 @@ fn compute_rule_metrics(
     // reference. This single subtraction re-anchors ALL band rules + tilt.
     let dev = anchor_deviations(dev, profile.stim_bands.as_deref(), instrument);
     let (slope, locals) = tilt_split(&dev, instrument, coverage);
-    let centered = centered_deviations(&dev, instrument);
+    let centered = centered_deviations(&dev, instrument, coverage);
     let facts = nodes.map(graph_facts);
     RuleMetrics {
         bdb,
@@ -2417,8 +2635,18 @@ fn compute_rule_metrics(
 /// The two-space consensus gate for a band rule: the margin in each space,
 /// combined as the SMALLER one (severity), firing only when BOTH clear —
 /// the false-positive control lives in the intersection (see `Thresholds`).
-fn consensus(tilt_val: f64, tilt_gate: f64, centered_val: f64, centered_gate: f64) -> (f64, bool) {
+/// An unknown centered value (`None`: too few covered body bands, see
+/// [`centered_deviations`]) never fires.
+fn consensus(
+    tilt_val: f64,
+    tilt_gate: f64,
+    centered_val: Option<f64>,
+    centered_gate: f64,
+) -> (f64, bool) {
     let margin_tilt = tilt_val - tilt_gate;
+    let Some(centered_val) = centered_val else {
+        return (margin_tilt, false);
+    };
     let margin_centered = centered_val - centered_gate;
     (
         margin_tilt.min(margin_centered),
@@ -2507,7 +2735,7 @@ fn apply_thresholds(
     let covered = |i: usize| band_covered(coverage, i);
     let bdb = &metrics.bdb;
     let locals = &metrics.locals;
-    let centered = &metrics.centered;
+    let centered = |i: usize| metrics.centered.as_ref().map(|c| c[i]);
     let (lows, low_mids, mids, high_mids, highs, air) = instrument.semantic_bands();
     let facts = &metrics.facts;
     let mut out = Vec::new();
@@ -2528,6 +2756,7 @@ fn apply_thresholds(
             label,
             sev,
             severity: margin,
+            z: margin / rule_sigma(key),
             bands,
             detail,
             explain,
@@ -2545,7 +2774,7 @@ fn apply_thresholds(
     let (muddy_margin, muddy_fires) = consensus(
         locals[low_mids],
         t.muddy_db + offsets.low_end_db,
-        centered[low_mids],
+        centered(low_mids),
         t.muddy_centered_db + offsets.low_end_db,
     );
     if covered(low_mids) && muddy_fires {
@@ -2562,7 +2791,7 @@ fn apply_thresholds(
     let (boomy_margin, boomy_fires) = consensus(
         locals[lows],
         t.boomy_db + offsets.low_end_db,
-        centered[lows],
+        centered(lows),
         t.boomy_centered_db + offsets.low_end_db,
     );
     if covered(lows) && boomy_fires {
@@ -2579,7 +2808,7 @@ fn apply_thresholds(
     let (harsh_margin, harsh_fires) = consensus(
         locals[high_mids],
         t.harsh_db,
-        centered[high_mids],
+        centered(high_mids),
         t.harsh_centered_db,
     );
     if covered(high_mids) && harsh_fires {
@@ -2600,7 +2829,8 @@ fn apply_thresholds(
     // capture, gate on the top octave's spectral flatness (noise-like HF hash vs
     // a merely bright cab) — inert on the synthetic stimulus (see
     // `FIZZY_MIN_FLATNESS`).
-    let fizzy_margin = (bdb[air] - bdb[highs]) - (t.fizzy_db + offsets.fizzy_db);
+    let fizzy_db = fizzy_metric(bdb, profile.stim_bands.as_deref(), instrument);
+    let fizzy_margin = fizzy_db - (t.fizzy_db + offsets.fizzy_db);
     let fizzy_gated = kind != StimulusKind::Capture || profile.air_flatness >= FIZZY_MIN_FLATNESS;
     if covered(air) && covered(highs) && fizzy_margin > 0.0 && fizzy_gated {
         push(
@@ -2611,7 +2841,7 @@ fn apply_thresholds(
             vec![air],
             format!(
                 "content above 6 kHz only {:.1} dB under the presence band",
-                bdb[highs] - bdb[air]
+                -fizzy_db
             ),
             "Fizzy, buzzy top end — the kind that sounds like radio static on the note tails.",
         );
@@ -2619,7 +2849,7 @@ fn apply_thresholds(
     let (lost_margin, lost_fires) = consensus(
         -locals[mids],
         t.lost_db,
-        -centered[mids],
+        centered(mids).map(|v| -v),
         t.lost_centered_db,
     );
     if covered(mids) && lost_fires {
@@ -2675,7 +2905,7 @@ fn apply_thresholds(
             let (thin_margin, thin_fires) = consensus(
                 -locals[lows],
                 t.thin_db,
-                -centered[lows],
+                centered(lows).map(|v| -v),
                 t.thin_centered_db,
             );
             if covered(lows) && thin_fires {
@@ -2714,7 +2944,7 @@ fn apply_thresholds(
     let (buried_margin, buried_fires) = consensus(
         -locals[lows],
         t.buried_lows_db,
-        -centered[lows],
+        centered(lows).map(|v| -v),
         t.buried_centered_db,
     );
     if matches!(instrument, Family::Bass | Family::BassVi)
@@ -2789,7 +3019,10 @@ fn localized_diags(
         band_index_for_freq(instrument, p.freq_hz).is_some_and(|bi| {
             covered(bi)
                 && metrics.locals[bi] > RESONANT_MIN_BAND_LOCAL_DB
-                && metrics.centered[bi] > RESONANT_MIN_BAND_LOCAL_DB
+                && metrics
+                    .centered
+                    .as_ref()
+                    .is_some_and(|c| c[bi] > RESONANT_MIN_BAND_LOCAL_DB)
         })
     };
     let boxy_pick = profile
@@ -2813,6 +3046,7 @@ fn localized_diags(
                 label: format!("Boxy (a {freq} hump)"),
                 sev: Sev::Med,
                 severity: peak.height_db - BOXY_MIN_HEIGHT_DB,
+                z: (peak.height_db - BOXY_MIN_HEIGHT_DB) / rule_sigma("boxy"),
                 bands: band.into_iter().collect(),
                 detail: format!(
                     "{freq} hump, {:.1} dB above the surrounding spectrum",
@@ -2824,6 +3058,8 @@ fn localized_diags(
                     localized_cut_rx(
                         nodes,
                         facts,
+                        peak.freq_hz,
+                        peak.q,
                         band_id,
                         4.0,
                         peak.height_db,
@@ -2833,6 +3069,7 @@ fn localized_diags(
                             insert_title: &title,
                             insert_detail: "Puts a graphic EQ after the cab and dips the boxy hump right where it measures.",
                             advise_detail: "Your chain already runs a graphic EQ — pull its band nearest the hump down, rather than adding a second EQ.",
+                            notch_title: &format!("Notch the {freq} hump"),
                         },
                     )
                 },
@@ -2866,6 +3103,7 @@ fn localized_diags(
                 label: format!("Rings at {freq}"),
                 sev: Sev::High,
                 severity: peak.height_db - RESONANT_MIN_HEIGHT_DB,
+                z: (peak.height_db - RESONANT_MIN_HEIGHT_DB) / rule_sigma("resonant"),
                 bands: band.into_iter().collect(),
                 detail: format!(
                     "{freq}, {:.1} dB above the surrounding spectrum, Q {:.1}",
@@ -2877,6 +3115,8 @@ fn localized_diags(
                     localized_cut_rx(
                         nodes,
                         facts,
+                        peak.freq_hz,
+                        peak.q,
                         band_id,
                         6.0,
                         peak.height_db,
@@ -2886,6 +3126,7 @@ fn localized_diags(
                             insert_title: &title,
                             insert_detail: "Puts a graphic EQ after the cab and dips the ring right where it measures.",
                             advise_detail: "Your chain already runs a graphic EQ — pull its band nearest the ring down, rather than adding a second EQ.",
+                            notch_title: &format!("Rings at {freq} — notch it out"),
                         },
                     )
                 },
@@ -3531,6 +3772,127 @@ mod tests {
             peaks: Vec::new(),
             stim_bands: None,
         }
+    }
+
+    /// `bdb = GUITAR_TARGET + dev`, diagnosed with an explicit `coverage`.
+    fn diag_keys_covered(dev: &[f64; 6], coverage: &[bool; 6]) -> Vec<&'static str> {
+        let bdb: Vec<f64> = GUITAR_TARGET.iter().zip(dev).map(|(t, d)| t + d).collect();
+        keys(&diagnose_kind(
+            &oracle_profile(&bdb),
+            None,
+            Family::Guitar,
+            StimulusKind::Synthetic,
+            Some(coverage),
+            PlaybackOffsets::NONE,
+        ))
+    }
+
+    #[test]
+    fn uncovered_bands_cannot_change_a_covered_verdict() {
+        // #192's reproduction: covered body bands 0, 2, 4 read [0, −8, 0]. The
+        // mids scoop is `lost` whatever the UNcovered bands 1 and 3 hold.
+        let cov = [true, false, true, false, true, true];
+        let baseline = diag_keys_covered(&[0.0, 0.0, -8.0, 0.0, 0.0, 0.0], &cov);
+        assert!(baseline.contains(&"lost"), "{baseline:?}");
+        for x in [-60.0, -8.0, 8.0, 60.0] {
+            let got = diag_keys_covered(&[0.0, x, -8.0, x, 0.0, 0.0], &cov);
+            assert_eq!(got, baseline, "uncovered bands at {x} dB");
+        }
+    }
+
+    #[test]
+    fn centered_deviations_use_only_covered_body_bands() {
+        let dev = [1.0, -50.0, 3.0, 7.0, 5.0, 40.0];
+        // Odd count (bands 0, 2, 4): median 3.
+        let odd = [true, false, true, false, true, true];
+        let c = centered_deviations(&dev, Family::Guitar, Some(&odd)).unwrap();
+        assert!((c[2] - 0.0).abs() < 1e-12 && (c[1] - (-53.0)).abs() < 1e-12);
+        // Even count (bands 0, 2, 3, 4): median (3 + 5) / 2 = 4.
+        let even = [true, false, true, true, true, false];
+        let c = centered_deviations(&dev, Family::Guitar, Some(&even)).unwrap();
+        assert!((c[0] - (-3.0)).abs() < 1e-12);
+        // All covered: the same as no coverage gating at all.
+        assert_eq!(
+            centered_deviations(&dev, Family::Guitar, Some(&[true; 6])),
+            centered_deviations(&dev, Family::Guitar, None)
+        );
+    }
+
+    #[test]
+    fn too_few_covered_body_bands_abstain_from_consensus_rules() {
+        // Two covered body bands: no centered space, so no band rule fires,
+        // however far the covered band sits past its gate.
+        let cov = [true, false, true, false, false, true];
+        let dev = [0.0, 0.0, -20.0, 0.0, 0.0, 0.0];
+        assert!(centered_deviations(&dev, Family::Guitar, Some(&cov)).is_none());
+        let got = diag_keys_covered(&dev, &cov);
+        for rule in ["muddy", "boomy", "harsh", "lost", "thin"] {
+            assert!(!got.contains(&rule), "{rule} fired on {got:?}");
+            assert!(!rule_judgeable(rule, Family::Guitar, Some(&cov), false));
+        }
+        // No covered body band at all.
+        let none = [false, false, false, false, false, true];
+        assert!(centered_deviations(&dev, Family::Guitar, Some(&none)).is_none());
+        assert!(diag_keys_covered(&dev, &none).is_empty());
+    }
+
+    #[test]
+    fn flat_chain_fizz_and_cut_through_do_not_depend_on_the_pickup() {
+        // #248: a wire chain (capture = stimulus) reads the same corrected fizz
+        // metric and cut-through percentile through every guitar stimulus.
+        let stems = [
+            "guitar-humbucker",
+            "guitar-singlecoil",
+            "guitar-active",
+            "guitar-acoustic",
+        ];
+        let mut fizz = Vec::new();
+        let mut pct = Vec::new();
+        for stem in stems {
+            let bands = runtime_stim_bands(stem);
+            let mut p = oracle_profile(&band_db(&bands));
+            p.bands = bands.clone();
+            p.stim_bands = Some(bands);
+            fizz.push(fizzy_metric(
+                &band_db(&p.bands),
+                p.stim_bands.as_deref(),
+                Family::Guitar,
+            ));
+            pct.push(
+                cut_through(&p, Family::Guitar)
+                    .unwrap()
+                    .factory_percentile
+                    .unwrap(),
+            );
+        }
+        for (i, stem) in stems.iter().enumerate() {
+            assert!((fizz[i] - fizz[0]).abs() < 1e-9, "{stem}: fizz {fizz:?}");
+            assert!((pct[i] - pct[0]).abs() < 1e-9, "{stem}: percentile {pct:?}");
+        }
+    }
+
+    #[test]
+    fn reference_stimulus_gets_no_fizz_or_cut_through_correction() {
+        // The humbucker IS the reference: corrected == raw, bit for bit, on an
+        // arbitrary capture. Fixtures without stimulus bands are uncorrected.
+        let stim = runtime_stim_bands("guitar-humbucker");
+        let bdb = [-3.0, 1.0, -7.0, 12.0, 15.0, -9.5];
+        let mut p = oracle_profile(&bdb);
+        let raw_fizz = bdb[5] - bdb[4];
+        let raw_ct = cut_through(&p, Family::Guitar).unwrap().contrast_db;
+        p.stim_bands = Some(stim);
+        assert_eq!(
+            fizzy_metric(&band_db(&p.bands), p.stim_bands.as_deref(), Family::Guitar).to_bits(),
+            fizzy_metric(&band_db(&p.bands), None, Family::Guitar).to_bits()
+        );
+        assert!((fizzy_metric(&band_db(&p.bands), None, Family::Guitar) - raw_fizz).abs() < 1e-9);
+        assert_eq!(
+            cut_through(&p, Family::Guitar)
+                .unwrap()
+                .contrast_db
+                .to_bits(),
+            raw_ct.to_bits()
+        );
     }
 
     fn assert_locals_close(got: &[f64], want: &[f64], tol: f64) {
@@ -5586,14 +5948,12 @@ mod tests {
     }
 
     #[test]
-    fn oracle_resonant_fires_at_measured_freq_with_nearest_eq10_band() {
+    fn oracle_resonant_fires_at_measured_freq_with_a_parametric_notch() {
         // A strong clean 2.6 kHz ring (noise bed 0.05, resonator drive 1.6,
-        // Q≈9): past RESONANT_MIN_HEIGHT_DB(13.5) — the matrix-calibrated
-        // "flagrant ring" floor — inside the [2, 16] Q window, under the
-        // 4 kHz cap, and outside the 300–500 Hz boxy range. 2.6 kHz keeps
-        // the bin-quantized peak clear of the 2k/4k log-midpoint (≈2828 Hz):
-        // |ln(2630/2000)| ≈ 0.27 < |ln(4000/2630)| ≈ 0.42, so the 2 kHz band
-        // wins decisively.
+        // Q14): past RESONANT_MIN_HEIGHT_DB(13.5) — the matrix-calibrated
+        // "flagrant ring" floor — inside the Q window, under the 4 kHz cap, and
+        // outside the 300–500 Hz boxy range. The fix is a parametric cut right
+        // on the measured frequency (#252), not the octave-wide 2 kHz band.
         let p = flagrant_ring(2_600.0);
         let peak = p.peaks[0];
         let nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
@@ -5616,21 +5976,87 @@ mod tests {
         let rx =
             d.rx.iter()
                 .find(|r| r.kind == RxKind::Chain)
-                .expect("an EQ-10 insert Rx");
+                .expect("a parametric EQ insert Rx");
         match &rx.ops[0] {
             DoctorOp::InsertNode {
                 fender_id, params, ..
             } => {
-                assert_eq!(fender_id, EQ10_STEREO);
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].0, "gain2khz");
+                assert_eq!(fender_id, PARAM_EQ);
+                let get = |k: &str| params.iter().find(|(p, _)| p == k).map(|(_, v)| *v);
+                assert_eq!(get("filter2frequency"), Some(peak.freq_hz.round()));
+                let gain = get("filter2gaindb").unwrap();
                 assert!(
-                    params[0].1 < 0.0,
-                    "a resonant fix is always a CUT: {params:?}"
+                    (-6.0..0.0).contains(&gain),
+                    "a resonant fix is a CUT of at most 6 dB: {params:?}"
                 );
+                let q = get("filter2q").unwrap();
+                assert!((NOTCH_Q_RANGE.0..=NOTCH_Q_RANGE.1).contains(&q), "{q}");
+                // Only band 2's float controls: the HW-verified insert vehicle.
+                assert_eq!(params.len(), 3, "{params:?}");
             }
             other => panic!("expected InsertNode, got {other:?}"),
         }
+    }
+
+    /// A parametric EQ node with `bands` = (band, type, bypass, gaindb).
+    fn peq_node(bands: &[(u8, f64, f64, f64)]) -> DoctorNode {
+        let mut params = HashMap::new();
+        for &(n, ty, bypass, gain) in bands {
+            params.insert(format!("filter{n}type"), ty);
+            params.insert(format!("filter{n}bypass"), bypass);
+            params.insert(format!("filter{n}gaindb"), gain);
+        }
+        DoctorNode {
+            group_id: "G1".into(),
+            node_id: "peq".into(),
+            model: PARAM_EQ.into(),
+            bypassed: false,
+            cab_sim_id: None,
+            cab_sim2_enabled: None,
+            params,
+        }
+    }
+
+    #[test]
+    fn a_ring_reuses_a_free_band_of_an_existing_parametric_eq() {
+        let p = flagrant_ring(2_600.0);
+        let mut nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        // Band 2 is busy (+3 dB), band 3 is a free neutral peak.
+        nodes.push(peq_node(&[
+            (2, 2.0, 0.0, 3.0),
+            (3, 2.0, 0.0, 0.0),
+            (4, 2.0, 1.0, 0.0),
+        ]));
+        let diags = localized_for(&p, Some(&nodes));
+        let d = diags.iter().find(|d| d.key == "resonant").unwrap();
+        assert_eq!(d.rx.len(), 1);
+        let rx = &d.rx[0];
+        assert_eq!(rx.kind, RxKind::OneClick);
+        let written: Vec<&str> = rx
+            .ops
+            .iter()
+            .map(|op| match op {
+                DoctorOp::Param { node_id, param, .. } => {
+                    assert_eq!(node_id, "peq");
+                    param.as_str()
+                }
+                other => panic!("expected Param, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(written, ["filter3frequency", "filter3gaindb", "filter3q"]);
+    }
+
+    #[test]
+    fn a_ring_with_no_free_parametric_band_is_an_advisory() {
+        let p = flagrant_ring(2_600.0);
+        let mut nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        // Every notch band busy or unknown: never retune a band in use.
+        nodes.push(peq_node(&[(2, 2.0, 0.0, 3.0), (3, 2.0, 0.0, -2.0)]));
+        let diags = localized_for(&p, Some(&nodes));
+        let d = diags.iter().find(|d| d.key == "resonant").unwrap();
+        assert_eq!(d.rx.len(), 1);
+        assert_eq!(d.rx[0].kind, RxKind::Advisory);
+        assert!(d.rx[0].ops.is_empty());
     }
 
     #[test]

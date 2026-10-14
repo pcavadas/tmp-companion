@@ -17,10 +17,12 @@ use realfft::RealFftPlanner;
 /// signals fall back to the largest power of two that fits.
 const SEG: usize = 8192;
 
-/// Half-width (bins) of [`Psd::peak_q`]'s parabola fit — also the envelope apron
-/// [`Psd::find_peaks_in_db`] computes past its scan range, since the fit is the only
-/// reader of the excess outside it.
-const PEAK_FIT_HALF_BINS: usize = 20;
+/// The flanks (octaves from the peak, each side) whose median levels set the
+/// baseline [`Psd::peak_q`] measures a peak's height and width against. Far
+/// enough out that a Q 2 bump has decayed to about 1 dB there, so the bump
+/// does not lift its own baseline; a line through the two flanks (in log
+/// frequency) absorbs a chain's broadband slope.
+const PEAK_FLANK_OCT: (f64, f64) = (1.0, 1.5);
 
 /// A one-sided power spectral density.
 ///
@@ -270,55 +272,120 @@ impl Psd {
         env
     }
 
-    /// Quality factor of the peak at `excess[peak_bin]`: center frequency
-    /// over an estimated −3 dB width from a least-squares PARABOLA fit of
-    /// `excess` over ±[`PEAK_FIT_HALF_BINS`] (20) bins around the peak (`y ≈ h + c·x²` on the symmetric
-    /// window; width = `2·√(3/−c)` bins). A walk to the first −3 dB crossing
-    /// is hopelessly noise-bound: the Welch estimate's per-bin scatter (plus
-    /// the capture/stimulus cross-term in transfer space) creates spurious
-    /// crossings within a few bins of a genuinely 300 Hz-wide bump's top and
-    /// read Q in the hundreds for a true Q≈9 resonance. The fit averages 41
-    /// bins: a one-bin comb line has huge curvature (Q ≫ any ceiling), an
-    /// octave-wide EQ bump has almost none (Q ≈ 1), and a wah-like resonance
-    /// lands near its physical Q (the quadratic under-reads a Lorentzian's
-    /// width by ~×0.83 — well inside the gate margins). Non-concave fits
-    /// (c ≥ 0, a plateau/shoulder) report Q = 0 (maximally wide).
-    fn peak_q(&self, excess: &[f64], peak_bin: usize) -> f64 {
-        let n = excess.len();
-        // Symmetric window so the odd fit terms vanish; clamp at the edges
-        // (an edge-clipped peak just fits the width it can see).
-        let half = PEAK_FIT_HALF_BINS.min(peak_bin).min(n - 1 - peak_bin);
-        if half == 0 {
+    /// Quality factor of the peak at `series[peak_bin]`: center frequency over
+    /// the width between the two frequencies where the peak falls to HALF its
+    /// height in dB (#251). That is the RBJ definition of a peaking filter's
+    /// bandwidth (between the `gain/2` dB points), for which
+    /// `f0 / (f_hi − f_lo)` is exactly its Q, so the reading tracks true Q at
+    /// any centre frequency and any peak height.
+    ///
+    /// Height here is measured against a baseline through the median levels
+    /// of two flanks [`PEAK_FLANK_OCT`] away on each side (a line in log
+    /// frequency), NOT against the one-octave detection envelope: that
+    /// envelope rides a wide bump's own skirt, so it would read a Q 2 bump
+    /// narrow. The reported `height_db` stays the envelope excess the gates
+    /// were calibrated on.
+    ///
+    /// The old estimator read Q from a parabola fit over a FIXED ±20 bins
+    /// (half an octave at 300 Hz, a twentieth at 3.5 kHz) and from the run
+    /// width above the ABSOLUTE 3 dB detection floor: true Q 2–12 all read
+    /// 4.6–7.5 at 300 Hz, Q 8 read 15.5 at 3.5 kHz, and a Q 2 bump read 6
+    /// everywhere.
+    ///
+    /// The walk stops at the first of TWO consecutive bins at or below half
+    /// height, so one bin of Welch scatter can't end it early, and the
+    /// crossing is interpolated linearly between bins. A side with no
+    /// crossing inside the flank is mirrored geometrically from the other
+    /// side; with neither, the peak is wider than the flanks and reads as
+    /// such. A non-positive height reads Q = 0.
+    fn peak_q(&self, series: &[f64], peak_bin: usize) -> f64 {
+        let n = series.len();
+        let f0 = self.freq(peak_bin);
+        if f0 <= 0.0 || self.bin_hz <= 0.0 || n < 3 {
             return 0.0;
         }
-        let (mut sy, mut sx2y, mut sx2, mut sx4, mut count) =
-            (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
-        for dx in -(half as i64)..=(half as i64) {
-            let y = excess[(peak_bin as i64 + dx) as usize];
-            if !y.is_finite() {
-                continue; // −∞ outside the computed envelope — skip, the fit stays symmetric enough
+        let bin_at = |hz: f64| ((hz / self.bin_hz).round().max(1.0) as usize).min(n - 1);
+        let (near, far) = PEAK_FLANK_OCT;
+        let flank = |lo_hz: f64, hi_hz: f64| -> Option<(f64, f64)> {
+            let (a, b) = (bin_at(lo_hz), bin_at(hi_hz));
+            let vals: Vec<f64> = series[a.min(b)..=b.max(a)]
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .collect();
+            if vals.is_empty() || lo_hz >= self.freq(n - 1) {
+                return None;
             }
-            let x2 = (dx * dx) as f64;
-            sy += y;
-            sx2y += x2 * y;
-            sx2 += x2;
-            sx4 += x2 * x2;
-            count += 1.0;
-        }
-        let denom = sx4 - sx2 * sx2 / count;
-        if denom <= 0.0 {
+            let mut v = vals;
+            v.sort_by(f64::total_cmp);
+            let m = v.len() / 2;
+            let med = if v.len() % 2 == 1 {
+                v[m]
+            } else {
+                (v[m - 1] + v[m]) / 2.0
+            };
+            Some(((lo_hz * hi_hz).sqrt().log2(), med))
+        };
+        let left = flank(f0 / 2f64.powf(far), f0 / 2f64.powf(near));
+        let right = flank(f0 * 2f64.powf(near), f0 * 2f64.powf(far));
+        let baseline = |hz: f64| -> f64 {
+            match (left, right) {
+                (Some((xl, yl)), Some((xr, yr))) => yl + (yr - yl) * (hz.log2() - xl) / (xr - xl),
+                (Some((_, y)), None) | (None, Some((_, y))) => y,
+                (None, None) => 0.0,
+            }
+        };
+        let bump = |k: usize| series[k] - baseline(self.freq(k).max(self.bin_hz));
+        let top = bump(peak_bin);
+        if top.is_nan() || top <= 0.0 {
             return 0.0;
         }
-        let c = (sx2y - sx2 * sy / count) / denom;
-        if c >= -1e-9 {
-            return 0.0; // flat or concave-up: no measurable narrowness
-        }
-        let width_bins = 2.0 * (3.0 / -c).sqrt();
-        let width_hz = width_bins * self.bin_hz;
+        let level = top / 2.0;
+        let reach_lo = bin_at(f0 / 2f64.powf(near));
+        let reach_hi = bin_at(f0 * 2f64.powf(near));
+        // The interpolated frequency of the half-height crossing walking from
+        // the peak in `step` (−1 or +1); `None` when the flank comes first.
+        let edge = |step: i64| -> Option<f64> {
+            let mut k = peak_bin as i64;
+            loop {
+                let next = k + step;
+                let after = next + step;
+                if next < reach_lo as i64 || next > reach_hi as i64 {
+                    return None;
+                }
+                let v = bump(next as usize);
+                if !v.is_finite() {
+                    return None;
+                }
+                let confirmed = v <= level
+                    && (after < 0
+                        || after as usize >= n
+                        || !bump(after as usize).is_finite()
+                        || bump(after as usize) <= level);
+                if confirmed {
+                    let prev = bump(k as usize);
+                    let frac = if prev > v {
+                        (prev - level) / (prev - v)
+                    } else {
+                        0.0
+                    };
+                    let (fa, fb) = (self.freq(k as usize), self.freq(next as usize));
+                    return Some(fa + frac.clamp(0.0, 1.0) * (fb - fa));
+                }
+                k = next;
+            }
+        };
+        let (f_lo, f_hi) = match (edge(-1), edge(1)) {
+            (Some(lo), Some(hi)) => (lo, hi),
+            (Some(lo), None) => (lo, f0 * f0 / lo.max(f64::MIN_POSITIVE)),
+            (None, Some(hi)) => (f0 * f0 / hi, hi),
+            (None, None) => (f0 / 2f64.powf(near), f0 * 2f64.powf(near)),
+        };
+        let width_hz = f_hi - f_lo;
         if width_hz <= 0.0 {
             return 0.0;
         }
-        self.freq(peak_bin) / width_hz
+        f0 / width_hz
     }
 
     /// The chain's TRANSFER magnitude in dB per bin: this capture's log-PSD
@@ -350,9 +417,8 @@ impl Psd {
     /// `series` minus a [`Psd::octave_envelope`] (so the envelope doesn't
     /// follow the peak itself), contiguous bins whose excess clears
     /// `min_height_db` become ONE peak (center = the run's maximum bin,
-    /// height = its excess, Q = the narrower of [`Psd::peak_q`]'s parabola fit
-    /// over ±[`PEAK_FIT_HALF_BINS`] and the run's own width; the envelope is
-    /// computed only over the scan range plus that fit's reach). Sorted
+    /// height = its excess, Q = [`Psd::peak_q`]'s half-height width; the
+    /// envelope is computed only over the scan range plus that walk's reach). Sorted
     /// highest-first. Empty on a degenerate PSD, an
     /// empty/inverted range, or a `series` that doesn't match the bin grid.
     pub fn find_peaks_in_db(
@@ -412,19 +478,14 @@ impl Psd {
                 let peak_bin = (start..=end)
                     .max_by(|&a, &b| excess[a].total_cmp(&excess[b]))
                     .unwrap_or(start);
-                // Two independent narrowness reads, combined pessimistically
-                // (NARROWER wins): the parabola fit measures a smooth bump's
-                // true bandwidth but flattens a one-bin comb line over its
-                // wide window, while the above-floor RUN width nails the comb
-                // line (1–3 bins) but over-reads a tall bump (its skirt stays
-                // above the floor far past −3 dB). max() lets either signal
-                // veto a fake "wide" reading — a spike can't hide behind a
-                // flat fit, a real resonance isn't penalized by its skirt.
-                let run_q = self.freq(peak_bin) / ((end - start + 1) as f64 * self.bin_hz);
+                // The half-height width reads a one-bin comb line as a
+                // needle (one or two bins wide → Q in the tens to hundreds)
+                // and a smooth bump at its own bandwidth, so no second,
+                // floor-relative run width is combined in any more (#251).
                 peaks.push(SpectralPeak {
                     freq_hz: self.freq(peak_bin),
                     height_db: excess[peak_bin],
-                    q: self.peak_q(&excess, peak_bin).max(run_q),
+                    q: self.peak_q(series, peak_bin),
                 });
                 k = end + 1;
             } else {
@@ -446,17 +507,13 @@ impl Psd {
 }
 
 /// The envelope range [`Psd::find_peaks_in_db`] computes for scan bins
-/// `lo_bin..=hi_bin` of `n`: the scan range plus [`PEAK_FIT_HALF_BINS`] each side.
-/// `peak_q` fits that far around a peak that may sit at the range's edge; nothing
-/// reads the envelope further out, and each bin's envelope depends only on the
-/// input series, so computing more changes no output (#197: the old one-octave
-/// apron, kept from a −3 dB walk that no longer exists, spent ~74% of the median
-/// sorts on bins nobody read).
-fn fit_apron(lo_bin: usize, hi_bin: usize, n: usize) -> (usize, usize) {
-    (
-        lo_bin.saturating_sub(PEAK_FIT_HALF_BINS),
-        (hi_bin + PEAK_FIT_HALF_BINS).min(n - 1),
-    )
+/// `lo_bin..=hi_bin` of `n`: the scan range itself. Only the detection reads
+/// the envelope (`peak_q` measures against its own flanks on the raw series,
+/// #251), and each bin's envelope depends only on the input series, so
+/// computing more changes no output (#197 trimmed a one-octave apron for the
+/// same reason).
+fn fit_apron(lo_bin: usize, hi_bin: usize, _n: usize) -> (usize, usize) {
+    (lo_bin, hi_bin)
 }
 
 /// A localized spectral peak found by [`Psd::find_peaks`]: center frequency,
@@ -700,10 +757,73 @@ mod tests {
         );
     }
 
-    // #197: the envelope apron was trimmed from one octave each side to the
-    // parabola fit's reach. Each bin's envelope depends only on the input series,
-    // so the peaks must be bit-identical to the old apron's — including a peak at
-    // each edge of the scan range, where the fit reaches outside it.
+    /// RBJ peaking biquad (`gain_db` at `f0`, quality `q`) run over `x`.
+    fn peaking(x: &[f32], f0: f64, q: f64, gain_db: f64) -> Vec<f32> {
+        let a = 10f64.powf(gain_db / 40.0);
+        let w0 = 2.0 * std::f64::consts::PI * f0 / f64::from(RATE);
+        let (sin, cos) = w0.sin_cos();
+        let alpha = sin / (2.0 * q);
+        let a0 = 1.0 + alpha / a;
+        let b = [
+            (1.0 + alpha * a) / a0,
+            -2.0 * cos / a0,
+            (1.0 - alpha * a) / a0,
+        ];
+        let fb = [-2.0 * cos / a0, (1.0 - alpha / a) / a0];
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        x.iter()
+            .map(|&v| {
+                let v = f64::from(v);
+                let y = b[0] * v + b[1] * x1 + b[2] * x2 - fb[0] * y1 - fb[1] * y2;
+                (x2, x1, y2, y1) = (x1, v, y1, y);
+                y as f32
+            })
+            .collect()
+    }
+
+    // #251: 3 s of white noise through a +12 dB peaking filter, against the
+    // clean noise (the production transfer path). The strongest peak's Q must
+    // track the true Q within ±30% across the band the localized rules judge.
+    #[test]
+    fn peak_q_tracks_true_q_across_frequency() {
+        let clean = scale(&white_noise(144_000, 251), 0.1);
+        let stim = welch_psd(&clean, RATE);
+        let mut worst = 0.0f64;
+        for f0 in [300.0, 700.0, 2_000.0, 3_500.0] {
+            for q in [2.0, 4.0, 8.0, 12.0] {
+                let cap = welch_psd(&peaking(&clean, f0, q, 12.0), RATE);
+                let transfer = cap.transfer_db(&stim).unwrap();
+                let peaks = cap.find_peaks_in_db(&transfer, 200.0, 8_000.0, 3.0);
+                let p = peaks.first().expect("a peak");
+                assert!(
+                    (p.freq_hz - f0).abs() < f0 * 0.1,
+                    "{f0} Hz Q{q}: at {}",
+                    p.freq_hz
+                );
+                let err = p.q / q - 1.0;
+                worst = worst.max(err.abs());
+                assert!(err.abs() <= 0.30, "{f0} Hz Q{q}: read q {:.2}", p.q);
+            }
+        }
+        eprintln!("worst relative Q error {worst:.3}");
+    }
+
+    #[test]
+    fn a_single_bin_line_still_reads_as_a_needle() {
+        // The comb-line class the Q ceiling rejects: a pure tone over noise.
+        let sig = add(
+            &scale(&white_noise(144_000, 252), 0.05),
+            &sine(2_500.0, 0.3, 144_000),
+        );
+        let psd = welch_psd(&sig, RATE);
+        let p = psd.find_peaks(200.0, 8_000.0, 3.0)[0];
+        assert!(p.q > 85.0, "needle read q {:.1}", p.q);
+    }
+
+    // #197 / #251: the envelope is computed over the scan range only. Each bin's
+    // envelope depends only on the input series, so the peaks must be
+    // bit-identical to a one-octave apron's — including a peak at each edge of
+    // the scan range.
     #[test]
     fn trimmed_apron_finds_bit_identical_peaks() {
         fn octave_apron(lo_bin: usize, hi_bin: usize, n: usize) -> (usize, usize) {

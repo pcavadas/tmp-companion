@@ -1039,10 +1039,13 @@ export interface DoctorDiag {
   key: string;
   label: string;
   sev: DoctorSev;
-  /** Magnitude past the fire threshold in the rule's natural unit (dB) —
-   *  `metric − threshold`, ≥ 0. `< 1.0` (below `POSSIBLE_MAX_SEVERITY`)
-   *  is a near-threshold "possible" verdict rendered muted. */
+  /** Magnitude past the fire threshold in the rule's natural unit (dB, or
+   *  dB/oct for dark/bright) — `metric − threshold`, ≥ 0. Display only. */
   severity: number;
+  /** `severity` over the rule's run-to-run σ: unit-free confidence. Below
+   *  `POSSIBLE_MAX_Z` it is a near-threshold "possible" verdict rendered
+   *  muted; cards sort by it. */
+  z: number;
   bands: number[];
   detail: string;
   explain: string;
