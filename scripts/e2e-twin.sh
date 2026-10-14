@@ -26,8 +26,9 @@
 #   3. seeds the scenario presets (`probe --seed-scenario`, a fresh process, as online);
 #   4. starts the e2e_server and waits for its TWIN phrase, never the online one;
 #   5. runs Playwright with e2e/playwright.twin.config.ts, which only adopts that server;
-#   6. with the twin's audio, fails the run if any capture job failed (`/twin/audio`): a job
-#      the twin ran without re-amp engaged, or one it could not finish;
+#   6. with the twin's audio, prints the capture counters (`/twin/audio`), whatever the specs
+#      did, and fails the run if any capture job failed: one the twin ran without re-amp
+#      engaged, or one it could not finish;
 #   7. tears down: re-amp OFF, stray sweep, recall preset 001, server stopped.
 #
 # Re-amp captures go to the twin's own audio when TMP_E2E_TWIN_AUDIO is set beside the
@@ -132,6 +133,7 @@ twin_probe() {
   return "$rc"
 }
 
+# shellcheck disable=SC2329,SC2317  # invoked via the EXIT/INT/TERM traps, which shellcheck doesn't count as a use
 cleanup() {
   local code=$?
   [ -z "${1:-}" ] || code="$1"
@@ -241,18 +243,11 @@ fi
 log "twin connected — snapshot includes the seeded presets"
 
 # ── 5. the specs ──
-bunx playwright test --config e2e/playwright.twin.config.ts "${SPEC_FILES[@]}"
-# Playwright exits 0 when every selected test skipped: count the tests that actually ran.
-ran="$(bun -e '
-  const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).stats ?? {};
-  console.log((s.expected ?? 0) + (s.flaky ?? 0) + " " + (s.skipped ?? 0));
-' "$TMP_E2E_TWIN_REPORT" 2>/dev/null || true)"
-case "$ran" in
-  ""|"0 "*)
-    err "no test ran on the twin (${ran#* } skipped, or no report): the selected specs skip in this mode — pick *.online specs"
-    exit 1 ;;
-esac
-log "twin specs: ${ran% *} ran, ${ran#* } skipped"
+# Their exit status is kept, not acted on at once: the capture counters below matter most
+# exactly when a spec failed, so they print first and the run exits with the worse verdict.
+spec_rc=0
+bunx playwright test --config e2e/playwright.twin.config.ts "${SPEC_FILES[@]}" || spec_rc=$?
+verdict=$spec_rc
 
 # ── 6. the twin's captures: any failed job fails the lane, whatever the specs made of it ──
 if [ -n "${TMP_E2E_TWIN_AUDIO:-}" ]; then
@@ -260,10 +255,24 @@ if [ -n "${TMP_E2E_TWIN_AUDIO:-}" ]; then
   log "twin captures: ${stats:-unreadable}"
   failed="$(printf '%s' "$stats" | sed -n 's/.*"failed":\([0-9][0-9]*\).*/\1/p')"
   if [ -z "$failed" ]; then
-    err "could not read the twin's capture counters"; exit 1
-  fi
-  if [ "$failed" != 0 ]; then
+    err "could not read the twin's capture counters"; verdict=1
+  elif [ "$failed" != 0 ]; then
     err "$failed twin capture job(s) failed (not engaged, mixed, stalled or refused): see lastError above"
-    exit 1
+    verdict=1
   fi
 fi
+
+# Playwright exits 0 when every selected test skipped: count the tests that actually ran.
+ran="$(bun -e '
+  const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).stats ?? {};
+  console.log((s.expected ?? 0) + (s.flaky ?? 0) + " " + (s.skipped ?? 0));
+' "$TMP_E2E_TWIN_REPORT" 2>/dev/null || true)"
+if [ "$spec_rc" -eq 0 ]; then
+  case "$ran" in
+    ""|"0 "*)
+      err "no test ran on the twin (${ran#* } skipped, or no report): the selected specs skip in this mode — pick *.online specs"
+      verdict=1 ;;
+    *) log "twin specs: ${ran% *} ran, ${ran#* } skipped" ;;
+  esac
+fi
+exit "$verdict"
