@@ -211,6 +211,16 @@ pub(super) fn rebalance_one_scene(
     // scene, which reverts an unsaved level; asserting it on only some captures skews the secant.
     intended_preset_level: Option<f32>,
 ) -> Result<SceneSolve, LevelError> {
+    // 0. The scene AS-IS, exactly as the joint-k and handle lanes open (the prepass reading
+    // when the batch paid it, else one isolated capture): a SILENT scene — e.g. both lane amps
+    // saved at `outputLevel` 0, deep digital silence on the unit — is the shared "no signal on
+    // USB 1/2" routing clamp with every knob left at its authored value, never a failed row.
+    // The solos below cannot tell: they clamp each lane's level up to 1e-3 before measuring.
+    if let Err(silent) = scene_prologue_or_silent(job, stimulus, intended_preset_level, || {
+        job.knobs.iter().map(|kt| kt.current).collect()
+    })? {
+        return Ok(silent);
+    }
     let a = &job.knobs[0];
     let b = &job.knobs[1];
     let cur_a = a.current.clamp(1e-3, 1.0);

@@ -3901,6 +3901,87 @@ fn every_rebalance_capture_asserts_the_run_preset_level() {
     }
 }
 
+/// The REBALANCE lane opens like the joint-k and handle lanes: a mergeable two-amp scene whose
+/// engaged amps both render at `outputLevel` 0 (fixture 403 "Clean" — deep digital silence on
+/// the unit) is the shared "no signal on USB 1/2" routing clamp from its silent as-is capture,
+/// never a failed row and never a solve: no lane solo, mute floor or write follows it.
+#[test]
+fn a_silent_mergeable_scene_rebalances_to_the_no_signal_routing_clamp() {
+    let _serial = serial();
+    scenario_env();
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    let stim = test_stim();
+    let saved = crate::read_saved_preset(ListIndex(403));
+    {
+        let mut s = crate::session::Session::connect_lean().expect("connect");
+        s.load_preset(ListIndex(403)).expect("load 403");
+    }
+    let lane = |group: &str, node: &str| crate::leveller::KnobTarget {
+        knob: crate::leveller::LevelKnob::Block {
+            group_id: group.into(),
+            node_id: node.into(),
+            parameter_id: "outputLevel".into(),
+            scene_slot: Some(2),
+        },
+        lo: 0.0,
+        hi: 1.0,
+        // "Clean" authors both lane amps at 0.0.
+        current: 0.0,
+    };
+    let job = crate::leveller::SceneJob {
+        scene_slot: 2,
+        target_lufs: -23.0,
+        knobs: vec![lane("G2", "ampA"), lane("G3", "ampB")],
+        skip: None,
+        rebalanceable: true,
+        handle: None,
+        prepass: None,
+        force_bypass: vec![],
+    };
+    let from = sim.events().len();
+    let outcomes = crate::leveller::level_scenes_rebalance(
+        ListIndex(403),
+        &[job],
+        &stim,
+        false,
+        None,
+        saved.as_ref(),
+        None,
+        &[],
+        |_, _| {},
+        |_| {},
+        || false,
+    )
+    .expect("the rebalance run must succeed");
+    assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+    let o = &outcomes[0];
+    assert!(
+        o.failure.is_none(),
+        "a silent scene is a clamp, not a failed row: {o:?}"
+    );
+    assert!(o.clamped, "{o:?}");
+    assert_eq!(
+        o.clamp_reason.as_deref(),
+        Some("no signal on USB 1/2"),
+        "{o:?}"
+    );
+    assert_eq!(
+        o.clamp_kind,
+        Some(crate::headroom_trade::ClampKind::NoAuthority),
+        "{o:?}"
+    );
+    assert_eq!(o.writes, 0, "{o:?}");
+    assert_eq!(o.final_level, Some(0.0), "the authored levels stay: {o:?}");
+    let ev = &sim.events()[from..];
+    assert!(
+        !wrote_output_level(ev, "ampA") && !wrote_output_level(ev, "ampB"),
+        "no lane solo, mute floor or solve write follows a silent as-is capture: {ev:?}"
+    );
+}
+
 // ───────────────── P5 external validation: identity + flags on the emitted rows ─────────
 //
 // The bug class this closes: the first design zipped a scene batch's RESULT vec against

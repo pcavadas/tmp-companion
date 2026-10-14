@@ -727,14 +727,12 @@ struct SimState {
 /// REMAINING DEVIATION from the plan's full "merged presetJson" (module header,
 /// `record_save`'s doc): `scene_params` (the fold below) makes the SAVED DOCUMENT TEXT
 /// correctly carry a scene overlay's write (`persisted_value`'s scene-overlay read consults
-/// it). What is STILL
-/// NOT modeled: `F_LOAD_PRESET` reseeds only the `SCENE_BASE` entries of `param_writes` on a
-/// fresh load (that handler's own comment), never `scene_params` — so after a save→load
-/// round trip the rendered TEXT holds the leveled scene value while the CAPTURE MODEL
-/// (`model_lufs`, which reads `param_writes`, not the doc text) still renders that scene's
-/// PRE-level loudness. A future spec that re-measures a scene AFTER its own save must reseed
-/// `param_writes` from `scene_params` on load first, or its capture will silently disagree
-/// with the saved document it just read (post-review amendment 4).
+/// it). `F_LOAD_PRESET` reseeds `param_writes` from BOTH `params` (the `SCENE_BASE` entries)
+/// and `scene_params` on a fresh load of a slot saved this run (that handler's own comment),
+/// so after a save→load round trip the CAPTURE MODEL (`model_lufs`, which reads
+/// `param_writes`, not the doc text) renders the same scene values the saved document and
+/// the scene-recall push carry — a scene saved with its amps at `outputLevel` 0 recalls
+/// silent (post-review amendment 4, closed for #176).
 ///
 /// `ftsw` ASSIGN edits DO round-trip, because the production Assign flow has two readers that
 /// a non-persisting `ftsw` makes lie: `leveller::verify_fs_persisted_writes` re-reads FIELD-8
@@ -1829,6 +1827,15 @@ impl SimDevice {
                 // device would still be sounding the SAVED knob value.
                 for ((group, node, param), v) in st.saved_doc(slot0).params.clone() {
                     st.param_writes.insert((SCENE_BASE, group, node, param), v);
+                }
+                // ...and the SCENE-scoped ones a scene deferred save persisted, the same way:
+                // the real unit re-instantiates the stored row, overlays included, so a scene
+                // whose amps were saved at `outputLevel` 0 must recall SILENT
+                // (`amps_render_silent` reads these through `rendered_param`), and a leveled
+                // scene must re-measure at its leveled value, not the fixture's.
+                for ((scene, group, node, param), v) in st.saved_doc(slot0).scene_params.clone() {
+                    st.param_writes
+                        .insert((i64::from(scene), group, node, param), v);
                 }
             }
             // Echo `currentPresetDataChanged`(3) right after the load — the real device's
@@ -4377,6 +4384,42 @@ mod physics_tests {
         // Forced OFF again (a sibling's own isolated measurement) — back to the flat C.
         st.bypass_writes.insert("pedal".into(), true);
         assert!((model_lufs(&mut st, &sc, &stored).unwrap() - (-10.0)).abs() < 1e-6);
+    }
+
+    /// A scene whose amps are WRITTEN to `outputLevel` 0 and SAVED must recall silent after a
+    /// fresh load: the load re-instantiates the stored row, scene overlays included, so the
+    /// capture model reseeds the saved scene writes exactly as it reseeds the base ones — never
+    /// the fixture's original (audible) overlay while the saved document holds zeroes.
+    #[test]
+    fn a_scene_saved_with_its_amps_at_zero_recalls_silent_after_a_reload() {
+        use crate::session::Session;
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let audible = |sim: &SimDevice| {
+            let mut st = sim.state.lock().expect("sim lock");
+            model_lufs(&mut st, sidecar(), stored_levels())
+        };
+        // 403 scene 0 "Rhythm": both lane amps authored at 1.0 — audible as authored.
+        s.load_preset(ListIndex(403)).unwrap();
+        s.load_scene(0).unwrap();
+        assert!(audible(&sim).is_some(), "fixture premise: scene 0 sounds");
+        s.change_parameter("G2", "ampA", "outputLevel", 0.0)
+            .unwrap();
+        s.change_parameter("G3", "ampB", "outputLevel", 0.0)
+            .unwrap();
+        assert!(
+            audible(&sim).is_none(),
+            "both lanes written to 0 is silence"
+        );
+        s.save_current_preset(ListIndex(403)).unwrap();
+        // A real reload: another slot first, then the target, then recall the scene.
+        s.load_preset(ListIndex(402)).unwrap();
+        s.load_preset(ListIndex(403)).unwrap();
+        s.load_scene(0).unwrap();
+        assert!(
+            audible(&sim).is_none(),
+            "the saved zeroes must survive the reload into the capture model"
+        );
     }
 
     /// An amp `outputLevel` of 0 is DEEP DIGITAL SILENCE on the real unit (`danger.md`), not a

@@ -870,7 +870,9 @@ pub(super) struct Prologue {
 /// REORDERED RUN: when the job carries a [`ScenePrepass`] the reading is CONSUMED rather than
 /// taken — the batch already paid this capture up front so it could plan the headroom trade
 /// against every ceiling at once. A job with no prepass measures here exactly as before, so
-/// the rebalance/redistribution/bench callers are untouched.
+/// the redistribution/bench callers are untouched. The rebalance lane opens with it too
+/// (`rebalance_one_scene`, through [`scene_prologue_or_silent`]), so a silent mergeable scene
+/// clamps before any lane solo; with no prepass that costs it one as-is capture.
 ///
 /// `intended_preset_level` rides through to [`measure_scene_asis`] — the run's own solved or
 /// UNSAVED-held `presetLevel`, re-asserted after the scene recall so the reading describes
@@ -947,8 +949,8 @@ pub(super) fn no_signal_scene_solve(levels: Vec<f32>) -> SceneSolve {
 
 /// [`scene_prologue`] with the silent as-is capture converted to the routing clamp
 /// ([`no_signal_scene_solve`]): `Ok(Err(solve))` is the scene's finished outcome, `Ok(Ok(_))`
-/// the reading to solve from. Shared by BOTH per-scene lanes so they cannot word or shape the
-/// clamp two ways. `levels` is what the device holds (each knob's authored `current`).
+/// the reading to solve from. Shared by EVERY per-scene lane (joint-k, user handle, and
+/// rebalance's `rebalance_one_scene`) so they cannot word or shape the clamp two ways. `levels` is what the device holds (each knob's authored `current`).
 pub(super) fn scene_prologue_or_silent(
     job: &SceneJob,
     stimulus: &[f32],
