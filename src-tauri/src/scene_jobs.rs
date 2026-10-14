@@ -141,8 +141,7 @@ fn amp_nodes(structure: &session::ActiveGraph) -> Vec<&session::GraphNode> {
 }
 
 /// Whether `doc` states the bypass of EVERY one of `amps` — the single definition of
-/// "usable scene doc" that [`classify_scene_knobs`] refuses on and
-/// [`scenes_missing_amp_bypass`] scans for, so the two can never disagree. All, not any: a
+/// "usable scene doc" that [`classify_scene_knobs`] refuses on. All, not any: a
 /// doc cut BETWEEN two amps answers the first and lets the second fall back to base, which
 /// levels a two-amp scene as the wrong pair.
 fn answers_all_amp_bypasses(amps: &[&session::GraphNode], doc: &serde_json::Value) -> bool {
@@ -1579,178 +1578,99 @@ pub(crate) fn scene_docs_from_saved(
     Some((docs, restore))
 }
 
-/// Scene-doc prepass with a switch between the SAVED-JSON path and the live recall path.
-/// `use_overlay` = derive the docs from the saved preset via `scene_docs_from_saved` (no scene
-/// recalls on the unit), then make the preset current; when the saved document cannot answer
-/// (no `audioGraph`, a requested scene missing or cut) or cannot be read, it logs the reason
-/// and falls back to the live `prepass_scene_docs`. `!use_overlay` goes straight to the live
-/// prepass.
+/// THE production scene-doc prepass (#176): each requested scene's doc derived from the
+/// caller's COMPLETE saved preset via [`scene_docs_from_saved`] — no scene recalls on the unit
+/// — then the preset made current. There is NO live fallback: the live walk
+/// ([`prepass_scene_docs`], kept for the probe benches and `probe --overlay-ab`) was the flaky
+/// harvest this replaces (the active-scene no-push gap, pushes cut before the amp nodes), and
+/// in the one case the saved document cannot answer it was actively dangerous — see
+/// [`saved_scene_docs_refusal`].
 ///
-/// The SAVED document is the caller's `saved` when given — the batch's one COMPLETE-OR-FAIL
-/// field-8 read (`read_saved_preset_complete`), never a raw read whose tail can be cut
-/// mid-`scenes` — else a complete-or-fail read of `audioGraph` + `scenes` here.
+/// `saved` is the batch's one COMPLETE-OR-FAIL field-8 read, which requires `audioGraph` and
+/// `scenes` (`commands::level_scenes`), so a cut tail has already been re-read from a backup
+/// or refused before this runs. When the saved document still cannot answer — no
+/// `audioGraph`, or a requested scene index that is not in `scenes[]` — this REFUSES with a
+/// readable reason and sends NOTHING to the device: no load, no recall.
 ///
 /// THE LOAD. The batched runner's contract is that the preset is already CURRENT (its apply
-/// sessions send no `LoadPreset`), and the live prepass's own `load_preset` is what made it so.
-/// The overlay path recalls nothing, so it loads the preset itself, through
-/// `leveller::make_current`: its OWN lean connection (danger.md: load in its own connection),
-/// one `load_preset` + the post-load settle, closed before any capture. It is the same load
-/// the live prepass opens with, at the same point of the run — after the field-8 read and
-/// before PHASE 1 and every deferred write, so it can never land ahead of
+/// sessions send no `LoadPreset`). This path recalls nothing, so it loads the preset itself,
+/// through `leveller::make_current`: its OWN lean connection (danger.md: load in its own
+/// connection), one `load_preset` + the post-load settle, closed before any capture — after
+/// the field-8 read and before PHASE 1 and every deferred write, so it can never land ahead of
 /// `save_deferred_scene_writes`. On a dirty working copy it is a real reload, on a clean one a
 /// no-op that already equals the stored row, so either way the docs derived from the stored
-/// row describe the working copy every later capture hears. Nothing after the prepass relied
-/// on the live walk's scene recalls: every capture and write recalls its own scene first
-/// (the scene-context rule), and the batch-end save recalls `restore`.
-///
-/// `saved` is ALSO, on the live path, the amp roster the scene-doc repair scan checks every
-/// live doc against, and the answer it splices in. `None` = no repair.
+/// row describe the working copy every later capture hears. Every capture and write recalls
+/// its own scene first (the scene-context rule), and the batch-end save recalls `restore`.
 pub(crate) fn prepass_scene_docs_via(
     slot: ListIndex,
     scene_slots: &[u32],
-    use_overlay: bool,
     saved: Option<&serde_json::Value>,
 ) -> Result<SceneDocs, String> {
-    prepass_scene_docs_with(
-        slot,
-        scene_slots,
-        use_overlay,
-        saved,
-        |slot| crate::read_slot_preset_complete(slot, &["audioGraph", "scenes"]).map(|(p, _, _)| p),
-        crate::leveller::make_current,
-        prepass_scene_docs,
-    )
+    prepass_scene_docs_with(slot, scene_slots, saved, crate::leveller::make_current)
 }
 
-/// [`prepass_scene_docs_via`] with its three device seams injected (the complete read used
-/// when the caller has no `saved`, the load, and the live prepass), so the overlay-vs-live
-/// decision and the load are unit-tested without a device.
+/// [`prepass_scene_docs_via`] with its one device seam (the load) injected, so the refusal and
+/// the load are unit-tested without a device.
 pub(crate) fn prepass_scene_docs_with(
     slot: ListIndex,
     scene_slots: &[u32],
-    use_overlay: bool,
     saved: Option<&serde_json::Value>,
-    read_complete: impl FnOnce(ListIndex) -> Result<serde_json::Value, String>,
     load: impl FnOnce(ListIndex) -> Result<(), String>,
-    live: impl FnOnce(ListIndex, &[u32]) -> Result<SceneDocs, String>,
 ) -> Result<SceneDocs, String> {
-    if use_overlay {
-        let read;
-        let preset = match saved {
-            Some(p) => Some(p),
-            None => match read_complete(slot) {
-                Ok(p) => {
-                    read = p;
-                    Some(&read)
-                }
-                Err(e) => {
-                    log::info!(
-                        "scene-doc overlay: slot {slot} complete field-8 read failed ({e}) — \
-                         falling back to live prepass"
-                    );
-                    None
-                }
-            },
-        };
-        if let Some(docs) = preset.and_then(|p| scene_docs_from_saved(p, scene_slots)) {
-            load(slot)?;
-            return Ok(docs);
-        }
-        if preset.is_some() {
-            log::info!(
-                "scene-doc overlay: slot {slot} saved preset lacked audioGraph or a requested \
-                 scene — falling back to live prepass"
-            );
-        }
-    }
-    let (mut docs, restore) = live(slot, scene_slots)?;
-    if let Some(preset) = saved {
-        backfill_scene_docs_from_saved(slot, preset, &mut docs);
-    }
-    Ok((docs, restore))
-}
-
-/// The scenes whose doc cannot answer EVERY amp's bypass — the same [`answers_all_amp_bypasses`]
-/// [`classify_scene_knobs`] refuses on. Keyed on the AMP question, not on "the doc is `Null`":
-/// a doc cut *after* some nodes but *before* the amps is a live partial that reads as present
-/// and would slip past a null check while producing the identical wrong-amp fallback.
-///
-/// The amp roster comes from `structure`, the caller's COMPLETE saved graph — never from the
-/// docs themselves: a live doc cut between two amps lists one amp and would answer for
-/// itself. A graph with no amps yields an empty list and the classifier's own error stands.
-pub(crate) fn scenes_missing_amp_bypass(
-    structure: &session::ActiveGraph,
-    docs: &[(u32, Option<serde_json::Value>)],
-) -> Vec<u32> {
-    let amps = amp_nodes(structure);
-    if amps.is_empty() {
-        return Vec::new();
-    }
-    docs.iter()
-        .filter(|(_, d)| {
-            d.as_ref()
-                .is_none_or(|doc| !answers_all_amp_bypasses(&amps, doc))
-        })
-        .map(|(s, _)| *s)
-        .collect()
-}
-
-/// Splice the SAVED preset's answer into every scene doc that cannot answer the amp question,
-/// in place. `false` = nothing needed it, or the preset could not answer either. Pure —
-/// [`backfill_scene_docs_from_saved`] owns the device read.
-///
-/// Repairs an unanswerable doc; never overrides an answerable one, and never substitutes base.
-/// Takes the unanswerable scenes as an argument rather than rescanning: the device caller
-/// scans first to decide whether the saved read is worth paying for at all, and a second scan
-/// here could only ever produce the same list.
-pub(crate) fn repair_scene_docs_from(
-    docs: &mut [(u32, Option<serde_json::Value>)],
-    preset: &serde_json::Value,
-    needy: &[u32],
-) -> bool {
-    if needy.is_empty() {
-        return false;
-    }
-    // Ask for ONLY the scenes that need repair: `scene_docs_from_saved` is all-or-nothing, so
-    // passing the full roster would let one unreadable scene discard the answer for the rest.
-    let Some((repaired, _)) = scene_docs_from_saved(preset, needy) else {
-        return false;
+    let Some(preset) = saved else {
+        return Err(format!(
+            "slot {}: no saved preset to derive the scene documents from — refusing to level \
+             its scenes; nothing was sent to the unit",
+            slot.device_slot()
+        ));
     };
-    let mut filled = false;
-    for (scene, doc) in repaired {
-        if let Some(slotted) = docs.iter_mut().find(|(s, _)| *s == scene) {
-            filled |= doc.is_some();
-            slotted.1 = doc;
-        }
-    }
-    filled
+    let Some(docs) = scene_docs_from_saved(preset, scene_slots) else {
+        return Err(saved_scene_docs_refusal(slot, preset, scene_slots));
+    };
+    load(slot)?;
+    Ok(docs)
 }
 
-/// Repair, in place, every live scene doc that cannot answer the amp question, from the
-/// caller's COMPLETE saved preset (`prepass_scene_docs_via`'s `saved`): its graph is the amp
-/// roster the scan checks each doc against, and its scene overlays are the answer spliced
-/// in. Pure apart from the log lines; `repair_scene_docs_from` is the splice.
-fn backfill_scene_docs_from_saved(
+/// The readable refusal for a saved document [`scene_docs_from_saved`] cannot answer. Pure.
+///
+/// Why refuse rather than fall back to the live walk: with `scenes` guaranteed complete by
+/// the read, a requested index outside it means the request names a scene the preset does
+/// not have (a stale request after the preset changed on the unit). The live walk had no
+/// range guard and would send `loadScene(N)` past the preset's scenes — which aborts the
+/// device server (fw 1.8.58 static RE), and on a scene-less preset swaps the working copy for
+/// the EMPTY template under the same name (`presetError` 6). A missing `audioGraph` has no
+/// safe guess either.
+pub(crate) fn saved_scene_docs_refusal(
     slot: ListIndex,
     preset: &serde_json::Value,
-    docs: &mut [(u32, Option<serde_json::Value>)],
-) {
-    let structure = session::extract_active_graph(preset, None);
-    let needy = scenes_missing_amp_bypass(&structure, docs);
-    if needy.is_empty() {
-        return;
-    }
-    if !repair_scene_docs_from(docs, preset, &needy) {
-        log::warn!(
-            "scene-doc repair: slot {slot} saved preset could not answer scenes {needy:?} — \
-             they will be skipped, not guessed"
-        );
-    } else {
-        log::info!(
-            "scene-doc repair: slot {slot} filled scenes {needy:?} from the saved preset (the live \
-             prepass pushed no usable amp state for them)"
+    scene_slots: &[u32],
+) -> String {
+    let dev = slot.device_slot();
+    if preset.get("audioGraph").is_none() {
+        return format!(
+            "slot {dev}: the saved preset has no signal chain (audioGraph) to level its scenes \
+             from — refusing; nothing was sent to the unit"
         );
     }
+    let scenes = preset.get("scenes").and_then(|s| s.as_array());
+    let count = scenes.map_or(0, Vec::len);
+    let missing: Vec<String> = scene_slots
+        .iter()
+        .filter(|&&s| s < session::BASE_SCENE_SLOT)
+        .filter(|&&s| {
+            scenes
+                .and_then(|a| a.get(s as usize))
+                .is_none_or(|v| !v.is_object())
+        })
+        .map(|s| (s + 1).to_string())
+        .collect();
+    format!(
+        "slot {dev}: scene {} was requested, but the saved preset has {count} scene{} — \
+         refusing to level it; nothing was sent to the unit. Refresh the preset list and try \
+         again",
+        missing.join(", "),
+        if count == 1 { "" } else { "s" }
+    )
 }
 
 // ───────────────────── Scene handle picker (enumeration) ─────────────────────

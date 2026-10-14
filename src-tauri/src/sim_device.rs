@@ -622,7 +622,8 @@ struct SimState {
     /// drive a save first.
     saved_scene: HashMap<u32, Option<u32>>,
     /// Gate seam: while scene `.0` is active, field-3 pushes are cut at the first byte of `.1`.
-    /// Field-8 stays whole — it is what `scene_jobs::backfill_scene_docs_from_saved` repairs from.
+    /// Field-8 stays whole — and since #176 production derives its scene docs from field-8
+    /// (`scene_jobs::scene_docs_from_saved`), so a cut push never reaches it.
     #[cfg(feature = "e2e")]
     truncated_scene_push: Option<(u32, String)>,
     /// The last `setPresetLevel` — the linear global multiplier the model shifts by

@@ -431,98 +431,74 @@ fn scene_docs_restore_scene_is_the_guarded_saved_on_load_scene() {
 
 // ── #176: the production saved-overlay prepass (`prepass_scene_docs_with`) ───────────────
 
-/// What one `prepass_scene_docs_with` call did on the device: loads issued, live prepasses
-/// run, complete reads issued — and its answer.
+/// What one `prepass_scene_docs_with` call did on the device — the loads it issued — and its
+/// answer. There is no other device seam: no live walk, no read.
 struct PrepassTrace {
     loads: Vec<u32>,
-    live: u32,
-    reads: u32,
     result: Result<SceneDocs, String>,
 }
 
-/// Drive the overlay-vs-live decision with recording fakes. `read` answers the complete read
-/// used when the caller has no `saved`; the live fake returns one marker doc and restore 7.
-fn prepass_trace(
-    use_overlay: bool,
+fn prepass_trace_for(
     saved: Option<&serde_json::Value>,
-    read: Result<serde_json::Value, String>,
+    scene_slots: &[u32],
     load: Result<(), String>,
 ) -> PrepassTrace {
     let mut loads = Vec::new();
-    let (mut live, mut reads) = (0, 0);
-    let result = prepass_scene_docs_with(
-        ListIndex(12),
-        &[0, session::BASE_SCENE_SLOT],
-        use_overlay,
-        saved,
-        |_| {
-            reads += 1;
-            read
-        },
-        |slot| {
-            loads.push(slot.0);
-            load
-        },
-        |_, slots| {
-            live += 1;
-            Ok((
-                slots
-                    .iter()
-                    .map(|s| (*s, Some(serde_json::json!({ "live": true }))))
-                    .collect(),
-                Some(7),
-            ))
-        },
-    );
-    PrepassTrace {
-        loads,
-        live,
-        reads,
-        result,
-    }
+    let result = prepass_scene_docs_with(ListIndex(12), scene_slots, saved, |slot| {
+        loads.push(slot.0);
+        load
+    });
+    PrepassTrace { loads, result }
+}
+
+fn prepass_trace(saved: Option<&serde_json::Value>, load: Result<(), String>) -> PrepassTrace {
+    prepass_trace_for(saved, &[0, session::BASE_SCENE_SLOT], load)
 }
 
 #[test]
 fn overlay_prepass_derives_docs_from_saved_and_loads_the_preset_once() {
     let saved = saved_preset();
-    let t = prepass_trace(true, Some(&saved), Err("unused".into()), Ok(()));
+    let t = prepass_trace(Some(&saved), Ok(()));
     let (docs, restore) = t.result.expect("overlay docs");
-    // The batch runner needs the preset CURRENT: exactly one load of THIS slot, and no
-    // scene-recalling live walk, no second field-8 read (the caller's complete one serves).
+    // The batch runner needs the preset CURRENT: exactly one load of THIS slot.
     assert_eq!(t.loads, vec![12]);
-    assert_eq!((t.live, t.reads), (0, 0));
     let want = scene_docs_from_saved(&saved, &[0, session::BASE_SCENE_SLOT]).unwrap();
     assert_eq!(docs, want.0);
     assert_eq!(restore, Some(2), "the saved on-load scene");
 }
 
 #[test]
-fn overlay_prepass_falls_back_to_the_live_walk_when_saved_cannot_answer() {
-    // A requested scene the saved document does not carry (a cut `scenes`).
-    let mut cut = saved_preset();
-    cut["scenes"] = serde_json::json!([]);
-    let t = prepass_trace(true, Some(&cut), Err("unused".into()), Ok(()));
-    let (docs, restore) = t.result.expect("live docs");
-    assert_eq!((t.live, t.reads), (1, 0));
+fn overlay_prepass_refuses_a_scene_the_saved_preset_does_not_have_and_sends_nothing() {
+    // `scenes` is complete (the batch's read guarantees it), so an index past it names a scene
+    // the preset does not have. The old live fallback would have sent `loadScene` past the
+    // preset's scenes — a device-server abort. Refuse instead, before any load.
+    let saved = saved_preset();
+    let count = saved["scenes"].as_array().expect("scenes").len() as u32;
+    let t = prepass_trace_for(Some(&saved), &[0, count + 2], Ok(()));
+    let err = t.result.expect_err("an out-of-range scene must be refused");
     assert!(
-        t.loads.is_empty(),
-        "the live prepass makes the preset current itself"
+        err.contains(&format!("scene {} was requested", count + 3)),
+        "{err}"
     );
-    assert_eq!(docs[0].1, Some(serde_json::json!({ "live": true })));
-    assert_eq!(restore, Some(7));
+    assert!(err.contains(&format!("has {count} scene")), "{err}");
+    assert!(err.contains("nothing was sent to the unit"), "{err}");
+    assert!(t.loads.is_empty(), "a refusal must not load the preset");
 }
 
 #[test]
-fn overlay_prepass_reads_complete_when_the_caller_has_no_saved_document() {
-    // No `saved`: one complete-or-fail read, then the overlay path as usual.
-    let t = prepass_trace(true, None, Ok(saved_preset()), Ok(()));
-    assert!(t.result.is_ok());
-    assert_eq!((t.reads, t.live), (1, 0));
-    assert_eq!(t.loads, vec![12]);
-    // That read refusing (a truncated preset with no backup answer): the live walk.
-    let t = prepass_trace(true, None, Err("too large".into()), Ok(()));
-    assert!(t.result.is_ok());
-    assert_eq!((t.reads, t.live), (1, 1));
+fn overlay_prepass_refuses_a_saved_preset_with_no_audio_graph_and_sends_nothing() {
+    let mut cut = saved_preset();
+    cut.as_object_mut().unwrap().remove("audioGraph");
+    let t = prepass_trace(Some(&cut), Ok(()));
+    let err = t.result.expect_err("no audioGraph must be refused");
+    assert!(err.contains("audioGraph"), "{err}");
+    assert!(t.loads.is_empty());
+}
+
+#[test]
+fn overlay_prepass_refuses_without_a_saved_document() {
+    let t = prepass_trace(None, Ok(()));
+    assert!(t.result.is_err());
     assert!(t.loads.is_empty());
 }
 
@@ -531,23 +507,8 @@ fn overlay_prepass_fails_the_run_when_the_load_fails() {
     // Without the load the runner would write into whatever preset is current — never
     // swallow it, and never let a doc set describe a preset that was not made current.
     let saved = saved_preset();
-    let t = prepass_trace(
-        true,
-        Some(&saved),
-        Err("unused".into()),
-        Err("no unit".into()),
-    );
+    let t = prepass_trace(Some(&saved), Err("no unit".into()));
     assert_eq!(t.result.unwrap_err(), "no unit");
-    assert_eq!(t.live, 0);
-}
-
-#[test]
-fn live_prepass_is_unchanged_when_the_overlay_is_off() {
-    let saved = saved_preset();
-    let t = prepass_trace(false, Some(&saved), Err("unused".into()), Ok(()));
-    assert!(t.result.is_ok());
-    assert_eq!((t.live, t.reads), (1, 0));
-    assert!(t.loads.is_empty());
 }
 
 // ── saved-structure fallback (the oversized-audioGraph class) ───────────────────────────
@@ -1231,7 +1192,7 @@ fn a_scene_whose_saved_overlay_is_unclassifiable_skips_instead_of_losing_its_hea
     );
 }
 
-// --- Live-prepass misses are repaired from the saved preset, never from base ---
+// --- The swap scene: the live walk missed it; the saved overlay answers it ---
 
 // G-D1a's two-amp base, plus the SCENES the real "Friedman HBE" carries. Scene 1 ("Clean") is
 // the swap scene: its overlay inverts the base pair — `ACD_BE100` off, `ACD_TwinReverb65NoFx`
@@ -1253,118 +1214,35 @@ fn two_amp_swap_preset() -> serde_json::Value {
     p
 }
 
-// The repair predicate keys on the AMP question, so it catches BOTH live-prepass failure
-// shapes — the scene that pushed nothing at all, and the scene whose doc arrived cut before
-// the amp nodes. The partial is the one a `Null` check would miss while it produces the
-// identical wrong-amp fallback.
-#[test]
-fn scenes_missing_amp_bypass_flags_absent_and_partial_docs() {
-    let (docs, _) = scene_docs_from_saved(&two_amp_swap_preset(), &[0]).unwrap();
-    let answerable = docs[0].1.clone().unwrap();
-    let partial = serde_json::json!({
-        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
-            { "nodeId": "ACD_TubeScreamer", "dspUnitParameters": { "bypass": false } }
-        ] } }
-    });
-    let docs = vec![
-        (0u32, Some(answerable)),
-        (1u32, None),
-        (2u32, Some(partial)),
-    ];
-    assert_eq!(
-        scenes_missing_amp_bypass(&saved_structure(), &docs),
-        vec![1, 2],
-        "the absent doc AND the amp-less partial both need repair; the answerable one does not"
-    );
-}
-
 // A doc cut BETWEEN the two amps answers the first (BE100) and not the second (the Twin the
-// swap scene needs): it must be flagged for repair and refused by the classifier, never
-// classified with the Twin's bypass resolved from base.
+// swap scene needs): the classifier must refuse it, never classify it with the Twin's bypass
+// resolved from base.
 #[test]
-fn a_doc_cut_between_two_amps_is_flagged_and_refused() {
+fn a_doc_cut_between_two_amps_is_refused_by_the_classifier() {
     let cut = serde_json::json!({
         "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
             { "nodeId": "ACD_BE100", "dspUnitParameters": { "bypass": true } }
         ] } }
     });
-    let (answerable, _) = scene_docs_from_saved(&two_amp_swap_preset(), &[0]).unwrap();
-    let docs = vec![(0u32, answerable[0].1.clone()), (1u32, Some(cut.clone()))];
-    assert_eq!(
-        scenes_missing_amp_bypass(&saved_structure(), &docs),
-        vec![1]
-    );
     let structure = session::extract_active_graph(&two_amp_base_saved(), None);
     let err = classify_scene_knobs(&structure, &cut, &two_amp_candidates()).unwrap_err();
     assert!(err.contains("every amp"), "{err}");
 }
 
-/// The complete saved graph every repair scan takes its amp roster from.
-fn saved_structure() -> session::ActiveGraph {
-    session::extract_active_graph(&two_amp_base_saved(), None)
-}
-
-// The roster must come from the COMPLETE saved graph, never from the live docs: when the only
-// doc is the one cut between the two amps, a roster read off that doc lists one amp and the
-// doc answers for itself (red under the docs-derived roster).
+// The HW shape the live walk got wrong (2026-09-01: the swap scene pushed no usable doc and was
+// skipped): derived from the saved preset, the swap scene classifies onto its OWN amp.
 #[test]
-fn a_cut_only_doc_is_flagged_off_the_saved_roster() {
-    let cut = serde_json::json!({
-        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
-            { "nodeId": "ACD_BE100", "dspUnitParameters": { "bypass": true } }
-        ] } }
-    });
-    let docs = vec![(1u32, Some(cut))];
-    assert_eq!(
-        scenes_missing_amp_bypass(&saved_structure(), &docs),
-        vec![1]
-    );
-}
-
-// The repair itself, end to end on the HW shape: two scenes the live prepass could not answer
-// (one pushed nothing, one arrived cut before the amps) are filled from the saved preset, the
-// scene that DID answer is left alone, and the swap scene ends up on its own amp.
-#[test]
-fn repair_scene_docs_fills_only_the_unanswerable_scenes() {
+fn the_saved_overlay_doc_puts_the_swap_scene_on_its_own_amp() {
     let saved = two_amp_swap_preset();
-    let (answerable, _) = scene_docs_from_saved(&saved, &[0]).unwrap();
-    let mut docs = vec![
-        (0u32, answerable[0].1.clone()),
-        // Scene 1 pushed nothing at all.
-        (1u32, None),
-    ];
-    // Mark scene 0's doc so we can prove the repair did not touch it.
-    docs[0].1.as_mut().unwrap()["__probe"] = serde_json::json!("untouched");
-
-    let needy = scenes_missing_amp_bypass(&saved_structure(), &docs);
-    assert_eq!(
-        needy,
-        vec![1],
-        "only the scene that pushed nothing needs repair"
-    );
-    assert!(repair_scene_docs_from(&mut docs, &saved, &needy));
-    assert_eq!(docs[0].1.as_ref().unwrap()["__probe"], "untouched");
-
+    let (docs, _) = scene_docs_from_saved(&saved, &[1]).unwrap();
     let structure = session::extract_active_graph(&two_amp_base_saved(), None);
     let (knobs, _) = classify_scene_knobs(
         &structure,
-        docs[1].1.as_ref().unwrap(),
+        docs[0].1.as_ref().unwrap(),
         &two_amp_candidates(),
     )
-    .expect("the repaired scene must classify");
+    .expect("the swap scene must classify");
     assert_eq!(knobs[0].1, "ACD_TwinReverb65NoFx");
-}
-
-// A saved preset that cannot answer either (truncated `scenes`) repairs NOTHING and leaves the
-// docs as they were — the classifier's refusal is still what the row reports.
-#[test]
-fn repair_scene_docs_leaves_docs_untouched_when_the_saved_preset_cannot_answer() {
-    let mut truncated = two_amp_swap_preset();
-    truncated["scenes"] = serde_json::json!([]);
-    let mut docs = vec![(1u32, None)];
-    let needy = scenes_missing_amp_bypass(&saved_structure(), &docs);
-    assert!(!repair_scene_docs_from(&mut docs, &truncated, &needy));
-    assert!(docs[0].1.is_none(), "no doc was invented");
 }
 
 // `scene_node_overrides` — the Doctor's per-scene graph source. Full and BypassOnly overlays

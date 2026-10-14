@@ -1842,7 +1842,9 @@ fn footswitch_assignment_set_and_clear_edit_the_working_copy_and_survive_only_a_
 }
 
 /// The preset-28 ("Friedman HBE") first-run class: a scene whose live field-3 doc arrives cut
-/// before the amp nodes must still level ITS OWN amp, from the saved preset. HW 2026-09-01, two
+/// before the amp nodes must still level ITS OWN amp, from the saved preset. Since #176 the
+/// batch never reads the recall push at all (the docs come from the saved overlay), so this now
+/// pins that a cut push cannot leak into the solve. HW 2026-09-01, two
 /// of four scenes pushed unanswerable docs and were silently SKIPPED — one of them swaps amps.
 ///
 /// Paired with BASE, not a second scene: base's push is whole so `scene_jobs::structure_graph`
@@ -1892,6 +1894,58 @@ fn a_truncated_swap_scene_levels_its_own_amp_not_the_base_one() {
     assert!(
         !wrote_output_level(&events, BASE_AMP),
         "{BASE_AMP} is bypassed here and base's row moves presetLevel: {rows:?}"
+    );
+}
+
+/// #176: a request for a scene the preset does not have is REFUSED before anything reaches the
+/// unit. The saved read guarantees `scenes` is complete, so index 6 on 403 (4 scenes) is a
+/// stale request; the removed live fallback would have sent `loadScene(6)` past the preset's
+/// scenes, which aborts the device server. No load and no scene recall may go out.
+#[test]
+fn a_scene_outside_the_preset_is_refused_and_no_scene_recall_is_sent() {
+    let _serial = serial();
+    let _cancel_reset = SceneCancelReset;
+    scenario_env();
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    let (_app, webview) = batched_scene_app();
+    let amp = serde_json::json!([
+        {"groupId": "G2", "nodeId": "ampA", "parameterId": "outputLevel", "value": 1.0},
+        {"groupId": "G3", "nodeId": "ampB", "parameterId": "outputLevel", "value": 1.0}
+    ]);
+    let from = sim.events().len();
+    let err = invoke(
+        &webview,
+        "level_scenes_apply_batched",
+        serde_json::json!({
+            "slot": 403,
+            "jobs": [{"sceneSlot": 0, "targetLufs": -23.0}, {"sceneSlot": 6, "targetLufs": -23.0}],
+            "candidates": amp,
+            "save": true, "rebalance": false,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect_err("a scene the preset does not have must be refused");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("scene 7 was requested") && msg.contains("has 4 scenes"),
+        "the refusal names the missing scene and the preset's real count: {msg}"
+    );
+    let ev = &sim.events()[from..];
+    assert!(
+        !ev.iter().any(|e| matches!(
+            e,
+            crate::sim_device::SimEvent::LoadScene(_) | crate::sim_device::SimEvent::Loaded(_)
+        )),
+        "no load and no scene recall may reach the unit: {ev:?}"
+    );
+    assert!(
+        !ev.iter()
+            .any(|e| matches!(e, crate::sim_device::SimEvent::ChangeParameter { .. })),
+        "nothing is written: {ev:?}"
     );
 }
 

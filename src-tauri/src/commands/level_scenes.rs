@@ -706,10 +706,16 @@ fn run_scene_batch(
     // A3: widened to `["scenes", "ftsw"]` when base is in this batch — `ftsw` feeds the
     // base isolation derivation below, and a PARTIAL `ftsw` silently under-isolates (some
     // footswitch-owned blocks never forced off), so it must be required, not optional.
+    // `audioGraph` is required too (#176): the scene docs are derived from this read alone
+    // (`prepass_scene_docs_via`, no live fallback), so a graph cut off its tail must take the
+    // backup re-read or be refused here, never reach the prepass half-read.
     let saved = Some(if base_in_plan {
-        crate::scene_jobs::read_saved_preset_complete_sections(slot, &["scenes", "ftsw"])?
+        crate::scene_jobs::read_saved_preset_complete_sections(
+            slot,
+            &["audioGraph", "scenes", "ftsw"],
+        )?
     } else {
-        crate::read_saved_preset_complete(slot)?
+        crate::scene_jobs::read_saved_preset_complete_sections(slot, &["audioGraph", "scenes"])?
     });
     let batch = SceneBatch {
         req: &req,
@@ -901,14 +907,13 @@ impl SceneBatch<'_> {
         // SAVED-OVERLAY prepass (#176): each scene's doc is derived from the complete
         // `saved` read above (its stored overlay applied over base) plus the prepass's own-
         // connection `load_preset` — no scene-hopping on the unit. Validated against the live
-        // prepass by `probe --overlay-ab` (76/76 scene-amp pairs, 0 bypass mismatches); it
-        // falls back to the live walk only when the saved document cannot answer
-        // (`prepass_scene_docs_via`'s doc). A scene whose stored amp `outputLevel` is 0 now
-        // reads as what it is — deep digital silence on the unit — and its as-is capture
-        // becomes the "no signal on USB 1/2" routing clamp (`scene_prologue_or_silent`), the
-        // conversion the base and footswitch lanes already make.
-        let (docs, restore_scene) =
-            prepass_scene_docs_via(slot, self.scene_slots, true, self.saved)?;
+        // walk by `probe --overlay-ab` (76/76 scene-amp pairs, 0 bypass mismatches). There is
+        // no live fallback: a saved document that cannot answer (no `audioGraph`, a requested
+        // scene the preset does not have) is REFUSED before anything reaches the unit
+        // (`prepass_scene_docs_via`'s doc). A scene whose stored amp `outputLevel` is 0 reads
+        // as what it is — deep digital silence on the unit — and its as-is capture becomes the
+        // "no signal on USB 1/2" routing clamp (`scene_prologue_or_silent`).
+        let (docs, restore_scene) = prepass_scene_docs_via(slot, self.scene_slots, self.saved)?;
         // `build_scene_jobs` stamps a base target on every job; override each with its
         // OWN wire job's offset-adjusted target (match by scene slot) so a mixed-target
         // preset levels in this ONE batch. `jobs` is non-empty (guarded above).
