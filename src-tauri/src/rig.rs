@@ -9,8 +9,12 @@
 //! `session::reamp`'s `REAMP_UNSETTLED`: [`scoped`] installs one for a closure and every
 //! `Session::connect*`, `audio::reamp_capture`, settle and abort check inside it — however
 //! deep — goes to that rig. A thread with nothing installed gets the build's default:
-//! - production and the ONLINE e2e tier: [`DeviceRig`], the real seized HID and Core Audio
-//!   / ALSA / WASAPI streams;
+//! - production and the ONLINE e2e tier (`TMP_E2E_ONLINE=1`): [`DeviceRig`], the real
+//!   seized HID and Core Audio / ALSA / WASAPI streams;
+//! - an e2e build with `TMP_E2E_REMOTE`: [`RemoteRig`], the remote device over
+//!   `hid::remote::RemoteHid` (captures over `remote_audio` when `TMP_E2E_REMOTE_AUDIO` is
+//!   set, refused otherwise; settles at full length). The remote device counts as online
+//!   everywhere else (`e2e_online`), since its state is device state, not SimDevice's;
 //! - an e2e build OFFLINE: `sim_device::LiveSimRig`, the e2e server's shared SimDevice
 //!   (the transport factory, the physics capture model, collapsed settles).
 //!
@@ -97,8 +101,57 @@ pub(crate) fn scoped<T>(rig: Rc<dyn Rig>, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// The `remote` e2e tier (`TMP_E2E_REMOTE`): a remote device reached over
+/// `hid::remote::RemoteHid`. Its captures are the remote device's own audio over `remote_audio`
+/// (`TMP_E2E_REMOTE_AUDIO`); with no audio address a capture is refused rather than faked.
+/// Settles run at the unit's real length.
+#[cfg(feature = "e2e")]
+pub(crate) struct RemoteRig;
+
+#[cfg(feature = "e2e")]
+impl Rig for RemoteRig {
+    fn open_transport(&self) -> Result<Box<dyn HidTransport>, DeviceError> {
+        let addr = crate::e2e_remote()
+            .ok_or_else(|| DeviceError::Other("TMP_E2E_REMOTE is not a remote address".into()))?;
+        crate::trace::open(crate::trace::Backend::Remote, || {
+            Ok(Box::new(crate::hid::remote::RemoteHid::open(&addr)?))
+        })
+    }
+
+    fn capture(&self, stimulus: &[f32], rate: u32, tail_ms: u64) -> Result<Capture, LevelError> {
+        crate::trace::capture(
+            crate::trace::Backend::Remote,
+            stimulus,
+            rate,
+            tail_ms,
+            || {
+                let addr = crate::e2e_remote_audio().ok_or_else(|| {
+                    LevelError::Device(
+                    "the remote device has no re-amp audio here: set TMP_E2E_REMOTE_AUDIO to its \
+                         audio address"
+                        .into(),
+                )
+                })?;
+                crate::remote_audio::capture(&addr, stimulus, rate, tail_ms, &|| self.aborted())
+            },
+        )
+    }
+
+    fn settle_ms(&self, ms: u64) -> u64 {
+        ms
+    }
+
+    fn aborted(&self) -> bool {
+        crate::device_gate::op_abort_requested()
+    }
+}
+
 /// The build's rig for a thread with none installed. See the module doc.
 fn default_rig() -> &'static dyn Rig {
+    #[cfg(feature = "e2e")]
+    if crate::e2e_remote().is_some() {
+        return &RemoteRig;
+    }
     #[cfg(feature = "e2e")]
     if !crate::e2e_online() {
         return &crate::sim_device::LiveSimRig;

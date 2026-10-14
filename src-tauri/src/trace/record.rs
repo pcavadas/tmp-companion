@@ -43,13 +43,16 @@ const FLUSH_EVERY: Duration = Duration::from_millis(250);
 /// bound only caps a stalled disk.
 const CLOSE_FLUSH_WAIT: Duration = Duration::from_millis(50);
 
-/// Where a transport came from: the real device, or the e2e factory's in-memory fake.
-/// Set from the branch that ran, never inferred from the environment.
+/// Where a transport came from: the real device, the e2e factory's in-memory fake, or the
+/// `remote` tier's remote device. Set from the branch that ran, never inferred from the
+/// environment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Backend {
     Device,
     #[cfg(any(test, feature = "e2e"))]
     Sim,
+    #[cfg(feature = "e2e")]
+    Remote,
 }
 
 impl Backend {
@@ -58,6 +61,8 @@ impl Backend {
             Backend::Device => "device",
             #[cfg(any(test, feature = "e2e"))]
             Backend::Sim => "sim",
+            #[cfg(feature = "e2e")]
+            Backend::Remote => "remote",
         }
     }
 }

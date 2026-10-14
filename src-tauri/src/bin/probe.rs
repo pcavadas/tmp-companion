@@ -1059,6 +1059,35 @@ fn main() {
         && args
             .get(1)
             .is_some_and(|arg| arg == "--seed-scenario" || arg == "--audio-devices");
+    // A stale TMP_E2E_REMOTE beside TMP_E2E_ONLINE=1 would leave which device this run
+    // touches to a precedence rule, and a TMP_E2E_REMOTE_AUDIO without a remote device would ride
+    // along unread: refuse both.
+    #[cfg(feature = "e2e")]
+    if let Some(e) = tmp_companion_lib::e2e_mode_refusal() {
+        eprintln!("[probe] REFUSING TO RUN: {e}");
+        std::process::exit(3);
+    }
+    // A remote run must never read as a unit run. Its re-amp captures go to the remote device's
+    // audio (`remote_audio`) or refuse; every host stream refuses at the open
+    // (`audio::refuse_under_remote`); everything else talks to the remote device.
+    #[cfg(feature = "e2e")]
+    if let Some(addr) = tmp_companion_lib::e2e_remote_label() {
+        eprintln!(
+            "[probe] REMOTE: every device op goes to the remote device at {addr}, not the unit"
+        );
+        match tmp_companion_lib::e2e_remote_audio_label() {
+            Some(audio) => {
+                eprintln!(
+                    "[probe] REMOTE: re-amp captures go to the remote device's audio at {audio}"
+                )
+            }
+            None => {
+                eprintln!(
+                    "[probe] REMOTE: no TMP_E2E_REMOTE_AUDIO, so every re-amp capture is refused"
+                )
+            }
+        }
+    }
     #[cfg(feature = "e2e")]
     if !tmp_companion_lib::e2e_online() && !capture_free_only {
         eprintln!(

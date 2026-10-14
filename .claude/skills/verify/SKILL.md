@@ -55,7 +55,7 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
   trap) — `bun install` before typecheck/lint/test/build, `bun run build`
   before any `cargo` gate.
 - **Online false-green tell:** confirm the server log prints `seeded snapshot from the real
-device` (or `/health` reports `online: true`) before trusting a pass — a stale offline server
+device` (or `/health` reports `online: true` with `remote` false — a remote server reports `online: true` too) before trusting a pass — a stale offline server
   reused under `TMP_E2E_ONLINE=1` looks identical until you check. A green spec run is not
   evidence by itself: a Playwright expectation is self-referential, so one retargeted to the
   observed number passes on the regression it should catch. The independent read is the ffmpeg

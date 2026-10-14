@@ -353,8 +353,8 @@ jobs:
       - uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6
 
   leak-guard:
-    # Belt-and-braces for the pre-commit hook: block private firmware-emulator
-    # content in tracked files. Pure grep — no macOS/HID/bun needed.
+    # Belt-and-braces for the pre-commit hook: block private tooling content
+    # in tracked files. Pure grep — no macOS/HID/bun needed.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

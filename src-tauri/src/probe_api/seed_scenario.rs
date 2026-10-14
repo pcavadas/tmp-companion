@@ -106,6 +106,10 @@ fn is_fixture_body(bytes: &[u8]) -> bool {
 /// Where the seed records what it placed. Env-overridable so tests never touch the
 /// real one; defaults alongside the runner's own logs (`scripts/e2e.sh` `LOG_DIR`).
 fn manifest_path() -> std::path::PathBuf {
+    #[cfg(feature = "e2e")]
+    let remote = crate::e2e_remote().map(|a| a.to_string());
+    #[cfg(not(feature = "e2e"))]
+    let remote: Option<String> = None;
     std::env::var("TMP_E2E_SEED_MANIFEST")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
@@ -113,8 +117,24 @@ fn manifest_path() -> std::path::PathBuf {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::env::temp_dir())
                 .join("tmp-companion-e2e")
-                .join("seeded-slots.json")
+                .join(manifest_file_name(remote.as_deref()))
         })
+}
+
+/// The default manifest's file name: one per device. A claim is a lease on ONE device's
+/// slots, so a remote device's seed and clear must never bless or release the unit's (or another
+/// remote's) claims.
+fn manifest_file_name(remote: Option<&str>) -> String {
+    match remote {
+        None => "seeded-slots.json".into(),
+        Some(addr) => {
+            let safe: String = addr
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            format!("seeded-slots.remote-{safe}.json")
+        }
+    }
 }
 
 /// Claim `list_index` (0-based) under `name`. Best-effort: a manifest we fail to write
@@ -837,6 +857,18 @@ pub fn probe_clear_strays() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The unit and each remote device keep separate seed manifests: a remote device's lease can
+    /// never bless or release the unit's slots, and two remotes never share one.
+    #[test]
+    fn each_device_keeps_its_own_seed_manifest() {
+        assert_eq!(manifest_file_name(None), "seeded-slots.json");
+        let a = manifest_file_name(Some("tcp:127.0.0.1:11600"));
+        let b = manifest_file_name(Some("tcp:127.0.0.1:11608"));
+        assert_eq!(a, "seeded-slots.remote-tcp_127_0_0_1_11600.json");
+        assert_ne!(a, b);
+        assert!(!manifest_file_name(Some("unix:/tmp/t.sock")).contains('/'));
+    }
 
     /// The stranding bug (HW 2026-07-25): once `level.spec.ts` levels and SAVES
     /// "E2E Reference", the device rewrites the body and the fixture's injected

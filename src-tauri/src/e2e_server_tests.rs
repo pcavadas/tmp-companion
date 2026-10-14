@@ -5097,6 +5097,41 @@ fn online_from_is_strict() {
     }
 }
 
+/// The remote tier: a blank `TMP_E2E_REMOTE` is no remote device, a scheme-less one is refused, and
+/// a remote beside `TMP_E2E_ONLINE=1` is refused whatever its value, so neither a stale online
+/// nor a stale remote variable can point a run at the other device.
+#[test]
+fn remote_from_refuses_a_bad_address_and_a_remote_beside_online() {
+    use crate::e2e_server::remote_from;
+    use crate::hid::remote::RemoteAddr;
+    assert_eq!(remote_from(None, None), Ok(None));
+    assert_eq!(remote_from(Some("0"), Some("  ")), Ok(None));
+    assert_eq!(
+        remote_from(None, Some("tcp:127.0.0.1:9600")),
+        Ok(Some(RemoteAddr::Tcp("127.0.0.1:9600".into())))
+    );
+    assert!(remote_from(None, Some("127.0.0.1:9600")).is_err());
+    assert!(remote_from(Some("1"), Some("tcp:127.0.0.1:9600")).is_err());
+    assert!(remote_from(Some("1"), Some("garbage")).is_err());
+    assert_eq!(remote_from(Some("1"), None), Ok(None));
+}
+
+/// The remote device's audio: blank is none (captures refused), an address needs a remote device
+/// beside it, and a scheme-less one is refused like the remote device's own.
+#[test]
+fn remote_audio_from_needs_a_remote_and_a_scheme() {
+    use crate::e2e_server::remote_audio_from;
+    use crate::hid::remote::RemoteAddr;
+    assert_eq!(remote_audio_from(true, None), Ok(None));
+    assert_eq!(remote_audio_from(false, Some(" ")), Ok(None));
+    assert_eq!(
+        remote_audio_from(true, Some("tcp:127.0.0.1:11700")),
+        Ok(Some(RemoteAddr::Tcp("127.0.0.1:11700".into())))
+    );
+    assert!(remote_audio_from(false, Some("tcp:127.0.0.1:11700")).is_err());
+    assert!(remote_audio_from(true, Some("127.0.0.1:11700")).is_err());
+}
+
 /// The side lane: every `cancel_*` invoke and the counter and timing reads skip the serial queue, and
 /// a run command does not. Queued, a Stop only lands after the run it targets returned.
 #[test]
@@ -5118,6 +5153,7 @@ fn side_lane_takes_cancels_and_counters_only() {
         );
     }
     assert!(super::e2e_is_side_lane(&req("GET", "/reamp/counters", "")));
+    assert!(super::e2e_is_side_lane(&req("GET", "/remote/audio", "")));
     assert!(super::e2e_is_side_lane(&req("GET", "/timing", "")));
     assert!(super::e2e_is_side_lane(&req(
         "GET",
@@ -5182,6 +5218,41 @@ fn the_offline_snapshot_reports_fw_1_8_58() {
     super::e2e_install_offline_fake();
     let snap = crate::monitor::startup_snapshot().expect("snapshot installed");
     assert_eq!(snap.firmware.as_deref(), Some("1.8.58"));
+}
+
+/// `/health` carries `remote` beside `online`: it is the only signal `assert-mode.ts` has to
+/// refuse an adopted remote server in the online lane, which would otherwise pass green with
+/// no unit attached. (Lib tests never select a remote device, so both read false here.)
+#[test]
+fn health_reports_remote_beside_online() {
+    let _g = serial();
+    let (_app, webview) = reamp_webview();
+    let (status, v) = route_json(&webview, "GET", "/health", serde_json::json!({}));
+    assert_eq!(status, "200 OK");
+    assert_eq!(v["online"], serde_json::json!(false));
+    assert_eq!(
+        v["remote"],
+        serde_json::json!(false),
+        "the key must be present: {v}"
+    );
+    assert_eq!(
+        v["remoteAudio"],
+        serde_json::json!(false),
+        "the key must be present: {v}"
+    );
+}
+
+/// The remote lane's job counters are served whatever the mode (zero offline), with the keys
+/// `scripts/e2e-remote.sh` reads.
+#[test]
+fn remote_audio_stats_are_served() {
+    let _g = serial();
+    let (_app, webview) = reamp_webview();
+    let (status, v) = route_json(&webview, "GET", "/remote/audio", serde_json::json!({}));
+    assert_eq!(status, "200 OK");
+    for key in ["jobs", "ok", "failed", "notEngaged", "mixed", "slips"] {
+        assert!(v[key].is_u64(), "{key} missing: {v}");
+    }
 }
 
 /// The re-amp oracle reads the latch the way the device answers: with the latch ON, both

@@ -470,8 +470,9 @@ export async function expectNoServerAborts(page: Page): Promise<void> {
   ).toBe(0);
 }
 
-/** Whether the server drives the REAL device — read from /health, which is AUTHORITATIVE;
- *  the Playwright process's env is no mode signal, so never read process.env. */
+/** Whether the server drives a REAL device (the unit, or a remote device, which /health also flags
+ *  as `remote`) — read from /health, which is AUTHORITATIVE; the Playwright process's env is
+ *  no mode signal, so never read process.env. */
 export async function isOnline(page: Page): Promise<boolean> {
   const res = await page.request.get(`${SERVER}/health`);
   return ((await res.json()) as { online?: boolean }).online === true;

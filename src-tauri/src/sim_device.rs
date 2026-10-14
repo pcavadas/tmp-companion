@@ -2684,7 +2684,8 @@ pub fn set_capture_delay(ms: u64) {
     }
 }
 
-/// The e2e build's OFFLINE rig (`crate::rig`'s default when `TMP_E2E_ONLINE` is not `1`):
+/// The e2e build's OFFLINE rig (`crate::rig`'s default when `TMP_E2E_ONLINE` is not `1` and
+/// no `TMP_E2E_REMOTE` is set):
 /// every session opens the transport factory's shared SimDevice (the real [`Hid`] when no
 /// factory is installed), every capture runs the physics model over the [`set_live`] fake,
 /// and the settles collapse once `e2e_install_offline_fake` has armed the offline regime.

@@ -8,9 +8,13 @@
 //! return value; their `tmp://` events and `Channel` sends reach the page through the
 //! UI bridge (`e2e_ui_bridge`, polled at `GET /ui/events`), in both tiers.
 //! The one source of truth for the e2e mode: `TMP_E2E_ONLINE=1` ⇒ drive the REAL device
-//! (no SimDevice factory, real re-amp, real device backup); anything else ⇒ the
-//! offline fake. Read by `run_e2e_server`, the `/sim/reset` guard, and `rig`'s default-rig pick
-//! (`sim_device::LiveSimRig` offline, the real device online).
+//! (no SimDevice factory, real re-amp, real device backup); `TMP_E2E_REMOTE=<addr>` ⇒ the
+//! same device paths against a remote device (`hid::remote`; its re-amp
+//! audio over `remote_audio` when `TMP_E2E_REMOTE_AUDIO=<addr>` is set beside it, captures
+//! refused otherwise); anything else ⇒ the offline fake. Setting online and remote together is
+//! refused, as is a remote device audio address without a remote device.
+//! Read by `run_e2e_server`, the `/sim/reset` guard, and `rig`'s default-rig pick
+//! (`sim_device::LiveSimRig` offline, `rig::RemoteRig` on a remote device, the real device online).
 
 #[cfg(feature = "e2e")]
 use crate::{
@@ -24,10 +28,105 @@ pub(crate) fn online_from(v: Option<&str>) -> bool {
     v == Some("1")
 }
 
+/// Parse of `TMP_E2E_REMOTE` beside `TMP_E2E_ONLINE`: unset or blank is no remote device; anything
+/// else must be a remote address, and never together with online, so a stale variable in
+/// either direction fails the run instead of pointing it at the wrong device.
+pub(crate) fn remote_from(
+    online: Option<&str>,
+    remote: Option<&str>,
+) -> Result<Option<crate::hid::remote::RemoteAddr>, String> {
+    match remote.map(str::trim).filter(|t| !t.is_empty()) {
+        None => Ok(None),
+        Some(_) if online_from(online) => Err(
+            "TMP_E2E_ONLINE=1 and TMP_E2E_REMOTE are both set: pick the unit or the remote device"
+                .into(),
+        ),
+        Some(t) => crate::hid::remote::RemoteAddr::parse(t).map(Some),
+    }
+}
+
+/// Parse of `TMP_E2E_REMOTE_AUDIO` (the remote device's re-amp audio, `remote_audio`): unset or
+/// blank is none, and the remote device then refuses captures; set, it needs a remote device beside
+/// it, so a stale value fails a unit or offline run instead of riding along unread.
+pub(crate) fn remote_audio_from(
+    remote: bool,
+    audio: Option<&str>,
+) -> Result<Option<crate::hid::remote::RemoteAddr>, String> {
+    match audio.map(str::trim).filter(|a| !a.is_empty()) {
+        None => Ok(None),
+        Some(_) if !remote => Err(
+            "TMP_E2E_REMOTE_AUDIO is set without TMP_E2E_REMOTE: the remote device's audio needs its remote"
+                .into(),
+        ),
+        Some(a) => crate::hid::remote::RemoteAddr::parse(a).map(Some),
+    }
+}
+
+/// The remote tier's address, or why the env is refused. See [`remote_from`].
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_remote_mode() -> Result<Option<crate::hid::remote::RemoteAddr>, String> {
+    if cfg!(test) {
+        return Ok(None);
+    }
+    remote_from(
+        std::env::var("TMP_E2E_ONLINE").ok().as_deref(),
+        std::env::var("TMP_E2E_REMOTE").ok().as_deref(),
+    )
+}
+
+/// The remote device this process drives, if any. A refused env reads as none here; the server and
+/// `probe` check [`e2e_mode_refusal`] at startup and exit on it.
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_remote() -> Option<crate::hid::remote::RemoteAddr> {
+    e2e_remote_mode().ok().flatten()
+}
+
+/// The remote device's audio address, or why the env is refused (the remote device's own refusal
+/// first). See [`remote_audio_from`].
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_remote_audio_mode() -> Result<Option<crate::hid::remote::RemoteAddr>, String> {
+    if cfg!(test) {
+        return Ok(None);
+    }
+    let remote = e2e_remote_mode()?;
+    remote_audio_from(
+        remote.is_some(),
+        std::env::var("TMP_E2E_REMOTE_AUDIO").ok().as_deref(),
+    )
+}
+
+/// The remote device audio this process captures from, if any. A refused env reads as none here.
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_remote_audio() -> Option<crate::hid::remote::RemoteAddr> {
+    e2e_remote_audio_mode().ok().flatten()
+}
+
+/// Why this process's e2e env is refused, if it is (see [`remote_from`] and
+/// [`remote_audio_from`]): the server and `probe` exit on it at startup.
+#[cfg(feature = "e2e")]
+pub fn e2e_mode_refusal() -> Option<String> {
+    e2e_remote_audio_mode().err()
+}
+
+/// The remote device's address as text, for `probe`'s banner.
+#[cfg(feature = "e2e")]
+pub fn e2e_remote_label() -> Option<String> {
+    e2e_remote().map(|a| a.to_string())
+}
+
+/// The remote device's audio address as text, for `probe`'s banner.
+#[cfg(feature = "e2e")]
+pub fn e2e_remote_audio_label() -> Option<String> {
+    e2e_remote_audio().map(|a| a.to_string())
+}
+
+/// The device is a real one, the unit or a remote device: its state is the device's own, so
+/// seeding, teardown and resets take the online paths.
 #[cfg(feature = "e2e")]
 pub fn e2e_online() -> bool {
     // Lib unit tests never drive hardware, whatever the ambient env says.
-    !cfg!(test) && online_from(std::env::var("TMP_E2E_ONLINE").ok().as_deref())
+    !cfg!(test)
+        && (online_from(std::env::var("TMP_E2E_ONLINE").ok().as_deref()) || e2e_remote().is_some())
 }
 
 /// The OFFLINE fake transport is installed in THIS process: every device "op" is an
@@ -177,6 +276,11 @@ pub fn run_e2e_server() {
         log::set_max_level(log::LevelFilter::Info);
     }
 
+    if let Some(e) = e2e_mode_refusal() {
+        eprintln!("e2e_server: REFUSING TO START: {e}");
+        std::process::exit(2);
+    }
+    let remote = e2e_remote();
     let online = e2e_online();
     // OFFLINE only: default the backup fixture so `read_library_via_backup` decodes it
     // through the real backup path. ONLINE must stream the REAL device backup, so the var
@@ -209,7 +313,18 @@ pub fn run_e2e_server() {
     // connect/list serve it (no Wry-typed monitor on the MockRuntime). The default OFFLINE
     // path installs the `SimDevice` factory + fixture snapshot instead. The server keeps
     // serving either way (a device-absent online run surfaces the error to the spec).
-    if online {
+    // A remote device seeds the same way over its own transport, under its OWN phrase: the online
+    // ready gate must never accept a remote device's server as the unit's.
+    if let Some(addr) = &remote {
+        match e2e_seed_online_snapshot() {
+            Ok(fw) => eprintln!(
+                "e2e_server: REMOTE — seeded snapshot from the remote device at {addr} fw={} audio={}",
+                fw.as_deref().unwrap_or("unknown"),
+                e2e_remote_audio_label().unwrap_or_else(|| "none (captures refused)".into())
+            ),
+            Err(e) => eprintln!("e2e_server: REMOTE — remote handshake failed at {addr}: {e}"),
+        }
+    } else if online {
         match e2e_seed_online_snapshot() {
             // `scripts/e2e.sh` greps the phrase (ready gate) and reads `fw=` (stamp run line).
             Ok(fw) => eprintln!(
@@ -252,10 +367,10 @@ pub fn run_e2e_server() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(7600);
     let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind e2e port");
-    let mode = if online {
-        "ONLINE / real device"
-    } else {
-        "offline / SimDevice"
+    let mode = match (&remote, online) {
+        (Some(addr), _) => format!("REMOTE / remote device at {addr}"),
+        (None, true) => "ONLINE / real device".into(),
+        (None, false) => "offline / SimDevice".into(),
     };
     eprintln!("e2e_server: listening on http://127.0.0.1:{port} ({mode})");
     // Requests RUN serially on this thread, in arrival order. Offline runs N of these
@@ -297,6 +412,7 @@ fn e2e_is_side_lane(req: &E2eRequest) -> bool {
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/reamp/counters") => true,
         ("GET", "/timing") => true,
+        ("GET", "/remote/audio") => true,
         ("GET", p) if p == "/ui/events" || p.starts_with("/ui/events?") => true,
         ("POST", "/invoke") => serde_json::from_slice::<serde_json::Value>(&req.body)
             .ok()
@@ -953,10 +1069,18 @@ fn e2e_route(
     }
     match (method, path) {
         // `online` is AUTHORITATIVE for mode-split specs — they read it here, never from
-        // process.env. (e2e.sh's readiness curl only checks the 200, not the body.)
+        // process.env. (e2e.sh's readiness curl only checks the 200, not the body.) A remote device
+        // is `online` (device state, not SimDevice) AND `remote`, so a spec that needs re-amp audio
+        // can tell it from the unit.
         ("GET", "/health") => (
             "200 OK",
-            serde_json::to_vec(&json!({ "ok": true, "online": e2e_online() })).unwrap_or_default(),
+            serde_json::to_vec(&json!({
+                "ok": true,
+                "online": e2e_online(),
+                "remote": e2e_remote().is_some(),
+                "remoteAudio": e2e_remote_audio().is_some(),
+            }))
+            .unwrap_or_default(),
         ),
         ("GET", "/reamp/counters") => {
             use std::sync::atomic::Ordering;
@@ -967,6 +1091,12 @@ fn e2e_route(
                 serde_json::to_vec(&json!({ "on": on, "off": off })).unwrap_or_default(),
             )
         }
+        // The remote device's capture counters (`remote_audio::STATS`): jobs, failures by kind,
+        // pacing. The remote lane reads it after its specs and fails a run that had any failed job.
+        ("GET", "/remote/audio") => (
+            "200 OK",
+            serde_json::to_vec(&crate::remote_audio::STATS.json()).unwrap_or_default(),
+        ),
         // The process's hardware-wait totals (`rig::WAITS`, #198): settles requested and
         // applied, and wall time inside re-amp captures. Monotonic — the online lane reads it
         // around each spec and records the difference beside the spec's wall time.

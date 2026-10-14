@@ -1041,9 +1041,26 @@ fn stream_error(what: &str, err: &str, linux: bool) -> String {
     base
 }
 
+/// Under the `remote` e2e tier (`TMP_E2E_REMOTE`) the device commands go to the remote device, so a
+/// real stream opened here would play into or record whatever unit is plugged in. Every real
+/// stream open refuses under it, whichever caller (the rig, `probe`) asked; the remote device's own
+/// captures go over `remote_audio` instead (`rig::RemoteRig`), and the live paths have none.
+fn refuse_under_remote() -> Result<(), String> {
+    #[cfg(feature = "e2e")]
+    if crate::e2e_remote().is_some() {
+        return Err(
+            "TMP_E2E_REMOTE is set: the remote device's captures go over its own audio link \
+                    (TMP_E2E_REMOTE_AUDIO), and the host's streams belong to the unit"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Find the TMP and pick a 48 kHz output config (≥3 ch for USB-In 3) + input
 /// config. Errors describe exactly which half is missing.
 fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
+    refuse_under_remote()?;
     // A nudged Windows volume slider on the unit's endpoints silently scales the
     // inject/capture — hold unity for the session (restored when the streams drop).
     #[cfg(windows)]
@@ -2009,6 +2026,7 @@ impl LiveReamp {
 /// index — a sub-3-channel negotiation fails here, loudly, instead of letting
 /// `Capture::channel`'s zero-pad read as "the player played nothing".
 pub fn capture_input(secs: f32, sample_rate: u32) -> Result<Capture, String> {
+    refuse_under_remote()?;
     // The capture endpoint's Windows level scales what we record (see
     // `endpoint_volume`); calibration must read the instrument at unity.
     #[cfg(windows)]

@@ -53,7 +53,12 @@ export default defineConfig({
       url: `http://127.0.0.1:${PORT}/health`,
       reuseExistingServer: true,
       timeout: 180_000,
-      env: { TMP_E2E_ONLINE: "1" },
+      // A blank TMP_E2E_REMOTE(_AUDIO) beats any ambient remote address (blank is none).
+      env: {
+        TMP_E2E_ONLINE: "1",
+        TMP_E2E_REMOTE: "",
+        TMP_E2E_REMOTE_AUDIO: "",
+      },
     },
   ],
 });

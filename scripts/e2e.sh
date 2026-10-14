@@ -226,6 +226,14 @@ USAGE
   esac
 done
 
+# This script drives the SimDevice or the unit, never a remote device: an ambient remote address would
+# point the seed probe at the remote device while the online server refuses to start beside it.
+if [ -n "${TMP_E2E_REMOTE:-}${TMP_E2E_REMOTE_AUDIO:-}" ]; then
+  printf 'e2e.sh: ignoring TMP_E2E_REMOTE=%s TMP_E2E_REMOTE_AUDIO=%s (this script never drives a remote device)\n' \
+    "${TMP_E2E_REMOTE:-}" "${TMP_E2E_REMOTE_AUDIO:-}" >&2
+fi
+unset TMP_E2E_REMOTE TMP_E2E_REMOTE_AUDIO
+
 # ── `online auto` / `online release`: resolve the spec set from the diff (auto) or from
 #    everything since the last release tag (release) BEFORE anything builds, locks or seeds,
 #    so a range that needs nothing exits 0 without touching the unit. `ANY` (a file every

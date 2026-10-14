@@ -38,6 +38,10 @@ src-tauri/src/session/handshake.rs	transport
 src-tauri/src/session/backup_stream.rs	transport
 src-tauri/src/session/diag.rs	transport
 src-tauri/src/hid.rs	transport
+# The remote tier's socket transport and its audio client: e2e builds only, never reached by
+# an online spec.
+src-tauri/src/hid/remote.rs	offline-oracle
+src-tauri/src/remote_audio.rs	offline-oracle
 src-tauri/src/hid/*	transport
 src-tauri/src/audio.rs	transport
 src-tauri/src/audio/*	transport
@@ -187,7 +191,6 @@ scripts/pre-release.sh	none
 src-tauri/src/sim_clock.rs	offline-oracle
 src-tauri/src/sim_link.rs	offline-oracle
 src-tauri/src/sim_calibrated.rs	offline-oracle
-src-tauri/src/twin_hid.rs	offline-oracle
 src-tauri/src/conformance/*	offline-oracle
 e2e/conformance/*	offline-oracle
 e2e/fixtures/device-timing.json	offline-oracle

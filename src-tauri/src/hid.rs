@@ -1,7 +1,8 @@
 //! HID transport for the Tone Master Pro: IOKit on macOS, hidraw on Linux, Win32
 //! HID on Windows — one `imp` module per platform behind the same [`Hid`] worker
 //! thread and [`HidTransport`] seam. The header below describes the macOS original;
-//! each other `imp` carries its own note on where it differs.
+//! each other `imp` carries its own note on where it differs. `remote` (e2e builds only) is a
+//! fourth, non-platform transport behind the same seam: a socket to a remote device.
 //!
 //! Why raw IOKit (not the `hidapi` crate): the TMP's HID is exclusive-access,
 //! and we *want* exclusive access to drive it. `hidapi` on macOS opens with
@@ -28,6 +29,9 @@ use crate::proto;
 mod read_release;
 #[cfg(any(windows, test))]
 mod write_completion;
+// The `remote` e2e tier's socket transport: never in a production build.
+#[cfg(any(feature = "e2e", test))]
+pub mod remote;
 
 /// Fender vendor ID / Tone Master Pro product ID.
 pub const VID: i32 = 0x1ED8;
@@ -103,7 +107,7 @@ pub struct Hid {
     join: Option<JoinHandle<()>>,
 }
 
-/// Live [`Hid`] handles in this process. fw 1.8.58 has no open lockout, so
+/// Live [`Hid`] and `remote::RemoteHid` handles in this process. fw 1.8.58 has no open lockout, so
 /// an exclusive-access failure means another handle holds the seize: Pro Control, or one of
 /// ours.
 static LIVE_HANDLES: AtomicUsize = AtomicUsize::new(0);
@@ -148,7 +152,8 @@ impl Hid {
     }
 }
 
-/// Wait, at most `timeout`, until no [`Hid`] handle in this process holds the device. A
+/// Wait, at most `timeout`, until no [`Hid`] (or `remote::RemoteHid`) handle in this process
+/// holds the device. A
 /// drop-then-reopen calls this rather than a blind gap: a handle another thread is still
 /// closing (the monitor, after a late pause-ack) would fail the reopen. Returns whether the
 /// device was released in time.
@@ -196,7 +201,8 @@ impl Drop for Hid {
 /// The device-transport seam: the send/pump primitives [`Session`] issues against the
 /// open device. [`Hid`] is the production implementation (real IOKit seize); a test can
 /// substitute an in-memory fake (`sim_device::SimDevice`) so the held-session edit/level
-/// orchestration runs end-to-end with no hardware. Methods take `&self` (the real `Hid`
+/// orchestration runs end-to-end with no hardware, and the `remote` e2e tier substitutes
+/// `remote::RemoteHid`. Methods take `&self` (the real `Hid`
 /// marshals over a channel to its worker thread), so the trait is object-safe and
 /// `Session` stores a `Box<dyn HidTransport>`.
 ///
