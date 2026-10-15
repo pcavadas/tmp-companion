@@ -1,10 +1,11 @@
 // src/views/settings/PlaybackLevelSection.tsx — the "Playback level" block in
-// the left column (under the targets). Fletcher–Munson compensation: equal-LUFS
-// only sounds equal-loud at one SPL, so below stage volume bass presets get a
-// small target boost. Stage = reference, no compensation (the serde default).
+// the left column (under the targets). Equal-loudness compensation: equal-LUFS
+// only sounds equal-loud near the ~60 dBA K-weighting was fitted at, so louder
+// than that bass presets are leveled a little lower (loud low end sounds bigger).
+// Quiet = reference, no compensation; Stage is the serde default.
 //
 // The per-level chip figures mirror the REAL backend model
-// (profiles::playback_offset_lu, bass: Quiet +1.5 / Rehearsal +0.5 / Stage 0 LU;
+// (profiles::playback_offset_lu, bass: Quiet 0 / Rehearsal −1.0 / Stage −1.5 LU;
 // guitar is always 0). Keep them in sync if those constants change.
 
 import { useTheme, useStyles } from "../../theme/ThemeContext";
@@ -26,19 +27,19 @@ interface Info {
 
 const INFO: Record<PlaybackLevel, Info> = {
   quiet: {
-    tag: "bass +1.5 LU",
-    comp: true,
-    text: "Headphones or bedroom — bass gets the most boost.",
-  },
-  rehearsal: {
-    tag: "bass +0.5 LU",
-    comp: true,
-    text: "Room volume — bass gets a small boost.",
-  },
-  stage: {
     tag: "no compensation",
     comp: false,
-    text: "Stage volume — targets used as set.",
+    text: "Headphones or bedroom — targets used as set.",
+  },
+  rehearsal: {
+    tag: "bass −1.0 LU",
+    comp: true,
+    text: "Room volume — bass is leveled a little lower.",
+  },
+  stage: {
+    tag: "bass −1.5 LU",
+    comp: true,
+    text: "Stage volume — bass is leveled lower, since loud low end sounds bigger.",
   },
 };
 

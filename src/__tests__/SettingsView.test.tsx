@@ -155,7 +155,7 @@ describe("SettingsView — playback level", () => {
 
   it("reflects the stored level + its compensation caption", async () => {
     const user = userEvent.setup();
-    mockStore(SEED_TARGETS, "quiet");
+    mockStore(SEED_TARGETS, "rehearsal");
     renderView();
     await screen.findByText("Rhythm");
     await openCategory(user, "Playback");
@@ -163,12 +163,11 @@ describe("SettingsView — playback level", () => {
     const group = await screen.findByRole("radiogroup", {
       name: /playback level/i,
     });
-    expect(within(group).getByRole("radio", { name: "Quiet" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-    // Quiet → the bass +1.5 LU chip (mirrors profiles::playback_offset_lu).
-    expect(screen.getByText("bass +1.5 LU")).toBeInTheDocument();
+    expect(
+      within(group).getByRole("radio", { name: "Rehearsal" }),
+    ).toHaveAttribute("aria-checked", "true");
+    // Rehearsal → the bass −1.0 LU chip (mirrors profiles::playback_offset_lu).
+    expect(screen.getByText("bass −1.0 LU")).toBeInTheDocument();
   });
 });
 

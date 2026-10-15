@@ -18,11 +18,10 @@ import {
 // for Doctor instead of three (doctor.spec.ts's online half + doctor-oracle.online.spec.ts +
 // doctor-apply.online.spec.ts, which stays its own spec — see its own header).
 //
-// (a) is doctor-oracle.online.spec.ts moved here — the executable proof that E2E Doctor
-//     Oracle's (407) judged spectral checks actually diagnose on real audio, not just that
-//     the fixture carries the right shape (that structural half stays pinned offline by
-//     lib.rs's fixture_gates). Its 4 wire-seam-only rows are listed but not captured: they
-//     asserted only a finite capture, which every judged row proves too.
+// (a) is doctor-oracle.online.spec.ts moved here (its two wire-seam-only rows, FIZZY and
+//     BRIGHT, are covered numerically by src-tauri/src/doctor_audio_oracle.rs) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
+//     actually diagnose on real audio, not just that the fixture carries the right shape
+//     (that structural half stays pinned offline by lib.rs's fixture_gates).
 // (b) is doctor.spec.ts's online UI run on E2E Edge (402) alone: the 2.6 kHz EQ-ring chip
 //     must fire on every one of Edge's played sounds, and opening a ringing row must surface
 //     the "notch it out" prescription. The CROSS-CARD scoping proof (a ring diagnosed on Edge
@@ -78,8 +77,14 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
   const SWITCHES: { row: number; label: string; verdict: Verdict }[] = [
     { row: 1, label: "CONTROL", verdict: { kind: "zero" } },
     { row: 2, label: "MUDDY", verdict: { kind: "contains", diagKey: "muddy" } },
-    { row: 3, label: "BOOMY", verdict: { kind: "seam" } },
-    { row: 4, label: "HARSH", verdict: { kind: "seam" } },
+    // BOOMY and HARSH fire on the pitched-pluck stimulus (#199): the remote device read
+    // BOOMY's lows local 7.0 against the 4.1 gate (dark co-fires) and HARSH's high-mids
+    // local 4.6 against 3.9.
+    { row: 3, label: "BOOMY", verdict: { kind: "contains", diagKey: "boomy" } },
+    { row: 4, label: "HARSH", verdict: { kind: "contains", diagKey: "harsh" } },
+    // FIZZY and BRIGHT stay seam-only: the cab IR leaves nothing above ~10 kHz to lift,
+    // and the amp's treble knob changes nothing audible (lib.rs's defect table). Their
+    // verdicts are covered on captured audio by doctor_audio_oracle.rs instead.
     { row: 5, label: "FIZZY", verdict: { kind: "seam" } },
     { row: 6, label: "LOST", verdict: { kind: "contains", diagKey: "lost" } },
     { row: 7, label: "BRIGHT", verdict: { kind: "seam" } },
@@ -100,7 +105,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
   ];
 
   // (a) — moved verbatim from doctor-oracle.online.spec.ts (COVERAGE row 40).
-  test("base fires nothing; each judged switch's own spectral verdict fires", async ({
+  test("base fires nothing; each switch's own spectral verdict fires; seam-only rows just capture", async ({
     page,
   }) => {
     test.skip(
@@ -108,8 +113,8 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
       "online-only: the oracle's verdicts need real audio",
     );
     // Budget arithmetic (added up rather than eyeballed, this file's own style):
-    //   10 sounds (1 base + 9 judged switches) x 18 s/capture (doctor.spec.ts's own
-    //   documented 12-18 s/capture online range, worst end) = 180 s.
+    //   14 sounds (1 base + 13 switches) x 18 s/capture (doctor.spec.ts's own
+    //   documented 12-18 s/capture online range, worst end) = 252 s.
     //   + up to 3 floor-suspect retries (FLOOR_RETRY_GAP_MS 5 s + one recapture
     //     18 s each, leveller.rs) = 69 s.
     //   + ONE live field-8 isolation read for the whole run (nodes/footswitches
@@ -118,7 +123,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     //   + a cold `ensureScenario` seed, worst case (its own 240_000 ms request
     //     timeout) = 240 s.
     //   + the run-end restore-active-preset reload = ~5 s.
-    //   Baseline ~= 180 + 69 + 5 + 240 + 5 = 499 s. >=2x headroom, PLUS the ceiling
+    //   Baseline ~= 252 + 69 + 5 + 240 + 5 = 571 s. >=2x headroom, PLUS the ceiling
     // must exceed worst-case ensureScenario (240 s) + the request budget below
     // (1080 s) = 1320 s, or a cold-seed run would die on the vaguer test timeout
     // before the request timeout could name the hang => 1_500_000 ms.
@@ -151,13 +156,9 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
       nodes: [] as unknown[],
       footswitches: [] as unknown[],
     };
-    // Seam-only rows are NOT captured: they assert nothing but a finite capture, which
-    // every judged row below already proves, and each cost a full ~18 s device capture.
-    // They stay in SWITCHES so the table keeps mirroring the fixture's 13 rows.
-    const judged = SWITCHES.filter((s) => s.verdict.kind !== "seam");
     const items = [
       baseItem,
-      ...judged.map((s) => ({
+      ...SWITCHES.map((s) => ({
         ...baseItem,
         key: `fs${String(s.row)}`,
         footswitch: s.row,
@@ -188,7 +189,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     // mirroring level.online.spec.ts's "no silent mid-batch drop" style.
     expect(
       preset.sounds.map((s) => s.key),
-      "every requested sound must come back, none dropped mid-run",
+      "all 14 requested sounds must come back, none dropped mid-run",
     ).toEqual(items.map((i) => i.key));
 
     // No sound may have failed its capture — a failure would make its diags
@@ -198,7 +199,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     }
 
     // The order-equality assertion above proves positional identity, so the sounds
-    // are indexed directly: [0] = base, [i + 1] = judged[i].
+    // are indexed directly: [0] = base, [i + 1] = SWITCHES[i].
     const diagKeys = (s: DoctorSoundResult): string[] =>
       s.diags.map((d) => d.key);
 
@@ -209,9 +210,24 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     // preset online.
     expect(diagKeys(preset.sounds[0]), "base must fire nothing").toEqual([]);
 
-    for (const [i, s] of judged.entries()) {
+    // Specificity: the localized ring and the wash tail are each owned by one switch, and
+    // no other sound comes near either gate on the remote device (the tallest other peak
+    // reads 11.9 dB against the 13.5 dB ring gate), so neither may fire anywhere else.
+    const OWNED: Record<string, string> = {
+      resonant: "RESONANT",
+      washed: "WASHED",
+    };
+    for (const [i, s] of SWITCHES.entries()) {
       const sound = preset.sounds[i + 1];
       const keys = diagKeys(sound);
+      for (const [key, owner] of Object.entries(OWNED)) {
+        if (s.label !== owner) {
+          expect(
+            keys,
+            `${s.label} (switch ${String(s.row)}) must not fire "${key}", which only ${owner} owns`,
+          ).not.toContain(key);
+        }
+      }
       switch (s.verdict.kind) {
         case "zero":
           expect(
@@ -226,7 +242,15 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
           ).toBe(true);
           break;
         case "seam":
-          throw new Error(`${s.label}: seam rows are filtered out above`);
+          // Seam-only: the write lands, but no spectral verdict is expected —
+          // assert only that a real capture happened (finite LUFS, no error —
+          // error already checked above). See the SWITCHES table for why FIZZY
+          // and BRIGHT stay inert on this chain.
+          expect(
+            Number.isFinite(sound.integratedLufs),
+            `${s.label} (switch ${String(s.row)}) must have captured real audio (finite integratedLufs)`,
+          ).toBe(true);
+          break;
       }
     }
 

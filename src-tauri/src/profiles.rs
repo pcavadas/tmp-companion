@@ -44,20 +44,25 @@ pub struct Target {
 
 /// The playback loudness the rig is matched at. Equal-LUFS is equal-loudness at
 /// ONE SPL only: BS.1770's K-weighting is a fixed equal-loudness snapshot, while
-/// the real contours (Fletcher–Munson) flatten as SPL rises — at stage volume the
+/// the real contours (ISO 226) flatten as SPL rises — at stage volume the
 /// low-frequency energy a bass preset lives on contributes far more perceived
 /// loudness than at bedroom level. The leveler compensates by adding a per-
 /// instrument LU offset to the target (see [`playback_offset_lu`]).
+///
+/// The one SPL K-weighting holds at is about 60 dBA: ITU-R BS.1770-5, Annex 1,
+/// Attachment 1, §4.1, reports the listening tests behind it (Benjamin 2004, AES
+/// preprint 6233; Soulodre 2004, Canadian Acoustics 32(3) pp. 152–153, 97
+/// subjects) with the reference reproduced at 60 dBA. That is bedroom level, so
+/// `Quiet` is the anchor (#242).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PlaybackLevel {
-    /// Bedroom / home practice — contours steepest, bass needs the most help.
+    /// Bedroom / home practice, near the 60 dBA K-weighting was fitted at — the
+    /// anchor; no compensation.
     Quiet,
     /// Rehearsal volume — partway up the contour family.
     Rehearsal,
-    /// Stage volume — the anchor the offsets are measured from; no compensation. (No
-    /// source makes it K-weighting's design point: K-weighting came from listening tests
-    /// at broadcast and home levels. The offsets are re-based in #242.)
+    /// Stage volume — contours flattest, so bass gets the largest cut.
     #[default]
     Stage,
 }
@@ -82,13 +87,16 @@ pub enum PlaybackChannels {
     LeftOnly,
 }
 
-/// Fletcher–Munson playback compensation, in LU, added to the leveling target
+/// Equal-loudness playback compensation, in LU, added to the leveling target
 /// for an instrument family (`topologies::Topology::instrument`). Guitar presets
 /// are the spectral reference (0 at every level — within-family leveling is
-/// contour-invariant); bass presets are leveled hotter the quieter the playback,
-/// because K-weighting under-credits their low-frequency energy relative to
-/// perception at low SPL. Values are deliberately coarse (the contours vary by
-/// listener and rig); `Stage` is always 0 so the default changes nothing.
+/// contour-invariant). `Quiet` is 0 for every family: it is the ~60 dBA level
+/// K-weighting was fitted at (see [`PlaybackLevel`]). Louder, the ear credits
+/// low-frequency energy MORE than K-weighting does, so bass presets are leveled
+/// lower the louder the playback. Values are deliberately coarse (the contours
+/// vary by listener and rig): the 1.5 LU span of the earlier Stage-anchored table,
+/// re-anchored at Quiet (#242), so every level sits 1.5 LU lower for bass than it
+/// did. A per-capture correction from the capture's own spectrum is a later step.
 pub fn playback_offset_lu(level: PlaybackLevel, instrument: &str) -> f64 {
     // Bass VI shares bass's low-fundamental Fletcher–Munson character (its E1 is
     // even lower), so it takes the same compensation.
@@ -96,9 +104,9 @@ pub fn playback_offset_lu(level: PlaybackLevel, instrument: &str) -> f64 {
         return 0.0;
     }
     match level {
-        PlaybackLevel::Quiet => 1.5,
-        PlaybackLevel::Rehearsal => 0.5,
-        PlaybackLevel::Stage => 0.0,
+        PlaybackLevel::Quiet => 0.0,
+        PlaybackLevel::Rehearsal => -1.0,
+        PlaybackLevel::Stage => -1.5,
     }
 }
 
@@ -848,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_offsets_compensate_bass_only_below_stage() {
+    fn playback_offsets_compensate_bass_only_above_quiet() {
         // Guitar is the spectral reference at every playback level.
         for lvl in [
             PlaybackLevel::Quiet,
@@ -857,14 +865,17 @@ mod tests {
         ] {
             assert_eq!(playback_offset_lu(lvl, "guitar"), 0.0);
         }
-        // Bass compensation grows as playback gets quieter; Stage is the
-        // anchor (always 0, the legacy baseline).
-        assert_eq!(playback_offset_lu(PlaybackLevel::Stage, "bass"), 0.0);
-        assert_eq!(playback_offset_lu(PlaybackLevel::Rehearsal, "bass"), 0.5);
-        assert_eq!(playback_offset_lu(PlaybackLevel::Quiet, "bass"), 1.5);
+        // Quiet is the anchor (K-weighting's ~60 dBA design level, #242); bass
+        // is leveled lower as playback gets louder.
+        assert_eq!(playback_offset_lu(PlaybackLevel::Quiet, "bass"), 0.0);
+        assert_eq!(playback_offset_lu(PlaybackLevel::Rehearsal, "bass"), -1.0);
+        assert_eq!(playback_offset_lu(PlaybackLevel::Stage, "bass"), -1.5);
         // Bass VI takes the same compensation as bass.
-        assert_eq!(playback_offset_lu(PlaybackLevel::Stage, "bass-vi"), 0.0);
-        assert_eq!(playback_offset_lu(PlaybackLevel::Rehearsal, "bass-vi"), 0.5);
-        assert_eq!(playback_offset_lu(PlaybackLevel::Quiet, "bass-vi"), 1.5);
+        assert_eq!(playback_offset_lu(PlaybackLevel::Quiet, "bass-vi"), 0.0);
+        assert_eq!(
+            playback_offset_lu(PlaybackLevel::Rehearsal, "bass-vi"),
+            -1.0
+        );
+        assert_eq!(playback_offset_lu(PlaybackLevel::Stage, "bass-vi"), -1.5);
     }
 }
