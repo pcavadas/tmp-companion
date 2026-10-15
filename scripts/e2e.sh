@@ -428,7 +428,7 @@ finish_run_evidence() { # $1 = the run's exit code. Best-effort; see cleanup().
     EV_DEVICE_FW="$fw" EV_UNIT="$UNIT" \
     EV_SCENE_CHANGE="$(grep -o 'sceneChangeBehavior=[A-Za-z]*' "$SERVER_LOG" 2>/dev/null | tail -1 | sed 's/.*=//')" \
     EV_FIXTURE_STAMP="$(sed -n 's/.*FIXTURE_SOURCE_STAMP: &str = "\([^"]*\)";.*/\1/p' \
-      "$REPO/src-tauri/src/probe_api/seed_scenario.rs" 2>/dev/null)" \
+      "$REPO/src-tauri/src/e2e_seed.rs" 2>/dev/null)" \
     EV_WAV_POLICY=pair EV_WAV_RUNS="${TMP_E2E_EVIDENCE_WAV_RUNS:-10}" \
     evidence_finalize | while IFS= read -r line; do log "$line"; done
 }

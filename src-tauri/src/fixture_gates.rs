@@ -51,10 +51,6 @@ fn fixture(list_index: u32) -> (String, String, serde_json::Value) {
 }
 
 /// Catalog block ids whose `category` makes them a SPEAKER CABINET (or a raw IR)
-/// — the downstream block a bare amp head needs to satisfy the cab rule. Read
-/// from the same `tmp-model-guide.json` `scene_jobs::amp_model_ids` reads, so
-/// amp-ness and cab-ness can never disagree about what the catalog says.
-/// Catalog block ids whose `category` makes them a SPEAKER CABINET (or a raw IR)
 /// — the downstream block a bare amp head needs to satisfy the cab rule. Routed
 /// through the same category collector `scene_jobs::amp_model_ids` uses, so
 /// amp-ness and cab-ness can never disagree about what the catalog says.
@@ -76,11 +72,6 @@ fn is_cab_merged_amp(model_id: &str) -> bool {
     crate::scene_jobs::bakes_in_a_cab(model_id)
 }
 
-/// Every complete signal path through a preset, as ordered block lists — built
-/// from the PRODUCTION routing decoder (`session::extract_active_graph`), so the
-/// cab rule below reasons about the same lanes the app draws. A `Split` stage
-/// forks the path set; split-OUTPUT lanes fork it once more at the tail; the
-/// independent-rail templates (`gtrMicParallel`) replace it outright.
 /// Fork every path in `paths` into two, extending one copy with `a_blocks` and the
 /// other with `b_blocks` — the shared reshape both the `Split`-stage fork and the
 /// `graph.outputs` fork in [`signal_paths`] perform.
@@ -101,6 +92,11 @@ fn fork(
         .collect()
 }
 
+/// Every complete signal path through a preset, as ordered block lists — built
+/// from the PRODUCTION routing decoder (`session::extract_active_graph`), so the
+/// cab rule below reasons about the same lanes the app draws. A `Split` stage
+/// forks the path set; split-OUTPUT lanes fork it once more at the tail; the
+/// independent-rail templates (`gtrMicParallel`) replace it outright.
 fn signal_paths(graph: &crate::ActiveGraph) -> Vec<Vec<crate::GraphNode>> {
     let mut paths: Vec<Vec<crate::GraphNode>> = vec![Vec::new()];
     for stage in &graph.stages {

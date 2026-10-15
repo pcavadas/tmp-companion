@@ -161,7 +161,7 @@ standalone (Friedman HBE) run.
    a verbatim device export already at the cliff, so its exact size is pinned instead.
    A per-scene `splitMix` alone costs ~730 B and is mandatory, so on 402 every extra overlay
    is paid eight times; that is why its scenes carry one overlay each at most.
-5. **Names keep the `E2E ` prefix.** `seed_scenario::scenario_strays` matches scenario names
+5. **Names keep the `E2E ` prefix.** `e2e_seed::scenario_strays` matches scenario names
    to find aborted-seed leftovers, and every fixture carries `info.source_id ==
 FIXTURE_SOURCE_STAMP` plus `e2e00000-`-prefixed scene uuids as the ownership markers the
    seed and teardown guards read. **Bump the stamp's `#rN` suffix on every fixture regen.**

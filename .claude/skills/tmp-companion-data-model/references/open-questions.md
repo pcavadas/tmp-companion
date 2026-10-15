@@ -465,7 +465,7 @@ CREATE TRIGGER BeforeReorderPresetInUserPresetsRenumberUserPresetsSlots
 
 It shifts the intervening rows, using **negative slot values as a temporary namespace** to dodge the `slot INTEGER NOT NULL UNIQUE` constraint mid-shuffle, then flips the signs back. The renumber is enforced at the storage layer, so it applies to _every_ path that reorders a preset, not just the `moveUserPreset` wire op that was tested. The same schema also pins the addressing rule: `CHECK (ABS(slot) >= 1 AND ABS(slot) <= 504)`, i.e. slots are **1-based**, confirming `device slot = list index + 1`.
 
-**Note:** the scratch zone is now the single `SCRATCH_SLOTS` const (`slot.rs`, list indices 400–409), which covers all ten e2e fixtures including 403 (`E2E Parallel`, formerly `E2E Realistic`) — the old per-file 400–402 consts that excluded 403 are gone.
+**Note:** the scratch zone is now the single `SCRATCH_SLOTS` const (`slot.rs`, list indices 400–410), which covers all eleven e2e fixtures including 403 (`E2E Parallel`, formerly `E2E Realistic`) — the old per-file 400–402 consts that excluded 403 are gone.
 
 **Still open:** **MIDI PC mappings**, which address presets by bank + program number, were not tested and remain UNDOCUMENTED.
 
