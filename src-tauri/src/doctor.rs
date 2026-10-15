@@ -538,8 +538,10 @@ pub fn body_psd(samples: &[f32], rate: u32, onset: usize) -> crate::psd::Psd {
 ///   chain reads the same, while decorrelated stereo keeps its full power and
 ///   partly correlated stereo (chorus, doublers) no longer comb-filters.
 ///
-/// An out-of-range `start` (an un-aligned onset, 0) falls back to the whole
-/// buffer, as [`body_psd`] always has.
+/// An empty span (`start >= end`, after clamping `end` to the channel) falls
+/// back to the whole buffer, as [`body_psd`] always has. A zero `start` with an
+/// in-range `end` still drops the tail: [`body_psd`] passes `end = len`, so for
+/// it slicing from 0 is the whole buffer anyway.
 pub fn body_psd_span(channels: &[&[f32]], rate: u32, start: usize, end: usize) -> crate::psd::Psd {
     // Low-variance Welch PSD (Stage 1) replaces the noisy single-bin Goertzel
     // probes — true integrated band power over each layout band, plus the
@@ -549,7 +551,7 @@ pub fn body_psd_span(channels: &[&[f32]], rate: u32, start: usize, end: usize) -
             .iter()
             .map(|c| {
                 let end = end.min(c.len());
-                if start > 0 && start < end {
+                if start < end {
                     crate::psd::welch_psd(&c[start..end], rate as f32)
                 } else {
                     crate::psd::welch_psd(c, rate as f32)
