@@ -223,46 +223,103 @@ pub enum StimulusKind {
 
 /// Per-rule threshold shifts (dB) added at COMPARISON time for the user's
 /// playback level — a separate additive mechanism, never a mutation of the
-/// pinned `Thresholds` consts. Fletcher–Munson: equal-loudness contours flatten
-/// as SPL rises, so low-frequency (boomy/muddy) and mildly-HF (fizzy) content is
-/// perceptually HOTTER at stage volume than at bedroom volume — Doctor should
-/// flag it EARLIER at Stage (tighten → lower the effective threshold) and LATER
-/// at Quiet (relax). Only these three rules shift; every other rule is SPL-blind.
+/// pinned `Thresholds` consts. Equal-loudness contours flatten as SPL rises
+/// (ISO 226:2023), so the lows are perceptually HOTTER, relative to the rest of
+/// the body, at stage volume than at bedroom volume — Doctor flags them EARLIER
+/// at Stage (a negative offset lowers the effective gate) and LATER at Quiet.
+/// Each field mirrors one [`Thresholds`] gate and is added to it; a consensus
+/// rule's two spaces move separately because the contour shift lands
+/// differently in the tilt-split local and the median-centered deviation (see
+/// [`playback_offsets`]). Only boomy, muddy and fizzy shift; every other rule is
+/// SPL-blind.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaybackOffsets {
-    /// Added to `boomy_db` AND `muddy_db` before the `>` comparison.
-    pub low_end_db: f64,
+    /// Added to `boomy_db` (the tilt-split local gate).
+    pub boomy_db: f64,
+    /// Added to `boomy_centered_db`.
+    pub boomy_centered_db: f64,
+    /// Added to `muddy_db` (the tilt-split local gate).
+    pub muddy_db: f64,
+    /// Added to `muddy_centered_db`.
+    pub muddy_centered_db: f64,
     /// Added to `fizzy_db` before the `>` comparison. NB `fizzy_db` is negative
-    /// (−9.0) and the rule is `bal[air]−bal[highs] > fizzy_db`, so a NEGATIVE
-    /// offset LOWERS the threshold and fires MORE easily (tighten).
+    /// (−9.3) and the rule is `air − highs > fizzy_db`, so a NEGATIVE offset
+    /// LOWERS the threshold and fires MORE easily (tighten).
     pub fizzy_db: f64,
 }
 
 impl PlaybackOffsets {
     /// No shift — the Rehearsal anchor and the `diagnose()` back-compat default.
     pub const NONE: PlaybackOffsets = PlaybackOffsets {
-        low_end_db: 0.0,
+        boomy_db: 0.0,
+        boomy_centered_db: 0.0,
+        muddy_db: 0.0,
+        muddy_centered_db: 0.0,
         fizzy_db: 0.0,
     };
+
+    /// `self` with every shift negated — Quiet mirrors Stage about Rehearsal.
+    const fn mirrored(self) -> PlaybackOffsets {
+        PlaybackOffsets {
+            boomy_db: -self.boomy_db,
+            boomy_centered_db: -self.boomy_centered_db,
+            muddy_db: -self.muddy_db,
+            muddy_centered_db: -self.muddy_centered_db,
+            fizzy_db: -self.fizzy_db,
+        }
+    }
 }
 
-/// PROVISIONAL playback-level offsets, anchored at Rehearsal (= the assumed
-/// calibration monitoring level, offset 0). Values are deliberately coarse and
-/// PROVISIONAL — pending an SPL-anchored recalibration sweep that records monitor
-/// SPL and re-derives them (see notes/doctor-calibration.md).
+/// The Stage shifts, derived from the ISO 226:2023 equal-loudness contours
+/// (#255). Nominal loudness levels: Quiet 60 phon, Rehearsal 70 phon (the
+/// anchor, offset 0), Stage 80 phon — 10 phon apart, and 80 is the top of the
+/// standard's validity for the 5–12.5 kHz points the Air band needs (the
+/// 20 Hz–4 kHz points are valid to 90 phon). A real stage runs louder than 80
+/// phon, so these are the smallest honest Stage shifts, not the largest.
+///
+/// Per ⅓-octave frequency `f` in a band, the gain the ear adds going from 70
+/// to 80 phon, relative to 1 kHz, is `(L_f(f,70) − 70) − (L_f(f,80) − 80)`
+/// (ISO 226:2023 eq. 1, with its Table 1 α_f, L_U, T_f). The band value is the
+/// mean over the band's ⅓-octave points: Lows +3.39, Low-mids +1.77, Mids
+/// +0.39, High-mids −0.23, Highs −0.39, Air +0.18 dB. That vector goes through
+/// the rule metrics themselves — [`tilt_split`] reads Lows +0.71 and Low-mids
+/// 0.00 local (the contour change is mostly a tilt, −0.67 dB/oct), and
+/// [`centered_deviations`] reads Lows +3.00, Low-mids +1.38, High-mids −0.62 —
+/// and the fizzy metric (Air − Highs) moves +0.57. Each gate moves by minus its
+/// metric's shift, rounded to 0.1 dB. The 60 phon shifts mirror these within
+/// 0.03 dB, so Quiet is Stage negated. A sound's own deviation and this shift
+/// add exactly in the centered space and to first order in the median-fit
+/// local; the per-band mean ignores the sound's spectrum inside the band.
+///
+/// `harsh` gets NO offset, decided rather than omitted: the 1–3 kHz contour is
+/// nearly level-independent (High-mids moves −0.23 dB), its local metric does
+/// not move at all, and its centered metric moves the OTHER way (High-mids
+/// reads 0.62 dB less prominent against the body at Stage). Shifting it would
+/// relax harsh as playback gets louder, which breaks the louder-suffix model
+/// [`diagnose_levels`] rests on for a 0.6 dB change in one consensus space.
+/// Perceived harshness growing with level is the whole tone getting louder,
+/// which every band shares; the band BALANCE the Doctor judges barely moves.
+///
+/// The dark/bright tilt rules stay SPL-blind too, though the same contour
+/// change tilts a tone −0.67 dB/oct darker at Stage; see
+/// notes/doctor-calibration.md. The anchor (Rehearsal = the calibration
+/// monitoring level) is still an assumption until a sweep records monitor SPL.
+const STAGE_OFFSETS: PlaybackOffsets = PlaybackOffsets {
+    boomy_db: -0.7,
+    boomy_centered_db: -3.0,
+    muddy_db: 0.0,
+    muddy_centered_db: -1.4,
+    fizzy_db: -0.6,
+};
+
+/// The playback-level offsets — see [`STAGE_OFFSETS`] for their derivation.
 pub fn playback_offsets(level: PlaybackLevel) -> PlaybackOffsets {
     match level {
-        // Stage is loudest → tighten: boomy/muddy −2.0, fizzy −1.0 (fires earlier).
-        PlaybackLevel::Stage => PlaybackOffsets {
-            low_end_db: -2.0,
-            fizzy_db: -1.0,
-        },
+        // Loudest → tighten (fires earlier).
+        PlaybackLevel::Stage => STAGE_OFFSETS,
         PlaybackLevel::Rehearsal => PlaybackOffsets::NONE,
-        // Quiet is softest → relax: boomy/muddy +2.0, fizzy +1.0 (fires later).
-        PlaybackLevel::Quiet => PlaybackOffsets {
-            low_end_db: 2.0,
-            fizzy_db: 1.0,
-        },
+        // Softest → relax (fires later).
+        PlaybackLevel::Quiet => STAGE_OFFSETS.mirrored(),
     }
 }
 
@@ -2879,9 +2936,9 @@ pub fn diagnose_calibrated(
 /// below 0 dB: these gates read a band's EXCESS over the target, so a gate the
 /// Stage tightening pushed under 0 would flag a band sitting exactly on the
 /// target (#247 — the pitched-pluck re-derivation put the muddy tilt gate at
-/// 0.8 dB, and Stage's −2 dB made a wire chain read muddy).
-fn low_end_gate(gate: f64, offsets: PlaybackOffsets) -> f64 {
-    (gate + offsets.low_end_db).max(0.0)
+/// 0.8 dB, and the then-Stage −2 dB made a wire chain read muddy).
+fn low_end_gate(gate: f64, offset: f64) -> f64 {
+    (gate + offset).max(0.0)
 }
 
 /// Threshold-application half of [`diagnose_kind`]: takes the level-invariant
@@ -2943,9 +3000,9 @@ fn apply_thresholds(
     // HW-σ-calibrated step — keep the raw `> threshold` fire condition here.
     let (muddy_margin, muddy_fires) = consensus(
         locals[low_mids],
-        low_end_gate(t.muddy_db, offsets),
+        low_end_gate(t.muddy_db, offsets.muddy_db),
         centered(low_mids),
-        low_end_gate(t.muddy_centered_db, offsets),
+        low_end_gate(t.muddy_centered_db, offsets.muddy_centered_db),
     );
     if covered(low_mids) && muddy_fires {
         push(
@@ -2960,9 +3017,9 @@ fn apply_thresholds(
     }
     let (boomy_margin, boomy_fires) = consensus(
         locals[lows],
-        low_end_gate(t.boomy_db, offsets),
+        low_end_gate(t.boomy_db, offsets.boomy_db),
         centered(lows),
-        low_end_gate(t.boomy_centered_db, offsets),
+        low_end_gate(t.boomy_centered_db, offsets.boomy_centered_db),
     );
     if covered(lows) && boomy_fires {
         push(
@@ -4669,13 +4726,15 @@ mod tests {
 
     #[test]
     fn playback_offset_shifts_severity() {
-        // Stage lowers the boomy threshold by 2 dB (BOTH the tilt and centered
-        // gates, per `offsets.low_end_db`), so the same sound reads 2 dB MORE
-        // margin (higher severity) at Stage than at Rehearsal. Anchor on the
-        // binding (centered) gate, same reasoning as far_past_threshold above.
+        // Stage lowers both boomy gates (by its own shift in each consensus
+        // space), so the same sound reads MORE margin (higher severity) at
+        // Stage than at Rehearsal: the smaller of the two shifted margins. A
+        // one-band bump reads the same in both spaces. Anchor on the binding
+        // (centered) gate, same reasoning as far_past_threshold above.
         use crate::profiles::PlaybackLevel::{Rehearsal, Stage};
         let bind = GUITAR.boomy_db.max(GUITAR.boomy_centered_db);
-        let p = resid_profile(Family::Guitar, 0, bind + 1.0); // rehearsal margin = 1.0
+        let dev = bind + 1.0; // rehearsal margin = 1.0
+        let p = resid_profile(Family::Guitar, 0, dev);
         let at = |lvl| {
             find(
                 &diagnose_kind(
@@ -4691,10 +4750,15 @@ mod tests {
         };
         let reh = at(Rehearsal);
         let stg = at(Stage);
+        let s = playback_offsets(Stage);
+        let stage_margin = (dev - (GUITAR.boomy_db + s.boomy_db))
+            .min(dev - (GUITAR.boomy_centered_db + s.boomy_centered_db));
         assert!((reh.severity - 1.0).abs() < 0.05);
+        assert!(stage_margin > 1.5, "the Stage shift is material");
         assert!(
-            (stg.severity - 3.0).abs() < 0.05,
-            "stage margin = 1.0 + 2.0"
+            (stg.severity - stage_margin).abs() < 0.05,
+            "stage severity {} vs {stage_margin}",
+            stg.severity
         );
     }
 
@@ -6023,9 +6087,9 @@ mod tests {
     #[test]
     fn stage_tightens_boomy_where_rehearsal_stays_silent() {
         use crate::profiles::PlaybackLevel::{Rehearsal, Stage};
-        // dev(lows) = 3.0 dB — between Stage's 2.0 (4.0−2.0) and Rehearsal's 4.0
-        // boomy threshold.
-        let p = resid_profile(Family::Guitar, 0, 3.0);
+        // dev(lows) = 4.0 dB — over both Stage-shifted gates (4.1−0.7 local,
+        // 4.7−3.0 centered) but under Rehearsal's 4.7 centered gate.
+        let p = resid_profile(Family::Guitar, 0, 4.0);
         assert!(!diag_keys_at(&p, Rehearsal).contains(&"boomy"));
         assert!(diag_keys_at(&p, Stage).contains(&"boomy"));
     }
@@ -6033,7 +6097,8 @@ mod tests {
     #[test]
     fn quiet_relaxes_a_boomy_verdict_rehearsal_fires() {
         use crate::profiles::PlaybackLevel::{Quiet, Rehearsal};
-        // dev(lows) = 5.0 — above Rehearsal's 4.0 but below Quiet's 6.0 (4.0+2.0).
+        // dev(lows) = 5.0 — above Rehearsal's 4.7 centered gate but below
+        // Quiet's 7.7 (4.7+3.0).
         let p = resid_profile(Family::Guitar, 0, 5.0);
         assert!(diag_keys_at(&p, Rehearsal).contains(&"boomy"));
         assert!(!diag_keys_at(&p, Quiet).contains(&"boomy"));
@@ -6042,8 +6107,8 @@ mod tests {
     #[test]
     fn stage_offset_lowers_the_fizzy_threshold() {
         use crate::profiles::PlaybackLevel::{Rehearsal, Stage};
-        // fizzy fires when bdb[air]−bdb[highs] > fizzy_db (−9) + offset. Construct
-        // air−highs = −9.5: below −9 (Rehearsal silent) but above Stage's −10 (fires),
+        // fizzy fires when bdb[air]−bdb[highs] > fizzy_db (−9.3) + offset. Construct
+        // air−highs = −9.5: below −9.3 (Rehearsal silent) but above Stage's −9.9 (fires),
         // proving the sign — a NEGATIVE offset makes fizzy fire MORE easily.
         let mut p = resid_profile(Family::Guitar, 0, 0.0);
         // Raise Air to sit 9.5 dB under Highs (the baseline rolls it 12 dB under).
@@ -6475,18 +6540,38 @@ mod tests {
         use crate::profiles::PlaybackLevel::{Quiet, Rehearsal, Stage};
         // Louder ⇒ tighter (lower) thresholds, so `diagnose_levels`' firing set is
         // always a louder-suffix and `from_level` fully describes it. Guard the
-        // relation any future offset edit must preserve.
+        // relation any future offset edit must preserve. A shift ISO 226 puts
+        // at zero (muddy's local gate) stays level, never inverted; every other
+        // field moves strictly, and boomy moves at least as far as muddy (#255).
         let q = playback_offsets(Quiet);
         let r = playback_offsets(Rehearsal);
         let s = playback_offsets(Stage);
-        assert!(q.low_end_db > r.low_end_db && r.low_end_db > s.low_end_db);
+        let field = |o: PlaybackOffsets| {
+            [
+                o.boomy_db,
+                o.boomy_centered_db,
+                o.muddy_db,
+                o.muddy_centered_db,
+                o.fizzy_db,
+            ]
+        };
+        for ((q, r), s) in field(q).into_iter().zip(field(r)).zip(field(s)) {
+            assert!(q >= r && r >= s, "{q} {r} {s}");
+        }
+        assert!(q.boomy_db > r.boomy_db && r.boomy_db > s.boomy_db);
+        assert!(q.boomy_centered_db > r.boomy_centered_db);
+        assert!(r.boomy_centered_db > s.boomy_centered_db);
+        assert!(q.muddy_centered_db > r.muddy_centered_db);
+        assert!(r.muddy_centered_db > s.muddy_centered_db);
         assert!(q.fizzy_db > r.fizzy_db && r.fizzy_db > s.fizzy_db);
+        assert!(s.boomy_db.abs() >= s.muddy_db.abs());
+        assert!(s.boomy_centered_db.abs() >= s.muddy_centered_db.abs());
     }
 
     #[test]
     fn diagnose_levels_tags_each_finding_with_its_quietest_level() {
-        // A boomy-only profile that fires at Stage (2.0) and Rehearsal (4.0) but
-        // NOT Quiet (6.0): dev(lows) = 5.0.
+        // A boomy-only profile that fires at Stage and Rehearsal (binding gate
+        // 4.7) but NOT Quiet (7.7): dev(lows) = 5.0.
         let p = resid_profile(Family::Guitar, 0, 5.0);
         let leveled = diagnose_levels(&p, None, Family::Guitar, StimulusKind::Synthetic, None);
         let boomy = leveled
@@ -6517,14 +6602,14 @@ mod tests {
     fn leveled_diag_flattens_diag_and_adds_from_level() {
         // The flatten means the wire object carries the Diag fields at the top
         // level PLUS `fromLevel` — the src/lib/types.ts DoctorDiag mirror.
-        // Binding (centered) gate + the Quiet low_end_db offset (+2.0) + a 1.0
-        // margin clears the Quiet-relaxed threshold in BOTH consensus spaces —
+        // Binding (centered) gate + the largest Quiet muddy offset (+1.4) + a
+        // 1.0 margin clears the Quiet-relaxed threshold in BOTH consensus spaces —
         // the rule is a strict `>`, so sitting exactly on the boundary is not a
         // safe way to assert "fires at every level".
         let p = resid_profile(
             Family::Guitar,
             1,
-            GUITAR.muddy_db.max(GUITAR.muddy_centered_db) + 2.0 + 1.0,
+            GUITAR.muddy_db.max(GUITAR.muddy_centered_db) + 1.4 + 1.0,
         );
         let leveled = diagnose_levels(&p, None, Family::Guitar, StimulusKind::Synthetic, None);
         let v = serde_json::to_value(&leveled[0]).unwrap();

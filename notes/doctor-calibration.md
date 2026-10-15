@@ -151,22 +151,62 @@ Captures are **Float32 WAV** (fmt tag 65534 / `WAVE_FORMAT_EXTENSIBLE`) — Pyth
 `wave` module rejects them (`unknown extended format`); parse the fmt/data chunks
 manually (or use a float-aware reader). Rust `hound` round-trips them.
 
-## Playback level (Fletcher–Munson) threshold offsets — PROVISIONAL
+## Playback level (equal-loudness) threshold offsets — ISO 226:2023
 
-`doctor::playback_offsets` shifts the boomy/muddy and fizzy thresholds by
-playback level. `doctor_check` diagnoses every sound at **all three** levels
+`doctor::playback_offsets` shifts the boomy, muddy and fizzy gates by playback
+level. `doctor_check` diagnoses every sound at **all three** levels
 (`doctor::diagnose_levels`) and tags each finding with the quietest level it
-fires at — it no longer reads a single level from the store. It is anchored at
-**Rehearsal = offset 0**, the ASSUMED monitoring level the synthetic `Thresholds`
-were calibrated at above (a working assumption, not measured — the 2026-07-03
-sweep did not record monitor SPL). Stage tightens (boomy/muddy −2.0 dB, fizzy
-−1.0 dB), Quiet relaxes (+2.0 / +1.0); values are coarse and PROVISIONAL.
+fires at — it no longer reads a single level from the store.
 
-The attended re-sweep should **record the monitor SPL** at capture time and
-re-derive these offsets against measured equal-loudness behaviour (and confirm
-which playback level the base `Thresholds` actually correspond to — if it is not
-Rehearsal, re-anchor). Offsets are additive at comparison time and never mutate
-the pinned consts, so this is a separate tuning axis from the `*_CAPTURE` sweep.
+**Derivation (#255).** Source: ISO 226:2023, _Acoustics — Normal equal-loudness-level
+contours_, eq. (1) with the Table 1 parameters α_f, L_U and T_f (α_r = 0.300,
+T_r = 2.4 dB). Nominal loudness levels: **Quiet 60, Rehearsal 70, Stage 80
+phon**. 80 phon is the standard's ceiling for the 5–12.5 kHz points the Air
+band needs (20 Hz–4 kHz is valid to 90 phon), so Stage is a floor for a real
+stage, which runs louder; 60 phon is also the level BS.1770's loudness tests
+were run at (see `notes/leveling.md`, "Playback-level compensation").
+
+For each ⅓-octave point `f` inside an analysis band, the gain the ear adds going
+from 70 to 80 phon, relative to 1 kHz, is `(L_f(f,70) − 70) − (L_f(f,80) − 80)`.
+The band value is the mean over its points:
+
+| Band              | Lows  | Low-mids | Mids  | High-mids | Highs | Air   |
+| ----------------- | ----- | -------- | ----- | --------- | ----- | ----- |
+| 70 → 80 phon (dB) | +3.39 | +1.77    | +0.39 | −0.23     | −0.39 | +0.18 |
+| tilt-split local  | +0.71 | 0.00     | −0.35 | 0.00      | +0.71 | +1.95 |
+| median-centered   | +3.00 | +1.38    | 0.00  | −0.62     | −0.78 | −0.21 |
+
+That vector is run through the rule metrics themselves (`tilt_split`, whose
+Theil–Sen slope takes −0.67 dB/oct of it, and `centered_deviations`), and each
+gate moves by minus its metric's shift, rounded to 0.1 dB. The fizzy metric
+(Air − Highs) moves +0.57. 70 → 60 phon mirrors 70 → 80 within 0.03 dB, so
+Quiet is Stage negated:
+
+| Gate                   | Stage       | Quiet       |
+| ---------------------- | ----------- | ----------- |
+| boomy local / centered | −0.7 / −3.0 | +0.7 / +3.0 |
+| muddy local / centered | 0.0 / −1.4  | 0.0 / +1.4  |
+| fizzy                  | −0.6        | +0.6        |
+| harsh                  | 0           | 0           |
+
+boomy moves at least as far as muddy in both spaces, as the contours require.
+**harsh is decided at 0:** its local metric does not move, and its centered
+metric moves the other way (High-mids reads 0.62 dB _less_ prominent against
+the body at 80 phon), so a derived shift would relax harsh as playback gets
+louder. That breaks the louder-suffix model `diagnose_levels` reports with, for
+0.6 dB in one consensus space. Harshness growing with level is the whole tone
+getting louder; the band balance the Doctor judges barely moves (−0.23 dB).
+
+Limits: the shift adds exactly to a sound's own centered deviation and to first
+order to its Theil–Sen local; the band mean ignores the sound's spectrum inside
+the band; and the dark/bright tilt rules stay SPL-blind although the same
+contour change tilts a tone −0.67 dB/oct darker at Stage (a follow-up, not part
+of #255). The **Rehearsal = offset 0** anchor is still the ASSUMED monitoring
+level the `Thresholds` were calibrated at (the 2026-07-03 sweep did not record
+monitor SPL). The next attended sweep should **record the monitor SPL** and
+confirm it; if it is not near 70 phon, re-anchor. Offsets are additive at
+comparison time and never mutate the pinned consts, so this is a separate
+tuning axis from the `*_CAPTURE` sweep.
 
 ### Field data point — preset 001 base vs "Dist" scene (2026-07-13)
 

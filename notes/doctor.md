@@ -392,11 +392,12 @@ hiding it behind a mode toggle.
 The capture is level-independent (the offset shifts the comparison THRESHOLD, not
 the measured deviation), so this is free: one ~5 s hardware capture per sound,
 then three microsecond-scale pure passes over ONE `RuleMetrics`
-(`doctor::diagnose_levels` → `apply_thresholds` ×3; `doctor::playback_offsets`:
-**Stage** tightens boomy/muddy −2.0 dB, fizzy −1.0 dB → fire earlier; **Quiet**
-relaxes +2.0 / +1.0; **Rehearsal** is the anchor, 0 and byte-identical to the
-legacy `diagnose()`) merged by diagnosis key. The offsets are **monotonic in
-loudness** (louder ⇒ tighter ⇒ strictly more firings — asserted by
+(`doctor::diagnose_levels` → `apply_thresholds` ×3; `doctor::playback_offsets`,
+derived from ISO 226:2023 at 60/70/80 phon: **Stage** tightens boomy −0.7 local /
+−3.0 centered, muddy 0.0 / −1.4, fizzy −0.6 dB → fire earlier; **Quiet** mirrors
+it; **Rehearsal** is the anchor, 0 and byte-identical to the legacy `diagnose()`)
+merged by diagnosis key. The offsets are **monotonic in loudness** (louder ⇒
+tighter or equal ⇒ never fewer firings — asserted by
 `playback_offsets_are_monotonic`), so a finding's firing set is always a
 louder-suffix and one ordinal fully describes it: `LeveledDiag.from_level` ∈
 {quiet, rehearsal, stage}. The UI renders this as `LevelIndicator`
@@ -407,8 +408,8 @@ shows as an all-lit "at any volume" state. **The indicator is a read-only render
 of `from_level` and is fully decoupled from the Settings `playback_level`
 store** — the Doctor diagnoses all three levels regardless of the room level
 chosen for leveling. The offsets are additive at comparison time — they never
-mutate the pinned `Thresholds` consts — and the table is **PROVISIONAL**,
-pending an SPL-anchored recalibration sweep (see notes/doctor-calibration.md).
+mutate the pinned `Thresholds` consts. Their Rehearsal anchor is still an
+assumption until a sweep records monitor SPL (see notes/doctor-calibration.md).
 The marketing showcase's curated profiles sit far from every threshold, so they
 tag `quiet` (untagged) at every level — the pinned `showcase_profile_diagnoses`
 test uses the offset-free `diagnose()`.
