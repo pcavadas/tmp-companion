@@ -137,7 +137,7 @@ export function useSettingsStore(): SettingsStore {
   // Optimistic: the list updates at once; a failed save re-reads the store.
   async function persistProfiles(next: Profile[]) {
     setProfiles(next);
-    saveSeqRef.current++;
+    const seq = ++saveSeqRef.current;
     try {
       await saveProfiles(next);
       setSaveError(null);
@@ -147,7 +147,6 @@ export function useSettingsStore(): SettingsStore {
     }
     // A pickup change can unlink an instrument's stored recording, so re-read the
     // derived `has_capture` flags (#361). Only the flags change; a newer save wins.
-    const seq = saveSeqRef.current;
     try {
       const stored = await getStore();
       if (saveSeqRef.current !== seq) return;

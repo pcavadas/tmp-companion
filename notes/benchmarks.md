@@ -4,7 +4,7 @@ Green tests prove state and flow contracts. They do not prove that the Doctor's 
 
 ## The in-sample problem
 
-`GUITAR_TARGET` is the median shape of the 25-preset R5 factory sweep, and the `GUITAR` gates were set on the same 25 presets (`doctor.rs`). Judged on that sweep, both look perfect by construction. With n = 25 the population maximum sits near the 96th percentile, so the false-positive rate on an unseen healthy preset is unknown, and about 13 rules at 3 playback levels compound per sound.
+The guitar constants were first set on the 25-preset R5 factory sweep (2026-07-16): `GUITAR_TARGET` as its median shape and the `GUITAR` gates on the same 25 presets. With n = 25 the population maximum sits near the 96th percentile, so the false-positive rate on an unseen healthy preset was unknown, and about 13 rules at 3 playback levels compound per sound. The shipped constants have since been re-derived from the 248-sound fw 1.8.58 sweep (2026-10-15): the target and stimulus reference directly, the gates rank-transferred from the R5 ones ([The committed baseline](#the-committed-baseline-2026-10-15)). Judged on the sweep they came from, any calibration looks better than it is, which is what leave-one-out corrects.
 
 ## Leave-one-out: `probe --doctor-loo`
 

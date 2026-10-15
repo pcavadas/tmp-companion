@@ -228,9 +228,8 @@ describe("InstrumentRow — clipped calibration takes (#361)", () => {
     expect(screen.getByText(/levels with your recording/i)).toBeInTheDocument();
     unmount();
     renderRow(profile, vi.fn());
-    expect(
-      screen.getByText(/not calibrated · levels with the test signal/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText("not calibrated")).toBeInTheDocument();
+    expect(screen.getByText("levels with the test signal")).toBeInTheDocument();
     expect(stimulusSource({ ...profile, calibration_lufs: -14 })).toBe(
       "levels with the test signal",
     );

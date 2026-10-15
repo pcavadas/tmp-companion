@@ -1696,6 +1696,22 @@ mod held_out_baseline {
             return;
         }
         let baseline: Counts = serde_json::from_str(BASELINE).unwrap();
+        // A mode or rule with no baseline entry would go unchecked: the key sets
+        // must match exactly (re-bless when a mode or rule is added on purpose).
+        let modes = |c: &Counts| c.keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            modes(&now),
+            modes(&baseline),
+            "mode keys differ from the baseline"
+        );
+        for (mode, rules) in &baseline {
+            let keys = |m: &BTreeMap<String, usize>| m.keys().cloned().collect::<Vec<_>>();
+            assert_eq!(
+                keys(&now[mode]),
+                keys(rules),
+                "{mode}: rule keys differ from the baseline"
+            );
+        }
         let mut grew = Vec::new();
         for (mode, rules) in &baseline {
             for (rule, &was) in rules {

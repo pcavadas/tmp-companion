@@ -79,11 +79,13 @@ export function InstrumentRow({
         ? "recording — play steadily"
         : phase === "error"
           ? (calibErr ?? "too quiet to read — the last attempt failed")
-          : `${
-              calibrated
-                ? `calibrated ${profile.calibration_lufs?.toFixed(1) ?? ""} LUFS`
-                : "not calibrated"
-            } · ${stimulusSource(profile)}${calibWarn != null ? ` — ${calibWarn}` : ""}`;
+          : calibrated
+            ? `calibrated ${profile.calibration_lufs?.toFixed(1) ?? ""} LUFS${
+                calibWarn != null ? ` — ${calibWarn}` : ""
+              }`
+            : "not calibrated";
+  // What leveling re-amps (#361): its own line, shown in every phase.
+  const source = stimulusSource(profile);
 
   // Type = the topology's instrument label; Pickup = the topology's label.
   const typeLabel = topology?.instrument ?? null;
@@ -177,6 +179,17 @@ export function InstrumentRow({
             }}
           >
             {sub}
+          </div>
+          <div
+            style={{
+              fontFamily: t.mono,
+              fontSize: t.fsData2,
+              marginTop: t.space1,
+              whiteSpace: "nowrap",
+              color: t.faint,
+            }}
+          >
+            {source}
           </div>
           {/* What-was-captured readout — SESSION-ONLY (calibResult isn't persisted),
               so it's visible right after a calibration and clears on the next attempt. */}
