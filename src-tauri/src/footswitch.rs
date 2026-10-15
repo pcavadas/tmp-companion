@@ -618,10 +618,10 @@ pub fn siblings_off_excluding(ftsw: &Value, switch: u32) -> Vec<(String, String,
 
 /// Derive the force-bypass isolation list OFFLINE from the backup scan's data
 /// (footswitch assignments + each block's saved bypass state) — the same list
-/// [`crate::doctor_force_bypass`] computes from a live field-8 preset read, but
+/// [`crate::commands::doctor::doctor_force_bypass`] computes from a live field-8 preset read, but
 /// walking the already-enumerated `FootswitchInfo` + a `node_id → saved bypass`
 /// map (both sourced from the SAME backup-scan `presetJson`
-/// [`crate::doctor_force_bypass`] would otherwise re-fetch live) instead of
+/// [`crate::commands::doctor::doctor_force_bypass`] would otherwise re-fetch live) instead of
 /// `ftsw`/`preset` JSON — decoupled from the Doctor's own node type so this
 /// lives next to its live twins (`all_onoff_blocks`/`siblings_off_excluding`/
 /// `engaged_bypass_for_switch`). Mirrors `all_onoff_blocks` (base: every
@@ -861,7 +861,7 @@ pub enum FsLevelPlan {
         engaged: Vec<(String, String, bool)>,
         clear_stale: Option<u32>,
         /// Scenes whose overlay restates the base value of the leveled param
-        /// ([`crate::scenes_restating_base`]) — the solved value is ALSO written into these
+        /// ([`crate::scene_jobs::scenes_restating_base`]) — the solved value is ALSO written into these
         /// overlays, because a full-param overlay MASKS base (the bake would otherwise be
         /// inert whenever a scene is active). Scenes that authored their OWN value are never
         /// listed — their divergence is intent and stays untouched.

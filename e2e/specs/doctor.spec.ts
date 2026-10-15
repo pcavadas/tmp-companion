@@ -26,13 +26,12 @@ import {
 //
 // ONLINE e2e suite consolidation (8→4 files): this file's first test below now runs
 // OFFLINE ONLY (test.skip'd online) — its online-specific assertions (the E2E Edge
-// EQ-ring chip + "notch it out" prescription, plus the cross-card ring-chip
-// scoping proof on the other two presets) moved to `doctor.online.spec.ts`, which runs
-// the same 3-preset selection online — see that file's own header for why. The offline
-// FLOW proof here (select → check → run → Results, three presets' cards render) is
-// unaffected and keeps running here exactly as before. The second test below
-// (leveling-damage advisories) is now explicitly offline-only too — it performs zero
-// device captures (a backup-scan read only), so an online run of it proved nothing extra.
+// EQ-ring chip + "notch it out" prescription) moved to `doctor.online.spec.ts`, which runs
+// Edge alone online; the cross-card ring-chip scoping proof is Vitest's
+// (`DoctorResults.test.tsx`). The offline FLOW proof here (select → check → run → Results,
+// three presets' cards render) is unaffected. It also reads E2E Rig's two leveling-damage
+// advisories off the same Results page — zero device captures (a backup-scan read only),
+// so they need no Doctor run of their own.
 //
 // ONLINE seeding note (kept for the file's own online-tier assertions, if any are ever
 // re-added): scripts/e2e.sh seeds the scenario via `probe --seed-scenario` BEFORE the
@@ -130,17 +129,32 @@ test.describe("Doctor — select, check, results", () => {
       page.getByText("Cut-through (estimated)").first(),
     ).toBeVisible();
 
+    // COVERAGE rows 32, 33 (leveling-damage advisories), on the same Results page — they
+    // used to pay a whole Doctor run of their own on E2E Rig. Deterministic offline:
+    // `LevelingDamageRow`'s hints are a BACKUP-SCAN read (zero device captures — see
+    // src/views/doctor/LevelingDamageRow.tsx's own header), not diagnosis content, so this
+    // is an exception to this file's "diagnosis content is sound-dependent, never asserted
+    // directly" rule. Scoped to E2E Rig's card: its "Leveling damage" finding row, its
+    // 2-assignment chip, and — once expanded — both signatures' factual copy (VERB KILL's
+    // deletedEffect, WAH SWEEP's sweptOther).
+    const rig = page.locator(`[data-preset-card="${picked[0].name}"]`);
+    await expect(rig.getByText("Leveling damage").first()).toBeVisible();
+    await expect(
+      rig.getByText(/2 assignments worth checking/).first(),
+    ).toBeVisible();
+    await rig.getByText("Leveling damage").first().click();
+    await expect(
+      rig.getByText(/drops to ~0 when engaged — the effect goes silent/),
+    ).toBeVisible();
+    await expect(
+      rig.getByText(/isn.t a level control — engaging it changes tone/),
+    ).toBeVisible();
+
     // Standing re-amp-OFF safety gate — the doctor capture path must disengage re-amp
     // at least as often as it engages (checked before any teardown rescue).
     await expectReampBalanced(page, reampBase);
   });
 
-  // COVERAGE rows 32, 33 (leveling-damage advisories). Deterministic offline:
-  // `LevelingDamageRow`'s hints are a BACKUP-SCAN read (zero device captures — see
-  // src/views/doctor/LevelingDamageRow.tsx's own header), not diagnosis content, so this is
-  // an exception to this file's "diagnosis content is sound-dependent, never asserted
-  // directly" rule.
-  //
   // MATRIX MISMATCH (row 35, the SNR "some checks skipped" badge): COVERAGE.md lists it
   // Offline, on the premise that 402's "Quiet" scene (sidecar C=-48) reads quiet enough
   // offline to trip the coverage gate. Empirically it doesn't — an actual offline run
@@ -150,49 +164,6 @@ test.describe("Doctor — select, check, results", () => {
   // compares the body PSD against the SAME capture's pre-onset floor, and the offline
   // scale_stimulus scales body and preamble uniformly, so coverage is level-invariant
   // offline however quiet the scene. This row is backend/online only.
-  test("400 surfaces its two leveling-damage advisories (backup-scan-only, zero captures)", async ({
-    page,
-  }) => {
-    // OFFLINE ONLY (ONLINE e2e consolidation): this row is a backup-scan read with zero
-    // device captures (see the header above), so an online run proves nothing an offline
-    // run doesn't already — it was only ever incidentally online because this file had
-    // no per-test mode split before.
-    test.skip(
-      await isOnline(page),
-      "zero captures — offline proves this identically",
-    );
-    await ensureScenario(page);
-    const reampBase = await reampCounters(page);
-
-    await openLevel(page);
-    await selectPresetsForCheck(page, [SCENARIO[0]]); // E2E Rig
-    await runDoctorCheck(page);
-    await expect(
-      page.getByText(/presets? need a look|All clear/).first(),
-    ).toBeVisible({ timeout: 240_000 });
-
-    const everything = page.getByRole("radio", { name: "Everything" });
-    if (await everything.isVisible().catch(() => false)) {
-      await everything.click();
-    }
-
-    // E2E Rig's card: the "Leveling damage" finding row, its 2-assignment chip, and — once
-    // expanded — both signatures' factual copy (VERB KILL's deletedEffect, WAH SWEEP's
-    // sweptOther). This is read straight from the backup scan, not from any capture.
-    await expect(page.getByText("Leveling damage").first()).toBeVisible();
-    await expect(
-      page.getByText(/2 assignments worth checking/).first(),
-    ).toBeVisible();
-    await page.getByText("Leveling damage").first().click();
-    await expect(
-      page.getByText(/drops to ~0 when engaged — the effect goes silent/),
-    ).toBeVisible();
-    await expect(
-      page.getByText(/isn.t a level control — engaging it changes tone/),
-    ).toBeVisible();
-
-    await expectReampBalanced(page, reampBase);
-  });
 
   // COVERAGE row 47 — a mid-run Stop (#190). Every capture is held for a minute, so the
   // only way to reach "Check stopped" inside the 15 s below is a cancel served WHILE

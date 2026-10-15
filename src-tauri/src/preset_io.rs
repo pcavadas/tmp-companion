@@ -4,7 +4,7 @@
 //!
 //! * [`OfflineIo`] — structural / full-preset edits.
 //!   Re-encodes the mutated JSON to `.preset` bytes and lands it via the
-//!   HW-validated AC7 **in-place re-import** ([`crate::replace_inplace_core`]),
+//!   HW-validated AC7 **in-place re-import** ([`crate::replace_inplace::replace_inplace_core`]),
 //!   preserving the slot + Song binding. Refuses any edit that changes `info.preset_id`
 //!   (a different identity empties the Song row).
 //!

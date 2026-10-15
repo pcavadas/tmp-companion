@@ -34,7 +34,7 @@ export interface LevelBlock {
 // oracle and the off-USB lane, plus (P4-C) a `shared_write_is_scene_local` Boost/Solo
 // anatomy — bypassed in base, un-bypassed ONLY by scene 3 "Solo"; Parallel: both lane amps live (joint-k / rebalance);
 // Hiwatt 3S: a VERBATIM device export (the scene-conformance oracle — do not edit);
-// Preset24: the stale-load / saturated-pedal footswitch fixture (level-fs-preset24.spec.ts),
+// Preset24: the stale-load / saturated-pedal footswitch fixture (e2e_server_tests.rs's base-boost gates; level.online.spec.ts's T5 online),
 // amended for the Plumes leveling regression (presetLevel 0.27, Twin outputLevel 0.28, Rat
 // base-ON at 0.62 — see COVERAGE.md and scenario-loudness.json's own "405" comment).
 // P3 additions (ADDITIONS, not replacements — 404/405 stay untouched structurally by P3):

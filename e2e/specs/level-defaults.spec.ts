@@ -13,6 +13,7 @@ import {
   reampOff,
   selectBaseOnly,
   selectPresetsForLevel,
+  simEvents,
   waitForCaptureInFlight,
 } from "../fixtures/scenario";
 
@@ -41,8 +42,8 @@ import {
 // danger.md OPEN distrust)"; a maxed fader would also have zero room even if it were
 // considered) — so 403 still clamps at Lead exactly as before, matching
 // `e2e_server_tests.rs`'s `level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch`
-// ("Base at Lead (-19) on 403 -> CLAMP at its ceiling (-20)"). Test (b) (the re-level-clamped
-// loop) now runs on 403 for exactly this reason — 401 no longer has a LOUD-enough named
+// ("Base at Lead (-19) on 403 -> CLAMP at its ceiling (-20)"). The retired test (b) (the re-level-clamped
+// loop) ran on 403 for exactly this reason — 401 no longer has a LOUD-enough named
 // target to demonstrate a clamp with.
 //
 // Per-SCENE/per-FOOTSWITCH outcomes are asserted at the command level (e2e_server_tests.rs
@@ -50,11 +51,19 @@ import {
 // their streamed rows reach the page through the UI bridge (.claude/rules/e2e.md's "Events
 // and Channels reach the page"), but this file reads none of them. The UI here asserts only
 // the BASE-leveling outcomes (level_preset returns directly, no Channel): the base-boost
-// reaching a loud default (a), the re-level-clamped loop (b), and a mid-run off-branch
-// capture fault (c).
+// reaching a loud default (a) and a mid-run off-branch capture fault (c). The old (b), the
+// re-level-clamped loop, is gone: the 403 Lead clamp is pinned at the command layer
+// (`level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch`) and the
+// re-level flow by `LevelView.test.tsx` ("Re-level clamped… reopens setup").
+//
+// The tests are independent (each starts from the fixture's `/sim/reset`, each worker owns
+// its own e2e_server), so the file runs them in parallel: as one serial file it was the
+// offline lane's wall-clock floor.
 
 // openLevel / selectBaseOnly / pickBaseTarget now live in ../fixtures/scenario.ts (shared
-// with level-setup.spec.ts, pedal-fiasco.spec.ts and level.spec.ts).
+// with level-setup.spec.ts and level.spec.ts).
+
+test.describe.configure({ mode: "parallel" });
 
 test.describe("Level — first-run defaults + physics outcomes (offline, sidecar-authored)", () => {
   test.afterEach(async ({ page }) => {
@@ -135,58 +144,15 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expectReampBalanced(page, reampBase);
   });
 
-  // (b) Re-level-clamped loop: a sound clamped at a LOUDER target resolves when re-leveled at a
-  // quieter one. RETARGETED (405-era 401 → 403): 401's Base at Lead no longer clamps at all
-  // (test (a) above) since it now has a fader to boost with, so it can't demonstrate this loop
-  // any more with a NAMED target (Rhythm/Crunch/Lead are the only picker options). 403 (E2E
-  // Parallel, ceiling ~-20) is UNAFFECTED by the boost feature — its base pair carries TWO
-  // active amps (`gtrParallel1`, both already at `outputLevel` 1.0), which the boost candidate
-  // derivation refuses outright (Phase 1's "≥2 amp knobs" refusal; a maxed fader would have
-  // zero headroom regardless) — so it clamps at Lead (-19) and resolves at Crunch (-21) exactly
-  // as before. Summary → "Re-level clamped…" → lower target → run 2 → the row is done (no
-  // clamp banner remains).
-  test("re-level-clamped: clamped at Lead resolves at Crunch", async ({
-    page,
-  }) => {
-    test.skip(
-      await isOnline(page),
-      "offline-only: authored ceiling via the sidecar",
-    );
-    await ensureScenario(page);
-    const reampBase = await reampCounters(page);
-    await openLevel(page);
-    await selectBaseOnly(page, SCENARIO[3].name); // E2E Parallel, Base only
-
-    await page.getByRole("button", { name: /Level 1 preset/ }).click();
-    await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await pickBaseTarget(page, SCENARIO[3].slot, "Lead"); // pick the LOUD target
-    await page.getByRole("button", { name: /Start.*1 sound/ }).click();
-    await expect(
-      page.getByRole("button", { name: "Accept", exact: true }),
-    ).toBeVisible({
-      timeout: 240_000,
-    });
-    await expect(page.getByText(/Clamped .* already maxed/)).toBeVisible();
-
-    await page.getByRole("button", { name: /Re-level clamped/ }).click();
-    await pickBaseTarget(page, SCENARIO[3].slot, "Crunch"); // QUIETER target
-    await page.getByRole("button", { name: /Start.*1 sound/ }).click();
-    await expect(
-      page.getByRole("button", { name: "Done", exact: true }),
-    ).toBeVisible({
-      timeout: 240_000,
-    });
-    await expect(page.getByText(/Clamped .* already maxed/)).toHaveCount(0);
-
-    await expectReampBalanced(page, reampBase);
-  });
-
-  // (c) Mid-run failure + no-signal banner: a 2-preset run with /sim/fault silencing 402's first
-  // capture → 402 goes OFF-BRANCH (no signal) with its "needs routing" remediation banner, while
-  // its sibling 401 still levels to the target. Whole-preset selection here (both presets now
-  // carry footswitches too) is fine — the test asserts base-leveling outcomes only, and no
-  // data-pick target is picked, so the collision risk from mixed row types never applies.
-  test("mid-run capture fault: one item off-branch (routing banner), the sibling levels", async ({
+  // (c) Mid-run failure + no-signal banner + the PEDAL-FIASCO gate (the complainant's "items
+  // failing / it changed everything" class; was pedal-fiasco.spec.ts): /sim/fault silences
+  // 402's first capture → 402's Base goes OFF-BRANCH (no signal) with its "needs routing"
+  // remediation banner and writes NOTHING (a silent capture must never be saved over with a
+  // near-zero level), while its sibling 401 still levels and saves. Exactly the three rows the
+  // assertions read are selected — 401 Base, 402 Base and 402's `OUT2` switch, the second
+  // "can't hear it" (its block sits on the split's OUT-2 lane, COVERAGE row 21) — rather than
+  // both whole presets, whose 8 scenes and other switches only cost captures.
+  test("mid-run capture fault: one item off-branch (routing banner) writes nothing, the sibling levels and saves", async ({
     page,
   }) => {
     test.skip(
@@ -197,13 +163,23 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     const reampBase = await reampCounters(page);
     await openLevel(page);
 
-    await selectPresetsForLevel(page, [SCENARIO[1], SCENARIO[2]]);
+    await selectBaseOnly(page, SCENARIO[1].name); // 401 Base
+    const filter = page.getByPlaceholder(/Filter by name or slot/i);
+    await filter.fill(SCENARIO[2].name);
+    await page
+      .getByTitle(/Show Base/)
+      .first()
+      .click();
+    const list = page.locator("[data-preset-list]");
+    await list.getByText("Base Preset", { exact: true }).click(); // 402 Base
+    await list.getByText("OUT2", { exact: true }).click(); // 402 switch 2
+    await filter.fill("");
 
     await armCaptureFault(page, SCENARIO[2].slot); // silence 402's next capture (one-shot)
 
     await page.getByRole("button", { name: /Level 2 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click(); // defaults; 401 solves, 402 faults
+    await page.getByRole("button", { name: /Start.*3 sound/ }).click(); // defaults; 401 solves, 402 faults
     await expect(
       page.getByRole("button", { name: /^(Done|Accept)$/ }),
     ).toBeVisible({
@@ -212,9 +188,8 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     // 402 off-branch: the row's own status, its specific no-signal diagnosis, and the
     // routing remediation banner (design 1a dropped the old per-category sub-tally count —
-    // the row status + banner are the evidence now).
-    // Two rows can't be heard: the faulted Base, and switch 2 `OUT2`, whose block sits on
-    // the split's OUT-2 lane (COVERAGE row 21). The second arrives through the UI bridge.
+    // the row status + banner are the evidence now). Two rows can't be heard: the faulted
+    // Base, and switch 2 `OUT2`. The second arrives through the UI bridge.
     await expect(page.getByText("can’t hear it")).toHaveCount(2);
     await expect(
       page.getByText(
@@ -223,8 +198,26 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     ).toHaveCount(2);
     await expect(page.getByText("Needs routing on the unit")).toBeVisible();
     // 401 still leveled — its displayed final LUFS near the default target (−23). No "LUFS"
-    // suffix on Summary (that's a RunPage-only unit label) — just the bare reading.
+    // suffix on Summary (that's a RunPage-only unit label) — just the bare reading. Its
+    // group is all-good (one Base row, done), and `useGroupOpen` auto-opens only groups with
+    // a non-"done" row, so expand it first, as test (a) does.
+    const sibling = page.locator(
+      `[data-preset-group="${String(SCENARIO[1].slot)}"]`,
+    );
+    await sibling.click();
     await expect(page.getByText(/[−-]2[234]\.\d/).first()).toBeVisible();
+
+    // /sim/reset (test fixture) cleared the log at test start, so these are THIS run's writes.
+    const saved = (await simEvents(page))
+      .map((e) => (e as { Saved?: number }).Saved)
+      .filter((s): s is number => typeof s === "number");
+    expect(saved, "the healthy sibling (401) leveled and saved").toContain(
+      SCENARIO[1].slot,
+    );
+    expect(
+      saved,
+      "the faulted preset (402) must NOT be saved — a silent capture writes nothing",
+    ).not.toContain(SCENARIO[2].slot);
 
     await expectReampBalanced(page, reampBase);
   });
@@ -273,7 +266,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
   // Chromium's six-connections-per-host pool fills with them, so the Stop's cancel invoke
   // only leaves the page once the in-flight item returns. The run itself sees the Stop at
   // once (the loop's own flag), so it ends after that item instead of aborting it; the
-  // capture delay is short for that reason.
+  // capture delay is short for that reason — every capture of that item pays it in full.
   test("a run survives a tab switch, and its Stop still ends it", async ({
     page,
   }) => {
@@ -283,7 +276,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     );
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
-    await armCaptureDelay(page, 10_000);
+    await armCaptureDelay(page, 3_000);
     await openLevel(page);
 
     await selectPresetsForLevel(page, [SCENARIO[1], SCENARIO[2]]);

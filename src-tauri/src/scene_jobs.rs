@@ -708,7 +708,7 @@ pub(crate) fn read_saved_preset(list_index: ListIndex) -> Option<serde_json::Val
 /// 28): the field-8 read returns 3 of 4 scenes, the third cut mid-record with no
 /// `sceneName` and 9 of 15 nodes, and "Clean" is absent entirely.
 ///
-/// So this routes through [`crate::read_slot_preset_complete`], which falls back to a
+/// So this routes through [`crate::slot_read::read_slot_preset_complete`], which falls back to a
 /// name-guarded device backup — the only transport carrying the whole document — and
 /// refuses rather than returning a partial one.
 pub(crate) fn read_saved_preset_complete(

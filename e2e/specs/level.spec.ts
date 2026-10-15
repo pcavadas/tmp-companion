@@ -1,17 +1,13 @@
 import { test, expect } from "../fixtures/test";
 import {
   SCENARIO,
-  baseRowKey,
   clearScenario,
-  ensurePresetGroupOpen,
   ensureScenario,
   expectReampBalanced,
   isOnline,
-  pickBaseTarget,
   reampCounters,
   reampOff,
   runBaseLevel,
-  selectBaseOnly,
   simEvents,
 } from "../fixtures/scenario";
 
@@ -38,6 +34,9 @@ import {
 // test, merged in verbatim (owner decision: one offline level spec is enough). That file's
 // online tests were already retired to `level.online.spec.ts`'s idempotency test — see this
 // file's own describe block for the merge; level-rerun.spec.ts is deleted.
+// Test 1 ("levels two presets' Base to different targets") was then folded into that last
+// test: its first run IS the two-preset, two-target wizard run, so the flow pays one page
+// load and one leveling run instead of two.
 test.describe("Level — plain presets + a scenes-and-footswitches preset", () => {
   // Between tests: SAFETY only (re-amp off, so an aborted capture can't strand the
   // unit input-muted for the next test). Slot cleanup happens ONCE in afterAll —
@@ -51,67 +50,6 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     const page = await browser.newPage();
     await clearScenario(page);
     await page.close();
-  });
-
-  test("levels two presets' Base to different targets, end to end", async ({
-    page,
-  }) => {
-    // OFFLINE ONLY (ONLINE e2e consolidation): moved verbatim into
-    // `level.online.spec.ts` for the online tier.
-    test.skip(await isOnline(page), "moved to level.online.spec.ts");
-    await ensureScenario(page);
-    const reampBase = await reampCounters(page);
-
-    await page.goto("/");
-    await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
-    await expect(page.getByText(/connected · \d+\.\d+/)).toBeVisible({
-      timeout: 20_000,
-    });
-
-    // Select each preset's Base row explicitly (expand → tick "Base Preset") so exactly
-    // ONE row per preset is selected — both now carry footswitches/scenes of their own,
-    // so a whole-preset tick would sweep those in too and shift the terminal summary's
-    // Done-vs-Accept text. The filter narrows the list to each in turn; the selection
-    // persists across filters.
-    const presets = [SCENARIO[1], SCENARIO[2]];
-    for (const p of presets) {
-      await selectBaseOnly(page, p.name);
-    }
-
-    await page.getByRole("button", { name: /Level 2 preset/ }).click();
-
-    // The wizard opens directly at Set up; tick the inline footer ack that gates the
-    // commit (there is no separate Back-up step).
-    await page.getByText(/I.ve backed up with Pro Control/i).click();
-
-    // Two DIFFERENT per-preset targets — each row's own `target:<rowKey>` trigger is
-    // unique by construction now, regardless of how many other rows that preset has.
-    const targets = [
-      { slot: SCENARIO[1].slot, label: "Crunch" },
-      { slot: SCENARIO[2].slot, label: "Lead" },
-    ];
-    for (const { slot, label } of targets) {
-      await ensurePresetGroupOpen(page, slot);
-      await pickBaseTarget(page, slot, label);
-    }
-    // The picks must actually BIND — assert each row's trigger now reads its target
-    // (guards a silent display-vs-value no-op the always-solving fake re-amp would hide).
-    for (const { slot, label } of targets) {
-      await expect(
-        page.locator(`[data-pick="target:${baseRowKey(slot)}"]`),
-      ).toContainText(label);
-    }
-
-    await page.getByRole("button", { name: /Start.*2 sound/ }).click();
-    await expect(
-      page.getByRole("button", { name: "Done", exact: true }),
-    ).toBeVisible({
-      timeout: 240_000,
-    });
-
-    // Standing safety gate: the app disengaged re-amp at least as often as it engaged,
-    // checked BEFORE the afterEach reampOff rescue (so a stranded engage fails here).
-    await expectReampBalanced(page, reampBase);
   });
 
   // COVERAGE row 1 — base presetLevel solve (indirect: 400's base solving is a
@@ -230,7 +168,11 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   // reachable in both modes — not merely an online-only property (it was offline-only
   // "events-equality", `previous_level` structurally always `None`, before that fidelity
   // fix landed; see git history for that shape if reviving it).
-  test("two identical base runs: run 2 makes no new Saved write (level_unchanged skip)", async ({
+  // It also carries the retired "levels two presets' Base to different targets" test: run 1
+  // levels two presets' Base rows to DIFFERENT per-preset targets through the wizard
+  // (`runBaseLevel` asserts each row's own `target:<rowKey>` pick binds), and must finish
+  // "Done" — every row solved.
+  test("two presets' Base at different targets, then an identical re-run makes no new Saved write (level_unchanged skip)", async ({
     page,
   }) => {
     // Online-only equivalent: `level.online.spec.ts`'s idempotency test, on the Hiwatt
@@ -243,15 +185,21 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
-    // Base-only, not the whole-preset checkbox: 401 now carries footswitches of its own
+    // Base-only, not the whole-preset checkbox: 401/402 now carry footswitches of their own
     // (P4-B fixture rebuild — see level-defaults.spec.ts's header), and a whole-preset
     // tick would sweep those in too and shift the terminal summary's Done-vs-Accept text.
     const run = () =>
-      runBaseLevel(page, [{ preset: SCENARIO[1], label: "Crunch" }]);
+      runBaseLevel(page, [
+        { preset: SCENARIO[1], label: "Crunch" },
+        { preset: SCENARIO[2], label: "Lead" },
+      ]);
 
     // /sim/reset (the `page` fixture) cleared the event log, so run 1's log is the whole
     // prefix.
     await run();
+    await expect(
+      page.getByRole("button", { name: "Done", exact: true }),
+    ).toBeVisible();
     const afterRun1 = await simEvents(page);
     // Non-vacuous: run 1 must actually solve + write a PresetLevel and Saved this slot,
     // else the "no new writes" check below proves nothing.

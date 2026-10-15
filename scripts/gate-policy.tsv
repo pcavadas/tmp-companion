@@ -13,6 +13,11 @@ lane	ALL
 probe-entry	ANY
 doctor-persist	doctor.online level.online doctor-apply.online
 level	doctor.online level.online
+# An online spec file's own edit requires that spec alone: a spec change cannot move the
+# product code the other specs exercise.
+spec-doctor-online	doctor.online
+spec-level-online	level.online
+spec-doctor-apply-online	doctor-apply.online
 copy	copy
 songs	songs
 unexercised	ANY	no online spec reaches this file; exercise it by hand on the unit (scripts/hw-e2e.sh covers the replace path)

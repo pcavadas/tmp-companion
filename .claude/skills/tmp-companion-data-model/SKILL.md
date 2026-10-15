@@ -92,7 +92,7 @@ Each mode has a `tabEnum` on the wire (`tmp-companion-protocol`). One product co
 
 ## Why this matters for the companion
 
-- **Copy**: because **all scenes share one block list**, an insert or remove must land in every scene, and the block lives in three keyed places (`notes/gotchas.md`). Route edits through `crate::replace_inplace_core` and walk with `audiograph::for_each_node{,_mut}` + `node_id` — never a private traversal.
+- **Copy**: because **all scenes share one block list**, an insert or remove must land in every scene, and the block lives in three keyed places (`notes/gotchas.md`). Route edits through `crate::replace_inplace::replace_inplace_core` and walk with `audiograph::for_each_node{,_mut}` + `node_id` — never a private traversal.
 - **Leveling**: `presetLevel` is a **global multiplier** over all scenes, so the base scene is levelled first; each footswitch scene is levelled on its **active amp's `outputLevel`**. Reamp bypasses the analog Loops 1–2. Mechanism: `notes/leveling.md`.
 - **Signal chain + Catalog**: the 12 templates, block types and cabinet sub-model are what the strip renders; `tmp-companion-catalog` owns the id→art/name mapping.
 

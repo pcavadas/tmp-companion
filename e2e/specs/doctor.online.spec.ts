@@ -22,18 +22,15 @@ import {
 //     BRIGHT, are covered numerically by src-tauri/src/doctor_audio_oracle.rs) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
 //     actually diagnose on real audio, not just that the fixture carries the right shape
 //     (that structural half stays pinned offline by fixture_gates.rs).
-// (b) is doctor.spec.ts's online UI run, moved here selecting all three fixtures exactly as
-//     that run used to (E2E Rig 400 + E2E Pedalboard 401 + E2E Edge 402). Edge alone carries
-//     the 2.6 kHz EQ-ring assertions (the chip must fire on every one of Edge's played
-//     sounds, and opening a ringing row must surface the "notch it out" prescription);
-//     Rig and Pedalboard carry the CROSS-CARD scoping proof (zero ring chips leak onto a
-//     sibling's card). That scoping proof is a UI property distinct from (a)'s base/CONTROL
-//     "healthy content never rings" property on a DIFFERENT fixture (407) — (a) proves the
-//     BACKEND never diagnoses a ring on healthy audio; only a shared multi-card Results view
-//     can prove the FRONTEND never renders one diagnosed on Edge onto a sibling's card — so
-//     narrowing to Edge alone (an earlier version of this file's trade) dropped a real
-//     property rather than a redundant one. doctor.spec.ts keeps its full 3-preset flow
-//     OFFLINE (test.skip'd online there now, trade — see that file's own header); the
+// (b) is doctor.spec.ts's online UI run on E2E Edge (402) alone: the 2.6 kHz EQ-ring chip
+//     must fire on every one of Edge's played sounds, and opening a ringing row must surface
+//     the "notch it out" prescription. The CROSS-CARD scoping proof (a ring diagnosed on Edge
+//     never renders on a sibling's card) is a pure rendering property of the Results view, so
+//     it lives in Vitest (`DoctorResults.test.tsx`, "keeps a ring chip on its own card"),
+//     not here: selecting E2E Rig and E2E Pedalboard as well cost ~20 real captures (4-6 min
+//     on the unit) for a property no device behaviour can change. (a) proves the BACKEND
+//     never diagnoses a ring on healthy audio. doctor.spec.ts keeps its full 3-preset flow
+//     OFFLINE (test.skip'd online there, trade — see that file's own header); the
 //     cut-through-estimate UI assertion (generic capture plumbing, not preset-specific)
 //     stays covered there too.
 test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)", () => {
@@ -260,9 +257,9 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     await expectReampBalanced(page, reampBase);
   });
 
-  // (b) — doctor.spec.ts's online UI run, selecting all three fixtures (COVERAGE row 31 +
-  // the cross-card ring-chip scoping property — see this file's own header).
-  test("E2E Rig/Pedalboard/Edge: the 2.6 kHz EQ ring fires on every Edge sound and never leaks onto a sibling card", async ({
+  // (b) — doctor.spec.ts's online UI run on E2E Edge alone (COVERAGE row 31; the cross-card
+  // scoping property is Vitest's — see this file's own header).
+  test("E2E Edge: the 2.6 kHz EQ ring fires on every Edge sound and its row prescribes the notch", async ({
     page,
   }) => {
     test.skip(
@@ -271,30 +268,28 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     );
     // Budget, added up rather than eyeballed (a bare 600 s ceiling here previously left the
     // Results wait below alone eating 500 s against it — cold-seed runs died on a vague "Test
-    // timeout exceeded" instead of the real assertion). All three fixtures now run (not Edge
-    // alone): ~29 sounds total (doctor.spec.ts's own "~29 real sounds across the three intact
-    // fixtures" figure) x 18 s/capture (worst end of doctor.spec.ts's documented 12-18 s
-    // range) ≈ 520 s, + up to 3 floor-suspect recapture retries (5 s gap + 18 s recapture
-    // each, leveller.rs) ≈ 69 s, + a cold `ensureScenario` reseed (240 s worst case,
-    // fixtures/scenario.ts's own request budget), + the real backup scan the preset picker
-    // pays before Check enables (~60 s, matching copy.spec.ts's precedent for that same
-    // wait), + small UI-click slack (~10 s) ≈ 900 s. 1_200_000 ms gives headroom, matching
-    // this file's other test's generous-ceiling style.
+    // timeout exceeded" instead of the real assertion). Edge alone: ~10 sounds (base + 8
+    // scenes + its footswitch) x 18 s/capture (worst end of doctor.spec.ts's documented
+    // 12-18 s range) ≈ 180 s, + up to 3 floor-suspect recapture retries (5 s gap + 18 s
+    // recapture each, leveller.rs) ≈ 69 s, + a cold `ensureScenario` reseed (240 s worst
+    // case, fixtures/scenario.ts's own request budget), + the real backup scan the preset
+    // picker pays before Check enables (up to ~180 s on a full bank, copy.spec.ts's SCAN_MS),
+    // + small UI-click slack (~10 s) ≈ 680 s. 1_200_000 ms gives headroom, matching this
+    // file's other test's generous-ceiling style.
     test.setTimeout(1_200_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
     await openLevel(page);
 
-    const picked = [SCENARIO[0], SCENARIO[1], EDGE]; // E2E Rig, E2E Pedalboard, E2E Edge
-    await selectPresetsForCheck(page, picked);
+    await selectPresetsForCheck(page, [EDGE]);
     await runDoctorCheck(page);
 
     // Terminal Results, or a fast-fail error pane (see doctor.spec.ts's own header for
-    // why the error pane is matched in the same wait). ~29 sounds at up to 18 s/capture
-    // (~520 s) plus floor-suspect recapture retries (~69 s) ≈ 589 s. 900 s keeps real
-    // headroom without eating most of this test's own ceiling — see that ceiling's budget
-    // comment above.
+    // why the error pane is matched in the same wait). ~10 sounds at up to 18 s/capture
+    // (~180 s) plus floor-suspect recapture retries (~69 s) ≈ 250 s, behind a backup scan of
+    // up to ~180 s. 900 s keeps real headroom without eating most of this test's own
+    // ceiling — see that ceiling's budget comment above.
     await expect(
       page
         .getByText(/presets? need a look|All clear|check couldn.t finish/)
@@ -315,16 +310,6 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     const ringChip = /^(?:Possible )?Rings at 2\.\d kHz$/;
     const edgeCard = page.locator(`[data-preset-card="${EDGE.name}"]`);
     await expect(edgeCard).toHaveCount(1);
-
-    // CROSS-CARD SCOPING: the ring chip must never leak onto a sibling's card. Each
-    // sibling card gets its own non-vacuity guard (`toHaveCount(1)`) — an attribute/name
-    // drift must not make the zero-count check below pass trivially against a card that
-    // doesn't exist.
-    for (const p of [SCENARIO[0], SCENARIO[1]]) {
-      const card = page.locator(`[data-preset-card="${p.name}"]`);
-      await expect(card).toHaveCount(1);
-      await expect(card.getByText(ringChip)).toHaveCount(0);
-    }
 
     // AS-PLAYED SEMANTICS: the EQ ring lives in Edge's BASE graph, so it is present in
     // every one of Edge's played sounds, not one isolated row — expand the collapsed

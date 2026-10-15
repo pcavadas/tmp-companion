@@ -135,7 +135,7 @@ src-tauri/src/leveller/trade.rs	doctor-persist
 src-tauri/src/leveller/persist.rs	doctor-persist
 src-tauri/src/leveller/rebalance.rs	doctor-persist
 src-tauri/src/leveller/block.rs	doctor-persist
-e2e/specs/doctor-apply.online.spec.ts	doctor-persist
+e2e/specs/doctor-apply.online.spec.ts	spec-doctor-apply-online
 
 # ── level: Doctor and leveling share captures, so both specs run ──
 src-tauri/src/doctor.rs	level
@@ -157,8 +157,8 @@ src-tauri/src/stimulus.rs	level
 src-tauri/src/probe_api/scene_bench.rs	level
 src-tauri/src/scene_jobs.rs	level
 src-tauri/resources/samples/*	level
-e2e/specs/doctor.online.spec.ts	level
-e2e/specs/level.online.spec.ts	level
+e2e/specs/doctor.online.spec.ts	spec-doctor-online
+e2e/specs/level.online.spec.ts	spec-level-online
 
 # ── copy ──
 src-tauri/src/commands/copy_apply.rs	copy

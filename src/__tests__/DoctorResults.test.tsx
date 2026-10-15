@@ -544,6 +544,51 @@ describe("DoctorResults — summary + cards", () => {
 describe("DoctorResults — filter", () => {
   beforeEach(resetMocks);
 
+  // The cross-card scoping half of doctor.online.spec.ts's Edge EQ-ring run, which no
+  // device behaviour can change: a ring diagnosed on one preset's sounds renders on THAT
+  // card only — never on a flagged sibling's, never on a clean one's.
+  it("keeps a ring chip on its own card", async () => {
+    const user = userEvent.setup();
+    const ring: DoctorDiag = {
+      key: "resonant",
+      label: "Rings at 2.6 kHz",
+      sev: "med",
+      severity: 3,
+      z: 8,
+      bands: [3],
+      detail: "a narrow peak at 2.6 kHz",
+      fromLevel: "quiet",
+      explain: "A narrow peak rings over every note.",
+      rx: [],
+    };
+    const result = fixture();
+    const [clean, flagged, broken] = result.presets;
+    // Every sound of the middle preset rings, as Edge's base-graph EQ ring does.
+    flagged.sounds = flagged.sounds.map((s) => ({
+      ...s,
+      diags: [...s.diags, ring],
+    }));
+    renderResults(result);
+    await user.click(screen.getByRole("radio", { name: "Everything" }));
+    const card = (listIndex: number): HTMLElement => {
+      const name = NAMES.get(listIndex) ?? "";
+      const el = document.querySelector<HTMLElement>(
+        `[data-preset-card="${name}"]`,
+      );
+      expect(el, `${name}'s card renders`).not.toBeNull();
+      if (!el) throw new Error(name);
+      return el;
+    };
+    expect(
+      within(card(flagged.listIndex)).getAllByText("Rings at 2.6 kHz"),
+    ).toHaveLength(flagged.sounds.length);
+    for (const sibling of [clean, broken]) {
+      expect(
+        within(card(sibling.listIndex)).queryByText(/Rings at/),
+      ).not.toBeInTheDocument();
+    }
+  });
+
   it("hides fully-clean presets by default and flips via the 'Show all' strip", async () => {
     const user = userEvent.setup();
     renderResults();

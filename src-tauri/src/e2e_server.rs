@@ -407,7 +407,8 @@ pub fn run_e2e_server() {
             e2e_load_preset,
             e2e_reamp_off,
             e2e_reamp_state,
-            e2e_measure_sound
+            e2e_measure_sound,
+            e2e_read_stored_preset
         ))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build e2e mock app");
@@ -752,6 +753,46 @@ async fn e2e_mark_seeded() -> Result<(), String> {
     Ok(())
 }
 
+/// One STORED preset row, read on its own (field-8, the device's saved row — the
+/// complete-document read falls back to a device backup only on a truncated tail): its
+/// name, routed graph and block-acting footswitches, derived exactly as
+/// `read_backup_archive` derives a `BackupPresetRow`'s. Lets an online spec check a save
+/// or a discard against the device's stored state without a whole-library backup
+/// (~85 s on a full bank) per check.
+#[cfg(feature = "e2e")]
+#[derive(serde::Serialize)]
+struct E2eStoredPreset {
+    name: String,
+    graph: crate::session::ActiveGraph,
+    footswitches: Vec<crate::footswitch::FootswitchInfo>,
+}
+
+#[cfg(feature = "e2e")]
+#[tauri::command]
+async fn e2e_read_stored_preset(
+    state: State<'_, AppState>,
+    slot: ListIndex,
+) -> Result<E2eStoredPreset, String> {
+    with_released_seize(state.session.clone(), move || {
+        // `info` too: it carries the name, and a cut that takes `ftsw` can take it as well
+        // (`slot_read.rs`), so a partial falls back to the backup re-read instead of a "" name.
+        let (preset, _, _) = crate::slot_read::read_slot_preset_complete(slot, &["ftsw", "info"])?;
+        Ok(E2eStoredPreset {
+            name: preset
+                .pointer("/info/displayName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            graph: crate::session::extract_active_graph(&preset, None),
+            footswitches: preset
+                .get("ftsw")
+                .map(|ftsw| crate::footswitch::enumerate_block_footswitches(ftsw, &preset))
+                .unwrap_or_default(),
+        })
+    })
+    .await
+}
+
 /// ONLINE-e2e recovery arm: sweep stray scenario imports out of the user's bank
 /// (fail-closed: only exact scenario-name matches at wrong slots, off a
 /// completeness-floored tolerant list). Invoked by spec teardown + the e2e.sh recovery
@@ -893,7 +934,7 @@ async fn e2e_reamp_state(state: State<'_, AppState>) -> Result<session::ReampSta
 }
 
 /// STRICT-HARNESS measure for the post-leveling audio gate (`level.online.spec.ts`
-/// online, `level-fs-preset24.spec.ts` offline): re-measure one sound of `slot` exactly
+/// online, `e2e_server_tests.rs` offline): re-measure one sound of `slot` exactly
 /// as the leveling lane measured it (scene as-is / base isolation / footswitch engaged
 /// state with the saved ASSIGN `valueA` re-played) and return its integrated LUFS, so
 /// the spec can assert the SAVED preset actually renders at the leveling target. USABLE

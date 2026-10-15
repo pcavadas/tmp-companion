@@ -71,7 +71,7 @@ cargo run --bin probe                         # headless HW re-validation (devic
 - **Auto-merge arms ONLY for `main`-targeted PRs.** [→ evidence](notes/gotchas.md#auto-merge-arms-only-for-main-targeted-prs)
 - **Connection is fully automatic** — there are no manual Connect/Disconnect buttons. [→ evidence](notes/gotchas.md#fully-automatic-connection)
 - **Editing `index.html` triggers a FULL webview reload** (not HMR) in `tauri dev`, re-running connect-on-mount. Reload via the UI instead.
-- **Shared seams** — the cross-module reuse contracts: `backup::xor_jld` (the `.preset` codec) + `library::decode_preset_bytes`; `crate::replace_inplace_core` (in-place re-import); `audiograph::for_each_node` / `for_each_node_mut` + `node_id` (the node-walk helpers the scan and edit modules share).
+- **Shared seams** — the cross-module reuse contracts: `backup::xor_jld` (the `.preset` codec) + `library::decode_preset_bytes`; `crate::replace_inplace::replace_inplace_core` (in-place re-import); `audiograph::for_each_node` / `for_each_node_mut` + `node_id` (the node-walk helpers the scan and edit modules share).
 
 ## How leveling works
 

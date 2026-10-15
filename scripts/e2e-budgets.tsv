@@ -9,12 +9,9 @@
 # Re-measure and update a row when a spec legitimately grows; never just raise it to quiet
 # a warning without finding out why the file slowed down.
 level-defaults.spec.ts	430	# measured 211.8
-level-fs-preset24.spec.ts	250	# measured 124.1
 doctor.spec.ts	230	# measured 113.7
 level.spec.ts	190	# measured 93.4
 level-setup.spec.ts	160	# measured 77.8
-level-trade.spec.ts	100	# measured 49.6
-pedal-fiasco.spec.ts	30	# measured 13.9
 copy.spec.ts	30	# measured 7.8
 level-fs-scene-context.spec.ts	30	# measured 7.2
 songs.spec.ts	30	# measured 6.4

@@ -35,7 +35,6 @@ import {
 
 // COVERAGE rows 37, 45
 const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S — the P4 leveling-regression fixture
-const HIWATT = SCENARIO[4]; // E2E Hiwatt 3S — carries only the one carried-over modulated row
 const PRESET24 = SCENARIO[5]; // E2E Preset24 — the Plumes-shape first-run journey (T5)
 
 // 410's base pair is a plain TRADE solve at -23 (G≈+1.0 <= P_up≈+6.0, plan physics section):
@@ -87,7 +86,7 @@ interface FootswitchLevelResult {
   predicted_lufs: number;
 }
 /** P5 external validation: what the run PROMISED for the sound about to be re-measured —
- *  see level-fs-preset24.spec.ts / .claude/rules/e2e.md's "External validation" section. */
+ *  see .claude/rules/e2e.md's "External validation" section. */
 interface ValidateArg {
   targetLufs: number;
   clamped: boolean;
@@ -190,7 +189,7 @@ test.describe
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
-    // Base (3 conns/1 engage) + 3 scenes (one batch) + 2 footswitch batches + 4 strict
+    // Base (3 conns/1 engage) + 2 scenes (one batch) + 1 footswitch batch + 3 strict
     // ffmpeg re-measures — generous headroom over the plan's own ~8 min estimate.
     test.setTimeout(900_000);
     await ensureScenario(page);
@@ -248,24 +247,18 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     ).toBeNull();
     baseTarget410 = baseTargetUsed;
 
-    // ── Lane 2: two footswitches, run BEFORE scenes (production order: `runRank` in
+    // ── Lane 2: the footswitch, run BEFORE scenes (production order: `runRank` in
     // src/views/level/leveling.ts ranks footswitch=1 ahead of scene=2, both after base=0) —
-    // 410's own TubeScreamer row, plus one MODULATED row (UniVibe, 404) carried verbatim from
-    // the retired Hiwatt arc so its own modulated-solve assertion keeps a named carrier (plan's
-    // online-budget table). Separate batches: the two rows live on different slots. As-is
-    // probes are taken AFTER the base save above, since base leveling just moved `presetLevel`,
-    // which scales every capture on this same slot. HIWATT (404) is a different slot with its
-    // own unrelated `presetLevel`, so its probe is unaffected by 410's base save timing, but
-    // it's read here too for a single "5 probes" batch (plan's own budget accounting).
+    // 410's own TubeScreamer row. The as-is probe is taken AFTER the base save above, since
+    // base leveling just moved `presetLevel`, which scales every capture on this same slot.
+    // (The modulated UniVibe row on 404 this lane once carried is gone: a footswitch solve on
+    // a LFO'd knob is the same solver path as this row, and it cost a probe, a solve, a save
+    // and the next run's re-import of 404.)
     const { asIs: asIsFs410, target: fsTargetUsed410 } =
       await measureAsIsTarget(page, {
         slot: FRIEDMAN.slot,
         footswitch: 1,
       });
-    const { target: fsTargetUniVibe } = await measureAsIsTarget(page, {
-      slot: HIWATT.slot,
-      footswitch: 12,
-    });
     fsTarget410 = fsTargetUsed410;
 
     const fs410 = (await invoke(
@@ -292,32 +285,6 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     )) as FootswitchLevelResult[];
     expectEverySwitch(fs410, [{ switch: 1 }]);
     assertFsSolved(fs410, () => fsTargetUsed410);
-
-    const fsUniVibe = (await invoke(
-      page,
-      "level_footswitches_apply",
-      {
-        slot: HIWATT.slot,
-        jobs: [
-          {
-            switch: 12,
-            levGroupId: "G4",
-            levNodeId: "ACD_UniVibe",
-            levParameterId: "volume",
-            targetLufs: fsTargetUniVibe,
-          },
-        ],
-        save: true,
-        topologyId: "guitar-humbucker",
-        calibrationLufs: null,
-        profileId: null,
-        onResult: "__CHANNEL__:1",
-      },
-      T * 2,
-    )) as FootswitchLevelResult[];
-    expectEverySwitch(fsUniVibe, [{ switch: 12 }]);
-    // A LFO'd knob (modulated UniVibe response) can legitimately need the full KNOB_TOL_LU band.
-    assertFsSolved(fsUniVibe, () => fsTargetUniVibe);
 
     // ── Lane 3: all 3 scenes (amp outputLevel, one batch, save) — run AFTER footswitches,
     // per the same production `runRank`. This is the fix: 410's TubeScreamer is base-ON and
@@ -404,7 +371,7 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     // Scene 0's own row is this arc's see-saw guard — with lanes in the correct order (base →
     // footswitches → scenes) nothing downstream still touches the shared base-ON TubeScreamer,
     // so a future ordering regression would show up here as a scene 0 miss.
-    // The 2 footswitch rows above are judged by their OWN solve result, not a second
+    // The footswitch row above is judged by its OWN solve result, not a second
     // strict re-measure — this arc caps its ffmpeg-validated rows to keep its cost down. It
     // emits 1 + SCENES_410.length; STRICT_VALIDATE_ROWS at the top of this file counts them.
     const sceneRow = (slot: number): LevelResult | undefined =>
@@ -516,8 +483,7 @@ when the stored value already measured within tolerance of target`,
       "the see-saw guard holds on re-run too: still TRADE, never BOOST",
     ).toBeNull();
 
-    // ── Footswitch skip-branch (410's own TubeScreamer row only — the carried-over
-    // UniVibe row belongs to T1′'s modulated-solve coverage, not this idempotency proof) ──
+    // ── Footswitch skip-branch (410's own TubeScreamer row) ──
     const firstRun = fs.map((r) => r.switch);
     expect(
       firstRun,
@@ -564,6 +530,7 @@ when the stored value already measured within tolerance of target`,
   });
 });
 
+// COVERAGE row 36 (online half: 405's base BOOST, then its footswitch rows after the save)
 // ── T5: Plumes-shape (405) first-run journey — the BOOST case paired with T1′'s TRADE
 // control above, run back-to-back in the same online session (see-saw surfaces in one run) ──
 test.describe("Level online — Plumes-shape first-run journey (405)", () => {
@@ -592,7 +559,7 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
   //     exercises the base-ON interaction the run-order fix exists for.
   // Switches 6 (`ACD_BluesDriver.level`) and 7 (`ACD_ObsessiveDrive.volume`) are the same two
   // classes over again and are dropped from the ONLINE journey only. They stay covered where
-  // the coverage is free: `level-fs-preset24.spec.ts` drives all four offline, gate E5
+  // the coverage is free: gate E5
   // (`e2e_server_tests.rs`) proves all four converge after a base boost, and — the reason
   // switch 7 mattered — `fixture_gates` now pins all four pedals' parameter NAMES against the
   // names the hardware exposes, which is a stronger guard than one online row was.
@@ -758,7 +725,7 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
     // `base_boost: null` (the solve is skipped entirely), a hairline re-measure can flip
     // `clamped: true`, and a within-tolerance re-plan that doesn't re-enter BOOST also reports
     // `base_boost: null` (`leveller::level_preset_impl`'s routing). `list_level_blocks` reads
-    // the SAVED state instead — same seam as level-fs-preset24.spec.ts's own persisted-Twin
+    // the SAVED state instead — same seam as `the_footswitch_rows_still_converge_after_a_base_boost`'s persisted-Twin
     // read on the SAME fixture (405).
     const blocks = (await invoke(
       page,

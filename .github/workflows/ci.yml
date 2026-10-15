@@ -145,22 +145,13 @@ jobs:
             bunx playwright install chromium
           fi
 
-      # Linux runners are CPU-constrained enough that the default 3-worker offline
-      # suite intermittently blows level-fs-preset24's 240 s test timeout (reproduced
-      # on GitHub's own ubuntu-latest hardware, not just underpowered local boxes);
-      # macos-14 has no such issue at the default worker count. Serializing on Linux
-      # trades CI minutes for reliability rather than touching the shared spec/config.
-      #
-      # The non-Linux branch is deliberately EMPTY, not "3": `bun run e2e` is
-      # scripts/e2e.sh, whose `WORKERS="${TMP_E2E_WORKERS:-3}"` substitutes on empty as
-      # well as unset and re-exports the resolved value before Playwright ever starts.
-      # So empty means "take e2e.sh's default" and there is exactly one place that
-      # default lives; hardcoding 3 here would let macOS CI silently diverge from a
-      # local run if it ever changed.
+      # Both OSes take scripts/e2e.sh's default worker count (`TMP_E2E_WORKERS:-3`, the one
+      # place that default lives). Linux used to run serialized because the 3-worker suite
+      # intermittently blew level-fs-preset24's 240 s test timeout on ubuntu-latest; that
+      # spec (55 CPU-bound captures in one test) is gone, its proof moved to the Rust gate
+      # `the_footswitch_rows_still_converge_after_a_base_boost`.
       - name: Offline e2e (SimDevice)
         run: bun run e2e
-        env:
-          TMP_E2E_WORKERS: ${{ runner.os == 'Linux' && '1' || '' }}
 
   bundle-linux:
     # Load-bearing, not just nice-to-have: release.yml's Linux build jobs run

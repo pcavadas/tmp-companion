@@ -1694,7 +1694,7 @@ fn sidecar_references_resolve_against_the_fixtures() {
     // The two slots whose SPECS depend on a knob-driven curve are pinned by name:
     //   400 — `ACD_TMSpring63.mix` on the `wetMix` curve (row 18's wet-floor gates).
     //   405 — the four drive pedals' own level knobs on `saturatedPedal` (row 16's BAKE
-    //         lane, `level-fs-preset24.spec.ts`'s whole premise).
+    //         lane, `the_footswitch_rows_still_converge_after_a_base_boost`'s whole premise).
     // The other slots deliberately declare none (the flat law IS their model), so this
     // is an explicit allowlist rather than a blanket "every slot must declare one".
     for want in [400u32, 405] {
