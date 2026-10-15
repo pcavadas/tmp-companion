@@ -48,7 +48,7 @@
 #
 # Options:
 #   --slot N                 0-based scratch list index (default 400). MUST be a member of
-#                             `SCRATCH_SLOTS` (`probe_api/mod.rs`) — checked before anything
+#                             `SCRATCH_SLOTS` (`slot.rs`) — checked before anything
 #                             device-touching runs. If it currently holds an e2e fixture,
 #                             the import step refuses (safely) rather than clobbering it.
 #   --target LUFS             base leveling target (default -23, one of the shipped defaults)
@@ -94,7 +94,7 @@ err()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; }
 # shellcheck source=scripts/device-lock.sh disable=SC1091
 . "$REPO/scripts/device-lock.sh"
 
-# ── SCRATCH_SLOTS mirror (`src-tauri/src/probe_api/mod.rs`) — the ONE declaration every
+# ── SCRATCH_SLOTS mirror (`src-tauri/src/slot.rs`) — the ONE declaration every
 # destructive/working-copy-writing probe guard checks; this script must never touch a slot
 # outside it. If that Rust constant ever widens, update this line in the SAME commit. ──
 SCRATCH_SLOTS="400 401 402 403 404 405 406 407 408 409 410"

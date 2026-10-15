@@ -2,9 +2,11 @@
 
 use crate::slot::DeviceSlot;
 use crate::{
-    audiograph, base_handle_candidates_scanned, decode_preset_scenes, filter_amp_candidates,
-    footswitch, is_amp_model_id, is_amp_output_level_param, scan_node_graph,
-    scene_handle_rows_scanned, session, LevelBlockArg, SceneHandleCandidate, SceneHandleRow,
+    audiograph, commands::level_scenes::LevelBlockArg, commands::presets::decode_preset_scenes,
+    footswitch, scene_jobs::base_handle_candidates_scanned, scene_jobs::filter_amp_candidates,
+    scene_jobs::is_amp_model_id, scene_jobs::is_amp_output_level_param,
+    scene_jobs::scan_node_graph, scene_jobs::scene_handle_rows_scanned, session,
+    SceneHandleCandidate, SceneHandleRow,
 };
 use serde::Serialize;
 
@@ -35,7 +37,7 @@ pub struct BackupPresetRow {
     /// body without the key, or for an EMPTY id — normalized away at the
     /// `crate::library::preset_id_of` chokepoint so a `Some("")` can never compare
     /// equal to another `Some("")` and pass a guard vacuously (the hazard
-    /// `lib.rs`'s fixture gates document).
+    /// `fixture_gates.rs` documents).
     pub preset_id: Option<String>,
     /// Number of scenes (`scenes.len()`); `-1` if the `presetJson` could not be
     /// parsed (full plaintext doc, so this is rare).

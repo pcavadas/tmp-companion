@@ -4160,7 +4160,7 @@ mod tests {
     /// the `.wav`).
     fn stim_bands_at(rel: &str) -> Vec<f64> {
         let path = format!("{}/resources/{rel}.wav", env!("CARGO_MANIFEST_DIR"));
-        let raw = crate::read_stimulus_calibrated(&path, None).expect("read stimulus");
+        let raw = crate::stimulus::read_stimulus_calibrated(&path, None).expect("read stimulus");
         let stim = crate::leveller::doctor_stim_slice(raw);
         // 48 kHz: the committed WAVs match the device clock (read_stimulus_48k),
         // the rate production computes the stimulus PSD at.

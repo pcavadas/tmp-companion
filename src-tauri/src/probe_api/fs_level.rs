@@ -11,7 +11,10 @@ use crate::session::Session;
 use crate::slot::ListIndex;
 use crate::stimulus::read_stimulus_48k;
 use crate::stimulus::read_stimulus_calibrated;
-use crate::{read_slot_preset_parsed, resolve_footswitch_job, FootswitchLevelJob};
+use crate::{
+    commands::level_footswitch::resolve_footswitch_job,
+    commands::level_footswitch::FootswitchLevelJob, slot_read::read_slot_preset_parsed,
+};
 
 /// Probe entry: isolate the in-process CoreAudio → chunked-HID failure. Sends a chunked
 /// `set_footswitch_assignment` (1) BEFORE any audio, (2) after ONE re-amp CoreAudio capture,
@@ -573,7 +576,7 @@ pub fn probe_measure_footswitch(
     dump_dir: Option<&str>,
 ) -> Result<String, String> {
     let stim = read_stimulus_calibrated(&super::stimulus::probe_stimulus_path(topology_id)?, None)?;
-    let saved = crate::read_saved_preset(slot)
+    let saved = crate::scene_jobs::read_saved_preset(slot)
         .ok_or_else(|| format!("field-8 read failed for slot {slot}"))?;
     let force = crate::commands::doctor::doctor_force_bypass(&saved["ftsw"], &saved, Some(switch));
     let fs_value = lev.and_then(|(g, n, p)| {
@@ -811,7 +814,7 @@ pub fn probe_fs_batch(list_index: ListIndex, values: Vec<f32>) -> Result<String,
             }
         }
     }
-    let restore = crate::last_loaded_scene(&preset);
+    let restore = crate::scene_jobs::last_loaded_scene(&preset);
     leveller::write_footswitch_values(list_index, &pends, restore)?;
     out += &format!(
         "wrote {} switch(es) on ONE session + ONE save — export the slot to verify\n",

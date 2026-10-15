@@ -1,10 +1,11 @@
 //! Active-preset reads, scene scans, and preset load/move/rename/delete commands.
 #[cfg(test)]
-use crate::SceneInfo;
+use crate::backup_read::SceneInfo;
+use crate::discovery::discover_active_graph;
 use crate::{
-    discover_active_graph, footswitch, monitor, profiles, read_backup_archive, session,
-    with_released_seize, AppState, BackupPresetRow, BackupReadResult, ListIndex, Serialize,
-    Session, State,
+    backup_read::read_backup_archive, backup_read::BackupPresetRow, backup_read::BackupReadResult,
+    device_gate::with_released_seize, footswitch, monitor, profiles, session, AppState, ListIndex,
+    Serialize, Session, State,
 };
 
 // ── Active-preset signal chain: live reads + deliberate writes ──────────────────

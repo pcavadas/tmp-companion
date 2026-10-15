@@ -1,8 +1,9 @@
 //! Probe entry points: preset leveling + amp-candidate filtering + channel/capture/AGC diagnostics.
 
-use super::slot_write::load_then_discover_blocks;
 use super::stimulus::probe_stimulus_path;
 use crate::audio;
+use crate::commands::level_scenes::LevelBlockArg;
+use crate::discovery::load_then_discover_blocks;
 use crate::leveller;
 use crate::lufs;
 use crate::scene_jobs::{filter_amp_candidates, knob_bounds};
@@ -12,7 +13,6 @@ use crate::slot::ListIndex;
 use crate::stimulus::dump_processed_capture;
 use crate::stimulus::read_stimulus_48k;
 use crate::stimulus::read_stimulus_calibrated;
-use crate::LevelBlockArg;
 
 /// The engaged/floor criterion the diagnostic arms share, delegating to the ONE
 /// definition ([`leveller::is_engaged`]) so this file's FLOOR/SILENT headline and

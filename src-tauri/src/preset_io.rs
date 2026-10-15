@@ -54,7 +54,7 @@ impl PresetIo for OfflineIo {
         assert_identity_preserved(&target.before_json, after_json)?;
         // Re-encode to `.preset` bytes (XOR is self-inverse; TMP exports are compact JSON).
         let bytes = backup::xor_jld(after_json.as_bytes());
-        let outcome = crate::replace_inplace_core(target.list_index, &bytes)?;
+        let outcome = crate::replace_inplace::replace_inplace_core(target.list_index, &bytes)?;
         if !outcome.edit_landed {
             return Err(format!(
                 "in-place edit did not land at list index {} (slot name unchanged: {:?})",

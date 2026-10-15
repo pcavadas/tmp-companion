@@ -77,7 +77,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use crate::is_amp_model_id;
+use crate::scene_jobs::is_amp_model_id;
 use crate::scene_jobs::resolve_base_id;
 
 /// How a block parameter may be used by the leveling picker. Serializes to the JSON

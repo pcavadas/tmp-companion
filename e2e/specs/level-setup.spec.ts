@@ -343,7 +343,7 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
   // carries that exact anatomy (P4-C): `ACD_Boost` is bypassed in BASE, un-bypassed ONLY
   // by scene 3 "Solo"'s bypass-only overlay, targeted by no footswitch or EXP assign, and
   // bypassed (or overlay-absent, inheriting base) in every OTHER scene — see
-  // `scene_jobs::shared_write_is_scene_local` and `lib.rs`'s
+  // `scene_jobs::shared_write_is_scene_local` and `fixture_gates.rs`'s
   // `fx_edge_keeps_the_eq_ring_and_eight_scenes`. The fix
   // (`scene_write_verdict_for_param`'s `WriteDirect{lands_on_base:true}` arm) must offer
   // the handle ENABLED here, not disabled — the write-lands-on-base + run-completes half

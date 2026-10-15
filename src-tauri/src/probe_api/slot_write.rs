@@ -1,17 +1,21 @@
 //! Probe entry points: preset write ops (import / clear / map / diag) + block discovery + bulk apply + connect/firmware.
 
-use super::songs::read_song_presets;
-use super::SCRATCH_SLOTS;
 use crate::bulk_cmd;
 use crate::bulkrun;
+use crate::discovery::{discover_active_graph, load_then_discover_blocks};
 use crate::leveller;
 use crate::library;
 use crate::proto;
 use crate::session;
 use crate::session::Session;
 use crate::slot::ListIndex;
+use crate::slot::SCRATCH_SLOTS;
+use crate::song_io::read_song_presets;
 use crate::PresetEntry;
-use crate::{format_dry_run, io_for_path, library_categories, targets_from_library};
+use crate::{
+    commands::library::format_dry_run, commands::library::io_for_path,
+    commands::library::library_categories, commands::library::targets_from_library,
+};
 
 /// Headless hardware probe used by the `probe` bin: connect (seizing the
 /// device), run the handshake, and return the "My Presets" list. Lets us verify
@@ -360,39 +364,6 @@ pub fn probe_firmware_version() -> Result<String, String> {
         .ok_or_else(|| "handshake carried no currentFwResponse".to_string())
 }
 
-/// Retry active-graph discovery because the TMP's field-3 stream length varies
-/// slightly between handshakes. A graph is usable only after its routing
-/// template arrives; otherwise a parallel path can be rendered as series.
-pub(crate) fn discover_active_graph() -> Result<(session::ActiveGraph, String), String> {
-    let mut errors = Vec::new();
-    for _ in 0..3 {
-        match Session::connect_for_discovery() {
-            Ok(mut s) => {
-                for _ in 0..4 {
-                    let diagnostics = format!(
-                        "{}\n{}",
-                        s.slot_read_diagnostics(),
-                        s.active_graph_diagnostics()
-                    );
-                    match s.current_audio_graph() {
-                        Ok(mut graph) => {
-                            if graph.slot.is_none() {
-                                graph.slot = s.resolve_unique_my_preset_slot(graph.name.as_deref());
-                            }
-                            return Ok((graph, diagnostics));
-                        }
-                        Err(e) => errors.push(format!("{e}\n{diagnostics}")),
-                    }
-                    s.pump_collect_alive(250)?;
-                }
-            }
-            Err(e) => errors.push(e),
-        }
-        std::thread::sleep(std::time::Duration::from_millis(150));
-    }
-    Err(errors.join("\n--- retry ---\n"))
-}
-
 /// Read-only diagnostic for the active-preset signal chain. Prints the
 /// live discovery payload summary and the routing-aware graph sent to React.
 pub fn probe_active_graph() -> Result<String, String> {
@@ -407,66 +378,6 @@ pub fn probe_active_graph() -> Result<String, String> {
 /// to USB; a dropped fire-and-forget OFF strands it there). `probe --reamp-off`.
 pub fn probe_reamp_off() -> Result<(), String> {
     Session::connect()?.set_reamp_mode(false).map(|_| ())
-}
-
-/// Discover a preset's level-type block controls (the leveling-knob candidates).
-///
-/// Primary path is the RICH LEAN SESSION (the bench intel-session / `prepass_scene_docs`
-/// pattern): heartbeat warmup → `send_and_collect(LoadPreset)` → pump past the 125 hit →
-/// read `current_preset_blocks` from the accumulated field-3 push bodies. Field-78
-/// (`connect_for_discovery`) is the fallback: it failed on 1.8.45 while its window was
-/// silent, and delivers kept-alive on 1.8.58. Without this, FS-scene leveling found zero
-/// amp candidates and silently skipped every scene (the device never switched scenes).
-/// `slot` is the 0-based list index; every path opens its own session.
-pub(crate) fn load_then_discover_blocks(
-    slot: ListIndex,
-) -> Result<Vec<session::LevelBlock>, String> {
-    match discover_blocks_rich(slot) {
-        Ok(blocks) if !blocks.is_empty() => return Ok(blocks),
-        Ok(_) => log::info!("rich block discovery for slot={slot}: loaded but no level blocks"),
-        Err(e) => log::warn!("rich block discovery for slot={slot}: {e}"),
-    }
-    // Fallback: the discovery handshake's own field-3 push.
-    {
-        let mut s = Session::connect()?;
-        s.load_preset(slot)?;
-        std::thread::sleep(std::time::Duration::from_millis(1200));
-    }
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    match Session::connect_for_discovery()?.current_preset_blocks() {
-        Ok(blocks) => Ok(blocks),
-        Err(first_err) => {
-            log::warn!("block discovery fallback for slot={slot}: {first_err}");
-            let mut s = Session::connect()?;
-            let raw = s.capture_full_preset_json(Some(slot), 2000)?;
-            let text = String::from_utf8_lossy(&raw);
-            let value = session::tolerant_parse_json(&text)
-                .ok_or_else(|| format!("{first_err}; fallback field-3 JSON did not parse"))?;
-            // Same picker gate as `current_preset_blocks` above — this is the last fallback
-            // of the SAME enumeration, so it must not offer a different control set.
-            let blocks = session::extract_level_candidates(&value);
-            if blocks.is_empty() {
-                Err(format!(
-                    "{first_err}; fallback field-3 JSON had no level blocks"
-                ))
-            } else {
-                Ok(blocks)
-            }
-        }
-    }
-}
-
-/// 1.8.45-safe block discovery: a single rich lean session loads the preset via
-/// `send_and_collect` (NOT `load_preset`, which discards the reports the field-3 push
-/// rides on) and reads the level blocks from the accumulated push bodies. Mirrors the
-/// bench intel session + `prepass_scene_docs`. Private: the primary path of
-/// `load_then_discover_blocks`, which owns the fallbacks.
-fn discover_blocks_rich(slot: ListIndex) -> Result<Vec<session::LevelBlock>, String> {
-    crate::leveller::make_current(slot)?;
-    let mut s = Session::connect()?;
-    s.rich_warmup()?;
-    s.rich_load_collect(slot)?;
-    s.current_preset_blocks()
 }
 
 /// Enumerate a preset's level-type block controls (the leveling-knob candidates).
@@ -812,7 +723,7 @@ pub fn probe_redistribute_persist_check(
     guard_slot_name(slot, expected_name)?;
 
     // Read the current preset (field-8) and locate the amp + a scene to write.
-    let (preset, _, _) = crate::read_slot_preset_parsed(slot)?;
+    let (preset, _, _) = crate::slot_read::read_slot_preset_parsed(slot)?;
     let (group_id, node_id, orig_base) = find_amp_output_level(&preset)
         .ok_or_else(|| format!("slot {slot} has no amp node with an outputLevel control"))?;
     let orig_preset_level = audiograph::preset_level(&preset)
@@ -863,7 +774,7 @@ pub fn probe_redistribute_persist_check(
     // scene-overlay leg's persistence is HW-ESTABLISHED INDEPENDENTLY (a single
     // saveCurrentPreset persists all accumulated overlays), not re-read here.
     std::thread::sleep(Duration::from_millis(READBACK_SETTLE_MS));
-    let (after, _, _) = crate::read_slot_preset_parsed(slot)?;
+    let (after, _, _) = crate::slot_read::read_slot_preset_parsed(slot)?;
     let got_pl = audiograph::preset_level(&after).map(|v| v as f32);
     let got_base = find_amp_output_level(&after).map(|(_, _, v)| v);
     let got_scene = scene_overlay_output_level(&after, scene_slot, &group_id, &node_id);
@@ -1200,14 +1111,16 @@ pub fn probe_set_scene_param(
     // Edit must be enabled — both write shapes corrupt the overlay when guessed), so the
     // field-8 read is mandatory there; a base write never consults it, so it is skipped
     // rather than paying ~4 s on this arm.
-    let saved_doc = scene.and_then(|_| crate::read_saved_preset(slot));
+    let saved_doc = scene.and_then(|_| crate::scene_jobs::read_saved_preset(slot));
     let opts = leveller::LevelOptions {
         save: true,
         verify: false,
         // The save must re-stamp the preset's ORIGINAL `lastLoadedScene` — the scene
         // recall the write performs otherwise leaves the written scene active at save
         // time (the same clobber `probe_level_preset` guards against).
-        restore_scene: saved_doc.as_ref().and_then(crate::last_loaded_scene),
+        restore_scene: saved_doc
+            .as_ref()
+            .and_then(crate::scene_jobs::last_loaded_scene),
         ..Default::default()
     };
     let (saved, _) = leveller::apply_levels(

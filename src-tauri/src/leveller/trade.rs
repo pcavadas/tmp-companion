@@ -436,7 +436,7 @@ pub fn redistribute_clamped_headroom(
     {
         let mut s = Session::connect()?;
         s.set_preset_level(new_preset_level)?;
-        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
 
     let mut outcomes = Vec::with_capacity(jobs.len());

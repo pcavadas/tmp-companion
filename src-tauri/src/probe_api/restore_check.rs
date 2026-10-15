@@ -13,9 +13,9 @@
 //! scratch slot, then the target), reloads the preset that was active at the start, and
 //! sends a fresh-connection re-amp OFF.
 
-use super::SCRATCH_SLOTS;
 use crate::leveller;
 use crate::session::Session;
+use crate::slot::SCRATCH_SLOTS;
 use crate::slot::{DeviceSlot, ListIndex};
 use serde_json::Value;
 

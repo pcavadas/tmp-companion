@@ -4,7 +4,7 @@
 # space-separated: a canonical online spec (`gates.sh --online-spec-set`), ALL (every
 # canonical spec), ANY (at least one online spec, the cheapest), or - (none). The optional
 # advisory is printed on stderr whenever a changed file falls in that class.
-# Every class gate-map.tsv names must appear here (Rust gate in lib.rs).
+# Every class gate-map.tsv names must appear here (Rust gate in fixture_gates.rs).
 transport	ALL
 protocol	ALL
 scan	ALL

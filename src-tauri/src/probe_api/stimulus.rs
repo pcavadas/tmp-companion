@@ -2,15 +2,15 @@
 //! harness, `--doctor`, `--stim-ab`, `--capture-wav` and `--scale-wav`. The shared stimulus
 //! and WAV I/O they call is `crate::stimulus`.
 
-use super::SCRATCH_SLOTS as SCRATCH;
 use crate::audio;
 use crate::doctor;
 use crate::footswitch;
 use crate::leveller;
 use crate::lufs;
-use crate::read_slot_preset_parsed;
 use crate::session;
 use crate::slot::ListIndex;
+use crate::slot::SCRATCH_SLOTS as SCRATCH;
+use crate::slot_read::read_slot_preset_parsed;
 use crate::stimulus::{
     capture_dry_di, is_clipped_capture, read_stimulus_48k, read_stimulus_calibrated_with_shortfall,
     read_wav_interleaved, read_wav_mono, write_wav_mono,
@@ -221,7 +221,7 @@ pub fn probe_reamp_wav(
         // Caveat, reported in the output so it can't be silently over-claimed:
         // this enumerates blocks that expose a LEVEL-type control. A block with
         // no level parameter is not in the list and stays active.
-        let blocks = crate::load_then_discover_blocks(slot)?;
+        let blocks = crate::discovery::load_then_discover_blocks(slot)?;
         for b in &blocks {
             let pair = (b.group_id.clone(), b.node_id.clone(), true);
             if !forced.contains(&pair) {

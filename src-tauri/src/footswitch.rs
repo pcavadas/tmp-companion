@@ -906,7 +906,11 @@ fn push_bake<'j>(
     plans.push(FsLevelPlan::Bake {
         engaged,
         clear_stale: None,
-        mirror_scenes: crate::scenes_restating_base(preset, job.lev_node, job.lev_param),
+        mirror_scenes: crate::scene_jobs::scenes_restating_base(
+            preset,
+            job.lev_node,
+            job.lev_param,
+        ),
     });
 }
 

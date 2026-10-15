@@ -28,7 +28,7 @@ export interface LevelBlock {
 // Role-based names (not slot numbers): the device stores these at userSlot = listIndex + 1
 // (401/402/.../411), so a slot-numbered name would read off-by-one in the backup view.
 // WHICH USE CASE EACH FIXTURE CARRIES: e2e/fixtures/COVERAGE.md (the matrix), pinned by
-// `fixture_gates` in src-tauri/src/lib.rs. In brief — Rig: scene overlays, footswitch classes
+// `src-tauri/src/fixture_gates.rs`. In brief — Rig: scene overlays, footswitch classes
 // and the two Doctor damage signatures; Pedalboard: scene-free, the Copy source, EXP + link
 // groups + a second-bank switch; Edge: gtrSplit, 8 scenes, the baked 2.6 kHz EQ-ring Doctor
 // oracle and the off-USB lane, plus (P4-C) a `shared_write_is_scene_local` Boost/Solo

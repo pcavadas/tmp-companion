@@ -8,6 +8,7 @@
 
 use super::stimulus::probe_stimulus_path;
 use crate::audio;
+use crate::commands::level_scenes::SCENE_LEVEL_CANCEL;
 use crate::error::LevelError;
 use crate::leveller::{
     coord_to_knob, knob_search_space, knob_to_coord, load_preset_isolated, measure_processed,
@@ -22,7 +23,6 @@ use crate::session;
 use crate::session::Session;
 use crate::slot::ListIndex;
 use crate::stimulus::read_stimulus_calibrated;
-use crate::SCENE_LEVEL_CANCEL;
 use serde::Serialize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
@@ -584,14 +584,14 @@ fn level_scenes_live_batched(
                 let mut s = Session::connect()?;
                 set_knob(&mut s, &kt.knob, kt.current.clamp(kt.lo, kt.hi), saved)?;
                 *writes += 1;
-                crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+                crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
                 let _ = s.set_reamp_mode(true)?;
-                crate::settle(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
+                crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
 
                 let (log_space, c_lo, c_hi) = knob_search_space(kt.lo, kt.hi);
                 let mut coord =
                     knob_to_coord(kt.current.clamp(kt.lo, kt.hi), log_space).clamp(c_lo, c_hi);
-                crate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                crate::device_gate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
                 let mut measured = live_window_lufs(&live, BATCH_WINDOW_MS)?;
                 *windows += 1;
                 let mut best = (coord, measured);
@@ -622,7 +622,9 @@ fn level_scenes_live_batched(
                     let next_value = coord_to_knob(next, log_space, kt.lo, kt.hi);
                     set_knob_value_only(&mut s, &kt.knob, next_value)?;
                     *writes += 1;
-                    crate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                    crate::device_gate::settle(Duration::from_millis(
+                        LIVE_SETTLE_MS + BATCH_WINDOW_MS,
+                    ));
                     let lufs = live_window_lufs(&live, BATCH_WINDOW_MS)?;
                     *windows += 1;
                     if (lufs - job.target_lufs).abs() < (best.1 - job.target_lufs).abs() {
@@ -638,7 +640,9 @@ fn level_scenes_live_batched(
                 if (best.0 - coord).abs() > 1e-4 {
                     set_knob_value_only(&mut s, &kt.knob, best_value)?;
                     *writes += 1;
-                    crate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                    crate::device_gate::settle(Duration::from_millis(
+                        LIVE_SETTLE_MS + BATCH_WINDOW_MS,
+                    ));
                     best.1 = live_window_lufs(&live, BATCH_WINDOW_MS)?;
                     *windows += 1;
                 }

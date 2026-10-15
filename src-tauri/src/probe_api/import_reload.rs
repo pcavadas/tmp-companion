@@ -159,7 +159,7 @@ pub fn probe_import_reload_check(path: &str) -> Result<String, String> {
     })();
 
     // Clear the landing slot only when its stored row AND its list entry are the check's.
-    let cleanup = crate::read_slot_preset_parsed(landing).and_then(|(row, _, _)| {
+    let cleanup = crate::slot_read::read_slot_preset_parsed(landing).and_then(|(row, _, _)| {
         match row.pointer("/info/displayName").and_then(Value::as_str) {
             Some(CHECK_NAME) => {
                 guarded_clear(landing, CHECK_NAME).map(|()| format!("cleared list {landing}"))

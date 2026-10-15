@@ -89,7 +89,7 @@ pub fn apply_levels(
         } else {
             SETTLE_BEFORE_WRITE_MS
         };
-        crate::settle(Duration::from_millis(settle));
+        crate::device_gate::settle(Duration::from_millis(settle));
     }
 
     let mut verify_lufs = None;
@@ -113,7 +113,7 @@ pub fn apply_levels(
     for (g, n, byp) in force_bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
-    crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
 
     if opts.verify {
         // A failed verify is `None` (callers read it as `Verification::VerifyFailed`), never
@@ -139,7 +139,7 @@ pub fn apply_levels(
             .all(|(k, _)| matches!(k, LevelKnob::PresetLevel))
         {
             let _ = set_knobs(&mut s, targets, saved);
-            crate::settle(Duration::from_millis(150));
+            crate::device_gate::settle(Duration::from_millis(150));
         }
     }
 
@@ -621,7 +621,7 @@ pub(super) fn raise_preset_level_unsaved<E>(
 ) -> Result<(), E> {
     let mut s = Session::connect().map_err(on_connect_err)?;
     s.set_preset_level(value).map_err(on_set_err)?;
-    crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     Ok(())
 }
 

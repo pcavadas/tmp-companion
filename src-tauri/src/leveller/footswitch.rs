@@ -572,7 +572,7 @@ pub(super) fn measure_fs_state(
         None => recall_base(&mut s)?,
         Some(sc) => {
             s.load_scene(sc)?;
-            crate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
+            crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
         }
     }
     if let Some(pl) = intended_preset_level {
@@ -1469,7 +1469,7 @@ pub(super) fn write_fs_values_on_session(
                             break;
                         }
                         let _ = s.heartbeat();
-                        crate::settle(Duration::from_millis(200));
+                        crate::device_gate::settle(Duration::from_millis(200));
                     }
                     if confirmed {
                         break;
@@ -1504,7 +1504,7 @@ pub(super) fn write_fs_values_on_session(
                             break;
                         }
                         let _ = s.heartbeat();
-                        crate::settle(Duration::from_millis(200));
+                        crate::device_gate::settle(Duration::from_millis(200));
                     }
                     if !cleared {
                         return Err(
@@ -1536,7 +1536,7 @@ pub(super) fn write_fs_values_on_session(
     }
     for (scene, writes) in &by_scene {
         s.load_scene(*scene)?;
-        crate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
+        crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
         for p in writes {
             s.change_parameter(&p.lev.0, &p.lev.1, &p.lev.2, p.value)?;
         }

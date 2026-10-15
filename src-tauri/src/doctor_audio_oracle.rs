@@ -26,7 +26,7 @@ fn stimulus() -> Vec<f32> {
         "{}/resources/samples/guitar-humbucker.wav",
         env!("CARGO_MANIFEST_DIR")
     );
-    doctor_stim_slice(crate::read_stimulus_calibrated(&path, None).unwrap())
+    doctor_stim_slice(crate::stimulus::read_stimulus_calibrated(&path, None).unwrap())
 }
 
 #[derive(Clone, Copy)]

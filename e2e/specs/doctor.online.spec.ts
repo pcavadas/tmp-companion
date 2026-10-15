@@ -21,7 +21,7 @@ import {
 // (a) is doctor-oracle.online.spec.ts moved here (its two wire-seam-only rows, FIZZY and
 //     BRIGHT, are covered numerically by src-tauri/src/doctor_audio_oracle.rs) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
 //     actually diagnose on real audio, not just that the fixture carries the right shape
-//     (that structural half stays pinned offline by lib.rs's fixture_gates).
+//     (that structural half stays pinned offline by fixture_gates.rs).
 // (b) is doctor.spec.ts's online UI run, moved here selecting all three fixtures exactly as
 //     that run used to (E2E Rig 400 + E2E Pedalboard 401 + E2E Edge 402). Edge alone carries
 //     the 2.6 kHz EQ-ring assertions (the chip must fire on every one of Edge's played
@@ -75,7 +75,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     | { kind: "seam" }; // wire-seam-only: assert a real, unerrored capture only
 
   // The 13 switches, in `ftsw` row order (== the 0-based `footswitch` value to send). One
-  // entry per src-tauri/src/lib.rs's `fx_doctor_oracle_fires_nothing_in_base_and_carries_
+  // entry per src-tauri/src/fixture_gates.rs's `fx_doctor_oracle_fires_nothing_in_base_and_carries_
   // its_defect_table` `table` row.
   const SWITCHES: { row: number; label: string; verdict: Verdict }[] = [
     { row: 1, label: "CONTROL", verdict: { kind: "zero" } },
@@ -86,7 +86,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     { row: 3, label: "BOOMY", verdict: { kind: "contains", diagKey: "boomy" } },
     { row: 4, label: "HARSH", verdict: { kind: "contains", diagKey: "harsh" } },
     // FIZZY and BRIGHT stay seam-only: the cab IR leaves nothing above ~10 kHz to lift,
-    // and the amp's treble knob changes nothing audible (lib.rs's defect table). Their
+    // and the amp's treble knob changes nothing audible (fixture_gates.rs's defect table). Their
     // verdicts are covered on captured audio by doctor_audio_oracle.rs instead.
     { row: 5, label: "FIZZY", verdict: { kind: "seam" } },
     { row: 6, label: "LOST", verdict: { kind: "contains", diagKey: "lost" } },

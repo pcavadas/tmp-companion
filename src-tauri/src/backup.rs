@@ -62,7 +62,7 @@ pub struct PresetSnapshot {
 /// (offline-file) backup and return the raw `.preset` bytes to import. **Refuses
 /// a `usb-partial` snapshot** — re-importing a partial would overwrite the slot
 /// with truncated data (AC1). The caller pushes these bytes through the AC7
-/// in-place path (`lib::run_replace_inplace`) so the restore lands on the
+/// in-place path (`replace_inplace::replace_inplace_core`, via `probe --restore`) so the restore lands on the
 /// snapshot's original slot and keeps its Song binding — NOT a bare append.
 pub fn restore_bytes(snapshot: &PresetSnapshot) -> Result<Vec<u8>, String> {
     if snapshot.source != SnapshotSource::OfflineFile {

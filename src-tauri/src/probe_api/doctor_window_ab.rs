@@ -190,7 +190,7 @@ pub fn probe_doctor_window_ab(
             continue;
         };
 
-        let prod_tail_ms = match crate::read_slot_preset_parsed(slot) {
+        let prod_tail_ms = match crate::slot_read::read_slot_preset_parsed(slot) {
             Ok((preset, _, _)) => {
                 let nodes: Vec<doctor::DoctorNode> =
                     crate::session::extract_active_graph(&preset, None)

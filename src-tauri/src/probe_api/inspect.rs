@@ -6,7 +6,7 @@ use crate::saved_blocks::{find_block_presets_blob, parse_block_presets_map, Save
 use crate::session;
 use crate::session::Session;
 use crate::slot::DeviceSlot;
-use crate::{discover_replace_plans, read_backup_archive};
+use crate::{backup_read::read_backup_archive, commands::bulk_replace::discover_replace_plans};
 
 /// READ-ONLY RE spike (`probe --re-blocks`): fire `RequestAllBlockPresets` (135) +
 /// the user-IR list request inside the handshake burst and dump every saved-block /

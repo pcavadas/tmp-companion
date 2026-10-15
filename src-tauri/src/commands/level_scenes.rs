@@ -2,14 +2,19 @@
 use super::ProgressStatus;
 use crate::error::LevelError;
 use crate::{
-    audio, audiograph, build_scene_jobs_with_handles, is_amp_output_level_param, leveller,
-    playback_offset_for, prepass_scene_docs_via, read_slot_preset_complete,
-    read_stimulus_calibrated, resolve_stimulus_for_leveling, scene_handle_rows, scene_overlay,
-    session, with_released_seize, AppState, ListIndex, SceneHandleRow, SceneHandleSpec,
-    SceneOverlay, SeqCst, State,
+    audio, audiograph, commands::level_preset::playback_offset_for,
+    commands::level_preset::resolve_stimulus_for_leveling, device_gate::with_released_seize,
+    leveller, scene_jobs::build_scene_jobs_with_handles, scene_jobs::is_amp_output_level_param,
+    scene_jobs::prepass_scene_docs_via, scene_jobs::scene_handle_rows, scene_jobs::scene_overlay,
+    scene_jobs::SceneHandleSpec, scene_jobs::SceneOverlay, session,
+    slot_read::read_slot_preset_complete, stimulus::read_stimulus_calibrated, AppState, ListIndex,
+    SceneHandleRow, SeqCst, State,
 };
 #[cfg(test)]
-use crate::{base_handle_candidates_scanned, param_class, scan_node_graph, SceneHandleCandidate};
+use crate::{
+    param_class, scene_jobs::base_handle_candidates_scanned, scene_jobs::scan_node_graph,
+    SceneHandleCandidate,
+};
 
 /// One resolved amp knob: `(group_id, node_id, current_outputLevel)`.
 pub(crate) type AmpKnobSpec = (String, String, f32);
@@ -409,7 +414,7 @@ pub(crate) static SCENE_LEVEL_CANCEL: std::sync::atomic::AtomicBool =
 pub(crate) fn cancel_scene_leveling() {
     SCENE_LEVEL_CANCEL.store(true, SeqCst);
     // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
-    crate::request_op_abort();
+    crate::device_gate::request_op_abort();
 }
 
 #[tauri::command]

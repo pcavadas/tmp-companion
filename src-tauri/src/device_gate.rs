@@ -389,7 +389,7 @@ mod tests {
     /// no unit test leaves the flag armed, so the flag is false and this is a live check on
     /// the guard; without the feature the branch does not
     /// compile at all and this pins the identity path. It is deliberately OUTSIDE any
-    /// `#[cfg(feature = "e2e")]` gating, mirroring `lib.rs`'s `fixture_gates`: a gate that
+    /// `#[cfg(feature = "e2e")]` gating, mirroring `fixture_gates.rs`: a gate that
     /// only compiles under a feature CI does not build is not a gate.
     #[test]
     fn settles_are_full_length_unless_the_offline_fake_is_installed() {

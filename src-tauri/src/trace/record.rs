@@ -636,10 +636,7 @@ impl Writer {
             .opt_str("run_id", cfg.run_id.as_deref())
             .opt_str("git_sha", cfg.git_sha.as_deref())
             .opt_str("tree_key", cfg.tree_key.as_deref())
-            .str(
-                "fixture_stamp",
-                crate::probe_api::seed_scenario::FIXTURE_SOURCE_STAMP,
-            )
+            .str("fixture_stamp", crate::e2e_seed::FIXTURE_SOURCE_STAMP)
             .opt_str("unit_config", cfg.unit_config.as_deref());
         self.write(l);
         let _ = self.out.flush();

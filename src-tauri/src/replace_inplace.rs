@@ -1,8 +1,9 @@
 //! In-place preset re-import — overwrite a slot preserving its Song link.
 
+use crate::session;
 use crate::session::Session;
 use crate::slot::ListIndex;
-use crate::{backup, read_song_presets, session};
+use crate::song_io::read_song_presets;
 
 /// The tolerant list read, retried on a fresh reconnect until `pred` is satisfied (or a
 /// reconnect stops helping). A single short read is the common case; the retry only
@@ -17,7 +18,7 @@ fn read_list_until(
         if pred(&list) || attempt == ATTEMPTS {
             break;
         }
-        crate::settle(std::time::Duration::from_millis(1_500));
+        crate::device_gate::settle(std::time::Duration::from_millis(1_500));
     }
     Ok(list)
 }
@@ -28,15 +29,6 @@ fn read_list_until(
 /// the target itself is still missing, which a length-only check would treat as reached.
 fn read_list_reaching(orig_list_index: ListIndex) -> Result<Vec<session::PresetEntry>, String> {
     read_list_until(|list| list.iter().any(|p| p.slot == orig_list_index))
-}
-
-/// Probe (AC7 positive case): edit a preset IN PLACE on its original slot and
-/// report whether the slot, its Song assignment, and scene binding survive.
-/// Compare against `--import` (bare append) as the negative control — that one
-/// lands the edit at a new slot and the Song row then points at the stale copy.
-pub fn probe_replace_inplace(orig_list_index: ListIndex, path: &str) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-    run_replace_inplace(orig_list_index, &bytes, &format!("file={path}"))
 }
 
 /// Shared in-place-edit core (used by `--replace-inplace` and AC5 `--restore`).
@@ -234,7 +226,7 @@ pub(crate) fn replace_inplace_with(
 
     // 4) Re-read and confirm slot / Song-link survival. Settle first: clear/save are
     // fire-and-forget (no ACK); give the device a moment or the read returns pre-clear state.
-    crate::settle(std::time::Duration::from_millis(800));
+    crate::device_gate::settle(std::time::Duration::from_millis(800));
     let after = Session::connect()?.list_my_presets()?;
     let orig_name_after = after
         .iter()
@@ -296,7 +288,7 @@ impl StoredProof {
         let name = file_name(file)?;
         let id = crate::library::preset_id_of(file).map(str::to_string);
         crate::library::refuse_template_id(id.as_deref(), "the preset file")?;
-        let (row, _, _) = crate::read_slot_preset_parsed(slot)
+        let (row, _, _) = crate::slot_read::read_slot_preset_parsed(slot)
             .map_err(|e| format!("predicted landing slot {slot}: field-8 read failed: {e}"))?;
         check_template_row(slot, &row)?;
         Ok(Self { slot, id, name })
@@ -312,7 +304,7 @@ impl StoredProof {
                 self.slot
             ));
         }
-        let (row, _, _) = crate::read_slot_preset_parsed(self.slot)
+        let (row, _, _) = crate::slot_read::read_slot_preset_parsed(self.slot)
             .map_err(|e| format!("list index {}: field-8 read failed: {e}", self.slot))?;
         check_imported_row(self.slot, &row, self.id.as_deref(), &self.name)?;
         Ok(self.slot)
@@ -513,49 +505,6 @@ fn check_loaded_body(
     crate::blockcaps::check_loaded_roster(file_roster, live_roster)
 }
 
-/// String-reporting wrapper over [`replace_inplace_core`] for the probe subcommands.
-fn run_replace_inplace(
-    orig_list_index: ListIndex,
-    bytes: &[u8],
-    src: &str,
-) -> Result<String, String> {
-    let o = replace_inplace_core(orig_list_index, bytes)?;
-    let ac7 = if o.had_binding {
-        format!(
-            "AC7 PASS = edit_landed && binding_preserved = {}",
-            o.edit_landed && o.binding_preserved
-        )
-    } else {
-        format!(
-            "AC7 = edit_landed={}; binding NOT CHECKED (song 1 has no rows to preserve)",
-            o.edit_landed
-        )
-    };
-    Ok(format!(
-        "[probe in-place] {src}\n\
-         orig list index = {}; scratch landed at list index {} ({:?})\n\
-         orig name:    before={:?}  after={:?}  (edit_landed={})\n\
-         scratch slot name after (expect cleared/'--'): {:?}\n\
-         song-1 rows: before={} after={}  (had_binding={}, binding_preserved={})\n\
-         {ac7}\n\
-         songs_before={:?}\n\
-         songs_after={:?}\n",
-        o.orig_list_index,
-        o.scratch_slot,
-        o.scratch_name,
-        o.orig_name_before,
-        o.orig_name_after,
-        o.edit_landed,
-        o.scratch_name_after,
-        o.songs_before.len(),
-        o.songs_after.len(),
-        o.had_binding,
-        o.binding_preserved,
-        o.songs_before,
-        o.songs_after,
-    ))
-}
-
 /// Take a scratch import back off the unit after its save was refused: re-prove from the
 /// stored row that `scratch_slot` is the one the import landed in and still holds the
 /// file ([`StoredProof::after`]), then clear it through [`guarded_clear`]. Never by name
@@ -591,22 +540,6 @@ pub(crate) fn guarded_clear(list_index: ListIndex, expect_name: &str) -> Result<
         ));
     }
     Session::connect()?.clear_user_preset(list_index) // the session derives the device slot
-}
-
-/// Probe (AC5): restore a backup snapshot to the device IN PLACE — onto the
-/// snapshot's original slot, preserving its Song link. Reads the snapshot JSON,
-/// validates it is a faithful offline backup (refuses `usb-partial` — re-importing
-/// a partial would overwrite the slot with truncated data), re-XORs it to `.preset`
-/// bytes, and routes through the AC7 in-place path. `snapshot.slot` is the list
-/// index the backup was captured at.
-pub fn probe_restore(snapshot_path: &str) -> Result<String, String> {
-    let snap = backup::load_snapshot_from_path(std::path::Path::new(snapshot_path))?;
-    let bytes = backup::restore_bytes(&snap)?;
-    run_replace_inplace(
-        snap.slot,
-        &bytes,
-        &format!("restore={snapshot_path} (slot {})", snap.slot),
-    )
 }
 
 #[cfg(test)]

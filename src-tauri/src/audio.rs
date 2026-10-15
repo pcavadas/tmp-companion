@@ -1445,7 +1445,7 @@ pub(crate) fn reamp_capture_real(
         while Instant::now() < deadline {
             // The hop sleep IS the abort poll — one cadence, no second timer.
             let remaining = deadline.saturating_duration_since(Instant::now());
-            crate::sleep_or_cancel(
+            crate::device_gate::sleep_or_cancel(
                 remaining
                     .min(Duration::from_millis(LIVE_LUFS_HOP_MS))
                     .as_millis() as u64,

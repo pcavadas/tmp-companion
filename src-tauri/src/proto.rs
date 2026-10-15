@@ -785,7 +785,7 @@ pub fn import_preset_request(payload: &[u8]) -> Vec<u8> {
 /// `nextEmptyPresetSlotResponse`, standalone or in-burst, any batch. Kept (with its
 /// golden + decode test) to document the wire format and make re-testing on a future
 /// firmware trivial; the live scratch-slot picker finds the empty slot by
-/// **observation** (import, then re-list) — see `lib::run_replace_inplace`.
+/// **observation** (import, then re-list) — see `replace_inplace::replace_inplace_with`.
 #[cfg_attr(
     not(test),
     expect(

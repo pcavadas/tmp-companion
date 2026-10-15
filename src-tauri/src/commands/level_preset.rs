@@ -1,11 +1,13 @@
 //! Preset-level (`presetLevel`) leveling command + stimulus resolution + calibration.
 use crate::audiograph::node_param_f64;
+use crate::discovery::load_then_discover_blocks;
 use crate::error::LevelError;
 use crate::{
-    audiograph, build_scene_jobs_with_handles, doctor, filter_amp_candidates, leveller,
-    load_then_discover_blocks, lufs, profiles, read_stimulus_calibrated,
-    read_stimulus_calibrated_with_shortfall, session, topologies, topology_wav_path,
-    with_released_seize, AppState, AtomicBool, ListIndex, LiveLufsGuard, SeqCst, Serialize, State,
+    audiograph, commands::level_scenes::LiveLufsGuard, commands::settings::topology_wav_path,
+    device_gate::with_released_seize, doctor, leveller, lufs, profiles,
+    scene_jobs::build_scene_jobs_with_handles, scene_jobs::filter_amp_candidates, session,
+    stimulus::read_stimulus_calibrated, stimulus::read_stimulus_calibrated_with_shortfall,
+    topologies, AppState, AtomicBool, ListIndex, SeqCst, Serialize, State,
 };
 
 /// One leveling job from the UI: a preset slot + the LUFS target to hit.
@@ -406,7 +408,7 @@ fn level_block_arm(
     // read still supplies `restore_scene`. An unreadable preset REFUSES rather
     // than guessing a class — the safe direction, and no offline spec exercises
     // this arm (every fixture job sends a null block triple).
-    let saved = crate::read_saved_preset(slot);
+    let saved = crate::scene_jobs::read_saved_preset(slot);
     let Some(preset) = saved.as_ref() else {
         return Err(format!(
             "could not read preset {} to classify {parameter_id} on {node_id} — \
@@ -428,8 +430,13 @@ fn level_block_arm(
     // A saving block-knob run measures/applies in base context too, so its save
     // must re-stamp the original `lastLoadedScene` like the whole-preset arm.
     if opts.save {
-        opts.restore_scene = crate::last_loaded_scene(preset);
-        crate::warn_missing_restore_scene("level_preset(block)", slot, preset, opts.restore_scene);
+        opts.restore_scene = crate::scene_jobs::last_loaded_scene(preset);
+        crate::scene_jobs::warn_missing_restore_scene(
+            "level_preset(block)",
+            slot,
+            preset,
+            opts.restore_scene,
+        );
     }
     let run = || {
         leveller::level_preset_block(
@@ -505,7 +512,12 @@ fn level_base_arm(
     // rewrite the preset's on-load scene to base (HW, Hiwatt slot 31).
     let previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
     opts.restore_scene = restore_scene;
-    crate::warn_missing_restore_scene("level_preset", slot, &preset, opts.restore_scene);
+    crate::scene_jobs::warn_missing_restore_scene(
+        "level_preset",
+        slot,
+        &preset,
+        opts.restore_scene,
+    );
     log::info!(
         "level_preset slot={slot}: base isolation forces {} footswitch-owned \
          block(s) off",
@@ -542,7 +554,7 @@ static PRESET_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
 pub(crate) fn cancel_preset_leveling() {
     PRESET_LEVEL_CANCEL.store(true, SeqCst);
     // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
-    crate::request_op_abort();
+    crate::device_gate::request_op_abort();
 }
 
 /// What one Tier-2 calibration measured, plus its quality caveats.

@@ -7,8 +7,9 @@ use crate::session;
 use crate::session::Session;
 use crate::slot::DeviceSlot;
 use crate::{
-    discover_replace_plans, held_replace_one, replace_many_held, BulkReplaceItem, ItemOutcome,
-    ReplArg,
+    commands::bulk_replace::discover_replace_plans, commands::bulk_replace::BulkReplaceItem,
+    commands::bulk_replace::ItemOutcome, commands::bulk_replace::ReplArg,
+    commands::held_edit::held_replace_one, commands::held_edit::replace_many_held,
 };
 
 /// Instrumented single-node ReplaceNode diagnostic (`probe --replace-debug SLOT FROM TO`):

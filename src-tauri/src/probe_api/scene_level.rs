@@ -16,7 +16,7 @@ use crate::stimulus::read_stimulus_calibrated;
 // (`read_saved_preset_complete`, backup fallback) — off the raw partial, every tail
 // scene past the cut refused as `SceneOverlay::Unknown` (HW 2026-09-02, "Friedman HBE"
 // scene 3); the read-only bench/scan entry points keep the tolerant read.
-use crate::read_preset_scenes_complete;
+use crate::commands::presets::read_preset_scenes_complete;
 use crate::scenes;
 use crate::session;
 use crate::session::Session;

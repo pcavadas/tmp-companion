@@ -830,7 +830,7 @@ fn scenario_fixture_matches_scenario_presets_json() {
 }
 
 /// This checks the STRUCT PLUMBING that the raw-bytes gate
-/// `backup_fixture_uses_device_product_id_and_unique_preset_ids` (lib.rs:1424+) is
+/// `backup_fixture_uses_device_product_id_and_unique_preset_ids` (`fixture_gates.rs`) is
 /// deliberately blind to — that gate reads the raw presetJson column, this one proves
 /// `BackupPresetRow` actually carries the id through `read_backup_archive`.
 #[test]

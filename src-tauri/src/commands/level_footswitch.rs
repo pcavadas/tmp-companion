@@ -3,9 +3,11 @@ use super::ProgressStatus;
 use crate::audiograph::node_param_f64;
 use crate::error::LevelError;
 use crate::{
-    footswitch, leveller, playback_offset_for, read_slot_preset_complete, read_stimulus_calibrated,
-    resolve_stimulus_for_leveling, scene_discard_guard, with_released_seize, AppState, AtomicBool,
-    ListIndex, LiveLufsGuard, SeqCst, Session, State,
+    commands::level_preset::playback_offset_for,
+    commands::level_preset::resolve_stimulus_for_leveling,
+    commands::level_scenes::scene_discard_guard, commands::level_scenes::LiveLufsGuard,
+    device_gate::with_released_seize, footswitch, leveller, slot_read::read_slot_preset_complete,
+    stimulus::read_stimulus_calibrated, AppState, AtomicBool, ListIndex, SeqCst, Session, State,
 };
 
 // ───────────────────────── Footswitch (engaged-state) leveling ─────────────────────────
@@ -58,7 +60,7 @@ static FOOTSWITCH_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
 pub(crate) fn cancel_footswitch_leveling() {
     FOOTSWITCH_LEVEL_CANCEL.store(true, SeqCst);
     // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
-    crate::request_op_abort();
+    crate::device_gate::request_op_abort();
 }
 
 /// Resolved inputs to `leveller::level_footswitch`: the switch-OFF value (`valueB` = the
@@ -749,8 +751,13 @@ impl FsBatch<'_> {
         // Re-stamp the preset's original `lastLoadedScene`: the write session's base
         // recall (and any bake-mirror scene recalls) leave the wrong scene active, and
         // the save records the active one (HW: the FS save stamped 8 over scene 3).
-        let restore = crate::last_loaded_scene(self.preset);
-        crate::warn_missing_restore_scene("level_footswitches", self.slot, self.preset, restore);
+        let restore = crate::scene_jobs::last_loaded_scene(self.preset);
+        crate::scene_jobs::warn_missing_restore_scene(
+            "level_footswitches",
+            self.slot,
+            self.preset,
+            restore,
+        );
         leveller::write_footswitch_values(self.slot, &writes, restore)?;
         let written: std::collections::HashSet<usize> = idxs.iter().copied().collect();
         for &idx in &idxs {

@@ -792,7 +792,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/resources/samples/guitar-humbucker.wav"
         );
-        let stim = crate::read_stimulus_calibrated(path, None).unwrap();
+        let stim = crate::stimulus::read_stimulus_calibrated(path, None).unwrap();
         let cap = capture(&addr, &stim, 48_000, 800, &never).unwrap();
         let padded = reference(&stim, 48_000, stim.len() + 38_400);
         let stim_lufs = crate::lufs::measure_mono(&padded, 48_000)

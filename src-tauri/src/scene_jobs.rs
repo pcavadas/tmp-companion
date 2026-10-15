@@ -9,7 +9,9 @@ use crate::scenes;
 use crate::session;
 use crate::session::Session;
 use crate::slot::ListIndex;
-use crate::{param_class, AmpKnobSpec, LevelBlockArg};
+use crate::{
+    commands::level_scenes::AmpKnobSpec, commands::level_scenes::LevelBlockArg, param_class,
+};
 
 pub(crate) fn is_amp_category(category: &str) -> bool {
     matches!(
@@ -686,7 +688,7 @@ fn handle_scene_job(
 /// Read it once per preset and thread the document — never add a second read. A failed
 /// read returns `None` and every consumer degrades to its pre-read behaviour.
 pub(crate) fn read_saved_preset(list_index: ListIndex) -> Option<serde_json::Value> {
-    match crate::read_slot_preset_parsed(list_index) {
+    match crate::slot_read::read_slot_preset_parsed(list_index) {
         Ok((preset, _, _)) => Some(preset),
         Err(e) => {
             log::warn!("scene jobs slot {list_index}: field-8 saved-preset read failed ({e})");
@@ -723,7 +725,7 @@ pub(crate) fn read_saved_preset_complete_sections(
     list_index: ListIndex,
     sections: &[&str],
 ) -> Result<serde_json::Value, String> {
-    crate::read_slot_preset_complete(list_index, sections).map(|(p, _, _)| p)
+    crate::slot_read::read_slot_preset_complete(list_index, sections).map(|(p, _, _)| p)
 }
 
 /// Un-engaged pre-pass for the app's batched scene leveling: ONE rich session
@@ -1680,8 +1682,8 @@ pub(crate) fn saved_scene_docs_refusal(
 // `base_handle_candidates_scanned`/`scene_handle_rows` straight off the backup scan with no command
 // or device involved, so it has no business reaching into the command layer for an
 // algorithm. `list_scene_level_handles` (the `#[tauri::command]` wrapper) stays in
-// `commands::level_scenes`; both it and `backup_read` keep addressing everything below
-// unqualified via the crate-root re-export (`crate::scene_handle_rows`, `crate::SceneHandleRow`, …).
+// `commands::level_scenes`; both it and `backup_read` address everything below by its
+// `scene_jobs::` path.
 
 /// One control a scene row could be leveled on, with the two annotations the picker cannot
 /// derive on its own. `class`/`range` come from [`crate::param_class`]; `current` is the

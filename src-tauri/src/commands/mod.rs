@@ -1,4 +1,5 @@
-//! Tauri command layer — one module per feature area, glob-re-exported from `lib.rs`.
+//! Tauri command layer — one module per feature area, each addressed by its path
+//! (`commands::<area>::<item>`); `lib.rs` re-exports only `copy_apply::CopyRepl` (see there why).
 //!
 //! Commands are registered by path from the one list in `app_commands.rs`
 //! (`crate::commands::<module>::<command>`); `#[tauri::command]` re-exports each

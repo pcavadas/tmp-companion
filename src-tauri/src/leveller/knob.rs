@@ -37,7 +37,7 @@ pub(super) fn saved_for_scene_knobs<'a>(
 /// / `SETTLE_AFTER_SCENE_EDIT_MS` pair instead, in `set_knobs`).
 pub(super) fn recall_base(s: &mut Session) -> Result<(), LevelError> {
     s.load_scene(crate::session::BASE_SCENE_SLOT)?;
-    crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     Ok(())
 }
 
@@ -53,7 +53,7 @@ pub(super) fn recall_original_scene(
 ) -> Result<(), LevelError> {
     if let Some(scene) = restore_scene {
         s.load_scene(scene)?;
-        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
     Ok(())
 }
@@ -102,7 +102,7 @@ pub(super) fn recall_reassert_save(
                     s.change_parameter(group, node, param, *value)?;
                 }
             }
-            crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+            crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
         }
     }
     s.save_current_preset(slot)?;
@@ -342,7 +342,7 @@ pub(super) fn set_knobs(
             "set_knobs[t] scene {scene}: loadScene returned at {} ms",
             t0.elapsed().as_millis()
         );
-        crate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
+        crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
         for (group_id, node_id) in &needs_enable {
             s.set_node_scene_edit(group_id, node_id, true)?;
             log::info!(
@@ -354,7 +354,7 @@ pub(super) fn set_knobs(
         // wasn't is pure idle and rides the ~400-450 ms silent-drop cliff (see
         // `SETTLE_AFTER_SCENE_EDIT_MS`'s doc for the HW evidence).
         if !needs_enable.is_empty() {
-            crate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
+            crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
         }
     } else if has_base_block {
         recall_base(s)?;

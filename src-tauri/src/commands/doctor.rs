@@ -2,10 +2,12 @@
 use super::ProgressStatus;
 use crate::error::LevelError;
 use crate::{
-    base64_encode, blockcaps, doctor, footswitch, leveller, read_slot_preset_complete,
-    read_slot_preset_parsed, read_stimulus_calibrated, resolve_stimulus_with_capture,
-    scene_write_verdict_for_param, session, topologies, wav_bytes, with_released_seize, AppState,
-    AtomicBool, ListIndex, SceneWriteVerdict, SeqCst, Serialize, Session, State,
+    blockcaps, commands::level_preset::resolve_stimulus_with_capture,
+    commands::media::base64_encode, commands::media::wav_bytes, device_gate::with_released_seize,
+    doctor, footswitch, leveller, scene_jobs::scene_write_verdict_for_param,
+    scene_jobs::SceneWriteVerdict, session, slot_read::read_slot_preset_complete,
+    slot_read::read_slot_preset_parsed, stimulus::read_stimulus_calibrated, topologies, AppState,
+    AtomicBool, ListIndex, SeqCst, Serialize, Session, State,
 };
 
 // ───────────────────────── Doctor (tone diagnosis) ─────────────────────────
@@ -107,7 +109,7 @@ pub(crate) fn base_isolation_or_refuse(
         )
     })?;
     let force = doctor_force_bypass(&preset["ftsw"], &preset, None);
-    let restore_scene = crate::last_loaded_scene(&preset);
+    let restore_scene = crate::scene_jobs::last_loaded_scene(&preset);
     Ok((preset, force, restore_scene))
 }
 
@@ -118,7 +120,7 @@ pub(crate) fn base_isolation_or_refuse(
 pub(crate) fn read_base_isolation(
     slot: ListIndex,
 ) -> Result<(serde_json::Value, bool, ForceBypass, Option<u32>), String> {
-    let read = crate::read_slot_preset_complete(slot, &["ftsw"]);
+    let read = crate::slot_read::read_slot_preset_complete(slot, &["ftsw"]);
     let has_fs_scenes = read
         .as_ref()
         .is_ok_and(|(_, has_fs_scenes, _)| *has_fs_scenes);
@@ -615,7 +617,7 @@ static DOCTOR_CANCEL: AtomicBool = AtomicBool::new(false);
 pub(crate) fn cancel_doctor_check() {
     DOCTOR_CANCEL.store(true, SeqCst);
     // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
-    crate::request_op_abort();
+    crate::device_gate::request_op_abort();
 }
 
 /// The Doctor RUN: capture every selected sound (Doctor tail), then diagnose
@@ -741,7 +743,7 @@ fn run_doctor_check(
         // A Stop landing after the last item's own success, with no further loop-header
         // check ahead of it, would otherwise finish the run silently instead of
         // reporting it stopped.
-        if crate::op_aborted() {
+        if crate::device_gate::op_aborted() {
             stopped = true;
             break;
         }
@@ -945,7 +947,7 @@ fn capture_profile_with_floor_retry(
         "doctor_check: {suspect:?} capture for {} (momentary spread {:.2} LU, stimulus {:.2} LU, onset {:?}) — retrying once",
         item.key, first.profile.momentary_spread_lu, stim_spread, first.onset.source
     );
-    crate::settle_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
+    crate::device_gate::settle_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
     let second = doctor_capture_profile(item, iso, stim, false)?;
     match suspect_of(&second, stim_spread) {
         None => Ok((second.profile, second.coverage)),
@@ -1216,7 +1218,7 @@ fn ab_side(
 ) -> Result<AbSide, String> {
     let rate = cap.sample_rate;
     let wav = match cap.processed_stereo() {
-        Some(pair) => crate::wav_bytes_channels(&pair, 2, rate)?,
+        Some(pair) => crate::commands::media::wav_bytes_channels(&pair, 2, rate)?,
         None => wav_bytes(&cap.channel(0), rate)?,
     };
     let clip = format!("data:audio/wav;base64,{}", base64_encode(&wav));
@@ -1531,7 +1533,7 @@ fn apply_ops_under_scene(
 ) -> Result<(), String> {
     s.begin_live_edit()?;
     s.load_scene(scene.unwrap_or(session::BASE_SCENE_SLOT))?;
-    crate::settle(std::time::Duration::from_millis(
+    crate::device_gate::settle(std::time::Duration::from_millis(
         leveller::SETTLE_AFTER_SET_MS,
     ));
     apply_doctor_ops(s, ops)

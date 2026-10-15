@@ -2931,7 +2931,7 @@ pub fn e2e_capture(
     // capture. Unarmed it never reads OP_ABORT, which parallel unit tests share.
     let hold = dev.state.lock().expect("sim lock").capture_delay_ms;
     if hold > 0 {
-        crate::sleep_or_cancel(hold)?;
+        crate::device_gate::sleep_or_cancel(hold)?;
     }
     Ok(dev.e2e_capture(stimulus, rate))
 }
@@ -3383,7 +3383,7 @@ fn load_stored_levels() -> Option<std::collections::HashMap<u32, StoredLevels>> 
     // `TMP_E2E_SCENARIO_PRESETS` override) so the physics model and the seeder can't drift
     // on which fixture they read; only the per-preset knob extraction is ours.
     let mut out = std::collections::HashMap::new();
-    for p in crate::probe_api::seed_scenario::scenario_spec().ok()? {
+    for p in crate::e2e_seed::scenario_spec().ok()? {
         let pj: serde_json::Value = serde_json::from_str(&p.preset_json).ok()?;
         out.insert(p.list_index.get(), stored_from_preset(&pj));
     }
@@ -3787,7 +3787,7 @@ fn saved_slot_json_body(st: &mut SimState, slot0: u32) -> Option<String> {
 fn scenario_json_for(slot0: u32) -> Option<&'static str> {
     static MAP: std::sync::OnceLock<HashMap<u32, String>> = std::sync::OnceLock::new();
     MAP.get_or_init(|| {
-        crate::probe_api::seed_scenario::scenario_spec()
+        crate::e2e_seed::scenario_spec()
             .map(|v| {
                 v.into_iter()
                     .map(|p| (p.list_index.get(), p.preset_json))

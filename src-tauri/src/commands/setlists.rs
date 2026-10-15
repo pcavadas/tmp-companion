@@ -1,7 +1,6 @@
 //! Setlist CRUD + membership Tauri commands.
-use crate::{
-    read_setlist_list, read_setlist_songs, session, with_released_seize, AppState, Session, State,
-};
+use crate::setlist_io::{read_setlist_list, read_setlist_songs};
+use crate::{device_gate::with_released_seize, session, AppState, Session, State};
 
 // ─── Song & Setlist CRUD for the device-backed Songs page ─────────────────────
 // Read-back-after-write: each write fires through its own fresh connection, then

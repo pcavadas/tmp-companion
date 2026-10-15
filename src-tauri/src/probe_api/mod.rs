@@ -1,31 +1,7 @@
-//! Headless `probe`-bin entry points + their private helpers, extracted from
-//! `lib.rs` (Phase 2 refactor). Each submodule groups one probe concern; the
-//! `pub fn probe_*` entry points are re-exported so `bin/probe.rs` reaches them
-//! as `<libcrate>::probe_xxx`. Helpers that stayed-in-lib commands still call are
-//! `pub(crate)` and re-listed in `lib.rs`'s explicit `pub(crate) use` seam.
-
-/// List indices the e2e scenario fixtures own and the only slots a destructive
-/// or working-copy-writing probe experiment may target. Shared by every guard
-/// that gates a probe write — a single declaration so widening or shifting the
-/// scratch zone is one edit, not four. 406-409 are the P3 leveling-doctor-fixtures
-/// additions (combined leveling / doctor oracle / two minimal-incident-repro slots).
-/// 410 is the P4 Friedman-HBE-class 3-scene addition (leveling regression coverage).
-pub(crate) const SCRATCH_SLOTS: [crate::slot::ListIndex; 11] = {
-    use crate::slot::ListIndex as L;
-    [
-        L(400),
-        L(401),
-        L(402),
-        L(403),
-        L(404),
-        L(405),
-        L(406),
-        L(407),
-        L(408),
-        L(409),
-        L(410),
-    ]
-};
+//! The headless `probe` bin's entry points and the helpers only the probe uses. Each
+//! submodule groups one probe concern, and `bin/probe.rs` reaches the `pub fn probe_*`
+//! entry points as `<libcrate>::probe_api::probe_xxx`. Shipped logic lives outside this
+//! module: nothing in the app or the e2e server imports from here.
 
 pub(crate) mod analyze;
 pub(crate) mod audio_devices;
@@ -43,6 +19,7 @@ pub(crate) mod level;
 pub(crate) mod mixer;
 pub(crate) mod overlay_ab;
 pub(crate) mod replace;
+pub(crate) mod replace_inplace;
 pub(crate) mod restore_check;
 pub(crate) mod scene_bench;
 pub(crate) mod scene_level;
@@ -111,6 +88,7 @@ pub use level::*;
 pub use mixer::*;
 pub use overlay_ab::*;
 pub use replace::*;
+pub use replace_inplace::*;
 pub use restore_check::*;
 pub use scene_bench::*;
 pub use scene_level::*;

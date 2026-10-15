@@ -1131,7 +1131,7 @@ fn main() {
 
     // Default: connect + list My Presets (HID stack sanity check).
     eprintln!("[probe] connecting to TMP (seizing device)…");
-    match tmp_companion_lib::probe_connect_and_list() {
+    match tmp_companion_lib::probe_api::probe_connect_and_list() {
         Ok(presets) => {
             println!("[probe] OK — {} presets in My Presets:", presets.len());
             // TMP_LIST_ALL=1 prints the whole list (finding a preset's current slot);
@@ -1163,7 +1163,7 @@ fn main() {
 
 fn arm_activegraph(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--activegraph") {
-        return report(tmp_companion_lib::probe_active_graph());
+        return report(tmp_companion_lib::probe_api::probe_active_graph());
     }
 
     false
@@ -1171,7 +1171,7 @@ fn arm_activegraph(args: &[String]) -> bool {
 
 fn arm_audio_devices(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--audio-devices") {
-        return report(tmp_companion_lib::probe_audio_devices());
+        return report(tmp_companion_lib::probe_api::probe_audio_devices());
     }
 
     false
@@ -1187,7 +1187,7 @@ fn arm_import_file(args: &[String]) -> bool {
             eprintln!("usage: probe --import-file <path> <listIdx>");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_import_file(&path, idx));
+        return report(tmp_companion_lib::probe_api::probe_import_file(&path, idx));
     }
 
     false
@@ -1207,7 +1207,7 @@ fn arm_scene_doc(args: &[String]) -> bool {
             eprintln!("usage: probe --scene-doc <listIdx> <scene…>");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_scene_doc(idx, &scenes));
+        return report(tmp_companion_lib::probe_api::probe_scene_doc(idx, &scenes));
     }
 
     false
@@ -1226,7 +1226,9 @@ fn arm_dump_list(args: &[String]) -> bool {
             eprintln!("usage: probe --dump-list <listEnum> <fromSlot> <toSlot> <outDir>");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_dump_list(le, from, to, &dir));
+        return report(tmp_companion_lib::probe_api::probe_dump_list(
+            le, from, to, &dir,
+        ));
     }
 
     false
@@ -1249,7 +1251,7 @@ fn arm_scene_node_doc(args: &[String]) -> bool {
             eprintln!("usage: probe --scene-node-doc <listIdx> <group> <node> <scene…>");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_scene_node_doc(
+        return report(tmp_companion_lib::probe_api::probe_scene_node_doc(
             idx, &group, &node, &scenes,
         ));
     }
@@ -1280,7 +1282,7 @@ fn arm_knob_sweep(args: &[String]) -> bool {
             eprintln!("usage: probe --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_knob_sweep(
+        return report(tmp_companion_lib::probe_api::probe_knob_sweep(
             idx, &group, &node, &param, &values,
         ));
     }
@@ -1343,7 +1345,7 @@ fn arm_measure_pair(args: &[String]) -> bool {
             );
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_measure_pair(
+        return report(tmp_companion_lib::probe_api::probe_measure_pair(
             idx,
             &topology,
             preset_level,
@@ -1366,7 +1368,9 @@ fn arm_dump_currentpresetdata(args: &[String]) -> bool {
         let out = std::env::temp_dir().join("tmp_currentpresetdata.json");
         let out = out.to_str().expect("temp dir path is UTF-8");
         eprintln!("[probe] capturing currentPresetDataChanged (slot={slot:?})…");
-        return report_ln(tmp_companion_lib::probe_dump_preset_data(slot, out));
+        return report_ln(tmp_companion_lib::probe_api::probe_dump_preset_data(
+            slot, out,
+        ));
     }
 
     false
@@ -1375,7 +1379,7 @@ fn arm_dump_currentpresetdata(args: &[String]) -> bool {
 fn arm_active_slot(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--active-slot") {
         // Read-only: the active preset as a plain handshake shows it (song BPM restore).
-        return report(tmp_companion_lib::probe_active_slot());
+        return report(tmp_companion_lib::probe_api::probe_active_slot());
     }
 
     false
@@ -1384,7 +1388,7 @@ fn arm_active_slot(args: &[String]) -> bool {
 fn arm_fw(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--fw") {
         // Read-only: the firmware version the device pushed in the handshake.
-        return report_ln(tmp_companion_lib::probe_firmware_version());
+        return report_ln(tmp_companion_lib::probe_api::probe_firmware_version());
     }
 
     false
@@ -1393,7 +1397,7 @@ fn arm_fw(args: &[String]) -> bool {
 fn arm_device_backup(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--device-backup") {
         eprintln!("[probe] device backup (BackupRequest → tar.lz4 stream → extract DB)…");
-        return report(tmp_companion_lib::probe_device_backup());
+        return report(tmp_companion_lib::probe_api::probe_device_backup());
     }
 
     false
@@ -1436,7 +1440,7 @@ fn arm_doctor_inject(args: &[String]) -> bool {
             Some(_) => usage(),
         };
         let block = flag_arg(args, "--block");
-        return report(tmp_companion_lib::probe_doctor_inject(
+        return report(tmp_companion_lib::probe_api::probe_doctor_inject(
             slot,
             &gains,
             block.as_deref(),
@@ -1459,7 +1463,7 @@ fn arm_doctor_fs(args: &[String]) -> bool {
             eprintln!("usage: probe --doctor-fs <listIdx> <switch>");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_doctor_fs(slot, switch));
+        return report(tmp_companion_lib::probe_api::probe_doctor_fs(slot, switch));
     }
 
     false
@@ -1477,7 +1481,7 @@ fn arm_doctor_defects(args: &[String]) -> bool {
         };
         let out = flag_arg(args, "--out");
         eprintln!("[probe] doctor-defects: slot {slot}…");
-        return report(tmp_companion_lib::probe_doctor_defects(
+        return report(tmp_companion_lib::probe_api::probe_doctor_defects(
             slot,
             out.as_deref(),
         ));
@@ -1491,7 +1495,9 @@ fn arm_replace_debug(args: &[String]) -> bool {
         let slot = slot_at(args, i + 1);
         let from = args.get(i + 2).cloned().unwrap_or_default();
         let to = args.get(i + 3).cloned().unwrap_or_default();
-        return report(tmp_companion_lib::probe_replace_debug(slot, &from, &to));
+        return report(tmp_companion_lib::probe_api::probe_replace_debug(
+            slot, &from, &to,
+        ));
     }
 
     false
@@ -1508,7 +1514,7 @@ fn arm_bulk_replace(args: &[String]) -> bool {
             eprintln!("usage: probe --bulk-replace <FROM_ID> <TO_ID> <slot,slot,…> [--commit]");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_bulk_replace(
+        return report(tmp_companion_lib::probe_api::probe_bulk_replace(
             &from, &to, &slots, commit,
         ));
     }
@@ -1524,7 +1530,7 @@ fn arm_roster(args: &[String]) -> bool {
             eprintln!("usage: probe --roster <slot,slot,…>");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_roster(&slots));
+        return report(tmp_companion_lib::probe_api::probe_roster(&slots));
     }
 
     false
@@ -1539,7 +1545,9 @@ fn arm_discover_diff(args: &[String]) -> bool {
             eprintln!("usage: probe --discover-diff <FROM_ID> <slot,slot,…>");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_discover_diff(&from, &slots));
+        return report(tmp_companion_lib::probe_api::probe_discover_diff(
+            &from, &slots,
+        ));
     }
 
     false
@@ -1548,7 +1556,7 @@ fn arm_discover_diff(args: &[String]) -> bool {
 fn arm_slot_json(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--slot-json") {
         let slot = slot_at(args, i + 1);
-        return report(tmp_companion_lib::probe_slot_json(slot));
+        return report(tmp_companion_lib::probe_api::probe_slot_json(slot));
     }
 
     false
@@ -1565,7 +1573,7 @@ fn arm_replace_held(args: &[String]) -> bool {
             eprintln!("usage: probe --replace-held <FROM_ID> <TO_ID> <slot,slot,…> [--commit]");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_replace_held(
+        return report(tmp_companion_lib::probe_api::probe_replace_held(
             &from, &to, &slots, commit,
         ));
     }
@@ -1598,7 +1606,7 @@ fn arm_insert_active(args: &[String]) -> bool {
             eprintln!("usage: probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <NODE_ID>] [--slot <deviceSlot>] [--commit]");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_insert_active(
+        return report(tmp_companion_lib::probe_api::probe_insert_active(
             &fender_id,
             group.as_deref(),
             after.as_deref(),
@@ -1652,7 +1660,7 @@ fn arm_measure_footswitch(args: &[String]) -> bool {
             slot.unwrap(),
             switch.unwrap(),
         );
-        return report(tmp_companion_lib::probe_measure_footswitch(
+        return report(tmp_companion_lib::probe_api::probe_measure_footswitch(
             slot.unwrap(),
             switch.unwrap(),
             &topology,
@@ -1687,7 +1695,7 @@ fn arm_level_footswitch(args: &[String]) -> bool {
             eprintln!("usage: probe --level-footswitch <slot> <switch> <levGroup> <levNode> <levParam> <target> [--commit]  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_level_footswitch(
+        return report(tmp_companion_lib::probe_api::probe_level_footswitch(
             slot, switch, &lev_group, &lev_node, &lev_param, target, commit,
         ));
     }
@@ -1714,7 +1722,7 @@ fn arm_bake_validate(args: &[String]) -> bool {
             eprintln!("usage: probe --bake-validate <slot> <switch> <group> <node> <param> <target>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_bake_validate(
+        return report(tmp_companion_lib::probe_api::probe_bake_validate(
             slot, switch, &group, &node, &param, target,
         ));
     }
@@ -1740,7 +1748,7 @@ fn arm_amp_recipe(args: &[String]) -> bool {
             eprintln!("usage: probe --amp-recipe <listIdx> <group> <ampNode> <gain 0..=1> <outputLevel 0..=1>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_amp_recipe(
+        return report(tmp_companion_lib::probe_api::probe_amp_recipe(
             idx, &group, &node, gain, out_level,
         ));
     }
@@ -1782,7 +1790,7 @@ fn arm_fs_sweep(args: &[String]) -> bool {
             eprintln!("usage: probe --fs-sweep <listIdx> <switch> <group> <node> <param> <v1,v2,… each 0..=1>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_fs_sweep(
+        return report(tmp_companion_lib::probe_api::probe_fs_sweep(
             idx, switch, &group, &node, &param, &values,
         ));
     }
@@ -1818,7 +1826,7 @@ fn arm_set_param_save(args: &[String]) -> bool {
             );
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_set_param_save(
+        return report(tmp_companion_lib::probe_api::probe_set_param_save(
             idx,
             &expect_name,
             &group,
@@ -1836,7 +1844,7 @@ fn arm_fs_list(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--fs-list") {
         // --fs-list <slot>   (read-only: footswitch blocks + bake/assign classification)
         let slot = slot_at(args, i + 1);
-        return report(tmp_companion_lib::probe_fs_list(slot));
+        return report(tmp_companion_lib::probe_api::probe_fs_list(slot));
     }
 
     false
@@ -1852,7 +1860,9 @@ fn arm_measure_forced(args: &[String]) -> bool {
             eprintln!("usage: probe --measure-forced <slot> <group> <node>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_measure_forced(slot, &group, &node));
+        return report(tmp_companion_lib::probe_api::probe_measure_forced(
+            slot, &group, &node,
+        ));
     }
 
     false
@@ -1860,7 +1870,7 @@ fn arm_measure_forced(args: &[String]) -> bool {
 
 fn arm_repro_chunked(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--repro-chunked") {
-        return report(tmp_companion_lib::probe_repro_chunked());
+        return report(tmp_companion_lib::probe_api::probe_repro_chunked());
     }
 
     false
@@ -1882,7 +1892,7 @@ fn arm_clear_ftsw(args: &[String]) -> bool {
             eprintln!("usage: probe --clear-ftsw <slot> <switch> <index>");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_clear_footswitch(
+        return report(tmp_companion_lib::probe_api::probe_clear_footswitch(
             slot, switch, index,
         ));
     }
@@ -1901,7 +1911,7 @@ fn arm_ftsw_validate(args: &[String]) -> bool {
             .filter(|s| !s.starts_with("--"))
             .and_then(|s| s.parse().ok());
         let commit = args.iter().any(|a| a == "--commit");
-        return report(tmp_companion_lib::probe_ftsw_validate(
+        return report(tmp_companion_lib::probe_api::probe_ftsw_validate(
             switch_override,
             commit,
         ));
@@ -1917,7 +1927,7 @@ fn arm_import_reload_check(args: &[String]) -> bool {
             eprintln!("usage: probe --import-reload-check <file.preset>");
             std::process::exit(2);
         };
-        match tmp_companion_lib::probe_import_reload_check(&path) {
+        match tmp_companion_lib::probe_api::probe_import_reload_check(&path) {
             Ok(report) => {
                 print!("{report}");
                 return true;
@@ -1937,7 +1947,9 @@ fn arm_restore_check(args: &[String]) -> bool {
         // --restore-check <deviceSlot> [trials]
         let slot = slot_at(args, i + 1);
         let trials: u32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(1);
-        return report(tmp_companion_lib::probe_restore_check(slot, trials));
+        return report(tmp_companion_lib::probe_api::probe_restore_check(
+            slot, trials,
+        ));
     }
     false
 }
@@ -1960,7 +1972,7 @@ fn arm_reprompt_map(args: &[String]) -> bool {
             eprintln!("usage: probe --reprompt-map <slot> <name> <group> (--remove <nodeId> | --insert <fenderId> [--before <id>]) [--commit]");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_reprompt_map(
+        return report(tmp_companion_lib::probe_api::probe_reprompt_map(
             slot,
             &name,
             &group,
@@ -1997,7 +2009,7 @@ fn arm_insert_map(args: &[String]) -> bool {
             eprintln!("usage: probe --insert-map <slot> <group> <fenderId> [--before <id>] [--at-index <n>] [--commit]");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_insert_map(
+        return report(tmp_companion_lib::probe_api::probe_insert_map(
             slot,
             &group,
             &fender_id,
@@ -2020,7 +2032,7 @@ fn arm_bulk_replace_saved(args: &[String]) -> bool {
             eprintln!("usage: probe --bulk-replace-saved <FROM_CAB_ID> <slot,slot,…> [--commit]");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_bulk_replace_saved(
+        return report(tmp_companion_lib::probe_api::probe_bulk_replace_saved(
             &from, &slots, commit,
         ));
     }
@@ -2031,7 +2043,7 @@ fn arm_bulk_replace_saved(args: &[String]) -> bool {
 fn arm_saved_blocks(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--saved-blocks") {
         eprintln!("[probe] list saved blocks (production decode path)…");
-        return report(tmp_companion_lib::probe_saved_blocks());
+        return report(tmp_companion_lib::probe_api::probe_saved_blocks());
     }
 
     false
@@ -2040,7 +2052,7 @@ fn arm_saved_blocks(args: &[String]) -> bool {
 fn arm_re_blocks(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--re-blocks") {
         eprintln!("[probe] RE spike: RequestAllBlockPresets + user-IR list (READ-ONLY)…");
-        return report(tmp_companion_lib::probe_re_blocks());
+        return report(tmp_companion_lib::probe_api::probe_re_blocks());
     }
 
     false
@@ -2063,7 +2075,9 @@ fn arm_overlay_ab(args: &[String]) -> bool {
             );
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_overlay_ab(&target, contexts));
+        return report(tmp_companion_lib::probe_api::probe_overlay_ab(
+            &target, contexts,
+        ));
     }
 
     false
@@ -2071,7 +2085,7 @@ fn arm_overlay_ab(args: &[String]) -> bool {
 
 fn arm_scenes_passive(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--scenes-passive") {
-        return report(tmp_companion_lib::probe_scan_scenes_passive());
+        return report(tmp_companion_lib::probe_api::probe_scan_scenes_passive());
     }
 
     false
@@ -2085,7 +2099,9 @@ fn arm_slotread_x(args: &[String]) -> bool {
             .take_while(|a| !a.starts_with("--"))
             .count();
         let slots: Vec<DeviceSlot> = (0..count).map(|k| slot_at(args, i + 1 + k)).collect();
-        return report(tmp_companion_lib::probe_slotread_experiments(slots));
+        return report(tmp_companion_lib::probe_api::probe_slotread_experiments(
+            slots,
+        ));
     }
 
     false
@@ -2095,7 +2111,9 @@ fn arm_slotread_live(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--slotread-live") {
         let slot: DeviceSlot = slot_at(args, i + 1);
         let rounds: u32 = args.get(i + 2).and_then(|a| a.parse().ok()).unwrap_or(4);
-        return report(tmp_companion_lib::probe_slotread_live(slot, rounds));
+        return report(tmp_companion_lib::probe_api::probe_slotread_live(
+            slot, rounds,
+        ));
     }
 
     false
@@ -2104,7 +2122,7 @@ fn arm_slotread_live(args: &[String]) -> bool {
 fn arm_scenes_full(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--scenes-full") {
         eprintln!("[probe] full scene scan via LoadPreset → field-3 (changes active preset)…");
-        return report(tmp_companion_lib::probe_scan_scenes_full_live());
+        return report(tmp_companion_lib::probe_api::probe_scan_scenes_full_live());
     }
 
     false
@@ -2113,7 +2131,7 @@ fn arm_scenes_full(args: &[String]) -> bool {
 fn arm_scenes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--scenes") {
         eprintln!("[probe] scene scan (LoadPreset → sceneList 125)…");
-        return report(tmp_companion_lib::probe_scan_scenes_load());
+        return report(tmp_companion_lib::probe_api::probe_scan_scenes_load());
     }
 
     false
@@ -2125,7 +2143,7 @@ fn arm_seed_scenario(args: &[String]) -> bool {
         // process degrades — truncated list harvests + capricious opens); sweeps
         // stray scenario imports first. The e2e runner calls this per spec.
         eprintln!("[probe] seeding the e2e scenario presets (sweep + import)…");
-        return report(tmp_companion_lib::probe_seed_scenario());
+        return report(tmp_companion_lib::probe_api::probe_seed_scenario());
     }
 
     false
@@ -2136,7 +2154,7 @@ fn arm_clear_strays(args: &[String]) -> bool {
         // Attended cleanup: sweep stray scenario imports (exact-name, wrong-slot
         // matches only, off a completeness-floored list) without seeding.
         eprintln!("[probe] sweeping stray e2e scenario imports…");
-        return report(tmp_companion_lib::probe_clear_strays());
+        return report(tmp_companion_lib::probe_api::probe_clear_strays());
     }
 
     false
@@ -2146,7 +2164,7 @@ fn arm_listall(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--listall") {
         // Read-only: print every My Presets slot + name (full list, not just the
         // first 20). For auditing device state after a run.
-        match tmp_companion_lib::probe_connect_and_list() {
+        match tmp_companion_lib::probe_api::probe_connect_and_list() {
             Ok(presets) => {
                 println!("[probe --listall] {} entries:", presets.len());
                 for p in &presets {
@@ -2170,7 +2188,7 @@ fn arm_capture_input(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--capture-input") {
         let secs: f32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
         eprintln!("[probe] GATE 1 — play your guitar continuously for {secs:.0}s NOW…");
-        return report(tmp_companion_lib::probe_capture_input(secs));
+        return report(tmp_companion_lib::probe_api::probe_capture_input(secs));
     }
 
     false
@@ -2180,7 +2198,7 @@ fn arm_agc_test(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--agc-test") {
         let slot = slot_at(args, i + 1);
         eprintln!("[probe] GATE 2 — re-amp inject AGC test on slot {slot} (no playing needed)…");
-        return report(tmp_companion_lib::probe_reamp_agc_test(slot));
+        return report(tmp_companion_lib::probe_api::probe_reamp_agc_test(slot));
     }
 
     false
@@ -2189,7 +2207,7 @@ fn arm_agc_test(args: &[String]) -> bool {
 fn arm_channels(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--channels") {
         let slot = slot_at(args, i + 1);
-        return report(tmp_companion_lib::probe_channels(slot));
+        return report(tmp_companion_lib::probe_api::probe_channels(slot));
     }
 
     false
@@ -2246,7 +2264,7 @@ fn arm_scene_write_cell(args: &[String]) -> bool {
             eprintln!("usage: probe --scene-write-cell <listIdx> <expectName> <sceneSlot> <group> <node> <param> [--value V] [--no-scene-edit] [--recall-settle MS]");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_scene_write_cell(
+        return report(tmp_companion_lib::probe_api::probe_scene_write_cell(
             slot,
             &expect_name,
             scene,
@@ -2300,7 +2318,7 @@ fn arm_set_scene_param(args: &[String]) -> bool {
         }
         // Outer Option = "arg present and parseable"; inner = None for base, Some(n) for scene n.
         let scene = scene.flatten();
-        return report(tmp_companion_lib::probe_set_scene_param(
+        return report(tmp_companion_lib::probe_api::probe_set_scene_param(
             slot,
             &expect_name,
             scene,
@@ -2330,7 +2348,7 @@ fn arm_levelblock(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] closed-loop block leveling: slot {slot} {group}/{node}/{param} → {target} LUFS…");
-        return report(tmp_companion_lib::probe_level_block(
+        return report(tmp_companion_lib::probe_api::probe_level_block(
             slot, target, group, node, param,
         ));
     }
@@ -2356,7 +2374,7 @@ fn arm_bench_scene_leveling(args: &[String]) -> bool {
         eprintln!(
             "[probe] benchmarking scene leveling slots={slots:?} target={target} topology={topology} → {out}…"
         );
-        return report(tmp_companion_lib::probe_bench_scene_leveling(
+        return report(tmp_companion_lib::probe_api::probe_bench_scene_leveling(
             slots, target, topology, out,
         ));
     }
@@ -2368,7 +2386,7 @@ fn arm_blocks(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--blocks") {
         let slot = slot_at(args, i + 1);
         eprintln!("[probe] enumerating level-type block controls for slot {slot}…");
-        return report(tmp_companion_lib::probe_list_blocks(slot));
+        return report(tmp_companion_lib::probe_api::probe_list_blocks(slot));
     }
 
     false
@@ -2385,7 +2403,7 @@ fn arm_listen(args: &[String]) -> bool {
         let seconds: u64 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(120);
         let hb: u64 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(250);
         let poll: u64 = args.get(i + 3).and_then(|s| s.parse().ok()).unwrap_or(0);
-        match tmp_companion_lib::probe_listen(seconds, hb, poll) {
+        match tmp_companion_lib::probe_api::probe_listen(seconds, hb, poll) {
             Ok(()) => return true,
             Err(e) => fail(e),
         }
@@ -2406,7 +2424,9 @@ fn arm_classify(args: &[String]) -> bool {
             .iter()
             .filter_map(|s| s.parse().ok())
             .collect();
-        return report(tmp_companion_lib::probe_classify_scenes(list_index, scenes));
+        return report(tmp_companion_lib::probe_api::probe_classify_scenes(
+            list_index, scenes,
+        ));
     }
 
     false
@@ -2433,7 +2453,7 @@ fn arm_level_scenes(args: &[String]) -> bool {
             .filter_map(|s| s.parse().ok())
             .collect();
         let commit = args.iter().any(|a| a == "--commit");
-        return report(tmp_companion_lib::probe_level_scenes_oneshot(
+        return report(tmp_companion_lib::probe_api::probe_level_scenes_oneshot(
             list_index, target, topology, scenes, rebalance, commit,
         ));
     }
@@ -2445,7 +2465,9 @@ fn arm_reamp_state(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--reamp-state") {
         // DIAGNOSTIC (reamp-stuck investigation): passive re-amp state read — no
         // HID commands; audio-only tell (see probe_api::level::probe_reamp_state).
-        return report_ln(tmp_companion_lib::probe_reamp_state("guitar-humbucker"));
+        return report_ln(tmp_companion_lib::probe_api::probe_reamp_state(
+            "guitar-humbucker",
+        ));
     }
 
     false
@@ -2473,7 +2495,7 @@ fn arm_reamp_multi_engage(args: &[String]) -> bool {
             .get(i + 2)
             .filter(|s| !s.starts_with("--"))
             .map_or("guitar-humbucker", String::as_str);
-        return report(tmp_companion_lib::probe_reamp_multi_engage(
+        return report(tmp_companion_lib::probe_api::probe_reamp_multi_engage(
             topology, cycles,
         ));
     }
@@ -2486,7 +2508,9 @@ fn arm_reamp_toggle_test(args: &[String]) -> bool {
         // DIAGNOSTIC (reamp-stuck investigation): --reamp-toggle-test <idle_ms> [hb]
         let idle_ms: u64 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
         let hb = args.iter().any(|a| a == "hb");
-        return report_ln(tmp_companion_lib::probe_reamp_toggle_test(idle_ms, hb));
+        return report_ln(tmp_companion_lib::probe_api::probe_reamp_toggle_test(
+            idle_ms, hb,
+        ));
     }
 
     false
@@ -2495,7 +2519,7 @@ fn arm_reamp_toggle_test(args: &[String]) -> bool {
 fn arm_reamp_off(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--reamp-off") {
         // Recovery: force re-amp OFF (a stranded re-amp mutes the guitar input).
-        match tmp_companion_lib::probe_reamp_off() {
+        match tmp_companion_lib::probe_api::probe_reamp_off() {
             Ok(()) => {
                 println!("re-amp OFF sent OK");
                 return true;
@@ -2530,7 +2554,9 @@ fn arm_set_param(args: &[String]) -> bool {
             std::process::exit(2);
         };
         eprintln!("[probe] set {g}/{n}/{p} = {v} on slot {slot}…");
-        return report(tmp_companion_lib::probe_set_param(slot, g, n, p, v));
+        return report(tmp_companion_lib::probe_api::probe_set_param(
+            slot, g, n, p, v,
+        ));
     }
 
     false
@@ -2546,7 +2572,7 @@ fn arm_settings_read(args: &[String]) -> bool {
                 std::process::exit(2);
             }
         };
-        return report(tmp_companion_lib::probe_settings_read(f));
+        return report(tmp_companion_lib::probe_api::probe_settings_read(f));
     }
 
     false
@@ -2563,7 +2589,7 @@ fn arm_set_scene_behavior(args: &[String]) -> bool {
             }
         };
         eprintln!("[probe] setting sceneChangeBehavior to {v}…");
-        return report(tmp_companion_lib::probe_set_scene_change_behavior(v));
+        return report(tmp_companion_lib::probe_api::probe_set_scene_change_behavior(v));
     }
 
     false
@@ -2584,7 +2610,7 @@ fn arm_switch_template(args: &[String]) -> bool {
             std::process::exit(2);
         };
         eprintln!("[probe] switching slot {slot} template → {t}…");
-        return report(tmp_companion_lib::probe_switch_template(slot, t));
+        return report(tmp_companion_lib::probe_api::probe_switch_template(slot, t));
     }
 
     false
@@ -2604,7 +2630,7 @@ fn arm_set_master(args: &[String]) -> bool {
             }
         };
         eprintln!("[probe] setting master level to {level}…");
-        return report(tmp_companion_lib::probe_set_master_level(level));
+        return report(tmp_companion_lib::probe_api::probe_set_master_level(level));
     }
 
     false
@@ -2616,7 +2642,7 @@ fn arm_mixer(args: &[String]) -> bool {
         // link/AUX per channel). The leveller's measurement tap IS a mixer channel
         // (USB 1/2), so a non-unity fader biases every solved presetLevel invisibly.
         eprintln!("[probe] reading output-mixer channel state…");
-        return report(tmp_companion_lib::probe_mixer_state());
+        return report(tmp_companion_lib::probe_api::probe_mixer_state());
     }
 
     false
@@ -2672,7 +2698,7 @@ fn arm_reamp_wav(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] re-amping {stim} through slot {slot} → {out}…");
-        return report(tmp_companion_lib::probe_reamp_wav(
+        return report(tmp_companion_lib::probe_api::probe_reamp_wav(
             slot,
             &stim,
             &out,
@@ -2727,7 +2753,7 @@ fn arm_tail_decay(args: &[String]) -> bool {
         eprintln!(
             "[probe] tail-decay: {stim} + {tail_ms}ms tail through slot {slot} scene {scene:?} → {out}…"
         );
-        return report(tmp_companion_lib::probe_tail_decay(
+        return report(tmp_companion_lib::probe_api::probe_tail_decay(
             slot, scene, &stim, tail_ms, &out,
         ));
     }
@@ -2748,7 +2774,7 @@ fn arm_move_preset(args: &[String]) -> bool {
             std::process::exit(2);
         };
         eprintln!("[probe] WRITE move preset list idx {from} → {to}…");
-        return report(tmp_companion_lib::probe_move_preset(from, to));
+        return report(tmp_companion_lib::probe_api::probe_move_preset(from, to));
     }
 
     false
@@ -2766,7 +2792,7 @@ fn arm_loadscene(args: &[String]) -> bool {
             std::process::exit(2);
         };
         eprintln!("[probe] recalling scene {scene_slot} on the current preset…");
-        match tmp_companion_lib::probe_load_scene(scene_slot) {
+        match tmp_companion_lib::probe_api::probe_load_scene(scene_slot) {
             Ok(()) => {
                 println!("loadScene({scene_slot}) sent OK");
                 return true;
@@ -2798,7 +2824,7 @@ fn arm_measure_current(args: &[String]) -> bool {
         );
         // No `--target` here on purpose: a validation row needs a stable slot identity,
         // and `--measure-current` measures "whatever is loaded". Use `--measure-scene`.
-        return report_ln(tmp_companion_lib::probe_measure_current_lufs(
+        return report_ln(tmp_companion_lib::probe_api::probe_measure_current_lufs(
             &topology,
             None,
             scene_slot,
@@ -2838,7 +2864,7 @@ fn arm_measure_scene(args: &[String]) -> bool {
             slot.unwrap(),
             scene_slot.unwrap(),
         );
-        return report_ln(tmp_companion_lib::probe_measure_current_lufs(
+        return report_ln(tmp_companion_lib::probe_api::probe_measure_current_lufs(
             &topology,
             slot,
             scene_slot,
@@ -2877,7 +2903,7 @@ fn arm_held_reengage(args: &[String]) -> bool {
             "[probe] held-reengage slot={} topology={topology} scenes={scenes:?}…",
             slot.unwrap()
         );
-        return report_ln(tmp_companion_lib::probe_held_reengage(
+        return report_ln(tmp_companion_lib::probe_api::probe_held_reengage(
             &topology,
             slot.unwrap(),
             &scenes,
@@ -2902,7 +2928,9 @@ fn arm_export(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] exporting preset listEnum={list_enum} slot={slot}…");
-        return report(tmp_companion_lib::probe_export_preset(list_enum, slot));
+        return report(tmp_companion_lib::probe_api::probe_export_preset(
+            list_enum, slot,
+        ));
     }
 
     false
@@ -2912,7 +2940,7 @@ fn arm_factory_list(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--factory-list") {
         // --factory-list — print every Factory preset as `slot<TAB>name`.
         eprintln!("[probe] listing Factory presets…");
-        return report(tmp_companion_lib::probe_factory_list());
+        return report(tmp_companion_lib::probe_api::probe_factory_list());
     }
 
     false
@@ -2939,7 +2967,9 @@ fn arm_load_probe(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] loadPreset slot={slot} tabEnum={tab_enum}…");
-        return report(tmp_companion_lib::probe_load_probe(slot, tab_enum));
+        return report(tmp_companion_lib::probe_api::probe_load_probe(
+            slot, tab_enum,
+        ));
     }
 
     false
@@ -2956,7 +2986,7 @@ fn arm_import(args: &[String]) -> bool {
             }
         };
         eprintln!("[probe] importing {path}…");
-        return report(tmp_companion_lib::probe_import_preset(&path));
+        return report(tmp_companion_lib::probe_api::probe_import_preset(&path));
     }
 
     false
@@ -2984,7 +3014,7 @@ fn arm_save_load_test(args: &[String]) -> bool {
             );
             std::process::exit(2);
         };
-        return report_ln(tmp_companion_lib::probe_save_load_test(
+        return report_ln(tmp_companion_lib::probe_api::probe_save_load_test(
             a,
             b,
             level,
@@ -3013,10 +3043,9 @@ fn arm_redistribute_persist_check(args: &[String]) -> bool {
             );
             std::process::exit(2);
         };
-        return report_ln(tmp_companion_lib::probe_redistribute_persist_check(
-            slot,
-            &expected_name,
-        ));
+        return report_ln(
+            tmp_companion_lib::probe_api::probe_redistribute_persist_check(slot, &expected_name),
+        );
     }
 
     false
@@ -3034,7 +3063,9 @@ fn arm_clear(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] clearing user preset slot {slot} (if it reads {expect:?})…");
-        return report(tmp_companion_lib::probe_clear_preset(slot, &expect));
+        return report(tmp_companion_lib::probe_api::probe_clear_preset(
+            slot, &expect,
+        ));
     }
 
     false
@@ -3044,7 +3075,7 @@ fn arm_map_slots(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--map-slots") {
         // Resolve the list-index ↔ device-userSlot offset (AC7 prerequisite).
         eprintln!("[probe] resolving list↔device slot mapping…");
-        return report(tmp_companion_lib::probe_map_slots());
+        return report(tmp_companion_lib::probe_api::probe_map_slots());
     }
 
     false
@@ -3053,7 +3084,7 @@ fn arm_map_slots(args: &[String]) -> bool {
 fn arm_songs(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--songs") {
         // Read-only: list every Song on the device with its notes + BPM.
-        return report(tmp_companion_lib::probe_list_songs());
+        return report(tmp_companion_lib::probe_api::probe_list_songs());
     }
 
     false
@@ -3062,7 +3093,7 @@ fn arm_songs(args: &[String]) -> bool {
 fn arm_setlists(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--setlists") {
         // Read-only: list every Setlist on the device (names only).
-        return report(tmp_companion_lib::probe_list_setlists());
+        return report(tmp_companion_lib::probe_api::probe_list_setlists());
     }
 
     false
@@ -3071,7 +3102,7 @@ fn arm_setlists(args: &[String]) -> bool {
 fn arm_setlist_songs(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--setlist-songs") {
         // Read-only: for every Setlist, list the songs it contains (slots → names).
-        return report(tmp_companion_lib::probe_setlist_songs());
+        return report(tmp_companion_lib::probe_api::probe_setlist_songs());
     }
 
     false
@@ -3080,7 +3111,7 @@ fn arm_setlist_songs(args: &[String]) -> bool {
 fn arm_diag_frames(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--diag-frames") {
         eprintln!("[probe] DIAG: dumping raw inbound frame magics for a setlist read…");
-        return report(tmp_companion_lib::probe_diag_frames());
+        return report(tmp_companion_lib::probe_api::probe_diag_frames());
     }
 
     false
@@ -3089,7 +3120,7 @@ fn arm_diag_frames(args: &[String]) -> bool {
 fn arm_diag_writes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--diag-writes") {
         eprintln!("[probe] DIAG: comparing addSong vs addSetlist device replies…");
-        return report(tmp_companion_lib::probe_diag_writes());
+        return report(tmp_companion_lib::probe_api::probe_diag_writes());
     }
 
     false
@@ -3103,7 +3134,7 @@ fn arm_add_song(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE add-song {name:?}…");
-        return report(tmp_companion_lib::probe_add_song(&name));
+        return report(tmp_companion_lib::probe_api::probe_add_song(&name));
     }
     false
 }
@@ -3116,7 +3147,7 @@ fn arm_add_setlist(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE add-setlist {name:?}…");
-        return report(tmp_companion_lib::probe_add_setlist(&name));
+        return report(tmp_companion_lib::probe_api::probe_add_setlist(&name));
     }
     false
 }
@@ -3130,7 +3161,9 @@ fn arm_add_setlist_song(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE add {song:?} → setlist {setlist:?}…");
-        return report(tmp_companion_lib::probe_add_setlist_song(&setlist, &song));
+        return report(tmp_companion_lib::probe_api::probe_add_setlist_song(
+            &setlist, &song,
+        ));
     }
     false
 }
@@ -3144,7 +3177,7 @@ fn arm_rename_song(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE rename-song {old:?} → {new:?}…");
-        return report(tmp_companion_lib::probe_rename_song(&old, &new));
+        return report(tmp_companion_lib::probe_api::probe_rename_song(&old, &new));
     }
     false
 }
@@ -3158,7 +3191,9 @@ fn arm_rename_setlist(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE rename-setlist {old:?} → {new:?}…");
-        return report(tmp_companion_lib::probe_rename_setlist(&old, &new));
+        return report(tmp_companion_lib::probe_api::probe_rename_setlist(
+            &old, &new,
+        ));
     }
     false
 }
@@ -3172,7 +3207,9 @@ fn arm_song_notes(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE song-notes {name:?} → {notes:?}…");
-        return report(tmp_companion_lib::probe_set_song_notes(&name, &notes));
+        return report(tmp_companion_lib::probe_api::probe_set_song_notes(
+            &name, &notes,
+        ));
     }
     false
 }
@@ -3189,7 +3226,7 @@ fn arm_song_bpm(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE song-bpm {name:?} → {bpm}…");
-        return report(tmp_companion_lib::probe_set_song_bpm(&name, bpm));
+        return report(tmp_companion_lib::probe_api::probe_set_song_bpm(&name, bpm));
     }
     false
 }
@@ -3210,7 +3247,9 @@ fn arm_assign_song_preset(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE assign-song-preset {name:?} row {row} → list idx {idx}…");
-        return report(tmp_companion_lib::probe_assign_song_preset(&name, row, idx));
+        return report(tmp_companion_lib::probe_api::probe_assign_song_preset(
+            &name, row, idx,
+        ));
     }
 
     false
@@ -3224,7 +3263,7 @@ fn arm_remove_song(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE remove-song {name:?}…");
-        return report(tmp_companion_lib::probe_remove_song(&name));
+        return report(tmp_companion_lib::probe_api::probe_remove_song(&name));
     }
     false
 }
@@ -3237,7 +3276,9 @@ fn arm_remove_setlists_named(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE remove-setlists-named {name:?}…");
-        return report(tmp_companion_lib::probe_remove_setlists_named(&name));
+        return report(tmp_companion_lib::probe_api::probe_remove_setlists_named(
+            &name,
+        ));
     }
 
     false
@@ -3251,7 +3292,7 @@ fn arm_remove_setlist(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE remove-setlist {name:?}…");
-        return report(tmp_companion_lib::probe_remove_setlist(&name));
+        return report(tmp_companion_lib::probe_api::probe_remove_setlist(&name));
     }
     false
 }
@@ -3268,7 +3309,9 @@ fn arm_remove_setlist_song(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE remove-setlist-song {setlist:?} position {pos}…");
-        return report(tmp_companion_lib::probe_remove_setlist_song(&setlist, pos));
+        return report(tmp_companion_lib::probe_api::probe_remove_setlist_song(
+            &setlist, pos,
+        ));
     }
     false
 }
@@ -3289,7 +3332,7 @@ fn arm_move_setlist_song(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] WRITE move-setlist-song {setlist:?} {old}→{new}…");
-        return report(tmp_companion_lib::probe_move_setlist_song(
+        return report(tmp_companion_lib::probe_api::probe_move_setlist_song(
             &setlist, old, new,
         ));
     }
@@ -3309,7 +3352,7 @@ fn arm_songpresets(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] reading song {song} preset rows…");
-        return report(tmp_companion_lib::probe_song_presets(song));
+        return report(tmp_companion_lib::probe_api::probe_song_presets(song));
     }
 
     false
@@ -3327,7 +3370,9 @@ fn arm_replace_inplace(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] in-place edit of list idx {idx} from {path}…");
-        return report(tmp_companion_lib::probe_replace_inplace(idx, &path));
+        return report(tmp_companion_lib::probe_api::probe_replace_inplace(
+            idx, &path,
+        ));
     }
 
     false
@@ -3342,7 +3387,7 @@ fn arm_restore(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] restoring snapshot {path} in place…");
-        return report(tmp_companion_lib::probe_restore(&path));
+        return report(tmp_companion_lib::probe_api::probe_restore(&path));
     }
 
     false
@@ -3360,7 +3405,7 @@ fn arm_capture_reference(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] capturing reference clip slot {slot} topology={topology} → {out}…");
-        return report(tmp_companion_lib::probe_capture_reference(
+        return report(tmp_companion_lib::probe_api::probe_capture_reference(
             slot, &topology, &out,
         ));
     }
@@ -3378,7 +3423,9 @@ fn arm_measure_adaptive(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] A/B full vs adaptive capture slot {slot} topology={topology}…");
-        return report(tmp_companion_lib::probe_measure_adaptive(slot, &topology));
+        return report(tmp_companion_lib::probe_api::probe_measure_adaptive(
+            slot, &topology,
+        ));
     }
 
     false
@@ -3414,7 +3461,9 @@ fn arm_doctor(args: &[String]) -> bool {
             "[probe] doctor sweep over {} slot(s), topology={topology}…",
             slots.len()
         );
-        return report(tmp_companion_lib::probe_doctor(&slots, &topology));
+        return report(tmp_companion_lib::probe_api::probe_doctor(
+            &slots, &topology,
+        ));
     }
 
     false
@@ -3450,7 +3499,7 @@ fn arm_doctor_calib(args: &[String]) -> bool {
             "[probe] doctor-calib sweep over {} slot(s), family={family}, stim={stim}…",
             slots.len()
         );
-        return report(tmp_companion_lib::probe_doctor_calib(
+        return report(tmp_companion_lib::probe_api::probe_doctor_calib(
             &slots,
             &stim,
             &family,
@@ -3478,7 +3527,7 @@ fn arm_doctor_derive(args: &[String]) -> bool {
             std::process::exit(2);
         };
         let slots = flag_arg(args, "--slots");
-        return report(tmp_companion_lib::probe_doctor_derive(
+        return report(tmp_companion_lib::probe_api::probe_doctor_derive(
             &report_path,
             &baseline,
             slots.as_deref(),
@@ -3499,7 +3548,7 @@ fn arm_doctor_replay(args: &[String]) -> bool {
             std::process::exit(2);
         };
         let family = flag_arg(args, "--family").unwrap_or_else(|| "guitar".to_string());
-        return report(tmp_companion_lib::probe_doctor_replay(
+        return report(tmp_companion_lib::probe_api::probe_doctor_replay(
             &wavs, &stim, &family,
         ));
     }
@@ -3518,7 +3567,7 @@ fn arm_doctor_loo(args: &[String]) -> bool {
         };
         let kind = flag_arg(args, "--kind").unwrap_or_else(|| "synthetic".to_string());
         let out = flag_arg(args, "--out");
-        match tmp_companion_lib::probe_doctor_loo(&report, &kind, out.as_deref()) {
+        match tmp_companion_lib::probe_api::probe_doctor_loo(&report, &kind, out.as_deref()) {
             Ok(r) => {
                 print!("{r}");
                 return true;
@@ -3546,7 +3595,7 @@ fn arm_benchmark(args: &[String]) -> bool {
             std::process::exit(2);
         };
         let thresholds = flag_arg(args, "--thresholds");
-        match tmp_companion_lib::probe_benchmark(&corpus, thresholds.as_deref(), &out) {
+        match tmp_companion_lib::probe_api::probe_benchmark(&corpus, thresholds.as_deref(), &out) {
             Ok((r, pass)) => {
                 print!("{r}");
                 if !pass {
@@ -3593,7 +3642,7 @@ fn arm_doctor_calib_factory(args: &[String]) -> bool {
             "[probe] doctor-calib-factory sweep over {} factory slot(s), family={family}, stim={stim}…",
             slots.len()
         );
-        return report(tmp_companion_lib::probe_doctor_calib_factory(
+        return report(tmp_companion_lib::probe_api::probe_doctor_calib_factory(
             &slots, &stim, &family, &out,
         ));
     }
@@ -3628,7 +3677,7 @@ fn arm_doctor_window_ab(args: &[String]) -> bool {
             "[probe] doctor-window-ab sweep over {} slot(s), family={family}, stim={stim}…",
             slots.len()
         );
-        return report(tmp_companion_lib::probe_doctor_window_ab(
+        return report(tmp_companion_lib::probe_api::probe_doctor_window_ab(
             &slots,
             &stim,
             &family,
@@ -3649,7 +3698,7 @@ fn arm_capture_wav(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] capturing dry instrument for {secs:.0}s — play continuously NOW…");
-        return report(tmp_companion_lib::probe_capture_wav(&path, secs));
+        return report(tmp_companion_lib::probe_api::probe_capture_wav(&path, secs));
     }
 
     false
@@ -3665,7 +3714,9 @@ fn arm_scale_wav(args: &[String]) -> bool {
             eprintln!("usage: probe --scale-wav <in.wav> <out.wav> <target_lufs>");
             std::process::exit(2);
         };
-        return report(tmp_companion_lib::probe_scale_wav(&src, &dst, target));
+        return report(tmp_companion_lib::probe_api::probe_scale_wav(
+            &src, &dst, target,
+        ));
     }
 
     false
@@ -3710,7 +3761,7 @@ fn arm_stim_ab(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] stimulus A/B on {} preset(s)…", slots.len());
-        return report(tmp_companion_lib::probe_stim_ab(
+        return report(tmp_companion_lib::probe_api::probe_stim_ab(
             &slots, &wav_a, &wav_b, ref_level,
         ));
     }
@@ -3726,7 +3777,9 @@ fn arm_measure_prefix_sweep(args: &[String]) -> bool {
             eprintln!("usage: probe --measure-prefix-sweep <wav>");
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_measure_prefix_sweep(&wav));
+        return report(tmp_companion_lib::probe_api::probe_measure_prefix_sweep(
+            &wav,
+        ));
     }
 
     false
@@ -3754,7 +3807,7 @@ fn arm_measure_converge_replay(args: &[String]) -> bool {
             );
             std::process::exit(2);
         }
-        return report(tmp_companion_lib::probe_measure_converge_replay(
+        return report(tmp_companion_lib::probe_api::probe_measure_converge_replay(
             &wav, eps, k, preroll,
         ));
     }
@@ -3769,7 +3822,7 @@ fn arm_lufs(args: &[String]) -> bool {
             eprintln!("usage: probe --lufs <wav>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::measure_wav_file(&path) {
+        match tmp_companion_lib::probe_api::measure_wav_file(&path) {
             Ok(l) => {
                 println!(
                     "integrated_lufs={:.3} short_term_max_lufs={:.3}",
@@ -3801,7 +3854,7 @@ fn arm_measure_wav(args: &[String]) -> bool {
             eprintln!("usage: probe --measure-wav <wav>");
             std::process::exit(2);
         }
-        match tmp_companion_lib::measure_wav_auto(&path) {
+        match tmp_companion_lib::probe_api::measure_wav_auto(&path) {
             Ok((l, channels)) => {
                 println!(
                     "channels={channels} integrated_lufs={:.3} short_term_max_lufs={:.3} true_peak_dbtp={:.3}",
@@ -3833,7 +3886,7 @@ fn arm_levelpreset(args: &[String]) -> bool {
         eprintln!(
             "[probe] one-shot level slot {slot} → {target} LUFS (save={save}, verify={verify})…"
         );
-        return report_ln(tmp_companion_lib::probe_level_preset(
+        return report_ln(tmp_companion_lib::probe_api::probe_level_preset(
             slot, target, save, verify,
         ));
     }
@@ -3861,7 +3914,7 @@ fn arm_live_lufs(args: &[String]) -> bool {
         eprintln!(
             "[probe] live-lufs level slot {slot} → {target} LUFS (save={save}, verify={verify}); streaming readings…"
         );
-        return report_ln(tmp_companion_lib::probe_live_lufs(
+        return report_ln(tmp_companion_lib::probe_api::probe_live_lufs(
             slot, target, save, verify,
         ));
     }
@@ -3892,7 +3945,7 @@ fn arm_level_preset_scenes(args: &[String]) -> bool {
         eprintln!(
             "[probe] level-preset-scenes list_index={list_index} default={default_target} topology={topology} save={save} overrides={overrides:?}…"
         );
-        return report_ln(tmp_companion_lib::probe_level_preset_scenes(
+        return report_ln(tmp_companion_lib::probe_api::probe_level_preset_scenes(
             list_index,
             default_target,
             topology,
@@ -3925,7 +3978,7 @@ fn arm_bisect_scene(args: &[String]) -> bool {
         }
         let with_asis = args.iter().any(|a| a == "asis");
         let with_save = args.iter().any(|a| a == "save");
-        return report_ln(tmp_companion_lib::probe_bisect_scene(
+        return report_ln(tmp_companion_lib::probe_api::probe_bisect_scene(
             list_index,
             scene_slot,
             group,
@@ -3946,7 +3999,9 @@ fn arm_fs_batch(args: &[String]) -> bool {
         // plan bake/assign per block-acting switch, write ALL on one session, ONE save.
         let list_index = slot_at(args, i + 1);
         let values: Vec<f32> = args[i + 2..].iter().map_while(|s| s.parse().ok()).collect();
-        return report_ln(tmp_companion_lib::probe_fs_batch(list_index, values));
+        return report_ln(tmp_companion_lib::probe_api::probe_fs_batch(
+            list_index, values,
+        ));
     }
 
     false
@@ -3982,7 +4037,7 @@ fn arm_defer_scenes(args: &[String]) -> bool {
             eprintln!("usage: probe --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>");
             std::process::exit(2);
         }
-        return report_ln(tmp_companion_lib::probe_defer_scenes(
+        return report_ln(tmp_companion_lib::probe_api::probe_defer_scenes(
             list_index, group, node, writes,
         ));
     }
@@ -4014,7 +4069,7 @@ fn arm_jointk_scenes(args: &[String]) -> bool {
         eprintln!(
             "[probe] jointk-scenes list_index={list_index} default={default_target} topology={topology} save={save} overrides={overrides:?}…"
         );
-        return report_ln(tmp_companion_lib::probe_jointk_scenes(
+        return report_ln(tmp_companion_lib::probe_api::probe_jointk_scenes(
             list_index,
             default_target,
             topology,
@@ -4046,7 +4101,7 @@ fn arm_redistribute(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] redistribute idx={list_index} target={target} topology={topology} worstDeficit={worst}…");
-        return report_ln(tmp_companion_lib::probe_redistribute(
+        return report_ln(tmp_companion_lib::probe_api::probe_redistribute(
             list_index, target, topology, worst,
         ));
     }
@@ -4069,7 +4124,7 @@ fn arm_scene_knob_authority(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] scene-knob-authority list_index={list_index} scene={scene_slot} topology={topology}…");
-        return report_ln(tmp_companion_lib::probe_scene_knob_authority(
+        return report_ln(tmp_companion_lib::probe_api::probe_scene_knob_authority(
             list_index, scene_slot, topology,
         ));
     }
@@ -4095,7 +4150,7 @@ fn arm_mute_floor(args: &[String]) -> bool {
         eprintln!(
             "[probe] mute-floor list_index={list_index} scene={scene_slot} topology={topology}…"
         );
-        return report_ln(tmp_companion_lib::probe_mute_floor(
+        return report_ln(tmp_companion_lib::probe_api::probe_mute_floor(
             list_index, scene_slot, topology,
         ));
     }
@@ -4115,7 +4170,7 @@ fn arm_measure_scene_levels(args: &[String]) -> bool {
         eprintln!(
             "[probe] measuring saved scene levels list_index={list_index} topology={topology}…"
         );
-        return report_ln(tmp_companion_lib::probe_measure_scene_levels(
+        return report_ln(tmp_companion_lib::probe_api::probe_measure_scene_levels(
             list_index, topology,
         ));
     }
@@ -4128,7 +4183,9 @@ fn arm_scene_amp_diag(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--scene-amp-diag") {
         let list_index = slot_at(args, i + 1);
         eprintln!("[probe] scene amp diagnostic for list_index={list_index}…");
-        return report_ln(tmp_companion_lib::probe_scene_amp_diag(list_index));
+        return report_ln(tmp_companion_lib::probe_api::probe_scene_amp_diag(
+            list_index,
+        ));
     }
 
     false
@@ -4144,7 +4201,9 @@ fn arm_bulk_dryrun(args: &[String]) -> bool {
             std::process::exit(2);
         }
         eprintln!("[probe] bulk dry-run over {folder}…");
-        return report_ln(tmp_companion_lib::probe_bulk_dryrun(&folder, &opspec));
+        return report_ln(tmp_companion_lib::probe_api::probe_bulk_dryrun(
+            &folder, &opspec,
+        ));
     }
 
     false
@@ -4165,7 +4224,7 @@ fn arm_bulk_apply(args: &[String]) -> bool {
             .map(|j| slots_at(args, j + 1));
         let revert = args.iter().any(|a| a == "revert");
         eprintln!("[probe] bulk apply over {folder} (slots={slots:?}, revert={revert})…");
-        return report_ln(tmp_companion_lib::probe_bulk_apply(
+        return report_ln(tmp_companion_lib::probe_api::probe_bulk_apply(
             &folder, &opspec, slots, revert,
         ));
     }

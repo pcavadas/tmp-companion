@@ -115,7 +115,7 @@ pub(crate) fn tail_ms_for_doc(doc: &serde_json::Value) -> u32 {
 /// a graph shaped `[...guitar, ...mic]` (any gtrMicMix/Parallel/Series
 /// template) would otherwise let a plain `.nodes.last()` pick a mic node.
 pub(crate) fn last_guitar_group_anchor(slot: ListIndex) -> Result<(String, String, u32), String> {
-    let (preset, _, _) = crate::read_slot_preset_parsed(slot)?;
+    let (preset, _, _) = crate::slot_read::read_slot_preset_parsed(slot)?;
     let graph = crate::session::extract_active_graph(&preset, None);
     let doctor_nodes: Vec<doctor::DoctorNode> = graph
         .nodes

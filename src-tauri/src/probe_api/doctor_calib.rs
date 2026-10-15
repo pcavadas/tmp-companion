@@ -27,9 +27,9 @@ use crate::doctor;
 use crate::footswitch;
 use crate::leveller;
 use crate::lufs;
-use crate::read_slot_preset_parsed;
 use crate::session;
 use crate::slot::ListIndex;
+use crate::slot_read::read_slot_preset_parsed;
 
 use crate::stimulus::read_stimulus_48k;
 

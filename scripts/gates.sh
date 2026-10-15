@@ -117,7 +117,7 @@ compute_key() {
   # atomically (nothing is removed) — e.g. a tree with no docs/ dir at all would
   # silently leave prose IN the key, quietly undoing the exclusion above.
   GIT_INDEX_FILE="$tmp_index" git rm -r --cached -q --ignore-unmatch -- '*.md' docs/ >/dev/null 2>&1 || true
-  # COVERAGE.md IS CODE, not prose: `fixture_gates` (src-tauri/src/lib.rs) parses it at
+  # COVERAGE.md IS CODE, not prose: `fixture_gates` (src-tauri/src/fixture_gates.rs) parses it at
   # TEST TIME to cross-check e2e spec coverage, so an edit to it must still re-key the
   # stamps like any other code change — re-add it after the blanket *.md exclusion above.
   GIT_INDEX_FILE="$tmp_index" git add -- e2e/fixtures/COVERAGE.md 2>/dev/null || true
@@ -127,7 +127,7 @@ compute_key() {
 }
 
 # Canonical online spec set — the SINGLE SOURCE OF TRUTH for the full online
-# tier, kept on ONE greppable line so a Rust gate (src-tauri/src/lib.rs) can
+# tier, kept on ONE greppable line so a Rust gate (src-tauri/src/fixture_gates.rs) can
 # parse it verbatim and assert it against scripts/e2e.sh's own hand-maintained
 # default-spec literal (the two are separate mirrors on purpose — see that
 # gate's doc comment — this line is what it diffs against). Consumed here by

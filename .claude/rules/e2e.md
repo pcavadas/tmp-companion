@@ -124,7 +124,7 @@ Online and soak runs archive into dated run folders under the git common dir, an
 ## Fixtures
 
 - The offline `backup-fixture.bin` and `scenario-presets.json` **must stay in sync** — regenerate both from one script.
-- **Fixture drift-lock trap:** a drift-lock or round-trip test that compares fixtures **through a typed struct** silently covers only the fields that struct carries. `info.product_id` and `info.preset_id` drifted while the lock test stayed green. Assert fixture invariants against the **RAW JSON** (`lib.rs`'s `fixture_gates`, deliberately OUTSIDE `#[cfg(feature = "e2e")]` — a gate that only compiles in a build nobody makes is not a gate). It pins `product_id == "tmStomp"` (a `"pro"` preset is rejected on the unit as "created using a newer firmware revision") and a unique `preset_id` per fixture preset.
+- **Fixture drift-lock trap:** a drift-lock or round-trip test that compares fixtures **through a typed struct** silently covers only the fields that struct carries. `info.product_id` and `info.preset_id` drifted while the lock test stayed green. Assert fixture invariants against the **RAW JSON** (`fixture_gates.rs`, deliberately OUTSIDE `#[cfg(feature = "e2e")]` — a gate that only compiles in a build nobody makes is not a gate). It pins `product_id == "tmStomp"` (a `"pro"` preset is rejected on the unit as "created using a newer firmware revision") and a unique `preset_id` per fixture preset.
 - The preset XOR key is committed as `const PRESET_XOR_KEY: [u8;3] = *b"JLD"` in `backup.rs`. The runtime `derive_key`/`learn_key`/panic recovery was deleted — **do NOT reintroduce it**.
 
 ## Ports

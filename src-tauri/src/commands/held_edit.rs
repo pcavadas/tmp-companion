@@ -1,11 +1,14 @@
 //! Held-session single/many replace helpers shared by the block-edit writers.
 use crate::{
-    blockcaps_advance, blockcaps_check, blockcaps_pre_edit_roster, blockcaps_replaced,
-    confirm_plan_identity, error_item, proto, repl_arg_fender_id, BulkReplaceItem, ItemOutcome,
-    ReplArg, ReplacePlan, Session,
+    commands::bulk_replace::blockcaps_advance, commands::bulk_replace::blockcaps_check,
+    commands::bulk_replace::blockcaps_pre_edit_roster, commands::bulk_replace::blockcaps_replaced,
+    commands::bulk_replace::confirm_plan_identity, commands::bulk_replace::error_item,
+    commands::bulk_replace::repl_arg_fender_id, commands::bulk_replace::BulkReplaceItem,
+    commands::bulk_replace::ItemOutcome, commands::bulk_replace::ReplArg,
+    commands::bulk_replace::ReplacePlan, proto, Session,
 };
 #[cfg(test)]
-use crate::{plan_identity_verdict, ListIndex};
+use crate::{commands::bulk_replace::plan_identity_verdict, ListIndex};
 
 /// Edit ONE preset on a HELD session (the validated fast path, E1): load it, re-arm so
 /// the session re-attaches to it, confirm attachment, replace every pre-discovered

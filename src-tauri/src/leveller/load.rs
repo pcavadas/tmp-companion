@@ -22,7 +22,7 @@ pub(crate) fn restore_saved_preset(slot: ListIndex) -> Result<(), String> {
     // the edit buffer dirty at the measurement level — the whole point of the restore.
     let mut s = Session::connect_lean()?;
     let via = reload_stored_on(&mut s, slot)?;
-    crate::settle(Duration::from_millis(settle_after_load_ms()));
+    crate::device_gate::settle(Duration::from_millis(settle_after_load_ms()));
     // The handshake's own field-3 reply (the DIRTY working copy this restore discards) is
     // still queued behind its ~1.2 s drain, and the next session would read it first.
     s.lapse()?;
@@ -33,7 +33,7 @@ pub(crate) fn restore_saved_preset(slot: ListIndex) -> Result<(), String> {
 /// [`restore_saved_preset`]'s loads on `s`: a neighbour slot, then the target. Returns the
 /// neighbour, which stays inside the e2e scratch zone when the target is in it.
 pub(super) fn reload_stored_on(s: &mut Session, slot: ListIndex) -> Result<ListIndex, String> {
-    let other = if slot == crate::probe_api::SCRATCH_SLOTS[0] {
+    let other = if slot == crate::slot::SCRATCH_SLOTS[0] {
         ListIndex(slot.get() + 1)
     } else {
         ListIndex(slot.get().checked_sub(1).unwrap_or(1))
@@ -90,7 +90,9 @@ pub(crate) fn load_preset_isolated(slot: ListIndex, mode: CancelMode) -> Result<
     s.load_preset(slot)?;
     match mode {
         CancelMode::Abortable => settle_or_cancel(settle_after_load_ms())?,
-        CancelMode::Cleanup => crate::settle(Duration::from_millis(settle_after_load_ms())),
+        CancelMode::Cleanup => {
+            crate::device_gate::settle(Duration::from_millis(settle_after_load_ms()))
+        }
     }
     s.lapse()?;
     drop(s);

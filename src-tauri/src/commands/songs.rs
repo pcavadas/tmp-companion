@@ -1,8 +1,7 @@
 //! Song CRUD + song-assignment device-write Tauri commands.
-use crate::{
-    bpm_landed, find_song_slot, read_setlist_songs, read_song_list, session, set_song_bpm_on,
-    with_released_seize, AppState, ListIndex, Session, State,
-};
+use crate::setlist_io::read_setlist_songs;
+use crate::song_io::{bpm_landed, find_song_slot, read_song_list, set_song_bpm_on};
+use crate::{device_gate::with_released_seize, session, AppState, ListIndex, Session, State};
 
 /// Read every Song's metadata (name / notes / BPM) for the Songs overview — the
 /// net-new live `songListResponse` read (rides the handshake burst).

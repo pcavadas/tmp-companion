@@ -191,6 +191,29 @@ pub(crate) fn ds(n: u32) -> DeviceSlot {
     DeviceSlot::try_from(n).expect("test device slots are 1-based")
 }
 
+/// List indices the e2e scenario fixtures own and the only slots a destructive
+/// or working-copy-writing probe experiment may target. Shared by every guard
+/// that gates a probe write — a single declaration so widening or shifting the
+/// scratch zone is one edit, not four. 406-409 are the P3 leveling-doctor-fixtures
+/// additions (combined leveling / doctor oracle / two minimal-incident-repro slots).
+/// 410 is the P4 Friedman-HBE-class 3-scene addition (leveling regression coverage).
+pub(crate) const SCRATCH_SLOTS: [ListIndex; 11] = {
+    use ListIndex as L;
+    [
+        L(400),
+        L(401),
+        L(402),
+        L(403),
+        L(404),
+        L(405),
+        L(406),
+        L(407),
+        L(408),
+        L(409),
+        L(410),
+    ]
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -412,7 +412,7 @@ fn the_footswitch_batch_solves_its_row_on_a_private_rig() {
 /// The working copy's chain as `group/node/model`, read the way the UI's "now playing" strip
 /// and the Doctor's live-node check read it.
 fn live_chain() -> Vec<String> {
-    let (graph, _) = crate::discover_active_graph().expect("discover_active_graph");
+    let (graph, _) = crate::discovery::discover_active_graph().expect("discover_active_graph");
     graph
         .nodes
         .iter()

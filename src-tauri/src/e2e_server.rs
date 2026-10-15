@@ -18,9 +18,10 @@
 
 #[cfg(feature = "e2e")]
 use crate::{
-    footswitch, leveller, monitor, probe_api, read_backup_archive, read_saved_preset,
-    read_stimulus_calibrated, resolve_stimulus, session, with_released_seize, AppState, ListIndex,
-    SeqCst, Session, State, MONITOR_ENABLED,
+    backup_read::read_backup_archive, commands::level_preset::resolve_stimulus,
+    device_gate::with_released_seize, footswitch, leveller, monitor, scene_jobs::read_saved_preset,
+    session, stimulus::read_stimulus_calibrated, AppState, ListIndex, SeqCst, Session, State,
+    MONITOR_ENABLED,
 };
 
 /// Strict parse of `TMP_E2E_ONLINE`: only the exact value `1` is online (#193).
@@ -686,7 +687,7 @@ fn e2e_patch_snapshot_slot(slot: ListIndex, name: &str) -> bool {
 /// ONLINE-e2e DETERMINISTIC scratch setup: sweep stray imports, then place EVERY
 /// committed scenario preset (`e2e/fixtures/scenario-presets.json` — the SAME
 /// presetJsons baked into the offline backup fixture) at its list index
-/// (400-409; the spec drives the slot set, nothing here hardcodes it). The heavy lifting lives in `probe_api::seed_scenario` — shared with
+/// (400-410; the spec drives the slot set, nothing here hardcodes it). The heavy lifting lives in `e2e_seed` — shared with
 /// `probe --seed-scenario`, which the RUNNER prefers (a fresh process per seed, run
 /// before the server starts, so the server's handshake snapshots the seeded presets).
 /// This command is the fallback for specs run without the runner, and the offline no-op
@@ -703,7 +704,7 @@ async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         // Pristine self-repair is ONLINE-only (see `seed_scenario_core`): offline the
         // suite's own leveling drifts the sim's slots by design.
-        let o = probe_api::seed_scenario::seed_scenario_core(e2e_online())?;
+        let o = crate::e2e_seed::seed_scenario_core(e2e_online())?;
         e2e_patch_swept(&o.swept);
         e2e_mark_seeded_snapshot()?;
         SCENARIO_VERIFIED.store(true, Ordering::SeqCst);
@@ -727,7 +728,7 @@ fn e2e_patch_swept(swept: &[ListIndex]) {
 #[cfg(feature = "e2e")]
 fn e2e_mark_seeded_snapshot() -> Result<(), String> {
     let mut missing = Vec::new();
-    for p in probe_api::seed_scenario::scenario_spec()? {
+    for p in crate::e2e_seed::scenario_spec()? {
         if !e2e_patch_snapshot_slot(p.list_index, &p.name) {
             missing.push(p.list_index);
         }
@@ -759,7 +760,7 @@ async fn e2e_mark_seeded() -> Result<(), String> {
 #[tauri::command]
 async fn e2e_clear_strays(state: State<'_, AppState>) -> Result<usize, String> {
     with_released_seize(state.session.clone(), move || {
-        let swept = probe_api::seed_scenario::sweep_strays_core()?;
+        let swept = crate::e2e_seed::sweep_strays_core()?;
         e2e_patch_swept(&swept);
         Ok(swept.len())
     })
@@ -800,7 +801,7 @@ async fn e2e_clear_preset(
             // its injected markers (the device rewrites the body on save), and a
             // marker-only check would refuse to clean up the harness's OWN preset —
             // stranding it and blocking the next run's seed.
-            if !probe_api::seed_scenario::slot_is_ours(&mut s, slot, &expect_name) {
+            if !crate::e2e_seed::slot_is_ours(&mut s, slot, &expect_name) {
                 return Err(format!(
                     "refusing to clear slot {slot}: '{expect_name}' matches by name but this \
                      harness has no record of seeding it — not seed-owned"
@@ -824,14 +825,14 @@ async fn e2e_clear_preset(
         // settles 800ms after its own clear). And an ABSENT entry — a truncated list, or
         // a failed read — is UNKNOWN, not empty: only a POSITIVELY observed empty name
         // releases the claim, so a degraded read keeps it instead of stranding the slot.
-        crate::settle(std::time::Duration::from_millis(800));
+        crate::device_gate::settle(std::time::Duration::from_millis(800));
         let now_empty = s
             .list_my_presets()
             .ok()
             .and_then(|list| list.get(slot.as_usize()).map(|e| e.name.clone()))
             .is_some_and(|name| session::is_empty_slot_name(&name));
         if now_empty {
-            probe_api::seed_scenario::forget_seeded(slot);
+            crate::e2e_seed::forget_seeded(slot);
             e2e_patch_snapshot_slot(slot, "Empty");
         } else {
             log::warn!(

@@ -8,7 +8,7 @@
 # Gated roots: src-tauri/src, src-tauri/resources/samples, e2e/specs, e2e/fixtures. A file
 # under a gated root that matches no row is UNCLASSIFIED: `gates.sh --required-online`
 # requires every canonical online spec for it (fail closed), and the Rust gate
-# `every_gated_file_matches_a_gate_map_row` (lib.rs) fails naming it. A file elsewhere that
+# `every_gated_file_matches_a_gate_map_row` (fixture_gates.rs) fails naming it. A file elsewhere that
 # matches no row is class none. A row that matches no file yet is legal.
 
 # ── offline-oracle: unit tests and offline-only fixtures (before every catch-all) ──
@@ -16,6 +16,7 @@ src-tauri/src/*_tests.rs	offline-oracle
 src-tauri/src/sim_device.rs	offline-oracle
 src-tauri/src/sim_device/*	offline-oracle
 src-tauri/src/test_support.rs	offline-oracle
+src-tauri/src/fixture_gates.rs	offline-oracle
 src-tauri/src/doctor_audio_oracle.rs	offline-oracle
 src-tauri/src/fixtures/*	offline-oracle
 e2e/fixtures/scenario-loudness.json	offline-oracle
@@ -76,6 +77,7 @@ src-tauri/src/commands/presets.rs	scan
 # read_song_list feeds the scan (backup_read.rs, commands/presets.rs) and read_song_presets
 # the seed's import path (replace_inplace.rs), so this is wider than the songs class.
 src-tauri/src/probe_api/songs.rs	scan
+src-tauri/src/song_io.rs	scan
 # Its strict song-list harvests serve that same read_song_list, so it is scan too.
 src-tauri/src/session/songs.rs	scan
 
@@ -87,6 +89,7 @@ src-tauri/src/session/reamp.rs	write
 src-tauri/src/preset_io.rs	write
 src-tauri/src/blockcaps.rs	write
 src-tauri/src/probe_api/slot_write.rs	write
+src-tauri/src/discovery.rs	write
 src-tauri/src/probe_api/mod.rs	write
 
 # ── lane: the online lane's own runner, oracle, lock and seed ──
@@ -109,6 +112,7 @@ src-tauri/src/e2e_ui_bridge.rs	lane
 src-tauri/src/validate_log.rs	lane
 src-tauri/src/bin/e2e_server.rs	lane
 src-tauri/src/probe_api/seed_scenario.rs	lane
+src-tauri/src/e2e_seed.rs	lane
 
 # ── probe-entry: online runs only its --seed-scenario arm ──
 src-tauri/src/bin/probe.rs	probe-entry
@@ -166,6 +170,7 @@ e2e/specs/copy.spec.ts	copy
 src-tauri/src/commands/songs.rs	songs
 src-tauri/src/commands/setlists.rs	songs
 src-tauri/src/probe_api/setlists.rs	songs
+src-tauri/src/setlist_io.rs	songs
 e2e/specs/songs.spec.ts	songs
 
 # ── unexercised: device-facing, but no online spec reaches it ──

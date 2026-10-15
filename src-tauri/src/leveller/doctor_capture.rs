@@ -529,7 +529,8 @@ mod onset_gate {
             "{}/resources/samples/guitar-humbucker.wav",
             env!("CARGO_MANIFEST_DIR")
         );
-        let stim = doctor_stim_slice(crate::read_stimulus_calibrated(&path, None).unwrap());
+        let stim =
+            doctor_stim_slice(crate::stimulus::read_stimulus_calibrated(&path, None).unwrap());
         let cap = wire(&stim, SR as usize * 32 / 1000, SR as usize * 3 / 10);
         let sig = DoctorSignal {
             channels: vec![cap.clone(), cap.clone()],
