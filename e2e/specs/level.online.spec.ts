@@ -530,6 +530,7 @@ when the stored value already measured within tolerance of target`,
   });
 });
 
+// COVERAGE row 36 (online half: 405's base BOOST, then its footswitch rows after the save)
 // ── T5: Plumes-shape (405) first-run journey — the BOOST case paired with T1′'s TRADE
 // control above, run back-to-back in the same online session (see-saw surfaces in one run) ──
 test.describe("Level online — Plumes-shape first-run journey (405)", () => {
