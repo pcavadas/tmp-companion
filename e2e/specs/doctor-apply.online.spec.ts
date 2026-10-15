@@ -21,8 +21,8 @@ import {
 // Every step is checked against the DEVICE, never against the command's own return:
 // - the A/B clips decode as WAV, carry real audio and differ;
 // - apply mutates the live working copy (`read_active_preset`, the field-3 graph);
-// - save is read back from the STORED row (`read_library_via_backup`, the device's own
-//   preset DB): the EQ is there with the cut, and nothing else in the chain moved;
+// - save is read back from the STORED row (`e2e_read_stored_preset`, the device's saved
+//   row for that one slot): the EQ is there with the cut, and nothing else in the chain moved;
 // - discard puts the working copy back to the pre-apply stored chain, and the stored row
 //   never changed.
 // A no-op save or a no-op discard therefore fails here.
@@ -32,8 +32,9 @@ import {
 // the run pays a re-verify. Doctor-persistence code (`commands/doctor.rs`) requires it
 // through scripts/gate-map.tsv's `doctor-persist` class.
 //
-// Device time: 3 backup reads (~20 s each), 3 live graph reads and 2 applies (each one
-// before + one after capture), about 3 min.
+// Device time: 3 one-slot stored reads, 3 live graph reads and 2 applies (each one before
+// + one after capture). No page load and no whole-library backup: every call is a raw
+// invoke, and a full backup streams at ~27 KiB/s (85 s for a 2.2 MiB bank).
 
 /** The fields of `session::GraphNode` this spec reads (snake_case on the wire). */
 interface GraphNode {
@@ -44,10 +45,9 @@ interface GraphNode {
   params: Record<string, number>;
 }
 
-/** The fields of `backup_read::BackupPresetRow` this spec reads. `slot` is the 1-based
- *  device slot (list index + 1). */
-interface BackupRow {
-  slot: number;
+/** One stored preset row (`e2e_read_stored_preset`): the same `graph` and `footswitches`
+ *  derivations as `backup_read::BackupPresetRow`. */
+interface StoredRow {
   name: string;
   graph: { nodes: GraphNode[] };
   footswitches: unknown[];
@@ -64,21 +64,22 @@ const OPS = [
     params: [["gain250hz", CUT_DB]],
   },
 ];
-// Backup reads and captures run far past Playwright's 30 s request default.
+// Stored reads and captures run far past Playwright's 30 s request default.
 const T = 180_000;
 
-/** Every stored preset, from the device's own preset DB (read-only). */
-async function storedRows(page: Page): Promise<BackupRow[]> {
-  const r = (await invoke(page, "read_library_via_backup", {}, T)) as {
-    presets: BackupRow[];
-  };
-  return r.presets;
-}
-
-/** The stored row of list index `slot`, by its device slot AND its name. */
-function rowOf(rows: BackupRow[], slot: number, name: string): BackupRow {
-  const row = rows.find((r) => r.slot === slot + 1);
-  if (!row) throw new Error(`no stored row for list index ${String(slot)}`);
+/** The stored row of list index `slot`, read from the device (read-only), checked to be
+ *  `name`'s. */
+async function storedRow(
+  page: Page,
+  slot: number,
+  name: string,
+): Promise<StoredRow> {
+  const row = (await invoke(
+    page,
+    "e2e_read_stored_preset",
+    { slot },
+    T,
+  )) as StoredRow;
   expect(row.name, `stored row ${String(slot + 1)} is ${name}`).toBe(name);
   return row;
 }
@@ -189,20 +190,20 @@ test.describe("Doctor apply/save/discard — one-off HW validation", () => {
     test.skip(!(await isOnline(page)), "online-only one-off HW validation");
     test.setTimeout(600_000);
     await ensureScenario(page);
-    await page.goto("/");
 
     const t1 = SCENARIO[1]; // E2E Pedalboard — apply, then save
     const t2 = SCENARIO[2]; // E2E Edge — apply, then discard
-    const before = await storedRows(page);
-    const saved1 = rowOf(before, t1.slot, t1.name).graph.nodes;
-    const saved2 = rowOf(before, t2.slot, t2.name).graph.nodes;
+    const before1 = await storedRow(page, t1.slot, t1.name);
+    const before2 = await storedRow(page, t2.slot, t2.name);
+    const saved1 = before1.graph.nodes;
+    const saved2 = before2.graph.nodes;
     // The premise both checks below rest on: neither stored chain has the EQ yet, so a
     // save that wrote nothing, or a discard that kept the edit, cannot pass.
     expect(eqs(saved1), `${t1.name} starts without ${EQ}`).toHaveLength(0);
     expect(eqs(saved2), `${t2.name} starts without ${EQ}`).toHaveLength(0);
 
     // The job the Doctor UI would build: the preset's own stored chain and footswitches.
-    const job = (slot: number, name: string, row: BackupRow) => ({
+    const job = (slot: number, name: string, row: StoredRow) => ({
       listIndex: slot,
       name,
       ops: OPS,
@@ -228,7 +229,7 @@ test.describe("Doctor apply/save/discard — one-off HW validation", () => {
     const applied = (await invoke(
       page,
       "doctor_apply",
-      { job: job(t1.slot, t1.name, rowOf(before, t1.slot, t1.name)) },
+      { job: job(t1.slot, t1.name, before1) },
       T,
     )) as { beforeClip: string; afterClip: string };
     const a = decodeClip("before clip", applied.beforeClip);
@@ -247,8 +248,7 @@ test.describe("Doctor apply/save/discard — one-off HW validation", () => {
       { listIndex: t1.slot, expectName: t1.name, scene: null, ops: OPS },
       T,
     );
-    const afterSave = rowOf(await storedRows(page), t1.slot, t1.name).graph
-      .nodes;
+    const afterSave = (await storedRow(page, t1.slot, t1.name)).graph.nodes;
     expectEqApplied(afterSave, "after save (stored row)");
     expect(
       ids(afterSave.filter((n) => n.model !== EQ)),
@@ -281,7 +281,7 @@ test.describe("Doctor apply/save/discard — one-off HW validation", () => {
     await invoke(
       page,
       "doctor_apply",
-      { job: job(t2.slot, t2.name, rowOf(before, t2.slot, t2.name)) },
+      { job: job(t2.slot, t2.name, before2) },
       T,
     );
     expectEqApplied(
@@ -294,7 +294,7 @@ test.describe("Doctor apply/save/discard — one-off HW validation", () => {
       "discard restores the pre-apply chain in the working copy",
     ).toEqual(ids(saved2));
     expect(
-      ids(rowOf(await storedRows(page), t2.slot, t2.name).graph.nodes),
+      ids((await storedRow(page, t2.slot, t2.name)).graph.nodes),
       "apply + discard never touched the stored row",
     ).toEqual(ids(saved2));
   });

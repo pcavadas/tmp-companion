@@ -48,7 +48,7 @@ specs prove the bridge, the command layer and, now, the rendered rows.
   - `E2E Edge` (402) — the split-output 8-scene fixture; also carries the Doctor's baked 2.6 kHz EQ-ring oracle.
   - `E2E Parallel` (403) — the both-lane-amps joint-k fixture.
   - `E2E Hiwatt 3S` (404) — a **verbatim device export** backing the wipe/bake/measurement-context gates (its exact byte length is pinned — do not edit it).
-  - `E2E Preset24` (405) — the preset-24 saturated-pedal footswitch fixture (`level-fs-preset24.spec.ts`).
+  - `E2E Preset24` (405) — the preset-24 saturated-pedal footswitch fixture (`e2e_server_tests.rs::the_footswitch_rows_still_converge_after_a_base_boost`, and `level.online.spec.ts`'s T5 online).
   - `E2E Combined Level` (406) — the new-flow leveling fixture (FS-alone / scene-alone "BASE SCENE" / scene-that-enables-an-FS, parallel both-amps-active, a post-cab compressor).
   - `E2E Doctor Oracle` (407) — 13 param-shaped footswitches, one per Doctor spectral check, its defect blocks enabled-neutral in base.
   - `E2E Preset24 Min` (408) / `E2E Hiwatt Min` (409) — the smallest presets still reproducing each incident's own bug class.

@@ -81,10 +81,16 @@ for f in src-tauri/src/doctor.rs src-tauri/src/scene_jobs.rs; do
 done
 # Doctor persistence (apply/save/discard, and the restore they share) also needs the one
 # spec that reads a save and a discard back from the device.
-for f in src-tauri/src/commands/doctor.rs src-tauri/src/leveller/mod.rs src-tauri/src/leveller/scene.rs e2e/specs/doctor-apply.online.spec.ts; do
+for f in src-tauri/src/commands/doctor.rs src-tauri/src/leveller/mod.rs src-tauri/src/leveller/scene.rs; do
   diff_of "$f"
   check "$f → doctor.online level.online doctor-apply.online" \
     "doctor.online level.online doctor-apply.online" "$(required)"
+done
+# An online spec file's own edit requires that spec alone.
+for pair in doctor.online:e2e/specs/doctor.online.spec.ts level.online:e2e/specs/level.online.spec.ts \
+  doctor-apply.online:e2e/specs/doctor-apply.online.spec.ts; do
+  diff_of "${pair#*:}"
+  check "${pair#*:} → ${pair%%:*}" "${pair%%:*}" "$(required)"
 done
 for f in src-tauri/src/session/mod.rs src-tauri/src/session/link.rs src-tauri/src/session/timing.rs \
   src-tauri/src/session/preset.rs src-tauri/src/session/songs.rs src-tauri/src/blockcaps.rs src-tauri/src/hid/write_completion.rs \

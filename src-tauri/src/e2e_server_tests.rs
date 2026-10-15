@@ -3229,6 +3229,11 @@ fn base_isolation_on_a_base_engaged_pedal_costs_the_measured_lu_delta() {
 /// folds in the ambient `preset_term`, `sim_device.rs::model_lufs`), so a footswitch row
 /// solved against the OLD presetLevel would be badly wrong against the new one. This is the
 /// "the fix must not just move the problem downstream" gate for Plumes' own 4-pedal FS lane.
+///
+/// It also carries what the retired `level-fs-preset24.spec.ts` alone proved (the 2026-08-02
+/// stale-load incident, COVERAGE row 36): every row converges and saves, the Twin's boosted
+/// fader SURVIVES the footswitch batch's own load → save, and base and every pedal
+/// RE-MEASURE at target from the saved state, not merely as the run reported them.
 #[test]
 fn the_footswitch_rows_still_converge_after_a_base_boost() {
     let _serial = serial();
@@ -3247,7 +3252,10 @@ fn the_footswitch_rows_still_converge_after_a_base_boost() {
     // ── All 4 footswitch rows, at the plan's own targets ──
     let app = tauri::test::mock_builder()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![level_footswitches_apply])
+        .invoke_handler(tauri::generate_handler![
+            level_footswitches_apply,
+            super::e2e_measure_sound
+        ])
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("app");
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
@@ -3294,10 +3302,67 @@ fn the_footswitch_rows_still_converge_after_a_base_boost() {
             row["clamped"], false,
             "switch {switch} must converge after the base boost: {row}"
         );
+        assert_eq!(
+            row["unconverged"], false,
+            "switch {switch} must converge, not stop short (the incident's signature): {row}"
+        );
+        assert!(
+            row["clamp_reason"].is_null(),
+            "switch {switch} must have signal: {row}"
+        );
+        assert_eq!(
+            row["saved"], true,
+            "switch {switch} must level and save: {row}"
+        );
         let predicted = row["predicted_lufs"].as_f64().expect("predicted_lufs");
         assert!(
             (predicted - target).abs() <= crate::leveller::ACCEPT_TOL_LU,
             "switch {switch} must land within ACCEPT_TOL_LU of {target}: {row}"
+        );
+    }
+
+    // ── Both halves of the boosted pair survived the footswitch batch's own save ──
+    let (pl, fader) = saved_pl_and_output_level(PLUMES, PLUMES_TWIN);
+    assert!(
+        (pl - 1.0).abs() < 1e-3,
+        "presetLevel stays at its ceiling: {pl}"
+    );
+    assert!(
+        (fader - 0.498).abs() < 0.01,
+        "the Twin's boosted fader survived the footswitch save at ~0.498: {fader}"
+    );
+
+    // ── The SAVED preset sounds at target: base and every pedal, re-measured ──
+    let measure = |footswitch: Option<u32>, lev: serde_json::Value| -> f64 {
+        invoke(
+            &webview,
+            "e2e_measure_sound",
+            serde_json::json!({
+                "slot": PLUMES,
+                "scene": null,
+                "footswitch": footswitch,
+                "topologyId": "guitar-humbucker",
+                "lev": lev,
+                "validate": null,
+            }),
+        )
+        .unwrap_or_else(|e| panic!("e2e_measure_sound switch {footswitch:?}: {e:?}"))
+        .as_f64()
+        .expect("a loudness")
+    };
+    let heard_base = measure(None, serde_json::Value::Null);
+    assert!(
+        (heard_base - -23.0).abs() <= crate::leveller::ACCEPT_TOL_LU,
+        "base re-measures at -23 from the saved state: {heard_base}"
+    );
+    for (switch, node, param, target) in rows {
+        let heard = measure(
+            Some(switch),
+            serde_json::json!({"groupId": "G1", "nodeId": node, "parameterId": param}),
+        );
+        assert!(
+            (heard - target).abs() <= crate::leveller::ACCEPT_TOL_LU,
+            "switch {switch} re-measures at {target} from the saved state: {heard}"
         );
     }
 }

@@ -2631,7 +2631,7 @@ pub fn live_events() -> Vec<SimEvent> {
 //  • STALE (superseded): earlier revisions of this comment called offline footswitch leveling
 //    "unmodeled (out of PR3 scope)" and listed it under "online-only classes" below.
 //    `SlotLoudness::leveled_params` (a drive pedal's own knob → `saturated_pedal_lufs`, module
-//    header) now models it — see `e2e/specs/level-fs-preset24.spec.ts` for full offline
+//    header) now models it — see `e2e_server_tests.rs::the_footswitch_rows_still_converge_after_a_base_boost` for full offline
 //    footswitch-leveling coverage, including a save→load round trip of the baked value
 //    (`SimState::param_writes` reseeded from the `SavedDoc` on load).
 //  • The ASSIGN-path footswitch WIRE flow is modeled too (module header): `handle` applies

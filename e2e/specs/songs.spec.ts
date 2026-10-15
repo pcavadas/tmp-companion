@@ -57,7 +57,11 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     await clearScenario(page); // leaves the unit on preset 001
   });
 
-  test("create / rename / delete a song and create / delete a setlist", async ({
+  // #295 rides along: tabs unmount on switch, and the Songs tab repaints from the startup
+  // library scan. A setlist renamed here must come back under its NEW name after a tab
+  // round-trip — a stale old name sits on a slot that every later setlist write would then
+  // address. (It was its own test, which paid a second page load and library scan.)
+  test("create / rename / delete a song; create / rename / delete a setlist that keeps its new name across a tab switch", async ({
     page,
   }) => {
     await page.goto("/");
@@ -106,57 +110,8 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
       timeout: 30_000,
     });
 
-    // DELETE setlist (open it → options → Delete setlist → confirm) — cleanup.
-    await page.getByText(SETLIST, { exact: true }).click();
-    // Selecting reads the setlist's membership ("reading this setlist…" = busy, which
-    // disables the options button) — wait for it to settle before opening the menu.
-    await expect(page.getByText(/reading this setlist/i)).toHaveCount(0, {
-      timeout: 30_000,
-    });
-    await page.getByTitle("Setlist options").click();
-    await page.getByText(/Delete setlist/).click();
-    await page.getByRole("button", { name: "Delete", exact: true }).click();
-    await expect(page.getByText(SETLIST, { exact: true })).toHaveCount(0, {
-      timeout: 30_000,
-    });
-
-    // DELETE song — cleanup → read-back gone (net-zero).
-    await songRow(page, SONG2).getByTitle("More").click();
-    await page.getByText(/Delete song/).click();
-    await page.getByRole("button", { name: "Delete", exact: true }).click();
-    await expect(page.getByText(SONG2, { exact: true })).toHaveCount(0, {
-      timeout: 30_000,
-    });
-  });
-});
-
-// #295: tabs unmount on switch, and the Songs tab repaints from the startup library scan.
-// A setlist renamed here must come back under its NEW name after a tab round-trip — a
-// stale old name sits on a slot that every later setlist write would then address.
-
-test.describe("Songs — edits survive a tab switch (self-cleaning)", () => {
-  test.afterEach(async ({ page }) => {
-    await removeTestSetlists(page);
-    await clearScenario(page);
-  });
-
-  test("a renamed setlist keeps its new name after leaving and returning to Songs", async ({
-    page,
-  }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
-    await page.getByRole("button", { name: "Songs", exact: true }).click();
-
-    await page
-      .getByRole("button", { name: "New setlist", exact: true })
-      .click();
-    await page.getByPlaceholder("Name this setlist").fill(SETLIST);
-    await page.getByTitle("Create").click();
-    await expect(page.getByText(SETLIST, { exact: true })).toBeVisible({
-      timeout: 30_000,
-    });
-
-    // RENAME it from its detail title.
+    // RENAME the setlist from its detail title. Selecting reads the setlist's membership
+    // ("reading this setlist…" = busy) — wait for it to settle first.
     await page.getByText(SETLIST, { exact: true }).click();
     await expect(page.getByText(/reading this setlist/i)).toHaveCount(0, {
       timeout: 30_000,
@@ -172,7 +127,7 @@ test.describe("Songs — edits survive a tab switch (self-cleaning)", () => {
       timeout: 30_000,
     });
 
-    // Leave the tab and come back: the rail shows the new name, not the scan's.
+    // Leave the tab and come back: the rail shows the new name, not the scan's (#295).
     await page.getByRole("button", { name: "Copy", exact: true }).click();
     await page.getByRole("button", { name: "Songs", exact: true }).click();
     await expect(page.getByText(SETLIST_NEW, { exact: true })).toBeVisible({
@@ -180,8 +135,10 @@ test.describe("Songs — edits survive a tab switch (self-cleaning)", () => {
     });
     await expect(page.getByText(SETLIST, { exact: true })).toHaveCount(0);
 
-    // DELETE it — cleanup, and the guarded delete must accept the CURRENT name.
+    // DELETE setlist (open it → options → Delete setlist → confirm) — cleanup, and the
+    // guarded delete must accept the CURRENT name.
     await page.getByText(SETLIST_NEW, { exact: true }).click();
+    // The options button is disabled while the membership read is busy.
     await expect(page.getByText(/reading this setlist/i)).toHaveCount(0, {
       timeout: 30_000,
     });
@@ -189,6 +146,14 @@ test.describe("Songs — edits survive a tab switch (self-cleaning)", () => {
     await page.getByText(/Delete setlist/).click();
     await page.getByRole("button", { name: "Delete", exact: true }).click();
     await expect(page.getByText(SETLIST_NEW, { exact: true })).toHaveCount(0, {
+      timeout: 30_000,
+    });
+
+    // DELETE song — cleanup → read-back gone (net-zero).
+    await songRow(page, SONG2).getByTitle("More").click();
+    await page.getByText(/Delete song/).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(page.getByText(SONG2, { exact: true })).toHaveCount(0, {
       timeout: 30_000,
     });
   });

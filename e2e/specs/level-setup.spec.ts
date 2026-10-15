@@ -617,8 +617,8 @@ test.describe("Level — footswitch opted-in write path (raw invoke, command-lev
   // invariant.
   //
   // Where the two halves the old write-path version of this test used to prove now live:
-  //  * Bake WRITE + persist (Playwright layer): `level-fs-preset24.spec.ts` ("base + 4
-  //    pedals solve to target and re-measure at target from the saved state") — 405's
+  //  * Bake WRITE + persist: `e2e_server_tests.rs::the_footswitch_rows_still_converge_after_a_base_boost`
+  //    (base + 4 pedals solve, save and re-measure at target from the saved state) — 405's
   //    curve-backed pedals give the model real authority over the leveled param, so a
   //    genuine off-anchor solve+persist is provable there.
   //  * Bake WRITE + save + RE-RUN SKIP (command layer, Saved-event discriminator):
