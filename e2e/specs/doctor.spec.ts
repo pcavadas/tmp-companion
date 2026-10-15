@@ -113,11 +113,17 @@ test.describe("Doctor — select, check, results", () => {
     // deterministic (unlike diagnosis content, which stays unasserted). Scope the
     // click inside the card's first [data-sound-row] header — a page-wide
     // getByText(name) can resolve into advisory-panel body text (see the Edge
-    // ring-row click above for the incident).
-    await page
-      .locator(`[data-preset-card="${picked[1].name}"] [data-sound-row]`)
-      .first()
-      .getByText(picked[1].name)
+    // ring-row click above for the incident). Which sounds are flagged is
+    // diagnosis content, so neither the first row's name nor whether the base
+    // sound sits behind the collapsed "N sounds check out" group is asserted:
+    // open that group when it is there, then expand the first row.
+    const card = page.locator(`[data-preset-card="${picked[1].name}"]`);
+    const checksOut = card.getByRole("button", { name: /sounds? checks? out/ });
+    if (await checksOut.isVisible().catch(() => false)) {
+      await checksOut.click();
+    }
+    await card
+      .locator("[data-sound-row] > button[aria-expanded]")
       .first()
       .click();
     await expect(
