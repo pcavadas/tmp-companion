@@ -773,7 +773,9 @@ async fn e2e_read_stored_preset(
     slot: ListIndex,
 ) -> Result<E2eStoredPreset, String> {
     with_released_seize(state.session.clone(), move || {
-        let (preset, _, _) = crate::read_slot_preset_complete(slot, &["ftsw"])?;
+        // `info` too: it carries the name, and a cut that takes `ftsw` can take it as well
+        // (`slot_read.rs`), so a partial falls back to the backup re-read instead of a "" name.
+        let (preset, _, _) = crate::read_slot_preset_complete(slot, &["ftsw", "info"])?;
         Ok(E2eStoredPreset {
             name: preset
                 .pointer("/info/displayName")
