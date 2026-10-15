@@ -1290,8 +1290,8 @@ mod fixture_gates {
             // counterpart): a mid push that helps cut through, below every gate.
             (8, "CUTTHRU", "eq10", "gain500hz", 6.0, 0.0),
             // RESONANT's q14 +24 spike fires "harsh" AND "resonant" together. +18
-            // read h 14.5 on the old stimulus and 12.4 on the pitched pluck (both on the
-            // remote device), under the 13.5 gate; +24 reads h 17.1.
+            // read h 14.5 on the old stimulus and 12.4 on the pitched pluck, under
+            // the 13.5 gate; +24 reads h 16.8 (HW 2026-10-15).
             (9, "RESONANT", "peq5", "filter3gaindb", 24.0, 0.0),
             // +18, not +12: at +12 the boxy locals sat ON the gate (+2.9/+1.8
             // across two otherwise-identical sweeps) — a coin-flip oracle row.
