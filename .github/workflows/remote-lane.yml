@@ -1,0 +1,78 @@
+name: remote-lane
+
+# Runs the remote e2e lane (scripts/e2e-remote.sh) for a pull request that touches
+# device-facing code, on a remote device that lives outside this repository. This job only
+# decides and dispatches: it reads which online specs the diff requires from the gate
+# policy (`gates.sh --required-online`, the same mapping the release run uses), and either
+# posts a passing `remote-lane` status at once ("not needed") or asks the runner named by the
+# TWIN_LANE_REPO variable (on the TWIN_LANE_REF branch, if set) to run exactly those specs on
+# the PR's head commit. That run posts the final `remote-lane` status back on the same commit.
+#
+# Advisory: `remote-lane` is not a required check. Same-repository PRs only: a fork's PR
+# never gets the dispatch token (and pull_request_target is never used here), so outside
+# code never reaches the remote device.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: remote-lane-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SHA: ${{ github.event.pull_request.head.sha }}
+      PR: ${{ github.event.pull_request.number }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Online specs this PR requires
+        id: specs
+        run: |
+          git fetch -q origin "$BASE_REF"
+          base=$(git merge-base "origin/$BASE_REF" HEAD)
+          req=$(bash scripts/gates.sh --required-online --since "$base" | tr '\n' ' ' | sed 's/ *$//')
+          # ANY: any one online spec covers the change; songs is the shortest.
+          [ "$req" = ANY ] && req=songs
+          echo "required: ${req:-none}"
+          echo "specs=$req" >> "$GITHUB_OUTPUT"
+
+      - name: Not needed
+        if: steps.specs.outputs.specs == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=success -f context=remote-lane \
+            -f description="not needed: no device-facing change" >/dev/null
+
+      - name: Dispatch the remote lane
+        if: steps.specs.outputs.specs != ''
+        env:
+          GH_TOKEN: ${{ secrets.TWIN_LANE_TOKEN }}
+          LANE_REPO: ${{ vars.TWIN_LANE_REPO }}
+          LANE_REF: ${{ vars.TWIN_LANE_REF }}
+          SPECS: ${{ steps.specs.outputs.specs }}
+        run: |
+          if [ -z "$GH_TOKEN" ] || [ -z "$LANE_REPO" ]; then
+            echo "::warning::remote lane not configured (TWIN_LANE_TOKEN / TWIN_LANE_REPO); skipping"
+            exit 0
+          fi
+          # TWIN_LANE_REF picks the runner's branch; unset, its default branch.
+          gh workflow run twin-lane.yml --repo "$LANE_REPO" ${LANE_REF:+--ref "$LANE_REF"} \
+            -f companion_ref="$SHA" -f specs="$SPECS" -f pr="$PR"
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=remote-lane \
+            -f description="running: $SPECS" >/dev/null
+          echo "dispatched: $SPECS for $SHA"
