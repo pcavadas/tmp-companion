@@ -3,7 +3,8 @@ name: remote-lane
 # Runs the remote e2e lane (scripts/e2e-remote.sh) for a pull request that touches
 # device-facing code, on a remote device that lives outside this repository. This job only
 # decides and dispatches: it reads which online specs the diff requires from the gate
-# policy (`gates.sh --required-online`, the same mapping the release run uses), and either
+# policy (`gates.sh --required-online`, the same mapping the release run uses, read with
+# TMP_GATES_LANE=remote so the twin's own runner rows apply), and either
 # posts a passing `remote-lane` status at once ("not needed") or asks the runner named by the
 # TWIN_LANE_REPO variable (on the TWIN_LANE_REF branch, if set) to run exactly those specs on
 # the PR's head commit. That run posts the final `remote-lane` status back on the same commit.
@@ -55,7 +56,7 @@ jobs:
         run: |
           git fetch -q origin "$BASE_REF"
           base=$(git merge-base "origin/$BASE_REF" HEAD)
-          req=$(bash scripts/gates.sh --required-online --since "$base" | tr '\n' ' ' | sed 's/ *$//')
+          req=$(TMP_GATES_LANE=remote bash scripts/gates.sh --required-online --since "$base" | tr '\n' ' ' | sed 's/ *$//')
           # ANY: any one online spec covers the change; songs is the shortest.
           [ "$req" = ANY ] && req=songs
           echo "required: ${req:-none}"
@@ -132,7 +133,7 @@ jobs:
           # Renames count under both names: moving a device file away is device-facing too.
           files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate \
             --jq '.[] | .filename, (.previous_filename // empty)')
-          req=$(TMP_GATES_CHANGED_FILES="$files" bash scripts/gates.sh --required-online \
+          req=$(TMP_GATES_LANE=remote TMP_GATES_CHANGED_FILES="$files" bash scripts/gates.sh --required-online \
             | tr '\n' ' ' | sed 's/ *$//')
           [ "$req" = ANY ] && req=songs
           echo "required: ${req:-none}"

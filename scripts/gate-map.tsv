@@ -75,11 +75,12 @@ src-tauri/src/slot_read.rs	scan
 src-tauri/src/footswitch.rs	scan
 src-tauri/src/commands/presets.rs	scan
 # read_song_list feeds the scan (backup_read.rs, commands/presets.rs) and read_song_presets
-# the seed's import path (replace_inplace.rs), so this is wider than the songs class.
-src-tauri/src/probe_api/songs.rs	scan
+# the seed's import path (replace_inplace.rs), so the module holding them is scan.
 src-tauri/src/song_io.rs	scan
-# Its strict song-list harvests serve that same read_song_list, so it is scan too.
-src-tauri/src/session/songs.rs	scan
+# The probe's Songs CRUD and the strict song-list harvests (session/songs.rs) run before
+# EVERY online spec, so the one spec that also drives the song edits covers them: songs.
+src-tauri/src/probe_api/songs.rs	songs
+src-tauri/src/session/songs.rs	songs
 
 # ── write: the seed's import path and every save ──
 src-tauri/src/replace_inplace.rs	write
@@ -92,13 +93,20 @@ src-tauri/src/probe_api/slot_write.rs	write
 src-tauri/src/discovery.rs	write
 src-tauri/src/probe_api/mod.rs	write
 
-# ── lane: the online lane's own runner, oracle, lock and seed ──
-scripts/e2e.sh	lane
-scripts/level-validate.sh	lane
-scripts/device-lock.sh	lane
-scripts/lib/e2e-lane.sh	lane
-scripts/lib/e2e-evidence.sh	lane
-e2e/playwright.online.config.ts	lane
+# ── unit-lane: the unit lane's own runner, judge and lock (the remote twin runs none) ──
+scripts/e2e.sh	unit-lane
+scripts/level-validate.sh	unit-lane
+scripts/device-lock.sh	unit-lane
+scripts/lib/e2e-lane.sh	unit-lane
+scripts/lib/e2e-evidence.sh	unit-lane
+scripts/lib/ebur128.sh	unit-lane
+e2e/playwright.online.config.ts	unit-lane
+
+# ── remote-runner: the remote twin's own runner and config (the unit runs neither) ──
+scripts/e2e-remote.sh	remote-runner
+e2e/playwright.remote.config.ts	remote-runner
+
+# ── lane: the harness and seed every online run, unit or twin, goes through ──
 e2e/bridge-client.js	lane
 e2e/fixtures/scenario.ts	lane
 e2e/fixtures/assert-mode.ts	lane
@@ -187,6 +195,10 @@ scripts/validate-hbe.sh	on-demand
 scripts/replay-user-leveling.sh	on-demand
 scripts/calibrate.sh	on-demand
 src-tauri/src/probe_api/harvest.rs	on-demand
+
+# ── deps: the Rust dependency set (hidapi, cpal and tauri ride it) ──
+src-tauri/Cargo.toml	deps
+src-tauri/Cargo.lock	deps
 
 # ── none, made explicit: the side-by-side runner only orchestrates the two lanes ──
 scripts/pre-release.sh	none

@@ -34,9 +34,10 @@ import {
 // The same rows by identity (`validate_log`'s label: list index + scene/switch). Each must be
 // MEASURED and PASS under the ffmpeg judge, or the run does not certify.
 // STRICT_VALIDATE_LABELS=base:slot410 scene:slot410:scene0 scene:slot410:scene1 base:slot405 footswitch:slot405:switch5 footswitch:slot405:switch8
-// The REMOTE twin skips those strict re-measures (`isRemote` below): its audio is not
-// calibrated against the unit, `scripts/e2e-remote.sh` runs no ffmpeg judge and never
-// stamps, so each one cost a device capture that certified nothing. The unit runs them all.
+// The REMOTE twin runs only the two re-measures that guard an ORDERING regression (`isRemote`
+// below): 410's scene 0 (the see-saw row) and 405's Rat (the base-ON pedal). Its audio is not
+// calibrated against the unit and `scripts/e2e-remote.sh` runs no ffmpeg judge, so the other
+// four only re-check a solve the run already reported. The unit runs all six.
 
 // COVERAGE rows 37, 45
 const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S — the P4 leveling-regression fixture
@@ -89,6 +90,9 @@ interface FootswitchLevelResult {
   clamped: boolean;
   clamp_reason: string | null;
   predicted_lufs: number;
+  /** The field-8 read after the save (`verify_fs_persisted_writes`): true when the stored
+   *  row does not hold what the batch wrote. Null when nothing was saved. */
+  persist_mismatch: boolean | null;
 }
 /** P5 external validation: what the run PROMISED for the sound about to be re-measured —
  *  see .claude/rules/e2e.md's "External validation" section. */
@@ -128,6 +132,12 @@ function assertFsSolved(
       Math.abs(r.predicted_lufs - targetOf(r, i)),
       `switch ${String(r.switch)} solved-vs-target`,
     ).toBeLessThanOrEqual(tol);
+    // danger.md's "a load before `save_deferred_scene_writes` wipes the writes" class: the
+    // run reads the stored row back after its save and publishes the verdict here.
+    expect(
+      r.persist_mismatch ?? false,
+      `switch ${String(r.switch)} must persist what it solved`,
+    ).toBe(false);
   }
 }
 
@@ -371,7 +381,7 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     // The footswitch row above is judged by its OWN solve result, not a second
     // strict re-measure — this arc caps its ffmpeg-validated rows to keep its cost down. It
     // emits 1 + SCENES_410.length; STRICT_VALIDATE_ROWS at the top of this file counts them.
-    // Not on the remote twin (file header).
+    // The remote twin re-measures scene 0 only (file header).
     const remote = await isRemote(page);
     const sceneRow = (slot: number): LevelResult | undefined =>
       scenes.find((r) => r.scene_slot === slot);
@@ -384,21 +394,22 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
           persistMismatch: base.persist_mismatch,
         },
       });
-      for (const scene of SCENES_410) {
-        const row = sceneRow(scene);
-        expect(
-          row,
-          `scene ${String(scene)} must be present in the batch results`,
-        ).toBeDefined();
-        heard[`scene${String(scene)}`] = await measure410({
-          scene,
-          validate: {
-            targetLufs: sceneTarget410,
-            clamped: row?.clamped ?? false,
-            persistMismatch: row?.persist_mismatch ?? null,
-          },
-        });
-      }
+    }
+    for (const scene of SCENES_410) {
+      if (remote && scene !== 0) continue;
+      const row = sceneRow(scene);
+      expect(
+        row,
+        `scene ${String(scene)} must be present in the batch results`,
+      ).toBeDefined();
+      heard[`scene${String(scene)}`] = await measure410({
+        scene,
+        validate: {
+          targetLufs: sceneTarget410,
+          clamped: row?.clamped ?? false,
+          persistMismatch: row?.persist_mismatch ?? null,
+        },
+      });
     }
     // Every solved value the arc wrote, quoted into any failure below: a level miss is only
     // diagnosable against what the lane BELIEVED it wrote (a mis-solve moves `final_level`; a
@@ -553,37 +564,52 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
     // The UI journey itself: the wizard end to end, proving the base_boost summary-row
     // disclosure (SummaryPage.tsx's `baseBoostSentence`) renders in the real app, not just on
     // the wire. `Rhythm` = -23 LUFS (profiles.rs::default_targets), matching BASE_TARGET_405.
+    // Both forms of `baseBoostSentence`: "raised" (applied) and "would raise" (not applied).
     const boostSentence = page.getByText(
-      /Turned this preset up as far as it goes and raised the amp/,
+      /Turned this preset up as far as it goes and (raised|would raise) the amp/,
     );
     const runAndReadBoost = async (): Promise<boolean> => {
       await runBaseLevel(page, [{ preset: PRESET24, label: "Rhythm" }]);
       // `useGroupOpen`'s `badSlots` auto-open list is built from non-"done" rows only
       // (SummaryPage.tsx) — an all-good run's preset group starts COLLAPSED on Summary, same
       // as level-defaults.spec.ts's own boost-sentence test (a). Expand it before reading the
-      // row detail, or the sentence is never in the DOM to match against.
-      if (!(await boostSentence.isVisible())) {
-        await page
-          .locator(`[data-preset-group="${String(PRESET24.slot)}"]`)
-          .click();
+      // row detail, or the sentence is never in the DOM to match against — but only when it
+      // is collapsed: a click on an auto-opened group would close it.
+      const group = page.locator(
+        `[data-preset-group="${String(PRESET24.slot)}"]`,
+      );
+      if ((await group.getAttribute("aria-expanded")) === "false") {
+        await group.click();
       }
-      return boostSentence
+      const shown = await boostSentence
         .waitFor({ timeout: 5_000 })
         .then(() => true)
         .catch(() => false);
+      if (!shown) return false;
+      // A boost the run planned but did not apply is a failure of its own, not a reason to
+      // calibrate and run again.
+      expect(
+        await boostSentence.textContent(),
+        'the base boost must be APPLIED ("raised"), not only planned ("would raise")',
+      ).toContain("raised the amp");
+      return true;
     };
 
-    // OPTIMISTIC FIRST (the T1′ base-clamp fallback's pattern): the seed re-imports 405
-    // pristine before every run, and its authored pair (presetLevel 0.27, Twin 0.28, the Rat
-    // base-ON) puts G = target - as_is well past P_up (headroom to presetLevel 1.0), so the
-    // run boosts with no setup. The as-is read, the dry preview and the fader calibration it
-    // used to pay up front (file header's SELF-CALIBRATE note: a sim magnitude is not device
-    // truth) now run only when the device proves that wrong — the fallback below.
+    // OPTIMISTIC FIRST on the unit (the T1′ base-clamp fallback's pattern): the seed
+    // re-imports 405 pristine before every run, and its authored pair (presetLevel 0.27,
+    // Twin 0.28, the Rat base-ON) is meant to put G = target - as_is past P_up (headroom to
+    // presetLevel 1.0), so the run boosts with no setup. The as-is read, the dry preview and
+    // the fader calibration (file header's SELF-CALIBRATE note: a sim magnitude is not device
+    // truth) run only when the device proves that wrong — the fallback below. The REMOTE twin
+    // is deterministic and its pristine 405 does NOT boost (G <= P_up on every twin run so
+    // far), so it goes straight to the calibration: trying first would cost it a second
+    // wizard drive every run.
+    const remote = await isRemote(page);
     let fCalibrated = twinCandidatePre.value;
     // The minimum excess of G over P_up the boost run saw — known only when the fallback
     // measured it; the optimistic path proves BOOST by the disclosure sentence instead.
     let guaranteedExcessDb: number | null = null;
-    if (!(await runAndReadBoost())) {
+    if (remote || !(await runAndReadBoost())) {
       // Self-calibration: guarantee the BOOST precondition directly — `G > P_up` — by
       // reading the pedals-off ceiling and lowering the Twin's fader (never `presetLevel`)
       // via `level_preset`'s BLOCK-KNOB arm, the only seam here that can write+persist a
@@ -756,8 +782,8 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       return job.targetLufs;
     });
 
-    // 3 strict ffmpeg re-measures: base + both leveled pedals, from the saved state. Not on
-    // the remote twin (file header).
+    // 3 strict ffmpeg re-measures: base + both leveled pedals, from the saved state. The
+    // remote twin re-measures the Rat only (file header).
     const measure405 = (
       job?: (typeof SWITCH_JOBS_405)[number],
     ): Promise<number> =>
@@ -785,19 +811,21 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
         T,
       ) as Promise<number>;
 
-    if (!(await isRemote(page))) {
+    if (!remote) {
       const heardBase = await measure405();
       expect(
         Math.abs(heardBase - BASE_TARGET_405),
         `base re-measures at ${heardBase.toFixed(2)} LUFS from the saved state`,
       ).toBeLessThanOrEqual(DELTA);
-      for (const job of SWITCH_JOBS_405) {
-        const heard = await measure405(job);
-        expect(
-          Math.abs(heard - job.targetLufs),
-          `switch ${String(job.switch)} re-measures at ${heard.toFixed(2)} LUFS from the saved state`,
-        ).toBeLessThanOrEqual(DELTA_FS);
-      }
+    }
+    for (const job of SWITCH_JOBS_405) {
+      // The Rat (switch 8) is the base-ON pedal the run-order fix exists for.
+      if (remote && job.switch !== 8) continue;
+      const heard = await measure405(job);
+      expect(
+        Math.abs(heard - job.targetLufs),
+        `switch ${String(job.switch)} re-measures at ${heard.toFixed(2)} LUFS from the saved state`,
+      ).toBeLessThanOrEqual(DELTA_FS);
     }
 
     await expectReampBalanced(page, reampBase);

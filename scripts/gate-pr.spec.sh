@@ -70,6 +70,8 @@ diff_of() {
 }
 required() { (cd "$r" && /bin/bash scripts/gates.sh --required-online 2>/dev/null) | tr '\n' ' ' | sed 's/ $//'; }
 required_err() { (cd "$r" && /bin/bash scripts/gates.sh --required-online 3>&1 1>/dev/null 2>&3); }
+# The remote twin's reading (remote-lane.yml): `<class>@remote` policy rows win.
+required_remote() { (cd "$r" && TMP_GATES_LANE=remote /bin/bash scripts/gates.sh --required-online 2>/dev/null) | tr '\n' ' ' | sed 's/ $//'; }
 
 ALL="doctor.online level.online songs copy doctor-apply.online"
 
@@ -93,11 +95,34 @@ for pair in doctor.online:e2e/specs/doctor.online.spec.ts level.online:e2e/specs
   check "${pair#*:} → ${pair%%:*}" "${pair%%:*}" "$(required)"
 done
 for f in src-tauri/src/session/mod.rs src-tauri/src/session/link.rs src-tauri/src/session/timing.rs \
-  src-tauri/src/session/preset.rs src-tauri/src/session/songs.rs src-tauri/src/blockcaps.rs src-tauri/src/hid/write_completion.rs \
+  src-tauri/src/session/preset.rs src-tauri/src/blockcaps.rs src-tauri/src/hid/write_completion.rs \
   e2e/fixtures/scenario.ts scripts/e2e.sh scripts/lib/e2e-lane.sh; do
   diff_of "$f"
   check "$f → all five" "$ALL" "$(required)"
 done
+# The song-list harvest runs before every spec (scan + seed), so songs alone covers it.
+diff_of src-tauri/src/session/songs.rs
+check "session/songs.rs → songs" "songs" "$(required)"
+# The unit lane's own runner, judge and lock: every spec on the unit, none on the twin.
+for f in scripts/e2e.sh scripts/level-validate.sh scripts/device-lock.sh scripts/lib/e2e-lane.sh \
+  e2e/playwright.online.config.ts; do
+  diff_of "$f"
+  check "$f → all five on the unit" "$ALL" "$(required)"
+  check "$f → nothing on the twin" "" "$(required_remote)"
+done
+# The twin's own runner: every spec on the twin, nothing on the unit.
+for f in scripts/e2e-remote.sh e2e/playwright.remote.config.ts; do
+  diff_of "$f"
+  check "$f → nothing on the unit" "" "$(required)"
+  check "$f → all five on the twin" "$ALL" "$(required_remote)"
+done
+# Shared harness: both lanes run it.
+diff_of e2e/fixtures/scenario.ts
+check "scenario.ts → all five on the twin too" "$ALL" "$(required_remote)"
+diff_of src-tauri/src/commands/songs.rs
+check "a class with no @remote row reads the same on the twin" "songs" "$(required_remote)"
+diff_of src-tauri/Cargo.lock
+check "Cargo.lock → ANY, with an advisory" "ANY|1" "$(required)|$(required_err | grep -c 'advisory (deps)')"
 diff_of src-tauri/src/session/structural.rs
 check "session/structural.rs → copy" "copy" "$(required)"
 diff_of src-tauri/src/session/ftsw.rs

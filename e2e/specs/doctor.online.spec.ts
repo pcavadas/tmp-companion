@@ -19,13 +19,15 @@ import {
 //     BRIGHT, are covered numerically by src-tauri/src/doctor_audio_oracle.rs) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
 //     actually diagnose on real audio, not just that the fixture carries the right shape
 //     (that structural half stays pinned offline by fixture_gates.rs).
-// (b), the Doctor UI run on E2E Edge (402), is gone. Its EQ-ring verdict is the `resonant`
-//     detector (a) already proves fires on real audio (RESONANT, switch 9), never on healthy
-//     audio (base, CONTROL) and on no other switch (the OWNED specificity check); the ring
-//     chip's rendering and its scoping to its own card are `DoctorResults.test.tsx`'s; and the
-//     select → check → Results flow runs offline in doctor.spec.ts. It cost ~10 captures plus
-//     a whole-library backup scan per run.
-test.describe("Doctor online — spectral oracle (407)", () => {
+// (b) is E2E Edge's (402) baked 2.6 kHz EQ ring on real audio, by raw invoke: base plus two
+//     consecutive scenes. (a)'s RESONANT row is a q14 +24 dB spike far over the ring gate;
+//     Edge's ring is the near-threshold one (a hedged chip still counts), and its scenes are
+//     the only online Doctor sounds that run the SCENE path — the second scene skips its
+//     preset load (`doctor_skip_load`). It used to drive the Doctor UI over all ~10 Edge
+//     sounds behind a whole-library backup scan; the chip's rendering, its scoping to its own
+//     card and the select → check → Results flow are `DoctorResults.test.tsx`'s and
+//     doctor.spec.ts's offline.
+test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", () => {
   // Shared across both tests below (mirrors doctor-oracle.online.spec.ts's own teardown):
   // reamp-off FIRST on every test so a mid-test failure can't strand the unit
   // input-muted, and ONE afterAll clearScenario rather than a per-test clear — a per-test
@@ -41,10 +43,11 @@ test.describe("Doctor online — spectral oracle (407)", () => {
   });
 
   const ORACLE = SCENARIO[7]; // E2E Doctor Oracle, slot 407
+  const EDGE = SCENARIO[2]; // E2E Edge, slot 402
 
   interface DoctorSoundResult {
     key: string;
-    diags: { key: string }[];
+    diags: { key: string; label: string }[];
     integratedLufs: number;
     error: string | null;
   }
@@ -243,6 +246,71 @@ test.describe("Doctor online — spectral oracle (407)", () => {
           ).toBe(true);
           break;
       }
+    }
+
+    await expectReampBalanced(page, reampBase);
+  });
+
+  // (b) — COVERAGE row 31.
+  test("E2E Edge: the 2.6 kHz EQ ring fires on base and on two consecutive scenes", async ({
+    page,
+  }) => {
+    test.skip(
+      !(await isOnline(page)),
+      "online-only: the EQ-ring oracle needs real audio",
+    );
+    // 3 sounds x 18 s/capture (worst end) + up to 3 floor-suspect retries (23 s each) + a
+    // cold `ensureScenario` (240 s) ≈ 360 s; the request budget sits under the ceiling so a
+    // hang names itself.
+    test.setTimeout(900_000);
+    const DOCTOR_T = 600_000;
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+
+    const baseItem = {
+      key: "base",
+      listIndex: EDGE.slot,
+      scene: null as number | null,
+      footswitch: null,
+      label: "Base",
+      tag: null,
+      topologyId: "guitar-humbucker",
+      calibrationLufs: null,
+      profileId: null,
+      nodes: [],
+      footswitches: [],
+    };
+    // Base first, then two scenes back to back: the second scene follows a scene of the same
+    // preset that wrote nothing, so it takes `doctor_skip_load`'s no-reload path.
+    const items = [
+      baseItem,
+      { ...baseItem, key: "scene0", scene: 0, label: "Scene 1" },
+      { ...baseItem, key: "scene1", scene: 1, label: "Scene 2" },
+    ];
+    const result = (await invoke(
+      page,
+      "doctor_check",
+      { items, restoreListIndex: null, onResult: "__CHANNEL__:1" },
+      DOCTOR_T,
+    )) as DoctorCheckResult;
+
+    expect(result.stopped, "the run must complete, not stop early").toBe(false);
+    expect(result.presets.length, "exactly one preset was checked").toBe(1);
+    const preset = result.presets[0];
+    expect(preset.listIndex).toBe(EDGE.slot);
+    expect(
+      preset.sounds.map((s) => s.key),
+      "every requested sound must come back, none dropped mid-run",
+    ).toEqual(items.map((i) => i.key));
+    // The ring lives in Edge's BASE graph, so every played sound carries it. Hedged counts:
+    // the backend's key is `resonant` whatever the z (the "Possible" prefix is the UI's).
+    for (const sound of preset.sounds) {
+      expect(sound.error, `${sound.key} must not have errored`).toBeNull();
+      const ring = sound.diags.find((d) => d.key === "resonant");
+      expect(
+        ring?.label,
+        `${sound.key} diags [${sound.diags.map((d) => d.key).join(", ")}] must ring at 2.x kHz`,
+      ).toMatch(/^Rings at 2\.\d kHz$/);
     }
 
     await expectReampBalanced(page, reampBase);

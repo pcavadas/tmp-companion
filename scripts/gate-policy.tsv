@@ -4,12 +4,22 @@
 # space-separated: a canonical online spec (`gates.sh --online-spec-set`), ALL (every
 # canonical spec), ANY (at least one online spec, the cheapest), or - (none). The optional
 # advisory is printed on stderr whenever a changed file falls in that class.
+# A `<class>@remote` row replaces `<class>`'s row for the remote twin
+# (TMP_GATES_LANE=remote, set by .github/workflows/remote-lane.yml); the unit's release run
+# reads the plain row.
 # Every class gate-map.tsv names must appear here (Rust gate in fixture_gates.rs).
 transport	ALL
 protocol	ALL
 scan	ALL
 write	ALL
 lane	ALL
+# The unit lane's own runner, judge and lock: every unit run goes through them, but the remote
+# twin runs scripts/e2e-remote.sh and never touches them.
+unit-lane	ALL
+unit-lane@remote	-
+# The twin's own runner and config: the unit's release run never touches them.
+remote-runner	-
+remote-runner@remote	ALL
 probe-entry	ANY
 doctor-persist	doctor.online level.online doctor-apply.online
 level	doctor.online level.online
@@ -18,6 +28,10 @@ level	doctor.online level.online
 spec-doctor-online	doctor.online
 spec-level-online	level.online
 spec-doctor-apply-online	doctor-apply.online
+# Every online run opens the HID transport and seeds (imports and saves) before its spec, so
+# one spec proves a dependency bump still drives the device; the advisory covers the crates
+# that also carry audio and the app shell.
+deps	ANY	a dependency bump: when it moves hidapi, cpal or tauri, run every online spec by hand on the unit
 copy	copy
 songs	songs
 unexercised	ANY	no online spec reaches this file; exercise it by hand on the unit (scripts/hw-e2e.sh covers the replace path)

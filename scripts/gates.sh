@@ -22,7 +22,9 @@
 #                                    `ANY`, or nothing), from scripts/gate-map.tsv +
 #                                    scripts/gate-policy.tsv; advisory lines go to
 #                                    stderr (read-only). TMP_GATES_CHANGED_FILES
-#                                    (newline-separated paths) replaces the diff
+#                                    (newline-separated paths) replaces the diff;
+#                                    TMP_GATES_LANE=remote reads a class's
+#                                    `<class>@remote` policy row first (the twin)
 #   scripts/gates.sh --release-base  print the last release tag (v*) behind HEAD
 #   scripts/gates.sh --device-changes [--since <ref>]
 #                                    list each commit since <ref> (default: the last
@@ -190,22 +192,37 @@ classify_path() {
   esac
 }
 
+# <class> — the policy row to read for it: `<class>@<lane>` when TMP_GATES_LANE names a lane
+# that has its own row for the class (the remote twin runs a different runner than the unit),
+# else the class itself.
+policy_class() {
+  local class rest
+  if [ -n "${TMP_GATES_LANE:-}" ]; then
+    while IFS="$TAB" read -r class rest; do
+      if [ "$class" = "$1@$TMP_GATES_LANE" ]; then printf '%s\n' "$class"; return 0; fi
+    done < "$GATE_POLICY"
+  fi
+  printf '%s\n' "$1"
+}
+
 # <class> — print its policy row's tokens (ALL for an unknown class: fail closed).
 policy_tokens() {
-  local class tokens advisory
+  local want class tokens advisory
+  want="$(policy_class "$1")"
   while IFS="$TAB" read -r class tokens advisory; do
     case "$class" in '' | '#'*) continue ;; esac
-    if [ "$class" = "$1" ]; then printf '%s\n' "$tokens"; return 0; fi
+    if [ "$class" = "$want" ]; then printf '%s\n' "$tokens"; return 0; fi
   done < "$GATE_POLICY"
   printf 'ALL\n'
 }
 
 # <class> — print its policy row's advisory, if any.
 policy_advisory() {
-  local class tokens advisory
+  local want class tokens advisory
+  want="$(policy_class "$1")"
   while IFS="$TAB" read -r class tokens advisory; do
     case "$class" in '' | '#'*) continue ;; esac
-    if [ "$class" = "$1" ]; then printf '%s' "${advisory:-}"; return 0; fi
+    if [ "$class" = "$want" ]; then printf '%s' "${advisory:-}"; return 0; fi
   done < "$GATE_POLICY"
 }
 
