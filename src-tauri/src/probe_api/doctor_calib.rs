@@ -692,6 +692,15 @@ pub fn probe_doctor_replay(
     for wav in wavs_csv.split(',').map(str::trim).filter(|w| !w.is_empty()) {
         let mut r = hound::WavReader::open(wav).map_err(|e| format!("open {wav}: {e}"))?;
         let spec = r.spec();
+        // The stimulus is 48 kHz and `doctor_onset` sizes the body window from its length,
+        // so a capture at any other rate would shift the window into the tail.
+        if spec.sample_rate != leveller::RATE {
+            return Err(format!(
+                "capture {wav} has sample rate {}, expected {}",
+                spec.sample_rate,
+                leveller::RATE
+            ));
+        }
         let interleaved: Vec<f32> = match spec.sample_format {
             hound::SampleFormat::Float => r.samples::<f32>().collect::<Result<_, _>>(),
             hound::SampleFormat::Int => {

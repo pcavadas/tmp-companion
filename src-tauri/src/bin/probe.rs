@@ -3467,7 +3467,7 @@ fn arm_doctor_derive(args: &[String]) -> bool {
         // --doctor-derive <factory_report.json> --baseline <old_report.json> [--slots <csv>]
         // OFFLINE: re-derives the Doctor constants from a sweep through a new stimulus,
         // carrying each gate's rank over from the baseline sweep of the same presets.
-        let Some(report) = args.get(i + 1).filter(|a| !a.starts_with("--")).cloned() else {
+        let Some(report_path) = args.get(i + 1).filter(|a| !a.starts_with("--")).cloned() else {
             eprintln!(
                 "usage: probe --doctor-derive <factory_report.json> --baseline <old_report.json> [--slots <csv>]"
             );
@@ -3478,16 +3478,11 @@ fn arm_doctor_derive(args: &[String]) -> bool {
             std::process::exit(2);
         };
         let slots = flag_arg(args, "--slots");
-        match tmp_companion_lib::probe_doctor_derive(&report, &baseline, slots.as_deref()) {
-            Ok(r) => {
-                print!("{r}");
-                return true;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_doctor_derive(
+            &report_path,
+            &baseline,
+            slots.as_deref(),
+        ));
     }
     false
 }
@@ -3504,16 +3499,9 @@ fn arm_doctor_replay(args: &[String]) -> bool {
             std::process::exit(2);
         };
         let family = flag_arg(args, "--family").unwrap_or_else(|| "guitar".to_string());
-        match tmp_companion_lib::probe_doctor_replay(&wavs, &stim, &family) {
-            Ok(r) => {
-                print!("{r}");
-                return true;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
+        return report(tmp_companion_lib::probe_doctor_replay(
+            &wavs, &stim, &family,
+        ));
     }
     false
 }
