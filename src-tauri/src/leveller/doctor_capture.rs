@@ -518,6 +518,45 @@ mod onset_gate {
         cap
     }
 
+    // BUG→GATE (#247): a wire chain (the empty preset re-amps as clean
+    // passthrough) must draw no finding at any playback level. On the old
+    // constants it read as a sick preset, because the target and gates came
+    // from a stimulus the shipped one no longer is. Runs the SHIPPED humbucker
+    // through the production analysis path, stereo, at the HW inject latency.
+    #[test]
+    fn a_wire_chain_through_the_shipped_stimulus_draws_no_finding() {
+        let path = format!(
+            "{}/resources/samples/guitar-humbucker.wav",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let stim = doctor_stim_slice(crate::read_stimulus_calibrated(&path, None).unwrap());
+        let cap = wire(&stim, SR as usize * 32 / 1000, SR as usize * 3 / 10);
+        let sig = DoctorSignal {
+            channels: vec![cap.clone(), cap.clone()],
+            mix: cap,
+        };
+        let family = doctor::Family::Guitar;
+        let pc = analyze_capture(
+            &sig,
+            SR,
+            &stim,
+            &stim_body_psd(&stim, SR),
+            family,
+            DOCTOR_TAIL_MS,
+            None,
+        )
+        .unwrap();
+        let found = doctor::diagnose_levels(
+            &pc.profile,
+            None,
+            family,
+            doctor::StimulusKind::Synthetic,
+            Some(&pc.coverage),
+        );
+        let keys: Vec<&str> = found.iter().map(|d| d.diag.key).collect();
+        assert!(keys.is_empty(), "a wire chain diagnosed {keys:?}");
+    }
+
     // BUG→GATE (#249): the body PSD spanned the tail and the stimulus PSD the
     // pad, so the two Welch grids sat 2.34 hops apart and a wire chain's
     // transfer rippled by up to ±1.9 dB. On one span and one grid it is flat.

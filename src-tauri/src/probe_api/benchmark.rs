@@ -70,16 +70,30 @@ fn read_sweep(report_path: &str) -> Result<Sweep, String> {
 }
 
 /// Re-derive the Doctor's shipped constants from a factory sweep taken through
-/// a new reference stimulus (#235): prints `GUITAR_STIM_REF`, the target, the
-/// max-plus-margin gates and `FACTORY_CONTRAST_DB`. Paste `GUITAR_STIM_REF`
-/// from `print_guitar_stim_ref` instead (bit-exact from the WAV); this arm's
-/// copy went through JSON and may differ in the last ulp.
+/// a new reference stimulus (#235): prints `GUITAR_STIM_REF`, the target,
+/// `FACTORY_CONTRAST_DB`, the cut-through advisory and the gates. Each gate is
+/// rank-transferred from the shipped one through `baseline_path`, a sweep of
+/// the same presets through the stimulus the shipped constants came from
+/// ([`crate::benchmark::transfer_gate`]), so every rule keeps its healthy
+/// false-alarm rate. Paste `GUITAR_STIM_REF` from `print_guitar_stim_ref`
+/// instead (bit-exact from the WAV); this arm's copy went through JSON and may
+/// differ in the last ulp.
 ///
 /// `slots`: a comma-separated subset of the report's rows (their `slot`
-/// values) to derive from — the 25-slot flagship set the shipped constants
-/// came from, say — or every row when `None`.
-pub fn probe_doctor_derive(report_path: &str, slots: Option<&str>) -> Result<String, String> {
+/// values) to derive from, or every row when `None`; the baseline is cut to
+/// the same rows.
+pub fn probe_doctor_derive(
+    report_path: &str,
+    baseline_path: &str,
+    slots: Option<&str>,
+) -> Result<String, String> {
     let (family_id, family, mut sounds) = read_sweep(report_path)?;
+    let (base_family, _, mut base) = read_sweep(baseline_path)?;
+    if base_family != family_id {
+        return Err(format!(
+            "the baseline is a {base_family} sweep, the report a {family_id} one"
+        ));
+    }
     if let Some(csv) = slots {
         let keep: Vec<&str> = csv.split(',').map(str::trim).collect();
         sounds.retain(|(id, _)| keep.contains(&id.as_str()));
@@ -91,8 +105,19 @@ pub fn probe_doctor_derive(report_path: &str, slots: Option<&str>) -> Result<Str
             ));
         }
     }
+    // The gates keep their rank across the SAME presets, so the baseline is cut
+    // to exactly the report's rows.
+    base.retain(|(id, _)| sounds.iter().any(|(s, _)| s == id));
+    if base.len() != sounds.len() {
+        return Err(format!(
+            "the baseline has {} of the report's {} rows; sweep the same presets",
+            base.len(),
+            sounds.len()
+        ));
+    }
     let rows: Vec<&ReplayProfile> = sounds.iter().map(|(_, r)| r).collect();
-    let d = benchmark::derive_constants(&rows, family)?;
+    let base_rows: Vec<&ReplayProfile> = base.iter().map(|(_, r)| r).collect();
+    let d = benchmark::derive_constants(&rows, &base_rows, family)?;
     let fmt = |xs: &[f64]| {
         xs.iter()
             .map(|x| format!("{x:.2}"))
@@ -104,12 +129,14 @@ pub fn probe_doctor_derive(report_path: &str, slots: Option<&str>) -> Result<Str
          \x20 stim ref (band dB): [{}]\n\
          \x20 target:             [{}]\n\
          \x20 contrasts ({}):     [{}]\n\
-         \x20 gates (max + margin): {:#?}\n",
+         \x20 cut-through advisory: {:.2} dB\n\
+         \x20 gates (rank-transferred from the baseline): {:#?}\n",
         sounds.len(),
         fmt(&d.stim_ref),
         fmt(&d.calibration.target),
         d.contrasts.len(),
         fmt(&d.contrasts),
+        d.advisory_db,
         d.calibration.thresholds,
     ))
 }

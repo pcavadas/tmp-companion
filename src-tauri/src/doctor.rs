@@ -138,31 +138,36 @@ pub struct Thresholds {
     pub buried_centered_db: f64,
 }
 
-/// Calibrated 2026-07-16 (R5, `probe --doctor-calib-factory`, the 25-preset
-/// flagship factory sweep that also derived [`GUITAR_TARGET`]): each band gate
-/// = healthy-population max + the R4 repeatability margin (3σ ≈ 1.2 dB for the
-/// band rules; tilt σ ≈ 0.05 dB/oct). `wash_tail_db = −10.0` is ground-truth
-/// (a verified 90%-wet reverb measures ≈−8 dB; the dry population sits
-/// −21…−44) in the R4 aligned-tail space. The tilt-space gates are
-/// deliberately loose: they fire only in CONSENSUS with `*_centered_db` (see
-/// [`Thresholds`]'s doc); `buried_db` stays `INFINITY` (bass-only). The full
-/// derivation story lives in `notes/doctor-calibration.md`.
+/// Re-derived 2026-10-15 for the pitched-pluck stimulus (#235, `probe
+/// --doctor-derive --baseline`, a 248-sound factory sweep through it): each
+/// gate is RANK-TRANSFERRED from the gate the 2026-07-16 calibration shipped —
+/// it keeps that gate's percentile in the healthy factory population, read
+/// against the old stimulus and the old target there and against the new
+/// stimulus and [`GUITAR_TARGET`] here (`benchmark::transfer_gate`), so each
+/// rule's false-alarm rate on healthy presets carries over unchanged. A
+/// max-plus-margin re-derive over the whole bank would have widened `lost` by
+/// 21 dB and silenced the defect presets. `wash_tail_db` moved from −10.0 to
+/// −8.5 the same way: the darker stimulus lifts every tail ratio (wet presets
+/// by about 1 dB, dry by 3). The tilt-space gates are deliberately loose:
+/// they fire only in CONSENSUS with `*_centered_db` (see [`Thresholds`]'s
+/// doc); `buried_db` stays `INFINITY` (bass-only). The original derivation
+/// lives in `notes/doctor-calibration.md`.
 pub const GUITAR: Thresholds = Thresholds {
-    muddy_db: 2.0,
-    boomy_db: 2.5,
-    harsh_db: 2.5,
-    fizzy_db: -9.0,
-    lost_db: 3.5,
-    wash_tail_db: -10.0,
+    muddy_db: 0.8,
+    boomy_db: 4.1,
+    harsh_db: 3.9,
+    fizzy_db: -9.3,
+    lost_db: 2.4,
+    wash_tail_db: -8.5,
     buried_lows_db: f64::INFINITY, // bass-only rule
     scene_delta_db: 3.0,
-    tilt_db_per_oct: 3.0,
-    thin_db: 4.0,
-    muddy_centered_db: 3.5,
-    boomy_centered_db: 3.5,
-    harsh_centered_db: 4.0,
-    lost_centered_db: 3.5,
-    thin_centered_db: 4.5,
+    tilt_db_per_oct: 1.8,
+    thin_db: 2.6,
+    muddy_centered_db: 2.3,
+    boomy_centered_db: 4.7,
+    harsh_centered_db: 3.4,
+    lost_centered_db: 3.0,
+    thin_centered_db: 2.8,
     buried_centered_db: f64::INFINITY, // bass-only rule
 };
 
@@ -481,10 +486,14 @@ impl SoundProfile {
             // Localization runs on the TRANSFER (capture − stimulus, dB) so
             // the deterministic stimulus's own spectral ridges cancel — raw
             // capture-space peaks false-fired `resonant` on 25/25 clean
-            // factory presets (see `Psd::transfer_db`). No stimulus PSD (or a
-            // mismatched grid) → no localization, empty peaks.
+            // factory presets (see `Psd::transfer_db`) — read only where the
+            // stimulus has energy, bridging its dips (#235, see
+            // `Psd::observable_transfer_db`). No stimulus PSD (or a mismatched
+            // grid) → no localization, empty peaks.
             peaks: stim_psd
-                .and_then(|sp| body_psd.transfer_db(sp))
+                .and_then(|sp| {
+                    body_psd.observable_transfer_db(sp, RESONANT_SCAN_LO_HZ, RESONANT_SCAN_HI_HZ)
+                })
                 .map(|t| {
                     body_psd.find_peaks_in_db(
                         &t,
@@ -575,43 +584,42 @@ pub fn body_psd_span(channels: &[&[f32]], rate: u32, start: usize, end: usize) -
 /// +7 dB low-mid bump case (`deviations`/`tilt_split` oracle case O4): shared
 /// by [`showcase_profile`]'s preset 11 (Tweed Warm) and the
 /// `oracle_o4_dark_and_muddy_co_fire` test so the two stay byte-identical.
-/// Derived as `GUITAR_TARGET[i] + (-5.0)·X[i] + (7.0 if i==1 else 0)` where
-/// `X` is `log2` of the guitar band centers (see the oracle test block's
-/// derivation comment) — python-verified to land `slope == -5.0` and
-/// `locals == [0, 7, 0, 0, 0, 0]`.
+/// Built as `GUITAR_TARGET[i] + (-5.0)·X[i] + (7.0 if i==1 else 0)` where `X`
+/// is `log2` of the guitar band centers, so Theil–Sen reads `slope == -5.0`
+/// and `locals == [0, 7, 0, 0, 0, 0]` back whatever the target is.
 #[cfg(any(test, feature = "e2e"))]
-pub(crate) const SHOWCASE_DARK_MUDDY_BDB: [f64; 6] = [
-    -37.034_453,
-    -33.876_867,
-    -51.524_101,
-    -40.791_328,
-    -46.753_734,
-    -79.753_734,
-];
+pub(crate) fn showcase_dark_muddy_bdb() -> [f64; 6] {
+    let centers = Family::Guitar.band_centers();
+    std::array::from_fn(|i| {
+        GUITAR_TARGET[i] - 5.0 * centers[i].log2() + if i == 1 { 7.0 } else { 0.0 }
+    })
+}
 
 #[cfg(any(test, feature = "e2e"))]
 pub(crate) fn showcase_profile(list_index: crate::slot::ListIndex) -> SoundProfile {
     // (band dB `[Lo, LoM, Mid, HiM, Hi, Air]`, tail_ratio_db). Scooped Verse (index 4)
     // carries `lost` (the mid scoop sorts first in the row), the tour expands it to
-    // feature the add-a-compressor fix.
-    // R5-retuned targets (2026-07-16): every band vector below is re-derived
-    // as `GUITAR_TARGET[i] + delta[i]` (python-verified — see the oracle test
-    // block's derivation comments for the shared method), so each showcase
-    // preset lands its intended verdict pair under the new gates and every
-    // other rule stays silent.
+    // feature the add-a-compressor fix. Every vector is `GUITAR_TARGET + delta`,
+    // so each showcase preset keeps its intended verdict pair across a target
+    // re-derivation and every other rule stays silent.
+    let on_target =
+        |delta: [f64; 6]| -> [f64; 6] { std::array::from_fn(|i| GUITAR_TARGET[i] + delta[i]) };
     let (db, tail): ([f64; 6], f64) = match list_index.get() {
         // Scooped Verse → lost + washed: target + a −7 dB Mids scoop (a
         // single-band bump — both consensus spaces read back the full −7.0,
-        // vs the 3.5 dB lost gate in each ⇒ margin ≈3.5) and a −2 dB tail
-        // (wash gate −4.0 + 2 margin).
-        4 => ([-5.0, -2.0, -12.0, 13.0, 13.5, -14.5], -2.0),
+        // well past either lost gate) and a −2 dB tail (past the wash gate).
+        4 => (on_target([0.0, 0.0, -7.0, 0.0, 0.0, 0.0]), -2.0),
         // Tweed Warm → dark + muddy: target + a −5.0 dB/oct dark tilt + a +7 dB
         // low-mid bump (`deviations`/`tilt_split` oracle case O4).
-        11 => (SHOWCASE_DARK_MUDDY_BDB, -80.0),
+        11 => (showcase_dark_muddy_bdb(), -80.0),
         // Direct Acoustic → harsh + fizzy: target + a +6 dB high-mid spike
-        // (harsh gate 4.0 + 2 margin) and Air pulled to Highs−7 dB (past the
-        // −9.0 fizzy gate by 2).
-        167 => ([-5.0, -2.0, -5.0, 19.0, 13.5, 6.5], -80.0),
+        // (past both harsh gates) and Air pulled to Highs − 7 dB (past the
+        // fizzy gate; the fizzy metric is self-relative, Air − Highs).
+        167 => {
+            let mut db = on_target([0.0, 0.0, 0.0, 6.0, 0.0, 0.0]);
+            db[5] = db[4] - 7.0;
+            (db, -80.0)
+        }
         // any other preset → all clear: sits exactly on the guitar target
         // curve (dev = 0 everywhere → silent by construction).
         _ => (GUITAR_TARGET, -80.0),
@@ -785,10 +793,10 @@ pub fn band_db(bands: &[f64]) -> Vec<f64> {
 /// note `band_power` is a width-integral, so wider high bands carry a bigger
 /// term baked into these numbers).
 ///
-/// Guitar: the R5 attended sweep's result — the MEDIAN spectral shape of a
-/// 25-preset flagship factory-bank sweep through the shipped humbucker
-/// stimulus at the production capture window (2026-07-16, `probe
-/// --doctor-calib-factory`), rounded to 0.5 dB. An authored anchor for
+/// Guitar: the MEDIAN spectral shape of the factory bank (248 guitar sounds)
+/// through the shipped pitched-pluck humbucker stimulus at the production
+/// capture window (2026-10-15, `probe --doctor-derive`; #235 replaced the
+/// 2026-07-16 band-passed-noise sweep), rounded to 0.5 dB. An authored anchor for
 /// "well-voiced Fender tone" whose provenance is the factory designers' own
 /// consensus voicing, NOT a per-preset fit — a corpus-derived target and
 /// threshold would be confounded (the target IS "what a typical preset
@@ -804,7 +812,7 @@ pub fn band_db(bands: &[f64]) -> Vec<f64> {
 /// — a starting point, not a calibrated consensus like the guitar curve.
 // ponytail: bass/bass-vi voicings are single/two-preset anchors, provisional
 // until a real bass factory sweep lands.
-const GUITAR_TARGET: [f64; 6] = [-5.0, -2.0, -5.0, 13.0, 13.5, -14.5];
+const GUITAR_TARGET: [f64; 6] = [-3.5, 8.5, 9.5, 9.0, 1.0, -24.0];
 const BASS_TARGET: [f64; 6] = [1.5, 6.5, 9.5, 5.0, 1.5, -24.0];
 const BASS_VI_TARGET: [f64; 7] = [-18.0, 1.5, 2.0, -5.0, 14.0, 15.0, -9.0];
 
@@ -815,13 +823,12 @@ const BASS_VI_TARGET: [f64; 7] = [-18.0, 1.5, 2.0, -5.0, 14.0, 15.0, -9.0];
 /// gets exactly zero correction while any other stimulus's differing spectral
 /// shape no longer skews the tilt/band verdicts.
 ///
-/// FROZEN to the pre-#235 humbucker (band-passed noise), kept at
-/// `resources/reference/guitar-humbucker-v1.wav` outside the bundle: the target,
-/// the thresholds and [`FACTORY_CONTRAST_DB`] all came from a factory sweep
-/// through it, so until a sweep through the pitched-pluck stimuli re-derives
-/// them, the shipped stimuli are anchored back onto it like any other pickup.
-/// That correction is exact for a linear chain and approximate for a driven
-/// one (a drive stage responds to the input spectrum, not just passes it).
+/// The shipped `samples/guitar-humbucker.wav` (#235): the target, the
+/// thresholds and [`FACTORY_CONTRAST_DB`] all came from a factory sweep
+/// through it, so the humbucker gets exactly zero correction and the other
+/// pickups are anchored onto it. That correction is exact for a linear chain
+/// and approximate for a driven one (a drive stage responds to the input
+/// spectrum, not just passes it).
 ///
 /// Derived once from that WAV through the EXACT
 /// runtime capture path (`read_stimulus_calibrated(_, None)` →
@@ -833,12 +840,12 @@ const BASS_VI_TARGET: [f64; 7] = [-18.0, 1.5, 2.0, -5.0, 14.0, 15.0, -9.0];
 /// the reference correction is exactly 0; `stim_ref_matches_committed_wav`
 /// guards the pairing.
 const GUITAR_STIM_REF: [f64; 6] = [
-    -44.02337308370499,
-    -42.172232216507126,
-    -49.662975561860144,
-    -26.6598989212791,
-    -24.67472470364622,
-    -32.97753377216802,
+    -43.120396717803956,
+    -29.08773060962603,
+    -27.503229131243984,
+    -31.8105312017696,
+    -47.19080316758518,
+    -74.36698364270784,
 ];
 
 /// The authored target curve for a family (length = its band count) — see
@@ -1137,22 +1144,40 @@ pub struct CutThrough {
 }
 
 /// Sorted presence contrasts (dB, see [`cut_through`]'s formula) of the
-/// 25-slot flagship factory-bank sweep (`probe --doctor-calib-factory`, the
-/// same sweep [`GUITAR_TARGET`] is derived from) — the reference population
+/// 248-sound factory-bank sweep through the shipped humbucker (2026-10-15,
+/// `probe --doctor-derive`, the same sweep [`GUITAR_TARGET`] is derived from) — the reference population
 /// [`cut_through`]'s `factory_percentile` ranks a sound against.
-const FACTORY_CONTRAST_DB: [f64; 25] = [
-    6.59, 9.25, 10.18, 10.47, 11.00, 11.10, 12.52, 12.86, 13.03, 14.49, 14.96, 15.00, 15.13, 15.60,
-    15.61, 15.82, 17.14, 17.14, 17.28, 19.02, 19.12, 20.19, 20.43, 20.43, 22.65,
+const FACTORY_CONTRAST_DB: [f64; 248] = [
+    -17.13, -13.85, -11.23, -11.06, -10.45, -9.96, -9.90, -9.59, -9.51, -9.33, -9.13, -8.98, -8.47,
+    -8.42, -8.36, -8.34, -8.28, -8.27, -8.19, -7.92, -7.91, -7.88, -7.67, -7.50, -7.35, -7.14,
+    -7.11, -6.97, -6.76, -6.66, -6.44, -6.38, -6.37, -6.37, -6.25, -6.18, -5.53, -5.49, -5.47,
+    -5.46, -5.45, -5.42, -5.39, -5.34, -5.21, -5.21, -5.16, -5.11, -5.02, -5.00, -5.00, -5.00,
+    -4.91, -4.86, -4.73, -4.71, -4.66, -4.65, -4.56, -4.53, -4.52, -4.48, -4.44, -4.43, -4.36,
+    -4.26, -4.24, -4.11, -4.07, -4.05, -4.03, -3.96, -3.89, -3.89, -3.87, -3.78, -3.76, -3.75,
+    -3.73, -3.67, -3.66, -3.65, -3.63, -3.60, -3.51, -3.48, -3.46, -3.45, -3.41, -3.38, -3.29,
+    -3.27, -3.21, -3.16, -3.13, -3.11, -3.09, -3.02, -2.99, -2.92, -2.89, -2.87, -2.81, -2.80,
+    -2.80, -2.77, -2.70, -2.65, -2.64, -2.62, -2.62, -2.57, -2.53, -2.52, -2.49, -2.41, -2.39,
+    -2.38, -2.37, -2.33, -2.32, -2.27, -2.26, -2.18, -2.18, -2.16, -2.15, -2.14, -2.11, -2.09,
+    -2.08, -2.07, -2.06, -2.05, -2.04, -2.03, -2.01, -1.98, -1.97, -1.96, -1.95, -1.93, -1.86,
+    -1.85, -1.79, -1.79, -1.72, -1.68, -1.67, -1.66, -1.62, -1.59, -1.58, -1.51, -1.51, -1.49,
+    -1.44, -1.22, -1.21, -1.20, -1.20, -1.19, -1.15, -1.10, -1.08, -1.06, -1.05, -1.02, -1.02,
+    -1.01, -0.87, -0.81, -0.76, -0.74, -0.68, -0.67, -0.63, -0.62, -0.56, -0.55, -0.54, -0.53,
+    -0.50, -0.49, -0.45, -0.44, -0.44, -0.28, -0.25, -0.15, -0.07, -0.06, -0.04, 0.02, 0.07, 0.07,
+    0.13, 0.19, 0.20, 0.23, 0.25, 0.26, 0.27, 0.30, 0.32, 0.43, 0.47, 0.48, 0.61, 0.62, 0.79, 0.82,
+    0.83, 0.94, 0.95, 1.16, 1.17, 1.24, 1.38, 1.46, 1.47, 1.52, 1.53, 1.60, 1.60, 1.70, 1.70, 1.72,
+    1.80, 1.80, 1.90, 2.09, 2.16, 2.25, 2.29, 2.34, 2.36, 2.39, 2.49, 2.54, 2.55, 2.71, 2.74, 3.24,
+    3.34, 3.64, 4.20, 4.31,
 ];
 
-/// Below this presence contrast (dB), [`cut_through`] flags `advisory` —
-/// approximately the factory bank's own p10 ([`FACTORY_CONTRAST_DB`]).
-pub const CUT_THROUGH_ADVISORY_DB: f64 = 10.0;
+/// Below this presence contrast (dB), [`cut_through`] flags `advisory` — the
+/// shipped −6.2 dB rank-transferred to the 2026-10-15 sweep (it sat at the old
+/// bank's p10 and keeps that rank in [`FACTORY_CONTRAST_DB`]).
+pub const CUT_THROUGH_ADVISORY_DB: f64 = -6.2;
 
 /// `contrast_db`'s position (0..100) within the sorted [`FACTORY_CONTRAST_DB`]:
 /// the standard linear-interpolation percentile-of-score, treating pinned
 /// value `i` (of `n`) as sitting at `100·i/(n-1)` — so the array's own median
-/// (index 12 of 25) lands at exactly 50. Clamped to `[0, 100]` outside the
+/// lands at exactly 50. Clamped to `[0, 100]` outside the
 /// pinned range.
 fn factory_percentile(contrast_db: f64) -> f64 {
     let xs = FACTORY_CONTRAST_DB;
@@ -1185,7 +1210,7 @@ fn factory_percentile(contrast_db: f64) -> f64 {
 /// excluded from the ratio entirely.
 ///
 /// Anchored against [`FACTORY_CONTRAST_DB`] — the MEASURED contrast
-/// distribution of the 25-preset flagship factory sweep — never an authored
+/// distribution of the factory-bank sweep — never an authored
 /// "typical mix masker" constant (unauditable).
 ///
 /// Guitar-only anchor for now: `factory_percentile`/`advisory` are
@@ -2829,6 +2854,15 @@ pub fn diagnose_calibrated(
     )
 }
 
+/// A low-end (muddy/boomy) gate shifted by the playback level's offset, never
+/// below 0 dB: these gates read a band's EXCESS over the target, so a gate the
+/// Stage tightening pushed under 0 would flag a band sitting exactly on the
+/// target (#247 — the pitched-pluck re-derivation put the muddy tilt gate at
+/// 0.8 dB, and Stage's −2 dB made a wire chain read muddy).
+fn low_end_gate(gate: f64, offsets: PlaybackOffsets) -> f64 {
+    (gate + offsets.low_end_db).max(0.0)
+}
+
 /// Threshold-application half of [`diagnose_kind`]: takes the level-invariant
 /// [`RuleMetrics`] plus everything that DOES vary with playback level
 /// (`kind`/`coverage`/`offsets`) and produces the fired [`Diag`]s. An exact
@@ -2888,9 +2922,9 @@ fn apply_thresholds(
     // HW-σ-calibrated step — keep the raw `> threshold` fire condition here.
     let (muddy_margin, muddy_fires) = consensus(
         locals[low_mids],
-        t.muddy_db + offsets.low_end_db,
+        low_end_gate(t.muddy_db, offsets),
         centered(low_mids),
-        t.muddy_centered_db + offsets.low_end_db,
+        low_end_gate(t.muddy_centered_db, offsets),
     );
     if covered(low_mids) && muddy_fires {
         push(
@@ -2905,9 +2939,9 @@ fn apply_thresholds(
     }
     let (boomy_margin, boomy_fires) = consensus(
         locals[lows],
-        t.boomy_db + offsets.low_end_db,
+        low_end_gate(t.boomy_db, offsets),
         centered(lows),
-        t.boomy_centered_db + offsets.low_end_db,
+        low_end_gate(t.boomy_centered_db, offsets),
     );
     if covered(lows) && boomy_fires {
         push(
@@ -3650,51 +3684,55 @@ mod cut_through_tests {
         );
     }
 
-    // (b) percentile: the pinned median (index 12 of 25, `FACTORY_CONTRAST_DB`)
-    // lands exactly 50 (`factory_percentile`'s doc); below the pinned min
-    // clamps to 0; above the pinned max clamps to 100.
+    // (b) percentile: a pinned value `i` (of `n`, the first of any run of
+    // equal values) lands at `100·i/(n−1)` (`factory_percentile`'s doc); below
+    // the pinned min clamps to 0; above the pinned max clamps to 100.
     #[test]
     fn percentile_matches_pinned_rank_positions() {
-        let median = cut_through(
-            &contrast_profile(Family::Guitar, FACTORY_CONTRAST_DB[12]),
-            Family::Guitar,
-        )
-        .unwrap();
-        assert!((median.factory_percentile.unwrap() - 50.0).abs() < 1e-6);
+        let xs = FACTORY_CONTRAST_DB;
+        let n = xs.len();
+        let i = (n / 2..n).find(|&i| xs[i] > xs[i - 1]).unwrap();
+        let mid = cut_through(&contrast_profile(Family::Guitar, xs[i]), Family::Guitar).unwrap();
+        let want = 100.0 * i as f64 / (n - 1) as f64;
+        assert!(
+            (mid.factory_percentile.unwrap() - want).abs() < 1e-6,
+            "{:?} vs {want}",
+            mid.factory_percentile
+        );
 
         let below = cut_through(
-            &contrast_profile(Family::Guitar, FACTORY_CONTRAST_DB[0] - 5.0),
+            &contrast_profile(Family::Guitar, xs[0] - 5.0),
             Family::Guitar,
         )
         .unwrap();
         assert_eq!(below.factory_percentile, Some(0.0));
 
         let above = cut_through(
-            &contrast_profile(Family::Guitar, FACTORY_CONTRAST_DB[24] + 5.0),
+            &contrast_profile(Family::Guitar, xs[n - 1] + 5.0),
             Family::Guitar,
         )
         .unwrap();
         assert_eq!(above.factory_percentile, Some(100.0));
     }
 
-    // (c) advisory fires strictly below CUT_THROUGH_ADVISORY_DB (10.0), not at
-    // or above it. The "at" case nudges 0.01 dB above the pinned threshold
+    // (c) advisory fires strictly below CUT_THROUGH_ADVISORY_DB, not at or
+    // above it. The "at" case nudges 0.01 dB above the pinned threshold
     // rather than sitting exactly on it — `contrast_profile` round-trips the
     // target dB through `powf`/`log10`, which is not guaranteed bit-exact at
     // an exact boundary, so testing exactly-at would assert on FP noise
     // rather than the `<` in `cut_through`'s advisory gate.
     #[test]
     fn advisory_fires_below_threshold_only() {
-        let below = cut_through(&contrast_profile(Family::Guitar, 9.0), Family::Guitar).unwrap();
-        assert!(below.advisory);
-        let at = cut_through(
-            &contrast_profile(Family::Guitar, CUT_THROUGH_ADVISORY_DB + 0.01),
-            Family::Guitar,
-        )
-        .unwrap();
-        assert!(!at.advisory);
-        let above = cut_through(&contrast_profile(Family::Guitar, 11.0), Family::Guitar).unwrap();
-        assert!(!above.advisory);
+        let at_offset = |d: f64| {
+            cut_through(
+                &contrast_profile(Family::Guitar, CUT_THROUGH_ADVISORY_DB + d),
+                Family::Guitar,
+            )
+            .unwrap()
+        };
+        assert!(at_offset(-1.0).advisory);
+        assert!(!at_offset(0.01).advisory);
+        assert!(!at_offset(1.0).advisory);
     }
 
     // (d) Non-Guitar families get no factory anchor: percentile None, advisory
@@ -3859,7 +3897,7 @@ mod tests {
     // implementation (independent of the Rust under test), run with python3:
     //
     //   X  = [6.406891, 7.775373, 9.30482, 10.758266, 12.050747, 13.050747]
-    //   T  = [-5.0, -2.0, -5.0, 13.0, 13.5, -14.5]   # GUITAR_TARGET
+    //   T  = GUITAR_TARGET (the vectors below are built on it at runtime)
     //   def theil_sen(dev, covered):   # covered = semantic body bands lows..highs
     //       pts = [(X[i], dev[i]) for i in covered]
     //       sl = sorted((y2-y1)/(x2-x1) for i,(x1,y1) in enumerate(pts)
@@ -3887,6 +3925,22 @@ mod tests {
             peaks: Vec::new(),
             stim_bands: None,
         }
+    }
+
+    /// `GUITAR_TARGET + delta`: oracle vectors are built on the CURRENT target
+    /// so a re-derived target leaves their deviations unchanged.
+    fn on_target(delta: [f64; 6]) -> Vec<f64> {
+        GUITAR_TARGET
+            .iter()
+            .zip(delta)
+            .map(|(t, d)| t + d)
+            .collect()
+    }
+
+    /// The target tilted by `s` dB/oct: `GUITAR_TARGET[i] + s·X[i]`.
+    fn tilted(s: f64) -> Vec<f64> {
+        let x = Family::Guitar.band_centers();
+        on_target(std::array::from_fn(|i| s * x[i].log2()))
     }
 
     /// `bdb = GUITAR_TARGET + dev`, diagnosed with an explicit `coverage`.
@@ -4027,8 +4081,8 @@ mod tests {
     }
 
     /// The stimulus [`GUITAR_STIM_REF`] was derived through, relative to
-    /// `resources/`: the pre-#235 humbucker WAV, kept out of the bundle.
-    const REFERENCE_STIM: &str = "reference/guitar-humbucker-v1";
+    /// `resources/`: the shipped humbucker.
+    const REFERENCE_STIM: &str = "samples/guitar-humbucker";
 
     /// [`runtime_stim_bands`] for any WAV under `resources/` (`rel` without
     /// the `.wav`).
@@ -4140,16 +4194,15 @@ mod tests {
 
     #[test]
     fn oracle_o2_muddy_local_bump() {
-        // python: L=8, bump=5.5 (muddy gate 3.5 + 2) on low-mids (index 1) —
-        // bdb = [T[i]+8+(5.5 if i==1 else 0) for i in range(6)]
-        //     = [3.0, 11.5, 3.0, 21.0, 21.5, -6.5]
-        // -> slope=0.0, locals=[0,5.5,0,0,0,0], muddy margin = 5.5-3.5 = 2.0
-        let bdb = [3.0, 11.5, 3.0, 21.0, 21.5, -6.5]; // target+8 uniform, +5.5 low-mids
+        // L=8 uniform, then a low-mids bump 2 dB past the binding (larger) of
+        // the two muddy gates: slope=0, locals=[0,bump,0,0,0,0], margin 2.0.
+        let bump = GUITAR.muddy_db.max(GUITAR.muddy_centered_db) + 2.0;
+        let bdb = on_target([8.0, 8.0 + bump, 8.0, 8.0, 8.0, 8.0]);
         let p = oracle_profile(&bdb);
         let dev = deviations(&bdb, Family::Guitar);
         let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
         assert!((slope.unwrap() - 0.0).abs() <= 0.01);
-        assert_locals_close(&locals, &[0.0, 5.5, 0.0, 0.0, 0.0, 0.0], 0.01);
+        assert_locals_close(&locals, &[0.0, bump, 0.0, 0.0, 0.0, 0.0], 0.01);
         let diags = diagnose(&p, None, Family::Guitar);
         let got = keys(&diags);
         assert!((find(&diags, "muddy").severity - 2.0).abs() < 0.01);
@@ -4160,18 +4213,13 @@ mod tests {
 
     #[test]
     fn oracle_o3_dark_tilt_only() {
-        // python: L=0, s=-5.0 (tilt gate 3.0 + 2) —
-        // bdb = [T[i] + s*X[i] for i in range(6)]
-        //     = [-37.034453, -40.876867, -51.524101, -40.791328, -46.753734,
-        //        -79.753734]
-        // -> slope=-5.0, locals≈[0;6], dark margin = 5.0-3.0 = 2.0
-        let bdb = [
-            -37.034453, -40.876867, -51.524101, -40.791328, -46.753734, -79.753734,
-        ];
+        // A pure tilt 2 dB/oct past the dark gate: slope=s, locals≈[0;6].
+        let s = -(GUITAR.tilt_db_per_oct + 2.0);
+        let bdb = tilted(s);
         let p = oracle_profile(&bdb);
         let dev = deviations(&bdb, Family::Guitar);
         let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
-        assert!((slope.unwrap() - (-5.0)).abs() <= 0.01);
+        assert!((slope.unwrap() - s).abs() <= 0.01);
         assert_locals_close(&locals, &[0.0; 6], 0.01);
         let diags = diagnose(&p, None, Family::Guitar);
         let got = keys(&diags);
@@ -4186,9 +4234,9 @@ mod tests {
         // The multi-defect lock: a −5.0 dB/oct dark tilt PLUS a +7 dB low-mid
         // bump on top — under Theil–Sen (unlike the old OLS fit) both verdicts
         // fire together. Same vector as the marketing showcase's preset 11
-        // (SHOWCASE_DARK_MUDDY_BDB's doc carries the python derivation).
-        // -> slope=-5.0, locals=[0,7,0,0,0,0]: dark margin=2.0, muddy margin=3.5.
-        let bdb = SHOWCASE_DARK_MUDDY_BDB;
+        // (`showcase_dark_muddy_bdb` builds it on the current target).
+        // -> slope=-5.0, locals=[0,7,0,0,0,0].
+        let bdb = showcase_dark_muddy_bdb();
         let p = oracle_profile(&bdb);
         let dev = deviations(&bdb, Family::Guitar);
         let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
@@ -4201,14 +4249,11 @@ mod tests {
 
     #[test]
     fn oracle_o5_no_false_fire() {
-        // python: apply the OLD test's delta-from-target ([-1,-1,0,2,2,3],
-        // chosen for a nonzero-but-small residual) to the NEW target —
-        // bdb = [T[i]+delta[i] for i in range(6)] = [-6.0, -3.0, -5.0, 15.0,
-        //        15.5, -11.5]
-        // -> slope≈0.671634, locals≈[0.790607,-0.128513,-0.155742,0.868075,
-        //    0,0.328366] — every |local| and |slope| stays well under every
-        //    new gate (lowest is muddy 3.5 / tilt 3.0), so nothing fires.
-        let bdb = [-6.0, -3.0, -5.0, 15.0, 15.5, -11.5]; // a different normal combo
+        // A small nonzero residual on the target (delta [-1,-1,0,2,2,3]):
+        // python -> slope≈0.671634, locals≈[0.790607,-0.128513,-0.155742,
+        // 0.868075,0,0.328366] — every |local| and |slope| stays under every
+        // gate it is tested against, so nothing fires.
+        let bdb = on_target([-1.0, -1.0, 0.0, 2.0, 2.0, 3.0]);
         let p = oracle_profile(&bdb);
         let dev = deviations(&bdb, Family::Guitar);
         let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
@@ -4222,18 +4267,13 @@ mod tests {
 
     #[test]
     fn oracle_o7_bright_only() {
-        // python: L=0, s=+5.0 (tilt gate 3.0 + 2) —
-        // bdb = [T[i] + s*X[i] for i in range(6)]
-        //     = [27.034453, 36.876867, 41.524101, 66.791328, 73.753734,
-        //        50.753734]
-        // -> slope=5.0, locals≈[0;6], bright margin = 5.0-3.0 = 2.0
-        let bdb = [
-            27.034453, 36.876867, 41.524101, 66.791328, 73.753734, 50.753734,
-        ];
+        // A pure tilt 2 dB/oct past the bright gate: slope=s, locals≈[0;6].
+        let s = GUITAR.tilt_db_per_oct + 2.0;
+        let bdb = tilted(s);
         let p = oracle_profile(&bdb);
         let dev = deviations(&bdb, Family::Guitar);
         let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
-        assert!((slope.unwrap() - 5.0).abs() <= 0.01);
+        assert!((slope.unwrap() - s).abs() <= 0.01);
         assert_locals_close(&locals, &[0.0; 6], 0.01);
         let got = keys(&diagnose(&p, None, Family::Guitar));
         assert!(got.contains(&"bright"));
@@ -4245,20 +4285,15 @@ mod tests {
         // R5 consensus: a single-band bump over an otherwise-flat target has 4
         // of 5 body bands sitting on the median, so `centered_deviations` reads
         // back the SAME exact bump as the tilt-split local (median = 0 either
-        // way) — the binding gate is the LARGER of the two spaces:
-        // thin tilt=4.0 / centered=4.5 -> binding 4.5. python: delta=[-6.5,0,0,0,0,0]
-        // (binding 4.5 + 2 margin) on Lows (index 0)
-        // -> slope=0.0, locals=[-6.5,0,0,0,0,0], thin margin = min(6.5-4.0, 6.5-4.5) = 2.0
-        let bdb: Vec<f64> = target_curve(Family::Guitar)
-            .iter()
-            .zip([-6.5, 0.0, 0.0, 0.0, 0.0, 0.0])
-            .map(|(t, d)| t + d)
-            .collect();
+        // way) — the binding gate is the LARGER of the two spaces. A Lows cut
+        // 2 dB past it: slope=0, locals=[-cut,0,0,0,0,0], thin margin 2.0.
+        let cut = GUITAR.thin_db.max(GUITAR.thin_centered_db) + 2.0;
+        let bdb = on_target([-cut, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let p = oracle_profile(&bdb);
         let dev = deviations(&bdb, Family::Guitar);
         let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
         assert!((slope.unwrap() - 0.0).abs() <= 0.01);
-        assert_locals_close(&locals, &[-6.5, 0.0, 0.0, 0.0, 0.0, 0.0], 0.01);
+        assert_locals_close(&locals, &[-cut, 0.0, 0.0, 0.0, 0.0, 0.0], 0.01);
         let diags = diagnose(&p, None, Family::Guitar);
         assert!((find(&diags, "thin").severity - 2.0).abs() < 0.01);
         // Same profile judged as Bass: no thin (guitar-only gate, INFINITY in
@@ -4272,22 +4307,17 @@ mod tests {
     #[test]
     fn oracle_o9_boomy_the_old_ols_miss() {
         // Same single-band-bump identity as O8 above: centered == tilt local
-        // exactly. boomy tilt=2.5 / centered=3.5 -> binding 3.5. python:
-        // delta=[5.5,0,0,0,0,0] (binding 3.5 + 2 margin) on Lows (index 0)
-        // -> slope=0.0, locals=[5.5,0,0,0,0,0], boomy margin = min(5.5-2.5, 5.5-3.5) = 2.0.
-        // An OLS fit on 5 points would absorb part of this single-band bump
-        // into the trend line and under-read it; Theil–Sen's median reads the
-        // full 5.5 dB local bump back exactly.
-        let bdb: Vec<f64> = target_curve(Family::Guitar)
-            .iter()
-            .zip([5.5, 0.0, 0.0, 0.0, 0.0, 0.0])
-            .map(|(t, d)| t + d)
-            .collect();
+        // exactly. A Lows bump 2 dB past the binding boomy gate:
+        // slope=0, locals=[bump,0,0,0,0,0], boomy margin 2.0. An OLS fit on 5
+        // points would absorb part of this single-band bump into the trend
+        // line and under-read it; Theil–Sen's median reads it back exactly.
+        let bump = GUITAR.boomy_db.max(GUITAR.boomy_centered_db) + 2.0;
+        let bdb = on_target([bump, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let p = oracle_profile(&bdb);
         let dev = deviations(&bdb, Family::Guitar);
         let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
         assert!((slope.unwrap() - 0.0).abs() <= 0.01);
-        assert_locals_close(&locals, &[5.5, 0.0, 0.0, 0.0, 0.0, 0.0], 0.01);
+        assert_locals_close(&locals, &[bump, 0.0, 0.0, 0.0, 0.0, 0.0], 0.01);
         let diags = diagnose(&p, None, Family::Guitar);
         assert!((find(&diags, "boomy").severity - 2.0).abs() < 0.01);
     }
@@ -4324,6 +4354,38 @@ mod tests {
     //    into a `band_db` via `GUITAR_TARGET[i] + dev[i]` so they exercise the
     //    real `deviations()` too, per `notes/doctor.md`.
 
+    /// The gates these HW fixtures were measured against (2026-07-16, the
+    /// band-passed-noise stimulus). They pin the CONSENSUS logic, so they keep
+    /// those gates: the 2026-10-15 re-derivation moved every gate to the
+    /// pitched-pluck stimulus, where these old-stimulus deviations no longer
+    /// apply (#235's defect run re-checks the shipped gates on real presets).
+    const R5_GUITAR: Thresholds = Thresholds {
+        muddy_db: 2.0,
+        boomy_db: 2.5,
+        harsh_db: 2.5,
+        fizzy_db: -9.0,
+        lost_db: 3.5,
+        wash_tail_db: -10.0,
+        buried_lows_db: f64::INFINITY,
+        scene_delta_db: 3.0,
+        tilt_db_per_oct: 3.0,
+        thin_db: 4.0,
+        muddy_centered_db: 3.5,
+        boomy_centered_db: 3.5,
+        harsh_centered_db: 4.0,
+        lost_centered_db: 3.5,
+        thin_centered_db: 4.5,
+        buried_centered_db: f64::INFINITY,
+    };
+
+    fn diagnose_r5(p: &SoundProfile) -> Vec<Diag> {
+        let cal = Calibration {
+            target: GUITAR_TARGET.to_vec(),
+            thresholds: R5_GUITAR,
+        };
+        diagnose_calibrated(p, Family::Guitar, StimulusKind::Synthetic, None, &cal)
+    }
+
     /// A dev-space fixture: `band_db[i] = GUITAR_TARGET[i] + dev[i]`, run
     /// through the real `deviations()`/`diagnose()` — asserts round-trip fidelity
     /// (deviations reconstructs `dev` exactly) before checking the diagnosis.
@@ -4345,7 +4407,7 @@ mod tests {
             assert!((g - d).abs() < 1e-9);
         }
         let p = injected_profile(dev);
-        let diags = diagnose(&p, None, Family::Guitar);
+        let diags = diagnose_r5(&p);
         assert_eq!(keys(&diags), vec!["muddy"], "{diags:?}");
         assert!(
             !keys(&diags).contains(&"thin"),
@@ -4366,7 +4428,7 @@ mod tests {
         // −12 dB @500 Hz+1 kHz post-chain cut, HW-measured.
         let dev = [-52.6, -52.6, -57.2, -49.9, -49.8, -50.2];
         let p = injected_profile(dev);
-        assert_eq!(keys(&diagnose(&p, None, Family::Guitar)), vec!["lost"]);
+        assert_eq!(keys(&diagnose_r5(&p)), vec!["lost"]);
     }
 
     #[test]
@@ -4374,7 +4436,7 @@ mod tests {
         // +12 dB @2 kHz post-chain boost, HW-measured.
         let dev = [-52.4, -50.5, -46.0, -41.4, -47.2, -49.7];
         let p = injected_profile(dev);
-        assert_eq!(keys(&diagnose(&p, None, Family::Guitar)), vec!["harsh"]);
+        assert_eq!(keys(&diagnose_r5(&p)), vec!["harsh"]);
     }
 
     #[test]
@@ -4386,7 +4448,7 @@ mod tests {
         // dark gate too, so it's silent among band rules by design, not a miss.
         let dev = [-42.7, -44.7, -46.4, -48.7, -49.3, -50.0];
         let p = injected_profile(dev);
-        let got = keys(&diagnose(&p, None, Family::Guitar));
+        let got = keys(&diagnose_r5(&p));
         for band_rule in ["muddy", "boomy", "harsh", "lost", "thin"] {
             assert!(
                 !got.contains(&band_rule),
@@ -4400,7 +4462,7 @@ mod tests {
         // The un-injected clean preset, HW-measured — the negative control.
         let dev = [-52.4, -50.6, -46.5, -48.7, -49.3, -50.0];
         let p = injected_profile(dev);
-        assert!(keys(&diagnose(&p, None, Family::Guitar)).is_empty());
+        assert!(keys(&diagnose_r5(&p)).is_empty());
     }
 
     #[test]
@@ -6069,6 +6131,21 @@ mod tests {
         ringing_profile_q(freq_hz, 1.6, 14.0)
     }
 
+    /// [`flagrant_ring`] at a boxy-range `freq_hz`, with its band levels put
+    /// on the shipped target plus a +3 dB Low-mids hump. The white-noise bed's
+    /// own band shape is not the target's (the pitched-pluck target is far
+    /// from flat), so on its own it may leave the hump's band uncorroborated;
+    /// this keeps the fixture about the peak, which is what it tests.
+    fn boxy_ring(freq_hz: f32) -> SoundProfile {
+        let mut p = flagrant_ring(freq_hz);
+        p.bands = GUITAR_TARGET
+            .iter()
+            .zip([0.0, 3.0, 0.0, 0.0, 0.0, 0.0])
+            .map(|(t, d)| 10f64.powf((t + d) / 10.0))
+            .collect();
+        p
+    }
+
     #[test]
     fn oracle_resonant_fires_at_measured_freq_with_a_parametric_notch() {
         // A strong clean 2.6 kHz ring (noise bed 0.05, resonator drive 1.6,
@@ -6190,7 +6267,7 @@ mod tests {
         // 13.5 — so the boxy-range exclusion in `resonant_pick`'s filter is
         // belt-and-braces; the user-visible contract stays: boxy fires,
         // resonant does not.)
-        let p = flagrant_ring(380.0);
+        let p = boxy_ring(380.0);
         let peak = p.peaks[0];
         assert!(
             peak.height_db >= BOXY_MIN_HEIGHT_DB && peak.q <= RESONANT_MAX_Q,
@@ -6330,7 +6407,7 @@ mod tests {
     fn shipped_diagnose_emits_boxy_since_the_matrix_calibration() {
         // boxy's own end-to-end proof through the shipped path (not just the
         // localized_for harness) — symmetric with the resonant test above.
-        let p = flagrant_ring(380.0);
+        let p = boxy_ring(380.0);
         let diags = diagnose_kind(
             &p,
             None,

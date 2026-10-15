@@ -443,6 +443,60 @@ impl Psd {
         )
     }
 
+    /// [`Psd::transfer_db`] read only where the stimulus EXCITES the chain
+    /// (#235). A pitched stimulus puts its energy in harmonic lines; between
+    /// them the capture holds the chain's own noise, reverb and intermodulation
+    /// products, so `capture − stimulus` there reads tall, narrow fake peaks
+    /// that no chain owns (HW 2026-10-15: they fired `resonant` and `boxy` on
+    /// healthy factory presets, at the same frequencies in every capture). A
+    /// bin is observable when the stimulus's level there reaches its own
+    /// one-octave median; every other bin's transfer is interpolated linearly
+    /// between the nearest observable bins on each side. Only
+    /// `lo_hz..=hi_hz`, widened by the flanks [`Psd::peak_q`] reads, is
+    /// bridged; the rest is the plain transfer. On the 2026-10-15 raw
+    /// captures this removed 5 of the 6 healthy `resonant` fires and 2 of the
+    /// 5 `boxy` ones while both injected defects kept their height within
+    /// 1.2 dB. `None` exactly when [`Psd::transfer_db`] is.
+    pub fn observable_transfer_db(
+        &self,
+        stimulus: &Psd,
+        lo_hz: f64,
+        hi_hz: f64,
+    ) -> Option<Vec<f64>> {
+        let mut t = self.transfer_db(stimulus)?;
+        let n = t.len();
+        if n < 3 || self.bin_hz <= 0.0 || lo_hz > hi_hz {
+            return Some(t);
+        }
+        let reach = 2f64.powf(PEAK_FLANK_OCT.1);
+        let from = ((lo_hz / reach / self.bin_hz).floor().max(1.0) as usize).min(n - 1);
+        let to = ((hi_hz * reach / self.bin_hz).ceil() as usize).min(n - 1);
+        let s = stimulus.log_psd();
+        let env = stimulus.octave_envelope(&s, from, to);
+        let observable = |k: usize| k < from || k > to || s[k] >= env[k];
+        let mut k = from;
+        while k <= to {
+            if observable(k) {
+                k += 1;
+                continue;
+            }
+            let start = k;
+            while k <= to && !observable(k) {
+                k += 1;
+            }
+            // Bin `start − 1` is observable (`from − 1` counts as such, being
+            // outside the bridged range); `k` is the first observable bin after
+            // the run, or one past the end.
+            let left = start - 1;
+            let (lv, rv) = (t[left], if k < n { t[k] } else { t[left] });
+            let span = (k - left) as f64;
+            for (i, v) in t.iter_mut().enumerate().take(k.min(n)).skip(start) {
+                *v = lv + (rv - lv) * (i - left) as f64 / span;
+            }
+        }
+        Some(t)
+    }
+
     /// Find localized spectral peaks of an arbitrary dB `series` on this PSD's
     /// bin grid (one value per bin — the production caller passes
     /// [`Psd::transfer_db`]; [`Psd::find_peaks`] passes the raw log-PSD):
@@ -871,6 +925,56 @@ mod tests {
             }
         }
         eprintln!("worst relative Q error {worst:.3}");
+    }
+
+    /// A stimulus with deep spectral dips: white noise through a feed-forward
+    /// comb (`x[n] − 0.95·x[n − 37]`), notches every ≈1.3 kHz — the kind a
+    /// plucked string's pick position cuts into a pitched stimulus.
+    fn combed(n: usize) -> Vec<f32> {
+        let x = scale(&white_noise(n, 2_350), 0.1);
+        (0..n)
+            .map(|i| x[i] - if i >= 37 { 0.95 * x[i - 37] } else { 0.0 })
+            .collect()
+    }
+
+    // BUG→GATE (#235): where the stimulus dips, the capture holds mostly the
+    // chain's own noise, so the plain transfer reads tall fake peaks there.
+    // The observable transfer bridges those bins; a real peaking EQ survives.
+    #[test]
+    fn the_observable_transfer_ignores_the_stimulus_dips() {
+        let clean = combed(144_000);
+        let stim = welch_psd(&clean, RATE);
+        let noisy = add(&clean, &scale(&white_noise(144_000, 235), 0.01));
+        let cap = welch_psd(&noisy, RATE);
+        let tallest = |t: &[f64]| {
+            cap.find_peaks_in_db(t, 200.0, 4_000.0, 3.0)
+                .first()
+                .map_or(0.0, |p| p.height_db)
+        };
+        let plain = tallest(&cap.transfer_db(&stim).unwrap());
+        let observable = tallest(&cap.observable_transfer_db(&stim, 200.0, 8_000.0).unwrap());
+        assert!(
+            plain > 7.5,
+            "the plain transfer should show the dips: {plain:.1}"
+        );
+        assert!(
+            observable < 3.0,
+            "observable transfer peak {observable:.1} dB"
+        );
+
+        let ring = welch_psd(&peaking(&noisy, 2_000.0, 8.0, 12.0), RATE);
+        let t = ring.observable_transfer_db(&stim, 200.0, 8_000.0).unwrap();
+        let p = ring
+            .find_peaks_in_db(&t, 200.0, 4_000.0, 3.0)
+            .into_iter()
+            .next()
+            .expect("the ring");
+        assert!(
+            (p.freq_hz - 2_000.0).abs() < 200.0,
+            "ring at {:.0} Hz",
+            p.freq_hz
+        );
+        assert!(p.height_db > 7.5, "ring height {:.1} dB", p.height_db);
     }
 
     #[test]

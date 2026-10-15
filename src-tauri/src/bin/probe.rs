@@ -865,8 +865,13 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--doctor-derive"],
-        usage: r#"--doctor-derive <factory_report.json> [--slots <csv>]"#,
+        usage: r#"--doctor-derive <factory_report.json> --baseline <old_report.json> [--slots <csv>]"#,
         run: arm_doctor_derive,
+    },
+    Arm {
+        flags: &["--doctor-replay"],
+        usage: r#"--doctor-replay <capture.wav[,capture.wav…]> --stim <wav> [--family <guitar|bass|bass-vi>]"#,
+        run: arm_doctor_replay,
     },
     Arm {
         flags: &["--benchmark"],
@@ -996,6 +1001,7 @@ const OPTION_FLAGS: &[&str] = &[
     "--after",
     "--at-index",
     "--before",
+    "--baseline",
     "--block",
     "--commit",
     "--contexts",
@@ -3458,14 +3464,47 @@ fn arm_doctor_calib(args: &[String]) -> bool {
 
 fn arm_doctor_derive(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor-derive") {
-        // --doctor-derive <factory_report.json> [--slots <csv>]
-        // OFFLINE: re-derives the Doctor constants from a sweep through a new stimulus.
+        // --doctor-derive <factory_report.json> --baseline <old_report.json> [--slots <csv>]
+        // OFFLINE: re-derives the Doctor constants from a sweep through a new stimulus,
+        // carrying each gate's rank over from the baseline sweep of the same presets.
         let Some(report) = args.get(i + 1).filter(|a| !a.starts_with("--")).cloned() else {
-            eprintln!("usage: probe --doctor-derive <factory_report.json> [--slots <csv>]");
+            eprintln!(
+                "usage: probe --doctor-derive <factory_report.json> --baseline <old_report.json> [--slots <csv>]"
+            );
+            std::process::exit(2);
+        };
+        let Some(baseline) = flag_arg(args, "--baseline") else {
+            eprintln!("--doctor-derive needs --baseline <old_report.json>");
             std::process::exit(2);
         };
         let slots = flag_arg(args, "--slots");
-        match tmp_companion_lib::probe_doctor_derive(&report, slots.as_deref()) {
+        match tmp_companion_lib::probe_doctor_derive(&report, &baseline, slots.as_deref()) {
+            Ok(r) => {
+                print!("{r}");
+                return true;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    false
+}
+
+fn arm_doctor_replay(args: &[String]) -> bool {
+    if let Some(i) = args.iter().position(|a| a == "--doctor-replay") {
+        // --doctor-replay <capture.wav[,…]> --stim <wav> [--family <…>]
+        // OFFLINE: re-diagnoses raw multichannel Doctor captures through the engine.
+        let (Some(wavs), Some(stim)) = (
+            args.get(i + 1).filter(|a| !a.starts_with("--")).cloned(),
+            flag_arg(args, "--stim"),
+        ) else {
+            eprintln!("usage: probe --doctor-replay <capture.wav[,capture.wav…]> --stim <wav> [--family <guitar|bass|bass-vi>]");
+            std::process::exit(2);
+        };
+        let family = flag_arg(args, "--family").unwrap_or_else(|| "guitar".to_string());
+        match tmp_companion_lib::probe_doctor_replay(&wavs, &stim, &family) {
             Ok(r) => {
                 print!("{r}");
                 return true;

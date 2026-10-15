@@ -675,6 +675,76 @@ pub fn probe_doctor_calib_factory(
     Ok(out)
 }
 
+/// OFFLINE: re-diagnose raw Doctor captures (multichannel float WAVs of the
+/// whole capture window plus its tail) through the shipped engine, with no
+/// unit attached. The capture runs through the same `leveller::analyze_capture`
+/// seam a live sweep uses, so a detector or constant change can be checked
+/// against recorded hardware audio. `stim_path` is the stimulus the capture was
+/// played through; the tail is whatever the capture holds past it.
+pub fn probe_doctor_replay(
+    wavs_csv: &str,
+    stim_path: &str,
+    family_id: &str,
+) -> Result<String, String> {
+    let family = super::parse_family_arg(family_id)?;
+    let stim = leveller::doctor_stim_slice(crate::stimulus::read_stimulus_48k(stim_path)?);
+    let mut out = String::new();
+    for wav in wavs_csv.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+        let mut r = hound::WavReader::open(wav).map_err(|e| format!("open {wav}: {e}"))?;
+        let spec = r.spec();
+        let interleaved: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => r.samples::<f32>().collect::<Result<_, _>>(),
+            hound::SampleFormat::Int => {
+                let scale = (1i64 << (spec.bits_per_sample - 1)) as f32;
+                r.samples::<i32>()
+                    .map(|s| s.map(|v| v as f32 / scale))
+                    .collect::<Result<_, _>>()
+            }
+        }
+        .map_err(|e| format!("read {wav}: {e}"))?;
+        let cap = crate::audio::Capture {
+            interleaved,
+            channels: usize::from(spec.channels),
+            sample_rate: spec.sample_rate,
+        };
+        let frames = cap.interleaved.len() / cap.channels.max(1);
+        let tail_ms = (frames.saturating_sub(stim.len()) as u64 * 1000
+            / u64::from(cap.sample_rate.max(1))) as u32;
+        let sig = leveller::DoctorSignal::from_capture(&cap);
+        let Some(pc) = profile_or_skip(
+            "replay ",
+            ListIndex(0),
+            &sig,
+            cap.sample_rate,
+            &stim,
+            tail_ms,
+            family,
+        ) else {
+            out += &format!("{wav}\tprofile failed\n");
+            continue;
+        };
+        let peaks: Vec<String> = pc
+            .profile
+            .peaks
+            .iter()
+            .filter(|p| {
+                p.freq_hz < doctor::RESONANT_MAX_FREQ_HZ
+                    && (doctor::RESONANT_MIN_Q..=doctor::RESONANT_MAX_Q).contains(&p.q)
+                    && p.height_db >= doctor::BOXY_MIN_HEIGHT_DB
+            })
+            .take(6)
+            .map(|p| format!("{:.0}Hz h{:.1} q{:.1}", p.freq_hz, p.height_db, p.q))
+            .collect();
+        out += &format!(
+            "{wav}\ttail {:.1} dB\t[{}]\t{}\n",
+            pc.profile.tail_ratio_db,
+            row_verdicts(&pc.profile, &pc.coverage, family).join(","),
+            peaks.join("; "),
+        );
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

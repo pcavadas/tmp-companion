@@ -371,8 +371,8 @@ pub fn derive_calibration(
 // ─── re-deriving the shipped constants ──────────────────────────────────────
 
 /// Every constant a factory sweep through a NEW reference stimulus re-derives
-/// at once: the stimulus reference, the target curve, the max-plus-margin
-/// gates and the factory presence-contrast population (#235, #247).
+/// at once: the stimulus reference, the target curve, the transferred gates and
+/// the factory presence-contrast population (#235, #247).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DerivedConstants {
     /// The sweep's own stimulus band dB — the new `GUITAR_STIM_REF`.
@@ -381,18 +381,13 @@ pub struct DerivedConstants {
     pub calibration: Calibration,
     /// Sorted presence contrasts (dB, 0.01 dB) — the new `FACTORY_CONTRAST_DB`.
     pub contrasts: Vec<f64>,
+    /// The cut-through advisory threshold at its old rank — the new
+    /// `CUT_THROUGH_ADVISORY_DB`.
+    pub advisory_db: f64,
 }
 
-/// Re-derive the shipped constants from a sweep whose every row was captured
-/// through ONE stimulus, which becomes the new reference. Anchoring each row
-/// to its own stimulus is then a no-op, so the rows are derived un-anchored:
-/// exactly what anchoring against the new reference would give, without
-/// depending on the shipped one. Refuses a sweep that mixed stimuli or
-/// recorded none.
-pub fn derive_constants(
-    rows: &[&ReplayProfile],
-    family: Family,
-) -> Result<DerivedConstants, String> {
+/// The single stimulus every row of a sweep was captured through, as band dB.
+fn sweep_stimulus(rows: &[&ReplayProfile]) -> Result<Vec<f64>, String> {
     let first = rows
         .first()
         .ok_or("the sweep has no rows")?
@@ -413,6 +408,55 @@ pub fn derive_constants(
             return Err("the sweep mixed stimuli; derive from one stimulus".to_string());
         }
     }
+    Ok(stim_ref)
+}
+
+/// Move `gate` from the `old` population to the `new` one at the SAME rank: its
+/// fractional position in `old` (the inverse of [`percentile`]) read back as that
+/// percentile of `new`. Past either end of `old`, it keeps its distance from that
+/// end. `None` when either population is empty or the gate is not finite (an
+/// `INFINITY` gate stays as it is).
+pub fn transfer_gate(old: &[f64], new: &[f64], gate: f64) -> Option<f64> {
+    if old.is_empty() || new.is_empty() || !gate.is_finite() {
+        return None;
+    }
+    let mut o = old.to_vec();
+    o.sort_by(f64::total_cmp);
+    let (lo, hi) = (o[0], o[o.len() - 1]);
+    let new_lo = new.iter().copied().min_by(f64::total_cmp)?;
+    let new_hi = new.iter().copied().max_by(f64::total_cmp)?;
+    if gate >= hi {
+        return Some(new_hi + (gate - hi));
+    }
+    if gate <= lo {
+        return Some(new_lo - (lo - gate));
+    }
+    let i = o.partition_point(|&v| v <= gate) - 1;
+    let frac = (gate - o[i]) / (o[i + 1] - o[i]);
+    percentile(new, (i as f64 + frac) / (o.len() - 1) as f64)
+}
+
+/// Re-derive the shipped constants from a sweep whose every row was captured
+/// through ONE new stimulus, which becomes the new reference. The target is the
+/// new population's median; anchoring each row to its own stimulus is then a
+/// no-op, so the new rows are derived un-anchored.
+///
+/// The gates are NOT re-derived from scratch: a max-plus-margin gate over a whole
+/// factory bank sits above its most extreme preset and stops firing on real
+/// defects. Each shipped gate instead keeps its RANK: `baseline` is a sweep of the
+/// same presets through the previous stimulus, measured against the shipped
+/// target (the space the shipped gates live in), and every gate moves to the
+/// same percentile of the new population ([`transfer_gate`]). A gate that fired
+/// on k of the bank's presets fires on about k of them again, so the healthy
+/// false-alarm rate carries over, whatever the new stimulus does to each
+/// metric's spread. Refuses a sweep that mixed stimuli or recorded none.
+pub fn derive_constants(
+    rows: &[&ReplayProfile],
+    baseline: &[&ReplayProfile],
+    family: Family,
+) -> Result<DerivedConstants, String> {
+    let stim_ref = sweep_stimulus(rows)?;
+    sweep_stimulus(baseline).map_err(|e| format!("baseline: {e}"))?;
     let own: Vec<ReplayProfile> = rows
         .iter()
         .map(|r| ReplayProfile {
@@ -421,17 +465,56 @@ pub fn derive_constants(
         })
         .collect();
     let own_refs: Vec<&ReplayProfile> = own.iter().collect();
-    let calibration = derive_calibration(&own_refs, family, GatePolicy::MaxPlusMargin);
-    let mut contrasts: Vec<f64> = own
-        .iter()
-        .filter_map(|r| doctor::cut_through(&r.to_profile(), family))
-        .map(|c| (c.contrast_db * 100.0).round() / 100.0)
-        .collect();
-    contrasts.sort_by(f64::total_cmp);
+    let target = derive_target(&own_refs, family);
+    let shipped = Calibration::shipped(family);
+    let old = population_metrics(baseline, family, &shipped.target);
+    let new = population_metrics(&own_refs, family, &target);
+    let mut t = shipped.thresholds;
+    let mv = |o: &[f64], n: &[f64], g: &mut f64| {
+        if let Some(v) = transfer_gate(o, n, *g) {
+            *g = v;
+        }
+    };
+    for (key, tilt, centered) in [
+        ("muddy", &mut t.muddy_db, &mut t.muddy_centered_db),
+        ("boomy", &mut t.boomy_db, &mut t.boomy_centered_db),
+        ("harsh", &mut t.harsh_db, &mut t.harsh_centered_db),
+        ("lost", &mut t.lost_db, &mut t.lost_centered_db),
+        ("thin", &mut t.thin_db, &mut t.thin_centered_db),
+    ] {
+        if let (Some((ol, oc)), Some((nl, nc))) = (old.consensus.get(key), new.consensus.get(key)) {
+            mv(ol, nl, tilt);
+            mv(oc, nc, centered);
+        }
+    }
+    mv(&old.fizzy, &new.fizzy, &mut t.fizzy_db);
+    mv(&old.tilt_abs, &new.tilt_abs, &mut t.tilt_db_per_oct);
+    let tails = |rs: &[&ReplayProfile]| rs.iter().map(|r| r.tail_ratio_db).collect::<Vec<_>>();
+    mv(&tails(baseline), &tails(&own_refs), &mut t.wash_tail_db);
+    let contrasts_of = |rs: &[&ReplayProfile]| -> Vec<f64> {
+        let mut c: Vec<f64> = rs
+            .iter()
+            .filter_map(|r| doctor::cut_through(&r.to_profile(), family))
+            .map(|c| (c.contrast_db * 100.0).round() / 100.0)
+            .collect();
+        c.sort_by(f64::total_cmp);
+        c
+    };
+    let contrasts = contrasts_of(&own_refs);
+    let advisory_db = transfer_gate(
+        &contrasts_of(baseline),
+        &contrasts,
+        doctor::CUT_THROUGH_ADVISORY_DB,
+    )
+    .unwrap_or(doctor::CUT_THROUGH_ADVISORY_DB);
     Ok(DerivedConstants {
         stim_ref,
-        calibration,
+        calibration: Calibration {
+            target,
+            thresholds: t,
+        },
         contrasts,
+        advisory_db,
     })
 }
 
@@ -1052,32 +1135,66 @@ mod tests {
     }
 
     #[test]
+    fn a_transferred_gate_keeps_its_rank() {
+        let old = [0.0, 1.0, 2.0, 3.0, 4.0];
+        let new = [0.0, 2.0, 4.0, 6.0, 8.0];
+        assert_eq!(transfer_gate(&old, &new, 2.5), Some(5.0));
+        assert_eq!(transfer_gate(&old, &new, 1.0), Some(2.0));
+        // Past either end it keeps its distance from that end.
+        assert_eq!(transfer_gate(&old, &new, 5.0), Some(9.0));
+        assert_eq!(transfer_gate(&old, &new, -1.0), Some(-1.0));
+        assert_eq!(transfer_gate(&old, &new, f64::INFINITY), None);
+        assert_eq!(transfer_gate(&[], &new, 1.0), None);
+    }
+
+    #[test]
     fn derived_constants_take_the_sweep_stimulus_as_the_reference() {
         let stim = vec![1e-4, 2e-4, 1e-5, 3e-3, 4e-3, 1e-4];
-        let pop: Vec<ReplayProfile> = healthy_population(9)
-            .into_iter()
-            .map(|(_, mut r)| {
-                r.stim_bands = Some(stim.clone());
-                r
-            })
+        let with_stim = |s: &[f64]| -> Vec<ReplayProfile> {
+            healthy_population(9)
+                .into_iter()
+                .map(|(_, mut r)| {
+                    r.stim_bands = Some(s.to_vec());
+                    r
+                })
+                .collect()
+        };
+        let pop = with_stim(&stim);
+        // The baseline went through the shipped reference stimulus, so it reads
+        // un-anchored against the shipped target.
+        let reference: Vec<f64> = doctor::stim_ref(Family::Guitar)
+            .unwrap()
+            .iter()
+            .map(|d| 10f64.powf(d / 10.0))
             .collect();
+        let base = with_stim(&reference);
         let rows: Vec<&ReplayProfile> = pop.iter().collect();
-        let d = derive_constants(&rows, Family::Guitar).unwrap();
+        let base_rows: Vec<&ReplayProfile> = base.iter().collect();
+        let d = derive_constants(&rows, &base_rows, Family::Guitar).unwrap();
         assert_eq!(d.stim_ref, doctor::band_db(&stim));
-        // The rows sit on the shipped target shape, so it comes back as the target.
-        let plain: Vec<ReplayProfile> = healthy_population(9).into_iter().map(|(_, r)| r).collect();
-        let plain_rows: Vec<&ReplayProfile> = plain.iter().collect();
+        // The rows sit on the shipped target shape, so it comes back as the target,
+        // and the same population on both sides leaves every gate where it was.
         assert_eq!(
-            d.calibration,
-            derive_calibration(&plain_rows, Family::Guitar, GatePolicy::MaxPlusMargin)
+            d.calibration.target,
+            Calibration::shipped(Family::Guitar).target
         );
+        let (got, shipped) = (d.calibration.thresholds, *Family::Guitar.thresholds());
+        for (g, s) in [
+            (got.muddy_db, shipped.muddy_db),
+            (got.lost_centered_db, shipped.lost_centered_db),
+            (got.fizzy_db, shipped.fizzy_db),
+            (got.tilt_db_per_oct, shipped.tilt_db_per_oct),
+            (got.wash_tail_db, shipped.wash_tail_db),
+        ] {
+            assert!((g - s).abs() < 1e-9, "{g} vs {s}");
+        }
         assert_eq!(d.contrasts.len(), 9);
         assert!(d.contrasts.windows(2).all(|w| w[0] <= w[1]));
 
         let mut mixed = pop.clone();
         mixed[3].stim_bands = Some(vec![1e-4; 6]);
         let mixed_rows: Vec<&ReplayProfile> = mixed.iter().collect();
-        assert!(derive_constants(&mixed_rows, Family::Guitar).is_err());
+        assert!(derive_constants(&mixed_rows, &base_rows, Family::Guitar).is_err());
     }
 
     #[test]
