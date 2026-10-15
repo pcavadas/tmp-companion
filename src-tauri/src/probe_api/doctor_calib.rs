@@ -744,11 +744,20 @@ pub fn probe_doctor_replay(
             .take(6)
             .map(|p| format!("{:.0}Hz h{:.1} q{:.1}", p.freq_hz, p.height_db, p.q))
             .collect();
+        let (locals, centered) = doctor::band_locals(&pc.profile, family, Some(&pc.coverage));
+        let fmt = |v: &[f64]| {
+            v.iter()
+                .map(|x| format!("{x:+.1}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         out += &format!(
-            "{wav}\ttail {:.1} dB\t[{}]\t{}\n",
+            "{wav}\ttail {:.1} dB\t[{}]\t{}\tlocals {}\tcentered {}\n",
             pc.profile.tail_ratio_db,
             row_verdicts(&pc.profile, &pc.coverage, family).join(","),
             peaks.join("; "),
+            fmt(&locals),
+            centered.as_deref().map_or_else(|| "-".to_string(), fmt),
         );
     }
     Ok(out)

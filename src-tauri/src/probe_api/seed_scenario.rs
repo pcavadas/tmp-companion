@@ -66,7 +66,7 @@ const FIXTURE_MARKERS: [&str; 2] = ["tmp-companion-e2e-fixture", "e2e00000-"];
 /// The ownership probe ([`FIXTURE_MARKERS`]) matches the version-less prefix, so
 /// old-rev copies stay clearable/overwritable. `committed_fixtures_carry_an_ownership_marker`
 /// pins every committed fixture to this exact stamp.
-pub(crate) const FIXTURE_SOURCE_STAMP: &str = "tmp-companion-e2e-fixture#r11";
+pub(crate) const FIXTURE_SOURCE_STAMP: &str = "tmp-companion-e2e-fixture#r12";
 
 /// Substring probe (truncation-proof vs the field-8 partial). Pure.
 fn is_fixture_body(bytes: &[u8]) -> bool {
@@ -987,9 +987,9 @@ mod tests {
     /// skip handed the next run pre-leveled state.
     #[test]
     fn pristine_check_flags_leveled_bodies() {
-        let fixture = r#"{"audioGraph":{"nodes":[],"presetLevel":0.5999999046325684},"info":{"source_id":"tmp-companion-e2e-fixture#r11"}}"#;
+        let fixture = r#"{"audioGraph":{"nodes":[],"presetLevel":0.5999999046325684},"info":{"source_id":"tmp-companion-e2e-fixture#r12"}}"#;
         let same = fixture.as_bytes();
-        let leveled = r#"{"audioGraph":{"nodes":[],"presetLevel":0.37495},"info":{"source_id":"tmp-companion-e2e-fixture#r11"}}"#.as_bytes();
+        let leveled = r#"{"audioGraph":{"nodes":[],"presetLevel":0.37495},"info":{"source_id":"tmp-companion-e2e-fixture#r12"}}"#.as_bytes();
         assert!(body_is_pristine(same, fixture));
         assert!(!body_is_pristine(leveled, fixture));
         // Tail-truncated AFTER presetLevel → still comparable.
@@ -1084,12 +1084,12 @@ mod tests {
     /// only the new chain compare can catch this.
     #[test]
     fn pristine_check_flags_a_structural_block_delete() {
-        let fixture = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r11"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"},{"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ"}]}}}"#;
+        let fixture = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r12"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"},{"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ"}]}}}"#;
         // The unmodified fixture passes against itself.
         assert!(body_is_pristine(fixture.as_bytes(), fixture));
 
         // The copy-delete shape: stamp + presetLevel intact, trailing block gone.
-        let mutilated = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r11"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"}]}}}"#;
+        let mutilated = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r12"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"}]}}}"#;
         assert!(
             !body_is_pristine(mutilated.as_bytes(), fixture),
             "a body missing its trailing FenderId block must NOT read pristine"
@@ -1113,7 +1113,7 @@ mod tests {
         // compare alone reads equal; `body_is_pristine`'s overall false comes ONLY
         // from the existing presetLevel gate, not from this one (pins the tolerance
         // both checks are independently responsible for their own drift class).
-        let level_drifted = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r11"},"audioGraph":{"presetLevel":0.5,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"},{"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ"}]}}}"#;
+        let level_drifted = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r12"},"audioGraph":{"presetLevel":0.5,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"},{"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ"}]}}}"#;
         assert_eq!(
             extract_fender_chain(level_drifted),
             extract_fender_chain(fixture),
@@ -1169,7 +1169,7 @@ mod tests {
     /// on a healthy import or a fixture with no blocks.
     #[test]
     fn landed_verify_flags_the_firmware_empty_body_substitution() {
-        let fixture = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r11","displayName":"E2E Doctor Oracle"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"}]}}}"#;
+        let fixture = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r12","displayName":"E2E Doctor Oracle"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"}]}}}"#;
         // A healthy landed body is the fixture itself — no discard, and pristine.
         assert!(!body_was_discarded(fixture.as_bytes(), fixture));
         assert_eq!(pristine_check(fixture.as_bytes(), fixture), Ok(()));

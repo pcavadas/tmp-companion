@@ -2773,6 +2773,24 @@ fn compute_rule_metrics(
     }
 }
 
+/// Each band's LOCAL deviation in both consensus spaces (tilt-split locals,
+/// centered deviations), as the band rules and the resonant/boxy band
+/// corroboration read them under the shipped target. For offline replay output.
+pub(crate) fn band_locals(
+    profile: &SoundProfile,
+    instrument: Family,
+    coverage: Option<&[bool]>,
+) -> (Vec<f64>, Option<Vec<f64>>) {
+    let m = compute_rule_metrics(
+        profile,
+        None,
+        instrument,
+        coverage,
+        target_curve(instrument),
+    );
+    (m.locals, m.centered)
+}
+
 /// The two-space consensus gate for a band rule: the margin in each space,
 /// combined as the SMALLER one (severity), firing only when BOTH clear —
 /// the false-positive control lives in the intersection (see `Thresholds`).
