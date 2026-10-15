@@ -836,9 +836,10 @@ const BASS_VI_TARGET: [f64; 7] = [-18.0, 1.5, 2.0, -5.0, 14.0, 15.0, -9.0];
 /// → `band_db`), printed verbatim by the `#[ignore]` `print_guitar_stim_ref`
 /// test. The slice length sets the Welch resolution, so the runtime slicing is
 /// load-bearing — a bare full-file welch gives a different shape. `{:?}`
-/// (shortest round-trippable f64) so the runtime recompute is bit-identical and
-/// the reference correction is exactly 0; `stim_ref_matches_committed_wav`
-/// guards the pairing.
+/// (shortest round-trippable f64) so the runtime recompute on the printing
+/// platform is bit-identical and the reference correction exactly 0; another
+/// platform's libm may differ in the last ulp (≈1e-15 dB, macOS vs Linux).
+/// `stim_ref_matches_committed_wav` guards the pairing.
 const GUITAR_STIM_REF: [f64; 6] = [
     -43.120396717803956,
     -29.08773060962603,
@@ -4042,26 +4043,20 @@ mod tests {
 
     #[test]
     fn reference_stimulus_gets_no_fizz_or_cut_through_correction() {
-        // The humbucker IS the reference: corrected == raw, bit for bit, on an
-        // arbitrary capture. Fixtures without stimulus bands are uncorrected.
+        // The humbucker IS the reference: corrected == raw on an arbitrary
+        // capture, to float rounding (GUITAR_STIM_REF was printed on one
+        // platform; another's libm can land a last-ulp apart — macOS CI read
+        // 2 ulp). Fixtures without stimulus bands are uncorrected.
         let stim = stim_bands_at(REFERENCE_STIM);
         let bdb = [-3.0, 1.0, -7.0, 12.0, 15.0, -9.5];
         let mut p = oracle_profile(&bdb);
         let raw_fizz = bdb[5] - bdb[4];
         let raw_ct = cut_through(&p, Family::Guitar).unwrap().contrast_db;
         p.stim_bands = Some(stim);
-        assert_eq!(
-            fizzy_metric(&band_db(&p.bands), p.stim_bands.as_deref(), Family::Guitar).to_bits(),
-            fizzy_metric(&band_db(&p.bands), None, Family::Guitar).to_bits()
-        );
+        let corrected = fizzy_metric(&band_db(&p.bands), p.stim_bands.as_deref(), Family::Guitar);
+        assert!((corrected - fizzy_metric(&band_db(&p.bands), None, Family::Guitar)).abs() < 1e-9);
         assert!((fizzy_metric(&band_db(&p.bands), None, Family::Guitar) - raw_fizz).abs() < 1e-9);
-        assert_eq!(
-            cut_through(&p, Family::Guitar)
-                .unwrap()
-                .contrast_db
-                .to_bits(),
-            raw_ct.to_bits()
-        );
+        assert!((cut_through(&p, Family::Guitar).unwrap().contrast_db - raw_ct).abs() < 1e-9);
     }
 
     fn assert_locals_close(got: &[f64], want: &[f64], tol: f64) {
