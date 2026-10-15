@@ -1,4 +1,6 @@
+import type { Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test";
+import { SERVER } from "../fixtures/port";
 import {
   SCENARIO,
   baseLevelJob,
@@ -32,6 +34,9 @@ import {
 // The same rows by identity (`validate_log`'s label: list index + scene/switch). Each must be
 // MEASURED and PASS under the ffmpeg judge, or the run does not certify.
 // STRICT_VALIDATE_LABELS=base:slot410 scene:slot410:scene0 scene:slot410:scene1 base:slot405 footswitch:slot405:switch5 footswitch:slot405:switch8
+// The REMOTE twin skips those strict re-measures (`isRemote` below): its audio is not
+// calibrated against the unit, `scripts/e2e-remote.sh` runs no ffmpeg judge and never
+// stamps, so each one cost a device capture that certified nothing. The unit runs them all.
 
 // COVERAGE rows 37, 45
 const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S — the P4 leveling-regression fixture
@@ -94,6 +99,12 @@ interface ValidateArg {
 }
 
 const T = LEVEL_T;
+
+/** Whether the server drives the REMOTE twin (`/health`'s `remote`), not the unit. */
+async function isRemote(page: Page): Promise<boolean> {
+  const res = await page.request.get(`${SERVER}/health`);
+  return ((await res.json()) as { remote?: boolean }).remote === true;
+}
 
 /** The shared clamp_reason/clamped/predicted_lufs-within-tolerance triple every footswitch
  *  batch result is checked against. `targetOf` reads each row's own target (by result + its
@@ -163,19 +174,7 @@ async function measureAsIsTarget(
   return { asIs, target: asIs - 2.0 };
 }
 
-// .serial: T2 genuinely depends on device state T1′ writes (410's base + footswitch saves).
-test.describe
-  .serial("Level online — Friedman-shape consolidated arc + idempotency (410)", () => {
-  // Carried from T1′ into T2 below (same describe, same worker — `.serial` guarantees the
-  // write-then-read order). T2 guards its own read with a thrown error, not a silent
-  // `test.skip`, so a predecessor that never got here fails loudly instead of no-op-passing.
-  let laneFs410: FootswitchLevelResult[] | undefined;
-  // The self-calibrated targets T1′ actually used (see the file header's SELF-CALIBRATE note) —
-  // there is no longer a fixture constant for T2 to re-import, so these ride the same
-  // carry-across-tests pattern `laneFs410` already uses.
-  let baseTarget410: number | undefined;
-  let fsTarget410: number | undefined;
-
+test.describe("Level online — Friedman-shape consolidated arc + idempotency (410)", () => {
   test.afterEach(async ({ page }) => {
     await reampOff(page);
   });
@@ -185,7 +184,7 @@ test.describe
     await page.close();
   });
 
-  test("base + 2 scenes + 2 footswitches re-measure at target after save; base stays TRADE, never BOOST (see-saw guard)", async ({
+  test("base + 2 scenes + a footswitch re-measure at target after save, an identical base re-run writes nothing; base stays TRADE, never BOOST (see-saw guard)", async ({
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
@@ -245,7 +244,6 @@ test.describe
       "410's base pair is a plain TRADE solve (G <= P_up) — it must never enter BOOST, or a \
 regression has widened BOOST's trigger and would start moving a fader nothing asked it to move",
     ).toBeNull();
-    baseTarget410 = baseTargetUsed;
 
     // ── Lane 2: the footswitch, run BEFORE scenes (production order: `runRank` in
     // src/views/level/leveling.ts ranks footswitch=1 ahead of scene=2, both after base=0) —
@@ -259,7 +257,6 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
         slot: FRIEDMAN.slot,
         footswitch: 1,
       });
-    fsTarget410 = fsTargetUsed410;
 
     const fs410 = (await invoke(
       page,
@@ -374,30 +371,34 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     // The footswitch row above is judged by its OWN solve result, not a second
     // strict re-measure — this arc caps its ffmpeg-validated rows to keep its cost down. It
     // emits 1 + SCENES_410.length; STRICT_VALIDATE_ROWS at the top of this file counts them.
+    // Not on the remote twin (file header).
+    const remote = await isRemote(page);
     const sceneRow = (slot: number): LevelResult | undefined =>
       scenes.find((r) => r.scene_slot === slot);
     const heard: Record<string, number> = {};
-    heard.base = await measure410({
-      validate: {
-        targetLufs: baseTargetUsed,
-        clamped: base.clamped,
-        persistMismatch: base.persist_mismatch,
-      },
-    });
-    for (const scene of SCENES_410) {
-      const row = sceneRow(scene);
-      expect(
-        row,
-        `scene ${String(scene)} must be present in the batch results`,
-      ).toBeDefined();
-      heard[`scene${String(scene)}`] = await measure410({
-        scene,
+    if (!remote) {
+      heard.base = await measure410({
         validate: {
-          targetLufs: sceneTarget410,
-          clamped: row?.clamped ?? false,
-          persistMismatch: row?.persist_mismatch ?? null,
+          targetLufs: baseTargetUsed,
+          clamped: base.clamped,
+          persistMismatch: base.persist_mismatch,
         },
       });
+      for (const scene of SCENES_410) {
+        const row = sceneRow(scene);
+        expect(
+          row,
+          `scene ${String(scene)} must be present in the batch results`,
+        ).toBeDefined();
+        heard[`scene${String(scene)}`] = await measure410({
+          scene,
+          validate: {
+            targetLufs: sceneTarget410,
+            clamped: row?.clamped ?? false,
+            persistMismatch: row?.persist_mismatch ?? null,
+          },
+        });
+      }
     }
     // Every solved value the arc wrote, quoted into any failure below: a level miss is only
     // diagnosable against what the lane BELIEVED it wrote (a mis-solve moves `final_level`; a
@@ -421,53 +422,27 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
       ).toBeLessThanOrEqual(DELTA);
     }
 
-    // Carry lane 2's 410 footswitch result to the idempotency test below (same describe,
-    // same worker — `.serial` guarantees ordering).
-    laneFs410 = fs410;
-
-    await expectReampBalanced(page, reampBase);
-  });
-
-  // ── Idempotency addendum, ON THE SAME SAVED STATE T1′ just wrote ────────────────────
-  test("idempotency: base and footswitch skip-branch re-runs make zero new writes (410)", async ({
-    page,
-  }) => {
-    test.skip(!(await isOnline(page)), "online-only: needs real audio");
-    test.setTimeout(600_000);
-    await ensureScenario(page);
-    const reampBase = await reampCounters(page);
-
-    if (
-      !laneFs410 ||
-      baseTarget410 === undefined ||
-      fsTarget410 === undefined
-    ) {
-      throw new Error(
-        "the arc test above must run first and set laneFs410/baseTarget410/fsTarget410 \
-(same describe.serial block)",
-      );
-    }
-    const fs = laneFs410;
-
-    // The retired Hiwatt arc's own SKIP-LEGITIMACY guard, folded in here: a `saved:false`
-    // result on the FIRST run (above) is legitimate ONLY when the stored value already
-    // measured within FS tolerance of target — never a silent "did nothing" masquerading
-    // as success.
-    for (const r of fs) {
+    // ── Idempotency, ON THE SAME SAVED STATE this arc just wrote (was its own test, T2) ──
+    // The SKIP-LEGITIMACY guard: a `saved:false` footswitch result above is legitimate ONLY
+    // when the stored value already measured within tolerance of target — never a silent
+    // "did nothing" masquerading as success.
+    for (const r of fs410) {
       if (!r.saved) {
         expect(
-          Math.abs(r.predicted_lufs - fsTarget410),
-          `switch ${String(r.switch)} skipped its save on the first run, legitimate only \
-when the stored value already measured within tolerance of target`,
+          Math.abs(r.predicted_lufs - fsTargetUsed410),
+          `switch ${String(r.switch)} skipped its save, legitimate only when the stored \
+value already measured within tolerance of target`,
         ).toBeLessThanOrEqual(ACCEPT_TOL_LU);
       }
     }
-
-    // ── Base skip-branch ──
+    // The base skip-branch: a re-run at the same target solves the value already saved, so
+    // it must write nothing (`level_unchanged`). The footswitch skip-branch is not re-run
+    // here: the same skip rule is pinned offline (`bake_path_footswitch_rerun_skips_the_
+    // persist_when_already_at_target`), and the device adds only capture noise to it.
     const baseRerun = (await invoke(
       page,
       "level_preset",
-      { job: baseLevelJob(FRIEDMAN.slot, baseTarget410) },
+      { job: baseLevelJob(FRIEDMAN.slot, baseTargetUsed) },
       T,
     )) as LevelResult;
     expect(
@@ -476,55 +451,12 @@ when the stored value already measured within tolerance of target`,
     ).toBe(false);
     expect(
       baseRerun.saved,
-      "base re-run solved the same value the arc test already saved → must skip the write (level_unchanged)",
+      "base re-run solved the same value the arc already saved → must skip the write (level_unchanged)",
     ).toBe(false);
     expect(
       baseRerun.base_boost,
       "the see-saw guard holds on re-run too: still TRADE, never BOOST",
     ).toBeNull();
-
-    // ── Footswitch skip-branch (410's own TubeScreamer row) ──
-    const firstRun = fs.map((r) => r.switch);
-    expect(
-      firstRun,
-      "the arc test must have leveled switch 1, or this re-run is a fresh solve, not a skip",
-    ).toContain(1);
-    const fs2 = (await invoke(
-      page,
-      "level_footswitches_apply",
-      {
-        slot: FRIEDMAN.slot,
-        jobs: [
-          {
-            switch: 1,
-            levGroupId: "G1",
-            levNodeId: "ACD_TubeScreamer",
-            levParameterId: "level",
-            targetLufs: fsTarget410,
-          },
-        ],
-        save: true,
-        topologyId: "guitar-humbucker",
-        calibrationLufs: null,
-        profileId: null,
-        onResult: "__CHANNEL__:1",
-      },
-      T * 2,
-    )) as FootswitchLevelResult[];
-
-    const fsTarget410Narrowed = fsTarget410;
-    expectEverySwitch(fs2, [{ switch: 1 }]);
-    assertFsSolved(fs2, () => fsTarget410Narrowed, ACCEPT_TOL_LU);
-    // Every switch the arc test leveled is on target now, whether it wrote a value there or
-    // skipped as already within ACCEPT_TOL_LU, so the re-run at the same target writes nothing.
-    for (const r2 of fs2) {
-      if (firstRun.includes(r2.switch)) {
-        expect(
-          r2.saved,
-          `switch ${String(r2.switch)} is on target after the arc test (written there or already within tolerance) → this re-run at the same target must skip the write`,
-        ).toBe(false);
-      }
-    }
 
     await expectReampBalanced(page, reampBase);
   });
@@ -583,20 +515,15 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
-    // Identity-verified preview read + conditional fader calibration (up to ~4 engages) +
-    // base UI drive (3 conns/1 engage via the wizard) + a same-target confirm read + a
-    // 2-switch footswitch batch + 3 strict ffmpeg re-measures.
+    // Base UI drive (3 conns/1 engage via the wizard), a fallback calibration only when the
+    // seeded fixture does not boost (up to ~4 engages + a second UI drive), a 2-switch
+    // footswitch batch + 3 strict ffmpeg re-measures (not on the remote twin).
     test.setTimeout(1_800_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
-    // Self-calibration (file header's SELF-CALIBRATE note): guarantee the BOOST precondition
-    // directly — `G = target - as_is > P_up` (headroom to presetLevel=1.0) — by reading the
-    // pedals-off ceiling and, if short, lowering the Twin's fader (never `presetLevel`) via
-    // `level_preset`'s BLOCK-KNOB arm, the only seam here that can write+persist a block
-    // parameter (a closed-loop TARGET solve, so the change is a raw LUFS target, not a value).
     // Verify by IDENTITY (the Twin): a discovery that answered with another preset's graph
-    // must fail loudly here.
+    // must fail loudly here. Its value is the fader's baseline for the boost assertions below.
     const blocksPre = (await invoke(
       page,
       "list_level_blocks",
@@ -612,112 +539,134 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
     const twinCandidatePre = findTwin(blocksPre);
     expect(
       twinCandidatePre,
-      `the Twin's outputLevel candidate must be discoverable before calibration — \
+      `the Twin's outputLevel candidate must be discoverable before the run — \
 list_level_blocks(${String(PRESET24.slot)}) answered with \
 [${blocksPre.map((b) => `${b.node_id}.${b.parameter_id}`).join(", ")}], which is another \
 preset's graph if the Twin is absent (a cross-slot load that did not take)`,
     ).toBeDefined();
     if (!twinCandidatePre) {
       throw new Error(
-        "the Twin's outputLevel candidate must be discoverable before calibration",
+        "the Twin's outputLevel candidate must be discoverable before the run",
       );
     }
-
-    // Raw pedals-off reading at the CURRENT presetLevel/fader. `e2e_measure_sound`'s base
-    // branch (scene=null, footswitch=null) isolates every footswitch-owned block off
-    // (e2e_server.rs's `doctor_force_bypass(&saved["ftsw"], &saved, footswitch)` with
-    // `footswitch: None`) — the SAME isolation `level_preset`'s own base arm uses
-    // (`commands/level_preset.rs`'s `base_isolation_or_refuse`), so this raw reading and the
-    // `constant_c` below are commensurable (same measurement context, different math on top).
-    const asIsRaw = (await invoke(
-      page,
-      "e2e_measure_sound",
-      {
-        slot: PRESET24.slot,
-        scene: null,
-        footswitch: null,
-        topologyId: "guitar-humbucker",
-        lev: null,
-        validate: null,
-      },
-      T,
-    )) as number;
-
-    // A DRY preview (save:false) of the ordinary presetLevel-only solve: never writes, just
-    // reports the SOLVED `constant_c` — the pedals-off ceiling extrapolated to presetLevel=1
-    // (leveller.rs's own doc on `LevelResult::constant_c`), which is presetLevel-INDEPENDENT
-    // (unlike `asIsRaw`, which reads at whatever presetLevel happens to be currently stored —
-    // resident state across runs, per e2e.md, so it can't be assumed to be 1.0).
-    const preview = (await invoke(
-      page,
-      "level_preset",
-      { job: { ...baseLevelJob(PRESET24.slot, BASE_TARGET_405), save: false } },
-      T,
-    )) as LevelResult;
-
-    // `P_up` (headroom from the current `presetLevel` to 1.0) is INVARIANT under a fader move —
-    // both `constant_c` and `asIsRaw` shift by the same d dB — so it can be computed once here
-    // and still describes the state after calibration below.
-    const pUp = preview.constant_c - asIsRaw;
-    const BOOST_MARGIN_DB = 2.0; // slack over the bare G > P_up boundary (secant/capture noise)
-    let fCalibrated = twinCandidatePre.value;
-    // Skip calibration (no write) when BOOST is already guaranteed (G > P_up) —
-    // the cheap, common path (a prior run's own leveling, or a naturally quiet fixture).
-    if (BASE_TARGET_405 - asIsRaw <= pUp) {
-      // Aim the closed loop at the raw LUFS value that makes the new G exceed P_up by the
-      // margin — commensurable with `asIsRaw`'s own isolated pedals-off measurement basis.
-      const blockTarget = BASE_TARGET_405 - pUp - BOOST_MARGIN_DB;
-      const calibration = (await invoke(
-        page,
-        "level_preset",
-        {
-          job: {
-            slot: PRESET24.slot,
-            target_lufs: blockTarget,
-            save: true,
-            topology_id: "guitar-humbucker",
-            calibration_lufs: null,
-            stimulus_path: null,
-            profile_id: null,
-            block_group_id: twinCandidatePre.group_id,
-            block_node_id: twinCandidatePre.node_id,
-            block_parameter_id: twinCandidatePre.parameter_id,
-            block_value: twinCandidatePre.value,
-          },
-        },
-        T,
-      )) as LevelResult;
-      expect(
-        calibration.clamped,
-        "the calibration fader-lower must reach its (quieter) target, not clamp",
-      ).toBe(false);
-      expect(calibration.saved, "the calibration write must save").toBe(true);
-      fCalibrated = calibration.final_level;
-    }
-
-    // The guaranteed minimum excess of `G` over `P_up` the run below will see: the engineered
-    // margin, or whatever natural margin already existed when calibration was skipped.
-    const guaranteedExcessDb =
-      BASE_TARGET_405 - asIsRaw > pUp
-        ? BASE_TARGET_405 - asIsRaw - pUp
-        : BOOST_MARGIN_DB;
 
     // The UI journey itself: the wizard end to end, proving the base_boost summary-row
     // disclosure (SummaryPage.tsx's `baseBoostSentence`) renders in the real app, not just on
     // the wire. `Rhythm` = -23 LUFS (profiles.rs::default_targets), matching BASE_TARGET_405.
-    await runBaseLevel(page, [{ preset: PRESET24, label: "Rhythm" }]);
-    // `useGroupOpen`'s `badSlots` auto-open list is built from non-"done" rows only
-    // (SummaryPage.tsx) — an all-good run's preset group starts COLLAPSED on Summary, same as
-    // level-defaults.spec.ts's own boost-sentence test (a). Expand it before reading the row
-    // detail, or the sentence below is never in the DOM to match against.
-    await page
-      .locator(`[data-preset-group="${String(PRESET24.slot)}"]`)
-      .click();
-    await expect(
-      page.getByText(
-        /Turned this preset up as far as it goes and raised the amp/,
-      ),
-    ).toBeVisible();
+    const boostSentence = page.getByText(
+      /Turned this preset up as far as it goes and raised the amp/,
+    );
+    const runAndReadBoost = async (): Promise<boolean> => {
+      await runBaseLevel(page, [{ preset: PRESET24, label: "Rhythm" }]);
+      // `useGroupOpen`'s `badSlots` auto-open list is built from non-"done" rows only
+      // (SummaryPage.tsx) — an all-good run's preset group starts COLLAPSED on Summary, same
+      // as level-defaults.spec.ts's own boost-sentence test (a). Expand it before reading the
+      // row detail, or the sentence is never in the DOM to match against.
+      if (!(await boostSentence.isVisible())) {
+        await page
+          .locator(`[data-preset-group="${String(PRESET24.slot)}"]`)
+          .click();
+      }
+      return boostSentence
+        .waitFor({ timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false);
+    };
+
+    // OPTIMISTIC FIRST (the T1′ base-clamp fallback's pattern): the seed re-imports 405
+    // pristine before every run, and its authored pair (presetLevel 0.27, Twin 0.28, the Rat
+    // base-ON) puts G = target - as_is well past P_up (headroom to presetLevel 1.0), so the
+    // run boosts with no setup. The as-is read, the dry preview and the fader calibration it
+    // used to pay up front (file header's SELF-CALIBRATE note: a sim magnitude is not device
+    // truth) now run only when the device proves that wrong — the fallback below.
+    let fCalibrated = twinCandidatePre.value;
+    // The minimum excess of G over P_up the boost run saw — known only when the fallback
+    // measured it; the optimistic path proves BOOST by the disclosure sentence instead.
+    let guaranteedExcessDb: number | null = null;
+    if (!(await runAndReadBoost())) {
+      // Self-calibration: guarantee the BOOST precondition directly — `G > P_up` — by
+      // reading the pedals-off ceiling and lowering the Twin's fader (never `presetLevel`)
+      // via `level_preset`'s BLOCK-KNOB arm, the only seam here that can write+persist a
+      // block parameter (a closed-loop TARGET solve, so the change is a raw LUFS target).
+      //
+      // Raw pedals-off reading at the CURRENT presetLevel/fader. `e2e_measure_sound`'s base
+      // branch isolates every footswitch-owned block off — the SAME isolation
+      // `level_preset`'s own base arm uses — so this raw reading and the `constant_c` below
+      // are commensurable.
+      const asIsRaw = (await invoke(
+        page,
+        "e2e_measure_sound",
+        {
+          slot: PRESET24.slot,
+          scene: null,
+          footswitch: null,
+          topologyId: "guitar-humbucker",
+          lev: null,
+          validate: null,
+        },
+        T,
+      )) as number;
+      // A DRY preview (save:false): never writes, just reports the SOLVED `constant_c` — the
+      // pedals-off ceiling extrapolated to presetLevel=1, which is presetLevel-INDEPENDENT.
+      const preview = (await invoke(
+        page,
+        "level_preset",
+        {
+          job: { ...baseLevelJob(PRESET24.slot, BASE_TARGET_405), save: false },
+        },
+        T,
+      )) as LevelResult;
+      // `P_up` is INVARIANT under a fader move — both `constant_c` and `asIsRaw` shift by the
+      // same d dB — so it still describes the state after calibration below.
+      const pUp = preview.constant_c - asIsRaw;
+      const BOOST_MARGIN_DB = 2.0; // slack over the bare G > P_up boundary
+      const twinNow = findTwin(
+        (await invoke(
+          page,
+          "list_level_blocks",
+          { slot: PRESET24.slot },
+          T,
+        )) as LevelBlock[],
+      );
+      if (!twinNow) throw new Error("the Twin vanished after the first run");
+      fCalibrated = twinNow.value;
+      guaranteedExcessDb = BASE_TARGET_405 - asIsRaw - pUp;
+      if (guaranteedExcessDb <= 0) {
+        // Aim the closed loop at the raw LUFS value that makes the new G exceed P_up by the
+        // margin — commensurable with `asIsRaw`'s own isolated measurement basis.
+        const calibration = (await invoke(
+          page,
+          "level_preset",
+          {
+            job: {
+              slot: PRESET24.slot,
+              target_lufs: BASE_TARGET_405 - pUp - BOOST_MARGIN_DB,
+              save: true,
+              topology_id: "guitar-humbucker",
+              calibration_lufs: null,
+              stimulus_path: null,
+              profile_id: null,
+              block_group_id: twinNow.group_id,
+              block_node_id: twinNow.node_id,
+              block_parameter_id: twinNow.parameter_id,
+              block_value: twinNow.value,
+            },
+          },
+          T,
+        )) as LevelResult;
+        expect(
+          calibration.clamped,
+          "the calibration fader-lower must reach its (quieter) target, not clamp",
+        ).toBe(false);
+        expect(calibration.saved, "the calibration write must save").toBe(true);
+        fCalibrated = calibration.final_level;
+        guaranteedExcessDb = BOOST_MARGIN_DB;
+      }
+      expect(
+        await runAndReadBoost(),
+        "with G > P_up guaranteed, the wizard run must disclose the base boost",
+      ).toBe(true);
+    }
 
     // Assert the PERSISTED pair directly rather than re-invoking `level_preset` a second
     // time: a same-target re-run's OWN result is unreliable evidence of what the UI run above
@@ -742,25 +691,27 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       twinFader,
       "the Twin's outputLevel candidate must be discoverable",
     ).toBeDefined();
-    // A derived BAND off our OWN calibrated baseline, never a hard-coded model number (the
-    // old `toBeCloseTo(0.498, 1)` was the offline sim model's own number, not a real-HW
-    // invariant — file header's SELF-CALIBRATE note). Boost maxes `presetLevel` FIRST (the disclosure
-    // sentence above just confirmed it fired), so the fader's OWN share of closing the
-    // `guaranteedExcessDb` deficit this test guaranteed is itself >= `guaranteedExcessDb`,
-    // inflated further by whatever the drive pedals' base-ON contribution already was — so the
-    // solved fader must be strictly louder than the calibrated baseline, by at least
-    // `(guaranteedExcessDb - 1)` dB (1 dB slack for solve noise/secant residual).
+    // A derived BAND off our OWN baseline, never a hard-coded model number (the old
+    // `toBeCloseTo(0.498, 1)` was the offline sim model's own number, not a real-HW invariant
+    // — file header's SELF-CALIBRATE note). Boost maxes `presetLevel` FIRST (the disclosure
+    // sentence above just confirmed it fired), so the solved fader must be strictly louder
+    // than its baseline. When the fallback measured the excess of G over P_up, the fader's
+    // own share of closing it is at least that excess (inflated further by the drive pedals'
+    // base-ON contribution), so it must also clear `(guaranteedExcessDb - 1)` dB over the
+    // baseline (1 dB slack for solve noise/secant residual).
     expect(
       twinFader?.value ?? Number.NaN,
-      "the boosted fader must be LOUDER than the calibrated baseline (a real boost, not a no-op)",
+      "the boosted fader must be LOUDER than its baseline (a real boost, not a no-op)",
     ).toBeGreaterThan(fCalibrated);
-    expect(
-      twinFader?.value ?? Number.NaN,
-      `the boosted fader must close at least the ~${guaranteedExcessDb.toFixed(2)} dB (minus \
+    if (guaranteedExcessDb !== null) {
+      expect(
+        twinFader?.value ?? Number.NaN,
+        `the boosted fader must close at least the ~${guaranteedExcessDb.toFixed(2)} dB (minus \
 1 dB solve-noise slack) deficit off the calibrated baseline ${fCalibrated.toFixed(4)}`,
-    ).toBeGreaterThanOrEqual(
-      fCalibrated * 10 ** ((guaranteedExcessDb - 1) / 20),
-    );
+      ).toBeGreaterThanOrEqual(
+        fCalibrated * 10 ** ((guaranteedExcessDb - 1) / 20),
+      );
+    }
 
     // Self-calibration (file header's SELF-CALIBRATE note): taken AFTER the base boost above
     // (which scales every footswitch capture on this slot), with the SAME `lev` coordinates the
@@ -805,7 +756,8 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       return job.targetLufs;
     });
 
-    // 3 strict ffmpeg re-measures: base + both leveled pedals, from the saved state.
+    // 3 strict ffmpeg re-measures: base + both leveled pedals, from the saved state. Not on
+    // the remote twin (file header).
     const measure405 = (
       job?: (typeof SWITCH_JOBS_405)[number],
     ): Promise<number> =>
@@ -833,17 +785,19 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
         T,
       ) as Promise<number>;
 
-    const heardBase = await measure405();
-    expect(
-      Math.abs(heardBase - BASE_TARGET_405),
-      `base re-measures at ${heardBase.toFixed(2)} LUFS from the saved state`,
-    ).toBeLessThanOrEqual(DELTA);
-    for (const job of SWITCH_JOBS_405) {
-      const heard = await measure405(job);
+    if (!(await isRemote(page))) {
+      const heardBase = await measure405();
       expect(
-        Math.abs(heard - job.targetLufs),
-        `switch ${String(job.switch)} re-measures at ${heard.toFixed(2)} LUFS from the saved state`,
-      ).toBeLessThanOrEqual(DELTA_FS);
+        Math.abs(heardBase - BASE_TARGET_405),
+        `base re-measures at ${heardBase.toFixed(2)} LUFS from the saved state`,
+      ).toBeLessThanOrEqual(DELTA);
+      for (const job of SWITCH_JOBS_405) {
+        const heard = await measure405(job);
+        expect(
+          Math.abs(heard - job.targetLufs),
+          `switch ${String(job.switch)} re-measures at ${heard.toFixed(2)} LUFS from the saved state`,
+        ).toBeLessThanOrEqual(DELTA_FS);
+      }
     }
 
     await expectReampBalanced(page, reampBase);

@@ -63,7 +63,7 @@ Behavior must be MAINTAIN CHANGES** for any spec set containing `level.online`. 
 drives the DEFERRED-WRITE leveling lanes (`level_scenes_apply_batched`,
 `level_footswitches_apply`), which `level_scenes::scene_discard_guard` refuses outright
 under DISCARD — so the run dies ~13 min in, after `doctor.online` has already spent its 8,
-and `describe.serial` takes level.online's other three tests down with it. It is a device
+and level.online's Plumes journey runs after it on the same misconfigured unit. It is a device
 misconfiguration, not a platform bug: any host fails identically.
 
 `scripts/e2e.sh`'s `scene_change_preflight` catches it in seconds instead. Two things about
