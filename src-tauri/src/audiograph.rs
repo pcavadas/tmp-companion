@@ -95,10 +95,10 @@ pub fn instance_id(node: &Value) -> Option<&str> {
 }
 
 /// The firmware's id for a new node of model `model` in a group already using `ids`
-/// (fw 1.8.58 `FUN_00c7fd80`): the model id, or the first free `<model>_<n>`. Shared by the
-/// offline [`replace_block`] and the simulator's insert/replace, so both mint the way the unit
-/// does and two blocks in one group never share an id (a duplicate id at load orphans the
-/// first unit).
+/// (fw 1.8.58 `FUN_00c7fd80`): the model id, or the first free `<model>_<n>`. The simulator's
+/// insert/replace mints with it, so it mints the way the unit does and two blocks in one group
+/// never share an id (a duplicate id at load orphans the first unit).
+#[cfg(any(test, feature = "e2e"))]
 pub fn mint_node_id(ids: &[String], model: &str) -> String {
     if !ids.iter().any(|id| id == model) {
         return model.to_string();
@@ -226,129 +226,6 @@ pub fn count_model_nodes(preset: &Value, model: &str) -> usize {
     n
 }
 
-/// Drop every per-scene parameter override for the instance `node_id` of `group`. A preset
-/// stores each scene's overlay under `scenes[].{guitarNodes,micNodes}.<group>.<nodeId>`
-/// (fw 1.8.58: the server keys it by the request's `nodeId`, not the `FenderId`); on a model
-/// swap the old block's scene-scoped tweaks are meaningless for the new model, so they go
-/// (the surviving block then plays its base params in every scene). Returns entries removed.
-fn drop_scene_overrides(preset: &mut Value, group: &str, node_id: &str) -> usize {
-    let mut removed = 0;
-    let Some(scenes) = preset.get_mut("scenes").and_then(Value::as_array_mut) else {
-        return 0;
-    };
-    for scene in scenes.iter_mut() {
-        for graph in GRAPHS {
-            if let Some(obj) = scene
-                .get_mut(graph)
-                .and_then(|g| g.get_mut(group))
-                .and_then(Value::as_object_mut)
-            {
-                if obj.remove(node_id).is_some() {
-                    removed += 1;
-                }
-            }
-        }
-    }
-    removed
-}
-
-/// Retarget footswitch on-off assignments by instance. A footswitch is
-/// `ftsw[i][].nodes[] = { groupId, nodeId }`; every ref whose `(groupId, nodeId)` is a key of
-/// `renames` is pointed at its new id in ONE pass (so a chain of renames can't re-match a ref
-/// it just rewrote), and the switch keeps controlling the swapped-in block. A ref with no
-/// `groupId` matches on `nodeId` alone. Returns the number of refs retargeted.
-fn retarget_ftsw(preset: &mut Value, renames: &[(String, String, String)]) -> usize {
-    let mut n = 0;
-    let Some(switches) = preset.get_mut("ftsw").and_then(Value::as_array_mut) else {
-        return 0;
-    };
-    for layer in switches
-        .iter_mut()
-        .filter_map(Value::as_array_mut)
-        .flat_map(|layers| layers.iter_mut())
-    {
-        let Some(nodes) = layer.get_mut("nodes").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        for nd in nodes.iter_mut() {
-            let group = nd.get("groupId").and_then(Value::as_str);
-            let id = nd.get("nodeId").and_then(Value::as_str);
-            let hit = renames
-                .iter()
-                .find(|(g, old, _)| Some(old.as_str()) == id && group.is_none_or(|grp| grp == g));
-            if let (Some((_, _, new)), Some(o)) = (hit, nd.as_object_mut()) {
-                o.insert("nodeId".into(), Value::String(new.clone()));
-                n += 1;
-            }
-        }
-    }
-    n
-}
-
-/// Replace every block of model `from` with model `to` (FenderId + a freshly minted
-/// `nodeId`), resetting its parameters to `b_defaults`. Returns the number of nodes replaced.
-/// `nodeType` is preserved. Presets without `from` are left untouched (count 0).
-///
-/// Matches by MODEL, so every instance (`X`, `X_1`, …) is replaced. Each replaced node gets
-/// the id the firmware would mint in its group ([`mint_node_id`] against the ids the group
-/// keeps), so two replaced instances never share one. Each instance's stale per-scene
-/// overrides are dropped and any footswitch on-off ref to it is retargeted to its own new id,
-/// so no scene/footswitch is left referencing the old block.
-pub fn replace_block(
-    preset: &mut Value,
-    from: &str,
-    to: &str,
-    b_defaults: &Map<String, Value>,
-) -> usize {
-    // (group, old instance id, new instance id) for every replaced node.
-    let mut renames: Vec<(String, String, String)> = Vec::new();
-    let Some(ag) = preset.get_mut("audioGraph").and_then(Value::as_object_mut) else {
-        return 0;
-    };
-    for graph in GRAPHS {
-        let Some(groups) = ag.get_mut(graph).and_then(Value::as_object_mut) else {
-            continue;
-        };
-        let mut keys: Vec<String> = groups.keys().cloned().collect();
-        keys.sort();
-        for group in keys {
-            let Some(nodes) = groups.get_mut(&group).and_then(Value::as_array_mut) else {
-                continue;
-            };
-            let is_target = |n: &Value| Node::of(n).is_some_and(|n| n.matches_model(from));
-            // The ids the group keeps: every node this replace leaves alone.
-            let mut taken: Vec<String> = nodes
-                .iter()
-                .filter(|n| !is_target(n))
-                .filter_map(|n| instance_id(n).map(str::to_string))
-                .collect();
-            for node in nodes.iter_mut() {
-                if !is_target(node) {
-                    continue;
-                }
-                let old = instance_id(node).unwrap_or(from).to_string();
-                let new = mint_node_id(&taken, to);
-                taken.push(new.clone());
-                let Some(obj) = node.as_object_mut() else {
-                    continue;
-                };
-                obj.insert("nodeId".into(), Value::String(new.clone()));
-                obj.insert("FenderId".into(), Value::String(to.to_string()));
-                obj.insert(
-                    "dspUnitParameters".into(),
-                    Value::Object(b_defaults.clone()),
-                );
-                renames.push((group.clone(), old, new));
-            }
-        }
-    }
-    for (group, old, _) in &renames {
-        drop_scene_overrides(preset, group, old);
-    }
-    retarget_ftsw(preset, &renames);
-    renames.len()
-}
-
 /// Set the `dspUnitParameters.bypass` flag to `bypass` on every block whose MODEL is in
 /// `ids` — every instance of it (base scene only). Returns the number of matching blocks set.
 pub fn set_bypass(
@@ -380,13 +257,6 @@ pub struct BulkBypassOp {
 }
 
 impl crate::bulkrun::Operation for BulkBypassOp {
-    fn label(&self) -> String {
-        format!(
-            "{} {} block type(s)",
-            if self.bypass { "bypass" } else { "enable" },
-            self.ids.len()
-        )
-    }
     fn transform(&self, t: &crate::bulkrun::PresetTarget) -> Result<Option<String>, String> {
         let mut v: Value =
             serde_json::from_str(&t.before_json).map_err(|e| format!("parse: {e}"))?;
@@ -420,69 +290,12 @@ mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
 
-    fn defaults(pairs: &[(&str, Value)]) -> Map<String, Value> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect()
-    }
-
     fn preset_with(node_id: &str, params: Value) -> Value {
         serde_json::json!({
             "audioGraph": { "guitarNodes": { "G1": [
                 { "FenderId": node_id, "nodeId": node_id, "nodeType": "dspUnit", "dspUnitParameters": params }
             ] } }
         })
-    }
-
-    // AC1 — every A node becomes a valid B node at the same path with B defaults.
-    #[test]
-    fn swap_model_a_to_b_in_audiograph() {
-        let mut p = preset_with("ACD_TubeScreamer", serde_json::json!({ "drive": 0.7 }));
-        let bd = defaults(&[
-            ("gain", serde_json::json!(0.1)),
-            ("level", serde_json::json!(0.5)),
-        ]);
-        let n = replace_block(&mut p, "ACD_TubeScreamer", "ACD_KlonCentaur", &bd);
-        assert_eq!(n, 1);
-        let node = &p["audioGraph"]["guitarNodes"]["G1"][0];
-        assert_eq!(node["nodeId"], "ACD_KlonCentaur");
-        assert_eq!(node["FenderId"], "ACD_KlonCentaur");
-        assert_eq!(node["nodeType"], "dspUnit"); // preserved
-        assert_eq!(
-            node["dspUnitParameters"],
-            serde_json::json!({ "gain": 0.1, "level": 0.5 })
-        );
-    }
-
-    // AC2 (round-trip) — mutate the decoded fixture, re-encode to `.preset` bytes
-    // (XOR), decode again → equals the mutated JSON (the OFFLINE re-import contract).
-    // Auto-skips when the gitignored fixture is absent.
-    #[test]
-    fn reencode_roundtrips() {
-        let xor = crate::backup::xor_jld;
-        let path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/Guitar.preset");
-        let Ok(file) = std::fs::read(&path) else {
-            eprintln!("skip: fixture {} absent", path.display());
-            return;
-        };
-        let json_str = String::from_utf8(xor(&file)).unwrap();
-        let mut v: Value = serde_json::from_str(&json_str).unwrap();
-
-        // Guitar.preset has ACD_KlonCentaur; swap it to ACD_Pugilist.
-        assert!(count_model_nodes(&v, "ACD_KlonCentaur") >= 1);
-        let n = replace_block(&mut v, "ACD_KlonCentaur", "ACD_Pugilist", &Map::new());
-        assert!(n >= 1);
-
-        // Re-encode → .preset bytes → decode again, and confirm losslessness.
-        let mutated = serde_json::to_string(&v).unwrap();
-        let preset_bytes = xor(mutated.as_bytes());
-        let decoded_again = String::from_utf8(xor(&preset_bytes)).unwrap();
-        assert_eq!(decoded_again, mutated, "XOR re-encode round-trips exactly");
-        let reparsed: Value = serde_json::from_str(&decoded_again).unwrap();
-        assert_eq!(count_model_nodes(&reparsed, "ACD_KlonCentaur"), 0);
-        assert!(count_model_nodes(&reparsed, "ACD_Pugilist") >= 1);
     }
 
     fn ids(list: &[&str]) -> HashSet<String> {
@@ -568,18 +381,6 @@ mod tests {
         assert!(found, "IR node present after round-trip");
     }
 
-    fn ids_of(preset: &Value, group: &str) -> Vec<String> {
-        preset
-            .pointer(&format!("/audioGraph/guitarNodes/{group}"))
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|n| instance_id(n).map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     // ─── remove + scene/ftsw ref rewrite ──────────────────────────────────────
 
     /// A preset carrying A and B in G1, a per-scene override for A, and a footswitch
@@ -601,30 +402,6 @@ mod tests {
                 [ { "func": "scene", "sceneSlot": 0 } ]
             ]
         })
-    }
-
-    #[test]
-    fn replace_block_retargets_scene_and_ftsw() {
-        let mut v = preset_with_scene_and_ftsw();
-        let n = replace_block(
-            &mut v,
-            "ACD_A",
-            "ACD_C",
-            &defaults(&[("vol", serde_json::json!(0.7))]),
-        );
-        assert_eq!(n, 1);
-        // node became C with B-defaults.
-        assert_eq!(
-            ids_of(&v, "G1"),
-            vec!["ACD_C".to_string(), "ACD_B".to_string()]
-        );
-        // stale scene override for A dropped (the new block plays base params).
-        assert!(v["scenes"][0]["guitarNodes"]["G1"].get("ACD_A").is_none());
-        // footswitch on-off now controls C.
-        assert_eq!(
-            v["ftsw"][0][0]["nodes"][0]["nodeId"],
-            serde_json::json!("ACD_C")
-        );
     }
 
     #[test]
@@ -690,39 +467,6 @@ mod tests {
             "an instance id is not a model"
         );
         assert_eq!(count_model_nodes(&p, "ACD_Klon"), 1);
-    }
-
-    #[test]
-    fn replace_block_replaces_every_instance_with_distinct_ids() {
-        let mut p = preset_with_two_instances();
-        let n = replace_block(&mut p, "ACD_TS", "ACD_Boost", &Map::new());
-        assert_eq!(n, 2, "both instances are replaced");
-        assert_eq!(
-            ids_of(&p, "G1"),
-            vec!["ACD_Boost", "ACD_Boost_1", "ACD_Klon"],
-            "minted the way the firmware does: distinct ids in the group"
-        );
-        assert_eq!(count_model_nodes(&p, "ACD_TS"), 0);
-        assert_eq!(count_model_nodes(&p, "ACD_Boost"), 2);
-        // Each instance's own overlay is dropped; the untouched block keeps its own.
-        let scene = &p["scenes"][0]["guitarNodes"]["G1"];
-        assert!(scene.get("ACD_TS").is_none());
-        assert!(scene.get("ACD_TS_1").is_none());
-        assert!(scene.get("ACD_Klon").is_some());
-        // Each footswitch follows ITS instance to its own new id.
-        assert_eq!(p["ftsw"][0][0]["nodes"][0]["nodeId"], "ACD_Boost");
-        assert_eq!(p["ftsw"][1][0]["nodes"][0]["nodeId"], "ACD_Boost_1");
-    }
-
-    #[test]
-    fn replace_block_mints_past_an_existing_block_of_the_new_model() {
-        let mut p = preset_with_two_instances();
-        // ACD_Klon already holds the `ACD_Klon` id in G1, so the replaced TS blocks mint past it.
-        replace_block(&mut p, "ACD_TS", "ACD_Klon", &Map::new());
-        assert_eq!(
-            ids_of(&p, "G1"),
-            vec!["ACD_Klon_1", "ACD_Klon_2", "ACD_Klon"]
-        );
     }
 
     #[test]

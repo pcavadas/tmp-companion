@@ -40,7 +40,6 @@ macro_rules! app_invoke_handler_with {
 
 mod audio;
 mod audiograph;
-mod audition;
 mod backup;
 mod backup_read;
 mod benchmark;
@@ -67,9 +66,7 @@ mod hid;
 mod ir;
 mod leveller;
 mod library;
-mod lint;
 mod lufs;
-mod migration;
 mod monitor;
 mod param_class;
 mod paramedit;
@@ -79,7 +76,6 @@ mod probe_api;
 mod profiles;
 mod proto;
 mod psd;
-mod rename;
 mod replace_inplace;
 mod rig;
 #[cfg(test)]
@@ -96,7 +92,6 @@ mod sim_device;
 // `pub` so the `probe` bin parses and passes typed slots (`tmp_companion_lib::slot`).
 pub mod slot;
 mod slot_read;
-mod spectrum;
 // Stimulus + WAV I/O and the dry-DI capture, shared by leveling, Doctor and calibration.
 mod stimulus;
 // Shared test-only fixtures/generators (`audio` onset tests, `leveller`
@@ -115,7 +110,6 @@ mod remote_audio;
 // P5 external validation: the JSON-lines expectation log the measurement seams append
 // to when `TMP_E2E_VALIDATE_LOG` is set. Inert (and unallocating) otherwise.
 mod validate_log;
-mod variants;
 mod watcher;
 
 pub use backup_read::*;
@@ -125,6 +119,7 @@ pub use probe_api::*;
 // The scene-leveling seam the commands address at the crate root. `scene_overlay_for`/
 // `RefusedScope` are NOT re-exported (their callers live inside `scene_jobs`; an unused
 // `pub(crate) use` is a `-D warnings` failure).
+pub(crate) use scene_jobs::filter_amp_candidates;
 pub(crate) use scene_jobs::{
     base_handle_candidates_scanned, build_scene_jobs_with_handles, is_amp_model_id,
     is_amp_output_level_param, last_loaded_scene, prepass_scene_docs_via, read_saved_preset,
@@ -132,7 +127,6 @@ pub(crate) use scene_jobs::{
     scene_overlay, scene_write_verdict_for_param, scenes_restating_base,
     warn_missing_restore_scene, SceneHandleSpec, SceneOverlay, SceneWriteVerdict,
 };
-pub(crate) use scene_jobs::{filter_amp_candidates, knob_bounds};
 // `pub`, not `pub(crate)`: `backup_read::BackupPresetRow.scene_handles`/`.base_handles` (both
 // `pub` fields) embed these — a less-visible type inside a more-visible field is a hard
 // warning (`private_interfaces`).
@@ -141,8 +135,7 @@ pub use scene_jobs::{SceneHandleCandidate, SceneHandleRow};
 pub(crate) use probe_api::setlists::{read_setlist_list, read_setlist_songs};
 pub(crate) use probe_api::slot_write::{discover_active_graph, load_then_discover_blocks};
 pub(crate) use probe_api::songs::{
-    bpm_landed, converge_song_bpm, find_song_slot, read_song_list, read_song_presets,
-    set_song_bpm_on,
+    bpm_landed, find_song_slot, read_song_list, read_song_presets, set_song_bpm_on,
 };
 pub use replace_inplace::*;
 pub use saved_blocks::*;
@@ -208,14 +201,6 @@ mod lock_ok_tests {
 #[derive(Default)]
 pub(crate) struct AppState {
     session: Arc<Mutex<Option<Session>>>,
-    /// The imported OFFLINE `.preset` library (None until `import_library`). The
-    /// canonical full-preset source every bulk feature edits.
-    library: Arc<Mutex<Option<library::Library>>>,
-    /// Completed bulk runs, keyed by run_id, so `bulk_revert` can restore one.
-    runs: Arc<Mutex<bulk_cmd::RunRegistry>>,
-    /// Rendered audition clips, keyed by slot+topology, so re-auditioning
-    /// skips the re-amp pass. Session-scoped (see `audition` module caveat).
-    clip_cache: Arc<Mutex<audition::ClipCache>>,
 }
 
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -223,8 +208,7 @@ use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 /// Monitor intent: when set, the persistent device monitor (`monitor.rs`) owns the
 /// idle HID seize, streams unsolicited unit pushes, and publishes the startup
 /// snapshot. `connect_device` sets this after releasing any old UI session; commands
-/// borrow the device through `DEVICE_OP_LOCK` + pause/ack. `stop_live_sync` is kept
-/// for diagnostics/settings paths that explicitly need to reclaim a UI session.
+/// borrow the device through `DEVICE_OP_LOCK` + pause/ack.
 pub(crate) static MONITOR_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// A command (holding [`DEVICE_OP_LOCK`]) asks the persistent device monitor to

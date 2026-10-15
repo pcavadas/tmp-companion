@@ -12,7 +12,6 @@
 //! so this module stays pure + unit-testable and the firmware coupling lives in the
 //! app layer.
 
-use crate::slot::ListIndex;
 use std::collections::BTreeSet;
 
 use serde::Serialize;
@@ -106,76 +105,6 @@ pub fn index_preset(preset: &Value, categories: &CategoryMap) -> Facets {
     }
 }
 
-/// One indexed preset (its list position + facets). The unit a filter selects over.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct PresetRecord {
-    pub list_index: ListIndex,
-    pub facets: Facets,
-}
-
-/// A query: every set field must match (AND). `name_substr` is case-insensitive
-/// substring; `amp`/`block`/`ir`/`sic` are exact-id membership; `level_lt`/`level_gt`
-/// are exclusive numeric bounds on `presetLevel`.
-#[derive(Debug, Clone, Default)]
-pub struct Filter {
-    pub name_substr: Option<String>,
-    pub amp: Option<String>,
-    pub block: Option<String>,
-    pub ir: Option<String>,
-    pub sic: Option<String>,
-    pub level_lt: Option<f64>,
-    pub level_gt: Option<f64>,
-}
-
-impl Filter {
-    pub fn matches(&self, rec: &PresetRecord) -> bool {
-        let f = &rec.facets;
-        if let Some(sub) = &self.name_substr {
-            if !f.name.to_lowercase().contains(&sub.to_lowercase()) {
-                return false;
-            }
-        }
-        if let Some(a) = &self.amp {
-            if !f.amps.contains(a) {
-                return false;
-            }
-        }
-        if let Some(b) = &self.block {
-            if !f.blocks.contains(b) {
-                return false;
-            }
-        }
-        if let Some(i) = &self.ir {
-            if !f.irs.contains(i) {
-                return false;
-            }
-        }
-        if let Some(s) = &self.sic {
-            if !f.sics.contains(s) {
-                return false;
-            }
-        }
-        if let Some(lt) = self.level_lt {
-            match f.preset_level {
-                Some(v) if v < lt => {}
-                _ => return false,
-            }
-        }
-        if let Some(gt) = self.level_gt {
-            match f.preset_level {
-                Some(v) if v > gt => {}
-                _ => return false,
-            }
-        }
-        true
-    }
-}
-
-/// The subset of `records` matching `filter`, in input order.
-pub fn filter_records<'a>(records: &'a [PresetRecord], filter: &Filter) -> Vec<&'a PresetRecord> {
-    records.iter().filter(|r| filter.matches(r)).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,81 +160,5 @@ mod tests {
         assert_eq!(f.sics, vec!["FenDlxRvb_c12k".to_string()]);
         // The IR node carries a file reference.
         assert_eq!(f.irs.len(), 1, "irs: {:?}", f.irs);
-    }
-
-    fn rec(idx: u32, name: &str, amps: &[&str], level: Option<f64>) -> PresetRecord {
-        PresetRecord {
-            list_index: ListIndex(idx),
-            facets: Facets {
-                name: name.into(),
-                template: "gtrSeries".into(),
-                preset_level: level,
-                blocks: amps.iter().map(|s| s.to_string()).collect(),
-                amps: amps.iter().map(|s| s.to_string()).collect(),
-                cabs: vec![],
-                irs: vec![],
-                sics: vec![],
-            },
-        }
-    }
-
-    // AC2 — each filter returns the correct subset; combined filters AND.
-    #[test]
-    fn filters_facet_substring_range_and_combine() {
-        let recs = [
-            rec(0, "Clean Twin", &["ACD_TwinReverb65NoFx"], Some(0.6)),
-            rec(1, "Lead Boost", &["ACD_TwinReverb65NoFx"], Some(0.9)),
-            rec(
-                2,
-                "Orange Crunch",
-                &["ACD_OrangeRockerverb50MKIII"],
-                Some(0.5),
-            ),
-        ];
-        let sel = |f: &Filter| {
-            filter_records(&recs, f)
-                .iter()
-                .map(|r| r.list_index.get())
-                .collect::<Vec<u32>>()
-        };
-        // facet: amp
-        assert_eq!(
-            sel(&Filter {
-                amp: Some("ACD_TwinReverb65NoFx".into()),
-                ..Default::default()
-            }),
-            vec![0, 1]
-        );
-        // substring (case-insensitive)
-        assert_eq!(
-            sel(&Filter {
-                name_substr: Some("boost".into()),
-                ..Default::default()
-            }),
-            vec![1]
-        );
-        // range: level < 0.7
-        assert_eq!(
-            sel(&Filter {
-                level_lt: Some(0.7),
-                ..Default::default()
-            }),
-            vec![0, 2]
-        );
-        // combined AND: Twin AND level < 0.7  → only slot 0
-        assert_eq!(
-            sel(&Filter {
-                amp: Some("ACD_TwinReverb65NoFx".into()),
-                level_lt: Some(0.7),
-                ..Default::default()
-            }),
-            vec![0]
-        );
-        // a filter matching nothing
-        assert!(sel(&Filter {
-            name_substr: Some("zzz".into()),
-            ..Default::default()
-        })
-        .is_empty());
     }
 }

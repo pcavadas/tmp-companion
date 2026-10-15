@@ -336,7 +336,7 @@ export interface SetupOption {
   presetName: string;
   /** Base scene (cross-preset) vs an FS scene (within-preset). */
   isBase: boolean;
-  /** The `loadScene` / `level_scenes_apply` wire slot (0-based scenes[] index);
+  /** The `loadScene` / `level_scenes_apply_batched` wire slot (0-based scenes[] index);
    *  null for the Base/whole-preset row (which levels `presetLevel`). */
   sceneSlot: number | null;
   /** Display name: "Base Preset" / "Whole preset" / the scene name. */

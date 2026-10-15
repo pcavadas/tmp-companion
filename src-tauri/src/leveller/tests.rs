@@ -573,18 +573,6 @@ fn balanced_solo_levels_equalizes_lanes() {
     );
 }
 
-// AC1 — the common target is min(C) − headroom (the loudest level every
-// preset can still reach), and empty input yields None.
-#[test]
-fn common_target_is_min_c_minus_headroom() {
-    let cs = [-22.0, -25.5, -19.0]; // quietest ceiling is -25.5
-    let t = super::common_target(&cs, 2.0).unwrap();
-    assert!((t - (-27.5)).abs() < 1e-9, "t={t}");
-    // A target equal to min(C) (headroom 0) is reachable by the quietest; a
-    // louder target would clamp that preset (solve_level flags it).
-    assert!(super::common_target(&[], 2.0).is_none());
-}
-
 #[test]
 fn secant_next_solves_linear_response() {
     // A perfectly linear knob: lufs = 10*x - 25. Target -20 ⇒ x = 0.5.

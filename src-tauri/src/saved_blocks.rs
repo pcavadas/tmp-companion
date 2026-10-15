@@ -1,4 +1,4 @@
-//! Decode the device saved-block ("block preset") + user-IR stores.
+//! Decode the device saved-block ("block preset") store.
 
 use crate::proto;
 use serde::Serialize;
@@ -75,56 +75,6 @@ pub(crate) fn find_block_presets_blob(bodies: &[Vec<u8>]) -> Option<Vec<u8>> {
     None
 }
 
-/// One user impulse-response slot on the device (`UserIRListRecord`).
-#[derive(Debug, Clone, Serialize)]
-pub struct UserIr {
-    pub name: String,
-    /// The device reports whether the IR file is actually present.
-    pub exists: bool,
-}
-
-/// Decode every `userIRListResponse` (UserIRMessage field 13 → field 3 → `record`
-/// field 2 = `{ name=1, exists=2 }`) carried in a set of inbound bodies.
-pub(crate) fn find_user_irs(bodies: &[Vec<u8>]) -> Vec<UserIr> {
-    // The device can answer the IR-list request more than once in a burst (the
-    // in-handshake reply + an explicit re-send), and an IR name can recur across
-    // slots — without de-duping, the frontend gets duplicate-named rows → duplicate
-    // React keys → broken list navigation. An IR is referenced by name (its file
-    // link), so de-dupe by name: keep first-seen order, OR `exists` so a present copy
-    // wins over a missing one.
-    let mut out: Vec<UserIr> = Vec::new();
-    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for b in bodies {
-        let top = proto::parse(b);
-        let Some(um) = proto::first_bytes(&top, 13) else {
-            continue;
-        };
-        let inner = proto::parse(um);
-        let Some(resp) = proto::first_bytes(&inner, 3) else {
-            continue;
-        };
-        let r = proto::parse(resp);
-        for rec in proto::all_bytes(&r, 2) {
-            let rp = proto::parse(rec);
-            let name = proto::first_bytes(&rp, 1)
-                .map(|x| String::from_utf8_lossy(x).into_owned())
-                .unwrap_or_default();
-            let exists = proto::first_varint(&rp, 2).unwrap_or(0) != 0;
-            if name.is_empty() {
-                continue;
-            }
-            match seen.get(&name) {
-                Some(&i) => out[i].exists = out[i].exists || exists,
-                None => {
-                    seen.insert(name.clone(), out.len());
-                    out.push(UserIr { name, exists });
-                }
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,48 +97,5 @@ mod tests {
         assert_eq!(out[1].cab1_id, "Diezel412FV");
         assert_eq!(out[1].cab2_id, "Diezel412FV");
         assert!(out[1].favorite);
-    }
-
-    #[test]
-    fn find_user_irs_decodes_records() {
-        // Minimal protobuf encoders (all our fields are short, <128-byte lengths).
-        fn ld(field: u32, inner: &[u8]) -> Vec<u8> {
-            let mut out = vec![((field << 3) | 2) as u8, inner.len() as u8];
-            out.extend_from_slice(inner);
-            out
-        }
-        fn vfield(field: u32, v: u64) -> Vec<u8> {
-            vec![(field << 3) as u8, v as u8]
-        }
-        // UserMessage(13) → userIRListResponse(3) → record(2) = { name=1, exists=2 }.
-        let rec = |name: &str, exists: u64| {
-            let mut inner = ld(1, name.as_bytes());
-            inner.extend(vfield(2, exists));
-            inner
-        };
-        let mut resp = ld(2, &rec("Oversize 4x12", 1));
-        resp.extend(ld(2, &rec("Matchless", 0)));
-        let body = ld(13, &ld(3, &resp));
-        let irs = find_user_irs(std::slice::from_ref(&body));
-        assert_eq!(irs.len(), 2);
-        assert_eq!(irs[0].name, "Oversize 4x12");
-        assert!(irs[0].exists);
-        assert!(!irs[1].exists);
-
-        // De-dupe by name across repeated responses (burst reply + re-send): the
-        // device can echo the same list twice → one row per name, first-seen order,
-        // exists OR-ed so a present copy wins. (Else duplicate React keys break the UI.)
-        let irs_dup = find_user_irs(&[body.clone(), body.clone()]);
-        assert_eq!(
-            irs_dup.len(),
-            2,
-            "duplicate responses must collapse by name"
-        );
-        // A "missing" copy followed by a "present" copy resolves to present.
-        let a = ld(13, &ld(3, &ld(2, &rec("Twin", 0))));
-        let b = ld(13, &ld(3, &ld(2, &rec("Twin", 1))));
-        let merged = find_user_irs(&[a, b]);
-        assert_eq!(merged.len(), 1);
-        assert!(merged[0].exists);
     }
 }

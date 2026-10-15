@@ -6,9 +6,10 @@
 //!   actually invoke (everything else is denied since `build.rs` declares the app manifest);
 //! - `src/lib/invoke.ts`: the frontend's typed wrappers, one `invokeCommand("<command>")` each.
 //!
-//! The rule: a command is granted exactly when the frontend calls it. A registered command
-//! the frontend never calls is denied and must be listed in [`UNWIRED`], so adding one is a
-//! deliberate choice rather than silent IPC surface.
+//! The rule: a command is registered exactly when the frontend calls it, and granted
+//! exactly then. A command no screen calls is deleted rather than kept registered and
+//! denied: the unwired surface was dropped, so a new one fails here instead of quietly
+//! growing IPC surface.
 
 use std::collections::BTreeSet;
 
@@ -20,68 +21,6 @@ macro_rules! names {
 
 /// Every registered app command, by name.
 const ALL: &[&str] = with_app_commands!(names!());
-
-/// Registered but called from no screen, so DENIED to the webview: kept for the `probe`
-/// CLI, the Rust e2e tests, or a feature that is not wired into a tab yet. Wiring one into
-/// the UI means adding its `invoke.ts` wrapper and its `allow-…` grant, and removing it here.
-const UNWIRED: &[&str] = &[
-    // Song and setlist editors superseded by `create_song_full` / `update_song_full` /
-    // `add_setlist_songs`, plus the slot-addressed song moves.
-    "add_setlist_song",
-    "add_song",
-    "rename_song",
-    "set_song_bpm",
-    "set_song_notes",
-    "song_assign",
-    "song_clear",
-    "song_move",
-    "song_swap",
-    // Offline-library bulk editing and migration (no tab).
-    "bulk_apply",
-    "bulk_dry_run",
-    "bulk_rename",
-    "bulk_revert",
-    "create_variant",
-    "import_library",
-    "library_filter",
-    "library_records",
-    "list_block_templates",
-    "list_snapshots",
-    "migration_apply",
-    "migration_plan",
-    "migration_scan",
-    "save_block_template",
-    // Live block replace and its cancel; Copy's own cancel (Copy has no Stop button).
-    "bulk_replace_live",
-    "cancel_bulk_replace",
-    "cancel_copy_apply",
-    // Re-amp drivers with no screen.
-    "audit_loudness",
-    "audition_render",
-    "eq_match",
-    "rank_candidates",
-    "spectrum_scan",
-    // Legacy leveling entry points (the Level tab uses the batched apply).
-    "level_scenes",
-    "level_scenes_apply",
-    "level_setlist",
-    // Preset management with no screen. `delete_preset` and `move_preset` carry the
-    // expected-name guard; `rename_save_preset` confirms the loaded name itself.
-    "delete_preset",
-    "move_preset",
-    "rename_save_preset",
-    // Device reads and loads with no screen.
-    "cancel_scene_scan",
-    "list_samples",
-    "list_saved_blocks",
-    "list_user_irs",
-    "load_preset_on_amp",
-    "load_scene_on_amp",
-    "read_preset_scenes",
-    "request_scene_list",
-    "scan_preset_scenes",
-    "stop_live_sync",
-];
 
 /// The command names `invoke.ts` calls: every `invokeCommand("<name>"` (with or without a
 /// type argument). Every wrapper goes through `invokeCommand`, so this is the full set.
@@ -196,19 +135,10 @@ fn the_capability_grants_exactly_the_frontend_commands() {
 }
 
 #[test]
-fn every_registered_command_is_granted_or_listed_as_unwired() {
-    let unwired = set(UNWIRED);
-    assert_eq!(
-        unwired.len(),
-        UNWIRED.len(),
-        "UNWIRED lists a command twice"
-    );
-    let expected: BTreeSet<String> = set(ALL).difference(&frontend_commands()).cloned().collect();
-    let new: Vec<_> = expected.difference(&unwired).collect();
-    let stale: Vec<_> = unwired.difference(&expected).collect();
+fn every_registered_command_has_a_frontend_caller() {
+    let unwired: Vec<_> = set(ALL).difference(&frontend_commands()).cloned().collect();
     assert!(
-        new.is_empty() && stale.is_empty(),
-        "registered with no frontend caller and not in UNWIRED: {new:?}; \
-         in UNWIRED but now called or unregistered: {stale:?}",
+        unwired.is_empty(),
+        "registered with no frontend caller (wire it into a screen or delete it): {unwired:?}",
     );
 }

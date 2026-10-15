@@ -2093,3 +2093,65 @@ fn doctor_params_keep_the_parametric_eq_filters_with_bools_as_numbers() {
         assert!(!got.contains_key(k), "{k}");
     }
 }
+
+/// A session whose handshake carried a `PresetLoaded` echo for 0-based `list_index`.
+fn session_echoing(list_index: u64) -> Session {
+    let mut echo = Vec::new();
+    proto::field_varint(&mut echo, 1, 1); // tabEnum = My Presets
+    proto::field_varint(&mut echo, 6, list_index + 1); // device slot = list index + 1
+    let raw = crate::sim_device::frame_multi(&crate::sim_device::preset_message(11, &echo));
+    crate::test_support::session_over(&crate::test_support::ScriptedTransport::default(), raw)
+}
+
+/// BUG→GATE #177 (HW fw 1.8.58): the connection opened right after a load still echoed the
+/// slot loaded before it, so a load that landed was refused and its scratch import stranded.
+/// A refused confirm releases its connection and retries on a fresh one; the first echo
+/// that names the target confirms.
+#[test]
+fn a_stale_load_echo_is_retried_on_a_fresh_connection() {
+    let mut echoes = vec![26u64, 10]; // popped from the end: stale 10 first, then 26
+    let mut released = 0;
+    let s = super::preset::confirm_on_fresh_connection(
+        || {
+            Ok(session_echoing(
+                echoes.pop().expect("one connection per attempt"),
+            ))
+        },
+        |_| released += 1,
+        ListIndex(26),
+        Some("Friedman HBE"),
+        super::preset::LOAD_CONFIRM_ATTEMPTS,
+    )
+    .expect("the second connection's echo names the target");
+    assert_eq!(s.loaded_slot(), Some(ListIndex(26)));
+    assert_eq!(
+        released, 1,
+        "the stale attempt's connection is released first"
+    );
+}
+
+/// The retry never relaxes the guard: an echo that keeps naming another slot refuses after
+/// the last attempt, and the refusal says which slot the unit reported.
+#[test]
+fn an_echo_that_keeps_naming_another_slot_still_refuses() {
+    let mut connects = 0;
+    let mut released = 0;
+    let e = super::preset::confirm_on_fresh_connection(
+        || {
+            connects += 1;
+            Ok(session_echoing(10))
+        },
+        |_| released += 1,
+        ListIndex(26),
+        Some("Friedman HBE"),
+        super::preset::LOAD_CONFIRM_ATTEMPTS,
+    )
+    .err()
+    .expect("a load that never shows up refuses");
+    assert_eq!(connects, super::preset::LOAD_CONFIRM_ATTEMPTS);
+    assert_eq!(released, super::preset::LOAD_CONFIRM_ATTEMPTS);
+    assert!(
+        e.contains("reports list index 10 as loaded") && e.contains("refusing the save"),
+        "{e}"
+    );
+}

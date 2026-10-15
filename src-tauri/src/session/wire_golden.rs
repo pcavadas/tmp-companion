@@ -95,7 +95,6 @@ fn record() -> Vec<String> {
     step(l, "reread_my_presets", s.reread_my_presets());
     step(l, "list_factory_presets", s.list_factory_presets());
     step(l, "list_my_presets_strict", s.list_my_presets_strict());
-    step(l, "request_scene_list", s.request_scene_list());
     step(l, "heartbeat", s.heartbeat());
     step(l, "load_preset", s.load_preset(ListIndex(400)));
     step(l, "load_preset_raw", s.load_preset_raw(401, 1));
@@ -216,9 +215,6 @@ fn record() -> Vec<String> {
         "assign_song_preset",
         s.assign_song_preset(0, 0, ListIndex(400), "A", 1, 0, 2),
     );
-    step(l, "move_song_preset", s.move_song_preset(0, 0, 1));
-    step(l, "swap_song_preset", s.swap_song_preset(0, 0, 1));
-    step(l, "clear_song_preset", s.clear_song_preset(0, 0));
     step(l, "load_song", s.load_song(0, 0, 400));
     step(l, "set_tap_tempo_bpm", s.set_tap_tempo_bpm(120.0));
     step(l, "song_list_strict", s.song_list_strict());

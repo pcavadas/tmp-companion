@@ -183,37 +183,6 @@ pub(crate) async fn remove_setlist(
     .await
 }
 
-/// Add a song (by GLOBAL song slot) to a setlist; returns the setlist's fresh
-/// member song slots (trailing 0s dropped). Guarded: the setlist still reads
-/// `expect_name` in the setlist list `expect_list`, and the song slot still reads
-/// `expect_song_name` in the song list `expect_song_list`.
-#[tauri::command]
-pub(crate) async fn add_setlist_song(
-    state: State<'_, AppState>,
-    setlist_slot: u32,
-    expect_name: String,
-    expect_list: Vec<String>,
-    song_slot: u32,
-    expect_song_name: String,
-    expect_song_list: Vec<String>,
-) -> Result<Vec<u32>, String> {
-    with_released_seize(state.session.clone(), move || {
-        {
-            let mut s = Session::connect()?;
-            guard_setlist_on(&mut s, setlist_slot, &expect_name, &expect_list)?;
-            crate::commands::songs::guard_song_on(
-                &mut s,
-                song_slot,
-                &expect_song_name,
-                &expect_song_list,
-            )?;
-            s.add_setlist_song(setlist_slot, song_slot)?;
-        }
-        read_setlist_songs(setlist_slot)
-    })
-    .await
-}
-
 /// Remove a song from a setlist by its POSITION within the setlist
 /// (`setlist_song_slot`, NOT the global song slot). Guarded: the setlist still reads
 /// `expect_name` in the setlist list `expect_list` and the position still holds

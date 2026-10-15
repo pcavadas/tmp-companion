@@ -59,10 +59,25 @@ Tier-2 calibration captures the dry instrument from `DRY_INSTRUMENT_IN_CH = 2` (
 
 Worth stating the `PRE` assumption explicitly in `notes/leveling.md`, and worth checking first the next time a calibration reads implausibly quiet.
 
-**Tracked as [#124](https://github.com/pcavadas/tmp-companion/issues/124) — pre-flight LANDED (2026-08-22), read-only.** A real unit on fw 1.8.58 had BOTH `usb3` and `usb4` strips `muteActive: true` in its `settingsBackup.mixerSaveData` — every calibration take read `[USB-Out 1/2 -14 dBFS · 3 silent · 4 silent]`, i.e. the guitar processed but no dry send at all. `calibrate_profile` now decodes the strip (`backup_read::usb3_strip`) from the settings snapshot the startup backup read persists to `support/device-settings.json`: the snapshot can be stale (the mixer may have been touched since connecting), so the two halves treat it ASYMMETRICALLY, and the asymmetry is deliberate:
+**Tracked as [#124](https://github.com/pcavadas/tmp-companion/issues/124) — pre-flight LANDED (2026-08-22), read-only; HW-validated 2026-10-14 (fw 1.8.58).** A real unit on fw 1.8.58 had BOTH `usb3` and `usb4` strips `muteActive: true` in its `settingsBackup.mixerSaveData` — every calibration take read `[USB-Out 1/2 -14 dBFS · 3 silent · 4 silent]`, i.e. the guitar processed but no dry send at all. `calibrate_profile` now decodes the strip (`backup_read::usb3_strip`) from the settings snapshot the startup backup read persists to `support/device-settings.json`: the snapshot can be stale (the mixer may have been touched since connecting), so the two halves treat it ASYMMETRICALLY, and the asymmetry is deliberate:
 
 - **Mute only EXPLAINS a silent take.** It is consulted on the silent-capture path alone, where it outranks the lane-peak guesses (with the on-unit fix: Mixer → USB 3 → unmute). A take that lands despite a "muted" snapshot is simply a newer mixer state, and wins. It is deliberately not attached to other capture failures — doing so once turned a mid-capture unplug into a confident "USB 3 is MUTED".
-- **`POST` with an off-unity fader DOES veto a take that landed.** This is the one place a stale snapshot can block real work, and it is the right trade: a successful take persists the capture as well as the scalar, and `resolve_stimulus_for_leveling` injects that WAV **verbatim at gain 1** as the profile's leveling stimulus. A fader-scaled capture would therefore drive every later re-amp through a nonlinear amp chain at the wrong level — wrong breakup, wrong `C`, silently wrong leveling and Doctor verdicts until someone recalibrates. Refused rather than compensated, because the fader's dB law is unmeasured. Recovery is in the message: fix the strip on the unit, then replug (a detach fires `resetLibraryScan`, so the next connection re-reads the mixer).
+- **`POST` with an off-unity fader DOES veto a take that landed.** This is the one place a stale snapshot can block real work, and it is the right trade: a successful take persists the capture as well as the scalar, and `resolve_stimulus_for_leveling` injects that WAV **verbatim at gain 1** as the profile's leveling stimulus. A fader-scaled capture would therefore drive every later re-amp through a nonlinear amp chain at the wrong level — wrong breakup, wrong `C`, silently wrong leveling and Doctor verdicts until someone recalibrates. Refused rather than compensated, because the fader's dB law is measured at one point only (below). Recovery is in the message: fix the strip on the unit, then replug (a detach fires `resetLibraryScan`, so the next connection re-reads the mixer).
+
+**HW-validated on the owner's unit (2026-10-14, fw 1.8.58)**, a guitar played continuously, each round a 6 s `probe --capture-wav` on USB-Out 3 and then a fresh settings backup:
+
+| Set on the unit    | `usb3` in `mixerSaveData`                               | Dry take                                         |
+| ------------------ | ------------------------------------------------------- | ------------------------------------------------ |
+| PRE, 0 dB, unmuted | `preEnabled` true, `faderLevel` 1.0, `muteActive` false | −16.6 LUFS                                       |
+| POST, −30 dB       | `preEnabled` false, `faderLevel` 0.5                    | −35.0 LUFS                                       |
+| PRE, −30 dB        | `preEnabled` true, `faderLevel` 0.5                     | −14.2 LUFS                                       |
+| PRE, 0 dB, muted   | `muteActive` true                                       | silent; refused with the "USB 3 … MUTED" message |
+
+- The backup's strip fields track every change made on the unit.
+- PRE ignores the fader. POST applies it: the screen's −30 dB is stored as 0.5 and cut the take by about 19–20 dB (live playing varies by 1–2 LU between takes).
+- Mute silences the dry send even in PRE.
+- So both halves above are right: only POST with an off-unity fader refuses, and mute only explains a silent take.
+- A side finding stays open as #361: on hard picks USB 3 reached full scale while USB 1/2 peaked at −13.6 dBFS and the unit showed no clipping, so `lufs::is_clipped` would refuse that take.
 
 **A second unit shows a clean strip exists — whether the mute is a fw 1.8.58 default is unresolved.** The development unit (**fw 1.8.45**, `probe --capture-input 6` / `--fw`, 2026-08-24) reports `usb3`/`usb4` both `muteActive: false`, `preEnabled: true`, `faderLevel: 1.0` — the clean state — and negotiates the full 4-channel capture with an actual dry lane on USB-Out 3. Whether the reporting unit's muted USB 3/4 is a fw 1.8.58 DEFAULT or that unit's own mixer history is UNRESOLVED: two units on two firmwares cannot separate the two, and only a fresh or factory-reset fw 1.8.58 unit can. What the second unit does establish is that a clean strip exists in the field, so do not "fix" this by assuming new firmware mutes the dry sends — the app keeps diagnosing the strip per unit rather than per firmware.
 
@@ -126,7 +141,7 @@ The firmware itself rewrites Song→preset and setlist→song bindings to follow
 
 `session.move_user_preset` is **fire-and-forget and emits no `presetError`**, and a `list_my_presets` issued on the **same connection** afterwards serves the **pre-move** state — so a same-connection verify reports "the reorder did not land" for a reorder that landed.
 
-Anything that reorders presets and then verifies (or reports success to the user) must **drop the connection and reconnect** before reading back. `commands/presets.rs`'s `move_preset` command confirms both slots' names first (`guarded_move`) but has no read-back afterwards, so a dropped reorder would surface as nothing. (It has no UI caller, and the webview is denied it.)
+Anything that reorders presets and then verifies (or reports success to the user) must **drop the connection and reconnect** before reading back. The app has no reorder command (the unwired `move_preset` was deleted); the rule stands for any that is added.
 
 **MIDI PC mappings** (preset addressed by bank + program number) were **not** tested and remain unknown.
 

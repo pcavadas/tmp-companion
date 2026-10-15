@@ -72,9 +72,6 @@ pub struct RelinkIrOp {
     pub to: String,
 }
 impl crate::bulkrun::Operation for RelinkIrOp {
-    fn label(&self) -> String {
-        format!("relink IR {} → {}", self.from, self.to)
-    }
     fn transform(&self, t: &crate::bulkrun::PresetTarget) -> Result<Option<String>, String> {
         let mut v: Value =
             serde_json::from_str(&t.before_json).map_err(|e| format!("parse: {e}"))?;
@@ -92,9 +89,6 @@ pub struct SetSicOp {
     pub only_files: Option<HashSet<String>>,
 }
 impl crate::bulkrun::Operation for SetSicOp {
-    fn label(&self) -> String {
-        format!("set SIC = {}", self.sicid)
-    }
     fn transform(&self, t: &crate::bulkrun::PresetTarget) -> Result<Option<String>, String> {
         let mut v: Value =
             serde_json::from_str(&t.before_json).map_err(|e| format!("parse: {e}"))?;

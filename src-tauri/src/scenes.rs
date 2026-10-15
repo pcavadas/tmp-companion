@@ -4,8 +4,6 @@
 
 use serde_json::Value;
 
-use crate::leveller::common_target;
-
 /// The node object at `group_id`/`node_id` under `preset`'s `audioGraph.guitarNodes`
 /// (an array per group; matched by instance via `audiograph::instance_id`). Shared
 /// node-lookup for [`block_bypass_in_live_graph`] and the scene-repair diff
@@ -35,15 +33,6 @@ pub fn block_bypass_in_live_graph(preset: &Value, group_id: &str, node_id: &str)
         .and_then(Value::as_bool)
 }
 
-/// Per-scene normalization deltas to a common target (MEASURE math): given each
-/// scene's measured ceiling `cs[i]`, the target is `min(C) − headroom`
-/// (`leveller::common_target`) and the per-scene delta is `target − cs[i]` (≤ 0 LU,
-/// the trim each scene needs so all scenes match in loudness). `None` if empty.
-pub fn normalize_scene_targets(cs: &[f64], headroom_lu: f64) -> Option<Vec<f64>> {
-    let target = common_target(cs, headroom_lu)?;
-    Some(cs.iter().map(|c| target - c).collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,21 +52,5 @@ mod tests {
         // Unknown block / unknown group → None.
         assert_eq!(block_bypass_in_live_graph(&p, "G1", "nope"), None);
         assert_eq!(block_bypass_in_live_graph(&p, "G9", "ampA"), None);
-    }
-
-    // AC — scene normalization: deltas to min(C) − headroom (MEASURE math).
-    #[test]
-    fn normalize_targets_to_common() {
-        let cs = vec![-22.0, -25.0, -20.0];
-        let deltas = normalize_scene_targets(&cs, 1.0).unwrap();
-        // target = min(-25,-22,-20) - 1 = -26.
-        assert!((deltas[0] - (-26.0 - -22.0)).abs() < 1e-9); // -4
-        assert!((deltas[1] - (-26.0 - -25.0)).abs() < 1e-9); // -1
-        assert!((deltas[2] - (-26.0 - -20.0)).abs() < 1e-9); // -6
-        assert!(
-            deltas.iter().all(|d| *d <= 0.0),
-            "all scenes trim down to the common floor"
-        );
-        assert!(normalize_scene_targets(&[], 1.0).is_none());
     }
 }

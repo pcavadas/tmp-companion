@@ -21,6 +21,33 @@ pub(crate) fn stored_preset_generation() -> u64 {
     STORED_PRESET_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// How many fresh connections [`Session::connect_confirmed`] tries before it refuses.
+pub(crate) const LOAD_CONFIRM_ATTEMPTS: u32 = 3;
+
+/// [`Session::connect_confirmed`] over an injected `connect` and `release`, so the retry
+/// rule is testable without a device. `release` ends a refused attempt's connection.
+pub(crate) fn confirm_on_fresh_connection(
+    mut connect: impl FnMut() -> Result<Session, String>,
+    mut release: impl FnMut(Session),
+    list_index: ListIndex,
+    expected_name: Option<&str>,
+    attempts: u32,
+) -> Result<Session, String> {
+    let mut refused = String::new();
+    for _ in 0..attempts.max(1) {
+        let mut s = connect()?;
+        match s.confirm_active(list_index, expected_name) {
+            Ok(()) => return Ok(s),
+            Err(e) => refused = e,
+        }
+        release(s);
+    }
+    Err(format!(
+        "{refused} (on {} fresh connections)",
+        attempts.max(1)
+    ))
+}
+
 fn bump_stored_preset_generation() {
     STORED_PRESET_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
@@ -258,14 +285,45 @@ impl Session {
         if self.active_matches(list_index, expected_name) {
             return Ok(());
         }
+        let why = match self.loaded_slot() {
+            // The echo is identity, so it wins over a name that matches (#177).
+            Some(other) => format!("the unit reports list index {other} as loaded"),
+            None => format!(
+                "no slot echo arrived, and the active name {:?} does not prove it (the \
+                 name must be {expected_name:?} and match exactly one My Presets slot)",
+                self.active_preset_name(),
+            ),
+        };
         Err(format!(
             "could not confirm the preset at list index {list_index} is active before \
-             saving (slot echo {:?}, active name {:?}, expected {:?}) — refusing the save \
-             to avoid overwriting the wrong preset",
-            self.loaded_slot(),
-            self.active_preset_name(),
-            expected_name,
+             saving: {why} — refusing the save to avoid overwriting the wrong preset"
         ))
+    }
+
+    /// Open a fresh connection after a load sent on ANOTHER one and [`Self::confirm_active`]
+    /// `list_index` on it: the load → drop → reconnect → confirm shape of every save-over
+    /// path. The caller ends the load's own connection with [`Self::lapse`].
+    ///
+    /// The first connection opened after a load can still report the slot loaded BEFORE it
+    /// in its `PresetLoaded` echo (#177; HW fw 1.8.58: a load that landed read stale on the
+    /// next connection, and right on one 16 s later). A session opened inside the unit's
+    /// 0.75 s drop inherits the last one's queued replies ahead of its own, so a refused
+    /// confirm lapses its connection and retries on a new one, [`LOAD_CONFIRM_ATTEMPTS`]
+    /// times in all. The echo still decides every attempt, and a load that really dropped
+    /// still refuses.
+    pub fn connect_confirmed(
+        list_index: ListIndex,
+        expected_name: Option<&str>,
+    ) -> Result<Session, String> {
+        confirm_on_fresh_connection(
+            Session::connect,
+            |mut s| {
+                let _ = s.lapse();
+            },
+            list_index,
+            expected_name,
+            LOAD_CONFIRM_ATTEMPTS,
+        )
     }
 
     /// Prove the loaded working copy is the import before a save writes it over another

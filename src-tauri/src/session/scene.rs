@@ -4,26 +4,6 @@
 use super::*;
 
 impl Session {
-    /// Request the active preset's scene list on demand — `sceneListRequest`
-    /// (field 126, no batch; addresses the CURRENT preset like `loadScene`).
-    /// Harvests the `sceneListResponse` (125) `sceneList` strings. The device
-    /// also pushes this UNSOLICITED on every preset load (the monitor's primary
-    /// path); this is a manual / first-paint top-up for a mid-preset connect.
-    pub fn request_scene_list(&mut self) -> Result<Vec<String>, String> {
-        self.raw.clear();
-        self.send_and_collect(&proto::scene_list_request(), KEEPALIVE_WINDOW_MS)?;
-        for _ in 0..6 {
-            if let Some(names) = self.push_bodies().iter().find_map(|b| decode_scene_list(b)) {
-                return Ok(names);
-            }
-            self.keepalive_pump()?;
-        }
-        self.push_bodies()
-            .iter()
-            .find_map(|b| decode_scene_list(b))
-            .ok_or_else(|| "no sceneListResponse received from device".to_string())
-    }
-
     /// Activate scene `scene_slot` within the current preset — `loadScene`.
     /// Non-destructive (changes the active scene, not stored data); enables per-scene
     /// re-amp capture. Load a preset first, then drive scenes.

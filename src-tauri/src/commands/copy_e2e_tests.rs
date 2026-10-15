@@ -1079,49 +1079,4 @@ mod copy_level_e2e_tests {
             "slot 3 active but target 5 — must not confirm"
         );
     }
-
-    // ── PR2: migration snapshot-before-write (AC2) ──
-
-    #[test]
-    fn migration_refuses_to_snapshot_into_an_unwritable_dir() {
-        // A path whose parent is a regular FILE, not a directory ⇒ the snapshot fails;
-        // migration_apply then skips the write and keeps the preset revertible. A real
-        // file (not `/dev/null`) so the shape holds on every platform.
-        let file = std::env::temp_dir().join(format!(
-            "tmp-companion-not-a-dir-{}-{}",
-            std::process::id(),
-            crate::bulkrun::now_stamp()
-        ));
-        std::fs::write(&file, b"x").unwrap();
-        let bad = file.join("tmp-companion-cannot-mkdir");
-        let r = crate::commands::migration::snapshot_before_migrate(
-            &bad,
-            ListIndex(3),
-            "Cliff",
-            r#"{"info":{"preset_id":"x"}}"#,
-        );
-        assert!(r.is_err(), "unwritable backup dir must refuse: {r:?}");
-    }
-
-    #[test]
-    fn migration_snapshot_captures_the_pre_edit_json() {
-        let dir = std::env::temp_dir().join(format!(
-            "tmp-companion-migsnap-{}",
-            crate::bulkrun::now_stamp()
-        ));
-        let before = r#"{"info":{"preset_id":"abc","displayName":"Cliff"}}"#;
-        let p = crate::commands::migration::snapshot_before_migrate(
-            &dir,
-            ListIndex(3),
-            "Cliff",
-            before,
-        )
-        .unwrap();
-        let content = std::fs::read_to_string(&p).unwrap();
-        assert!(
-            content.contains("abc"),
-            "snapshot must carry the pre-edit json: {content}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

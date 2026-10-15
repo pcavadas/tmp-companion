@@ -40,7 +40,6 @@ pub struct PresetTarget {
 /// to the run). Path-agnostic — it does not know whether it will be persisted LIVE
 /// or OFFLINE.
 pub trait Operation {
-    fn label(&self) -> String;
     fn transform(&self, target: &PresetTarget) -> Result<Option<String>, String>;
 }
 
@@ -366,9 +365,6 @@ mod tests {
         value: f64,
     }
     impl Operation for SetOutputLevel {
-        fn label(&self) -> String {
-            format!("set outputLevel = {}", self.value)
-        }
         fn transform(&self, t: &PresetTarget) -> Result<Option<String>, String> {
             let mut v: serde_json::Value =
                 serde_json::from_str(&t.before_json).map_err(|e| e.to_string())?;

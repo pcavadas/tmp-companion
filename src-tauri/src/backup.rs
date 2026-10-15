@@ -124,34 +124,6 @@ pub fn load_snapshot_from_path(path: &Path) -> Result<PresetSnapshot, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("parse {}: {e}", path.display()))
 }
 
-/// List snapshot files in `dir` (newest first by filename — timestamp-prefixed).
-/// A missing dir yields an empty list (no backups taken yet).
-pub fn list_snapshots_in_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("read dir {}: {e}", dir.display())),
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .collect();
-    paths.sort();
-    paths.reverse();
-    Ok(paths)
-}
-
-/// `backups/` under the app config dir. App-layer seam wired into a Tauri command
-/// by the first destructive feature.
-pub(crate) fn backups_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
-    use tauri::Manager;
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("resolve app config dir: {e}"))?;
-    Ok(dir.join("backups"))
-}
-
 // ─── diff primitive ──────────────────────────────────────────────────────────
 
 /// One changed field between two preset states, addressed by JSON pointer.
@@ -275,13 +247,6 @@ mod tests {
         let name = snapshot_filename(&sample());
         assert!(!name.contains(':') && !name.contains('/'));
         assert!(name.ends_with("_le1_slot11.json"));
-    }
-
-    #[test]
-    fn list_snapshots_missing_dir_is_empty() {
-        let dir = std::env::temp_dir().join("tmp-bk-none-xyz");
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(list_snapshots_in_dir(&dir).unwrap().is_empty());
     }
 
     // AC5: snapshot a preset, "edit" a copy, restore → back to the pre-edit state.

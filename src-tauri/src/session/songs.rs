@@ -113,37 +113,6 @@ impl Session {
         ))
     }
 
-    /// Reorder a Song row — `moveSongPreset`. Song-internal positions.
-    pub fn move_song_preset(&mut self, song_slot: u32, old: u32, new: u32) -> Result<(), String> {
-        self.transact(
-            &proto::move_song_preset(song_slot as u64, old as u64, new as u64),
-            SONG_SETTER_ECHO_MS,
-        )?;
-        Ok(())
-    }
-
-    /// Swap two Song rows — `swapSongPreset`.
-    pub fn swap_song_preset(&mut self, song_slot: u32, a: u32, b: u32) -> Result<(), String> {
-        self.transact(
-            &proto::swap_song_preset(song_slot as u64, a as u64, b as u64),
-            SONG_SETTER_ECHO_MS,
-        )?;
-        Ok(())
-    }
-
-    /// Empty a Song row — `clearSongPreset`.
-    pub fn clear_song_preset(
-        &mut self,
-        song_slot: u32,
-        song_preset_slot: u32,
-    ) -> Result<(), String> {
-        self.transact(
-            &proto::clear_song_preset(song_slot as u64, song_preset_slot as u64),
-            SONG_SETTER_ECHO_MS,
-        )?;
-        Ok(())
-    }
-
     /// Make a song the ACTIVE song by loading one of its footswitch presets
     /// (`LoadPreset{ tabEnum=5, songSlot, songPresetSlot, presetSlot }`). Required
     /// before `set_tap_tempo_bpm` targets that song. Fire-and-forget.
