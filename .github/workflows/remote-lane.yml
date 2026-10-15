@@ -70,9 +70,14 @@ jobs:
             echo "::warning::remote lane not configured (TWIN_LANE_TOKEN / TWIN_LANE_REPO); skipping"
             exit 0
           fi
+          status() { gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$1" -f context=remote-lane \
+            -f description="$2" >/dev/null; }
+          # Pending first, so it can never land after the final status the run posts.
+          status pending "running: $SPECS"
           # TWIN_LANE_REF picks the runner's branch; unset, its default branch.
-          gh workflow run twin-lane.yml --repo "$LANE_REPO" ${LANE_REF:+--ref "$LANE_REF"} \
-            -f companion_ref="$SHA" -f specs="$SPECS" -f pr="$PR"
-          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context=remote-lane \
-            -f description="running: $SPECS" >/dev/null
+          if ! gh workflow run twin-lane.yml --repo "$LANE_REPO" ${LANE_REF:+--ref "$LANE_REF"} \
+            -f companion_ref="$SHA" -f specs="$SPECS" -f pr="$PR"; then
+            status error "could not dispatch the remote lane"
+            exit 1
+          fi
           echo "dispatched: $SPECS for $SHA"
