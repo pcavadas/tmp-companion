@@ -21,7 +21,8 @@
 #                                    since <ref>) requires, in canonical order (or
 #                                    `ANY`, or nothing), from scripts/gate-map.tsv +
 #                                    scripts/gate-policy.tsv; advisory lines go to
-#                                    stderr (read-only)
+#                                    stderr (read-only). TMP_GATES_CHANGED_FILES
+#                                    (newline-separated paths) replaces the diff
 #   scripts/gates.sh --release-base  print the last release tag (v*) behind HEAD
 #   scripts/gates.sh --device-changes [--since <ref>]
 #                                    list each commit since <ref> (default: the last
@@ -155,6 +156,13 @@ write_stamp() { # <stamp-path> <prefix> [content]  — one stamp per tree; orpha
 # Union of changed files: everything in the working tree that differs from base, plus
 # untracked non-ignored files. Shared by the run mode's scope and --required-online.
 changed_files() {
+  # TMP_GATES_CHANGED_FILES (newline-separated paths) replaces the worktree diff: the
+  # remote-lane workflow classifies a fork PR's file list (from the API) with the base
+  # branch's own scripts and gate map, never checking out the fork's code.
+  if [ -n "${TMP_GATES_CHANGED_FILES:-}" ]; then
+    printf '%s\n' "$TMP_GATES_CHANGED_FILES" | LC_ALL=C sort -u
+    return 0
+  fi
   {
     if [ -n "${since:-$base}" ]; then git diff --name-only "${since:-$base}"; fi
     git ls-files --others --exclude-standard

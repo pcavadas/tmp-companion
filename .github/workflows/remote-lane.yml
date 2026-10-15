@@ -14,10 +14,14 @@ name: remote-lane
 # only: a fork's PR never gets the dispatch token (and pull_request_target is never used
 # here), so outside code never reaches the remote device on its own, and the PR waits until
 # a maintainer has read it and dispatches the lane for its head commit by hand
-# (`twin-lane.yml` with companion_ref=<head SHA>, specs=<this job's selection>, pr=<number>).
+# (`twin-lane.yml` with companion_ref=<head SHA>, specs=<this job's selection>, pr=<number>);
+# a fork PR with no device-facing change gets "not needed" from the `fork` job below.
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Fork PRs only (the `fork` job): their pull_request token cannot post a status.
+  pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -25,12 +29,15 @@ permissions:
   statuses: write
 
 concurrency:
-  group: remote-lane-${{ github.event.pull_request.number }}
+  group: remote-lane-${{ github.event_name }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   dispatch:
-    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -92,3 +99,47 @@ jobs:
             exit 1
           fi
           echo "dispatched: $SPECS for $SHA"
+
+  # A fork PR still needs a `remote-lane` status, or the required check never resolves. This
+  # job runs in the base repository's context (pull_request_target) and never fetches or runs
+  # the fork's code: it checks out the BASE commit, reads the PR's changed-file NAMES from the
+  # API, and classifies them with the base's own gates.sh and gate map. No device-facing file
+  # posts "not needed"; otherwise the status stays pending until a maintainer has read the PR
+  # and dispatches the lane by hand. It never dispatches, and never sees TWIN_LANE_TOKEN.
+  fork:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    env:
+      SHA: ${{ github.event.pull_request.head.sha }}
+      PR: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Classify the fork's changed files (names only, base scripts)
+        run: |
+          # Renames count under both names: moving a device file away is device-facing too.
+          files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)')
+          req=$(TMP_GATES_CHANGED_FILES="$files" bash scripts/gates.sh --required-online \
+            | tr '\n' ' ' | sed 's/ *$//')
+          [ "$req" = ANY ] && req=songs
+          echo "required: ${req:-none}"
+          if [ -z "$req" ]; then
+            state=success desc="not needed: no device-facing change"
+          else
+            state=pending desc="fork PR: a maintainer must dispatch the remote lane ($req)"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=remote-lane \
+            -f description="${desc:0:140}" >/dev/null
