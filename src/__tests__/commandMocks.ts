@@ -71,7 +71,9 @@ export const makeCalibrateResult = (
   over: Partial<CalibrateResult> = {},
 ): CalibrateResult => ({
   lufs: -20,
-  clipped: false,
+  clip: "clean",
+  capture_stored: true,
+  kept_previous_capture: false,
   stimulus_shortfall_lu: null,
   spread_lu: 3,
   band_coverage: [true, true, true, true, true, true],

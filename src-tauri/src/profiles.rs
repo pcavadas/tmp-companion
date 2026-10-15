@@ -32,6 +32,17 @@ pub struct Profile {
     /// the instrument actually drives the amp (bright pickups aren't under-counted).
     #[serde(default)]
     pub calibration_lufs: Option<f32>,
+    /// Whether a stored Tier-2 DI capture exists for this profile, so leveling
+    /// re-amps the player's own recording rather than the synthetic stimulus (#361).
+    /// Derived from the capture store on every `get_store` ([`mark_captures`]) and
+    /// never read back: it is neither deserialized nor written while false, so the
+    /// store file never carries a stale value.
+    #[serde(default, skip_deserializing, skip_serializing_if = "is_false")]
+    pub has_capture: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A named loudness target the user applies per preset (e.g. "Lead" → −22 LUFS).
@@ -323,6 +334,15 @@ pub fn load<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Store, Strin
     load_from_path(&store_path(app)?)
 }
 
+/// Fill each profile's derived `has_capture` from the capture store under
+/// `config_dir`. Only the UI read (`get_store`) calls this, so a store that is
+/// loaded, edited and saved never writes the flag back.
+pub(crate) fn mark_captures(config_dir: &Path, store: &mut Store) {
+    for p in &mut store.profiles {
+        p.has_capture = existing_capture(config_dir, &p.id).is_some();
+    }
+}
+
 /// Persist the store for the running app. Generic over the runtime (like `load`)
 /// so runtime-generic commands (e.g. `set_auto_install_updates`) can call it.
 pub fn save<R: tauri::Runtime>(app: &tauri::AppHandle<R>, store: &Store) -> Result<(), String> {
@@ -373,25 +393,25 @@ pub(crate) fn existing_capture_for<R: tauri::Runtime>(
     existing_capture(&app_config_dir(app).ok()?, profile_id)
 }
 
-/// Store (or clear) a profile's calibration capture, keeping the on-disk WAV
-/// consistent with the scalar `calibrate_profile` is about to save:
-/// - ALWAYS unlink any existing capture first (a clipped/aborted run must not leave
-///   a stale WAV paired with a fresh scalar).
-/// - `clipped` → store nothing, return `Ok(false)` (leveling falls back to synthetic).
+/// Store a profile's calibration capture:
+/// - `refused` (a take past the #361 clip severity rule) → touch nothing and return
+///   `Ok(false)`. A refused take never deletes the capture already stored: a good
+///   earlier take keeps leveling, and with none the synthetic stimulus stays.
 /// - else write the mono 48 kHz f32 samples via temp-file + sync + rename
-///   (`fsutil::commit`; no torn WAV can pass an existence check) and return `Ok(true)`. A write failure is an `Err` so
-///   the caller fails the command BEFORE persisting the scalar.
+///   (`fsutil::commit`, which replaces any earlier capture atomically; no torn WAV
+///   can pass an existence check) and return `Ok(true)`. A write failure is an
+///   `Err` so the caller fails the command BEFORE persisting the scalar, and the
+///   earlier capture is left as it was.
 pub(crate) fn store_capture(
     config_dir: &Path,
     profile_id: &str,
     samples: &[f32],
-    clipped: bool,
+    refused: bool,
 ) -> Result<bool, String> {
-    let path = capture_wav_path_in(config_dir, profile_id);
-    let _ = std::fs::remove_file(&path);
-    if clipped {
+    if refused {
         return Ok(false);
     }
+    let path = capture_wav_path_in(config_dir, profile_id);
     let parent = path
         .parent()
         .ok_or_else(|| "capture path has no parent".to_string())?;
@@ -453,12 +473,14 @@ mod tests {
                     name: "Telecaster".into(),
                     topology_id: "guitar-singlecoil".into(),
                     calibration_lufs: None,
+                    has_capture: false,
                 },
                 Profile {
                     id: "p2".into(),
                     name: "Metal Ibanez".into(),
                     topology_id: "guitar-active".into(),
                     calibration_lufs: Some(-9.5),
+                    has_capture: false,
                 },
             ],
             profile_by_slot: by_slot,
@@ -762,16 +784,22 @@ mod tests {
     }
 
     #[test]
-    fn store_capture_clipped_unlinks_and_stores_nothing() {
+    fn store_capture_refused_keeps_the_stored_capture() {
+        // #361: a take refused for clipping must not delete a good earlier capture.
         let dir = tmp_dir("clip");
         let path = capture_wav_path_in(&dir, "p1");
-        // Pre-existing capture on disk.
-        store_capture(&dir, "p1", &[0.1, -0.1, 0.2, -0.2], false).unwrap();
+        let good = [0.1f32, -0.1, 0.2, -0.2];
+        store_capture(&dir, "p1", &good, false).unwrap();
         assert!(path.is_file(), "sanity: capture written");
-        // A clipped run must delete it and store nothing.
-        let stored = store_capture(&dir, "p1", &[0.5; 8], true).unwrap();
-        assert!(!stored, "clipped run stores nothing");
-        assert!(!path.is_file(), "clipped run unlinks the stale capture");
+        let stored = store_capture(&dir, "p1", &[1.0; 8], true).unwrap();
+        assert!(!stored, "a refused take stores nothing");
+        let reader = hound::WavReader::open(&path).expect("the earlier capture survives");
+        let kept: Vec<f32> = reader.into_samples::<f32>().map(Result::unwrap).collect();
+        assert_eq!(kept, good, "the earlier capture is unchanged");
+        // With no earlier capture, a refused take leaves none.
+        let stored = store_capture(&dir, "p2", &[1.0; 8], true).unwrap();
+        assert!(!stored);
+        assert_eq!(existing_capture(&dir, "p2"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -792,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn store_capture_unlink_first_replaces_content() {
+    fn store_capture_replaces_content() {
         let dir = tmp_dir("replace");
         store_capture(&dir, "p1", &[0.0; 100], false).unwrap();
         store_capture(&dir, "p1", &[0.0; 42], false).unwrap();
@@ -827,6 +855,7 @@ mod tests {
             name: id.into(),
             topology_id: topo.into(),
             calibration_lufs: Some(-9.0),
+            has_capture: false,
         };
         let old = Store {
             profiles: vec![

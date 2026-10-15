@@ -472,17 +472,29 @@ export interface Profile {
   topology_id: string;
   /** K-weighted loudness (LUFS) of the dry instrument; null until calibrated. */
   calibration_lufs: number | null;
+  /** A recording of the player is stored, so leveling re-amps it instead of the
+   * test signal. Filled by `get_store`; the backend ignores it on save (#361). */
+  has_capture?: boolean;
 }
+
+/** How far a calibration take clipped (mirrors stimulus::ClipVerdict). */
+export type ClipVerdict = "clean" | "mild" | "severe";
 
 /** What one Tier-2 calibration measured + its quality caveats (mirrors
  * lib::CalibrateResult). */
 export interface CalibrateResult {
-  /** Measured dry-instrument loudness (K-weighted LUFS), stored on the profile. */
+  /** Measured dry-instrument loudness (K-weighted LUFS), stored on the profile
+   * unless `kept_previous_capture`. */
   lufs: number;
-  /** Dry capture hit 0 dBFS — measurement biased low; re-calibrate softer. */
-  clipped: boolean;
+  /** How far the unit's dry USB 3 send flat-topped on hard picks: a `mild` take is
+   * stored, a `severe` one is not (#361). */
+  clip: ClipVerdict;
+  /** This take was stored as the profile's recording; leveling re-amps it. */
+  capture_stored: boolean;
+  /** This take was refused and the profile's earlier recording was kept as is. */
+  kept_previous_capture: boolean;
   /** LU the topology stimulus falls short of reproducing `lufs` (peak-capped);
-   * null when reachable — always null when the capture was stored as the stimulus. */
+   * null when reachable — always null when a recording levels instead. */
   stimulus_shortfall_lu: number | null;
   /** Short-term-max − integrated (LU) of the dry capture — how dynamic the take was. */
   spread_lu: number;

@@ -143,6 +143,22 @@ export function useSettingsStore(): SettingsStore {
       setSaveError(null);
     } catch (e) {
       saveFailed("instruments", e);
+      return;
+    }
+    // A pickup change can unlink an instrument's stored recording, so re-read the
+    // derived `has_capture` flags (#361). Only the flags change; a newer save wins.
+    const seq = saveSeqRef.current;
+    try {
+      const stored = await getStore();
+      if (saveSeqRef.current !== seq) return;
+      const flags = new Map(
+        stored.profiles.map((p) => [p.id, p.has_capture === true]),
+      );
+      setProfiles((cur) =>
+        cur.map((p) => ({ ...p, has_capture: flags.get(p.id) ?? false })),
+      );
+    } catch {
+      // The save landed; the rows keep their last known flags.
     }
   }
 

@@ -24,7 +24,9 @@ describe("InstrumentRow — capture quality readout", () => {
     mockCommands({
       calibrate_profile: () => ({
         lufs: -18.2,
-        clipped: false,
+        clip: "clean",
+        capture_stored: true,
+        kept_previous_capture: false,
         stimulus_shortfall_lu: null,
         spread_lu: 4.7,
         band_coverage: [true, true, false, false, true, true],
@@ -60,7 +62,9 @@ describe("InstrumentRow — capture quality readout", () => {
     mockCommands({
       calibrate_profile: () => ({
         lufs: -18.2,
-        clipped: false,
+        clip: "clean",
+        capture_stored: true,
+        kept_previous_capture: false,
         stimulus_shortfall_lu: null,
         spread_lu: 2.1,
         band_coverage: [true, true, true, true, true, true],
@@ -88,7 +92,9 @@ describe("InstrumentRow — capture quality readout", () => {
     mockCommands({
       calibrate_profile: () => ({
         lufs: -21.4,
-        clipped: false,
+        clip: "clean",
+        capture_stored: true,
+        kept_previous_capture: false,
         stimulus_shortfall_lu: null,
         spread_lu: 5.2,
         band_coverage: [true, true, true, true, true, false],

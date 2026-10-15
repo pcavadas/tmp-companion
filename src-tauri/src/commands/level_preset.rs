@@ -549,12 +549,17 @@ pub(crate) fn cancel_preset_leveling() {
 /// Mirrored in `src/lib/types.ts` (`CalibrateResult`).
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CalibrateResult {
-    /// Measured K-weighted loudness of the dry capture (stored on the profile).
+    /// Measured K-weighted loudness of the dry capture (stored on the profile unless
+    /// a refused take left an earlier capture in place — see `kept_previous_capture`).
     lufs: f32,
-    /// The dry tap (USB-Out 3, no limiter) FLAT-TOPPED at full scale (a sustained
-    /// run, not a lone pick transient — see `is_clipped_capture`) — the measurement
-    /// is biased LOW (clipped transients flatten the brightness K-weighting credits).
-    clipped: bool,
+    /// How far the dry tap (USB-Out 3) flat-topped at full scale (#361). The unit's
+    /// dry send clips on hard picks; a `Mild` take is stored, a `Severe` one is not.
+    clip: crate::stimulus::ClipVerdict,
+    /// This take was stored as the profile's DI capture, so leveling re-amps it.
+    capture_stored: bool,
+    /// This take was refused and the profile's EARLIER capture (and its loudness)
+    /// were kept unchanged: a refused take never throws a good one away.
+    kept_previous_capture: bool,
     /// The topology stimulus cannot be scaled up to `lufs` without clipping (the
     /// 0.99 peak cap in `read_stimulus_calibrated_with_shortfall`): leveling will
     /// drive the amp this many LU softer than the real instrument. `None` = reachable
@@ -681,19 +686,20 @@ pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
         let lufs = loudness.integrated_lufs as f32;
         let spread_lu = loudness.spread_lu();
         // Flat-top clip check, not a bare sample-peak: a lone hot pick transient is
-        // not clipping (see is_clipped_capture) — the old `peak >= 0.99` gate
-        // rejected good takes whose only "clip" was a sub-ms attack apex.
-        let clipped = crate::stimulus::is_clipped_capture(&mono);
+        // not clipping (see is_clipped_capture). The unit's dry USB 3 send clips on
+        // hard picks (#361), so a take within the severity rule is kept; only a
+        // `Severe` one is refused.
+        let clip = crate::stimulus::clip_verdict(&mono, 48_000);
+        let refused = clip == crate::stimulus::ClipVerdict::Severe;
+        let config_dir = profiles::app_config_dir(&app2)?;
+        let had_capture = profiles::existing_capture(&config_dir, &profile_id).is_some();
 
-        // Store the capture (or clear a stale one on a clipped run) BEFORE persisting the
-        // scalar — a WAV write failure fails the whole command so the scalar never lands
-        // paired with a torn/absent capture.
-        let capture_stored = profiles::store_capture(
-            &profiles::app_config_dir(&app2)?,
-            &profile_id,
-            &mono,
-            clipped,
-        )?;
+        // Store the capture BEFORE persisting the scalar — a WAV write failure fails
+        // the whole command so the scalar never lands paired with a torn capture. A
+        // refused take touches neither the capture nor, when an earlier capture
+        // exists, the scalar: the stored pair stays exactly as it was.
+        let capture_stored = profiles::store_capture(&config_dir, &profile_id, &mono, refused)?;
+        let kept_previous_capture = refused && had_capture;
 
         let mut store = profiles::load(&app2)?;
         let p = store
@@ -701,9 +707,11 @@ pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
             .iter_mut()
             .find(|p| p.id == profile_id)
             .ok_or_else(|| format!("unknown profile '{profile_id}'"))?;
-        p.calibration_lufs = Some(lufs);
         let topology_id = p.topology_id.clone();
-        profiles::save(&app2, &store)?;
+        if !kept_previous_capture {
+            p.calibration_lufs = Some(lufs);
+            profiles::save(&app2, &store)?;
+        }
 
         // Per-band excitation of the capture, in the profile's family band layout
         // (same bands the Doctor engine diagnoses with) — surfaces whether the
@@ -719,7 +727,7 @@ pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
         // With a stored capture the stimulus IS the capture (gain 1) — a synthetic
         // shortfall is impossible, so skip the computation (the old warning would be
         // false). Otherwise report the best-effort synthetic-scaling shortfall.
-        let stimulus_shortfall_lu = if capture_stored {
+        let stimulus_shortfall_lu = if capture_stored || kept_previous_capture {
             None
         } else {
             resolve_stimulus(&app2, None, Some(topology_id))
@@ -729,7 +737,9 @@ pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
         };
         Ok(CalibrateResult {
             lufs,
-            clipped,
+            clip,
+            capture_stored,
+            kept_previous_capture,
             stimulus_shortfall_lu,
             spread_lu,
             band_coverage,

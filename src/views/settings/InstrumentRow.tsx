@@ -13,7 +13,11 @@ import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
 import type { Profile, TopologyInfo } from "../../lib/types";
 import { NeedsDevicePill } from "./NeedsDevicePill";
-import { CALIBRATE_SECS, useCalibration } from "./useCalibration";
+import {
+  CALIBRATE_SECS,
+  stimulusSource,
+  useCalibration,
+} from "./useCalibration";
 
 // ===========================================================================
 // InstrumentRow
@@ -75,11 +79,11 @@ export function InstrumentRow({
         ? "recording — play steadily"
         : phase === "error"
           ? (calibErr ?? "too quiet to read — the last attempt failed")
-          : calibrated
-            ? `calibrated ${profile.calibration_lufs?.toFixed(1) ?? ""} LUFS${
-                calibWarn != null ? ` — ${calibWarn}` : ""
-              }`
-            : "not calibrated";
+          : `${
+              calibrated
+                ? `calibrated ${profile.calibration_lufs?.toFixed(1) ?? ""} LUFS`
+                : "not calibrated"
+            } · ${stimulusSource(profile)}${calibWarn != null ? ` — ${calibWarn}` : ""}`;
 
   // Type = the topology's instrument label; Pickup = the topology's label.
   const typeLabel = topology?.instrument ?? null;

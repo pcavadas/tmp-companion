@@ -38,12 +38,18 @@ pub(crate) fn list_pickup_topologies() -> Vec<TopologyInfo> {
         .collect()
 }
 
-/// Load the persisted profile store (instrument profiles + per-slot assignments).
+/// Load the persisted profile store (instrument profiles + per-slot assignments),
+/// with each profile's `has_capture` filled from the capture store so the UI can
+/// show whether it levels with the player's recording or the test signal (#361).
 #[tauri::command]
 pub(crate) fn get_store<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<profiles::Store, String> {
-    profiles::load(&app)
+    let mut store = profiles::load(&app)?;
+    if let Ok(dir) = profiles::app_config_dir(&app) {
+        profiles::mark_captures(&dir, &mut store);
+    }
+    Ok(store)
 }
 
 /// Replace the profile list (keeps the per-slot assignment map intact).
