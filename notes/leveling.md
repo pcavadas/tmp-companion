@@ -118,7 +118,11 @@ The dry instrument is tapped on **USB-Out 3** (`audio::DRY_INSTRUMENT_IN_CH`). `
 
 ## Playback-level (Fletcher–Munson) compensation
 
-Equal-LUFS is equal-loudness only near one SPL. The store carries a playback level (Quiet / Rehearsal / Stage); below stage volume, bass-instrument targets get a small positive offset so low-frequency energy is not under-credited. Stage is the default (zero offset).
+Equal-LUFS is equal-loudness only near one SPL. The store carries a playback level (Quiet / Rehearsal / Stage, default Stage), and `profiles::playback_offset_lu` adds a per-family LU offset to the target: bass and Bass VI get **Quiet 0, Rehearsal −1.0, Stage −1.5 LU**; guitar is 0 everywhere.
+
+**Why Quiet is the anchor (#242).** K-weighting was fitted to listening tests run at about 60 dBA: ITU-R BS.1770-5, Annex 1, Attachment 1, §4.1, describes them (Benjamin 2004, AES preprint 6233; Soulodre 2004, "Evaluation of objective measures of loudness", _Canadian Acoustics_ 32(3), pp. 152–153: 97 subjects, the reference reproduced at 60 dBA). No source makes stage volume its design point. So equal LUFS is equal loudness near bedroom level, and the ISO 226 contours flatten as playback gets louder: the ear credits low-frequency energy more than K-weighting does, and a bass preset at equal LUFS sounds bigger. Bass therefore gets a **negative** offset that grows with level.
+
+The table before #242 was anchored at Stage (Quiet +1.5, Rehearsal +0.5, Stage 0). The re-anchor keeps its coarse 1.5 LU span and shifts it so Quiet is 0, which means **every level now levels bass 1.5 LU lower than before**, including the default Stage. The magnitudes stay deliberately coarse: contours vary by listener and rig, and a bass preset's loudness shift depends on how much of its energy sits below ~200 Hz. The principled next step is a per-capture correction from each capture's own spectrum (an ISO 226 or ISO 532-1 loudness model), which would also cover guitar presets with very different low ends; it is not done yet. The Doctor's threshold offsets use the same contours, derived per band (`notes/doctor-calibration.md`).
 
 ## Capture window
 

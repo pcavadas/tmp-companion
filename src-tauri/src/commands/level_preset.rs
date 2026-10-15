@@ -139,14 +139,13 @@ pub(crate) fn resolve_stimulus_with_capture<R: tauri::Runtime>(
     }
     topology_wav_path(app, topologies::DEFAULT_TOPOLOGY_ID).map(|p| (p, false))
 }
-/// Fletcher–Munson playback compensation for a leveling job: the LU offset added
+/// Equal-loudness playback compensation for a leveling job: the LU offset added
 /// to the target, from the store's playback level × the stimulus topology's
-/// instrument family. Equal-LUFS is equal-loudness only at the SPL the K-weighting
-/// curve approximates (~stage volume); at quieter playback the equal-loudness
-/// contours steepen and a bass preset matched at equal LUFS sits perceptibly
-/// quieter, so its target is raised (see `profiles::playback_offset_lu`). `None` /
-/// unknown topology falls back to the guitar default (offset 0); `Stage` (the
-/// store default) is always 0, so legacy stores level exactly as before.
+/// instrument family. Equal-LUFS is equal-loudness only at the SPL K-weighting was
+/// fitted at (~60 dBA, bedroom level); at louder playback the equal-loudness
+/// contours flatten and a bass preset matched at equal LUFS sounds bigger, so its
+/// target is lowered (see `profiles::playback_offset_lu`). `None` / unknown
+/// topology falls back to the guitar default (offset 0); `Quiet` is always 0.
 pub(crate) fn playback_offset_for<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     topology_id: Option<&str>,
