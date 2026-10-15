@@ -576,45 +576,15 @@ pub fn set_reamp_mode(active: bool) -> Vec<u8> {
     len_delimited(3, &len_delimited(30, &inner))
 }
 
-/// `MixerMessage.allChannelsDisplayStateRequest{ dummy=true }` — TMS field **5**
-/// (`mixerMessage`), inner field **2**. Schema from the firmware-extracted
-/// `MixerMessage.proto` (fw 1.7.75, sibling RE repo): the mixer service exposes a
-/// request/changed pair per topic, and the reply here is
-/// `channelDisplayStateChanged` (field 7) carrying a repeated `ChannelDisplayState`
-/// { idEnum, isStereo, faderLevel, muteActive, soloActive, linkToMasterLvl,
-/// monoOutActive, globalEqActive, sourceActive[], cutActive, preEnabled }.
-///
-/// Why this matters: the leveller measures **USB 1/2**, which is a full mixer
-/// channel (fader/mute/solo/AUX). None of that is in preset data, so a
-/// non-unity fader silently biases every solved `presetLevel` — and solve-then-
-/// verify cannot detect it (both captures ride the same attenuation). This read
-/// is what makes a pre-flight possible instead of a disclaimer.
-///
-/// Two shape rules copied from `set_reamp_mode`, both HW-load-bearing there:
-/// NO `batchStatus` (field 10) — the device rejects a Settings-family message
-/// carrying one — and `dummy` is sent EXPLICITLY as `true` so the inner message
-/// is non-empty (the device ignores an empty `LoadScene{}`; an empty request
-/// submessage is the same silent-drop shape).
-///
-/// NB `set_reamp_mode` proves the SettingsMessage (TMS 3) path is live; whether
-/// TMS 5 is also served is exactly what `probe --mixer` decides. A silent reply
-/// is a real negative for fw 1.7.75's schema, not proof the mixer is unreadable
-/// on a later firmware.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "reserved for the USB 3/4 mixer-strip read (#157); golden-tested"
-    )
-)]
-pub fn mixer_state_request() -> Vec<u8> {
-    mixer_request(2)
-}
-
 /// Generic `MixerMessage{ <request_field>{ dummy=true } }` on TMS field **5**.
 ///
+/// No `batchStatus` (field 10), and `dummy` is sent EXPLICITLY as `true` so the inner
+/// message is non-empty (an empty request submessage is a silent-drop shape).
+///
 /// All five read requests in the extracted schema — `allChannelsDisplayDataRequest`
-/// (1), `allChannelsDisplayStateRequest` (2), `globalEqDisplayInfoRequest` (3),
+/// (1), `allChannelsDisplayStateRequest` (2, whose reply carries each strip's fader,
+/// mute and PRE state; the app reads the USB 3 strip from the settings backup
+/// instead, #157), `globalEqDisplayInfoRequest` (3),
 /// `reAmpModeRequest` (4), `masterLevelInfoRequest` (5) — are the same
 /// `{ bool dummy = 1 }` shape, so one builder covers the sweep.
 ///
@@ -1839,12 +1809,12 @@ mod tests {
     }
 
     #[test]
-    fn mixer_state_request_matches_schema() {
+    fn mixer_display_state_request_matches_schema() {
         // TMS 5 (mixerMessage) → field 2 (allChannelsDisplayStateRequest) →
         // field 1 varint 1 (dummy=true, sent explicitly so the inner message is
         // non-empty). No batchStatus.
         //   2a 04   12 02   08 01
-        assert_eq!(hex(&mixer_state_request()), "2a0412020801");
+        assert_eq!(hex(&mixer_request(2)), "2a0412020801");
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::proto;
 use crate::proto::Val;
 use crate::session::Session;
 
-/// TMS oneof slot for `MixerMessage` (see `proto::mixer_state_request`).
+/// TMS oneof slot for `MixerMessage` (see `proto::mixer_request`).
 const TMS_MIXER: u32 = 5;
 /// `MixerMessage.channelDisplayStateChanged` — the reply to a state request.
 const CHANNEL_DISPLAY_STATE_CHANGED: u32 = 7;
