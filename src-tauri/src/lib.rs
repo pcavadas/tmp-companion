@@ -51,6 +51,7 @@ mod device_gate;
 #[cfg(target_os = "macos")]
 mod dock;
 mod doctor;
+mod doctor_audio_oracle;
 #[cfg(feature = "e2e")]
 mod e2e_server;
 #[cfg(feature = "e2e")]
@@ -1257,27 +1258,27 @@ mod fixture_gates {
         let table: &[DefectRow] = &[
             (1, "CONTROL", "eq10", "gain1khz", 0.0, 0.0),
             (2, "MUDDY", "eq10", "gain250hz", 12.0, 0.0),
-            // BOOMY is seam-only: even a +18 dB peaking bump at 80 Hz reads as a
-            // broad low tilt (locals[lows] +1.7 vs the 2.5 gate) — the boomy rule
-            // as calibrated wants a narrow low bump with QUIET low-mids, which no
-            // single accepted param produced (HW 2026-08-18).
+            // BOOMY was seam-only on the old stimulus (its +18 dB 80 Hz bump read as
+            // a broad low tilt, HW 2026-08-18). On the pitched pluck it fires: the
+            // remote device read the lows local at 7.0 against the 4.1 gate (#199).
             (3, "BOOMY", "peq5", "filter1gaindb", 18.0, 0.0),
-            // HARSH standalone is seam-only (locals[high-mids] saturates ~+1.4 at
-            // q 1.5–2.5); the harsh VERDICT is covered online by RESONANT's q14
-            // spike, which fires harsh+resonant together (HW 2026-08-18).
+            // HARSH was seam-only on the old stimulus (the high-mids local
+            // saturated near +1.4). On the pitched pluck it fires standalone: the
+            // remote device read 4.6 against the 3.9 gate (#199).
             (4, "HARSH", "peq5", "filter4gaindb", 15.0, 0.0),
             // FIZZY is seam-only on this chain: the V30 cab IR leaves nothing above
             // ~10 kHz for any EQ boost to lift (HW 2026-08-18: +12 dB at 16 kHz moved
             // the air band +0.2 dB), and an on-off row bypassing the cab poisons every
             // OTHER sound's capture through the doctor's force-bypass isolation. The
-            // row validates the param-write seam; no fizzy verdict fires online.
+            // row validates the param-write seam; no fizzy verdict fires online
+            // (doctor_audio_oracle.rs covers the verdict on captured audio).
             (5, "FIZZY", "eq10", "gain16khz", 12.0, 0.0),
             (6, "LOST", "eq10", "gain500hz", -12.0, 0.0),
             // BRIGHT is seam-only: no single param tilts the whole spectrum past
             // the 3 dB/oct bright gate through this cab, and the DR103's tone-stack
             // knobs (treble/presence) are ACCEPTED by the FS param seam but change
             // nothing in the captured audio (HW 2026-08-18) — kept as the amp-knob
-            // write-acceptance probe.
+            // write-acceptance probe (doctor_audio_oracle.rs covers the verdict).
             (
                 7,
                 "BRIGHT",

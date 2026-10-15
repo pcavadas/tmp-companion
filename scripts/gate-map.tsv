@@ -16,6 +16,7 @@ src-tauri/src/*_tests.rs	offline-oracle
 src-tauri/src/sim_device.rs	offline-oracle
 src-tauri/src/sim_device/*	offline-oracle
 src-tauri/src/test_support.rs	offline-oracle
+src-tauri/src/doctor_audio_oracle.rs	offline-oracle
 src-tauri/src/fixtures/*	offline-oracle
 e2e/fixtures/scenario-loudness.json	offline-oracle
 e2e/fixtures/backup-fixture.bin	offline-oracle

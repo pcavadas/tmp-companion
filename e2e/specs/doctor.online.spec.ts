@@ -18,8 +18,8 @@ import {
 // for Doctor instead of three (doctor.spec.ts's online half + doctor-oracle.online.spec.ts +
 // doctor-apply.online.spec.ts, which stays its own spec — see its own header).
 //
-// (a) is doctor-oracle.online.spec.ts moved here UNCHANGED (including the 4 wire-seam-only
-//     rows) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
+// (a) is doctor-oracle.online.spec.ts moved here (its two wire-seam-only rows, FIZZY and
+//     BRIGHT, are covered numerically by src-tauri/src/doctor_audio_oracle.rs) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
 //     actually diagnose on real audio, not just that the fixture carries the right shape
 //     (that structural half stays pinned offline by lib.rs's fixture_gates).
 // (b) is doctor.spec.ts's online UI run, moved here selecting all three fixtures exactly as
@@ -80,8 +80,14 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
   const SWITCHES: { row: number; label: string; verdict: Verdict }[] = [
     { row: 1, label: "CONTROL", verdict: { kind: "zero" } },
     { row: 2, label: "MUDDY", verdict: { kind: "contains", diagKey: "muddy" } },
-    { row: 3, label: "BOOMY", verdict: { kind: "seam" } },
-    { row: 4, label: "HARSH", verdict: { kind: "seam" } },
+    // BOOMY and HARSH fire on the pitched-pluck stimulus (#199): the remote device read
+    // BOOMY's lows local 7.0 against the 4.1 gate (dark co-fires) and HARSH's high-mids
+    // local 4.6 against 3.9.
+    { row: 3, label: "BOOMY", verdict: { kind: "contains", diagKey: "boomy" } },
+    { row: 4, label: "HARSH", verdict: { kind: "contains", diagKey: "harsh" } },
+    // FIZZY and BRIGHT stay seam-only: the cab IR leaves nothing above ~10 kHz to lift,
+    // and the amp's treble knob changes nothing audible (lib.rs's defect table). Their
+    // verdicts are covered on captured audio by doctor_audio_oracle.rs instead.
     { row: 5, label: "FIZZY", verdict: { kind: "seam" } },
     { row: 6, label: "LOST", verdict: { kind: "contains", diagKey: "lost" } },
     { row: 7, label: "BRIGHT", verdict: { kind: "seam" } },
@@ -207,9 +213,24 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     // preset online.
     expect(diagKeys(preset.sounds[0]), "base must fire nothing").toEqual([]);
 
+    // Specificity: the localized ring and the wash tail are each owned by one switch, and
+    // no other sound comes near either gate on the remote device (the tallest other peak
+    // reads 11.9 dB against the 13.5 dB ring gate), so neither may fire anywhere else.
+    const OWNED: Record<string, string> = {
+      resonant: "RESONANT",
+      washed: "WASHED",
+    };
     for (const [i, s] of SWITCHES.entries()) {
       const sound = preset.sounds[i + 1];
       const keys = diagKeys(sound);
+      for (const [key, owner] of Object.entries(OWNED)) {
+        if (s.label !== owner) {
+          expect(
+            keys,
+            `${s.label} (switch ${String(s.row)}) must not fire "${key}", which only ${owner} owns`,
+          ).not.toContain(key);
+        }
+      }
       switch (s.verdict.kind) {
         case "zero":
           expect(
@@ -226,8 +247,8 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
         case "seam":
           // Seam-only: the write lands, but no spectral verdict is expected —
           // assert only that a real capture happened (finite LUFS, no error —
-          // error already checked above). See this file's header for why each
-          // of these five is inert/gate-blocked on the synthetic stimulus.
+          // error already checked above). See the SWITCHES table for why FIZZY
+          // and BRIGHT stay inert on this chain.
           expect(
             Number.isFinite(sound.integratedLufs),
             `${s.label} (switch ${String(s.row)}) must have captured real audio (finite integratedLufs)`,
