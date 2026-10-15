@@ -8,9 +8,13 @@ name: remote-lane
 # TWIN_LANE_REPO variable (on the TWIN_LANE_REF branch, if set) to run exactly those specs on
 # the PR's head commit. That run posts the final `remote-lane` status back on the same commit.
 #
-# Advisory: `remote-lane` is not a required check. Same-repository PRs only: a fork's PR
-# never gets the dispatch token (and pull_request_target is never used here), so outside
-# code never reaches the remote device.
+# `remote-lane` is a REQUIRED check on main, so every PR from this repository must end with
+# one: "not needed", the lane's own verdict, or `error` (a missing TWIN_LANE_TOKEN or
+# TWIN_LANE_REPO is named in the description, never skipped silently). Same-repository PRs
+# only: a fork's PR never gets the dispatch token (and pull_request_target is never used
+# here), so outside code never reaches the remote device on its own, and the PR waits until
+# a maintainer has read it and dispatches the lane for its head commit by hand
+# (`twin-lane.yml` with companion_ref=<head SHA>, specs=<this job's selection>, pr=<number>).
 
 on:
   pull_request:
@@ -62,16 +66,23 @@ jobs:
         if: steps.specs.outputs.specs != ''
         env:
           GH_TOKEN: ${{ secrets.TWIN_LANE_TOKEN }}
+          STATUS_TOKEN: ${{ github.token }}
           LANE_REPO: ${{ vars.TWIN_LANE_REPO }}
           LANE_REF: ${{ vars.TWIN_LANE_REF }}
           SPECS: ${{ steps.specs.outputs.specs }}
         run: |
-          if [ -z "$GH_TOKEN" ] || [ -z "$LANE_REPO" ]; then
-            echo "::warning::remote lane not configured (TWIN_LANE_TOKEN / TWIN_LANE_REPO); skipping"
-            exit 0
+          # Statuses go through this repository's own token, so a missing dispatch token can
+          # still be reported on the PR instead of leaving the required check absent.
+          status() { GH_TOKEN="$STATUS_TOKEN" gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$1" -f context=remote-lane -f description="$2" >/dev/null; }
+          missing=""
+          [ -n "$GH_TOKEN" ] || missing="the TWIN_LANE_TOKEN secret (unset or empty)"
+          [ -n "$LANE_REPO" ] || missing="${missing:+$missing and }the TWIN_LANE_REPO variable"
+          if [ -n "$missing" ]; then
+            echo "::error::remote lane not configured: $missing"
+            status error "not configured: $missing"
+            exit 1
           fi
-          status() { gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$1" -f context=remote-lane \
-            -f description="$2" >/dev/null; }
           # Pending first, so it can never land after the final status the run posts.
           status pending "running: $SPECS"
           # TWIN_LANE_REF picks the runner's branch; unset, its default branch.
