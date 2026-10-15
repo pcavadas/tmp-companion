@@ -687,6 +687,57 @@ pub(crate) fn is_clipped_capture(samples: &[f32]) -> bool {
     lufs::is_clipped(samples, 1)
 }
 
+/// #361 severity rule: the most of a calibration take that may sit at full scale
+/// and still be stored. The unit's dry USB 3 send is the instrument ADC pair times
+/// a fixed +5.9 dB trim, converted to 24 bit with saturation, so hard picks from a
+/// normal passive guitar pin it at ±2²³ (fw 1.8.58: firmware static analysis plus
+/// four 8 s takes on the owner's unit — 0.015–0.112% of samples clipped, longest
+/// run 23 samples ≈ 0.5 ms). The limits sit about 4× above that measured spread.
+pub(crate) const MILD_CLIP_MAX_FRACTION: f64 = 0.005;
+/// The longest full-scale run (seconds) a stored take may carry — see
+/// [`MILD_CLIP_MAX_FRACTION`].
+pub(crate) const MILD_CLIP_MAX_RUN_SECS: f64 = 0.002;
+
+/// How badly a dry calibration take flat-topped (#361). Mirrored in
+/// `src/lib/types.ts` (`ClipVerdict`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ClipVerdict {
+    /// No flat top at all ([`is_clipped_capture`] is false).
+    Clean,
+    /// Flat-topped, but within the severity rule: the take is stored.
+    Mild,
+    /// Past the severity rule: the take is not stored.
+    Severe,
+}
+
+/// Judge a mono take against the #361 severity rule. Only a take that
+/// [`is_clipped_capture`] flags can be `Mild` or `Severe`; every full-scale
+/// sample counts toward the fraction, and the longest full-scale run is checked
+/// against [`MILD_CLIP_MAX_RUN_SECS`].
+pub(crate) fn clip_verdict(samples: &[f32], sample_rate: u32) -> ClipVerdict {
+    if !is_clipped_capture(samples) {
+        return ClipVerdict::Clean;
+    }
+    let (mut pinned, mut run, mut longest) = (0usize, 0usize, 0usize);
+    for &x in samples {
+        if x.abs() >= lufs::CLIP_LEVEL {
+            pinned += 1;
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let fraction = pinned as f64 / samples.len().max(1) as f64;
+    let longest_secs = longest as f64 / f64::from(sample_rate.max(1));
+    if fraction <= MILD_CLIP_MAX_FRACTION && longest_secs <= MILD_CLIP_MAX_RUN_SECS {
+        ClipVerdict::Mild
+    } else {
+        ClipVerdict::Severe
+    }
+}
+
 #[cfg(test)]
 mod stimulus_shortfall_tests {
     use super::read_stimulus_calibrated_with_shortfall;
@@ -793,6 +844,71 @@ mod clip_gate_tests {
             *x = 1.0; // 8 consecutive pinned samples = genuine overload
         }
         assert!(is_clipped_capture(&s));
+    }
+}
+
+#[cfg(test)]
+mod clip_severity_tests {
+    //! #361: the severity rule pinned on takes shaped like the measured ones —
+    //! picks whose tops are pinned at exactly ±2²³ on the 24-bit grid, in both
+    //! polarities, on an 8 s 48 kHz take.
+    use super::{clip_verdict, ClipVerdict};
+
+    const SR: u32 = 48_000;
+    /// +8388607 and −8388608 as the f32 the capture path hands over.
+    const POS_FS: f32 = 8_388_607.0 / 8_388_608.0;
+    const NEG_FS: f32 = -1.0;
+
+    /// An 8 s take of decaying picks, then `runs` flat tops of `run_len` samples
+    /// each, alternating polarity.
+    fn take(runs: usize, run_len: usize) -> Vec<f32> {
+        let mut s: Vec<f32> = (0..SR as usize * 8)
+            .map(|i| (i as f32 * 0.07).sin() * 0.4 * (-((i % 12_000) as f32) / 6_000.0).exp())
+            .collect();
+        let step = s.len() / (runs + 1);
+        for r in 0..runs {
+            let at = step * (r + 1);
+            let v = if r % 2 == 0 { POS_FS } else { NEG_FS };
+            for x in s.iter_mut().skip(at).take(run_len) {
+                *x = v;
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn unclipped_take_is_clean() {
+        assert_eq!(clip_verdict(&take(0, 0), SR), ClipVerdict::Clean);
+    }
+
+    #[test]
+    fn measured_takes_are_mild() {
+        // The four measured takes: (runs ≥ 4 samples, longest run, clipped %).
+        // 48 runs up to 21 samples is 0.112% of 384 000 samples at most.
+        for (runs, longest) in [(48, 21), (25, 23), (11, 7), (19, 10)] {
+            let s = take(runs, longest);
+            assert_eq!(
+                clip_verdict(&s, SR),
+                ClipVerdict::Mild,
+                "{runs} runs of {longest}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_past_2_ms_is_severe() {
+        // One flat top of 2.1 ms (101 samples) is past the run limit on its own.
+        assert_eq!(clip_verdict(&take(1, 101), SR), ClipVerdict::Severe);
+        // Exactly 2 ms (96 samples) is still within it.
+        assert_eq!(clip_verdict(&take(1, 96), SR), ClipVerdict::Mild);
+    }
+
+    #[test]
+    fn more_than_half_a_percent_pinned_is_severe() {
+        // 400 runs of 6 samples = 2 400 samples = 0.625% of the take, every run short.
+        assert_eq!(clip_verdict(&take(400, 6), SR), ClipVerdict::Severe);
+        // 300 runs of 6 = 0.469%: within the rule.
+        assert_eq!(clip_verdict(&take(300, 6), SR), ClipVerdict::Mild);
     }
 }
 

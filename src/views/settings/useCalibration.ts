@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { calibrateProfile } from "../../lib/invoke";
 import { errMsg } from "../../lib/format";
-import type { CalibrateResult } from "../../lib/types";
+import type { CalibrateResult, Profile } from "../../lib/types";
 
 // Tier-2 capture length passed to calibrate_profile (backend clamps 2..30).
 export const CALIBRATE_SECS = 8;
@@ -33,12 +33,28 @@ export type Calibration =
 
 const IDLE: Calibration = { kind: "idle", result: null, warn: null };
 
-/** The take's non-fatal caveats, joined — or null when it was clean. */
-function warningsOf(res: CalibrateResult): string | null {
+/** What leveling re-amps for this instrument, shown on the row at all times
+ *  (#361): the player's stored recording, or the synthetic test signal. */
+export function stimulusSource(profile: Profile): string {
+  return profile.has_capture === true
+    ? "levels with your recording"
+    : "levels with the test signal";
+}
+
+/** The take's non-fatal caveats, joined — or null when it was clean.
+ *
+ * #361: the unit's dry USB 3 send clips on hard picks from a normal guitar, so a
+ * mildly clipped take is stored without comment. A take past the severity rule is
+ * explained as the unit's send clipping. Never tell the player to play softer and
+ * never point at the unit's mixer meter (its RMS ballistics hide sub-ms flat tops);
+ * an on-unit lever is named here only once it has been checked on a real unit. */
+export function warningsOf(res: CalibrateResult): string | null {
   const warns: string[] = [];
-  if (res.clipped)
+  if (res.clip === "severe")
     warns.push(
-      "signal clipped — play softer, or turn the instrument volume down, then re-calibrate",
+      res.kept_previous_capture
+        ? "hard picks clipped the unit's USB 3 send, so this take wasn't stored — leveling keeps your earlier recording"
+        : "hard picks clipped the unit's USB 3 send, so this take wasn't stored — leveling uses the test signal at this loudness",
     );
   if (res.stimulus_shortfall_lu != null)
     warns.push(

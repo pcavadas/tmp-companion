@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { InstrumentRow } from "../views/settings/InstrumentRow";
+import { stimulusSource, warningsOf } from "../views/settings/useCalibration";
 import type { CalibrateResult, Profile } from "../lib/types";
 import { fired, makeCalibrateResult, mockCommands } from "./commandMocks";
 import { renderWithTheme } from "./testKit";
@@ -40,7 +41,9 @@ function renderRow(p: Profile, onCalibrated: () => void) {
 
 const RESULT: CalibrateResult = {
   lufs: -20,
-  clipped: false,
+  clip: "clean",
+  capture_stored: true,
+  kept_previous_capture: false,
   stimulus_shortfall_lu: null,
   spread_lu: 0.4,
   band_coverage: [],
@@ -147,14 +150,15 @@ describe("regression: BUG-6 calibration abort on unmount", () => {
   );
 
   it(
-    "clip + stimulus-ceiling caveats surface as a non-fatal warning",
+    "a severe clip + stimulus-ceiling caveats surface as a non-fatal warning (#361)",
     { timeout: 10000 },
     async () => {
       mockCommands({
         calibrate_profile: () =>
           makeCalibrateResult({
             lufs: -12.4,
-            clipped: true,
+            clip: "severe",
+            capture_stored: false,
             stimulus_shortfall_lu: 2.3,
             spread_lu: 3.5,
           }),
@@ -164,11 +168,70 @@ describe("regression: BUG-6 calibration abort on unmount", () => {
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: /re-calibrate/i }));
       // Both caveats land on the idle sub-line, joined "; " — success still fires.
-      await screen.findByText(/signal clipped/i, undefined, { timeout: 8000 });
-      expect(
-        screen.getByText(/leveling drives ~2\.3 LU softer/i),
-      ).toBeInTheDocument();
+      const line = await screen.findByText(
+        /clipped the unit's USB 3 send/i,
+        undefined,
+        {
+          timeout: 8000,
+        },
+      );
+      expect(line.textContent).toMatch(/leveling uses the test signal/i);
+      expect(line.textContent).toMatch(/leveling drives ~2\.3 LU softer/i);
       expect(onCalibrated).toHaveBeenCalled();
     },
   );
+});
+
+describe("InstrumentRow — clipped calibration takes (#361)", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("never says play softer and never points at the mixer meter", () => {
+    for (const clip of ["clean", "mild", "severe"] as const)
+      for (const kept of [false, true]) {
+        const warn =
+          warningsOf(
+            makeCalibrateResult({
+              clip,
+              capture_stored: clip !== "severe",
+              kept_previous_capture: clip === "severe" && kept,
+            }),
+          ) ?? "";
+        expect(warn).not.toMatch(/softer|volume down|meter/i);
+      }
+  });
+
+  it("a mild clip is stored without comment", () => {
+    expect(
+      warningsOf(makeCalibrateResult({ clip: "mild", capture_stored: true })),
+    ).toBeNull();
+  });
+
+  it("a refused take over an earlier recording says the recording was kept", () => {
+    expect(
+      warningsOf(
+        makeCalibrateResult({
+          clip: "severe",
+          capture_stored: false,
+          kept_previous_capture: true,
+        }),
+      ),
+    ).toMatch(/keeps your earlier recording/i);
+  });
+
+  it("the row always shows what leveling re-amps", () => {
+    const { unmount } = renderRow(
+      { ...profile, calibration_lufs: -14, has_capture: true },
+      vi.fn(),
+    );
+    expect(screen.getByText(/levels with your recording/i)).toBeInTheDocument();
+    unmount();
+    renderRow(profile, vi.fn());
+    expect(screen.getByText("not calibrated")).toBeInTheDocument();
+    expect(screen.getByText("levels with the test signal")).toBeInTheDocument();
+    expect(stimulusSource({ ...profile, calibration_lufs: -14 })).toBe(
+      "levels with the test signal",
+    );
+  });
 });

@@ -1611,3 +1611,119 @@ mod tests {
         assert_eq!((m.tp, m.fn_, m.abstained), (0, 0, 3));
     }
 }
+
+#[cfg(test)]
+mod held_out_baseline {
+    //! #200: the committed held-out Doctor benchmark. The fixture is the 248-sound
+    //! guitar factory sweep (fw 1.8.58, 2026-10-15, through the shipped
+    //! `guitar-humbucker.wav`; provenance inside the file) that the shipped guitar
+    //! constants were derived from. Leave-one-out re-derives the calibration
+    //! without each sound before diagnosing it, so its counts are the held-out
+    //! false-alarm estimate. The baseline file holds every rule's count per mode;
+    //! a change that makes any count GROW fails here, so a Doctor change can't
+    //! raise the false-alarm rate on healthy presets unnoticed. A change that
+    //! lowers counts re-blesses the baseline (`TMP_BLESS_LOO=1 cargo test --lib
+    //! held_out_baseline`) and records the new numbers in `notes/benchmarks.md`.
+    use super::*;
+    use crate::doctor::StimulusKind;
+
+    const SWEEP: &str = include_str!("fixtures/doctor-guitar-factory-2026-10-15.json");
+    const BASELINE_PATH: &str = "src/fixtures/doctor-guitar-loo-baseline.json";
+    const BASELINE: &str = include_str!("fixtures/doctor-guitar-loo-baseline.json");
+
+    /// Mode id → (rule or "any") → fires.
+    type Counts = BTreeMap<String, BTreeMap<String, usize>>;
+
+    fn counts(mode: &LooMode) -> BTreeMap<String, usize> {
+        let mut m: BTreeMap<String, usize> = mode
+            .per_rule
+            .iter()
+            .map(|(k, r)| ((*k).to_string(), r.fires))
+            .collect();
+        m.insert("any".to_string(), mode.any_rule.fires);
+        m
+    }
+
+    fn sweep_rows() -> (Family, Vec<(String, ReplayProfile)>) {
+        let report: serde_json::Value = serde_json::from_str(SWEEP).unwrap();
+        for key in [
+            "hardware",
+            "firmware",
+            "stimulus",
+            "capturePolicy",
+            "labeling",
+        ] {
+            assert!(
+                report["provenance"][key]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "the fixture's provenance lacks {key}"
+            );
+        }
+        let family = Family::from_topology(report["family"].as_str().unwrap());
+        let rows = report["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["slot"].to_string(),
+                    serde_json::from_value(r["replay"].clone()).unwrap(),
+                )
+            })
+            .collect();
+        (family, rows)
+    }
+
+    #[test]
+    fn leave_one_out_false_alarms_do_not_grow() {
+        let (family, rows) = sweep_rows();
+        assert_eq!(
+            rows.len(),
+            248,
+            "the committed sweep is the 248 guitar sounds"
+        );
+        let report = doctor_leave_one_out(&rows, family, StimulusKind::Synthetic).unwrap();
+        let mut now: Counts = BTreeMap::new();
+        now.insert("inSample".to_string(), counts(&report.in_sample));
+        for (id, mode) in &report.modes {
+            now.insert((*id).to_string(), counts(mode));
+        }
+        if std::env::var("TMP_BLESS_LOO").is_ok_and(|v| v == "1") {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(BASELINE_PATH);
+            let json = serde_json::to_string_pretty(&now).unwrap();
+            std::fs::write(path, json + "\n").unwrap();
+            return;
+        }
+        let baseline: Counts = serde_json::from_str(BASELINE).unwrap();
+        // A mode or rule with no baseline entry would go unchecked: the key sets
+        // must match exactly (re-bless when a mode or rule is added on purpose).
+        let modes = |c: &Counts| c.keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            modes(&now),
+            modes(&baseline),
+            "mode keys differ from the baseline"
+        );
+        for (mode, rules) in &baseline {
+            let keys = |m: &BTreeMap<String, usize>| m.keys().cloned().collect::<Vec<_>>();
+            assert_eq!(
+                keys(&now[mode]),
+                keys(rules),
+                "{mode}: rule keys differ from the baseline"
+            );
+        }
+        let mut grew = Vec::new();
+        for (mode, rules) in &baseline {
+            for (rule, &was) in rules {
+                let is = now[mode][rule];
+                if is > was {
+                    grew.push(format!("{mode}/{rule}: {was} → {is}"));
+                }
+            }
+        }
+        assert!(
+            grew.is_empty(),
+            "held-out false alarms grew on the 248-sound guitar sweep: {grew:?}"
+        );
+    }
+}

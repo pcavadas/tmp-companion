@@ -1,0 +1,62 @@
+{
+  "inSample": {
+    "any": 124,
+    "boomy": 5,
+    "boxy": 4,
+    "bright": 7,
+    "buried": 0,
+    "dark": 17,
+    "fizzy": 9,
+    "harsh": 8,
+    "lost": 33,
+    "muddy": 24,
+    "resonant": 7,
+    "thin": 25,
+    "washed": 36
+  },
+  "maxPlusMargin": {
+    "any": 45,
+    "boomy": 0,
+    "boxy": 4,
+    "bright": 0,
+    "buried": 0,
+    "dark": 1,
+    "fizzy": 1,
+    "harsh": 1,
+    "lost": 1,
+    "muddy": 0,
+    "resonant": 7,
+    "thin": 0,
+    "washed": 36
+  },
+  "p75Consensus": {
+    "any": 163,
+    "boomy": 36,
+    "boxy": 4,
+    "bright": 0,
+    "buried": 0,
+    "dark": 1,
+    "fizzy": 1,
+    "harsh": 43,
+    "lost": 53,
+    "muddy": 37,
+    "resonant": 7,
+    "thin": 37,
+    "washed": 36
+  },
+  "targetOnly": {
+    "any": 126,
+    "boomy": 8,
+    "boxy": 4,
+    "bright": 7,
+    "buried": 0,
+    "dark": 17,
+    "fizzy": 9,
+    "harsh": 8,
+    "lost": 35,
+    "muddy": 21,
+    "resonant": 7,
+    "thin": 25,
+    "washed": 36
+  }
+}

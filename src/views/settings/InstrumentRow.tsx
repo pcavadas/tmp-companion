@@ -13,7 +13,11 @@ import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
 import type { Profile, TopologyInfo } from "../../lib/types";
 import { NeedsDevicePill } from "./NeedsDevicePill";
-import { CALIBRATE_SECS, useCalibration } from "./useCalibration";
+import {
+  CALIBRATE_SECS,
+  stimulusSource,
+  useCalibration,
+} from "./useCalibration";
 
 // ===========================================================================
 // InstrumentRow
@@ -80,6 +84,8 @@ export function InstrumentRow({
                 calibWarn != null ? ` — ${calibWarn}` : ""
               }`
             : "not calibrated";
+  // What leveling re-amps (#361): its own line, shown in every phase.
+  const source = stimulusSource(profile);
 
   // Type = the topology's instrument label; Pickup = the topology's label.
   const typeLabel = topology?.instrument ?? null;
@@ -173,6 +179,17 @@ export function InstrumentRow({
             }}
           >
             {sub}
+          </div>
+          <div
+            style={{
+              fontFamily: t.mono,
+              fontSize: t.fsData2,
+              marginTop: t.space1,
+              whiteSpace: "nowrap",
+              color: t.faint,
+            }}
+          >
+            {source}
           </div>
           {/* What-was-captured readout — SESSION-ONLY (calibResult isn't persisted),
               so it's visible right after a calibration and clears on the next attempt. */}
