@@ -121,6 +121,21 @@ function assertFsSolved(
   }
 }
 
+/** Every requested switch must come back. `level_footswitches_apply` reports a row that
+ *  errors (an audio overrun mid-solve, say) as a streamed Error item and leaves it out of the
+ *  returned array, so `assertFsSolved` alone passes over it, and a later test that builds on
+ *  the row then measures something else (a dropped switch-1 solve turned the idempotency
+ *  re-run into a fresh solve on the unit, 2026-10-14). */
+function expectEverySwitch(
+  results: FootswitchLevelResult[],
+  jobs: readonly { switch: number }[],
+): void {
+  expect(
+    results.map((r) => r.switch).sort((a, b) => a - b),
+    "every requested switch must come back (no silent mid-batch drop)",
+  ).toEqual(jobs.map((j) => j.switch).sort((a, b) => a - b));
+}
+
 /** The "measure as-is, target = as-is minus 2 dB" idiom shared by every self-calibrated lane
  *  (file header's SELF-CALIBRATE note) — always reachable, since the handle only needs to go
  *  quieter and the floor is ~0.01 ≈ -34 dB of room. */
@@ -275,6 +290,7 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
       },
       T * 2,
     )) as FootswitchLevelResult[];
+    expectEverySwitch(fs410, [{ switch: 1 }]);
     assertFsSolved(fs410, () => fsTargetUsed410);
 
     const fsUniVibe = (await invoke(
@@ -299,6 +315,7 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
       },
       T * 2,
     )) as FootswitchLevelResult[];
+    expectEverySwitch(fsUniVibe, [{ switch: 12 }]);
     // A LFO'd knob (modulated UniVibe response) can legitimately need the full KNOB_TOL_LU band.
     assertFsSolved(fsUniVibe, () => fsTargetUniVibe);
 
@@ -502,6 +519,10 @@ when the stored value already measured within tolerance of target`,
     // ── Footswitch skip-branch (410's own TubeScreamer row only — the carried-over
     // UniVibe row belongs to T1′'s modulated-solve coverage, not this idempotency proof) ──
     const firstRun = fs.map((r) => r.switch);
+    expect(
+      firstRun,
+      "the arc test must have leveled switch 1, or this re-run is a fresh solve, not a skip",
+    ).toContain(1);
     const fs2 = (await invoke(
       page,
       "level_footswitches_apply",
@@ -526,6 +547,7 @@ when the stored value already measured within tolerance of target`,
     )) as FootswitchLevelResult[];
 
     const fsTarget410Narrowed = fsTarget410;
+    expectEverySwitch(fs2, [{ switch: 1 }]);
     assertFsSolved(fs2, () => fsTarget410Narrowed, ACCEPT_TOL_LU);
     // Every switch the arc test leveled is on target now, whether it wrote a value there or
     // skipped as already within ACCEPT_TOL_LU, so the re-run at the same target writes nothing.
@@ -809,10 +831,7 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       },
       T * 3,
     )) as FootswitchLevelResult[];
-    expect(
-      fs.map((r) => r.switch).sort((a, b) => a - b),
-      "every requested switch must come back (no silent mid-batch drop)",
-    ).toEqual(SWITCH_JOBS_405.map((j) => j.switch).sort((a, b) => a - b));
+    expectEverySwitch(fs, SWITCH_JOBS_405);
     assertFsSolved(fs, (r) => {
       const job = SWITCH_JOBS_405.find((j) => j.switch === r.switch);
       if (!job) throw new Error(`unexpected switch ${String(r.switch)}`);
