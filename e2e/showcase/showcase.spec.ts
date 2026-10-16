@@ -120,7 +120,7 @@ test.describe("Marketing screenshots", () => {
     await expect(page.getByPlaceholder(/Search a model/i)).toBeVisible({
       timeout: 30_000,
     });
-    await expect(page.locator('[title*="—"]').first()).toBeVisible(); // a model card
+    await expect(page.locator("[data-model]").first()).toBeVisible(); // a model tile
     await grab("catalog");
 
     // ── Doctor: check three PLAIN presets (Base only). The backend injects curated

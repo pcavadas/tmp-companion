@@ -60,14 +60,14 @@ single rollback at the end.
 
 ## 1. Test matrix at a glance
 
-| Area                 | Functional scenarios | Monkey/chaos scenarios | Existing auto-coverage                            | Biggest gap                                                         |
-| -------------------- | -------------------- | ---------------------- | ------------------------------------------------- | ------------------------------------------------------------------- |
-| Connection lifecycle | C1–C7                | M-C1–M-C3              | unit (`connectError`, `DeviceStatus`, `firmware`) | mid-op disconnect; Pro-Control-grab busy page live                  |
-| Level + wizard       | L1–L14               | M-L1–M-L8              | e2e happy paths + many vitest                     | **cancel mid-run**, partial failure, clamp/offbranch live           |
-| Copy                 | P1–P10               | M-P1–M-P5              | e2e + vitest happy paths                          | physical unplug mid-save (partial failure + Back gated in Vitest)   |
-| Songs                | S1–S13               | M-S1–M-S4              | e2e CRUD + vitest                                 | **add-to-setlist + reorder e2e**, BPM-didn't-stick warn             |
-| Catalog              | T1–T7                | M-T1–M-T2              | model-wall + `CatalogView` interaction unit tests | scroll/DnD only (filters/sort/facets now in `CatalogView.test.tsx`) |
-| Settings             | E1–E10               | M-E1–M-E3              | vitest only                                       | **calibration flow live**, slider/drag, no e2e at all               |
+| Area                 | Functional scenarios | Monkey/chaos scenarios | Existing auto-coverage                            | Biggest gap                                                       |
+| -------------------- | -------------------- | ---------------------- | ------------------------------------------------- | ----------------------------------------------------------------- |
+| Connection lifecycle | C1–C7                | M-C1–M-C3              | unit (`connectError`, `DeviceStatus`, `firmware`) | mid-op disconnect; Pro-Control-grab busy page live                |
+| Level + wizard       | L1–L14               | M-L1–M-L8              | e2e happy paths + many vitest                     | **cancel mid-run**, partial failure, clamp/offbranch live         |
+| Copy                 | P1–P10               | M-P1–M-P5              | e2e + vitest happy paths                          | physical unplug mid-save (partial failure + Back gated in Vitest) |
+| Songs                | S1–S13               | M-S1–M-S4              | e2e CRUD + vitest                                 | **add-to-setlist + reorder e2e**, BPM-didn't-stick warn           |
+| Catalog              | T1–T7                | M-T1–M-T2              | model-wall + `CatalogView` interaction unit tests | scroll only (filters/sort/details now in `CatalogView.test.tsx`)  |
+| Settings             | E1–E10               | M-E1–M-E3              | vitest only                                       | **calibration flow live**, slider/drag, no e2e at all             |
 
 ---
 
@@ -271,24 +271,27 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 
 ### Functional
 
-- **T1 — Search** ⌨️ — matches model / real-unit / brand; clear X; count readout updates; empty
-  "No models match" / "…these filters".
-- **T2 — Category rail** — All models + per-category + Effects disclosure (caret opens subcategories;
-  note: no collapse path once opened — see §8); counts per row; scroll the rail.
-- **T3 — Effect-type chips** — appear inside an Effects subcategory with >1 type; "All {sub}" +
-  per-type toggle.
-- **T4 — Facets** — Mono / Stereo (disabled when no stereo in scope — can disable mid-session as
-  scope changes) / Convolution (only in Reverb/Effects scope).
-- **T5 — Sort** — Type / CPU (label cycles CPU → CPU ↓ → CPU ↑; grouping changes to ranked wall).
-- **T6 — Model card select** — click → detail bar populates (type path, real unit, cpu\*, routing,
-  since); hover styling; sticky group headers; scroll the wall.
+- **T1 — Search** ⌨️ — matches model / real-unit / brand; clear X; the count reads "{n} models",
+  or "{n} of {models in the chosen category}" once a filter is on; no match shows
+  `No models match "{query}"` with "Clear search", or "No models match these filters".
+- **T2 — Category sidebar** — All models + per-category (sentence case) + the nine Effects
+  subcategories, always listed and indented; counts per row; scroll the sidebar.
+- **T3 — Effect type** — a dropdown inside an Effects subcategory with >1 type: "All {sub}" first,
+  then each type.
+- **T4 — Sound and Convolution** — All / Mono / Stereo (Stereo greyed when no stereo in scope, but
+  never while it is on) / "Convolution only" checkbox (only in Reverb/Effects scope).
+- **T5 — Sort** — Type / CPU; under CPU a "Highest first" / "Lowest first" button flips the order,
+  the wall is one ranked section and tiles show their CPU cost (only then).
+- **T6 — Model tile select** — click → the details open under the wall (beside it from 1280 wide):
+  type, "Models the …", CPU of budget, sound, engine (reverbs), since; the × closes them; scroll the
+  wall.
 - **T7 — Block art correctness** — combo vs head vs half-stack tiles; null-bid mics resolve by name
   (regression-prone — `models-catalog.test.tsx` is the guard).
 
 ### Monkey/chaos
 
-- **M-T1 — Rapid facet toggling while Stereo self-disables** — toggle routing=stereo then narrow
-  scope so `hasStereo` flips; button greys mid-interaction; list still filters correctly.
+- **M-T1 — Rapid Sound toggling while Stereo self-disables** — choose Stereo then narrow scope so
+  `hasStereo` flips; the segment greys only once it is off; list still filters correctly.
 - **M-T2 — Search + filter + sort combinations** — search while CPU-sorted; clear into a filtered
   category; scope changes drop `convOnly`/`et` appropriately.
 
@@ -334,10 +337,9 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 2. ✅ resolved (2026-07-05): **Row click does not recall the preset.** `LevelView.tsx` and
    `PresetRow.tsx` comments now agree with the code (click only selects; recall is owned by
    Pro Control / the footswitches).
-3. ⚠️ still open (2026-07-05): **Catalog Effects disclosure has no collapse path** — `fxOpen` is
-   only ever set `true`; once opened, the subcategory rows can't be hidden again. Minor, but a real
-   one-way toggle. Confirmed via grep (`src/views/CatalogView.tsx`): `setFxOpen` is called exactly
-   once, with `true` — the behavior described is unchanged.
+3. ✅ resolved (2026-10-16, look B): **Catalog Effects disclosure had no collapse path** — the
+   disclosure is gone: the Effects subcategories are always listed in the sidebar, so there is
+   nothing to collapse.
 4. ✅ resolved (2026-10-12, #292): **Copy "Back" no longer discards staged edits.** Re-entering
    Step 2 re-targets the history (`retargetHistory` in `copyModel.ts`): targets still selected keep
    their edits and undo steps, and only new targets start from their library graph.

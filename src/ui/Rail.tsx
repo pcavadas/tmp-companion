@@ -1,14 +1,16 @@
-// src/ui/Rail.tsx — the shared sidebar pieces (look B): the Songs and Settings rails.
+// src/ui/Rail.tsx — the shared sidebar pieces (look B): the Songs, Catalog and Settings
+// rails.
 // `SplitView` lays a sidebar beside the content; these are what goes in it.
 //
 // `Rail` is the column itself (200 px, `window` fill, a 1 px `border` on the right,
 // padding 12/10, items 2 px apart) for the screens that still lay it out by hand.
 // `RailLabel` is a section label (12 px semibold, secondary, sentence case). `RailItem`
 // is a 28-high row: 13 px, `radiusControl`, an optional leading icon, an optional count
-// at the right in secondary text; the current item is `rowSelected` with semibold text
-// (no accent bar). Rows are real <button>s. `nav="tab"` rows sit in the caller's
-// role="tablist" (Settings) and carry aria-selected; `nav="current"` rows are a plain
-// navigation list (Songs) and mark the shown item with aria-current.
+// at the right in secondary text, optionally indented 22 px under the item above; the
+// current item is `rowSelected` with semibold text (no accent bar). Rows are real
+// <button>s. `nav="tab"` rows sit in the caller's role="tablist" (Settings) and carry
+// aria-selected; `nav="current"` rows are a plain navigation list (Songs, Catalog) and
+// mark the shown item with aria-current.
 
 import type { CSSProperties, ReactNode } from "react";
 
@@ -80,7 +82,12 @@ interface RailItemProps {
   icon?: IconName;
   /** Trailing count (or DASH), in secondary text. */
   meta?: ReactNode;
+  /** A child of the item above (Catalog's Effects subcategories): 22 px in. */
+  indent?: boolean;
 }
+
+/** Left padding of an indented (child) item. */
+const RAIL_INDENT = 22;
 
 export function RailItem({
   label,
@@ -89,6 +96,7 @@ export function RailItem({
   nav,
   icon,
   meta,
+  indent = false,
 }: RailItemProps) {
   const { t } = useTheme();
   return (
@@ -109,7 +117,7 @@ export function RailItem({
         display: "flex",
         alignItems: "center",
         gap: t.sp8,
-        padding: `0 ${String(t.sp8)}px`,
+        padding: `0 ${String(t.sp8)}px 0 ${String(indent ? RAIL_INDENT : t.sp8)}px`,
         borderRadius: t.radiusControl,
         background: active ? t.rowSelected : "transparent",
         fontFamily: t.fontSans,

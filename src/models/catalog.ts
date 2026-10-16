@@ -10,6 +10,10 @@
 // different `cid`/`cat`, never de-duped.
 
 import catalog from "./tmp-model-guide.slim.json";
+// The unit prints model names in capitals; this generated map gives each the name the
+// app shows ("FENDER '57 DELUXE" → "Fender '57 Deluxe"). Never hand-edit it: re-run
+// `bun scripts/catalog-display-names.ts` (catalogDisplayNames.test.ts fails on drift).
+import displayNames from "./model-display-names.json";
 import { DASH } from "../lib/format";
 import { LINEAGE_BY_BID } from "./lineage";
 import { cpuForBid } from "./cpu";
@@ -45,7 +49,7 @@ interface RawBlock {
 export interface ModelRecord {
   cid: string; // catalog_id — unique row id, React key
   bid: string | null; // block_id (ACD_*); null for the 7 mics
-  name: string; // exact Fender public model name (UPPERCASE as printed)
+  name: string; // exact Fender public model name (UPPERCASE as printed); `displayName` shows it
   /** What the UNIT prints under a footswitch for this block (`name8`) — often an
    *  abbreviation of `name` ("SAPPHIRE DRIVE" → "Sapphire OD"), and differing from it
    *  for 188 blocks. null where the catalog has no display-name record. */
@@ -283,18 +287,23 @@ export function isComboBid(bid: string | null | undefined): boolean {
   return FORMS_BY_BID.get(id)?.has("combo") ?? false;
 }
 
-/** The user-facing title for a model row. Amps catalogued in BOTH a combo and a
- *  head form share an identical `name`, so append "(Combo)" / "(Head)" to tell the
- *  two otherwise-identical rows apart. Head-only / combo-only amps keep the plain
+const DISPLAY_NAMES = displayNames.names as Partial<Record<string, string>>;
+
+/** The user-facing title for a model row: its name in normal case, from the generated
+ *  map (the unit's own capitals when a regen added a model the map doesn't have yet;
+ *  the coverage test fails until it is regenerated). Amps catalogued in BOTH a combo
+ *  and a head form share an identical `name`, so append "(Combo)" / "(Head)" to tell
+ *  the two otherwise-identical rows apart. Head-only / combo-only amps keep the plain
  *  name. */
 export function displayName(r: ModelRecord): string {
+  const name = DISPLAY_NAMES[r.name] ?? r.name;
   if (r.bid && (r.form === "combo" || r.form === "head")) {
     const forms = FORMS_BY_BID.get(r.bid);
     if (forms?.has("combo") && forms.has("head")) {
-      return `${r.name} (${r.form === "combo" ? "Combo" : "Head"})`;
+      return `${name} (${r.form === "combo" ? "Combo" : "Head"})`;
     }
   }
-  return r.name;
+  return name;
 }
 
 // ── Derived counts + lookups ────────────────────────────────────────────────

@@ -480,6 +480,27 @@ describe("SegmentedControl — look B", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Presets" }));
     expect(onChange).toHaveBeenCalledWith("presets");
   });
+
+  it("a disabled segment is greyed and can't be chosen", () => {
+    const onChange = vi.fn();
+    renderWithTheme(
+      <SegmentedControl
+        ariaLabel="Sound"
+        size="sm"
+        value="all"
+        options={[
+          { value: "all", label: "All" },
+          { value: "stereo", label: "Stereo", disabled: true },
+        ]}
+        onChange={onChange}
+      />,
+    );
+    const stereo = screen.getByRole("radio", { name: "Stereo" });
+    expect(stereo).toBeDisabled();
+    expect(stereo.style.color).toBe(toRgb(light.textDisabled));
+    fireEvent.click(stereo);
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });
 
 describe("Modal — the confirm, in Dialog's look", () => {

@@ -1,5 +1,6 @@
 // src/views/catalog/ModelTile.tsx — one catalog model's illustration through the shared
-// BlockArt engine (identical to the signal-chain strip by construction).
+// BlockArt engine (identical to the signal-chain strip by construction), centred in a
+// `size` × `size` box (44 on a tile, 72 in the detail).
 
 import { BlockArt, HalfStackArt } from "../../ui/BlockArt";
 import {
@@ -16,10 +17,33 @@ import { artFor, ICON_SHADOW } from "./catalogArt";
 // `public/tmp_blocks/` PNG photos were Fender's copyright and are no longer used.)
 export interface ModelTileProps {
   r: ModelRecord;
+  /** The square box the art sits in (px). */
   size: number;
 }
 
+/** A half stack (head over cab) is about 1.45× taller than its width, so it is drawn
+ *  at this share of the box to fit its height. */
+const HALF_STACK_SHARE = 0.65;
+
 export function ModelTile({ r, size }: ModelTileProps) {
+  return (
+    <span
+      aria-hidden
+      style={{
+        width: size,
+        height: size,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <TileArt r={r} size={size} />
+    </span>
+  );
+}
+
+function TileArt({ r, size }: ModelTileProps) {
   const art = artFor(r);
   // Per-model art treatments (EVH channel colour, the Seventy Sixer face, …) ride
   // the explicit `variant`; the caption is display text only.
@@ -42,7 +66,7 @@ export function ModelTile({ r, size }: ModelTileProps) {
           art?.tone ??
           "marshall"
         }
-        cabW={size}
+        cabW={Math.round(size * HALF_STACK_SHARE)}
       />
     );
   }

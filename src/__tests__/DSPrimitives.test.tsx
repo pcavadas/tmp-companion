@@ -145,7 +145,8 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).toContain("minus"); // look B mixed Checkbox
     expect(ICONS).toContain("alert"); // look B danger Notice / PageState
     expect(ICONS).toContain("usb"); // look B "Plug in your Tone Master Pro" page
-    expect(ICONS.length).toBe(45);
+    expect(ICONS).toContain("arrow-up"); // look B Catalog "Lowest first"
+    expect(ICONS.length).toBe(46);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });
