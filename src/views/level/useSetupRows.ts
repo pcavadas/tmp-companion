@@ -1,101 +1,162 @@
-// src/views/level/useSetupRows.ts — the Set up page's per-row state: each sound's
-// Guitar / Target / handle / scene-context picks, the bulk row that writes every sound,
-// the candidate fetches behind the handle pickers, and the commit (`buildChoices`).
+// src/views/level/useSetupRows.ts — the Set up page's state and what every row shows.
 //
-// A re-run row carries the instrument and target it was leveled with; seed from them so
-// "Run again" repeats the same settings instead of resetting to the first profile and
-// target. Only ids the pickers still offer are kept: a `Pick` whose value is missing from
-// its options DISPLAYS `options[0]` while submitting the stale id (danger.md).
+// State: each sound's target (unset = "by name"), its chosen knob (`handle`) and, for a
+// footswitch, the scene it is leveled in; one instrument per PRESET; and the presets whose
+// two amps are balanced first. Everything a row shows is derived from that state plus the
+// data the backup scan already read (candidates, scene drives, footswitch scene
+// suggestions), so every dropdown shows exactly what the run will use.
+//
+// A re-run row (reopened from the Summary) carries the instrument, target and knob it was
+// leveled with, and Set up seeds from them — only values the dropdowns still offer are
+// kept, so a dropdown never shows one thing while the run gets another (danger.md).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
-import type { PickOption } from "../overlays/Pick";
-import type { FlatLevelFetch } from "./FlatLevelPick";
+import { getLibraryScan, subscribeLibraryScan } from "../../device/libraryScan";
+import type { LevelParamCandidate } from "../../lib/types";
+import type { SelectOption } from "../../ui/selectValue";
 import type { BlockLevelHandle } from "./blockLevelGroups";
-import { enablingBlockHandle, sceneCandidatesFetch } from "./setupCandidates";
+import {
+  baseCandidatesFetch,
+  enablingBlockHandle,
+  footswitchCandidatesFetch,
+  sceneCandidatesFetch,
+} from "./setupCandidates";
+import {
+  controlModel,
+  sceneDefault,
+  targetByName,
+  type ControlModel,
+} from "./setupControls";
 import { useSceneHandles } from "./useSceneHandles";
 import { useLevelBlocks } from "./useLevelBlocks";
+import { useFootswitchSceneContexts } from "./useFootswitchSceneContexts";
 import {
-  useFootswitchSceneContexts,
-  type FsContextFetchState,
-} from "./useFootswitchSceneContexts";
-import {
+  MAIN_SOUND,
   buildSetupChoices,
+  runRank,
+  setupRowHookKey,
   type SetupChoice,
   type SetupOption,
-  type SetupRowPick,
 } from "./leveling";
 
-/** One sound's picks. `handle` undefined = not chosen (the page preselects). */
-export interface RowChoice extends SetupRowPick {
+/** One sound's own choices. `undefined` = not chosen: the target goes by name, the knob
+ *  is the row's default (or its preselect), the footswitch scene is the suggested one. */
+interface RowState {
+  target: string | undefined;
   handle: BlockLevelHandle | null | undefined;
+  sceneContext: number | null | undefined;
 }
 
-/** One preset of the Set up list, its sounds in option order. */
-export interface SetupGroup {
+/** The "Level it in scene" choice of a footswitch row. */
+export interface SceneChoiceModel {
+  /** `""` none chosen (the suggestion couldn't be read), `"base"` the main sound, or the
+   *  scene's 0-based wire index. */
+  value: string;
+  options: SelectOption[];
+  /** The suggestion is still being read. */
+  busy: boolean;
+}
+
+/** What Start waits for on a row, and the footer link that points at it. */
+export interface RowNeed {
+  which: "scene" | "block";
+  text: string;
+}
+
+export interface SetupRowModel {
+  option: SetupOption;
+  /** e2e identity (`setupRowHookKey`). */
+  hookKey: string;
+  /** "footswitch 3" beside a footswitch's name. */
+  caption: string | null;
+  /** The target the run uses. */
+  target: string;
+  control: ControlModel;
+  /** Footswitch rows of presets with scenes only. */
+  scene: SceneChoiceModel | null;
+  /** Notes under the row, one per line. */
+  notes: string[];
+  need: RowNeed | null;
+}
+
+export interface SetupGroupModel {
   slot: number;
   name: string;
-  opts: SetupOption[];
+  /** The preset's instrument (profile id or "none"). */
+  inst: string;
+  /** "Balance its two amps first" applies: the backend can rebalance this preset and
+   *  one of its scenes is in the run. */
+  canRebalance: boolean;
+  rows: SetupRowModel[];
 }
 
-/** `id` when the picker still offers it, else `fallback`. */
-function seedFrom(
-  id: string | undefined,
-  options: PickOption[],
-  fallback: string,
-): string {
-  return id !== undefined && options.some((x) => x.id === id) ? id : fallback;
+/** A "for all" dropdown's value: one shared value, or rows that differ. */
+export interface ForAllValue {
+  value: string;
+  mixed: boolean;
 }
 
-/** The one value every entry shares, else `fallback`. */
-function sharedOr(values: string[], fallback: string): string {
-  const distinct = new Set(values);
-  if (distinct.size !== 1) return fallback;
-  const [only] = distinct;
-  return only;
-}
+/** "Target for all"'s own values: "By name", or one target. */
+export const TARGET_BY_NAME = "by-name";
+export const targetForAllValue = (name: string): string => `t:${name}`;
 
 export interface UseSetupRowsArgs {
   options: SetupOption[];
   isRelevel: boolean;
-  instrumentOptions: PickOption[];
-  targetOptions: PickOption[];
+  /** "None" + each instrument (`value` = profile id). */
+  instrumentOptions: readonly SelectOption[];
+  /** The configured targets' names, in their order. */
+  targetNames: readonly string[];
+  /** The instrument saved for each preset (0-based list index → profile id or "none"). */
+  savedInstruments: Partial<Record<number, string>>;
+  /** A preset's instrument when nothing is saved for it. */
   defaultInst: string;
-  defaultTarget: string;
+  /** Remember a preset's instrument (the app's own store, never the unit). */
+  onInstrumentChange?: (slot: number, id: string) => void;
 }
+
+const footswitchNumber = (o: SetupOption): number =>
+  (o.footswitch?.switchIndex ?? 0) + 1;
 
 export function useSetupRows({
   options,
   isRelevel,
   instrumentOptions,
-  targetOptions,
+  targetNames,
+  savedInstruments,
   defaultInst,
-  defaultTarget,
+  onInstrumentChange,
 }: UseSetupRowsArgs) {
-  const groups = useMemo(() => {
-    const by = new Map<number, SetupGroup>();
+  const lib = useSyncExternalStore(subscribeLibraryScan, getLibraryScan);
+
+  // Presets in slot order, each with its sounds in run order (`chosenFrom`'s order).
+  const presets = useMemo(() => {
+    const by = new Map<
+      number,
+      { slot: number; name: string; opts: SetupOption[] }
+    >();
     options.forEach((o) => {
-      let group = by.get(o.slot);
-      if (!group) {
-        group = { slot: o.slot, name: o.presetName, opts: [] };
-        by.set(o.slot, group);
+      let g = by.get(o.slot);
+      if (!g) {
+        g = { slot: o.slot, name: o.presetName, opts: [] };
+        by.set(o.slot, g);
       }
-      group.opts.push(o);
+      g.opts.push(o);
     });
     return [...by.values()].sort((a, b) => a.slot - b.slot);
   }, [options]);
 
-  const seedInst = (o: SetupOption): string =>
-    seedFrom(o.instId, instrumentOptions, defaultInst);
-  const seedTarget = (o: SetupOption): string =>
-    seedFrom(o.targetName, targetOptions, defaultTarget);
+  const offersInst = (id: string | undefined): id is string =>
+    id !== undefined && instrumentOptions.some((o) => o.value === id);
+  const offersTarget = (name: string | undefined): name is string =>
+    name !== undefined && targetNames.includes(name);
 
-  const [rows, setRows] = useState<Partial<Record<string, RowChoice>>>(() => {
-    const m: Partial<Record<string, RowChoice>> = {};
+  const [rows, setRows] = useState<Partial<Record<string, RowState>>>(() => {
+    const m: Partial<Record<string, RowState>> = {};
     options.forEach((o) => {
       m[o.key] = {
-        inst: seedInst(o),
-        target: seedTarget(o),
+        target: offersTarget(o.targetName) ? o.targetName : undefined,
         handle:
           o.footswitch != null
             ? {
@@ -107,7 +168,7 @@ export function useSetupRows({
               ? (o.baseHandle ?? null)
               : (o.sceneHandle ?? undefined),
         // A re-run footswitch keeps the scene it was measured in. A fresh row stays
-        // undefined and resolves to the preset's suggested scene (`fsSuggestedFor`).
+        // unset and resolves to the preset's suggested scene.
         sceneContext:
           isRelevel && o.footswitch != null
             ? o.footswitch.sceneContext
@@ -116,13 +177,31 @@ export function useSetupRows({
     });
     return m;
   });
-  const patchRow = (k: string, partial: Partial<RowChoice>) => {
+  const patchRow = (key: string, partial: Partial<RowState>) => {
     setRows((p) => {
-      const cur = p[k];
-      if (!cur) return p;
-      return { ...p, [k]: { ...cur, ...partial } };
+      const cur = p[key];
+      return cur ? { ...p, [key]: { ...cur, ...partial } } : p;
     });
   };
+
+  // One instrument per preset: the one a re-run was leveled with, else the one saved for
+  // the preset, else the default — only an instrument the dropdown still offers.
+  const [insts, setInsts] = useState<Partial<Record<number, string>>>(() => {
+    const m: Partial<Record<number, string>> = {};
+    presets.forEach((g) => {
+      const carried = g.opts.find((o) => o.instId !== undefined)?.instId;
+      const saved = savedInstruments[g.slot];
+      m[g.slot] = offersInst(carried)
+        ? carried
+        : offersInst(saved)
+          ? saved
+          : defaultInst;
+    });
+    return m;
+  });
+  const instOf = (slot: number): string => insts[slot] ?? defaultInst;
+
+  const [rebalance, setRebalance] = useState<ReadonlySet<number>>(new Set());
 
   const {
     prefetch: fetchHandlesFor,
@@ -137,123 +216,331 @@ export function useSetupRows({
   const { prefetch: fetchFsContextFor, contextFor } =
     useFootswitchSceneContexts();
 
+  // A footswitch's scenes and knobs ride its option; a re-run row lacks them, so they
+  // come from the backup scan instead.
+  const sceneNamesOf = (o: SetupOption): string[] =>
+    o.fsSceneNames ?? (lib.sceneInfo.get(o.slot) ?? []).map((sc) => sc.name);
+  const levelParamsOf = (o: SetupOption): LevelParamCandidate[] => {
+    if (o.levelParams) return o.levelParams;
+    const sw = o.footswitch?.switchIndex;
+    return (
+      (lib.allFootswitchesByIndex.get(o.slot) ?? []).find(
+        (f) => f.switch === sw,
+      )?.level_params ?? []
+    );
+  };
+
+  // Warm every preset's candidates the backup scan already holds (provably no device
+  // read — `hasBackupData`), so the dropdowns open on their lists.
   useEffect(() => {
-    groups.forEach((g) => {
+    presets.forEach((g) => {
       if (baseHasBackup(g.slot)) fetchBlocksFor(g.slot);
       if (sceneHasBackup(g.slot)) fetchHandlesFor(g.slot);
     });
-  }, [groups, fetchBlocksFor, fetchHandlesFor, baseHasBackup, sceneHasBackup]);
+  }, [presets, fetchBlocksFor, fetchHandlesFor, baseHasBackup, sceneHasBackup]);
 
-  // A footswitch row's default scene context is the preset's suggested scene, so resolve
-  // it for every footswitch row up front rather than on first picker open — otherwise the
-  // same selection could measure a switch in different scenes depending on whether a
-  // picker was opened. Answered off the backup scan; a device read only for a preset the
-  // scan has no entry for. Rows that already carry a context (a re-run) need no fetch.
+  // A footswitch's default scene is the preset's suggested one, so resolve it for every
+  // footswitch row of a preset with scenes as Set up opens — never on a dropdown click,
+  // or the same selection could level a switch in different scenes. Answered off the
+  // backup scan; a device read only for a preset the scan has no entry for. A re-run row
+  // already carries its scene.
+  const fsSlots = useMemo(
+    () =>
+      isRelevel
+        ? []
+        : [
+            ...new Set(
+              options
+                .filter(
+                  (o) =>
+                    o.footswitch != null && (o.fsSceneNames ?? []).length > 0,
+                )
+                .map((o) => o.slot),
+            ),
+          ],
+    [options, isRelevel],
+  );
   useEffect(() => {
-    if (isRelevel) return;
-    options.forEach((o) => {
-      if (o.footswitch != null) fetchFsContextFor(o.slot);
-    });
-  }, [options, isRelevel, fetchFsContextFor]);
+    fsSlots.forEach(fetchFsContextFor);
+  }, [fsSlots, fetchFsContextFor]);
 
-  const effectiveHandle = (
-    o: SetupOption,
-    row: RowChoice | undefined,
-    // Pass this when the caller already built the row's `FlatLevelFetch` (e.g. for
-    // the `candidates` prop) — skips re-deriving it from raw fetch state.
-    fetch?: FlatLevelFetch,
-  ): BlockLevelHandle | null => {
-    if (row?.handle !== undefined) return row.handle;
+  /** The knob a row levels with: its choice, else its default — for a scene, the block
+   *  the scene turns on (issue 5's preselect) before the amp. */
+  const handleFor = (o: SetupOption): BlockLevelHandle | null => {
+    const chosen = rows[o.key]?.handle;
+    if (chosen !== undefined) return chosen;
+    if (o.isBase) return o.baseHandle ?? null;
     if (o.footswitch == null && o.sceneSlot != null) {
       const st = candidatesFor(o.slot, o.sceneSlot);
-      const preselect = enablingBlockHandle(
-        st,
-        fetch ?? sceneCandidatesFetch(st),
+      return (
+        o.sceneHandle ??
+        enablingBlockHandle(st, sceneCandidatesFetch(st)) ??
+        null
       );
-      if (preselect) return preselect;
     }
     return null;
   };
 
+  /** The suggested scene of a footswitch row, once read (`null` = the main sound). */
   const fsSuggestedFor = (o: SetupOption): number | null => {
     if (o.footswitch == null) return null;
     const st = contextFor(o.slot, o.footswitch.switchIndex);
     return st.status === "resolved" ? (st.row?.suggested ?? null) : null;
   };
 
-  // A footswitch row with no scene context the user chose, and whose suggested one is
-  // still being read or could not be read. Start waits for the read, so the run never
-  // measures a switch in base just because it hadn't landed yet; a FAILED read (no
-  // retry within this mount, see `useLazySlotCache`) needs an explicit pick instead.
-  const fsContextState = (
-    o: SetupOption,
-  ): FsContextFetchState["status"] | null =>
-    o.footswitch == null || rows[o.key]?.sceneContext !== undefined
-      ? null
-      : contextFor(o.slot, o.footswitch.switchIndex).status;
-  const fsContextPending = options.some((o) => {
-    const st = fsContextState(o);
-    return st === "unfetched" || st === "loading";
-  });
-  // Only a row that renders the scene picker can take that pick.
-  const fsContextMissing = options.some(
-    (o) => fsContextState(o) === "error" && (o.levelParams ?? []).length > 0,
-  );
+  const targetOf = (o: SetupOption): string =>
+    rows[o.key]?.target ?? targetByName(o.sceneName, targetNames);
 
-  // The bulk row's current value — always written to EVERY row (no ticking; what
-  // gets leveled was already chosen on the preset list). Seeded with the rows' shared
-  // value when they all agree (a re-run of sounds leveled alike), else the default.
-  const [bulkInst, setBulkInst] = useState(() =>
-    sharedOr(options.map(seedInst), defaultInst),
-  );
-  const [bulkTarget, setBulkTarget] = useState(() =>
-    sharedOr(options.map(seedTarget), defaultTarget),
-  );
-  const applyBulkField = (field: "inst" | "target", v: string) => {
+  const modelOf = (o: SetupOption): SetupRowModel => {
+    const row = rows[o.key];
+    const notes: string[] = [];
+    let need: RowNeed | null = null;
+    let scene: SceneChoiceModel | null = null;
+    let control: ControlModel;
+    const fsw = o.footswitch ?? null;
+
+    if (fsw != null) {
+      control = controlModel(
+        footswitchCandidatesFetch(levelParamsOf(o)),
+        handleFor(o),
+        { kind: "none" },
+      );
+      const names = sceneNamesOf(o);
+      if (names.length > 0) {
+        const n = String(footswitchNumber(o));
+        const labelOf = (i: number) => names[i] || `Scene ${String(i + 1)}`;
+        const ctx = contextFor(o.slot, fsw.switchIndex);
+        const chosen = row?.sceneContext;
+        const reading =
+          chosen === undefined &&
+          (ctx.status === "unfetched" || ctx.status === "loading");
+        const unread = chosen === undefined && ctx.status === "error";
+        const value =
+          chosen !== undefined
+            ? chosen
+            : ctx.status === "resolved"
+              ? (ctx.row?.suggested ?? fsw.sceneContext)
+              : undefined;
+        scene = {
+          value:
+            value === undefined ? "" : value === null ? "base" : String(value),
+          options: [
+            { value: "base", label: MAIN_SOUND },
+            ...names.map((_, i) => ({ value: String(i), label: labelOf(i) })),
+          ],
+          busy: reading,
+        };
+        if (unread) {
+          notes.push(`Couldn't read which scene to level footswitch ${n} in.`);
+          need = { which: "scene", text: `Choose a scene for footswitch ${n}` };
+        }
+        const enabling =
+          ctx.status === "resolved" ? (ctx.row?.enablingScenes ?? null) : null;
+        if (
+          typeof value === "number" &&
+          enabling != null &&
+          !enabling.includes(value)
+        )
+          notes.push(
+            `Footswitch ${n} doesn't turn its effect on in ${labelOf(value)}. Choose another scene for it.`,
+          );
+      }
+    } else if (o.isBase) {
+      control = controlModel(
+        baseCandidatesFetch(blocksFor(o.slot)),
+        handleFor(o),
+        {
+          kind: "preset",
+        },
+      );
+    } else if (o.sceneSlot != null) {
+      const def = sceneDefault(
+        (lib.sceneDrivesByIndex.get(o.slot) ?? []).find(
+          (d) => d.sceneSlot === o.sceneSlot,
+        ),
+      );
+      control = controlModel(
+        sceneCandidatesFetch(candidatesFor(o.slot, o.sceneSlot)),
+        handleFor(o),
+        def,
+      );
+      if (control.nothingToChoose)
+        notes.push(
+          "Nothing in this scene can be leveled, so its volume won't change.",
+        );
+      else if (control.needsBlock) {
+        notes.push(
+          def.kind === "none" && def.reason === "no_active_amp"
+            ? "No amp found for this scene. Choose a block and knob for it."
+            : "Couldn't confirm which amp to turn in this scene. Choose a block and knob for it.",
+        );
+        need = { which: "block", text: `Choose a block for ${o.sceneName}` };
+      }
+    } else {
+      // A scene with no wire slot: nothing to level it with.
+      control = controlModel({ status: "resolved", list: [] }, null, {
+        kind: "none",
+      });
+    }
+    if (control.stale)
+      notes.unshift("This knob isn't in the preset any more. Choose another.");
+
+    return {
+      option: o,
+      hookKey: setupRowHookKey(o),
+      caption: fsw != null ? `footswitch ${String(footswitchNumber(o))}` : null,
+      target: targetOf(o),
+      control,
+      scene,
+      notes,
+      need,
+    };
+  };
+
+  // Rows in run order (`runRank`): a footswitch leveled in a scene runs after the scenes.
+  // Ranked by the switch's DEFAULT scene (the suggestion, or a re-run's own), never by a
+  // later pick, so a row never jumps away under the pointer.
+  const rankOf = (o: SetupOption): number => {
+    const fsw = o.footswitch;
+    if (fsw == null) return runRank(o);
+    const sceneContext = isRelevel
+      ? fsw.sceneContext
+      : sceneNamesOf(o).length > 0
+        ? (fsSuggestedFor(o) ?? fsw.sceneContext)
+        : null;
+    return runRank({ isBase: o.isBase, footswitch: { sceneContext } });
+  };
+  const groups: SetupGroupModel[] = presets.map((g) => ({
+    slot: g.slot,
+    name: g.name,
+    inst: instOf(g.slot),
+    canRebalance:
+      lib.rebalanceableIndices.has(g.slot) &&
+      g.opts.some((o) => o.footswitch == null && o.sceneSlot != null),
+    rows: [...g.opts].sort((a, b) => rankOf(a) - rankOf(b)).map(modelOf),
+  }));
+  const allRows = groups.flatMap((g) => g.rows);
+
+  /** A footswitch scene still being read: Start waits (usually instant). */
+  const pending = allRows.some((r) => r.scene?.busy === true);
+  /** The first row Start waits on, in run order. */
+  const firstNeed = allRows.find((r) => r.need != null) ?? null;
+
+  // "Target for all": "By name" while every row goes by name; one target when every row
+  // lands on it; else "Mixed".
+  const targetAll: ForAllValue = (() => {
+    if (options.every((o) => rows[o.key]?.target === undefined))
+      return { value: TARGET_BY_NAME, mixed: false };
+    const used = new Set(options.map(targetOf));
+    if (used.size === 1) {
+      const [only] = used;
+      return { value: targetForAllValue(only), mixed: false };
+    }
+    return { value: "", mixed: true };
+  })();
+  const setAllTargets = (value: string) => {
+    const name = value === TARGET_BY_NAME ? undefined : value.slice(2);
     setRows((p) => {
       const n = { ...p };
       options.forEach((o) => {
         const cur = n[o.key];
-        if (cur) n[o.key] = { ...cur, [field]: v };
+        if (cur) n[o.key] = { ...cur, target: name };
       });
       return n;
     });
   };
-  const applyBulkInst = (v: string) => {
-    setBulkInst(v);
-    applyBulkField("inst", v);
+
+  // "Instrument for all": the presets' shared instrument, or "Mixed".
+  const instAll: ForAllValue = (() => {
+    const used = new Set(presets.map((g) => instOf(g.slot)));
+    if (used.size === 1) {
+      const [only] = used;
+      return { value: only, mixed: false };
+    }
+    return { value: "", mixed: true };
+  })();
+  const setInst = (slot: number, id: string) => {
+    setInsts((p) => ({ ...p, [slot]: id }));
+    onInstrumentChange?.(slot, id);
   };
-  const applyBulkTarget = (v: string) => {
-    setBulkTarget(v);
-    applyBulkField("target", v);
+  const setAllInst = (id: string) => {
+    setInsts((p) => {
+      const n = { ...p };
+      presets.forEach((g) => {
+        n[g.slot] = id;
+      });
+      return n;
+    });
+    presets.forEach((g) => onInstrumentChange?.(g.slot, id));
   };
 
-  /** The run's choices from the rows as they stand (the Start commit). */
-  const buildChoices = (): SetupChoice[] =>
-    buildSetupChoices(
-      options,
-      (k) => rows[k],
-      (o) => effectiveHandle(o, rows[o.key]),
+  const toggleRebalance = (slot: number) => {
+    setRebalance((p) => {
+      const n = new Set(p);
+      if (n.has(slot)) n.delete(slot);
+      else n.add(slot);
+      return n;
+    });
+  };
+
+  /** The run's choices from the rows as they stand (the Start commit), plus the presets
+   *  whose two amps are balanced first. */
+  const buildChoices = (): {
+    choices: SetupChoice[];
+    rebalance: number[];
+  } => {
+    const byKey = new Map(options.map((o) => [o.key, o]));
+    const choices = buildSetupChoices(
+      // A re-run footswitch's knobs come from the scan, so a knob picked on it is kept.
+      options.map((o) =>
+        o.footswitch != null ? { ...o, levelParams: levelParamsOf(o) } : o,
+      ),
+      (key) => {
+        const o = byKey.get(key);
+        if (!o) return undefined;
+        return {
+          inst: instOf(o.slot),
+          target: targetOf(o),
+          sceneContext: rows[key]?.sceneContext,
+        };
+      },
+      handleFor,
       fsSuggestedFor,
-      { inst: defaultInst, target: defaultTarget },
+      {
+        inst: defaultInst,
+        target: targetNames.length > 0 ? targetNames[0] : "",
+      },
     );
+    return {
+      choices,
+      rebalance: groups
+        .filter((g) => g.canRebalance && rebalance.has(g.slot))
+        .map((g) => g.slot),
+    };
+  };
 
   return {
     groups,
-    rows,
-    patchRow,
-    bulkInst,
-    bulkTarget,
-    applyBulkInst,
-    applyBulkTarget,
-    effectiveHandle,
-    fsSuggestedFor,
-    fsContextState,
-    fsContextPending,
-    fsContextMissing,
-    candidatesFor,
-    blocksFor,
-    contextFor,
+    /** At least one chosen footswitch belongs to a preset with scenes. */
+    sceneColumn: allRows.some((r) => r.scene != null),
+    targetAll,
+    instAll,
+    rebalance,
+    pending,
+    firstNeed,
+    setTarget: (key: string, name: string) => {
+      patchRow(key, { target: name });
+    },
+    setAllTargets,
+    setInst,
+    setAllInst,
+    setHandle: (key: string, handle: BlockLevelHandle | null) => {
+      patchRow(key, { handle });
+    },
+    setSceneContext: (key: string, value: number | null) => {
+      patchRow(key, { sceneContext: value });
+    },
+    toggleRebalance,
     fetchBlocksFor,
     fetchHandlesFor,
     fetchFsContextFor,

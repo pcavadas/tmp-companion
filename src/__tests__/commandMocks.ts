@@ -206,7 +206,7 @@ export const makeSetupOption = (
   presetName: "Preset",
   isBase: true,
   sceneSlot: null,
-  sceneName: "Base Preset",
+  sceneName: "Main sound",
   tag: "BASE",
   hasScenes: true,
   ...over,

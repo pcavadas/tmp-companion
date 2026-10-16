@@ -1,20 +1,17 @@
-// src/views/overlays/LevelingWizard.tsx — routes props → the right full-page stage
-// (design handoff 1a: full window for all three stages, replacing the old
-// setup-is-full-page/run+summary-are-a-centered-modal split — `WizardShell`/
-// `Dialog size="lg"` are no longer used by leveling; `WizardShell` itself stays for
-// Doctor). Purely presentational: levelRunStore (bound through useLevelingFlow) owns
-// the state machine and the device run.
+// src/views/overlays/LevelingWizard.tsx — the leveling flow's stage switch. Purely
+// presentational: levelRunStore (bound through useLevelingFlow) owns the state machine
+// and the device run.
 //
-// Stage → step: setup 0 (Set up) · run 1 (Level) · summary 2. Every stage is a
-// full-bleed page over the Level tab's body (`LevelPage`, `zIndex:40`) with no
-// backdrop at all — so Run can never be dismissed by a stray click mid-device-write,
-// and Summary's primary Accept/Done button is the unconditional way out.
+// Set up is a page in the Level tab's content area (look B: `SetupPage`, under the
+// toolbar, no overlay). The run and the Summary still draw over the Level tab's body on
+// the full-bleed `LevelPage` (`zIndex: 40`, no backdrop at all — so the run can never be
+// dismissed by a stray click mid-device-write) until they become pages too.
 
 import type { Stage } from "./wizardContext";
 import { SetupPage } from "../level/SetupPage";
 import { RunPage } from "../level/RunPage";
 import { SummaryPage } from "../level/SummaryPage";
-import type { PickOption } from "./Pick";
+import type { SelectOption } from "../../ui/selectValue";
 import type { SetupOption, SetupChoice, RunItem } from "../level/leveling";
 import type { RunState } from "../level/levelRunStore";
 
@@ -23,10 +20,15 @@ export interface LevelingWizardProps {
   // setup inputs
   chosen: SetupOption[];
   isRelevel: boolean;
-  instrumentOptions: PickOption[];
-  targetOptions: PickOption[];
+  /** "None" + each instrument (`value` = profile id). */
+  instrumentOptions: SelectOption[];
+  /** The instruments with a recording. */
+  recordedInstruments: ReadonlySet<string>;
+  /** The configured targets' names, in their order. */
+  targetNames: string[];
+  /** The instrument saved for each preset (0-based list index → id). */
+  savedInstruments: Partial<Record<number, string>>;
   defaultInst: string;
-  defaultTarget: string;
   instrumentName: (id: string) => string;
   /** Resolve a target name to its LUFS (the run table's Target column). */
   targetLufsByName: (name: string | null) => number;
@@ -34,13 +36,15 @@ export interface LevelingWizardProps {
   run: RunState;
   // callbacks
   onCancel: () => void;
-  /** Set up's commit: the configured rows and its opt-in rebalance toggle. */
-  onStart: (choices: SetupChoice[], rebalance: boolean) => void;
+  /** Set up's commit: the configured sounds and the presets balanced first. */
+  onStart: (choices: SetupChoice[], rebalance: number[]) => void;
+  /** Remember a preset's instrument choice. */
+  onInstrumentChange?: (slot: number, id: string) => void;
   onRunCancel: () => void;
   onRunComplete: () => void;
   onAccept: () => void;
   onRelevel: (subset: RunItem[]) => void;
-  /** Jump to Settings → Instruments (the Set-up step's "calibrate" cue). */
+  /** Jump to Settings → Instruments ("Record yours in Settings"). */
   onCalibrate?: () => void;
 }
 
@@ -49,14 +53,16 @@ export function LevelingWizard({
   chosen,
   isRelevel,
   instrumentOptions,
-  targetOptions,
+  recordedInstruments,
+  targetNames,
+  savedInstruments,
   defaultInst,
-  defaultTarget,
   instrumentName,
   targetLufsByName,
   run,
   onCancel,
   onStart,
+  onInstrumentChange,
   onRunCancel,
   onRunComplete,
   onAccept,
@@ -69,11 +75,13 @@ export function LevelingWizard({
         options={chosen}
         isRelevel={isRelevel}
         instrumentOptions={instrumentOptions}
-        targetOptions={targetOptions}
+        recordedInstruments={recordedInstruments}
+        targetNames={targetNames}
+        savedInstruments={savedInstruments}
         defaultInst={defaultInst}
-        defaultTarget={defaultTarget}
         onCancel={onCancel}
         onStart={onStart}
+        onInstrumentChange={onInstrumentChange}
         onCalibrate={onCalibrate}
       />
     );

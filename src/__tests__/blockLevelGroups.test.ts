@@ -1,16 +1,14 @@
 // src/__tests__/blockLevelGroups.test.ts — direct unit coverage for the pure
-// grouping/derivation logic in `../views/level/blockLevelGroups.ts` behind
-// `FlatLevelPick` and `SetupPage`'s auto-pick, so this algorithmic behavior — rank
-// ordering and the "Recommended"/auto-pick candidate — is testable without rendering
-// anything. `src/__tests__/FlatLevelPick.test.tsx` keeps the DOM-level coverage; this
-// file is the fast, render-free layer underneath it.
+// grouping/derivation logic in `../views/level/blockLevelGroups.ts` behind Set up's Block
+// and Knob dropdowns, so this algorithmic behavior — rank ordering and the best-knob
+// pick — is testable without rendering anything. `setupControls.test.ts` covers the
+// dropdowns built on it (including a block whose every knob is disabled).
 
 import { describe, it, expect } from "vitest";
 
 import {
   groupByBlock,
   bestEnabled,
-  recommendedBlock,
   blockKeyOf,
   type BlockLevelCandidate,
 } from "../views/level/blockLevelGroups";
@@ -112,30 +110,5 @@ describe("bestEnabled", () => {
     );
     expect(boost).toBeDefined();
     expect(bestEnabled(boost ?? [])).toBeUndefined();
-  });
-});
-
-describe("recommendedBlock", () => {
-  it("is the first block's best candidate when that block has one enabled", () => {
-    const blocks = groupByBlock([boostToneOther, twinOutputLevel]);
-    // Twin's outputLevel (level_linear) outranks Boost's toneKnob (no class).
-    expect(recommendedBlock(blocks)?.parameterId).toBe("outputLevel");
-  });
-
-  it("BUG FIX: a top block entirely disabled is skipped — the next block with an enabled candidate is recommended instead of nothing at all", () => {
-    // Boost's gain is level_db (rank 0, ties Twin's outputLevel) and sorts FIRST,
-    // but every Boost candidate is disabled.
-    const blocks = groupByBlock([disabledBoostGain, twinOutputLevel]);
-    expect(blockKeyOf(blocks[0][0])).toBe("G1:boost1"); // still sorts first
-    expect(recommendedBlock(blocks)?.parameterId).toBe("outputLevel");
-  });
-
-  it("returns null when every block is fully disabled", () => {
-    const blocks = groupByBlock([disabledBoostGain, disabledBoostTone]);
-    expect(recommendedBlock(blocks)).toBeNull();
-  });
-
-  it("returns null for an empty candidate list", () => {
-    expect(recommendedBlock(groupByBlock([]))).toBeNull();
   });
 });

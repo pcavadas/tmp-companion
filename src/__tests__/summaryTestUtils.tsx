@@ -12,7 +12,7 @@ export const base = (over: Partial<RunItem>): RunItem => ({
   presetName: "Guitar",
   isBase: true,
   sceneSlot: null,
-  sceneName: "Whole preset",
+  sceneName: "Main sound",
   tag: null,
   footswitch: null,
   instId: "none",

@@ -131,8 +131,8 @@ export async function openLevel(page: Page): Promise<void> {
   });
 }
 
-/** The Base row's stable identity, mirroring `setupRowHookKey`'s `baseKey(slot)`
- *  (`leveling.ts`) — the `Pick`'s `tid` for a Base row's target picker is
+/** The main sound row's stable identity, mirroring `setupRowHookKey`'s `baseKey(slot)`
+ *  (`leveling.ts`) — the `Select`'s `tid` for that row's Target dropdown is
  *  `target:${baseRowKey(slot)}`, unique per preset regardless of how many other
  *  rows (scenes/footswitches) that preset also has selected. */
 export const baseRowKey = (slot: number): string => `p${String(slot)}`;
@@ -168,10 +168,9 @@ export const levelButton = (page: Page, sounds: number | "any") =>
   });
 
 /** Select ONLY a preset's main sound (never its scenes/footswitches) — open it with the
- *  caret, then tick the "Main sound" sub-row alone. Kept even though the target picker no
- *  longer collides across a preset's other rows (each row now has its own
- *  `target:<rowKey>` selector) — this still isolates a base-clamp test to exactly the one
- *  row it means to drive. */
+ *  caret, then tick the "Main sound" sub-row alone. Kept even though each Set up row has
+ *  its own `target:<rowKey>` dropdown — this still isolates a base-clamp test to exactly
+ *  the one row it means to drive. */
 export async function selectBaseOnly(page: Page, name: string): Promise<void> {
   const filter = page.getByPlaceholder(/Filter by name or slot/i);
   await filter.fill(name);
@@ -180,40 +179,34 @@ export async function selectBaseOnly(page: Page, name: string): Promise<void> {
   await filter.fill("");
 }
 
-/** Design 1a auto-opens only the LOWEST-slot preset group in Set up (`useGroupOpen`,
- *  `SetupPage.tsx`'s `groups[0]`) — every other selected preset's row starts collapsed,
- *  so its sound rows (and their `data-pick="target:<rowKey>"` triggers) aren't in the DOM
- *  yet. Click the group header (`data-preset-group={slot}`, `PresetGroupRow.tsx`) to
- *  expand it before targeting a row inside. A no-op if the group is already open. */
-export async function ensurePresetGroupOpen(
+/** Pick a Set up dropdown's option by the e2e hooks `Select` carries:
+ *  `data-select="<tid>"` on the trigger, `data-select-option="<tid>:<value>"` on each
+ *  option (`ui/Select.tsx`; row tids are keyed by `setupRowHookKey`, `leveling.ts`). An
+ *  attribute selector rather than the option's TEXT: two rows' lists can show the same
+ *  words ("Lead"), and the attribute is unique per (dropdown, option) pair by
+ *  construction, so there is never more than one match. */
+export async function chooseOption(
   page: Page,
-  slot: number,
+  tid: string,
+  value: string,
 ): Promise<void> {
-  const trigger = page.locator(`[data-pick="target:${baseRowKey(slot)}"]`);
-  if (!(await trigger.isVisible().catch(() => false))) {
-    await page.locator(`[data-preset-group="${String(slot)}"]`).click();
-  }
+  await page.locator(`[data-select="${tid}"]`).click();
+  await page.locator(`[data-select-option="${tid}:${value}"]`).click();
 }
 
-/** Pick a Base row's target by its option id ("Rhythm"/"Crunch"/"Lead"). Uses
- *  `data-pick-option="target:<rowKey>:<id>"` (`Pick.tsx`, keyed by `setupRowHookKey` —
- *  `leveling.ts`) rather than the option's TEXT — a text-based
- *  `getByText(label,{exact:true}).last()` proved unreliable once a SECOND preset's picker
- *  opens while an earlier preset is already bound to the same label: Playwright's own
- *  actionability wait ("visible, enabled, stable" all pass) still hung on click, retried
- *  hundreds of times, and eventually timed out with "<div></div> subtree intercepts pointer
- *  events" — `.last()`'s re-resolved match apparently isn't a stable target across retries.
- *  The attribute selector is unique per (row, option) pair by construction, so there is
- *  never more than one match to begin with. */
+/** Pick a main sound row's target by name ("Rhythm"/"Crunch"/"Lead"). Every Set up row
+ *  shows at once (no preset collapses), so no row needs opening first. */
 export async function pickBaseTarget(
   page: Page,
   slot: number,
   label: string,
 ): Promise<void> {
-  const key = baseRowKey(slot);
-  await page.locator(`[data-pick="target:${key}"]`).click();
-  await page.locator(`[data-pick-option="target:${key}:${label}"]`).click();
+  await chooseOption(page, `target:${baseRowKey(slot)}`, label);
 }
+
+/** Set up's one main action. It keeps its words whatever it waits for. */
+export const startLeveling = (page: Page) =>
+  page.getByRole("button", { name: "Start leveling", exact: true });
 
 /** Drive the Level wizard's Base flow end to end for one or more presets: select each
  *  preset's Base row, submit, pick and confirm each target label, submit, and wait for
@@ -226,23 +219,19 @@ export async function runBaseLevel(
   for (const { preset } of targets) {
     await selectBaseOnly(page, preset.name);
   }
-  const n = String(targets.length);
   await levelButton(page, targets.length).click();
   await page.getByText(/I.ve backed up with Pro Control/i).click();
   for (const { preset, label } of targets) {
-    await ensurePresetGroupOpen(page, preset.slot);
     await pickBaseTarget(page, preset.slot, label);
   }
-  // The picks must actually BIND — assert each row's trigger now reads its target (guards
+  // The picks must actually BIND — assert each row's dropdown now reads its target (guards
   // a silent display-vs-value no-op an always-solving fake re-amp would otherwise hide).
   for (const { preset, label } of targets) {
     await expect(
-      page.locator(`[data-pick="target:${baseRowKey(preset.slot)}"]`),
+      page.locator(`[data-select="target:${baseRowKey(preset.slot)}"]`),
     ).toContainText(label);
   }
-  await page
-    .getByRole("button", { name: new RegExp(`Start.*${n} sound`) })
-    .click();
+  await startLeveling(page).click();
   await expect(
     page.getByRole("button", { name: /^(Done|Accept)$/ }),
   ).toBeVisible({

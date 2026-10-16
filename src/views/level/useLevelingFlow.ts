@@ -116,11 +116,11 @@ export function useLevelingFlow({
     if (keys.length > 0) deselectKeys(keys);
   }, [deselectKeys]);
 
-  // Set-up "Level N sounds" (the COMMIT) → build run items and start. The backup
+  // Set up's "Start leveling" (the COMMIT) → build run items and start. The backup
   // acknowledgment gated this button inline, so this goes straight to the run. Set up
-  // hands over its opt-in rebalance toggle with the choices.
+  // hands over the presets whose two amps are balanced first with the choices.
   const onSetupStart = useCallback(
-    (choices: SetupChoice[], rebalance = false) => {
+    (choices: SetupChoice[], rebalance: readonly number[] = []) => {
       if (choices.length === 0) return;
       const items = choices.map((c) => ({
         ...optionToRunItem(c.option, c.instId, c.targetName),
@@ -131,7 +131,7 @@ export function useLevelingFlow({
         targetLufsByName,
         ampCandidates,
         blocksByIndex,
-        rebalance,
+        rebalance: new Set(rebalance),
         refresh,
       });
     },

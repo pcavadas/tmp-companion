@@ -1,7 +1,7 @@
 // src/__tests__/SetupPage.sceneHandlePreselect.test.tsx — issue 5: a scene whose
 // overlay un-bypasses a block the base graph keeps bypassed (Solo un-bypassing
 // ACD_Boost, the plan's own example) should default its leveling handle to THAT
-// block's own control, not "Amp output level" — the amp barely moves the sound the
+// block's own control, not the amp's output level — the amp barely moves the sound the
 // scene actually turns on. `SceneHandleCandidate.enablesBlock` is the backend's
 // signal; SetupPage must preselect the first such candidate once the row's
 // candidates resolve (they arrive ASYNC — the warm effect's backup-sourced fetch
@@ -14,10 +14,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { SetupPage } from "../views/level/SetupPage";
-import { WithCard } from "./pickCardTestUtils";
-import { blockArtTile } from "../models/blockArt";
-import { paramLabel } from "../views/level/leveling";
+import { blockStripName } from "../views/level/leveling";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type { SceneHandleCandidate, SceneHandleRow } from "../lib/types";
 import {
@@ -27,15 +24,9 @@ import {
   mockCommands,
 } from "./commandMocks";
 import type { SetupOption } from "../views/level/leveling";
-import type { PickOption } from "../views/overlays/Pick";
-import { renderWithTheme } from "./testKit";
+import { choose, renderSetupPage, selectTrigger } from "./setupPageTestUtils";
 
-const BOOST_LABEL = (() => {
-  const art = blockArtTile("ACD_Boost");
-  return art.fullName ?? art.name;
-})();
-// The flattened picker combines block + param into one row/trigger label.
-const BOOST_ROW = `${BOOST_LABEL} — ${paramLabel("gain")}`;
+const BOOST = blockStripName("ACD_Boost");
 
 function boostCandidate(enablesBlock: boolean): SceneHandleCandidate {
   return {
@@ -77,25 +68,8 @@ const sceneOpt: SetupOption = makeSceneOption(0, {
   sceneName: "Solo",
 });
 
-const instrumentOptions: PickOption[] = [{ id: "none", label: "None" }];
-const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
-
-function renderSetup(options: SetupOption[]) {
-  return renderWithTheme(
-    <WithCard>
-      <SetupPage
-        options={options}
-        isRelevel={false}
-        instrumentOptions={instrumentOptions}
-        targetOptions={targetOptions}
-        defaultInst="none"
-        defaultTarget="Rhythm"
-        onCancel={vi.fn()}
-        onStart={vi.fn()}
-      />
-    </WithCard>,
-  );
-}
+const blockOf = () => selectTrigger("block:s0:0");
+const knobOf = () => selectTrigger("knob:s0:0");
 
 describe("SetupPage — scene handle preselect (issue 5)", () => {
   beforeEach(() => {
@@ -103,7 +77,7 @@ describe("SetupPage — scene handle preselect (issue 5)", () => {
     vi.mocked(invoke).mockReset();
   });
 
-  it("preselects the enabling handle once candidates resolve", async () => {
+  it("preselects the enabling block's knob once candidates resolve", async () => {
     await seedScan([
       {
         sceneSlot: 0,
@@ -111,18 +85,18 @@ describe("SetupPage — scene handle preselect (issue 5)", () => {
         allCandidates: [boostCandidate(true)],
       },
     ]);
-    renderSetup([sceneOpt]);
+    renderSetupPage([sceneOpt]);
 
-    // Starts on the pseudo default before the async candidate fetch resolves…
-    expect(screen.getByText("Amp output level")).toBeInTheDocument();
-    // …then flips to the enabling block once it does.
+    // Shows the enabling block, not the amp default, once the candidates land.
     await waitFor(() => {
-      expect(screen.getByText(BOOST_ROW)).toBeInTheDocument();
+      expect(blockOf()).toHaveAccessibleName(
+        `Block for Friedman HBE, Solo: ${BOOST}`,
+      );
     });
-    expect(screen.queryByText("Amp output level")).toBeNull();
+    expect(knobOf()).toHaveAccessibleName("Knob for Friedman HBE, Solo: Gain");
   });
 
-  it("never overrides an explicit user choice of the pseudo-option", async () => {
+  it("never overrides an explicit user choice of the amp default", async () => {
     await seedScan([
       {
         sceneSlot: 0,
@@ -131,20 +105,22 @@ describe("SetupPage — scene handle preselect (issue 5)", () => {
       },
     ]);
     const user = userEvent.setup();
-    renderSetup([sceneOpt]);
-
-    // Explicitly re-affirm the pseudo-option BEFORE resolution lands.
-    await user.click(screen.getByText("Amp output level"));
-    await user.click(await screen.findByText("Amp output level (default)"));
-
-    // Give the async fetch every chance to resolve — the explicit choice must stick.
+    renderSetupPage([sceneOpt]);
     await waitFor(() => {
-      expect(screen.getByText("Amp output level")).toBeInTheDocument();
+      expect(blockOf()).toHaveAccessibleName(
+        `Block for Friedman HBE, Solo: ${BOOST}`,
+      );
     });
-    expect(screen.queryByText(BOOST_ROW)).toBeNull();
+
+    // Explicitly pick the amp default — the preselect must not take it back.
+    await choose(user, "block:s0:0", "default");
+    expect(blockOf()).toHaveAccessibleName("Block for Friedman HBE, Solo: Amp");
+    expect(knobOf()).toHaveAccessibleName(
+      "Knob for Friedman HBE, Solo: Output level",
+    );
   });
 
-  it("falls through to the amp pseudo-option when no candidate enables a block", async () => {
+  it("stays on the amp default when no candidate enables a block", async () => {
     await seedScan([
       {
         sceneSlot: 0,
@@ -153,15 +129,12 @@ describe("SetupPage — scene handle preselect (issue 5)", () => {
       },
     ]);
     const user = userEvent.setup();
-    renderSetup([sceneOpt]);
+    renderSetupPage([sceneOpt]);
 
-    // Open the menu and wait for the (non-enabling) Boost candidate row to appear —
-    // proof the async candidate fetch actually resolved, not just that nothing rendered
-    // yet.
-    await user.click(screen.getByText("Amp output level"));
-    await screen.findByText(BOOST_ROW);
-
-    // The trigger (outside the menu) never moved off the pseudo default.
-    expect(screen.getAllByText("Amp output level").length).toBeGreaterThan(0);
+    // Open the list and wait for the (non-enabling) Boost to appear — proof the
+    // candidates actually resolved, not just that nothing rendered yet.
+    await user.click(blockOf());
+    await screen.findByRole("option", { name: BOOST });
+    expect(blockOf()).toHaveAccessibleName("Block for Friedman HBE, Solo: Amp");
   });
 });

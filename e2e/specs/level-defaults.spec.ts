@@ -18,6 +18,7 @@ import {
   simEvents,
   soundBox,
   waitForCaptureInFlight,
+  startLeveling,
 } from "../fixtures/scenario";
 
 // First-session DEFAULTS + the physics-outcome gates (the real user's complaint set), driven
@@ -113,7 +114,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await levelButton(page, 1).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click(); // the inline commit gate
     await pickBaseTarget(page, SCENARIO[1].slot, "Lead"); // the loud default — now REACHED via boost
-    await page.getByRole("button", { name: /Start.*1 sound/ }).click();
+    await startLeveling(page).click();
     // allGood (SummaryPage.tsx): no clamp/unconverged/offbranch/skip rows this run ⇒ "Done",
     // not "Accept" — the row solved, it didn't need acknowledgement.
     // `exact`: the Run page's preset-group header is a button whose name ends in its "done"
@@ -178,7 +179,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await levelButton(page, 3).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await page.getByRole("button", { name: /Start.*3 sound/ }).click(); // defaults; 401 solves, 402 faults
+    await startLeveling(page).click(); // defaults; 401 solves, 402 faults
     await expect(
       page.getByRole("button", { name: /^(Done|Accept)$/ }),
     ).toBeVisible({
@@ -239,7 +240,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await levelButton(page, "any").click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
+    await startLeveling(page).click();
     await waitForCaptureInFlight(page, reampBase);
 
     await page.getByRole("button", { name: "Stop", exact: true }).click();
@@ -282,7 +283,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await levelButton(page, "any").click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
+    await startLeveling(page).click();
     await waitForCaptureInFlight(page, reampBase);
 
     await page.getByRole("button", { name: "Settings", exact: true }).click();

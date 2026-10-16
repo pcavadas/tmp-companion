@@ -1,7 +1,8 @@
 // src/__tests__/DoctorSetupLabels.test.tsx — BUG→GATE (issue 2), Doctor's Set-up step.
-// Same mislabel as SetupPage's (see SetupPage.labels.test.tsx): a hardcoded "Whole
-// preset" for every base row shadowed `chosenFrom`'s own "Base Preset" answer for a
-// multi-scene preset. The fix is `nameLabel = o.sceneName` here too.
+// Same mislabel as Level's Set up (see SetupPage.labels.test.tsx): a hardcoded "Whole
+// preset" for every base row shadowed `chosenFrom`'s own answer for a multi-scene
+// preset. The fix is `nameLabel = o.sceneName` here too. `chosenFrom` now names every
+// main sound "Main sound" (look B's one name); Doctor still renders it verbatim.
 
 import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
@@ -26,34 +27,34 @@ function renderSetup(option: SetupOption) {
   );
 }
 
-describe("DoctorSetup — base row label (issue 2)", () => {
-  it('a hasScenes base row renders "Base Preset"', () => {
+describe("DoctorSetup — main sound label (issue 2)", () => {
+  it('renders the row\'s own name verbatim (`chosenFrom` names it "Main sound")', () => {
     renderSetup({
       key: "p0",
       slot: 0,
       presetName: "Friedman HBE",
       isBase: true,
       sceneSlot: null,
-      sceneName: "Base Preset",
+      sceneName: "Main sound",
       tag: "BASE",
       hasScenes: true,
     });
-    expect(screen.getByText("Base Preset")).toBeInTheDocument();
+    expect(screen.getByText("Main sound")).toBeInTheDocument();
+    expect(screen.queryByText("Base Preset")).toBeNull();
     expect(screen.queryByText("Whole preset")).toBeNull();
   });
 
-  it('a scene-less base row renders "Whole preset"', () => {
+  it("never re-derives it from whether the preset has scenes", () => {
     renderSetup({
       key: "p0",
       slot: 0,
       presetName: "Studio Clean",
       isBase: true,
       sceneSlot: null,
-      sceneName: "Whole preset",
+      sceneName: "Named by chosenFrom",
       tag: null,
       hasScenes: false,
     });
-    expect(screen.getByText("Whole preset")).toBeInTheDocument();
-    expect(screen.queryByText("Base Preset")).toBeNull();
+    expect(screen.getByText("Named by chosenFrom")).toBeInTheDocument();
   });
 });

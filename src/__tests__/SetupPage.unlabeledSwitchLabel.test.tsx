@@ -13,16 +13,17 @@
 // the name from the candidate actually chosen — but only for an unlabeled switch: a
 // player's own label is theirs, and picking a different knob does not make it wrong.
 
-import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { describe, it, expect } from "vitest";
 import userEvent from "@testing-library/user-event";
 
-import { SetupPage, type SetupChoice } from "../views/level/SetupPage";
-import { WithCard } from "./pickCardTestUtils";
 import type { SetupOption } from "../views/level/leveling";
 import type { LevelParamCandidate } from "../lib/types";
-import type { PickOption } from "../views/overlays/Pick";
-import { renderWithTheme } from "./testKit";
+import {
+  choose,
+  renderSetupPage,
+  selectTrigger,
+  startLeveling,
+} from "./setupPageTestUtils";
 
 // Two level candidates on DIFFERENT blocks. The Boost is first, so `defaultParamIndex`
 // (first best-ranked hit) makes it the default and the row is born named after it.
@@ -42,9 +43,6 @@ const screamerLevel: LevelParamCandidate = {
   current: 0.5,
   fender_id: "ACD_TubeScreamer",
 };
-
-const instrumentOptions: PickOption[] = [{ id: "none", label: "None" }];
-const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
 
 /** The row `chosenFrom` builds for an unlabeled block-acting switch: `sceneName` is the
  *  DEFAULT candidate's block, and `fsUnlabeled` records that it is a derived fallback. */
@@ -75,35 +73,15 @@ function fsOption(over: Partial<SetupOption> = {}): SetupOption {
 }
 
 async function pickTubeScreamerAndStart(option: SetupOption) {
-  const onStart = vi.fn<(c: SetupChoice[]) => void>();
-  // The picker is card-portaled (`usePickAnchor`), and in production SetupPage always
-  // lives inside the wizard's full-page card — supply the same card context.
-  renderWithTheme(
-    <WithCard>
-      <SetupPage
-        options={[option]}
-        isRelevel={false}
-        instrumentOptions={instrumentOptions}
-        targetOptions={targetOptions}
-        defaultInst="none"
-        defaultTarget="Rhythm"
-        onCancel={vi.fn()}
-        onStart={onStart}
-      />
-    </WithCard>,
-  );
+  const { onStart } = renderSetupPage([option]);
   const user = userEvent.setup();
-  // Every row levels now (D2 — no "Make level-neutral" opt-in any more). Open the
-  // flattened control picker, currently on the tone-safe DEFAULT candidate (Boost's
-  // gain)…
-  await user.click(screen.getByTitle("Choose this sound's leveling control"));
-  // …and pick the OTHER block's own (only, hence best-ranked) candidate — one row
-  // combines block + param, so a single click both overrides the block AND lands
-  // on the right control.
-  await user.click(await screen.findByText("GREENBOX 8 — Level"));
-  // The backup acknowledgment gates the primary button on a fresh run.
-  await user.click(screen.getByText(/I.ve backed up with Pro Control/i));
-  await user.click(screen.getByRole("button", { name: /start.*1 sound/i }));
+  // Every row levels (D2). The Block dropdown is on the tone-safe DEFAULT (the Boost);
+  // pick the OTHER block, which lands on its best knob.
+  await choose(user, "block:f0:sw2", "G1:ACD_TubeScreamer");
+  expect(selectTrigger("knob:f0:sw2")).toHaveAccessibleName(
+    `Knob for Rig, ${option.sceneName}: Level`,
+  );
+  await startLeveling(user);
   return onStart;
 }
 

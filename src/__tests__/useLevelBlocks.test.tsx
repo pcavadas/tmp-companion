@@ -5,18 +5,13 @@
 // expected answer for a genuinely blockless/unparseable preset (mirrors
 // `useSceneHandles.ts`'s own discriminator: MAP KEY PRESENCE, not list emptiness).
 
-import { useState } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook, act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import {
-  FlatLevelPick,
-  type BlockLevelHandle,
-} from "../views/level/FlatLevelPick";
-import { WithCard } from "./pickCardTestUtils";
 import { useLevelBlocks } from "../views/level/useLevelBlocks";
+import { blockStripName } from "../views/level/leveling";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type {
   BackupPresetRow,
@@ -26,9 +21,10 @@ import type {
 import {
   makeBackupPresetRow,
   makeBackupRead,
+  makeSetupOption,
   mockCommands,
 } from "./commandMocks";
-import { renderWithTheme } from "./testKit";
+import { renderSetupPage, selectTrigger } from "./setupPageTestUtils";
 
 function backupRow(
   slot: number,
@@ -167,58 +163,26 @@ describe("useLevelBlocks — instant-first with device fallback", () => {
     expect(result.current.hasBackupData(5)).toBe(false);
   });
 
-  it("never reaches FlatLevelPick's 'Loading controls…' state on the backup path", async () => {
+  it("Set up's Block list never shows 'Reading knobs…' on the backup path", async () => {
     await seedScan([backupRow(1, "Stadium Lead", [AMP_CANDIDATE])]);
-
-    function Harness() {
-      const { prefetch, blocksFor } = useLevelBlocks();
-      const [handle, setHandle] = useState<BlockLevelHandle | null>(null);
-      const st = blocksFor(0);
-      const candidates =
-        st.status === "resolved"
-          ? {
-              status: "resolved" as const,
-              list: st.blocks.map((b) => ({
-                groupId: b.group_id,
-                nodeId: b.node_id,
-                fenderId: b.model_id,
-                parameterId: b.parameter_id,
-                paramClass: b.paramClass,
-              })),
-            }
-          : { status: st.status };
-      return (
-        <FlatLevelPick
-          pseudoLabel="Preset level"
-          handle={handle}
-          onHandleChange={setHandle}
-          candidates={candidates}
-          onOpen={() => {
-            prefetch(0);
-          }}
-        />
-      );
-    }
-
     const user = userEvent.setup();
-    renderWithTheme(
-      <WithCard>
-        <Harness />
-      </WithCard>,
-    );
+    renderSetupPage([makeSetupOption({ presetName: "Stadium Lead" })]);
 
-    await user.click(screen.getByText("Preset level"));
-    // The candidate is already resolved by open time (the backup scan ran at
-    // `beforeEach`/`seedScan` time, well before this click) — the skeleton never
-    // shows, and the flattened list's one candidate row (block + param name) is
-    // there immediately, in a single click (no separate block/control stage).
-    expect(screen.queryByText("Loading controls…")).toBeNull();
-    const row = await screen.findByText(
-      "FENDER '65 TWIN REVERB — Output level",
+    await user.click(selectTrigger("block:p0"));
+    // The candidate is already resolved by open time (the backup scan ran in `seedScan`,
+    // well before this click): no "Reading knobs…", the block is listed at once, and
+    // one click picks it, landing on its best knob.
+    expect(screen.queryByText("Reading knobs…")).toBeNull();
+    const twin = blockStripName("ACD_TwinReverb65NoFx");
+    await user.click(await screen.findByRole("option", { name: twin }));
+    expect(selectTrigger("block:p0")).toHaveAccessibleName(
+      `Block for Stadium Lead, Main sound: ${twin}`,
     );
-    await user.click(row);
-    expect(
-      screen.getByText("FENDER '65 TWIN REVERB — Output level"),
-    ).toBeInTheDocument();
+    expect(selectTrigger("knob:p0")).toHaveAccessibleName(
+      "Knob for Stadium Lead, Main sound: Output level",
+    );
+    expect(invoke).not.toHaveBeenCalledWith("list_level_blocks", {
+      slot: 0,
+    });
   });
 });

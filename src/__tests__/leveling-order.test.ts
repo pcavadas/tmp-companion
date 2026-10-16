@@ -97,13 +97,13 @@ describe("chosenFrom run-order", () => {
     }
   });
 
-  it("renders a scene-less preset's Base as the whole preset", () => {
+  it('names a scene-less preset\'s main sound like any other ("Main sound")', () => {
     const out = chosenFrom(new Set([baseKey(1)]), rows, sceneInfo, noFsw);
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({
       isBase: true,
       hasScenes: false,
-      sceneName: "Whole preset",
+      sceneName: "Main sound",
       tag: null,
     });
   });
@@ -353,9 +353,9 @@ describe("chosenFrom run-order", () => {
     });
   });
 
-  it("scene-less preset with only a footswitch keeps Base as the whole preset", () => {
-    // Bravo (slot 1) has no scenes but one footswitch: Base is still "Whole preset"
-    // (footswitches read like scenes but the Base is the cross-preset essential).
+  it("scene-less preset with only a footswitch keeps its main sound first", () => {
+    // Bravo (slot 1) has no scenes but one footswitch: its main sound (the cross-preset
+    // essential) comes first and keeps its one name, then the footswitch.
     const fswInfo = new Map<number, FootswitchInfo[]>([[1, [fsw(0, "Drive")]]]);
     const out = chosenFrom(
       new Set([baseKey(1), fswKey(1, 0)]),
@@ -364,7 +364,7 @@ describe("chosenFrom run-order", () => {
       fswInfo,
     );
     expect(out.map((o) => o.key)).toEqual([baseKey(1), fswKey(1, 0)]);
-    expect(out[0]).toMatchObject({ isBase: true, sceneName: "Base Preset" });
+    expect(out[0]).toMatchObject({ isBase: true, sceneName: "Main sound" });
     expect(out[1]).toMatchObject({ tag: "FS1", sceneName: "Drive" });
   });
 });

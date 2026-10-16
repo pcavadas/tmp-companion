@@ -11,6 +11,8 @@
 //    live events takes the registry with `mockLiveEvents()`.
 // 4. An `SVGElement.getBBox` stub: jsdom has none, and `HalfStackArt` measures its
 //    head and cab with it in a layout effect, so any render of one would throw.
+// 5. An `Element.scrollIntoView` no-op: jsdom has none, and Set up's footer link brings
+//    the row it points at into view before opening its dropdown.
 
 import "@testing-library/jest-dom/vitest";
 import { vi } from "vitest";
@@ -70,3 +72,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 // A fixed 72×100 box: enough for HalfStackArt to lay head over cab.
 (SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox = () =>
   ({ x: 0, y: 0, width: 72, height: 100 }) as DOMRect;
+
+// jsdom lays nothing out, so there is nothing to scroll.
+(
+  Element.prototype as unknown as { scrollIntoView: () => void }
+).scrollIntoView = () => undefined;

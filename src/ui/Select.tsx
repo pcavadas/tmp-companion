@@ -61,6 +61,13 @@ export interface SelectProps {
   loadingText?: string;
   /** The open list when there is nothing to choose. Default "Nothing to choose". */
   emptyText?: string;
+  /** A line under the options in the open list, in secondary text — a read that
+   *  failed while the default stays usable ("Couldn't read this preset's knobs."). */
+  listNote?: string;
+  /** Open the list from outside (a footer link that points at this choice): each NEW
+   *  non-zero value opens it once. 0 or an unchanged value does nothing. The caller
+   *  fires its own lazy read first; `onOpen` runs only for a click. */
+  openRequest?: number;
   /** Fired each time the list opens (a lazy per-preset read). Idempotent. */
   onOpen?: () => void;
   /** Fixed list width (px). Default: at least the trigger's width. */
@@ -89,6 +96,8 @@ export function Select({
   loading = false,
   loadingText = "Reading…",
   emptyText = "Nothing to choose",
+  listNote,
+  openRequest = 0,
   onOpen,
   menuWidth,
   tid,
@@ -98,6 +107,12 @@ export function Select({
   // The trigger's width at open (measured in the click handler, never in render), so
   // the list is at least as wide as the dropdown it hangs from.
   const [anchorW, setAnchorW] = useState(0);
+  // A new outside request opens the list (adjusted during render, never in an effect).
+  const [seenRequest, setSeenRequest] = useState(openRequest);
+  if (openRequest !== seenRequest) {
+    setSeenRequest(openRequest);
+    if (openRequest !== 0) setOpen(true);
+  }
 
   const sm = size === "sm";
   const inert = disabled || busy;
@@ -224,7 +239,7 @@ export function Select({
           zIndex={LIST_Z}
           width={menuWidth}
           minWidth={Math.max(anchorW, 120)}
-          contentKey={`${String(loading)}:${String(options.length)}`}
+          contentKey={`${String(loading)}:${String(options.length)}:${listNote ?? ""}`}
           onClose={() => {
             setOpen(false);
           }}
@@ -300,6 +315,9 @@ export function Select({
                 </button>
               );
             })
+          )}
+          {!loading && listNote != null && (
+            <div style={infoRow}>{listNote}</div>
           )}
         </Menu>
       )}

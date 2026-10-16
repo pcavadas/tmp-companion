@@ -5,18 +5,13 @@
 // an empty row is the correct, expected answer for a scene-less preset (see
 // `useSceneHandles.ts`'s doc), so it must NOT trigger a device read.
 
-import { useState } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook, act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import {
-  FlatLevelPick,
-  type BlockLevelHandle,
-} from "../views/level/FlatLevelPick";
-import { WithCard } from "./pickCardTestUtils";
 import { useSceneHandles } from "../views/level/useSceneHandles";
+import { blockStripName } from "../views/level/leveling";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type {
   BackupPresetRow,
@@ -26,9 +21,10 @@ import type {
 import {
   makeBackupPresetRow,
   makeBackupRead,
+  makeSceneOption,
   mockCommands,
 } from "./commandMocks";
-import { renderWithTheme } from "./testKit";
+import { renderSetupPage, selectTrigger } from "./setupPageTestUtils";
 
 function backupRow(
   slot: number,
@@ -156,7 +152,7 @@ describe("useSceneHandles — instant-first with device fallback", () => {
     });
   });
 
-  it("never reaches FlatLevelPick's 'Loading controls…' state on the backup path", async () => {
+  it("Set up's Block list never shows 'Reading knobs…' on the backup path", async () => {
     await seedScan([
       backupRow(1, "Friedman HBE", [
         {
@@ -166,51 +162,25 @@ describe("useSceneHandles — instant-first with device fallback", () => {
         },
       ]),
     ]);
-
-    function Harness() {
-      const { prefetch, candidatesFor } = useSceneHandles();
-      const [handle, setHandle] = useState<BlockLevelHandle | null>(null);
-      const st = candidatesFor(0, 0);
-      const candidates =
-        st.status === "resolved"
-          ? {
-              status: "resolved" as const,
-              list: st.allCandidates.map((c) => ({
-                groupId: c.groupId,
-                nodeId: c.nodeId,
-                fenderId: c.fenderId,
-                parameterId: c.parameterId,
-                paramClass: c.class,
-              })),
-            }
-          : { status: st.status };
-      return (
-        <FlatLevelPick
-          pseudoLabel="Amp output level"
-          handle={handle}
-          onHandleChange={setHandle}
-          candidates={candidates}
-          onOpen={() => {
-            prefetch(0);
-          }}
-        />
-      );
-    }
-
     const user = userEvent.setup();
-    renderWithTheme(
-      <WithCard>
-        <Harness />
-      </WithCard>,
-    );
+    renderSetupPage([
+      makeSceneOption(0, { presetName: "Friedman HBE", sceneName: "Solo" }),
+    ]);
 
-    await user.click(screen.getByText("Amp output level"));
-    // The candidate is already resolved by open time — the skeleton never shows,
-    // and the flattened list's one candidate row (block + param name) is there
-    // immediately, in a single click (no separate block/control stage).
-    expect(screen.queryByText("Loading controls…")).toBeNull();
-    const row = await screen.findByText("BOOST — Gain");
-    await user.click(row);
-    expect(screen.getByText("BOOST — Gain")).toBeInTheDocument();
+    await user.click(selectTrigger("block:s0:0"));
+    // Already resolved by open time: no "Reading knobs…", the scene's block is listed
+    // at once, and one click picks it, landing on its best knob.
+    expect(screen.queryByText("Reading knobs…")).toBeNull();
+    const boost = blockStripName("ACD_Boost");
+    await user.click(await screen.findByRole("option", { name: boost }));
+    expect(selectTrigger("block:s0:0")).toHaveAccessibleName(
+      `Block for Friedman HBE, Solo: ${boost}`,
+    );
+    expect(selectTrigger("knob:s0:0")).toHaveAccessibleName(
+      "Knob for Friedman HBE, Solo: Gain",
+    );
+    expect(invoke).not.toHaveBeenCalledWith("list_scene_level_handles", {
+      slot: 0,
+    });
   });
 });

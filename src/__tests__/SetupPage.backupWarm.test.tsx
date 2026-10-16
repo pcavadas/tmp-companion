@@ -12,16 +12,14 @@
 //    preset) still renders an empty picker with no device call — the warm effect's own
 //    `hasBackupData` check is satisfied, `prefetch` runs, and the fetchFn resolves purely
 //    off the backup with nothing to show.
-//  - the LAZY fallback (today's per-row `onOpen` path, untouched by this fix) still fires
-//    when the user actually opens a key-absent row's own picker.
+//  - the LAZY fallback (the row's Block/Knob `onOpen` path, untouched by this fix) still
+//    fires when the user actually opens a key-absent row's own dropdown.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { SetupPage } from "../views/level/SetupPage";
-import { WithCard } from "./pickCardTestUtils";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type {
   BackupPresetRow,
@@ -34,9 +32,8 @@ import {
   makeSetupOption,
   mockCommands,
 } from "./commandMocks";
-import type { SetupOption } from "../views/level/leveling";
-import type { PickOption } from "../views/overlays/Pick";
-import { renderWithTheme } from "./testKit";
+import { blockStripName, type SetupOption } from "../views/level/leveling";
+import { renderSetupPage, selectTrigger } from "./setupPageTestUtils";
 
 function backupRow(
   slot: number,
@@ -60,30 +57,9 @@ async function seedScan(
 
 const baseOpt: SetupOption = makeSetupOption({
   presetName: "Clean",
-  sceneName: "Whole preset",
   tag: null,
   hasScenes: false,
 });
-
-const instrumentOptions: PickOption[] = [{ id: "none", label: "None" }];
-const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
-
-function renderSetup(options: SetupOption[]) {
-  return renderWithTheme(
-    <WithCard>
-      <SetupPage
-        options={options}
-        isRelevel={false}
-        instrumentOptions={instrumentOptions}
-        targetOptions={targetOptions}
-        defaultInst="none"
-        defaultTarget="Rhythm"
-        onCancel={vi.fn()}
-        onStart={vi.fn()}
-      />
-    </WithCard>,
-  );
-}
 
 const deviceCallsAgainst = (cmd: string) =>
   vi.mocked(invoke).mock.calls.filter(([c]) => c === cmd);
@@ -98,27 +74,28 @@ describe("SetupPage's eager warm effect stays provably device-free", () => {
     // No presets at all — every map (`baseHandlesByIndex` included) stays empty, so
     // EVERY slot's key is absent (the failed-scan shape: `ready: true`, maps empty).
     await seedScan([]);
-    renderSetup([baseOpt]);
+    renderSetupPage([baseOpt]);
 
     // Let the warm effect's microtasks settle — nothing should have fired.
     await waitFor(() => {
-      expect(screen.getByText("Preset level")).toBeInTheDocument();
+      expect(selectTrigger("block:p0")).toHaveAccessibleName(
+        "Block for Clean, Main sound: Preset",
+      );
     });
     expect(deviceCallsAgainst("list_level_blocks")).toHaveLength(0);
     expect(deviceCallsAgainst("list_scene_level_handles")).toHaveLength(0);
   });
 
-  it("a present but empty backup entry renders an empty picker with no device call", async () => {
+  it("a present but empty backup entry lists only the default, with no device call", async () => {
     await seedScan([backupRow(1, "No Handles", [])]);
     const user = userEvent.setup();
-    renderSetup([baseOpt]);
+    renderSetupPage([baseOpt]);
 
-    await user.click(screen.getByText("Preset level"));
-    // Only the pseudo default shows — no real candidate row, no loading skeleton.
-    expect(
-      await screen.findByText("Preset level (default)"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Loading controls…")).toBeNull();
+    await user.click(selectTrigger("block:p0"));
+    // Only the default shows — no block of its own, no "Reading knobs…".
+    const options = await screen.findAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual(["Preset"]);
+    expect(screen.queryByText("Reading knobs…")).toBeNull();
     expect(deviceCallsAgainst("list_level_blocks")).toHaveLength(0);
   });
 
@@ -136,23 +113,24 @@ describe("SetupPage's eager warm effect stays provably device-free", () => {
       ],
     );
     const user = userEvent.setup();
-    renderSetup([baseOpt]);
+    renderSetupPage([baseOpt]);
 
     // Nothing yet — the warm effect never called prefetch for this key-absent slot.
     expect(deviceCallsAgainst("list_level_blocks")).toHaveLength(0);
 
-    await user.click(screen.getByText("Preset level"));
+    await user.click(selectTrigger("block:p0"));
     await waitFor(() => {
       expect(deviceCallsAgainst("list_level_blocks")).toHaveLength(1);
     });
     expect(invoke).toHaveBeenCalledWith("list_level_blocks", { slot: 0 });
-    // The flattened list lands with the one fallback-fetched block's own candidate
-    // row (Tweed Deluxe, rendered by its catalog full name + param) — one click
-    // picks it directly (no separate block/control stage).
-    const row = await screen.findByText("FENDER '57 DELUXE — Output level");
-    await user.click(row);
-    expect(
-      screen.getByText("FENDER '57 DELUXE — Output level"),
-    ).toBeInTheDocument();
+    // The device-read block lands in the open list; picking it lands on its knob.
+    const tweed = blockStripName("ACD_TweedDeluxe");
+    await user.click(await screen.findByRole("option", { name: tweed }));
+    expect(selectTrigger("block:p0")).toHaveAccessibleName(
+      `Block for Clean, Main sound: ${tweed}`,
+    );
+    expect(selectTrigger("knob:p0")).toHaveAccessibleName(
+      "Knob for Clean, Main sound: Output level",
+    );
   });
 });

@@ -139,7 +139,7 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
     );
     // Opens straight at Set up — there is no separate Back-up step.
     expect(
-      await screen.findByText("Make all your sounds equally loud"),
+      await screen.findByRole("heading", { name: /^Level \d+ sounds?$/ }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Back up your unit first")).toBeNull();
 
@@ -148,10 +148,10 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
     // on the apply-to bar and per-row — at least once each).
     expect(screen.getAllByText("Telecaster").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Rhythm/i).length).toBeGreaterThan(0);
-    // Commit: tick the footer backup ack, then Base + Rhythm + Lead → "Start — 3 sounds".
+    // Commit: tick the footer backup ack, then "Start leveling" (Base + Rhythm + Lead).
     await ackBackup(user);
     await user.click(
-      await screen.findByRole("button", { name: /start.*3 sounds/i }),
+      await screen.findByRole("button", { name: "Start leveling" }),
     );
 
     // ── 4 + 5. run auto-advances (650 ms) to the summary headline ───────────────
@@ -196,7 +196,7 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
     );
     await ackBackup(user);
     await user.click(
-      await screen.findByRole("button", { name: /start.*3 sounds/i }),
+      await screen.findByRole("button", { name: "Start leveling" }),
     );
 
     expect(

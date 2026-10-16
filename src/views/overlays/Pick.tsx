@@ -21,9 +21,6 @@ export interface PickOption {
   id: string;
   label: string;
   sub?: string;
-  /** Instrument options only: true ⇒ this profile carries a stored calibration.
-   *  Drives the Set up step's instrument nudge (the menu itself ignores it). */
-  calibrated?: boolean;
 }
 
 export interface PickProps {

@@ -1,19 +1,16 @@
 // src/views/level/leveling.ts — types + helpers for the unified leveling flow.
 //
-// The unit of leveling is a SCENE. A preset's BASE scene carries cross-preset
-// loudness ("matches this preset’s loudness to your other presets" → preset
-// `presetLevel`); an FS scene is leveled within its preset ("matches this scene's
-// loudness to the preset’s base sound" → amp `outputLevel` in scene mode). The
-// mechanism is never exposed: no block /
-// parameter selector, the target is implicit and fixed.
+// The unit of leveling is a SOUND: a preset's main sound carries cross-preset loudness
+// (preset `presetLevel`); a scene is leveled with its amp's `outputLevel` in scene mode;
+// a footswitch with its block's level knob.
 //
 // SELECTION lives in the list (the scene tree): the source of truth is a flat set of
-// scene KEYS — Base = `p${slot}`, FS scene = `s${slot}:${idx}`. `chosenFrom` turns
-// that set into the SetupOption[] the setup dialog configures (instrument + target).
+// scene KEYS — main sound = `p${slot}`, scene = `s${slot}:${idx}`, footswitch =
+// `f${slot}:${i}`. `chosenFrom` turns that set into the SetupOption[] the Set up page
+// configures (instrument per preset; target, block and knob per sound).
 //
-// Flow (one persistent wizard, body swaps per stage): setup (set instrument + target
-// for everything picked in the list; its footer's backup acknowledgment gates the
-// commit) → run (steps the chosen scenes) → summary.
+// Flow (setup → run → summary): Set up (its footer's backup acknowledgment gates the
+// commit) → run (steps the chosen sounds) → summary.
 
 import type {
   BaseBoostSummary,
@@ -123,8 +120,8 @@ const CLASS_RANK: Record<ParamClass, number> = {
 };
 
 /** Friendly labels for the technical parameter ids (fallback: capitalize the id).
- *  Read through `paramLabel` by `FlatLevelPick` — the one "which block parameter"
- *  picker — for both its trigger label and its candidate rows. */
+ *  Read through `paramLabel` by Set up's Knob dropdown (`setupControls`), for both the
+ *  value it shows and its options. */
 const PARAM_LABELS: Partial<Record<string, string>> = {
   level: "Level",
   outputLevel: "Output level",
@@ -159,20 +156,6 @@ export function defaultParamIndex(params: LevelParamCandidate[]): number {
     }
   });
   return bestIdx;
-}
-
-/** The apply-to-all instrument's place on the good → better → best ladder that drives
- *  the Set up step's instrument nudge: `none` (no instrument → levels against the
- *  default reference) → `uncal` (instrument, no stored calibration) → `cal`
- *  (calibrated). An unknown / empty id is treated as `none`. */
-export function instCalState(
-  id: string,
-  options: PickOption[],
-): "none" | "uncal" | "cal" {
-  if (!hasInstrument(id)) return "none";
-  const o = options.find((x) => x.id === id);
-  if (!o) return "none";
-  return o.calibrated ? "cal" : "uncal";
 }
 
 /** Build a footswitch target from a specific candidate (the user's explicit pick, or the
@@ -218,6 +201,10 @@ const fsTagOf = (switchIndex: number): string => `FS${String(switchIndex + 1)}`;
  *  sentinel for it, in the pickers, the Set-up defaults and every run item. */
 export const NO_INSTRUMENT = "none";
 
+/** The one name of a preset's main sound (its base, `presetLevel`), with or without
+ *  scenes — the voice guide's word, on the list, Set up, the run and Doctor alike. */
+export const MAIN_SOUND = "Main sound";
+
 /** The instrument `Pick` options shared by the Level and Doctor setup steps:
  *  "None" (the no-instrument path — level/diagnose against the default reference)
  *  followed by each saved profile, calibrated ones flagged with their reference dB. */
@@ -232,7 +219,6 @@ export function instrumentOptions(
         id: p.id,
         label: p.name,
         sub: cal != null ? `${cal.toFixed(1)} dB` : undefined,
-        calibrated: cal != null,
       };
     }),
   ];
@@ -290,7 +276,7 @@ export function footswitchNameForCandidate(c: LevelParamCandidate): string {
  *
  *  Order: the device's own strip name (`name8`), else the Model Guide name, else the
  *  old de-camel-cased id so an uncatalogued or user block still gets something. */
-function blockStripName(fenderId: string): string {
+export function blockStripName(fenderId: string): string {
   return (
     stripNameFor(fenderId) ??
     blockArtTile(fenderId).fullName ??
@@ -341,11 +327,12 @@ export interface SetupOption {
   /** The `loadScene` / `level_scenes_apply_batched` wire slot (0-based scenes[] index);
    *  null for the Base/whole-preset row (which levels `presetLevel`). */
   sceneSlot: number | null;
-  /** Display name: "Base Preset" / "Whole preset" / the scene name. */
+  /** Display name: "Main sound" / the scene name / the footswitch's name. */
   sceneName: string;
-  /** Tag chip: "BASE" | `FS${n}` | null (em-dash for an untagged named scene). */
+  /** Tag chip for the run and Doctor rows: "BASE" | `FS${n}` | null (em-dash for an
+   *  untagged named scene). Set up shows none (a footswitch says "footswitch 3"). */
   tag: string | null;
-  /** False ⇒ a scene-less preset, whose Base row renders "Whole preset". */
+  /** False ⇒ a preset with no scenes and no footswitches. */
   hasScenes: boolean;
   /** Set ⇒ this row is a block-acting FOOTSWITCH (not Base/scene); carries the coords
    *  for `levelFootswitchesApply`. null/undefined for Base + scene rows. */
@@ -579,7 +566,8 @@ export function chosenFrom(
       const scenes = sceneInfo.get(r.slot) ?? [];
       const footswitches = footswitchInfo.get(r.slot) ?? [];
       // A footswitch row reads like a scene (the user picks "a sound"), so a preset with
-      // ONLY footswitches still shows "Base Preset" vs "Whole preset" as a true scene-less case.
+      // ONLY footswitches has children too. The main sound has ONE name everywhere,
+      // whether or not the preset has scenes (the voice guide's "main sound").
       const hasChildren = scenes.length > 0 || footswitches.length > 0;
       if (sel.has(baseKey(r.slot))) {
         items.push({
@@ -588,7 +576,7 @@ export function chosenFrom(
           presetName: r.name,
           isBase: true,
           sceneSlot: null,
-          sceneName: hasChildren ? "Base Preset" : "Whole preset",
+          sceneName: MAIN_SOUND,
           tag: hasChildren ? "BASE" : null,
           hasScenes: hasChildren,
         });

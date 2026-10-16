@@ -1,67 +1,69 @@
-// src/views/level/SetupPage.tsx — the leveling wizard's "Set up" stage (design
-// handoff 1a: full window, one row per preset).
+// src/views/level/SetupPage.tsx — Level's Set up, a page under the toolbar (look B).
 //
-// A bulk row (Guitar / How loud) writes every sound at once — no ticking; what gets
-// leveled was already chosen on the preset list, so a second selection model here
-// would be redundant. Each sound also carries its OWN Guitar / Target / Knob pickers
-// (and, for footswitches, the D3 scene-context picker), so any single row can be
-// overridden on top of the bulk write. The list groups by PRESET (`PresetGroupRow`),
-// auto-opening the first preset so the per-sound controls are discoverable
-// (`useGroupOpen`) — the user can expand/collapse any other row on top of that.
+// Top to bottom: the title ("Level 6 sounds") with the flow's Steps, the "for all"
+// choices ("Instrument for all" with 2+ presets, "Target for all"), the column heads, one
+// Group (a header row per preset with its one instrument, then a row per chosen sound
+// with its Target, Block, Knob and, for a footswitch of a preset with scenes, "Level it in
+// scene"), and the Footer: Cancel on the left; on the right the one thing Start waits for
+// (a link to it), the backup tick and "Start leveling".
 //
-// The leveling HANDLE (D2 — every row levels against one user-chosen block+param
-// control) keeps its full any-block/any-param capability via `FlatLevelPick`
-// (Base rows default to "Preset level", Scene rows to "Amp output level", Footswitch
-// rows always carry a real pick), over the candidate data `blockLevelGroups.ts`
-// groups and ranks.
+// What to level was chosen on the list, once; this page only says how. Every dropdown is
+// pre-set to the best guess and always shows exactly what the run will use. Every chosen
+// sound shows: no preset collapses. The backup tick is the only safety line (the run
+// saves each sound as soon as it matches). A re-level reopened from the Summary
+// (`isRelevel`) skips the tick until the Summary's Try again replaces it.
 //
-// History (do not reintroduce): an earlier build put inclusion checkboxes here,
-// forcing users to pick sounds twice (list + dialog) — the list is the single place
-// you choose WHAT to level, this step only chooses HOW. A later build gave footswitch
-// rows a "Verify only" default + scene rows a match/offset target-mode chip — both
-// removed (the backend dropped verify-only entirely; the combined handle picker
-// replaced the target-mode concept). The gain-budget redistribution / common-target /
-// per-row "Restore original" features are gone from the wizard entirely (design 1a) —
-// the backup-acknowledgment checkbox below is the one revert path: restore from your
-// Pro Control backup.
-//
-// Split: the row state + the commit live in ./useSetupRows (over the pure
-// `buildSetupChoices` in ./leveling); the candidate adapters in ./setupCandidates; the
-// pieces in ./FsRowControls, ./InstrumentNudge, ./CalibrationOnboardingBanner and
-// ./RebalanceToggle.
+// State and derivation: `useSetupRows` (over `setupControls` and `buildSetupChoices`).
 
 import { useState } from "react";
 
-import { useTheme, useStyles } from "../../theme/ThemeContext";
+import { useTheme } from "../../theme/ThemeContext";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
+import { Footer } from "../../ui/Footer";
+import { Icon } from "../../ui/Icon";
+import { Group } from "../../ui/List";
+import { PageHead } from "../../ui/PageHead";
+import { Select } from "../../ui/Select";
+import type { SelectOption } from "../../ui/selectValue";
+import { Steps } from "../../ui/Steps";
 import { Button } from "../../ui/primitives";
-import { LevelPage } from "./LevelPage";
-import { PresetGroupList } from "./PresetGroupList";
-import { PresetGroupRow } from "./PresetGroupRow";
-import { useGroupOpen } from "./useGroupOpen";
-import { Pick, type PickOption } from "../overlays/Pick";
-import { FlatLevelPick } from "./FlatLevelPick";
-import { CalibrationOnboardingBanner } from "./CalibrationOnboardingBanner";
-import { FsRowControls } from "./FsRowControls";
-import { InstrumentNudge } from "./InstrumentNudge";
-import { RebalanceToggle } from "./RebalanceToggle";
-import { baseCandidatesFetch, sceneCandidatesFetch } from "./setupCandidates";
-import { useSetupRows, type SetupGroup } from "./useSetupRows";
-import { instCalState, setupRowHookKey } from "./leveling";
-import type { SetupOption, SetupChoice } from "./leveling";
+import { SetupPresetHeader } from "./SetupPresetHeader";
+import { SetupSoundRow } from "./SetupSoundRow";
+import { LEVEL_STEPS, SETUP_COLUMN_GAP, setupColumns } from "./setupLayout";
+import {
+  TARGET_BY_NAME,
+  targetForAllValue,
+  useSetupRows,
+  type SetupRowModel,
+} from "./useSetupRows";
+import type { SetupChoice, SetupOption } from "./leveling";
 
 export type { SetupChoice };
 
+/** The content column's widest (px): wider windows centre it. */
+const MAX_CONTENT_W = 960;
+
 export interface SetupPageProps {
   options: SetupOption[];
+  /** Reopened from the Summary for a re-level: no backup tick (already given). */
   isRelevel: boolean;
-  instrumentOptions: PickOption[];
-  targetOptions: PickOption[];
+  /** "None" + each instrument (`value` = profile id). */
+  instrumentOptions: SelectOption[];
+  /** The instruments with a recording; any other choice shows the record link. */
+  recordedInstruments: ReadonlySet<string>;
+  /** The configured targets' names, in their order. */
+  targetNames: string[];
+  /** The instrument saved for each preset (0-based list index → id). */
+  savedInstruments: Partial<Record<number, string>>;
+  /** A preset's instrument when nothing is saved for it. */
   defaultInst: string;
-  defaultTarget: string;
   onCancel: () => void;
-  /** The commit: the configured rows plus the opt-in rebalance toggle. */
-  onStart: (choices: SetupChoice[], rebalance: boolean) => void;
+  /** The commit: the configured sounds, and the presets whose two amps are balanced
+   *  first (0-based list indices). */
+  onStart: (choices: SetupChoice[], rebalance: number[]) => void;
+  /** Remember a preset's instrument choice (the app's own store, never the unit). */
+  onInstrumentChange?: (slot: number, id: string) => void;
+  /** "Record yours in Settings": go to Settings › Instruments. */
   onCalibrate?: () => void;
 }
 
@@ -69,348 +71,263 @@ export function SetupPage({
   options,
   isRelevel,
   instrumentOptions,
-  targetOptions,
+  recordedInstruments,
+  targetNames,
+  savedInstruments,
   defaultInst,
-  defaultTarget,
   onCancel,
   onStart,
+  onInstrumentChange,
   onCalibrate,
 }: SetupPageProps) {
   const { t } = useTheme();
-  const s = useStyles();
-  const requireBackup = !isRelevel;
   const [backedUp, setBackedUp] = useState(false);
-  // Opt-in: equalize a path-MERGE scene's two parallel-amp lanes before joint-k. A fresh
-  // Set up starts it off; the commit hands it to the run with the choices.
-  const [rebalance, setRebalance] = useState(false);
-  const toggleRebalance = () => {
-    setRebalance(!rebalance);
-  };
+  // The footer link's request to open one row's Block or scene dropdown.
+  const [openReq, setOpenReq] = useState<{
+    key: string;
+    which: "block" | "scene";
+    n: number;
+  } | null>(null);
 
-  const {
-    groups,
-    rows,
-    patchRow,
-    bulkInst,
-    bulkTarget,
-    applyBulkInst,
-    applyBulkTarget,
-    effectiveHandle,
-    fsSuggestedFor,
-    fsContextState,
-    fsContextPending,
-    fsContextMissing,
-    candidatesFor,
-    blocksFor,
-    contextFor,
-    fetchBlocksFor,
-    fetchHandlesFor,
-    fetchFsContextFor,
-    buildChoices,
-  } = useSetupRows({
+  const setup = useSetupRows({
     options,
     isRelevel,
     instrumentOptions,
-    targetOptions,
+    targetNames,
+    savedInstruments,
     defaultInst,
-    defaultTarget,
+    onInstrumentChange,
   });
+  const { groups, firstNeed, pending } = setup;
 
   const total = options.length;
+  const ready =
+    total > 0 && (isRelevel || backedUp) && !pending && firstNeed == null;
+  const targetOptions: SelectOption[] = targetNames.map((n) => ({
+    value: n,
+    label: n,
+  }));
+  const targetAllOptions: SelectOption[] = [
+    { value: TARGET_BY_NAME, label: "By name" },
+    ...targetNames.map((n) => ({ value: targetForAllValue(n), label: n })),
+  ];
+  // The run uses "None" or an instrument with no recording: point at Settings once.
+  const needsRecording =
+    onCalibrate != null && groups.some((g) => !recordedInstruments.has(g.inst));
+  const forAllInstrument = groups.length >= 2;
 
   const start = () => {
-    const choices = buildChoices();
-    if (choices.length) onStart(choices, rebalance);
+    const { choices, rebalance } = setup.buildChoices();
+    if (choices.length > 0) onStart(choices, rebalance);
   };
 
-  const [isOpen, toggle] = useGroupOpen(groups.length ? [groups[0].slot] : []);
+  // "Choose a scene for footswitch 3" / "Choose a block for Lead": bring the row into
+  // view and open the dropdown that needs the choice.
+  const goToNeed = (row: SetupRowModel) => {
+    const need = row.need;
+    if (!need) return;
+    document
+      .querySelector(`[data-setup-row="${row.hookKey}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+    setOpenReq((p) => ({
+      key: row.option.key,
+      which: need.which,
+      n: (p?.n ?? 0) + 1,
+    }));
+  };
+  const requestFor = (key: string, which: "block" | "scene"): number =>
+    openReq?.key === key && openReq.which === which ? openReq.n : 0;
 
-  const summarizeField = (
-    values: Set<string>,
-    fieldOptions: PickOption[],
-    mixedLabel: string,
-  ): string => {
-    if (values.size !== 1) return mixedLabel;
-    const [only] = values;
-    return fieldOptions.find((x) => x.id === only)?.label ?? only;
+  const onOpenControls = (row: SetupRowModel) => {
+    // Lazy read for a preset the backup scan missed (a device read); idempotent.
+    if (row.option.isBase) setup.fetchBlocksFor(row.option.slot);
+    else if (row.option.sceneSlot != null && row.option.footswitch == null)
+      setup.fetchHandlesFor(row.option.slot);
   };
 
-  const groupNote = (g: SetupGroup): string => {
-    const insts = new Set(g.opts.map((o) => rows[o.key]?.inst ?? defaultInst));
-    const targets = new Set(
-      g.opts.map((o) => rows[o.key]?.target ?? defaultTarget),
-    );
-    const instLabel = summarizeField(insts, instrumentOptions, "mixed guitars");
-    const targetLabel = summarizeField(targets, targetOptions, "mixed targets");
-    return `${instLabel} · ${targetLabel}`;
-  };
+  const caption = {
+    fontSize: t.fontCaption,
+    color: t.textSecondary,
+    whiteSpace: "nowrap",
+  } as const;
+  const labelled = {
+    display: "flex",
+    alignItems: "center",
+    gap: t.sp8,
+    fontSize: t.fontBody,
+    whiteSpace: "nowrap",
+  } as const;
+  const columns = setupColumns(setup.sceneColumn);
 
   return (
-    <LevelPage
-      step={0}
-      title={
-        isRelevel ? "Level these again" : "Make all your sounds equally loud"
-      }
-      sub="We play a short test tone through each sound, listen, and turn its volume up or down until they match. Nothing else about your tone changes."
-      footerLeft={
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onCancel}
-          style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
-        >
-          Cancel
-        </Button>
-      }
-      footerRight={
-        <>
-          {requireBackup && (
-            <BackupAckLabel
-              checked={backedUp}
-              onChange={setBackedUp}
-              style={{ userSelect: "none", paddingRight: t.space2 }}
-            />
-          )}
-          <Button
-            variant="primary"
-            size="sm"
-            icon="gauge"
-            disabled={
-              total === 0 ||
-              (requireBackup && !backedUp) ||
-              fsContextPending ||
-              fsContextMissing
-            }
-            onClick={start}
-            style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
-          >
-            {fsContextPending
-              ? "Reading footswitches…"
-              : fsContextMissing
-                ? "Choose a footswitch scene"
-                : `Start — ${String(total)} sound${total === 1 ? "" : "s"}`}
-          </Button>
-        </>
-      }
+    <div
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        background: t.window,
+        fontFamily: t.fontSans,
+        color: t.text,
+      }}
     >
-      {/* bulk row — always writes every sound; per-row pickers override individually */}
-      <div
-        style={{
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "flex-start",
-          gap: t.space10,
-          flexWrap: "wrap",
-          padding: `${String(t.space6)}px ${String(t.space7)}px`,
-          border: `0.5px solid ${t.hairlineStrong}`,
-          borderRadius: t.rCard,
-          background: t.window,
-        }}
-      >
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         <div
           style={{
+            maxWidth: MAX_CONTENT_W,
+            margin: "0 auto",
+            padding: `${String(t.sp16)}px ${String(t.sp24)}px ${String(t.sp16 + t.sp4)}px`,
             display: "flex",
             flexDirection: "column",
-            gap: t.space3,
-            minWidth: 180,
+            gap: t.sp12 + t.sp2,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: t.space5 }}>
-            <span
+          <PageHead
+            title={`Level ${String(total)} ${total === 1 ? "sound" : "sounds"}`}
+            actions={<Steps steps={LEVEL_STEPS} current={0} />}
+          />
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: t.sp24,
+              flexWrap: "wrap",
+            }}
+          >
+            {forAllInstrument && (
+              <span style={labelled}>
+                Instrument for all
+                <Select
+                  width={130}
+                  label="Instrument for all presets"
+                  value={setup.instAll.value}
+                  mixed={setup.instAll.mixed}
+                  options={instrumentOptions}
+                  onChange={setup.setAllInst}
+                  tid="inst-all"
+                />
+                {needsRecording && (
+                  <Button variant="link" onClick={onCalibrate}>
+                    Record yours in Settings
+                  </Button>
+                )}
+              </span>
+            )}
+            <span style={labelled}>
+              Target for all
+              <Select
+                width={130}
+                label="Target for all sounds"
+                value={setup.targetAll.value}
+                mixed={setup.targetAll.mixed}
+                options={targetAllOptions}
+                onChange={setup.setAllTargets}
+                tid="target-all"
+              />
+            </span>
+          </div>
+
+          <div>
+            <div
+              aria-hidden
               style={{
-                fontFamily: t.serif,
-                fontSize: 15,
-                color: t.ink,
-                whiteSpace: "nowrap",
+                display: "grid",
+                gridTemplateColumns: columns,
+                gap: SETUP_COLUMN_GAP,
+                padding: `0 ${String(t.sp12 + 1)}px ${String(t.sp6)}px`,
+                fontSize: t.fontCaption,
+                fontWeight: t.weightSemibold,
+                color: t.textSecondary,
               }}
             >
-              Guitar
-            </span>
-            <div style={{ width: 168 }}>
-              <Pick
-                value={bulkInst}
-                options={instrumentOptions}
-                onChange={applyBulkInst}
-              />
+              <span>Sound</span>
+              <span>Target</span>
+              <span>Block</span>
+              <span>Knob</span>
+              {setup.sceneColumn && <span>Level it in scene</span>}
             </div>
+            <Group label="Sounds to level">
+              {groups.map((g) => (
+                <div key={g.slot}>
+                  <SetupPresetHeader
+                    group={g}
+                    instrumentOptions={instrumentOptions}
+                    onInstrument={setup.setInst}
+                    onRecord={
+                      !forAllInstrument &&
+                      onCalibrate != null &&
+                      !recordedInstruments.has(g.inst)
+                        ? onCalibrate
+                        : undefined
+                    }
+                    rebalance={setup.rebalance.has(g.slot)}
+                    onToggleRebalance={setup.toggleRebalance}
+                  />
+                  {g.rows.map((r) => (
+                    <SetupSoundRow
+                      key={r.option.key}
+                      row={r}
+                      targetOptions={targetOptions}
+                      sceneColumn={setup.sceneColumn}
+                      openBlock={requestFor(r.option.key, "block")}
+                      openScene={requestFor(r.option.key, "scene")}
+                      onTarget={setup.setTarget}
+                      onHandle={setup.setHandle}
+                      onSceneContext={setup.setSceneContext}
+                      onOpenControls={onOpenControls}
+                    />
+                  ))}
+                </div>
+              ))}
+            </Group>
           </div>
-          <InstrumentNudge
-            state={instCalState(bulkInst, instrumentOptions)}
-            onCalibrate={onCalibrate}
-          />
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: t.space5 }}>
-          <span
-            style={{
-              fontFamily: t.serif,
-              fontSize: 15,
-              color: t.ink,
-              whiteSpace: "nowrap",
-            }}
-          >
-            How loud
-          </span>
-          <div style={{ width: 168 }}>
-            <Pick
-              value={bulkTarget}
-              options={targetOptions}
-              onChange={applyBulkTarget}
-            />
-          </div>
-        </div>
-        <span
-          style={{
-            flex: 1,
-            minWidth: 160,
-            fontFamily: t.sans,
-            fontSize: 11.5,
-            lineHeight: 1.45,
-            color: t.faint,
-            textWrap: "pretty",
-          }}
-        >
-          Sets all {total} at once.
-        </span>
       </div>
 
-      <CalibrationOnboardingBanner
-        show={instCalState(bulkInst, instrumentOptions) === "uncal"}
-      />
-
-      <PresetGroupList
-        label={`${String(groups.length)} preset${groups.length === 1 ? "" : "s"} · ${String(total)} sound${total === 1 ? "" : "s"}`}
-      >
-        {groups.map((g) => (
-          <PresetGroupRow
-            key={g.slot}
-            slot={g.slot}
-            name={g.name}
-            open={isOpen(g.slot)}
-            onToggle={() => {
-              toggle(g.slot);
-            }}
-            tag={
-              <span style={{ ...s.kickerWide(t.faint) }}>
-                {g.opts.length} sound{g.opts.length === 1 ? "" : "s"}
-              </span>
-            }
-            note={groupNote(g)}
-          >
-            {g.opts.map((o) => {
-              const row = rows[o.key];
-              const fsw = o.footswitch ?? null;
-              const params = fsw ? (o.levelParams ?? []) : [];
-              const sceneFetch =
-                o.sceneSlot != null
-                  ? sceneCandidatesFetch(candidatesFor(o.slot, o.sceneSlot))
-                  : null;
-              return (
-                <div
-                  key={o.key}
-                  data-setup-row={setupRowHookKey(o)}
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: t.space5,
-                    minHeight: 34,
-                    padding: `${String(t.space2)}px 0`,
+      <Footer
+        left={
+          <Button variant="secondary" size="lg" onClick={onCancel}>
+            Cancel
+          </Button>
+        }
+        right={
+          <>
+            {pending ? (
+              <span style={caption}>Reading footswitch scenes</span>
+            ) : (
+              firstNeed?.need && (
+                <Button
+                  variant="link"
+                  onClick={() => {
+                    goToNeed(firstNeed);
                   }}
                 >
-                  <span
-                    style={{
-                      fontFamily: t.sans,
-                      fontSize: 13,
-                      color: t.ink2,
-                      width: 138,
-                      flexShrink: 0,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      paddingTop: t.space2,
-                    }}
-                  >
-                    {o.sceneName}
-                  </span>
-                  <div style={{ width: 128, flexShrink: 0 }}>
-                    <Pick
-                      grow
-                      value={row?.inst ?? defaultInst}
-                      options={instrumentOptions}
-                      onChange={(v) => {
-                        patchRow(o.key, { inst: v });
-                      }}
-                    />
-                  </div>
-                  <div style={{ width: 118, flexShrink: 0 }}>
-                    <Pick
-                      grow
-                      tid={`target:${setupRowHookKey(o)}`}
-                      value={row?.target ?? defaultTarget}
-                      options={targetOptions}
-                      onChange={(v) => {
-                        patchRow(o.key, { target: v });
-                      }}
-                    />
-                  </div>
-                  <div style={{ width: 200, flexShrink: 0 }}>
-                    {fsw && params.length > 0 ? (
-                      <FsRowControls
-                        switchIndex={fsw.switchIndex}
-                        levelParams={params}
-                        fsSceneNames={o.fsSceneNames ?? []}
-                        handle={effectiveHandle(o, row)}
-                        onHandleChange={(h) => {
-                          patchRow(o.key, { handle: h });
-                        }}
-                        sceneContext={
-                          row?.sceneContext !== undefined
-                            ? row.sceneContext
-                            : (fsSuggestedFor(o) ?? fsw.sceneContext)
-                        }
-                        ctxState={contextFor(o.slot, fsw.switchIndex)}
-                        needsChoice={fsContextState(o) === "error"}
-                        onOpenSceneContext={() => {
-                          fetchFsContextFor(o.slot);
-                        }}
-                        onSceneContextChange={(v) => {
-                          patchRow(o.key, { sceneContext: v });
-                        }}
-                      />
-                    ) : o.isBase ? (
-                      <FlatLevelPick
-                        pseudoLabel="Preset level"
-                        handle={effectiveHandle(o, row)}
-                        onHandleChange={(h) => {
-                          patchRow(o.key, { handle: h });
-                        }}
-                        candidates={baseCandidatesFetch(blocksFor(o.slot))}
-                        onOpen={() => {
-                          fetchBlocksFor(o.slot);
-                        }}
-                      />
-                    ) : sceneFetch != null ? (
-                      <FlatLevelPick
-                        pseudoLabel="Amp output level"
-                        handle={effectiveHandle(o, row, sceneFetch)}
-                        onHandleChange={(h) => {
-                          patchRow(o.key, { handle: h });
-                        }}
-                        candidates={sceneFetch}
-                        onOpen={() => {
-                          fetchHandlesFor(o.slot);
-                        }}
-                      />
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-          </PresetGroupRow>
-        ))}
-      </PresetGroupList>
-
-      {/* run option — advanced, opt-in, applies to the whole run */}
-      <RebalanceToggle on={rebalance} onToggle={toggleRebalance} />
-    </LevelPage>
+                  <Icon
+                    name="warn-tri"
+                    size={13}
+                    stroke={t.caution}
+                    strokeWidth={2}
+                  />
+                  {firstNeed.need.text}
+                </Button>
+              )
+            )}
+            {!isRelevel && (
+              <BackupAckLabel checked={backedUp} onChange={setBackedUp} />
+            )}
+            <Button
+              variant="primary"
+              size="lg"
+              busy={pending}
+              disabled={!ready}
+              onClick={start}
+            >
+              Start leveling
+            </Button>
+          </>
+        }
+      />
+    </div>
   );
 }

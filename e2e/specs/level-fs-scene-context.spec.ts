@@ -12,16 +12,17 @@ import {
   reampOff,
   simEvents,
   soundBox,
+  startLeveling,
 } from "../fixtures/scenario";
 
-// PR #144 NEW COVERAGE — the D3 scene-context picker (`FsRowControls` in SetupPage.tsx)
-// drives `FootswitchLevelJob.sceneContext` on the wire, and a USER OVERRIDE of the
-// auto-suggested scene must actually ride the call — not just the suggestion happening to
-// be right. E2E Combined Level (406)'s BOOST switch (`ftsw[2]`, `ACD_KingOfTone`, G4) is
-// enabled by exactly one scene (`LEAD`, `scenes[2]`), so `list_footswitch_scene_contexts`
-// suggests it by default (`FsSceneContext.suggested`). This spec overrides that suggestion
-// to SCRATCH (`scenes[0]`, a scene BOOST is NOT enabled in — the picker allows this,
-// flagged, never blocked: `FsRowControls`'s own doc) and proves the override — not the
+// PR #144 NEW COVERAGE — the D3 scene context (Set up's "Level it in scene" dropdown, a
+// footswitch row's `scene:<rowKey>` Select) drives `FootswitchLevelJob.sceneContext` on the
+// wire, and a USER OVERRIDE of the auto-suggested scene must actually ride the call — not
+// just the suggestion happening to be right. E2E Combined Level (406)'s BOOST switch
+// (`ftsw[2]`, `ACD_KingOfTone`, G4) is enabled by exactly one scene (`LEAD`, `scenes[2]`),
+// so `list_footswitch_scene_contexts` suggests it by default (`FsSceneContext.suggested`).
+// This spec overrides that suggestion to SCRATCH (`scenes[0]`, a scene BOOST is NOT enabled
+// in — allowed, flagged under the row, never blocked) and proves the override — not the
 // suggestion — is what the backend actually recalls before capturing.
 //
 // Danger.md's latch nuance is the physics this pins: `loadScene` mid-engage is INAUDIBLE (the
@@ -93,11 +94,18 @@ test.describe("Level Setup — footswitch scene-context override rides the wire 
 
     // `f406:sw2` (setupRowHookKey, leveling.ts): BOOST is `ftsw[2]`.
     const boostRow = page.locator('[data-setup-row="f406:sw2"]');
-    const ctxTrigger = boostRow.locator('[data-pick="fsctx:2"]');
-    await ctxTrigger.click(); // fires the lazy list_footswitch_scene_contexts fetch
-    // The option list PORTALS to the wizard card, detached from the row's own DOM — the
-    // `data-pick-option` hook (not row scoping) is what disambiguates it.
-    const scratchOption = page.locator('[data-pick-option="fsctx:2:0"]');
+    const ctxTrigger = boostRow.locator('[data-select="scene:f406:sw2"]');
+    // The suggestion is resolved as Set up opens (off the backup scan), never on a click.
+    await expect(
+      ctxTrigger,
+      "the dropdown shows the suggested scene before anything is clicked",
+    ).toContainText("LEAD");
+    await ctxTrigger.click();
+    // The list portals to <body>, detached from the row's own DOM — the
+    // `data-select-option` hook (not row scoping) is what disambiguates it.
+    const scratchOption = page.locator(
+      '[data-select-option="scene:f406:sw2:0"]',
+    );
     await expect(
       scratchOption,
       "SCRATCH (scenes[0]) must be offered even though BOOST isn't enabled there",
@@ -105,19 +113,22 @@ test.describe("Level Setup — footswitch scene-context override rides the wire 
     await scratchOption.click();
     await expect(
       ctxTrigger,
-      "the trigger must reflect the override before the run starts",
+      "the dropdown must reflect the override before the run starts",
     ).toContainText("SCRATCH");
-    // The non-enabling warning must follow the override (BOOST's own `ftswStates[2]` is
+    // The non-enabling note must follow the override (BOOST's own `ftswStates[2]` is
     // false in SCRATCH — confirmed against the fixture JSON directly, not re-derived here).
     await expect(
-      boostRow.getByText(/doesn.t turn on in that scene/),
+      boostRow.getByText(
+        "Footswitch 3 doesn't turn its effect on in SCRATCH. Choose another scene for it.",
+      ),
     ).toBeVisible();
 
-    // Baseline AFTER every Setup-time interaction (the lazy scene-context fetch above reads
-    // the preset and can itself emit load-class events) — the slice below is the RUN's own.
+    // Baseline AFTER every Setup-time interaction (a scene-context fetch that falls back
+    // to the device reads the preset and can emit load-class events) — the slice below is
+    // the RUN's own.
     const from = (await simEvents(page)).length;
 
-    await page.getByRole("button", { name: /Start.*1 sound/ }).click();
+    await startLeveling(page).click();
     // Per this file's header, the per-row OUTCOME is not observable offline (the Channel
     // seam) — wait for the terminal state without asserting what it says.
     await expect(

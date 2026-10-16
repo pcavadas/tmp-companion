@@ -181,7 +181,7 @@ function fakeDeps(over: Partial<EngineDeps> = {}): EngineDeps {
       ],
     ]),
     blocksByIndex: new Map(),
-    rebalance: false,
+    rebalance: new Set(),
     ...over,
   };
 }
@@ -262,12 +262,22 @@ describe("runEngine", () => {
     }
   });
 
-  it("passes the run's rebalance choice to the scene call", async () => {
-    const deps = fakeDeps({ rebalance: true });
-    await drive([scene("s1", 1)], deps);
-    expect(
-      vi.mocked(deps.levelScenesApplyBatched).mock.calls[0][0].rebalance,
-    ).toBe(true);
+  it("passes each preset's own rebalance choice to its scene call", async () => {
+    // "Balance its two amps first" is per preset: preset 0 ticked it, preset 1 did not.
+    const amp = { groupId: "G", nodeId: "amp", parameterId: "outputLevel" };
+    const deps = fakeDeps({
+      rebalance: new Set([0]),
+      ampCandidates: new Map([
+        [0, [{ ...amp, value: 0.5 }]],
+        [1, [{ ...amp, value: 0.5 }]],
+      ]),
+    });
+    await drive([scene("s1", 1), scene("t1", 1, { slot: 1 })], deps);
+    const calls = vi.mocked(deps.levelScenesApplyBatched).mock.calls;
+    expect(calls.map(([job]) => [job.slot, job.rebalance])).toEqual([
+      [0, true],
+      [1, false],
+    ]);
   });
 
   it("skips a failed call's rows with its reason and carries on", async () => {

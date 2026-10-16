@@ -115,7 +115,9 @@ gate keys live there — `gates.ts`).
 ## 3. Level tab + leveling wizard
 
 The wizard is **3 stages** — `setup → run → summary` (no separate Disclaimer/Backup stage; the
-backup ack is an inline checkbox in the Setup footer, see §8). Most monkey-value is concentrated here.
+backup ack is an inline checkbox in the Setup footer, see §8). Set up is a page in the Level tab:
+the list stays mounted, hidden, underneath it, so a text query that is not scoped to Set up's rows
+(`[data-setup-row]`) can match the hidden list first. Most monkey-value is concentrated here.
 
 ### Functional
 
@@ -137,11 +139,13 @@ backup ack is an inline checkbox in the Setup footer, see §8). Most monkey-valu
   loading; "X of N shown"; matching nothing shows `No presets match "…"` with Clear filter.
 - **L6 — "How leveling works" dialog** — opens from "How it works"; Done or the scrim closes it
   (no × button, no key handling).
-- **L7 — Setup: apply-to-all** — bulk Instrument + Target pickers brush all ticked rows; "Clear
-  ticks"; per-row overrides (Instrument / Target / FsParamPick).
+- **L7 — Setup: for all** — "Target for all" ("By name" / a target / "Mixed") and, with 2+
+  presets, "Instrument for all"; one instrument per preset, saved for the preset; per-row Target,
+  Block, Knob and "Level it in scene" dropdowns.
 - **L8 — Setup: backup ack gating** — "Level N sounds" disabled until backup checkbox ticked (fresh
   run only; re-level hides it). Disabled at total=0.
-- **L9 — "Even out parallel amps" toggle** — default off; on → ByEarChip + rebalance footnote band.
+- **L9 — "Balance its two amps first"** — per preset, shown only where the backend can rebalance;
+  default off; on → ByEarChip + rebalance footnote band.
 - **L10 — Run: whole preset** — fires `level_preset` + `level_scenes_apply_batched` +
   `level_footswitches_apply`; live LUFS strip; auto-advance to Summary 650 ms after natural finish.
 - **L11 — Run: Base-only / scene-only / footswitch-only** — verify only the relevant command(s)
@@ -172,8 +176,8 @@ backup ack is an inline checkbox in the Setup footer, see §8). Most monkey-valu
   must not corrupt. _Only single remount-with-push is covered._
 - **M-L7 — Partial failure.** A preset/scene that errors mid-run → item "skipped", run continues,
   never aborts; Summary shows it. _No test injects a `status:"error"` item._
-- **M-L8 — Empty / no-scene / no-footswitch presets** in setup — Base row labeled "Whole preset";
-  no caret; FsParamPick column empty for re-leveled footswitches.
+- **M-L8 — Empty / no-scene / no-footswitch presets** in setup — the main sound is "Main sound"
+  like any other; no caret; a re-leveled footswitch takes its knobs from the backup scan.
 
 ---
 

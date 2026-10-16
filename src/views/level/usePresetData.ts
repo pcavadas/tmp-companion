@@ -13,7 +13,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
-import { listPresets, getStore } from "../../lib/invoke";
+import { listPresets, getStore, setPresetInstrument } from "../../lib/invoke";
 import { useDeviceLoad } from "../../lib/useDeviceLoad";
 import { baseKey, childKeys } from "./leveling";
 import { presetChoice, presetKeys } from "./presetChoice";
@@ -139,6 +139,22 @@ export function usePresetData(
         ?.lufs ?? -27,
     [store],
   );
+
+  // Remember the instrument chosen for a preset (owner answer 6): saved in the app's own
+  // store on this computer, never on the unit, and mirrored into this view's copy of the
+  // store so the next Set up starts from it. A failed save keeps the old copy (the command
+  // logs it); the choice still applies to this run.
+  const rememberInstrument = useCallback((slot: number, id: string) => {
+    void setPresetInstrument(slot, id)
+      .then(() => {
+        setStore((st) =>
+          st
+            ? { ...st, profile_by_slot: { ...st.profile_by_slot, [slot]: id } }
+            : st,
+        );
+      })
+      .catch(() => undefined);
+  }, []);
 
   // ── read-only loads (mount + after connect) ───────────────────────────────
   // The active graph is no longer fetched here — it arrives from the combined
@@ -372,6 +388,7 @@ export function usePresetData(
     deselectKeys,
     toggleAll,
     targetLufsByName,
+    rememberInstrument,
     refresh,
   };
 }

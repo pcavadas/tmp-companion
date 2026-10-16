@@ -209,8 +209,10 @@ export interface RunEnv {
   ampCandidates: Map<number, AmpCandidate[]>;
   /** Per-preset block roster (fender_ids), keyed by 0-based list index. */
   blocksByIndex: Map<number, string[]>;
-  /** Opt-in: equalize a path-MERGE scene's two parallel-amp lanes (Set up's toggle). */
-  rebalance: boolean;
+  /** The presets (0-based list indices) whose path-MERGE scenes get their two
+   *  parallel-amp lanes equalized first — Set up's "Balance its two amps first", per
+   *  preset. */
+  rebalance: ReadonlySet<number>;
   /** Reloads the preset list after the run (non-throwing). */
   refresh: () => Promise<void>;
 }

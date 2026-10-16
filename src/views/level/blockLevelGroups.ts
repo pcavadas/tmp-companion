@@ -1,5 +1,5 @@
 // src/views/level/blockLevelGroups.ts — the pure candidate-grouping/derivation logic
-// behind `FlatLevelPick`'s leveling-handle picker and `SetupPage`'s auto-pick. Kept out
+// behind Set up's Block and Knob dropdowns (`setupControls`) and its auto-picks. Kept out
 // of the components so they stay JSX-only: everything here operates on plain data (no
 // React, no DOM) and is unit-testable without rendering anything.
 //
@@ -8,14 +8,9 @@
 //     grouped BY BLOCK (`groupId:nodeId`), level-class-first rank both across blocks and
 //     within one. One stable pass — `Map` preserves first-insertion key order.
 //   • `bestEnabled` — a block's best-ranked ENABLED candidate (or `undefined` when every
-//     candidate in the block is disabled). Shared by the auto-pick (selecting a
-//     different block) and by `recommendedBlock` below — ONE "best control" rule, not
-//     two that can drift apart.
-//   • `recommendedBlock` — the single overall-best candidate: the FIRST block (in rank
-//     order) that has an enabled candidate, not simply `blocks[0][0]`. A top block whose
-//     every candidate is disabled (Scene's `shared_with_base`/`unknown` scope) must not
-//     blank the "Recommended" tag for the whole list — it falls through to the next
-//     block that actually has something pickable.
+//     candidate in the block is disabled — Scene's `shared_with_base`/`unknown` scope).
+//     THE one "best knob" rule: a Block pick lands on it, the Knob list notes it "best",
+//     and a block with none is offered disabled.
 
 import type { ParamClass } from "../../lib/types";
 
@@ -47,13 +42,13 @@ export interface BlockLevelHandle {
   parameterId: string;
 }
 
-/** `groupId:nodeId` — the block-identity key threaded through grouping and the
- *  picker's `selected`/`Recommended` checks. */
+/** `groupId:nodeId` — the block-identity key threaded through grouping and the Block
+ *  dropdown's values. */
 export function blockKeyOf(c: { groupId: string; nodeId: string }): string {
   return `${c.groupId}:${c.nodeId}`;
 }
 
-/** Level-class-first rank, shared by the "Recommended" pick and the group order —
+/** Level-class-first rank, shared by the best-knob pick and the group order —
  *  mirrors `leveling.ts`'s `CLASS_RANK` (kept local: that table is keyed on the WIRE
  *  `ParamClass`, this one also has to rank the classless Base candidates). */
 function rank(c: BlockLevelCandidate): number {
@@ -65,7 +60,7 @@ function rank(c: BlockLevelCandidate): number {
 /** A block's first (best-ranked) candidate — defensive because this tsconfig lacks
  *  `noUncheckedIndexedAccess`, even though `groupByBlock` never emits an empty group.
  *  Shared by every caller that would otherwise re-spell the same `length > 0 ? …`
- *  guard (`SetupPage`'s auto-pick). */
+ *  guard (`setupControls`, `enablingBlockHandle`). */
 export function groupHead(
   group: BlockLevelCandidate[],
 ): BlockLevelCandidate | undefined {
@@ -94,27 +89,10 @@ export function groupByBlock(
 }
 
 /** A block's best-ranked ENABLED candidate — `undefined` when every candidate in the
- *  block is disabled. THE one "best control" rule: both the auto-pick (selecting a
- *  different block lands on its best enabled candidate) and `recommendedBlock` below
- *  read this same function, so the "Recommended" tag and the auto-pick can never
- *  disagree about which candidate is best. */
+ *  block is disabled. THE one "best knob" rule: a Block pick lands on it and the Knob
+ *  list's "best" note names it, so the two can never disagree. */
 export function bestEnabled(
   group: BlockLevelCandidate[],
 ): BlockLevelCandidate | undefined {
   return group.find((c) => c.disabled !== true);
-}
-
-/** The single overall-best candidate across every block: the FIRST block (in rank
- *  order) that has an enabled candidate — not simply `blocks[0][0]`. A top block whose
- *  every candidate is disabled must not blank the "Recommended" tag for the whole
- *  list; it falls through to the next block that actually has something pickable.
- *  `null` only when every block is fully disabled (or there are no blocks at all). */
-export function recommendedBlock(
-  blocks: BlockLevelCandidate[][],
-): BlockLevelCandidate | null {
-  for (const group of blocks) {
-    const best = bestEnabled(group);
-    if (best) return best;
-  }
-  return null;
 }

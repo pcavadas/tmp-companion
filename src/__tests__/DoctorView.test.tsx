@@ -38,7 +38,7 @@ function renderView(connected: boolean) {
 }
 
 // One non-empty, scene-less preset; the backup returns its (empty) scenes so the
-// row settles to "base only" and selecting it yields a single "Whole preset" sound.
+// row settles to "base only" and selecting it yields a single sound, its main sound.
 type DoctorCheckArgs = CommandArgs<"doctor_check">;
 let lastDoctorArgs: DoctorCheckArgs | null = null;
 
@@ -188,7 +188,7 @@ describe("DoctorView — select → setup → run → results", () => {
     // The list renders from the mocked reads.
     await screen.findByText("Studio Clean");
 
-    // Tick the preset → a single "Whole preset" sound → "Check 1 sound…" (singular).
+    // Tick the preset → a single sound (its main sound) → "Check 1 sound…" (singular).
     await user.click(
       screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
     );

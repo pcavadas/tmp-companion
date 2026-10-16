@@ -4,8 +4,10 @@
 // `ActiveSignalChainView` on white, scaled down to fit a long chain by SignalPathFit) →
 // the preset list (filter bar + one Group of presets; the whole library's scenes and
 // footswitches arrive via one background backup scan) → the Footer ("How it works" on the
-// left; the caption and the one main action, "Level N sounds", on the right) → the
-// leveling flow (setup → run → summary).
+// left; the caption and the one main action, "Level N sounds", on the right). The leveling
+// flow (setup → run → summary) takes the tab's whole content area while it is open; the
+// list stays mounted underneath, hidden, so its choices, filter and scroll position are
+// all there again on the way back.
 //
 // The list is a SCENE TREE: each preset row is a parent of its sounds (the main sound,
 // each scene, each footswitch). The row checkbox chooses the whole preset, the caret opens
@@ -34,9 +36,12 @@ import { LevelingWizard } from "../overlays";
 import { HowLevelingSheet } from "./HowLevelingSheet";
 import { SignalPathFit } from "./SignalPathFit";
 import { instrumentOptions, instrumentName, NO_INSTRUMENT } from "./leveling";
-import type { PickOption } from "../overlays/Pick";
+import type { SelectOption } from "../../ui/selectValue";
 import type { ActiveGraph } from "../../lib/types";
 import { currentGraph, readActivePreset } from "../../lib/invoke";
+
+/** No instrument saved for any preset (before the store loads). */
+const NO_SAVED_INSTRUMENTS: Partial<Record<number, string>> = {};
 
 // Grace window after a recall for the signal-chain push to land before the UI
 // concludes the picture is stale (the diagram-fail state).
@@ -87,6 +92,7 @@ export function LevelView({
     deselectKeys,
     toggleAll,
     targetLufsByName,
+    rememberInstrument,
     refresh,
     // BUG 1: Level's own list/selection needs the FULL footswitch roster (a switch
     // with no level control still gets a row, disabled with a reason) — Doctor keeps
@@ -225,20 +231,29 @@ export function LevelView({
   }, []);
 
   // ── derived (declared BEFORE the phase early-returns — constant hook count) ─
-  const instOptions = useMemo<PickOption[]>(
-    () => instrumentOptions(store?.profiles),
+  // Set up's choices: "None" + each instrument (no dB on Set up), and the targets by name.
+  const instOptions = useMemo<SelectOption[]>(
+    () =>
+      instrumentOptions(store?.profiles).map((o) => ({
+        value: o.id,
+        label: o.label,
+      })),
     [store?.profiles],
   );
-  const targetOptions = useMemo<PickOption[]>(
+  const recordedInstruments = useMemo<ReadonlySet<string>>(
     () =>
-      (store?.targets ?? []).map((tg) => ({
-        id: tg.name,
-        label: `${tg.name} ${tg.lufs < 0 ? "−" : ""}${Math.abs(tg.lufs).toFixed(0)}`,
-      })),
+      new Set(
+        (store?.profiles ?? [])
+          .filter((p) => p.calibration_lufs != null)
+          .map((p) => p.id),
+      ),
+    [store?.profiles],
+  );
+  const targetNames = useMemo(
+    () => (store?.targets ?? []).map((tg) => tg.name),
     [store?.targets],
   );
   const defaultInst = store?.profiles[0]?.id ?? NO_INSTRUMENT;
-  const defaultTarget = store?.targets[0]?.name ?? "";
   // Resolve an instrument profile id → its display name (the run-row instrument chip).
   const instName = useCallback(
     (id: string): string => instrumentName(store?.profiles, id),
@@ -292,6 +307,8 @@ export function LevelView({
     presetsLoading || (live.syncing && heroGraph == null);
   const heroPresetLoading = heroDiagramLoading && heroGraph == null;
 
+  const flowOpen = flow.stage !== "closed";
+
   return (
     <div
       style={{
@@ -302,63 +319,75 @@ export function LevelView({
         position: "relative",
       }}
     >
-      <SignalPathFit label={heroLabel}>
-        <ActiveSignalChainView
-          graph={heroGraph}
-          slot={activeSlot}
-          presetLoading={heroPresetLoading}
-          diagramLoading={heroDiagramLoading}
-          sceneTag={sceneTag}
-          diagramError={diagError}
-          onRetryDiagram={() => {
-            void handleRetryDiagram();
-          }}
-        />
-      </SignalPathFit>
+      {/* The list page: hidden (still mounted) while a flow page shows. */}
+      <div
+        style={{
+          display: flowOpen ? "none" : "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+        }}
+      >
+        <SignalPathFit label={heroLabel}>
+          <ActiveSignalChainView
+            graph={heroGraph}
+            slot={activeSlot}
+            presetLoading={heroPresetLoading}
+            diagramLoading={heroDiagramLoading}
+            sceneTag={sceneTag}
+            diagramError={diagError}
+            onRetryDiagram={() => {
+              void handleRetryDiagram();
+            }}
+          />
+        </SignalPathFit>
 
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <PresetList
-          rows={rows}
-          sel={sel}
-          pendingWhole={pendingWhole}
-          expanded={expanded}
-          ready={ready}
-          activeSlot={activeSlot}
-          filter={filter}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <PresetList
+            rows={rows}
+            sel={sel}
+            pendingWhole={pendingWhole}
+            expanded={expanded}
+            ready={ready}
+            activeSlot={activeSlot}
+            filter={filter}
+            loading={presetsLoading}
+            scan={scan}
+            sceneInfo={sceneInfo}
+            footswitchInfo={footswitchInfo}
+            graphByIndex={graphByIndex}
+            onFilterChange={setFilter}
+            onTogglePreset={togglePreset}
+            onToggleExpand={toggleExpand}
+            onToggleKey={toggleKey}
+            onToggleAll={toggleAll}
+          />
+        </div>
+
+        <ContextFooter
           loading={presetsLoading}
-          scan={scan}
-          sceneInfo={sceneInfo}
-          footswitchInfo={footswitchInfo}
-          graphByIndex={graphByIndex}
-          onFilterChange={setFilter}
-          onTogglePreset={togglePreset}
-          onToggleExpand={toggleExpand}
-          onToggleKey={toggleKey}
-          onToggleAll={toggleAll}
+          ready={ready}
+          presetCount={presetCount}
+          soundCount={soundCount}
+          onLevel={handleLevel}
+          onHelp={() => {
+            setHelpOpen(true);
+          }}
         />
       </div>
 
-      <ContextFooter
-        loading={presetsLoading}
-        ready={ready}
-        presetCount={presetCount}
-        soundCount={soundCount}
-        onLevel={handleLevel}
-        onHelp={() => {
-          setHelpOpen(true);
-        }}
-      />
-
-      {/* ── leveling flow — one persistent wizard, body swaps per stage ── */}
+      {/* ── leveling flow — Set up is a page here; run and Summary still overlay ── */}
       {flow.stage !== "closed" && (
         <LevelingWizard
           stage={flow.stage}
           chosen={flow.chosen}
           isRelevel={flow.isRelevel}
           instrumentOptions={instOptions}
-          targetOptions={targetOptions}
+          recordedInstruments={recordedInstruments}
+          targetNames={targetNames}
+          savedInstruments={store?.profile_by_slot ?? NO_SAVED_INSTRUMENTS}
           defaultInst={defaultInst}
-          defaultTarget={defaultTarget}
+          onInstrumentChange={rememberInstrument}
           instrumentName={instName}
           targetLufsByName={targetLufsByName}
           run={flow.run}

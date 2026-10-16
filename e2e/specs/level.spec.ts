@@ -14,6 +14,7 @@ import {
   runBaseLevel,
   simEvents,
   soundBox,
+  startLeveling,
 } from "../fixtures/scenario";
 
 // Level scenarios — run identically offline (fake re-amp) and online (real re-amp).
@@ -104,18 +105,21 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     // The wizard opens directly at Set up; tick the inline footer ack that gates the commit.
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
-    // Set up must show all THREE row kinds — the redesign dropped the old per-row-kind
-    // sub-text captions (design 1a's terser direction), so this proves them by their own
-    // row label instead: Base, a scene ("Rhythm"), a block-acting footswitch ("DRIVE").
-    await expect(page.getByText("Base").first()).toBeVisible();
-    await expect(page.getByText("Rhythm").first()).toBeVisible(); // a footswitch SCENE
-    await expect(page.getByText("DRIVE").first()).toBeVisible(); // a block-acting FOOTSWITCH
+    // Set up must show all THREE row kinds, proven by their own row label: the main
+    // sound, a scene ("Rhythm"), a block-acting footswitch ("DRIVE"). Scoped to Set up's
+    // rows: the list stays mounted (hidden) underneath and names the same sounds.
+    const rows = page.locator("[data-setup-row]");
+    await expect(rows.getByText("Main sound").first()).toBeVisible();
+    await expect(
+      rows.getByText("Rhythm", { exact: true }).first(),
+    ).toBeVisible(); // a SCENE
+    await expect(rows.getByText("DRIVE").first()).toBeVisible(); // a block-acting FOOTSWITCH
     // The bake/assign mechanism is never surfaced.
     await expect(page.getByText(/baked|assigned/i)).toHaveCount(0);
 
     // Run base + scenes + footswitches → a terminal Summary (Done OR Accept; offline
     // clamps on scenes/footswitches are fine).
-    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
+    await startLeveling(page).click();
     await expect(
       page.getByRole("button", { name: /^(Done|Accept)$/ }),
     ).toBeVisible({ timeout: 1_200_000 });
@@ -248,11 +252,12 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
 });
 
 // Choosing what to level, look B: the first three of `B-LevelFlow`'s four scenarios, walked
-// up to the Level click with every click counted. What to level is chosen once, here: the
-// checkbox ticks a whole preset, the NAME of a preset with scenes opens it (Q6), and
-// "Select all N shown" acts only on what the filter shows (Q7 — a bug fix: it used to choose
-// the whole library). List-and-Set-up only, so it costs seconds; OFFLINE ONLY like the
-// list-rendering test above (no device write happens before Start).
+// up to an enabled "Start leveling" with every click counted (Start and Done are the last
+// two). What to level is chosen once, on the list: the checkbox ticks a whole preset, the
+// NAME of a preset with scenes opens it (Q6), and "Select all N shown" acts only on what the
+// filter shows (Q7 — a bug fix: it used to choose the whole library). Set up then needs only
+// the backup tick: scenes named like a target already have it (Q2). List-and-Set-up only, so
+// it costs seconds; OFFLINE ONLY like the list-rendering test above (nothing is started).
 test.describe("Level list — choosing, scenario by scenario", () => {
   const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S: scenes Rhythm / Lead / Base Scene
 
@@ -266,7 +271,7 @@ test.describe("Level list — choosing, scenario by scenario", () => {
     });
   });
 
-  test("scenario 1, level one preset: Checkbox · Level N sounds = 2 clicks", async ({
+  test("scenario 1, level one preset: Checkbox · Level N sounds · Backup tick (· Start · Done = 5)", async ({
     page,
   }) => {
     expect(FRIEDMAN.name).toBe("E2E Friedman 3S");
@@ -288,13 +293,21 @@ test.describe("Level list — choosing, scenario by scenario", () => {
     await expect(page.getByText("1 preset", { exact: true })).toBeVisible();
     await levelButton(page, sounds).click(); // 2 Level N sounds
     clicks++;
-    await expect(
-      page.getByText(/I.ve backed up with Pro Control/i),
-    ).toBeVisible();
-    expect(clicks).toBe(2);
+    // Set up: the scenes named like a target already have it — nothing to retarget.
+    const slot = String(FRIEDMAN.slot);
+    await expect(page.locator(`[data-select="target:s${slot}:0"]`)).toHaveText(
+      "Rhythm",
+    );
+    await expect(page.locator(`[data-select="target:s${slot}:1"]`)).toHaveText(
+      "Lead",
+    );
+    await page.getByText(/I.ve backed up with Pro Control/i).click(); // 3 Backup tick
+    clicks++;
+    await expect(startLeveling(page)).toBeEnabled(); // 4 Start leveling · 5 Done
+    expect(clicks).toBe(3);
   });
 
-  test("scenario 2, level a bank: Type · Select all shown · Level = 3 actions, hidden presets untouched", async ({
+  test("scenario 2, level a bank: Type · Select all shown · Level · Backup tick (· Start · Done = 6), hidden presets untouched", async ({
     page,
   }) => {
     let actions = 0;
@@ -308,13 +321,13 @@ test.describe("Level list — choosing, scenario by scenario", () => {
     await expect(page.getByText("2 presets", { exact: true })).toBeVisible();
     await levelButton(page, "any").click(); // 3 Level N sounds
     actions++;
-    await expect(
-      page.getByText(/I.ve backed up with Pro Control/i),
-    ).toBeVisible();
-    expect(actions).toBe(3);
+    await page.getByText(/I.ve backed up with Pro Control/i).click(); // 4 Backup tick
+    actions++;
+    await expect(startLeveling(page)).toBeEnabled(); // 5 Start leveling · 6 Done
+    expect(actions).toBe(4);
   });
 
-  test("scenario 3, some scenes of one preset: Name · Scene · Scene · Level 2 sounds = 4 clicks", async ({
+  test("scenario 3, some scenes of one preset: Name · Scene · Scene · Level 2 sounds · Backup tick (· Start · Done = 7)", async ({
     page,
   }) => {
     let clicks = 0;
@@ -338,8 +351,11 @@ test.describe("Level list — choosing, scenario by scenario", () => {
     await levelButton(page, 2).click(); // 4 Level 2 sounds
     clicks++;
     await expect(
-      page.getByText(/I.ve backed up with Pro Control/i),
+      page.getByRole("heading", { name: "Level 2 sounds" }),
     ).toBeVisible();
-    expect(clicks).toBe(4);
+    await page.getByText(/I.ve backed up with Pro Control/i).click(); // 5 Backup tick
+    clicks++;
+    await expect(startLeveling(page)).toBeEnabled(); // 6 Start leveling · 7 Done
+    expect(clicks).toBe(5);
   });
 });

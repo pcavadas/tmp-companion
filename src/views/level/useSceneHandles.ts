@@ -14,9 +14,8 @@
 // bare `undefined` ("not fetched yet") and an empty/mismatched list ("fetched,
 // this handle is gone") collapse into the same falsy check, so a carried-forward
 // VALID handle rendered "(removed)" until the fetch resolved (BUG→GATE). Naming
-// "unfetched" as its own state is what `FlatLevelPick` (fed through `SetupPage`'s
-// candidate mapping) derives BOTH `stale` and `triggerLabel` from now — see that
-// component.
+// "unfetched" as its own state is what Set up's Block and Knob dropdowns
+// (`setupControls`) derive `stale` from: a knob is stale only once the list is read.
 
 import { listSceneLevelHandles } from "../../lib/invoke";
 import type { SceneHandleRow, SceneHandleCandidate } from "../../lib/types";
@@ -32,7 +31,7 @@ export type HandleFetchState =
       /** The safe-preselect list: level-safe candidates only, never `"other"`. */
       candidates: SceneHandleCandidate[];
       /** EVERY numeric control of every block in this scene, class-annotated and
-       *  level-class first — the combined block+param picker's source (a superset of
+       *  level-class first — the Block and Knob dropdowns' source (a superset of
        *  `candidates`). */
       allCandidates: SceneHandleCandidate[];
     };

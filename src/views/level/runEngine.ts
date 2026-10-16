@@ -233,8 +233,9 @@ export interface EngineDeps {
   ampCandidates: Map<number, AmpCandidate[]>;
   /** Per-preset block roster (fender_ids), keyed by 0-based list index. */
   blocksByIndex: Map<number, string[]>;
-  /** Opt-in: equalize a path-MERGE scene's two parallel-amp lanes before joint-k. */
-  rebalance: boolean;
+  /** The presets (0-based list indices) whose path-MERGE scenes get their two
+   *  parallel-amp lanes equalized before joint-k (Set up's per-preset opt-in). */
+  rebalance: ReadonlySet<number>;
 }
 
 /** Drive `items` (already in `sortRunItems` order) one batch at a time. Resolves once
@@ -572,7 +573,8 @@ export async function runEngine(
             })),
             candidates: cands,
             save: true,
-            rebalance: deps.rebalance,
+            // A scene batch is one preset's rows, so its flag is that preset's choice.
+            rebalance: deps.rebalance.has(it.slot),
             ...wireProfile,
             ...(baseAnchor ? { baseAnchor } : {}),
           },
