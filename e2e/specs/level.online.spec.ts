@@ -133,9 +133,10 @@ function assertFsSolved(
       `switch ${String(r.switch)} solved-vs-target`,
     ).toBeLessThanOrEqual(tol);
     // danger.md's "a load before `save_deferred_scene_writes` wipes the writes" class: the
-    // run reads the stored row back after its save and publishes the verdict here.
+    // run reads the stored row back after its save and publishes the verdict here. A saved
+    // row must carry a real verdict: `null` there is an unverifiable re-read, not a pass.
     expect(
-      r.persist_mismatch ?? false,
+      r.saved ? r.persist_mismatch : false,
       `switch ${String(r.switch)} must persist what it solved`,
     ).toBe(false);
   }
@@ -368,8 +369,9 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
       // silent — 410's `lastLoadedScene` is 1, so scene 1 is exactly the row that class fires
       // on. The run publishes its own verdict here; a spec that re-measures without reading it
       // ignores the run's own warning and reports the revert as an unexplained level miss.
+      // Every scene here saved, so `null` (an unverifiable re-read) is not a pass either.
       expect(
-        r.persist_mismatch ?? false,
+        r.persist_mismatch,
         `scene ${id} must persist what it solved (danger.md's batched-save revert class)`,
       ).toBe(false);
     }
