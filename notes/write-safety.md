@@ -36,7 +36,7 @@ Node ids, as two sources describe them:
 
 ## Backup / restore
 
-Pre-edit backups capture the original preset; restore re-imports it in place. Saving permanently alters a preset, so every write path that persists is opt-in.
+Pre-edit backups capture the original preset; restore re-imports it in place. Saving permanently alters a preset and cannot be undone from the app, so every write path that persists sits behind the "I've backed up with Pro Control" acknowledgment (`ui/BackupAckLabel` — the leveling Set-up footer, the Copy save bar, Doctor's prescription card), and that backup is the only way back. A leveling run saves each sound automatically as soon as it matches; there is no separate save opt-in (`danger.md`).
 
 ## Preset-schema fidelity (the "newer firmware revision" banner)
 
