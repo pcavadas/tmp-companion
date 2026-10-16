@@ -308,7 +308,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
             gap: t.space3,
             padding: `${String(t.space4)}px ${String(t.space8)}px ${String(t.space4)}px`,
             borderBottom: `0.5px solid ${t.hairline}`,
-            background: t.bgAlt,
+            background: t.window,
           }}
         >
           {facetBtn(`All ${String(sel.sub)}`, et === null, () => {
@@ -335,7 +335,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
         <div
           style={{
             borderRight: `0.5px solid ${t.hairline}`,
-            background: t.bgAlt,
+            background: t.window,
             overflowY: "auto",
             padding: `${String(t.space4)}px ${String(t.space4)}px ${String(t.space7)}px`,
           }}

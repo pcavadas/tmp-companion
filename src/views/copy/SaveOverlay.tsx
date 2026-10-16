@@ -135,7 +135,7 @@ export function SaveOverlay({
                   marginTop: t.space8,
                   padding: `${String(t.space5)}px ${String(t.space6)}px`,
                   borderRadius: t.rMd,
-                  background: t.bgAlt,
+                  background: t.window,
                   textAlign: "left",
                 }}
               >

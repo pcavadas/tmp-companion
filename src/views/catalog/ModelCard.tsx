@@ -79,7 +79,7 @@ export const ModelCard = memo(function ModelCard({
         borderRadius: t.rLg,
         cursor: "pointer",
         border: `0.5px solid ${selected ? t.accent : "transparent"}`,
-        background: selected ? t.accentSoft : hov ? t.bgAlt : "transparent",
+        background: selected ? t.accentSoft : hov ? t.window : "transparent",
       }}
     >
       <div style={{ filter: ICON_SHADOW }}>

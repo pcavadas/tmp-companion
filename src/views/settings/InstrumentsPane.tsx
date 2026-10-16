@@ -72,7 +72,7 @@ export function InstrumentsPane({
             marginBottom: t.space6,
             borderRadius: t.rCard,
             border: `0.5px solid ${t.hairlineStrong}`,
-            background: t.bgAlt,
+            background: t.window,
           }}
         >
           <Icon name="cable" size={15} stroke={t.sevWarn} strokeWidth={1.5} />

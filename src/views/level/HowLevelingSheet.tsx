@@ -67,7 +67,7 @@ function LevelBeatStrip() {
               flexDirection: "column",
               gap: t.space3,
               padding: `${String(t.space5)}px ${String(t.space6)}px`,
-              background: t.bgAlt,
+              background: t.window,
               border: `0.5px solid ${t.hairline}`,
               borderRadius: 9,
             }}
@@ -225,7 +225,7 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
                 alignItems: "center",
                 gap: t.space6,
                 padding: `${String(t.space5)}px ${String(t.space6)}px`,
-                background: t.bgAlt,
+                background: t.window,
                 border: `0.5px solid ${t.hairline}`,
                 borderRadius: 10,
               }}

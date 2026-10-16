@@ -245,7 +245,7 @@ export function DoctorResults({
               background: allClear
                 ? t.goodSoft
                 : stoppedClean
-                  ? t.bgAlt
+                  ? t.window
                   : t.accentSoft,
               display: "flex",
               alignItems: "center",
@@ -358,7 +358,7 @@ export function DoctorResults({
                 padding: `${String(t.space5)}px ${String(t.space7)}px`,
                 borderRadius: 10,
                 border: `0.5px dashed ${t.hairlineStrong}`,
-                background: t.bgAlt,
+                background: t.window,
               }}
             >
               <Icon name="check" size={14} stroke={t.good} />
@@ -392,7 +392,7 @@ export function DoctorResults({
           style={{
             flexShrink: 0,
             borderTop: `0.5px solid ${t.hairline}`,
-            background: t.bgAlt,
+            background: t.window,
             padding: `${String(t.space6)}px ${String(t.space10)}px`,
             display: "flex",
             alignItems: "center",

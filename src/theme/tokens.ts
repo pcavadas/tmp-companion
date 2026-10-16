@@ -1,31 +1,312 @@
-// src/theme/tokens.ts — design tokens (LIGHT-ONLY).
+// src/theme/tokens.ts — design tokens, look B ("Mac utility"). LIGHT-ONLY.
 //
-// Source of truth: the prototype's `APP` token set (handoff_drift_audit/
-// reference_prototype/screens.jsx) === the README Part 1.1 table. The app is
-// light-only: dark mode was removed, so there is ONE token object. `useTheme()`
-// always returns this set; field names are kept stable so call-sites read
-// `t.bg`, `t.mutedInk`, `t.serif`, etc. unchanged.
+// Replaces the previous token set. Three parts, one object:
 //
-// The spacing scale and font-family constants are carried on the same object so
-// primitives can read `t.space2`, `t.serif`, etc.
+//   1. The B tokens. Everything outside the signal-path diagram uses these.
+//   2. SIGNAL-PATH TOKENS. Read by the keep-as-is files (src/ui/BlockArt.tsx,
+//      src/ui/blockart/, src/models/blockArt.ts, src/views/SignalChainView.tsx,
+//      src/views/ActiveSignalChainView.tsx, src/views/signalChain/). Names and
+//      values are frozen, except `bgAlt`, which is now white so the diagram sits
+//      on white in look B. Do not use these in new code.
+//   3. DEPRECATED aliases. The rest of the old token names, with their OLD
+//      values, so the app compiles and looks unchanged until each screen moves to
+//      the B tokens. Each one names its replacement. Delete a line once nothing
+//      reads it; delete the block when it is empty.
+//
+// Same name, new value: `track`, `good`, `scrim` and `shadowMenu` keep their
+// names and take the B value straight away.
+//
+// `bgAlt` is the diagram's own background, nothing else's. Outside the diagram a
+// grey fill reads `window` (window, toolbar, footer, sidebars) or `groupHeader`
+// (header rows).
+//
+// Fonts: B uses Inter only. Source Serif 4 and JetBrains Mono stay bundled
+// because the signal-path diagram uses them; nothing else should.
 
 import type { CSSProperties } from "react";
 
-// ---------------------------------------------------------------------------
-// Font families. Three bundled families (./fonts, self-hosted for the CSP).
-// ---------------------------------------------------------------------------
 const FONT_SERIF = "'Source Serif 4', Georgia, serif";
+/** Unchanged: the signal-path code imports it. */
 export const FONT_SANS = "'Inter', system-ui, sans-serif";
 const FONT_MONO = "'JetBrains Mono', ui-monospace, monospace";
 
 // ---------------------------------------------------------------------------
-// Spacing scale — the Tailwind ramp (2px steps to 16, 4px to 32, then 48). The
-// DS is FULLY EVEN: all spacing is one of these tokens; odd/off-grid values snap
-// to the nearest step. Ordinal names carry the px in a comment — the `spaceN =
-// 2N` mnemonic holds ONLY through space8; do not guess it past there (space10 is
-// 24, not 20). Cross-surface values that must AGREE get a role-named const
-// instead (see DIALOG_PAD_X), not a primitive.
+// 1. B tokens
 // ---------------------------------------------------------------------------
+
+/** Colour. Text meets 4.5:1 on window, surface and groupHeader, and on its own
+ *  tone's fill; control edges and fills meet 3:1. */
+export const color = {
+  /** Window background, toolbar, footer, sidebars. */
+  window: "#f5f5f7",
+  /** List groups, dialogs, menus, fields, the signal path. */
+  surface: "#ffffff",
+  /** Header row of a list group (a preset in Set up, column headers). */
+  groupHeader: "#fafafa",
+  /** Line between rows inside a group. */
+  separator: "rgba(0,0,0,0.06)",
+  /** Edge of a group, card, dialog, toolbar and footer. */
+  border: "rgba(0,0,0,0.10)",
+  /** Edge of buttons, fields, dropdowns and unticked checkboxes, and a switch
+   *  that is off (3.6:1 on white, 3.3:1 on window). */
+  controlBorder: "#86868b",
+
+  /** Primary text. */
+  text: "#1d1d1f",
+  /** Secondary text: metadata, slot numbers, column headers, placeholders. */
+  textSecondary: "#6e6e73",
+  /** Disabled text and icons (exempt from contrast rules). */
+  textDisabled: "#a1a1a6",
+
+  /** Brand terracotta for marks that aren't controls: progress fill, live meter,
+   *  the target tick, the app icon. */
+  accent: "#d97757",
+  /** Fill of everything you click that's "on": primary button, ticked checkbox,
+   *  switch on, focus ring (white on it is 4.6:1). */
+  action: "#bd5632",
+  /** Primary button pressed. */
+  actionPressed: "#a7461f",
+  /** Text and glyphs on `action`, `danger` fills. */
+  onAction: "#ffffff",
+  /** Text links ("Record yours in Settings"). */
+  link: "#a7461f",
+  /** Focus ring. */
+  focus: "#bd5632",
+
+  /** Selected row, open preset group, active sidebar item. Grey, never terracotta. */
+  rowSelected: "rgba(0,0,0,0.04)",
+  /** Row and menu-item hover. */
+  rowHover: "rgba(0,0,0,0.03)",
+
+  /** Connected, at target, saved. 4.5:1 or more on its own fill too. */
+  good: "#246b3a",
+  goodFill: "rgba(36,107,58,0.10)",
+  /** Needs a look: loud peaks, a choice to make, firmware not tested. */
+  caution: "#8a5a00",
+  cautionFill: "rgba(176,125,28,0.12)",
+  /** Edge of a dropdown that needs a choice. */
+  cautionLine: "#b07d1c",
+  /** Something failed; destructive confirmation. */
+  danger: "#a93226",
+  dangerFill: "rgba(169,50,38,0.08)",
+
+  /** Tracks of meters, progress bars and sliders. */
+  track: "#e8e8ed",
+  /** CPU bar fill. */
+  meter: "#a1a1a6",
+  /** Switch track when off (3.3:1 on window). */
+  switchOff: "#86868b",
+  /** Track behind a segmented control (the tab switch). */
+  segmentTrack: "rgba(0,0,0,0.06)",
+  /** Behind dialogs. */
+  scrim: "rgba(0,0,0,0.25)",
+};
+
+/** Type: Inter only, four sizes. Hierarchy comes from weight, not more sizes. */
+export const type = {
+  fontSans: FONT_SANS,
+  /** Metadata, column headers, badges, captions. */
+  fontCaption: 12,
+  /** Everything else: rows, buttons, body, menus. */
+  fontBody: 13,
+  /** Dialog titles, empty-state titles, a Doctor finding's name. */
+  fontLarge: 15,
+  /** Page and step titles ("Level 6 sounds"). */
+  fontTitle: 20,
+  lineCaption: 16,
+  lineBody: 18,
+  lineLarge: 20,
+  lineTitle: 26,
+  weightRegular: 400,
+  weightMedium: 500,
+  weightSemibold: 600,
+  /** Page titles only. */
+  trackingTitle: "-0.01em",
+};
+
+/** Spacing, named by pixels. */
+export const space = {
+  sp2: 2,
+  sp4: 4,
+  sp6: 6,
+  sp8: 8,
+  sp12: 12,
+  sp16: 16,
+  sp24: 24,
+  sp32: 32,
+};
+
+/** Corner radii. */
+export const radius = {
+  /** Checkboxes, badges, menu items. */
+  radiusSmall: 4,
+  /** Buttons, fields, dropdowns, tab buttons, sidebar items. */
+  radiusControl: 6,
+  /** Notices, menus, toasts, the segmented track (control + its 2 px padding). */
+  radiusPanel: 8,
+  /** List groups and dialogs. */
+  radiusGroup: 10,
+  /** Switches. */
+  radiusPill: 999,
+};
+
+/** Fixed heights, so rows and controls line up across tabs. */
+export const size = {
+  controlSmall: 22,
+  control: 28,
+  controlLarge: 32,
+  row: 36,
+  /** Rows that hold dropdowns (Set up). */
+  rowControls: 34,
+  rowCompact: 30,
+  toolbar: 52,
+  footer: 56,
+};
+
+export const elevation = {
+  /** The selected tab in a segmented control. */
+  shadowSegment: "0 1px 2px rgba(0,0,0,0.15)",
+  /** Menus, dropdown lists, toasts. */
+  shadowMenu: "0 8px 24px rgba(0,0,0,0.14), 0 0 0 0.5px rgba(0,0,0,0.12)",
+  /** Dialogs and sheets. */
+  shadowDialog: "0 24px 60px rgba(0,0,0,0.22), 0 0 0 0.5px rgba(0,0,0,0.12)",
+};
+
+// ---------------------------------------------------------------------------
+// 2. SIGNAL-PATH TOKENS (frozen; read by the keep-as-is files)
+// ---------------------------------------------------------------------------
+const signalPath = {
+  /** Was #f6f7f9. White in look B: the diagram sits on white. */
+  bgAlt: "#ffffff",
+  bg: "#ffffff",
+  ink: "#0f1115",
+  ink2: "#33373f",
+  mutedInk: "#6b7280",
+  faint: "#9aa0a9",
+  hairline: "rgba(15,17,21,0.09)",
+  hairlineStrong: "rgba(15,17,21,0.18)",
+  accent: "#d97757",
+  accentDeep: "#a7461f",
+  accentSoft: "rgba(217,119,87,0.10)",
+  accentBorder: "rgba(217,119,87,0.45)",
+  onAccent: "#ffffff",
+  /** The over-budget CPU figure in the signal-path header. */
+  warn: "#a7461f",
+  sevWarn: "#b07d1c",
+  sevWarnBorder: "rgba(176,125,28,0.5)",
+  shadow: "rgba(15,17,21,0.28)",
+  shadowBadge: "0 1px 2px rgba(15,17,21,0.2)",
+  dropShadowStripArt: "drop-shadow(0 2px 3px rgba(15,17,21,0.18))",
+  stripWire: "rgba(15,17,21,0.34)",
+  stripGhost: "rgba(15,17,21,0.12)",
+  stripInk: "#5b554a",
+  stripInkSel: "#a5421b",
+  stripChangedBorder: "rgba(217,119,87,0.55)",
+  stripChangedSoft: "rgba(217,119,87,0.06)",
+  serif: FONT_SERIF,
+  sans: FONT_SANS,
+  mono: FONT_MONO,
+  fsSubhead: 19,
+  fsName2: 14,
+  fsUi: 12,
+  fsLabel: 11.5,
+  fsData: 11,
+  fsData2: 10,
+  fsTag: 8.5,
+  lsTag: "0.08em",
+  rBtn: 6,
+  rCard: 8,
+  rLg: 9,
+  space1: 2,
+  space2: 4,
+  space3: 6,
+  space4: 8,
+  space5: 10,
+  space6: 12,
+  space7: 14,
+  space8: 16,
+};
+
+// ---------------------------------------------------------------------------
+// 3. DEPRECATED aliases (old values; each names its B replacement)
+// ---------------------------------------------------------------------------
+const deprecated = {
+  inset: "#eef0f3", // use `window`
+  titlebar: "#ffffff", // use `window`
+  onInk: "#ffffff", // use `onAction`
+  bgFrost: "rgba(255,255,255,0.92)", // use `surface` (drop the frosted header)
+  rowSel: "rgba(15,17,21,0.035)", // use `rowSelected`
+  hover: "rgba(15,17,21,0.05)", // use `rowHover`
+  knob: "#ffffff", // use `surface`
+  knobRing: "rgba(15,17,21,0.25)", // use `controlBorder`
+  toggleTrack: "rgba(15,17,21,0.14)", // use `switchOff`
+  accentBadgeSoft: "rgba(217,119,87,0.14)", // use `rowSelected` (selection is grey in B)
+  accentBorderSoft: "rgba(217,119,87,0.3)", // use `rowSelected`
+  warnSoft: "rgba(167,70,31,0.08)", // use `dangerFill`
+  warnBorder: "rgba(167,70,31,0.45)", // use `danger`
+  warnBorderSoft: "rgba(167,70,31,0.4)", // use `danger`
+  goodSoft: "rgba(63,125,78,0.10)", // use `goodFill`
+  goodBorder: "rgba(63,125,78,0.4)", // use `goodFill` (no bordered badges)
+  sevWarnSoft: "rgba(176,125,28,0.08)", // use `cautionFill`
+  sevWarnChipBorder: "rgba(176,125,28,0.4)", // use `cautionLine`
+  sevWarnChipSoft: "rgba(176,125,28,0.10)", // use `cautionFill`
+  record: "#c0392b", // use `danger`
+  recordSoft: "rgba(192,57,43,0.16)", // use `dangerFill`
+  badgeStereo: "#2f6c98", // use `textSecondary` (model badges become plain Badges)
+  badgeConv: "#6a4ba0", // use `textSecondary`
+  shadowModal: "0 40px 80px -16px rgba(15,17,21,0.28)", // use `shadowDialog`
+  shadowKnob: "0 1px 3px rgba(0,0,0,0.25)", // use `shadowSegment`
+  shadowAccentEdge: "0 1px 0 rgba(217,119,87,0.08)", // remove (SongForm edge)
+
+  fsTitle: 24, // use `fontTitle`
+  fsSheet: 21, // use `fontLarge`
+  fsCard: 16, // use `fontLarge`
+  fsName: 14.5, // use `fontBody` + `weightMedium`
+  fsBody2: 13.5, // use `fontBody`
+  fsBody: 13, // use `fontBody`
+  fsControl: 12.5, // use `fontBody`
+  fsMeta: 10.5, // use `fontCaption`
+  fsMicro: 9.5, // use `fontCaption` (no kickers)
+  fsMicro2: 9, // use `fontCaption` (no kickers)
+
+  space9: 20, // use `sp24`
+  space10: 24, // use `sp24`
+  space11: 28, // use `sp24` or `sp32`
+  space12: 32, // use `sp32`
+  space13: 48, // use `sp32`
+
+  rSm: 3, // use `radiusSmall`
+  rMenuItem: 5, // use `radiusSmall`
+  rMd: 7, // use `radiusControl`
+  rPopover: 12, // use `radiusPanel`
+  rDialog: 14, // use `radiusGroup`
+  rPill: 999, // use `radiusPill`
+
+  lsTight: "-0.01em", // use `trackingTitle`
+  lsMeta: "0.02em", // remove (no tracked labels)
+  lsLabel: "0.1em", // remove (no uppercase labels)
+  lsWide: "0.12em", // remove (no uppercase labels)
+  lsKicker: "0.14em", // remove (no uppercase labels)
+};
+
+// ---------------------------------------------------------------------------
+// The single token object. `useTheme()` returns it as `t`.
+// ---------------------------------------------------------------------------
+export const light = {
+  ...deprecated,
+  ...signalPath,
+  ...color,
+  ...type,
+  ...space,
+  ...radius,
+  ...size,
+  ...elevation,
+} satisfies Record<string, string | number>;
+
+export type ThemeTokens = typeof light;
+
+// Old exports kept so imports still resolve while screens move over.
+/** @deprecated use `space` */
 export const spacing = {
   space1: 2,
   space2: 4,
@@ -41,194 +322,61 @@ export const spacing = {
   space12: 32,
   space13: 48,
 };
-
-// ---------------------------------------------------------------------------
-// Type scale (README Part 1.2). Theme-invariant px sizes.
-// ---------------------------------------------------------------------------
+/** @deprecated use `type` */
 export const typeScale = {
-  fsTitle: 24, // page header (serif)
-  fsSheet: 21, // overlay-sheet icon icon
-  fsSubhead: 19, // hero name (ActiveSignalChainView)
-  fsCard: 16, // models-card / medium heading
-  fsName: 14.5, // table name cell / row title (serif)
-  fsName2: 14, // compact serif name / strong label
-  fsBody2: 13.5, // dialog / sheet body
-  fsBody: 13, // default sans body / nav
-  fsUi: 12, // buttons / controls
-  fsControl: 12.5, // inputs, menu items (between Ui and Body)
-  fsLabel: 11.5, // secondary labels
-  fsData: 11, // mono numerics
-  fsMeta: 10.5, // muted compact labels
-  fsData2: 10, // small mono data / micro labels
-  fsMicro: 9.5, // uppercase mono kickers
-  fsMicro2: 9, // compact micro kicker
-  fsTag: 8.5, // tiny badge text
+  fsTitle: 24,
+  fsSheet: 21,
+  fsSubhead: 19,
+  fsCard: 16,
+  fsName: 14.5,
+  fsName2: 14,
+  fsBody2: 13.5,
+  fsBody: 13,
+  fsUi: 12,
+  fsControl: 12.5,
+  fsLabel: 11.5,
+  fsData: 11,
+  fsMeta: 10.5,
+  fsData2: 10,
+  fsMicro: 9.5,
+  fsMicro2: 9,
+  fsTag: 8.5,
 };
-
-// ---------------------------------------------------------------------------
-// Corner radii (README Part 1.3). Theme-invariant px.
-// ---------------------------------------------------------------------------
+/** @deprecated use `radius` */
 export const radii = {
-  rSm: 3, // chips, inline tags, badges
-  rMenuItem: 5, // popover menu-item row
-  rBtn: 6, // small buttons / measure pill / icon buttons
-  rMd: 7, // buttons, inputs, fields
-  rCard: 8, // some cards / popovers (distinct from rLg — do not fold)
-  rLg: 9, // cards, rows, popovers, modals (8–9)
-  rPopover: 12, // large popovers / pickers
-  rDialog: 14, // the DS Dialog card (every modal/overlay)
-  rPill: 999, // pill toggles, switches
+  rSm: 3,
+  rMenuItem: 5,
+  rBtn: 6,
+  rMd: 7,
+  rCard: 8,
+  rLg: 9,
+  rPopover: 12,
+  rDialog: 14,
+  rPill: 999,
 };
-
-// ---------------------------------------------------------------------------
-// Letter-spacing scale (uppercase mono kickers + tracked labels). Unitful
-// strings, mirroring the canon literals exactly.
-// ---------------------------------------------------------------------------
+/** @deprecated remove with the uppercase labels */
 export const letterSpacing = {
-  lsTight: "-0.01em", // page titles (negative tracking)
-  lsMeta: "0.02em", // secondary metadata / counts
-  lsTag: "0.08em", // badges / tags
-  lsLabel: "0.1em", // standard uppercase mono label
-  lsWide: "0.12em", // popover headers / setlist labels
-  lsKicker: "0.14em", // section kicker (microLabel)
+  lsTight: "-0.01em",
+  lsMeta: "0.02em",
+  lsTag: "0.08em",
+  lsLabel: "0.1em",
+  lsWide: "0.12em",
+  lsKicker: "0.14em",
 };
 
-// ---------------------------------------------------------------------------
-// The single light token set — README Part 1.1 / prototype `APP`. `ThemeTokens`
-// is DERIVED from this object (below), so a key is declared exactly once: add it
-// here with its doc comment and every `t.<key>` reader types itself.
-// ---------------------------------------------------------------------------
-export const light = {
-  // core palette
-  bg: "#ffffff",
-  /** README `alt`. */
-  bgAlt: "#f6f7f9",
-  ink: "#0f1115",
-  /** secondary text — between `ink` and `mutedInk`. */
-  ink2: "#33373f",
-  /** README `muted`. */
-  mutedInk: "#6b7280",
-  /** quaternary text / icon strokes — fainter than `mutedInk`. */
-  faint: "#9aa0a9",
-  /** recessed surface (rare inset wells). */
-  inset: "#eef0f3",
-  /** text/icon color on an ink fill (== bg, so primary buttons invert). */
-  onInk: "#ffffff",
-  /** white glyph/text/ring on an `accent` (terracotta) fill — checkbox tick,
-   *  active facet chip, the Copy edit badge. */
-  onAccent: "#ffffff",
-  /** sticky section header over a scrolling wall — a near-opaque white wash
-   *  (paired with a backdrop blur at the call site). */
-  bgFrost: "rgba(255,255,255,0.92)",
-  /** README `hair`. */
-  hairline: "rgba(15,17,21,0.09)",
-  /** README `hairStrong`. */
-  hairlineStrong: "rgba(15,17,21,0.18)",
-  /** terracotta. */
-  accent: "#d97757",
-  /** deeper accent for accent-colored text / counts (vs `accent` for fills). */
-  accentDeep: "#a7461f",
-  accentSoft: "rgba(217,119,87,0.10)",
-  /** terracotta SCENE-badge fill — a touch stronger than `accentSoft` so the live
-   *  scene's ACTIVE badge reads distinctly (its border is `accentBorder`). */
-  accentBadgeSoft: "rgba(217,119,87,0.14)",
-  warn: "#a7461f",
-  /** destructive/error chip background. */
-  warnSoft: "rgba(167,70,31,0.08)",
-  /** connected / healthy / ACTIVE / measured / calibrated (green). */
-  good: "#3f7d4e",
-  /** green chip background (ACTIVE badge / measured pill). README `okSoft`. */
-  goodSoft: "rgba(63,125,78,0.10)",
-  titlebar: "#ffffff",
-  /** selected-row tint (non-active). */
-  rowSel: "rgba(15,17,21,0.035)",
-  /** menu-item / row hover tint. */
-  hover: "rgba(15,17,21,0.05)",
-  /** slider track. */
-  track: "rgba(15,17,21,0.07)",
-  /** slider knob fill (also the `Toggle` switch knob). */
-  knob: "#ffffff",
-  /** slider knob ring. */
-  knobRing: "rgba(15,17,21,0.25)",
-  /** `Toggle` switch track in the OFF state (ON fills with `accent`). */
-  toggleTrack: "rgba(15,17,21,0.14)",
-  /** menu/popover drop-shadow base color. */
-  shadow: "rgba(15,17,21,0.28)",
+/** Section label: sentence case, 12 px semibold, secondary. Replaces `microLabel`. */
+export function sectionLabel(t: ThemeTokens): CSSProperties {
+  return {
+    fontFamily: t.fontSans,
+    fontSize: t.fontCaption,
+    lineHeight: `${String(t.lineCaption)}px`,
+    fontWeight: t.weightSemibold,
+    color: t.textSecondary,
+  };
+}
 
-  // chip/pill borders (soft tints of the status colors, mirroring canon rgba)
-  /** green badge border (ACTIVE / measured). */
-  goodBorder: "rgba(63,125,78,0.4)",
-  /** terracotta error/danger badge border. */
-  warnBorder: "rgba(167,70,31,0.45)",
-  /** lighter terracotta error border (an instrument row in its error phase). */
-  warnBorderSoft: "rgba(167,70,31,0.4)",
-  /** accent (terracotta) border for accent-tinted pills. */
-  accentBorder: "rgba(217,119,87,0.45)",
-  /** lighter accent border (the Doctor shared-block caption). */
-  accentBorderSoft: "rgba(217,119,87,0.3)",
-  /** amber "measuring" pill border + soft background. */
-  sevWarnBorder: "rgba(176,125,28,0.5)",
-  sevWarnSoft: "rgba(176,125,28,0.08)",
-  /** amber filter-chip border + fill (Copy's "only over budget" toggle). */
-  sevWarnChipBorder: "rgba(176,125,28,0.4)",
-  sevWarnChipSoft: "rgba(176,125,28,0.10)",
-  /** recording indicator red (off-palette, audio-feedback semantics) + soft bg —
-   *  also the Toast "error" status color (same true-failure red, no need for a
-   *  second token). */
-  record: "#c0392b",
-  recordSoft: "rgba(192,57,43,0.16)",
-  /** model badge foregrounds (stereo / convolution). */
-  badgeStereo: "#2f6c98",
-  badgeConv: "#6a4ba0",
-
-  // signal-chain strip (SignalChainView)
-  /** strip wire / bracket / endpoint ink. */
-  stripWire: "rgba(15,17,21,0.34)",
-  /** skeleton strip ink + an interactive (Copy) tile's idle border. */
-  stripGhost: "rgba(15,17,21,0.12)",
-  /** strip caption ink (block / endpoint / diamond labels). */
-  stripInk: "#5b554a",
-  /** a SELECTED Copy tile's caption ink. */
-  stripInkSel: "#a5421b",
-  /** a CHANGED (added/replaced) Copy tile's border + fill. */
-  stripChangedBorder: "rgba(217,119,87,0.55)",
-  stripChangedSoft: "rgba(217,119,87,0.06)",
-
-  // font families
-  serif: FONT_SERIF,
-  sans: FONT_SANS,
-  mono: FONT_MONO,
-
-  ...typeScale,
-  ...spacing,
-  ...radii,
-  ...letterSpacing,
-
-  // elevation
-  shadowModal: "0 40px 80px -16px rgba(15,17,21,0.28)",
-  /** the scrollable dropdown-menu card (`styles.menuCard`) — lighter and closer
-   *  than `shadowModal`. */
-  shadowMenu: "0 16px 38px -14px rgba(15,17,21,0.28)",
-  /** the `Toggle` switch knob. */
-  shadowKnob: "0 1px 3px rgba(0,0,0,0.25)",
-  /** a small floating badge (the Copy tile's edit badge). */
-  shadowBadge: "0 1px 2px rgba(15,17,21,0.2)",
-  /** the accent-bordered edit card's 1px terracotta under-edge (SongForm). */
-  shadowAccentEdge: "0 1px 0 rgba(217,119,87,0.08)",
-  /** block-art drop shadow on a signal-chain strip tile (a CSS `filter`). */
-  dropShadowStripArt: "drop-shadow(0 2px 3px rgba(15,17,21,0.18))",
-  scrim: "rgba(15,17,21,0.32)",
-
-  // severity colors
-  /** amber, distinct from `warn` terracotta. */
-  sevWarn: "#b07d1c",
-} satisfies Record<string, string | number>;
-
-/** The full set of keys carried by the (single, light) token object — derived
- *  from `light`, so the type never re-lists a key by hand. */
-export type ThemeTokens = typeof light;
-
-/** Reusable uppercase mono micro-label (kicker) style. */
+/** Superseded by `sectionLabel`: uppercase mono kickers are gone in B. Kept
+ *  until its last reader moves. */
 export function microLabel(t: ThemeTokens): CSSProperties {
   return {
     fontFamily: t.mono,
@@ -239,8 +387,7 @@ export function microLabel(t: ThemeTokens): CSSProperties {
   };
 }
 
-/** Border-only / transparent text input — the app's inline-edit convention. Spread
- *  `extra` for the per-field font/flex (e.g. `plainInput(t, { flex: 1, fontSize: … })`). */
+/** Border-only / transparent text input — the app's inline-edit convention. */
 export function plainInput(
   t: ThemeTokens,
   extra?: CSSProperties,
@@ -254,12 +401,8 @@ export function plainInput(
   };
 }
 
-/** Native-<button> reset — the ONE shared reset behind every clickable row, chip,
- *  glyph and inline link (the `bare` Button variant and any hand-rolled <button>).
- *  It strips the UA chrome so a real, keyboard- and VoiceOver-reachable button keeps
- *  the exact look of the div/span it replaced. Spread the site's own layout in
- *  `extra` (a block-level row adds `display` + `width: "100%"`, since a button
- *  shrink-wraps where a div would stretch). */
+/** Native-<button> reset behind every clickable row, chip, glyph and inline
+ *  link. Unchanged: the signal-path code imports it. */
 export function plainButton(extra?: CSSProperties): CSSProperties {
   return {
     appearance: "none",

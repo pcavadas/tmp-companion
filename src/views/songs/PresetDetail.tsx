@@ -124,7 +124,7 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
               alignItems: "center",
               padding: `0 ${String(t.space8)}px`,
               borderTop: `0.5px solid ${t.hairline}`,
-              background: t.bgAlt,
+              background: t.window,
               fontFamily: t.mono,
               fontSize: t.fsData2,
               color: t.faint,

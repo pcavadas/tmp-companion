@@ -146,7 +146,7 @@ export interface ModalProps {
   headline: ReactNode;
   /** Optional serif body prose (the revert promise). */
   body?: ReactNode;
-  /** Mono code block content on bgAlt (run_id / scope / op). */
+  /** Mono code block content on window grey (run_id / scope / op). */
   code?: ReactNode;
   /** Apply / confirm label (default "Apply"). */
   applyLabel?: ReactNode;
@@ -218,7 +218,7 @@ export function Modal({
             style={{
               marginTop: t.space8,
               padding: t.space6,
-              background: t.bgAlt,
+              background: t.window,
               borderRadius: t.rSm,
               fontFamily: t.mono,
               fontSize: t.fsData,
@@ -840,7 +840,7 @@ export function SegmentedControl<T extends string>({
         textTransform: "uppercase" as const,
         padding: `${String(t.space3)}px ${String(t.space4)}px`,
         height: undefined as number | undefined,
-        onBg: t.bgAlt,
+        onBg: t.window,
         onFg: t.ink,
         offFg: t.faint,
         onIcon: t.accentDeep,

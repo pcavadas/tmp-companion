@@ -57,7 +57,7 @@ export function SceneRow({
         height: 38,
         padding: `0 ${String(t.space8)}px 0 58px`,
         borderBottom: `0.5px solid ${t.hairline}`,
-        background: !disabled && selected ? t.rowSel : t.bgAlt,
+        background: !disabled && selected ? t.rowSel : t.window,
         opacity: disabled ? 0.55 : 1,
         cursor: disabled ? "default" : "pointer",
       }}

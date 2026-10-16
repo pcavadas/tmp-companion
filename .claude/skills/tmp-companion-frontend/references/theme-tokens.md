@@ -2,6 +2,8 @@
 
 The companion is **light-only** — `src/theme/tokens.ts` exports ONE token object (`light`); its type `ThemeTokens` is DERIVED (`typeof light`), so a new token is one keyed entry with its doc comment — never a second hand-written interface line. `useTheme()` returns `{ t }` where `t` is that object; field names are stable so call-sites read `t.bg`, `t.mutedInk`, `t.serif`, `t.rMd`, etc. directly. This file mirrors `tokens.ts` + `styles.ts` so you don't have to open them for a quick lookup — but `tokens.ts` is the source of truth; if a value here ever disagrees, trust the file.
 
+**Look B is landing.** `tokens.ts` now carries the B token groups (`color`, `type`, `space`, `radius`, `size`, `elevation` — e.g. `t.window`, `t.surface`, `t.groupHeader`, `t.text`, `t.action`, `t.fontBody`, `t.sp12`, `t.radiusControl`) on the same object, next to the frozen signal-path tokens and the old names kept as aliases with their old values. New code reads the B tokens; the tables below describe the old names until the clean-up removes them.
+
 Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styled-components, no Tailwind, no className system — that's deliberate and verified pixel-exact against the design canon.
 
 ## Colors (palette)
@@ -9,7 +11,7 @@ Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styl
 | Token                           | Value                                                                                 | Use                                                                   |
 | ------------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | `bg`                            | `#ffffff`                                                                             | base surface                                                          |
-| `bgAlt`                         | `#f6f7f9`                                                                             | alt surface (README `alt`)                                            |
+| `bgAlt`                         | `#ffffff`                                                                             | diagram background only; elsewhere use `window`/`groupHeader`         |
 | `inset`                         | `#eef0f3`                                                                             | recessed inset wells (rare)                                           |
 | `ink`                           | `#0f1115`                                                                             | primary text                                                          |
 | `ink2`                          | `#33373f`                                                                             | secondary text                                                        |
@@ -33,13 +35,13 @@ Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styl
 | `sevWarn`                       | `#b07d1c`                                                                             | amber "measuring" severity (distinct from `warn`)                     |
 | `sevWarnSoft` / `sevWarnBorder` | amber soft / border                                                                   | measuring pill                                                        |
 | `sevWarnChip{Border,Soft}`      | amber 0.4 border / 0.10 fill                                                          | amber filter chip (Copy "only over budget")                           |
-| `good`                          | `#3f7d4e`                                                                             | connected / healthy / ACTIVE / measured (green)                       |
+| `good`                          | `#246b3a`                                                                             | connected / healthy / ACTIVE / measured (green)                       |
 | `goodSoft`                      | `rgba(63,125,78,0.10)`                                                                | green chip background (README `okSoft`)                               |
 | `goodBorder`                    | `rgba(63,125,78,0.4)`                                                                 | green badge border                                                    |
 | `record`                        | `#c0392b`                                                                             | recording indicator red (off-palette, audio semantics) + `recordSoft` |
 | `rowSel`                        | `rgba(15,17,21,0.035)`                                                                | selected-row tint (non-active)                                        |
 | `hover`                         | `rgba(15,17,21,0.05)`                                                                 | row/menu-item hover tint                                              |
-| `track` / `knob` / `knobRing`   | slider track / knob fill / knob ring                                                  | sliders (`knob` is also the `Toggle` knob)                            |
+| `track` / `knob` / `knobRing`   | `#e8e8ed` track / knob fill / knob ring                                               | meter, progress and slider tracks (`knob` is also the `Toggle` knob)  |
 | `toggleTrack`                   | `rgba(15,17,21,0.14)`                                                                 | `Toggle` switch track, OFF state                                      |
 | `shadow`                        | `rgba(15,17,21,0.28)`                                                                 | popover drop-shadow base                                              |
 | `badgeStereo` / `badgeConv`     | `#2f6c98` / `#6a4ba0`                                                                 | model badge foregrounds (stereo / convolution)                        |
@@ -85,7 +87,7 @@ There is no `density` token group. (`Density` in `src/views/CatalogView.tsx` is 
 
 ## Elevation
 
-`shadowModal` (modals/popovers), `shadowMenu` (the `s.menuCard` dropdown — lighter, closer), `shadowKnob` (`Toggle` knob), `shadowBadge` (small floating badge), `shadowAccentEdge` (accent edit card's 1px under-edge), `dropShadowStripArt` (a CSS `filter` for strip block art), `scrim` `rgba(15,17,21,0.32)` (modal backdrop).
+`shadowModal` (modals/popovers), `shadowMenu` `0 8px 24px rgba(0,0,0,0.14), 0 0 0 0.5px rgba(0,0,0,0.12)` (the `s.menuCard` dropdown), `shadowKnob` (`Toggle` knob), `shadowBadge` (small floating badge), `shadowAccentEdge` (accent edit card's 1px under-edge), `dropShadowStripArt` (a CSS `filter` for strip block art), `scrim` `rgba(0,0,0,0.25)` (modal backdrop).
 
 ## Composed styles — `useStyles()` → `s`
 

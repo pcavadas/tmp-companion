@@ -404,7 +404,7 @@ export function PrescriptionCard({
             width: 28,
             height: 28,
             borderRadius: 7,
-            background: t.bgAlt,
+            background: t.window,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",

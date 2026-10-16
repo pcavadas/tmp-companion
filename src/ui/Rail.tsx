@@ -1,5 +1,5 @@
 // src/ui/Rail.tsx — the shared left-rail idiom (the Songs setlist rail + the
-// Settings category rail): a 210px bgAlt column behind a 0.5px hairline edge,
+// Settings category rail): a 210px window-grey column behind a 0.5px hairline edge,
 // mono micro-labels, and serif rows with a 2px left-accent bar when active.
 // Rows are real <button>s with a leading icon slot (Settings categories) and/or
 // a trailing mono meta slot (Songs counts). `nav="tab"` rows sit in the caller's
@@ -18,7 +18,7 @@ interface RailProps {
   style?: CSSProperties;
 }
 
-/** The rail column: 210px, bgAlt fill, hairline right edge, "12px 10px" pad. */
+/** The rail column: 210px, window fill, hairline right edge, "12px 10px" pad. */
 export function Rail({ children, style }: RailProps) {
   const { t } = useTheme();
   return (
@@ -29,7 +29,7 @@ export function Rail({ children, style }: RailProps) {
         flexShrink: 0,
         minHeight: 0,
         borderRight: `0.5px solid ${t.hairline}`,
-        background: t.bgAlt,
+        background: t.window,
         display: "flex",
         flexDirection: "column",
         padding: `${String(t.space6)}px ${String(t.space5)}px`,

@@ -121,7 +121,7 @@ export function SongsLoadingSkeleton() {
         <div
           style={{
             borderRight: `0.5px solid ${t.hairline}`,
-            background: t.bgAlt,
+            background: t.window,
             padding: `${String(t.space6)}px ${String(t.space5)}px`,
             display: "flex",
             flexDirection: "column",

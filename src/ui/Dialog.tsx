@@ -170,7 +170,7 @@ export function Dialog({
 }
 
 // ---- chrome slots ----------------------------------------------------------
-// Header (bottom hairline) · Body (scrolls) · Footer (top hairline, bgAlt tint).
+// Header (bottom hairline) · Body (scrolls) · Footer (top hairline, window tint).
 // One DIALOG_PAD_X so dialogs never drift to ad-hoc padding again.
 
 export function DialogHeader({ children }: { children: ReactNode }) {
@@ -226,7 +226,7 @@ export function DialogFooter({ start, children }: DialogFooterProps) {
         gap: t.space4,
         padding: `${String(t.space6)}px ${String(DIALOG_PAD_X)}px`,
         borderTop: `0.5px solid ${t.hairline}`,
-        background: t.bgAlt,
+        background: t.window,
       }}
     >
       {start != null && <div style={{ marginRight: "auto" }}>{start}</div>}

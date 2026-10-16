@@ -34,7 +34,7 @@ export function ConfirmBar({
         flexShrink: 0,
         borderTop: `0.5px solid ${t.hairline}`,
         padding: `${String(t.space6)}px ${String(t.space10)}px`,
-        background: t.bgAlt,
+        background: t.window,
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",

@@ -17,7 +17,7 @@ export function RebalanceToggle({ on, onToggle }: RebalanceToggleProps) {
       style={{
         flexShrink: 0,
         padding: `${String(t.space5)}px ${String(t.space7)}px`,
-        background: t.bgAlt,
+        background: t.window,
         borderTop: `0.5px solid ${t.hairline}`,
         borderRadius: t.rCard,
       }}

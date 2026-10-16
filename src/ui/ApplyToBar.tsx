@@ -36,7 +36,7 @@ export function ApplyToBar({
       style={{
         flexShrink: 0,
         padding: `${String(t.space6)}px ${String(t.space10)}px ${String(t.space7)}px`,
-        background: t.bgAlt,
+        background: t.window,
         borderBottom: `0.5px solid ${t.hairline}`,
       }}
     >

@@ -6,7 +6,9 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { light, microLabel } from "../theme/tokens";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { light, microLabel, sectionLabel } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { ICONS } from "../ui/iconNames";
 import { BlockArt } from "../ui/BlockArt";
@@ -32,27 +34,84 @@ beforeEach(() => {
   }
 });
 
-describe("tokens — light-only set (README Part 1.1)", () => {
-  it("carries the documented light values on the single token object", () => {
-    expect(light.bg).toBe("#ffffff");
-    expect(light.onInk).toBe("#ffffff");
-    expect(light.bgAlt).toBe("#f6f7f9"); // alt
-    expect(light.warn).toBe("#a7461f");
-    expect(light.good).toBe("#3f7d4e"); // green status
-    expect(light.goodSoft).toBe("rgba(63,125,78,0.10)");
+/** Every .ts/.tsx source under `dir`, test files excluded. */
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) return e.name === "__tests__" ? [] : sourceFiles(p);
+    return /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [p] : [];
+  });
+}
+
+/** The signal-path diagram's files: the only readers `bgAlt` may have. */
+const DIAGRAM_FILES = [
+  /^ui\/BlockArt\.tsx$/,
+  /^ui\/blockart\//,
+  /^models\/blockArt\.ts$/,
+  /^views\/SignalChainView\.tsx$/,
+  /^views\/ActiveSignalChainView\.tsx$/,
+  /^views\/signalChain\//,
+];
+
+describe("tokens — light-only set, look B", () => {
+  it("carries the B values on the single token object", () => {
+    expect(light.window).toBe("#f5f5f7");
+    expect(light.surface).toBe("#ffffff");
+    expect(light.groupHeader).toBe("#fafafa");
+    expect(light.text).toBe("#1d1d1f");
+    expect(light.textSecondary).toBe("#6e6e73");
     expect(light.accent).toBe("#d97757");
-    expect(light.hairlineStrong).toBe("rgba(15,17,21,0.18)"); // hairStrong
-    expect(light.hairline).toBe("rgba(15,17,21,0.09)"); // hair
-    expect(light.fsTitle).toBe(24); // page header
-    expect(light.rMd).toBe(7); // buttons/inputs
-    expect(light.rPill).toBe(999);
-    expect(typeof light.scrim).toBe("string");
-    expect(typeof light.shadowModal).toBe("string");
+    expect(light.action).toBe("#bd5632");
+    expect(light.fontSans).toBe("'Inter', system-ui, sans-serif");
+    expect(light.fontTitle).toBe(20);
+    expect(light.sp24).toBe(24);
+    expect(light.radiusGroup).toBe(10);
   });
 
-  it("preserves the repo's existing field names + severity model", () => {
+  it("gives the four same-name tokens their B value", () => {
+    expect(light.good).toBe("#246b3a");
+    expect(light.track).toBe("#e8e8ed");
+    expect(light.scrim).toBe("rgba(0,0,0,0.25)");
+    expect(light.shadowMenu).toBe(
+      "0 8px 24px rgba(0,0,0,0.14), 0 0 0 0.5px rgba(0,0,0,0.12)",
+    );
+  });
+
+  it("keeps the signal-path tokens frozen, except bgAlt, which turns white", () => {
+    expect(light.bgAlt).toBe("#ffffff"); // the diagram sits on white
+    expect(light.bg).toBe("#ffffff");
+    expect(light.ink).toBe("#0f1115");
     expect(light.mutedInk).toBe("#6b7280");
-    expect(light.sevWarn).toBe("#b07d1c"); // amber
+    expect(light.hairline).toBe("rgba(15,17,21,0.09)");
+    expect(light.hairlineStrong).toBe("rgba(15,17,21,0.18)");
+    expect(light.warn).toBe("#a7461f");
+    expect(light.sevWarn).toBe("#b07d1c");
+  });
+
+  it("keeps the old aliases at their old values until their readers move", () => {
+    expect(light.onInk).toBe("#ffffff");
+    expect(light.goodSoft).toBe("rgba(63,125,78,0.10)");
+    expect(light.fsTitle).toBe(24);
+    expect(light.rMd).toBe(7);
+    expect(light.rPill).toBe(999);
+    expect(light.shadowModal).toBe("0 40px 80px -16px rgba(15,17,21,0.28)");
+  });
+
+  it("nothing outside the signal-path diagram reads bgAlt (it is white now)", () => {
+    const src = join(process.cwd(), "src");
+    const readers = sourceFiles(src)
+      .map((f) => relative(src, f).split("\\").join("/"))
+      .filter((rel) => !DIAGRAM_FILES.some((re) => re.test(rel)))
+      .filter((rel) => /\.bgAlt\b/.test(readFileSync(join(src, rel), "utf8")));
+    expect(readers).toEqual([]);
+  });
+
+  it("sectionLabel is sentence-case 12 px semibold secondary text", () => {
+    const sl = sectionLabel(light);
+    expect(sl.textTransform).toBeUndefined();
+    expect(sl.fontSize).toBe(12);
+    expect(sl.fontWeight).toBe(600);
+    expect(sl.color).toBe(light.textSecondary);
   });
 
   it("microLabel is an uppercase mono style with the 0.14em kicker tracking", () => {

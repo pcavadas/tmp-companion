@@ -29,7 +29,7 @@ export function CalibrationOnboardingBanner({
         padding: `${String(t.space4)}px ${String(t.space5)}px`,
         borderRadius: t.rCard,
         border: `0.5px solid ${t.hairlineStrong}`,
-        background: t.bgAlt,
+        background: t.window,
       }}
     >
       <span style={{ display: "flex", flexShrink: 0, marginTop: t.space1 }}>

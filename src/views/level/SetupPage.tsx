@@ -204,7 +204,7 @@ export function SetupPage({
           padding: `${String(t.space6)}px ${String(t.space7)}px`,
           border: `0.5px solid ${t.hairlineStrong}`,
           borderRadius: t.rCard,
-          background: t.bgAlt,
+          background: t.window,
         }}
       >
         <div

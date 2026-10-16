@@ -54,7 +54,7 @@ export function BlockEditor({
         marginTop: t.space4,
         border: `1px solid ${t.accent}`,
         borderRadius: t.rPopover,
-        background: t.bgAlt,
+        background: t.window,
         overflow: "hidden",
       }}
     >

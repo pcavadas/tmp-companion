@@ -132,7 +132,7 @@ function Fallback({
             padding: `${String(t.space4)}px ${String(t.space8)}px`,
             border: `0.5px solid ${t.hairline}`,
             borderRadius: t.rMd,
-            background: t.bgAlt,
+            background: t.window,
             color: t.ink,
             fontFamily: t.sans,
             fontSize: 13,

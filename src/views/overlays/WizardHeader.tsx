@@ -1,4 +1,4 @@
-// src/views/overlays/WizardHeader.tsx — the bgAlt bar that frames the wizard's
+// src/views/overlays/WizardHeader.tsx — the window-grey bar that frames the wizard's
 // StepRail, shared by the modal `WizardShell` and the full-page `WizardPage`.
 
 import { useTheme } from "../../theme/ThemeContext";
@@ -7,7 +7,7 @@ import { Button } from "../../ui/primitives";
 import { StepRail } from "./StepRail";
 import type { RailStep } from "./wizardContext";
 
-// ---- rail header (the bgAlt bar that frames the StepRail) -------------------
+// ---- rail header (the window-grey bar that frames the StepRail) -------------
 // Shared by the modal WizardShell and the full-page `WizardPage` (Level + Doctor) so
 // the header styling lives in ONE place; only the outer container (centered modal
 // vs opaque inset:0 page) differs between the two. `back`, when given, puts a Back
@@ -29,7 +29,7 @@ export function WizardHeader({ current, steps, back }: WizardHeaderProps) {
         gap: t.space8,
         padding: `${String(t.space8)}px ${String(DIALOG_PAD_X)}px`,
         borderBottom: `0.5px solid ${t.hairline}`,
-        background: t.bgAlt,
+        background: t.window,
       }}
     >
       {back && (

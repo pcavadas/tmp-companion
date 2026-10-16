@@ -145,7 +145,7 @@ export function PresetResultCard({
           alignItems: "center",
           gap: t.space5,
           padding: `${String(t.space6)}px ${String(t.space7)}px`,
-          background: tinted ? tone.soft : t.bgAlt,
+          background: tinted ? tone.soft : t.groupHeader,
         }}
       >
         <SlotLabel index={preset.listIndex} style={{ flexShrink: 0 }} />

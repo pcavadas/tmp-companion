@@ -1,7 +1,7 @@
 // src/ui/ActionBar.tsx — the ONE bottom-bar shell used across the app.
 //
 // A single bottom-bar style: min-height 60, padding
-// 0 20px, a 0.5px hairline top rule on the `bgAlt` band, space-between. The Copy
+// 0 20px, a 0.5px hairline top rule on the `window` band, space-between. The Copy
 // feature's two steps and the Presets-view selection footer all render their content
 // inside this shell so there is exactly one bottom-bar style.
 
@@ -28,7 +28,7 @@ export function ActionBar({ left, right }: ActionBarProps) {
         gap: t.space7,
         padding: `0 ${String(t.space9)}px`,
         borderTop: `0.5px solid ${t.hairline}`,
-        background: t.bgAlt,
+        background: t.window,
         boxSizing: "border-box",
       }}
     >

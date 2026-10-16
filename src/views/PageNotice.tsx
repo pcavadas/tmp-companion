@@ -81,7 +81,7 @@ export function PageNotice({
           height: 72,
           borderRadius: t.rPill,
           border: `0.5px solid ${warn ? t.warn : t.hairlineStrong}`,
-          background: warn ? t.warnSoft : t.bgAlt,
+          background: warn ? t.warnSoft : t.window,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",

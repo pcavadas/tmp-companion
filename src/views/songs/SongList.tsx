@@ -178,7 +178,7 @@ export function SongList({
             style={{
               padding: `${String(t.space5)}px ${String(t.space8)}px ${String(t.space5)}px ${String(t.space8)}px`,
               borderBottom: `0.5px solid ${t.hairline}`,
-              background: t.bgAlt,
+              background: t.window,
             }}
           >
             <SongForm
@@ -199,7 +199,7 @@ export function SongList({
               style={{
                 padding: `${String(t.space5)}px ${String(t.space8)}px ${String(t.space5)}px ${String(t.space8)}px`,
                 borderBottom: `0.5px solid ${t.hairline}`,
-                background: t.bgAlt,
+                background: t.window,
               }}
             >
               <SongForm

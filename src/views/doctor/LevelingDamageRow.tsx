@@ -74,7 +74,7 @@ export function LevelingDamageRow({
               gap: t.space2,
               padding: `${String(t.space3)}px ${String(t.space4)}px`,
               borderRadius: 8,
-              background: t.bgAlt,
+              background: t.window,
               border: `0.5px solid ${t.hairline}`,
             }}
           >
