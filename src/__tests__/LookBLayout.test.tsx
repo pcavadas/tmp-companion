@@ -1,6 +1,6 @@
 // src/__tests__/LookBLayout.test.tsx — the look B page pieces: PageState, Steps,
 // PageHead, SplitView, Footer (and its ActionBar re-export), Badge, the restyled
-// PaneEmpty, and the Dialog card + its `xs` confirm width.
+// EmptyState, and the Dialog card + its `xs` confirm width.
 
 import { describe, it, expect } from "vitest";
 import { screen } from "@testing-library/react";
@@ -12,7 +12,7 @@ import { SplitView } from "../ui/SplitView";
 import { Footer } from "../ui/Footer";
 import { ActionBar } from "../ui/ActionBar";
 import { Badge } from "../ui/Badge";
-import { PaneEmpty } from "../ui/PaneEmpty";
+import { EmptyState } from "../ui/EmptyState";
 import { Dialog, DialogBody } from "../ui/Dialog";
 import { Button } from "../ui/primitives";
 import { light } from "../theme/tokens";
@@ -220,16 +220,16 @@ describe("Badge", () => {
   });
 });
 
-describe("PaneEmpty — the look B empty state", () => {
+describe("EmptyState — the look B empty state", () => {
   it("a 24 px icon, a 13/600 h2 and a secondary body; page size is bigger", () => {
     renderWithTheme(
       <>
-        <PaneEmpty
+        <EmptyState
           icon="search"
           title='No presets match "fuzzz"'
           body="Search by preset name or slot number."
         />
-        <PaneEmpty icon="music" title="No songs yet" size="page" />
+        <EmptyState icon="music" title="No songs yet" size="page" />
       </>,
     );
     const pane = screen.getByRole("heading", {

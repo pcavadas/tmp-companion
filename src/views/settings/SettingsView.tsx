@@ -65,12 +65,16 @@ export interface SettingsViewProps {
    *  jumping here) — read once at mount, not synced on later prop changes;
    *  omit for a plain tab entry, which defaults to "targets". */
   initialCategory?: CategoryId;
+  /** Open the Report a bug dialog (About and updates' "Report a bug"; the native Help
+   *  menu opens the same one). */
+  onReportBug?: () => void;
 }
 
 export function SettingsView({
   connected,
   updater,
   initialCategory,
+  onReportBug,
 }: SettingsViewProps) {
   const { t } = useTheme();
 
@@ -255,6 +259,24 @@ export function SettingsView({
             {cat === "about" && (
               <div style={{ maxWidth: 560 }}>
                 <AppUpdatesSection updater={updater} />
+                {onReportBug && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: t.sp12,
+                      marginTop: t.sp16,
+                      fontSize: t.fontBody,
+                      color: t.text,
+                    }}
+                  >
+                    Something not working?
+                    <Button variant="secondary" size="sm" onClick={onReportBug}>
+                      Report a bug
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -1,13 +1,13 @@
 // #302: setlist songs reorder with clicks alone (⋯ Move up / Move down), and
-// #304: the no-device screen's "Connection help" opens real help instead of
-// being a dead button.
+// #304: the no-device page's "Connection help" (DeviceState, shared by Level, Doctor,
+// Copy and Songs) opens real help instead of being a dead button.
 
 import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { SetlistDetail } from "../views/songs/SetlistDetail";
-import { EmptyState } from "../views/EmptyState";
+import { DeviceState } from "../views/DeviceState";
 import type { SetlistRecord, SongRecord } from "../lib/types";
 import { renderWithTheme } from "./testKit";
 
@@ -62,21 +62,28 @@ describe("SetlistDetail — click-only reorder (#302)", () => {
   });
 });
 
-describe("EmptyState — Connection help works (#304)", () => {
-  it("opens the connection help sheet, and Done closes it", async () => {
-    renderWithTheme(
-      <EmptyState title="No unit" body="Connect it." onScan={vi.fn()} />,
-    );
-    const user = userEvent.setup();
-    await user.click(screen.getByText("Connection help"));
-    expect(screen.getByText("Close Pro Control")).toBeInTheDocument();
-    await user.click(screen.getByText("Done"));
-    expect(screen.queryByText("Close Pro Control")).toBeNull();
-  });
+describe("DeviceState — Connection help works (#304)", () => {
+  it.each(["off", "failed"] as const)(
+    "the %s page opens the connection help sheet, and Done closes it",
+    async (state) => {
+      renderWithTheme(<DeviceState state={state} />);
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Connection help" }));
+      expect(
+        screen.getByRole("dialog", { name: "Connecting your Tone Master Pro" }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Quit Pro Control")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Done" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    },
+  );
 
-  it("renders no Scan button without a handler", () => {
-    renderWithTheme(<EmptyState title="No unit" body="Connect it." />);
-    expect(screen.queryByText("Scan for device")).toBeNull();
-    expect(screen.getByText("Connection help")).toBeInTheDocument();
-  });
+  it.each(["connecting", "off", "busy", "failed"] as const)(
+    "the %s page offers no Scan or Connect button (connection is automatic)",
+    (state) => {
+      renderWithTheme(<DeviceState state={state} />);
+      expect(screen.queryByText(/scan for device/i)).toBeNull();
+      expect(screen.queryByRole("button", { name: /connect$/i })).toBeNull();
+    },
+  );
 });

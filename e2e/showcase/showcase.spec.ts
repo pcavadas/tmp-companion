@@ -77,7 +77,7 @@ test.describe("Marketing screenshots", () => {
 
     await page.goto("/");
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
-    await expect(page.getByText(/connected · \d+\.\d+/)).toBeVisible({
+    await expect(page.getByText(/Connected · firmware \d+\.\d+/)).toBeVisible({
       timeout: 30_000,
     });
 

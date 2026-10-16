@@ -7,7 +7,7 @@
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { PaneEmpty } from "../../ui/PaneEmpty";
+import { EmptyState } from "../../ui/EmptyState";
 import { UnitBadge } from "./UnitBadge";
 import { slotLabel } from "../../lib/format";
 import type { SongRecord } from "../../lib/types";
@@ -83,13 +83,13 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
       </div>
 
       {members == null ? (
-        <PaneEmpty
+        <EmptyState
           icon="wave"
           title="Not known since a song was added or removed"
           body="Adding or removing a song renumbers the unit's songs, so the list read at connect no longer matches. Reconnect the unit to read it again."
         />
       ) : n === 0 ? (
-        <PaneEmpty
+        <EmptyState
           icon="wave"
           title="No songs use this preset"
           body="Which songs use a preset is set on the unit in Pro Control. This view stays in sync with the device."

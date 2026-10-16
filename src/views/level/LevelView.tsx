@@ -26,8 +26,8 @@ import { useLevelingFlow } from "./useLevelingFlow";
 import { ContextFooter } from "./ContextFooter";
 import { ActiveSignalChainView, type SceneTag } from "../ActiveSignalChainView";
 import { PresetList } from "../PresetList";
-import { EmptyState } from "../EmptyState";
-import { UsbC } from "../UsbC";
+import { DeviceState } from "../DeviceState";
+import type { NoUnitState } from "../../lib/connectError";
 import { LevelingWizard } from "../overlays";
 import { HowLevelingSheet } from "./HowLevelingSheet";
 import { instrumentOptions, instrumentName, NO_INSTRUMENT } from "./leveling";
@@ -46,7 +46,8 @@ const GRAPH_FRESH_SLACK_MS = 1000;
 
 export interface LevelViewProps {
   connected: boolean;
-  onScan?: () => void;
+  /** What to show while no unit is connected (App's connect state). Default "off". */
+  deviceState?: NoUnitState;
   initialGraph?: ActiveGraph | null;
   /** Jump to Settings → Instruments (the Set-up step's "calibrate" cue). */
   onCalibrate?: () => void;
@@ -54,7 +55,7 @@ export interface LevelViewProps {
 
 export function LevelView({
   connected,
-  onScan,
+  deviceState = "off",
   initialGraph,
   onCalibrate,
 }: LevelViewProps) {
@@ -269,25 +270,10 @@ export function LevelView({
   }, [sel, pendingWhole, openFlow]);
 
   // ── render ──────────────────────────────────────────────────────────────────
-  if (!connected) {
-    return (
-      <EmptyState
-        title="Presets live on the Tone Master Pro"
-        body={
-          <>
-            Connect your unit over <UsbC /> and power it on. Your presets will
-            show up on their own.
-          </>
-        }
-        onScan={onScan}
-      />
-    );
-  }
+  if (!connected) return <DeviceState state={deviceState} />;
 
   if (phase.kind === "error") {
-    return (
-      <LoadErrorPane message={phase.message} onRetry={() => void refresh()} />
-    );
+    return <LoadErrorPane what="presets" onRetry={() => void refresh()} />;
   }
 
   const presetsLoading = phase.kind === "loading";

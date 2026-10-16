@@ -1,7 +1,8 @@
-// Regression: the top-level ErrorBoundary must catch a render crash and show a
-// themed fallback (not a blank tree). Locks Fix 3 — before it, an uncaught render
-// error (e.g. a Rules-of-Hooks violation) unmounted the whole React root → blank
-// window with no on-disk trace.
+// Regression: the top-level ErrorBoundary must catch a render crash and show the
+// "Something went wrong" page (not a blank tree), and log what was thrown. Locks Fix 3 —
+// before it, an uncaught render error (e.g. a Rules-of-Hooks violation) unmounted the
+// whole React root → blank window with no on-disk trace. Look B draws no raw message:
+// the page says the details are saved for a bug report, and they are (the log).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen } from "@testing-library/react";
@@ -34,7 +35,13 @@ describe("ErrorBoundary", () => {
     );
 
     expect(screen.getByText("Something went wrong")).toBeInTheDocument();
-    expect(screen.getByText("kaboom in render")).toBeInTheDocument();
+    expect(
+      screen.getByText("The details are saved for a bug report."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("kaboom in render")).not.toBeInTheDocument();
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("React render crash: kaboom in render"),
+    );
     expect(screen.getByRole("button", { name: /reload/i })).toBeInTheDocument();
   });
 
@@ -66,9 +73,9 @@ describe("ErrorBoundary", () => {
     expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
   });
 
-  it("renders a thrown NON-Error (a bare string) as its text, not an empty box", () => {
+  it("logs a thrown NON-Error (a bare string) as its text, and never draws it", () => {
     // A rejected backend command used to reach JS as a bare string; a render
-    // that rethrows one must still show what went wrong.
+    // that rethrows one must still record what went wrong.
     function ThrowsString(): never {
       const thrown: unknown = "the unit stopped answering";
       throw thrown;
@@ -80,7 +87,12 @@ describe("ErrorBoundary", () => {
     );
 
     expect(screen.getByText("Something went wrong")).toBeInTheDocument();
-    expect(screen.getByText("the unit stopped answering")).toBeInTheDocument();
+    expect(
+      screen.queryByText("the unit stopped answering"),
+    ).not.toBeInTheDocument();
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("React render crash: the unit stopped answering"),
+    );
   });
 
   it("renders children unchanged when they do not throw", () => {

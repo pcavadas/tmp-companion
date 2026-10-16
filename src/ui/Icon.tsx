@@ -359,6 +359,13 @@ export function Icon({
           <path d="M12 7.5v5.5M12 16.5h.01" />
         </svg>
       );
+    case "usb":
+      return (
+        <svg {...props}>
+          <path d="M12 3v14M8 7l4-4 4 4M7 13v2l5 3 5-3v-2" />
+          <circle cx="12" cy="20" r="1.5" />
+        </svg>
+      );
     default:
       return null;
   }

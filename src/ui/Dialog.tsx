@@ -48,8 +48,8 @@ const DIALOG_WIDTH: Record<DialogSize, number> = {
 export const DIALOG_PAD_X = 20;
 
 const VIEWPORT_CAP = "calc(100vh - 32px)";
-/** Width twin of VIEWPORT_CAP. The window's minWidth (640) is narrower than the `lg`
- *  card, so without this the wizard clips off-screen on a narrowed window. */
+/** Width twin of VIEWPORT_CAP. The window's minWidth (800) less this margin is narrower
+ *  than the `lg` card, so without this the wizard clips off-screen on a narrowed window. */
 const VIEWPORT_CAP_X = "calc(100vw - 32px)";
 
 export interface DialogProps {

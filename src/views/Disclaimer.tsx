@@ -1,208 +1,98 @@
+// src/views/Disclaimer.tsx — the first-run page (look B): the only thing the app shows
+// until it is accepted, with no toolbar. One white card centred on the window grey, 520
+// wide: the backup title, what saves to the unit and how to get presets back, then the
+// non-affiliation and liability line ("You use TMP Companion at your own risk." keeps
+// its words). Bottom row: "Don't show this again" on the left, the primary "I've backed
+// up, continue" on the right. Accepting always sets the session key; the permanent key
+// only when the box is ticked (App owns both).
+
 import { useState } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
-import type { IconName } from "../ui/Icon";
-import { Icon } from "../ui/Icon";
-import { Button, CheckboxMark } from "../ui/primitives";
+import { Button, Checkbox } from "../ui/primitives";
 
 interface DisclaimerProps {
   onAccept: (permanent: boolean) => void;
 }
 
-function CalloutRow({
-  icon,
-  iconColor,
-  children,
-}: {
-  icon: IconName;
-  iconColor: string;
-  children: React.ReactNode;
-}) {
-  const { t } = useTheme();
-  return (
-    <div style={{ display: "flex", alignItems: "flex-start", gap: t.space5 }}>
-      <span style={{ flexShrink: 0, marginTop: t.space1 }}>
-        <Icon name={icon} size={15} stroke={iconColor} strokeWidth={1.8} />
-      </span>
-      <span
-        style={{
-          fontFamily: t.sans,
-          fontSize: 12.5,
-          lineHeight: 1.55,
-          color: t.ink2,
-        }}
-      >
-        {children}
-      </span>
-    </div>
-  );
-}
-
 export function Disclaimer({ onAccept }: DisclaimerProps) {
   const { t } = useTheme();
   const [dontShow, setDontShow] = useState(false);
+  const para = {
+    margin: 0,
+    fontSize: t.fontBody,
+    lineHeight: `${String(t.lineBody + 1)}px`,
+  };
 
   return (
     <div
       style={{
         flex: 1,
+        minHeight: 0,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        position: "relative",
-        overflow: "hidden",
+        padding: t.sp24,
+        overflowY: "auto",
       }}
     >
       <div
         style={{
-          position: "absolute",
-          inset: 0,
-          backgroundImage:
-            "repeating-linear-gradient(135deg, rgba(15,17,21,0.09) 0 1px, transparent 1px 13px)",
-          opacity: 0.45,
-          pointerEvents: "none",
-        }}
-      />
-
-      <div
-        style={{
-          position: "relative",
+          width: 520,
+          maxWidth: "100%",
+          boxSizing: "border-box",
+          padding: t.sp24 + t.sp4,
+          background: t.surface,
+          border: `1px solid ${t.border}`,
+          borderRadius: t.radiusGroup,
           display: "flex",
           flexDirection: "column",
-          alignItems: "center",
-          textAlign: "center",
-          maxWidth: 460,
-          padding: `0 ${String(t.space9)}px`,
+          gap: t.sp12 + t.sp2,
+          fontFamily: t.fontSans,
+          color: t.text,
         }}
       >
-        <div
+        <h1
           style={{
-            width: 64,
-            height: 64,
-            borderRadius: 999,
-            background: t.window,
-            border: `0.5px solid ${t.hairlineStrong}`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            marginBottom: t.space11,
+            margin: 0,
+            fontSize: t.fontTitle,
+            lineHeight: `${String(t.lineTitle)}px`,
+            fontWeight: t.weightSemibold,
           }}
         >
-          <Icon
-            name="shield"
-            size={28}
-            stroke={t.accentDeep}
-            strokeWidth={1.5}
+          Back up your Tone Master Pro first
+        </h1>
+        <p style={para}>
+          Leveling, Copy and Songs save changes to your Tone Master Pro right
+          away, and they can&apos;t be undone here. A backup made in Fender Tone
+          Master Pro Control is how you get your presets back.
+        </p>
+        <p style={{ ...para, color: t.textSecondary }}>
+          This app isn&apos;t made by Fender. It only talks to your own Tone
+          Master Pro, over USB. You use TMP Companion at your own risk.
+        </p>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: t.sp12,
+            marginTop: t.sp8,
+          }}
+        >
+          <Checkbox
+            checked={dontShow}
+            label="Don't show this again"
+            onChange={setDontShow}
           />
-        </div>
-
-        <div
-          style={{
-            fontFamily: t.mono,
-            fontSize: 10,
-            letterSpacing: "0.18em",
-            textTransform: "uppercase",
-            color: t.faint,
-            marginBottom: t.space4,
-          }}
-        >
-          BEFORE YOU BEGIN
-        </div>
-
-        <div
-          style={{
-            fontFamily: t.serif,
-            fontSize: 26,
-            lineHeight: 1.15,
-            letterSpacing: "-0.01em",
-            color: t.ink,
-            textWrap: "balance",
-          }}
-        >
-          Back up your Tone Master Pro
-        </div>
-
-        <div
-          style={{
-            fontFamily: t.sans,
-            fontSize: 13.5,
-            lineHeight: 1.65,
-            color: t.mutedInk,
-            marginTop: t.space8,
-            maxWidth: 420,
-            textWrap: "pretty",
-          }}
-        >
-          Leveling and song editing write changes straight to your device. Make
-          a full backup in{" "}
-          <span style={{ fontFamily: t.mono, fontSize: 12.5, color: t.ink2 }}>
-            Fender Tone Master Pro Control
-          </span>{" "}
-          first.
-        </div>
-
-        <div
-          style={{
-            marginTop: t.space10,
-            borderRadius: 8,
-            border: `0.5px solid ${t.hairline}`,
-            background: t.window,
-            padding: `${String(t.space8)}px ${String(t.space10)}px`,
-            maxWidth: 420,
-            textAlign: "left",
-            display: "flex",
-            flexDirection: "column",
-            gap: t.space5,
-          }}
-        >
-          <CalloutRow icon="warn-tri" iconColor={t.accentDeep}>
-            TMP Companion is not responsible for data loss. Changes save to your
-            device right away, and you may not be able to undo them without a
-            backup.
-          </CalloutRow>
-          <CalloutRow icon="shield" iconColor={t.good}>
-            This app isn&apos;t made by Fender. It talks to your unit over USB
-            and only touches your own device and presets.
-          </CalloutRow>
-        </div>
-
-        <div
-          style={{
-            marginTop: t.space11,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: t.space8,
-          }}
-        >
           <Button
             variant="primary"
+            size="lg"
             onClick={() => {
               onAccept(dontShow);
             }}
           >
             I&apos;ve backed up, continue
-          </Button>
-          <Button
-            variant="bare"
-            role="checkbox"
-            aria-checked={dontShow}
-            onClick={() => {
-              setDontShow((v) => !v);
-            }}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: t.space4,
-              userSelect: "none",
-            }}
-          >
-            <CheckboxMark checked={dontShow} />
-            <span
-              style={{ fontFamily: t.sans, fontSize: 12, color: t.mutedInk }}
-            >
-              Don&apos;t show again
-            </span>
           </Button>
         </div>
       </div>

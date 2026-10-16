@@ -478,7 +478,7 @@ mod imp {
                 }
                 Err(e) => {
                     // Only a held seize (kIOReturnExclusiveAccess) is worth re-enumerating for.
-                    let transient = matches!(e, DeviceError::SeizeHeld(_));
+                    let transient = e.is_held_seize();
                     last_err = e;
                     if !transient {
                         break;
@@ -578,9 +578,12 @@ mod imp {
             };
             let msg = format!("IOHIDDeviceOpen failed: 0x{:08x}{hint}", rc as u32);
             // Exclusive access alone is a held seize (the kind `open_device` retries on);
-            // not-permitted keeps the hint but is not retried, as before.
+            // not-permitted reads as busy too (it has the same cause and the same fix) but is
+            // not retried, as before.
             return Err(if rc == K_IORETURN_EXCLUSIVE_ACCESS {
                 DeviceError::SeizeHeld(msg)
+            } else if rc == K_IORETURN_NOT_PERMITTED {
+                DeviceError::OpenDenied(msg)
             } else {
                 DeviceError::Other(msg)
             });
@@ -1414,9 +1417,11 @@ mod imp {
             };
             let msg = format!("open {text}: {err}{hint}");
             // A sharing violation is the held exclusive open (Share mode 0 above); an access
-            // denial keeps the hint but stays `Other`, like macOS's not-permitted.
+            // denial reads as busy too, like macOS's not-permitted.
             return Err(if code == ERROR_SHARING_VIOLATION {
                 DeviceError::SeizeHeld(msg)
+            } else if code == ERROR_ACCESS_DENIED {
+                DeviceError::OpenDenied(msg)
             } else {
                 DeviceError::Other(msg)
             });

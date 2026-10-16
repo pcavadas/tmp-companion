@@ -1,8 +1,8 @@
-// src/ui/UpdateOverlay.tsx — pure phase → DS Toast/Modal mapping for auto-update.
+// src/ui/UpdateOverlay.tsx — pure phase → DS Toast/Modal mapping for auto-update (look B).
 //
-// Renders NOTHING at idle; every other phase maps to the existing Toast (which
-// self-positions bottom-right) or the reviewing Modal. All state lives in
-// useUpdater — this component only reads the UpdaterApi it's handed.
+// Renders NOTHING at idle; every other phase maps to a bottom-centre Toast with at most
+// one link action and a close button, or (reviewing) the Modal with the release notes.
+// All state lives in useUpdater — this component only reads the UpdaterApi it's handed.
 
 import { useTheme } from "../theme/ThemeContext";
 import { Modal, Toast } from "./primitives";
@@ -25,13 +25,12 @@ export function UpdateOverlay({ u }: UpdateOverlayProps) {
       return (
         <Toast
           status="available"
-          title={`TMP Companion ${version} is ready`}
-          message="A new update is available to download."
+          title={`TMP Companion ${version} is available.`}
           actions={[
-            { label: "Review", primary: true, onClick: u.review },
-            { label: "Later", onClick: u.dismiss },
+            { label: "See what's new", primary: true, onClick: u.review },
           ]}
           onDismiss={u.dismiss}
+          dismissLabel="Later"
         />
       );
 
@@ -42,37 +41,26 @@ export function UpdateOverlay({ u }: UpdateOverlayProps) {
         <Modal
           open
           label={`TMP Companion ${version}`}
-          headline={
-            <>
-              TMP Companion{" "}
-              <span style={{ fontStyle: "italic" }}>{version}</span>
-            </>
-          }
+          headline={`TMP Companion ${version}`}
           body={
             <>
-              <div
-                style={{
-                  fontFamily: t.mono,
-                  fontSize: t.fsData,
-                  color: t.faint,
-                  marginBottom: t.space5,
-                }}
-              >
-                Updating from {u.currentVersion ?? ""}
-              </div>
-              {shown.map((line, i) => (
+              {u.currentVersion != null && (
                 <div
-                  key={i}
                   style={{
-                    fontFamily: t.sans,
-                    fontSize: t.fsBody2,
-                    lineHeight: 1.75,
-                    color: t.ink2,
+                    fontSize: t.fontCaption,
+                    lineHeight: `${String(t.lineCaption)}px`,
+                    color: t.textSecondary,
+                    marginBottom: t.sp8,
                   }}
                 >
-                  {"•  " + line}
+                  You have {u.currentVersion}.
                 </div>
-              ))}
+              )}
+              <ul style={{ margin: 0, paddingLeft: t.sp16 }}>
+                {shown.map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+              </ul>
             </>
           }
           applyLabel="Update now"
@@ -88,8 +76,8 @@ export function UpdateOverlay({ u }: UpdateOverlayProps) {
       return (
         <Toast
           status="downloading"
-          title={`Downloading ${version}…`}
-          message="About a minute or two left. You can keep working while it downloads."
+          title={`Downloading TMP Companion ${version}…`}
+          message="You can keep working."
           percent={u.percent}
         />
       );
@@ -98,13 +86,12 @@ export function UpdateOverlay({ u }: UpdateOverlayProps) {
       return (
         <Toast
           status="success"
-          title="Ready to install"
-          message={`Restart to finish updating to ${version}. Takes a few seconds — your presets and setlists are untouched.`}
+          title={`TMP Companion ${version} is ready to install.`}
           actions={[
             { label: "Restart now", primary: true, onClick: u.restart },
-            { label: "Later", onClick: u.dismiss },
           ]}
           onDismiss={u.dismiss}
+          dismissLabel="Later"
         />
       );
 
@@ -112,12 +99,9 @@ export function UpdateOverlay({ u }: UpdateOverlayProps) {
       return (
         <Toast
           status="error"
-          title="Update didn’t finish"
-          message={`Couldn’t finish downloading ${version}. Your presets and settings are untouched.`}
-          actions={[
-            { label: "Try again", primary: true, onClick: u.retry },
-            { label: "Dismiss", onClick: u.dismiss },
-          ]}
+          title="The update didn't download."
+          message="Your presets and settings aren't touched."
+          actions={[{ label: "Try again", primary: true, onClick: u.retry }]}
           onDismiss={u.dismiss}
         />
       );

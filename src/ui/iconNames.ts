@@ -49,6 +49,7 @@ export const ICONS = [
   "chev-updown",
   "minus",
   "alert",
+  "usb",
 ] as const;
 
 export type IconName = (typeof ICONS)[number];

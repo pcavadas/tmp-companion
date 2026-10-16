@@ -64,7 +64,7 @@ Full hardware evidence for the linked entries is in [`notes/gotchas.md`](../../n
 
 - **`0xe00002c5` means another handle holds the exclusive seize — there is no device open lockout.** The "HID open-lockout model" (a quick re-open, then tens of seconds locked out, every failed open resetting it) was a host-side misdiagnosis, not fw 1.8.45 behaviour: nothing on the device produces such a lockout (the likely cause is macOS releasing its exclusive-open handle late), and 1,060 in-process open/close cycles at 0 ms–3 s gaps, 200 of them at 0 ms, and an open after a 42.6-min idle drew zero `0xe00002c5` (fw 1.8.58; the evidence indicates the same on older firmware). The real hazards: Pro Control holding the seize, or an overlapping `Session` in this process — the source of the past in-process "lockouts" — which `Hid::open` names in its error; it clears when that handle closes. The code matches: sessions reopen with no fixed gap (the UI's drop-then-reopen waits on `hid::wait_released`), `hid.rs` re-enumerates at 3×400 ms (`ENUM_RETRY_DELAY_MS`), and `scripts/e2e.sh` has no rests (a failed seed retries after 2 s). [→ evidence](../../notes/gotchas.md#0xe00002c5-means-another-handle-holds-the-seize--the-open-lockout-model-was-a-host-side-misdiagnosis)
 
-- **Exclusive HID seize blocks Pro Control.** `IOHIDDeviceOpen` fails while Pro Control is running; the app surfaces a "close Pro Control" error.
+- **Exclusive HID seize blocks Pro Control.** `IOHIDDeviceOpen` fails while Pro Control is running; the app shows "Another app is using your Tone Master Pro" (the `busy` kind; the backend's "close Pro Control" text goes to the log).
 
 ## UI values
 

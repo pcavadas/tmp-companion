@@ -276,6 +276,23 @@ describe("SettingsView — app updates", () => {
     expect(screen.getByText(/releases\/latest$/)).toBeInTheDocument();
   });
 
+  it("'Report a bug' (Something not working?) calls onReportBug", async () => {
+    const user = userEvent.setup();
+    const onReportBug = vi.fn();
+    renderWithTheme(
+      <SettingsView
+        connected={false}
+        updater={makeStubUpdater()}
+        onReportBug={onReportBug}
+      />,
+    );
+    await screen.findByText("Rhythm");
+    await openCategory(user, "About & updates");
+    expect(screen.getByText("Something not working?")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Report a bug" }));
+    expect(onReportBug).toHaveBeenCalledTimes(1);
+  });
+
   it("toggles auto-install", async () => {
     const user = userEvent.setup();
     renderView();

@@ -33,8 +33,8 @@ import { useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { LoadErrorPane } from "../LoadErrorPane";
 import { Modal, Toast } from "../../ui/primitives";
-import { EmptyState } from "../EmptyState";
-import { UsbC } from "../UsbC";
+import { DeviceState } from "../DeviceState";
+import type { NoUnitState } from "../../lib/connectError";
 import type { SongRecord } from "../../lib/types";
 import type { SetlistEntry } from "./songUtil";
 import { SongList } from "./SongList";
@@ -55,10 +55,11 @@ type Confirm =
 
 export interface SongsViewProps {
   connected: boolean;
-  onScan?: () => void;
+  /** What to show while no unit is connected (App's connect state). Default "off". */
+  deviceState?: NoUnitState;
 }
 
-export function SongsView({ connected, onScan }: SongsViewProps) {
+export function SongsView({ connected, deviceState = "off" }: SongsViewProps) {
   const { t } = useTheme();
   const {
     phase,
@@ -123,30 +124,14 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   // Songs + setlists are the slowest payload from the unit; while they arrive the
   // whole two-column layout ghosts in place (see SongsLoadingSkeleton).
   // Disconnected takes priority over loading — songs/setlists (read from the device) live on the unit.
-  if (!connected) {
-    return (
-      <EmptyState
-        title="Songs & setlists live on the unit"
-        body={
-          <>
-            The Tone Master Pro keeps your songs and the setlists that order
-            them. Connect over <UsbC /> and power it on to build, reorder and
-            assign them.
-          </>
-        }
-        onScan={onScan}
-      />
-    );
-  }
+  if (!connected) return <DeviceState state={deviceState} />;
 
   if (phase.kind === "loading") {
     return <SongsLoadingSkeleton />;
   }
 
   if (phase.kind === "error") {
-    return (
-      <LoadErrorPane message={phase.message} onRetry={() => void refresh()} />
-    );
+    return <LoadErrorPane what="songs" onRetry={() => void refresh()} />;
   }
 
   return (

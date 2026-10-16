@@ -88,6 +88,19 @@ export class CommandError extends Error {
 }
 
 /**
+ * Log a caught failure unless it is a {@link CommandError}, which `invokeCommand` has
+ * already logged. The UI never prints a failure's text (it says what happened in plain
+ * words), so a failure thrown by the app's own code around a command — post-processing a
+ * reply, say — would otherwise reach neither the screen nor the log, and so never a bug
+ * report. `where` names the caller in the log line.
+ */
+export function logUnlessCommandError(where: string, e: unknown): void {
+  if (e instanceof CommandError) return;
+  const stack = e instanceof Error && e.stack ? `\n${e.stack}` : "";
+  logError(`${where} failed: ${errMsg(e)}${stack}`);
+}
+
+/**
  * The ONE call path every wrapper below goes through, so a backend command
  * rejection always reaches the on-disk log (`logError`) before it propagates —
  * otherwise a rejection a caller doesn't `.catch()` vanishes with nothing but an

@@ -102,7 +102,7 @@ fn menu_plan(gtk: bool) -> &'static [(&'static str, &'static [Entry])] {
                 "Edit",
                 &[Entry::Cut, Entry::Copy, Entry::Paste, Entry::SelectAll],
             ),
-            ("Help", &[Entry::Custom(REPORT_BUG_ID, "Report a Bug…")]),
+            ("Help", &[Entry::Custom(REPORT_BUG_ID, "Report a bug…")]),
         ]
     } else {
         &[
@@ -140,7 +140,7 @@ fn menu_plan(gtk: bool) -> &'static [(&'static str, &'static [Entry])] {
                     Entry::CloseWindow,
                 ],
             ),
-            ("Help", &[Entry::Custom(REPORT_BUG_ID, "Report a Bug…")]),
+            ("Help", &[Entry::Custom(REPORT_BUG_ID, "Report a bug…")]),
         ]
     }
 }
@@ -224,7 +224,7 @@ pub fn run() {
         // items, and those ARE among the few GTK renders). The non-affiliation
         // notice lives in the standard "About TMP Companion" panel via
         // AboutMetadata; the leveling explainer is in-app (Level tab). Help
-        // carries one item, "Report a Bug…", which just emits tmp://open-bug-report
+        // carries one item, "Report a bug…", which just emits tmp://open-bug-report
         // for the frontend to open its own dialog (see on_menu_event below).
         .menu(|handle| {
             use tauri::menu::{AboutMetadataBuilder, MenuBuilder, SubmenuBuilder};
@@ -392,8 +392,9 @@ mod menu_tests {
         assert!(has_quit, "Linux menu has no way to quit the app");
     }
 
-    /// "Report a Bug…" is the ONLY entry point to `BugReportDialog`, on every
-    /// platform — losing it strands the whole bug-report flow.
+    /// "Report a bug…" opens `BugReportDialog` on every platform, and it is the only
+    /// way in while the first-run notice covers the app (Settings › About and updates is
+    /// the other) — losing it strands the bug-report flow there.
     #[test]
     fn every_plan_keeps_the_bug_report_entry() {
         for gtk in [GTK, APPKIT] {
@@ -401,7 +402,7 @@ mod menu_tests {
                 .iter()
                 .flat_map(|(_, entries)| entries.iter())
                 .any(|e| matches!(e, Entry::Custom(id, _) if *id == REPORT_BUG_ID));
-            assert!(has_report, "gtk={gtk}: no Report a Bug… item");
+            assert!(has_report, "gtk={gtk}: no Report a bug… item");
         }
     }
 
@@ -495,7 +496,7 @@ mod menu_tests {
         );
         assert_eq!(
             menu_plan(APPKIT)[3].1,
-            [Entry::Custom(REPORT_BUG_ID, "Report a Bug…")],
+            [Entry::Custom(REPORT_BUG_ID, "Report a bug…")],
         );
     }
 }

@@ -22,7 +22,7 @@ A macOS-first Tauri 2 desktop app (Rust backend + React/TypeScript frontend) tha
 ## Platform constraints
 
 - **Ships:** macOS 12+, universal (Apple Silicon & Intel) — signed and notarized. Also an **alpha** Linux `.deb`/`.rpm` (see `notes/linux-packaging.md`), via a hidraw (`hid.rs`) + ALSA `hw:` (`audio.rs`) `imp` seam on each of the two platform-boundary modules — see their own headers for the measured detail (device resolution, format, the WirePlumber device-contention rule Linux dev machines need).
-- Exclusive HID seize on macOS blocks Pro Control — the app surfaces a "close Pro Control" error if it is running. On Linux `flock` locks out only another TMP Companion process; Fender ships no Pro Control for Linux.
+- Exclusive HID seize on macOS blocks Pro Control — while Pro Control holds the unit, the device tabs show "Another app is using your Tone Master Pro" (the connect error's `busy` kind). On Linux `flock` locks out only another TMP Companion process; Fender ships no Pro Control for Linux.
 - The device is single-connection: every device command is serialized through a process-global lock.
 - Behaviour is firmware-version dependent (validated on 1.7.75, 1.8.45, 1.8.58).
 

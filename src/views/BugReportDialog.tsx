@@ -1,9 +1,14 @@
-// src/views/BugReportDialog.tsx — "Report a Bug" dialog, opened from the native Help
-// menu (bootstrap.rs emits tmp://open-bug-report on click; App.tsx listens and mounts
-// this). Bundles recent logs + captured device settings + app info (+ an opt-in
-// preset) and either sends it straight to the maintainer (sendReport.ts) or saves it
-// to Downloads for a manual report — falling back to the save automatically when
+// src/views/BugReportDialog.tsx — "Report a bug" (look B, a 460-wide Dialog), opened from
+// the native Help menu (bootstrap.rs emits tmp://open-bug-report; App listens) and from
+// Settings › About and updates. Bundles recent logs + captured device settings + app info
+// (+ an opt-in preset) and either sends it straight to the maintainer (sendReport.ts) or
+// saves it to Downloads for a manual report — falling back to the save automatically when
 // sending fails (no endpoint configured, network error, non-200).
+//
+// What happened shows as one Notice above the buttons, in plain words: no file path, no
+// backend text (a failed save is already in the log, which is what the bundle carries).
+// The close (x) button stays at the top right; the backdrop closes it too (it writes
+// nothing to the unit).
 //
 // The optional preset is sourced from the SHARED library scan store (never triggers a
 // scan). The store keeps a parsed signal `graph` per preset, not the raw device
@@ -13,18 +18,43 @@
 import { useState, useSyncExternalStore } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
+import { sectionLabel } from "../theme/tokens";
 import { Dialog, DialogHeader, DialogBody, DialogFooter } from "../ui/Dialog";
-import { AlertBanner, Button } from "../ui/primitives";
-import { Icon } from "../ui/Icon";
-import { Pick } from "./overlays/Pick";
-import { plainInput } from "../theme/tokens";
+import { Button, Notice, TextArea, type NoticeTone } from "../ui/primitives";
+import { Select } from "../ui/Select";
 import { saveSupportBundle, buildSupportBundle } from "../lib/invoke";
-import { errMsg } from "../lib/format";
 import { subscribeLibraryScan, getLibraryScan } from "../device/libraryScan";
 import { sendReport, type SendReportOutcome } from "./sendReport";
 import { REPORT_ENDPOINT } from "../lib/reportEndpoint";
 
 const NO_PRESET_ID = "none";
+const TITLE = "Report a bug";
+
+/** How the last save or send ended. */
+type Outcome =
+  | { kind: "sent"; reportId: number }
+  | { kind: "fellBack" }
+  | { kind: "saved" }
+  | { kind: "failed" };
+
+function outcomeNotice(o: Outcome): { tone: NoticeTone; text: string } {
+  switch (o.kind) {
+    case "sent":
+      return {
+        tone: "info",
+        text: `Report ${String(o.reportId)} sent. Keep this number in case you need to ask about it.`,
+      };
+    case "fellBack":
+      return {
+        tone: "caution",
+        text: "Couldn't send the report, so it's saved in your Downloads folder. You can send it yourself.",
+      };
+    case "saved":
+      return { tone: "info", text: "Report saved in your Downloads folder." };
+    case "failed":
+      return { tone: "danger", text: "Couldn't save the report. Try again." };
+  }
+}
 
 interface BugReportDialogProps {
   connected: boolean;
@@ -43,14 +73,13 @@ export function BugReportDialog({
 
   const [pickedSlot, setPickedSlot] = useState<number | null>(null);
   const [busy, setBusy] = useState<"save" | "send" | null>(null);
-  const [savedPath, setSavedPath] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [description, setDescription] = useState("");
-  const [reportId, setReportId] = useState<number | null>(null);
-  const [sendFallbackPath, setSendFallbackPath] = useState<string | null>(null);
 
+  const canSend = REPORT_ENDPOINT !== "";
   const hasPresets = lib.presets.length > 0;
+  // Connected, but the shared scan hasn't settled: the presets are on their way.
+  const readingPresets = !hasPresets && connected && !lib.ready;
   const pickedPreset =
     pickedSlot == null
       ? null
@@ -73,21 +102,20 @@ export function BugReportDialog({
   }
 
   // The one local-save call both flows share (save button + send fallback).
-  async function localSave(): Promise<string> {
+  async function localSave(): Promise<void> {
     const { presetJson, presetName } = pickedPresetArgs();
-    return (await saveSupportBundle(firmware, presetJson, presetName)).path;
+    await saveSupportBundle(firmware, presetJson, presetName);
   }
 
   async function save() {
     setBusy("save");
-    setError(null);
-    setSavedPath(null);
-    setReportId(null);
-    setSendFallbackPath(null);
+    setOutcome(null);
     try {
-      setSavedPath(await localSave());
-    } catch (e) {
-      setError(errMsg(e));
+      await localSave();
+      setOutcome({ kind: "saved" });
+    } catch {
+      // Already in the log (the invoke wrapper logs every failed command).
+      setOutcome({ kind: "failed" });
     } finally {
       setBusy(null);
     }
@@ -95,12 +123,9 @@ export function BugReportDialog({
 
   async function send() {
     setBusy("send");
-    setError(null);
-    setReportId(null);
-    setSendFallbackPath(null);
-    setSavedPath(null);
+    setOutcome(null);
     try {
-      let outcome: SendReportOutcome = { ok: false };
+      let sent: SendReportOutcome = { ok: false };
       try {
         const { presetJson, presetName } = pickedPresetArgs();
         const bundleBytes = await buildSupportBundle(
@@ -108,7 +133,7 @@ export function BugReportDialog({
           presetJson,
           presetName,
         );
-        outcome = await sendReport({
+        sent = await sendReport({
           description: description.trim(),
           meta: { firmware },
           bundleBytes,
@@ -116,105 +141,72 @@ export function BugReportDialog({
       } catch {
         // Building the bundle or reaching the endpoint failed — fall through
         // to the local-save fallback below (never a hard failure to the user).
-        outcome = { ok: false };
+        sent = { ok: false };
       }
-      if (outcome.ok) {
-        setReportId(outcome.reportId);
+      if (sent.ok) {
+        setOutcome({ kind: "sent", reportId: sent.reportId });
         return;
       }
-      setSendFallbackPath(await localSave());
-    } catch (e) {
-      setError(errMsg(e));
+      await localSave();
+      setOutcome({ kind: "fellBack" });
+    } catch {
+      setOutcome({ kind: "failed" });
     } finally {
       setBusy(null);
     }
   }
 
+  const notice = outcome != null ? outcomeNotice(outcome) : null;
+  const describeFirst = canSend && description.trim().length === 0;
+
   return (
-    <Dialog size="sm" onClose={onClose} label="Report a Bug">
+    <Dialog size="sm" onClose={onClose} label={TITLE}>
       <DialogHeader>
-        <span
+        <h2
           style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: t.space4,
+            margin: 0,
+            fontSize: t.fontLarge,
+            lineHeight: `${String(t.lineLarge)}px`,
+            fontWeight: t.weightSemibold,
+            color: t.text,
           }}
         >
-          <span
-            style={{
-              width: 24,
-              height: 24,
-              borderRadius: 7,
-              background: t.accentSoft,
-              display: "grid",
-              placeItems: "center",
-            }}
-          >
-            <Icon name="info" size={15} stroke={t.accentDeep} />
-          </span>
-          <span style={{ fontFamily: t.serif, fontSize: 18, color: t.ink }}>
-            Report a Bug
-          </span>
-        </span>
-        <button
-          type="button"
-          onClick={onClose}
-          title="Close"
+          {TITLE}
+        </h2>
+        <Button
+          variant="plain"
+          size="sm"
+          icon="x"
           aria-label="Close"
-          style={{
-            border: "none",
-            background: "transparent",
-            cursor: "pointer",
-            display: "flex",
-            padding: t.space2,
-            color: t.faint,
-          }}
-        >
-          <Icon name="x" size={16} />
-        </button>
+          onClick={onClose}
+        />
       </DialogHeader>
 
       <DialogBody>
-        <div
-          style={{ display: "flex", flexDirection: "column", gap: t.space5 }}
-        >
-          <div
+        <div style={{ display: "flex", flexDirection: "column", gap: t.sp12 }}>
+          <p
             style={{
-              fontFamily: t.sans,
-              fontSize: t.fsUi,
-              color: t.ink2,
-              lineHeight: 1.5,
-              textWrap: "pretty",
+              margin: 0,
+              lineHeight: `${String(t.lineBody + 1)}px`,
+              color: t.textSecondary,
             }}
           >
-            Bundles recent logs, device settings, and app info into a file.
-            Describe what happened, then send it to the maintainer, or save it
-            to Downloads to attach yourself.
-          </div>
+            {canSend
+              ? "Describe what happened. The report adds recent logs, your Tone Master Pro's settings and the app version."
+              : "The report adds recent logs, your Tone Master Pro's settings and the app version."}
+          </p>
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: t.space5,
-            }}
-          >
-            <span
-              style={{ fontFamily: t.sans, fontSize: t.fsUi, color: t.ink2 }}
-            >
-              Include a preset
-            </span>
+          <div style={{ display: "flex", flexDirection: "column", gap: t.sp4 }}>
+            <span style={sectionLabel(t)}>Include a preset</span>
             {hasPresets ? (
-              // Portals through DialogCardCtx (every <Dialog> provides it) so the
-              // dropdown never clips past the scrolling DialogBody — the same
-              // mechanism the leveling wizard's Set-up step uses.
-              <Pick
+              <Select
+                label="Include a preset"
+                width={220}
                 value={pickedSlot == null ? NO_PRESET_ID : String(pickedSlot)}
                 options={[
-                  { id: NO_PRESET_ID, label: "No preset" },
+                  { value: NO_PRESET_ID, label: "No preset" },
                   ...lib.presets.map((p) => ({
-                    id: String(p.slot),
+                    value: String(p.slot),
                     label: p.name,
                   })),
                 ]}
@@ -222,102 +214,90 @@ export function BugReportDialog({
                   setPickedSlot(id === NO_PRESET_ID ? null : Number(id));
                 }}
               />
+            ) : readingPresets ? (
+              <Select
+                label="Include a preset"
+                width={220}
+                value=""
+                placeholder="Reading presets…"
+                attention={false}
+                disabled
+                options={[]}
+                onChange={() => undefined}
+              />
             ) : (
-              <span
-                title="Connect the Tone Master Pro to include a preset"
-                style={{
-                  fontFamily: t.sans,
-                  fontSize: t.fsLabel,
-                  color: t.faint,
-                  fontStyle: "italic",
-                }}
-              >
-                {connected ? "reading library…" : "connect to include a preset"}
-              </span>
+              <>
+                <Select
+                  label="Include a preset"
+                  width={220}
+                  value={NO_PRESET_ID}
+                  options={[{ value: NO_PRESET_ID, label: "No preset" }]}
+                  disabled
+                  onChange={() => undefined}
+                />
+                {!connected && (
+                  <span
+                    style={{
+                      fontSize: t.fontCaption,
+                      lineHeight: `${String(t.lineCaption)}px`,
+                      color: t.textSecondary,
+                    }}
+                  >
+                    Connect your Tone Master Pro to include a preset.
+                  </span>
+                )}
+              </>
             )}
           </div>
 
-          {REPORT_ENDPOINT !== "" && (
-            <textarea
+          {canSend && (
+            <TextArea
+              label="What happened?"
+              placeholder="What did you expect to happen?"
               value={description}
-              onChange={(e) => {
-                setDescription(e.target.value);
-              }}
-              placeholder="What happened? What did you expect?"
-              aria-label="What happened? What did you expect?"
-              rows={4}
-              style={plainInput(t, {
-                border: `0.5px solid ${t.hairlineStrong}`,
-                borderRadius: t.rMd,
-                padding: `${String(t.space5)}px ${String(t.space6)}px`,
-                fontFamily: t.sans,
-                fontSize: t.fsUi,
-                resize: "vertical",
-              })}
+              onChange={setDescription}
             />
           )}
 
-          {error != null && (
-            <AlertBanner>Something went wrong: {error}</AlertBanner>
-          )}
-
-          {reportId != null && (
-            <div
-              style={{
-                fontFamily: t.sans,
-                fontSize: t.fsUi,
-                color: t.accentDeep,
-                fontWeight: 500,
-              }}
-            >
-              Report #{reportId} sent. Keep this ID — you&apos;ll need it if you
-              contact me or ask me to delete your data.
-            </div>
-          )}
-
-          {sendFallbackPath != null && (
-            <AlertBanner>
-              Couldn&apos;t send the report. It saved to {sendFallbackPath}{" "}
-              instead — you can send it yourself.
-            </AlertBanner>
-          )}
-
-          {savedPath != null && (
-            <div
-              style={{
-                fontFamily: t.sans,
-                fontSize: t.fsUi,
-                color: t.accentDeep,
-                fontWeight: 500,
-              }}
-            >
-              Bundle saved to {savedPath}.
-            </div>
-          )}
+          {notice != null && <Notice tone={notice.tone}>{notice.text}</Notice>}
         </div>
       </DialogBody>
 
-      <DialogFooter>
+      <DialogFooter
+        start={
+          describeFirst ? (
+            <span
+              style={{
+                fontSize: t.fontCaption,
+                lineHeight: `${String(t.lineCaption)}px`,
+                color: t.textSecondary,
+              }}
+            >
+              Describe what happened first.
+            </span>
+          ) : undefined
+        }
+      >
         <Button
-          variant="ghost"
-          size="sm"
+          variant={canSend ? "secondary" : "primary"}
+          busy={busy === "save"}
           disabled={busy != null}
           onClick={() => {
             void save();
           }}
         >
-          {busy === "save" ? "Saving…" : "Save bundle"}
+          Save to Downloads
         </Button>
-        {REPORT_ENDPOINT !== "" && (
+        {canSend && (
           <Button
             variant="primary"
-            size="sm"
-            disabled={busy != null || description.trim().length === 0}
+            busy={busy === "send"}
+            disabled={busy != null || describeFirst}
             onClick={() => {
               void send();
             }}
           >
-            {busy === "send" ? "Sending…" : "Send report"}
+            Send report
           </Button>
         )}
       </DialogFooter>

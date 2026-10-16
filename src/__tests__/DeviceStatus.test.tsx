@@ -1,104 +1,94 @@
-// Locks the device-status indicator's 3-phase detection model (design handoff:
-// firmware_status). The dot carries link state (hollow → amber pulse → green),
-// the label carries the firmware the unit reported: off renders "disconnected",
-// a (re)connect always passes through "reading firmware…" for the 900 ms
-// minimum, then resolves to `connected · <version>`; unplugging returns to off
-// and a replug re-runs the whole handshake cycle.
+// Locks the toolbar's device readout (look B): a Dot (or a spinner) and one short phrase,
+// `role="status"`, no hover titles and no click target. A (re)connect always passes
+// through "Connecting…" for the 900 ms minimum, then resolves to "Connected · firmware
+// <v>" (or "Untested firmware <v>" in caution); "In use by another app" for a busy unit;
+// "Not connected" with a hollow dot otherwise. Unplugging returns to off at once and a
+// replug re-runs the whole cycle.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, screen } from "@testing-library/react";
 
-import { DeviceStatus } from "../ui/DeviceStatus";
-import { renderWithTheme } from "./testKit";
+import { light } from "../theme/tokens";
+import { DeviceStatus, type DeviceStatusState } from "../ui/DeviceStatus";
+import { renderWithTheme, toRgb } from "./testKit";
 
-function renderStatus(connected: boolean, firmwareVersion: string | null) {
+function renderStatus(
+  state: DeviceStatusState,
+  firmwareVersion: string | null,
+) {
   return renderWithTheme(
-    <DeviceStatus connected={connected} firmwareVersion={firmwareVersion} />,
+    <DeviceStatus state={state} firmwareVersion={firmwareVersion} />,
   );
+}
+
+function wait900() {
+  act(() => {
+    vi.advanceTimersByTime(900);
+  });
 }
 
 describe("DeviceStatus", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("off — hollow dot, 'disconnected', no firmware ever shown", () => {
-    renderStatus(false, null);
-    expect(screen.getByText("disconnected")).toBeTruthy();
-    expect(screen.getByTitle("No unit connected")).toBeTruthy();
-    expect(document.querySelector(".tmp-fwpulse")).toBeNull();
+  it("off — hollow dot and 'Not connected', no firmware ever shown", () => {
+    renderStatus("off", null);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/^Not connected$/);
+    expect(status.querySelector("[title]")).toBeNull();
   });
 
-  it("connect — reads for the 900 ms minimum (amber pulse), then connected · version", () => {
-    renderStatus(true, "1.7.75");
-    // Phase: reading — pulsing dot + reading copy, version not yet shown.
-    expect(screen.getByText("reading firmware…")).toBeTruthy();
-    expect(screen.getByTitle("Reading firmware from unit…")).toBeTruthy();
-    expect(document.querySelector(".tmp-fwpulse")).toBeTruthy();
-    expect(screen.queryByText(/1\.7\.75/)).toBeNull();
-
-    act(() => {
-      vi.advanceTimersByTime(900);
-    });
-
-    // Phase: ready — labeled format, tooltip carries the full identity.
-    expect(screen.getByText("connected")).toBeTruthy();
-    expect(screen.getByText(/·\s*1\.7\.75/)).toBeTruthy();
-    expect(screen.getByTitle("Tone Master Pro · firmware 1.7.75")).toBeTruthy();
-    expect(document.querySelector(".tmp-fwpulse")).toBeNull();
+  it("connecting — spinner + 'Connecting…'", () => {
+    renderStatus("connecting", null);
+    expect(screen.getByRole("status")).toHaveTextContent(/^Connecting…$/);
+    expect(document.querySelector(".tmp-spin")).not.toBeNull();
   });
 
-  it("ready without a version — plain 'connected', no separator (fallback)", () => {
-    renderStatus(true, null);
-    act(() => {
-      vi.advanceTimersByTime(900);
-    });
-    expect(screen.getByText("connected")).toBeTruthy();
-    expect(screen.queryByText(/·/)).toBeNull();
-    expect(screen.getByTitle("Tone Master Pro")).toBeTruthy();
+  it("connect — 'Connecting…' for the 900 ms minimum, then 'Connected · firmware <v>'", () => {
+    renderStatus("connected", "1.8.45");
+    expect(screen.getByRole("status")).toHaveTextContent(/^Connecting…$/);
+    expect(screen.queryByText(/1\.8\.45/)).toBeNull();
+    wait900();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^Connected · firmware 1\.8\.45$/,
+    );
+    expect(document.querySelector(".tmp-spin")).toBeNull();
   });
 
-  it("ready on below-floor firmware — warn-toned 'untested · version', floor in tooltip", () => {
-    renderStatus(true, "1.6.3");
-    act(() => {
-      vi.advanceTimersByTime(900);
-    });
-    expect(screen.getByText("untested")).toBeTruthy();
-    expect(screen.getByText(/·\s*1\.6\.3/)).toBeTruthy();
-    expect(screen.queryByText("connected")).toBeNull();
-    expect(
-      screen.getByTitle(
-        "Tone Master Pro · firmware 1.6.3 — untested below 1.7",
-      ),
-    ).toBeTruthy();
+  it("connected without a version — plain 'Connected'", () => {
+    renderStatus("connected", null);
+    wait900();
+    expect(screen.getByRole("status")).toHaveTextContent(/^Connected$/);
   });
 
-  it("ready on supported firmware stays 'connected' (no untested label)", () => {
-    renderStatus(true, "1.7.75");
-    act(() => {
-      vi.advanceTimersByTime(900);
-    });
-    expect(screen.getByText("connected")).toBeTruthy();
-    expect(screen.queryByText("untested")).toBeNull();
+  it("untested — 'Untested firmware <v>' in the caution colour", () => {
+    renderStatus("untested", "1.6.3");
+    wait900();
+    const words = screen.getByText("Untested firmware 1.6.3");
+    expect(words.style.color).toBe(toRgb(light.caution));
+    expect(screen.queryByText(/^Connected/)).toBeNull();
   });
 
-  it("unplug → off immediately; replug re-runs the reading handshake", () => {
-    const view = renderStatus(true, "1.7.75");
-    act(() => {
-      vi.advanceTimersByTime(900);
-    });
-    expect(screen.getByText("connected")).toBeTruthy();
+  it("busy — 'In use by another app', never the backend text", () => {
+    renderStatus("busy", null);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^In use by another app$/,
+    );
+  });
+
+  it("unplug → off immediately; replug re-runs 'Connecting…'", () => {
+    const view = renderStatus("connected", "1.8.45");
+    wait900();
+    expect(screen.getByText("Connected · firmware 1.8.45")).toBeTruthy();
 
     // Unplug: straight to off — no cached version.
-    view.rerender(<DeviceStatus connected={false} firmwareVersion={null} />);
-    expect(screen.getByText("disconnected")).toBeTruthy();
-    expect(screen.queryByText(/1\.7\.75/)).toBeNull();
+    view.rerender(<DeviceStatus state="off" firmwareVersion={null} />);
+    expect(screen.getByRole("status")).toHaveTextContent(/^Not connected$/);
 
-    // Replug: the detection cycle replays from "reading".
-    view.rerender(<DeviceStatus connected={true} firmwareVersion="1.7.75" />);
-    expect(screen.getByText("reading firmware…")).toBeTruthy();
-    act(() => {
-      vi.advanceTimersByTime(900);
-    });
-    expect(screen.getByText(/·\s*1\.7\.75/)).toBeTruthy();
+    // Replug: the cycle replays from "Connecting…".
+    view.rerender(<DeviceStatus state="connected" firmwareVersion="1.8.45" />);
+    expect(screen.getByRole("status")).toHaveTextContent(/^Connecting…$/);
+    wait900();
+    expect(screen.getByText("Connected · firmware 1.8.45")).toBeTruthy();
   });
 });

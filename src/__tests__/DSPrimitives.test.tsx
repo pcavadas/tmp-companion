@@ -22,6 +22,7 @@ import {
   SearchInput,
 } from "../ui/primitives";
 import { Tag } from "../ui/Tag";
+import { EmptyState } from "../ui/EmptyState";
 import { PaneEmpty } from "../ui/PaneEmpty";
 import { Spinner } from "../ui/Spinner";
 import { Dot } from "../ui/Dot";
@@ -143,7 +144,8 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).toContain("chev-updown"); // look B Select chevron
     expect(ICONS).toContain("minus"); // look B mixed Checkbox
     expect(ICONS).toContain("alert"); // look B danger Notice / PageState
-    expect(ICONS.length).toBe(44);
+    expect(ICONS).toContain("usb"); // look B "Plug in your Tone Master Pro" page
+    expect(ICONS.length).toBe(45);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });
@@ -373,10 +375,10 @@ describe("Spinner", () => {
   });
 });
 
-describe("PaneEmpty", () => {
+describe("EmptyState (was PaneEmpty)", () => {
   it("renders the icon medallion, title, and body", () => {
     const { container } = renderWithTheme(
-      <PaneEmpty icon="music" title="Nothing here" body="Add some things." />,
+      <EmptyState icon="music" title="Nothing here" body="Add some things." />,
     );
     expect(screen.getByText("Nothing here")).not.toBeNull();
     expect(screen.getByText("Add some things.")).not.toBeNull();
@@ -385,7 +387,7 @@ describe("PaneEmpty", () => {
 
   it("renders a CTA when passed, and none otherwise", () => {
     renderWithTheme(
-      <PaneEmpty
+      <EmptyState
         icon="music"
         title="t"
         body="b"
@@ -395,9 +397,13 @@ describe("PaneEmpty", () => {
     expect(screen.getByText("Add songs")).not.toBeNull();
 
     const { container } = renderWithTheme(
-      <PaneEmpty icon="wave" title="t2" body="b2" />,
+      <EmptyState icon="wave" title="t2" body="b2" />,
     );
     expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("PaneEmpty stays the same component until the clean-up step", () => {
+    expect(PaneEmpty).toBe(EmptyState);
   });
 });
 

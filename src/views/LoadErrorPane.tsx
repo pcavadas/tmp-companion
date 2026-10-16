@@ -1,24 +1,29 @@
-// src/views/LoadErrorPane.tsx — the shared device-view load-error pane.
-//
-// A warn banner + a "Try again" button. Used by LevelView / SongsView / CopyView,
-// which previously each carried a byte-identical copy of this markup.
+// src/views/LoadErrorPane.tsx — the shared device-view load-error page: a danger
+// PageState "Couldn't read your presets (or songs) from your Tone Master Pro" with one
+// "Try again". Used by Level, Doctor, Copy and Songs. The failure's text is never drawn;
+// it is in the log (the invoke wrapper, or `logUnlessCommandError`), so in a bug report.
 
-import { useTheme } from "../theme/ThemeContext";
-import { AlertBanner, Button } from "../ui/primitives";
+import { Button } from "../ui/primitives";
+import { PageState } from "../ui/PageState";
 
 export interface LoadErrorPaneProps {
-  message: string;
+  /** What couldn't be read. */
+  what: "presets" | "songs";
   onRetry: () => void;
 }
 
-export function LoadErrorPane({ message, onRetry }: LoadErrorPaneProps) {
-  const { t } = useTheme();
+export function LoadErrorPane({ what, onRetry }: LoadErrorPaneProps) {
   return (
-    <div style={{ padding: t.space11 }}>
-      <AlertBanner style={{ marginBottom: t.space7 }}>{message}</AlertBanner>
-      <Button variant="primary" onClick={onRetry}>
-        Try again
-      </Button>
-    </div>
+    <PageState
+      tone="danger"
+      icon="alert"
+      title={`Couldn't read your ${what} from your Tone Master Pro`}
+      body="The details are saved for a bug report."
+      actions={
+        <Button variant="secondary" onClick={onRetry}>
+          Try again
+        </Button>
+      }
+    />
   );
 }

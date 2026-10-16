@@ -15,8 +15,8 @@ import { errMsg, slotLabel } from "../../lib/format";
 import { copyApply } from "../../lib/invoke";
 import { patchLibraryGraph } from "../../device/libraryScan";
 import { patchLiveGraph, useLiveDevice } from "../../device/useLiveDevice";
-import { EmptyState } from "../EmptyState";
-import { UsbC } from "../UsbC";
+import { DeviceState } from "../DeviceState";
+import type { NoUnitState } from "../../lib/connectError";
 import { ChoosePresets } from "./ChoosePresets";
 import { PlaceBlocks } from "./PlaceBlocks";
 import { SaveOverlay } from "./SaveOverlay";
@@ -44,12 +44,17 @@ export interface BlockedSlot {
 
 export interface CopyViewProps {
   connected: boolean;
-  onScan?: () => void;
+  /** What to show while no unit is connected (App's connect state). Default "off". */
+  deviceState?: NoUnitState;
   /** The connect-time active graph — its slot marks the ON-UNIT preset. */
   initialGraph?: ActiveGraph | null;
 }
 
-export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
+export function CopyView({
+  connected,
+  deviceState = "off",
+  initialGraph,
+}: CopyViewProps) {
   const { t } = useTheme();
   // The ON-UNIT marker follows the unit's LIVE active preset (the monitor pushes
   // hardware preset changes), not the frozen connect-time graph — so switching presets
@@ -212,25 +217,10 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
   };
 
   // ── render ────────────────────────────────────────────────────────────────
-  if (!connected) {
-    return (
-      <EmptyState
-        title="Copy lives on the Tone Master Pro"
-        body={
-          <>
-            Connect your unit over <UsbC /> to copy blocks between presets. It
-            connects on its own.
-          </>
-        }
-        onScan={onScan}
-      />
-    );
-  }
+  if (!connected) return <DeviceState state={deviceState} />;
 
   if (lib.error != null) {
-    return (
-      <LoadErrorPane message={lib.error} onRetry={() => void lib.refresh()} />
-    );
+    return <LoadErrorPane what="presets" onRetry={() => void lib.refresh()} />;
   }
 
   const from = fromSlot != null ? bySlot.get(fromSlot) : undefined;

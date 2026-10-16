@@ -62,7 +62,7 @@ single rollback at the end.
 
 | Area                 | Functional scenarios | Monkey/chaos scenarios | Existing auto-coverage                            | Biggest gap                                                         |
 | -------------------- | -------------------- | ---------------------- | ------------------------------------------------- | ------------------------------------------------------------------- |
-| Connection lifecycle | C1–C7                | M-C1–M-C3              | unit (`connectError`, `DeviceStatus`, `firmware`) | mid-op disconnect; Pro-Control-grab red banner live                 |
+| Connection lifecycle | C1–C7                | M-C1–M-C3              | unit (`connectError`, `DeviceStatus`, `firmware`) | mid-op disconnect; Pro-Control-grab busy page live                  |
 | Level + wizard       | L1–L14               | M-L1–M-L8              | e2e happy paths + many vitest                     | **cancel mid-run**, partial failure, clamp/offbranch live           |
 | Copy                 | P1–P10               | M-P1–M-P5              | e2e + vitest happy paths                          | physical unplug mid-save (partial failure + Back gated in Vitest)   |
 | Songs                | S1–S13               | M-S1–M-S4              | e2e CRUD + vitest                                 | **add-to-setlist + reorder e2e**, BPM-didn't-stick warn             |
@@ -76,22 +76,26 @@ single rollback at the end.
 Preconditions reset between runs by clearing `localStorage`/`sessionStorage` (the disclaimer +
 gate keys live there — `gates.ts`).
 
-- **C1 — Cold launch, device present.** Launch app → expect Disclaimer gate first (storage clear),
-  then after accept: DeviceStatus goes hollow→amber "reading firmware…" (≥900 ms floor)→green
-  "connected · <fw>". Level tab paints list + hero together.
-- **C2 — Disclaimer gate.** Both paths: "I've backed up — continue" with and without "Don't show
-  again". Verify the perm checkbox writes `localStorage tmp_disclaimer_perm=1` (survives relaunch);
+- **C1 — Cold launch, device present.** Launch app → expect the first-run page first (storage
+  clear), then after accept: DeviceStatus shows "Connecting…" (≥900 ms floor) → green dot
+  "Connected · firmware <fw>". Level tab paints list + hero together.
+- **C2 — First-run gate.** Both paths: "I've backed up, continue" with and without "Don't show
+  this again". Verify the tick writes `localStorage tmp_disclaimer_perm=1` (survives relaunch);
   without it, only `sessionStorage` (re-prompts next cold launch).
-- **C3 — Launch with no device.** Unplug → launch → friendly "Please connect your Tone Master Pro…"
-  banner (NOT red), DeviceStatus hollow, 3 s retry loop armed. Plug in → auto-connects within ~3 s,
-  no "Try again" needed.
-- **C4 — Pro Control holding the device.** Open Pro Control, launch app → **red** AlertBanner with
-  the "close Fender Pro Control" hint (the one actionable-error case). Close PC → retry/auto-recovers.
-- **C5 — Firmware gate.** (Hard to force without old fw.) If fw < 1.7: Level/Copy/Songs show
-  FirmwareGate full-page ("Use it anyway"); Catalog/Settings stay reachable;
-  DeviceStatus shows persistent "untested ⚠". "Use it anyway" unlocks per-mount.
-- **C6 — Hot-plug detach.** While connected on Level, unplug → DeviceStatus→hollow, body→EmptyState,
-  firmware/graph cleared, retry loop stays armed. Replug → auto-reconnects, body repopulates.
+- **C3 — Launch with no device.** Unplug → launch → "Connecting to your Tone Master Pro…", then the
+  "Plug in your Tone Master Pro" page, DeviceStatus hollow "Not connected", 3 s retry loop armed.
+  Plug in → auto-connects within ~3 s, nothing to click.
+- **C4 — Pro Control holding the device.** Open Pro Control, launch app → the "Another app is
+  using your Tone Master Pro" page (kind `busy`, no button) and "In use by another app" in the
+  toolbar; the backend's "close Fender Pro Control" text goes to the log only. Close PC →
+  auto-recovers on the next retry.
+- **C5 — Firmware gate.** (Hard to force without old fw.) If fw < 1.7: Level/Doctor/Copy/Songs
+  show the "This firmware hasn't been tested" page ("Use it anyway"); Catalog/Settings stay
+  reachable; DeviceStatus keeps "Untested firmware <fw>" in caution. "Use it anyway" unlocks
+  per-mount.
+- **C6 — Hot-plug detach.** While connected on Level, unplug → DeviceStatus "Not connected", body →
+  the "Plug in your Tone Master Pro" page (DeviceState), firmware/graph cleared, retry loop stays
+  armed. Replug → auto-reconnects, body repopulates.
 - **C7 — Tab routing.** Click through all 6 tabs (incl. Doctor, post-snapshot); each body wrapped in `ErrorBoundary key={tab}` —
   a crash in one tab shows its fallback ("Try again"/"Reload") without killing the tab bar or
   connection. Catalog/Settings render disconnected (deviceIndependent).
@@ -345,7 +349,7 @@ Mapping the scenarios above to the cheapest durable layer. "Have" = already cove
 | **Rust unit** (have: proto/session/leveller/lufs/monitor/library/variants)              | `bpm_warning` propagation path; a `copy_apply` partial-failure (one slot `error`) shaping the streamed items.                                                                                                                                                                                                                                                       |
 | **Vitest component** (have: most happy paths)                                           | **Cancel-mid-run RunBody → Summary "Not leveled" + levels-kept** (inject cancel); **partial-failure item** (`status:"error"`) in Level streaming (Copy: done, #291); **double-click guard** on Level/Copy/Songs primaries; BPM-warn Toast render; Copy Back keeps edits (done, #292); Settings calibration phase machine (countdown→recording→abort, `abortedRef`). |
 | **Playwright offline** (have: copy/level/songs happy paths + `CatalogView` interaction) | **Add-song-to-setlist + reorder + remove** (current songs spec only makes an empty setlist); empty-library Copy/Level UX; backup-scan-failure rendering; tab-switch-during-scan. Settings spec (none exists); a Catalog Playwright spec is optional (the vitest one covers filters/sort/facets).                                                                    |
-| **Playwright online** (have: all 3 specs GREEN online, attended)                        | The genuinely hardware-only ones: **Stop-mid-run leaves unit un-muted**; clamp/off-branch on a real hard target; cold-boot SetReport window; Pro-Control-grab red banner; ~22 s backup latency. Most overlap with the manual run order in §10.                                                                                                                      |
+| **Playwright online** (have: all 3 specs GREEN online, attended)                        | The genuinely hardware-only ones: **Stop-mid-run leaves unit un-muted**; clamp/off-branch on a real hard target; cold-boot SetReport window; Pro-Control-grab busy page; ~22 s backup latency. Most overlap with the manual run order in §10.                                                                                                                       |
 | **Manual / Claude-driven only** (cannot reasonably automate)                            | Real LUFS convergence accuracy; native-window chrome (Dock icon, focus, OS dialogs); `cliclick` left-display caveat; physical replug timing.                                                                                                                                                                                                                        |
 
 ---

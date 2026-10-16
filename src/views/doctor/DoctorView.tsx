@@ -13,8 +13,8 @@
 import { useCallback, useMemo, useState } from "react";
 
 import { LoadErrorPane } from "../LoadErrorPane";
-import { EmptyState } from "../EmptyState";
-import { UsbC } from "../UsbC";
+import { DeviceState } from "../DeviceState";
+import type { NoUnitState } from "../../lib/connectError";
 import { usePresetData } from "../level/usePresetData";
 import { useLiveDevice } from "../../device/useLiveDevice";
 import {
@@ -35,10 +35,14 @@ type Stage = "select" | "setup" | "run" | "results";
 
 export interface DoctorViewProps {
   connected: boolean;
-  onScan?: () => void;
+  /** What to show while no unit is connected (App's connect state). Default "off". */
+  deviceState?: NoUnitState;
 }
 
-export function DoctorView({ connected, onScan }: DoctorViewProps) {
+export function DoctorView({
+  connected,
+  deviceState = "off",
+}: DoctorViewProps) {
   const {
     phase,
     rows,
@@ -140,25 +144,10 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
   }, [reset]);
 
   // ── render ──────────────────────────────────────────────────────────────────
-  if (!connected) {
-    return (
-      <EmptyState
-        title="Doctor needs the Tone Master Pro"
-        body={
-          <>
-            Connect your unit over <UsbC /> and power it on to check your
-            presets. It connects on its own.
-          </>
-        }
-        onScan={onScan}
-      />
-    );
-  }
+  if (!connected) return <DeviceState state={deviceState} />;
 
   if (phase.kind === "error") {
-    return (
-      <LoadErrorPane message={phase.message} onRetry={() => void refresh()} />
-    );
+    return <LoadErrorPane what="presets" onRetry={() => void refresh()} />;
   }
 
   if (stage === "setup") {

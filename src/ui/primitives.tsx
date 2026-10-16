@@ -379,6 +379,8 @@ export interface ToastProps {
   /** Rendered left to right. Max 2 recommended. */
   actions?: ToastAction[];
   onDismiss?: () => void;
+  /** The close button's accessible name (what closing means). Default "Dismiss". */
+  dismissLabel?: string;
 }
 
 /** Legacy `kind` isn't just a `status` alias: `warn` gets its own caution "notice"
@@ -425,6 +427,7 @@ export function Toast({
   showPercent = true,
   actions,
   onDismiss,
+  dismissLabel = "Dismiss",
 }: ToastProps) {
   const { t } = useTheme();
   const resolved = resolveStatus(status, kind);
@@ -543,7 +546,7 @@ export function Toast({
             variant="plain"
             size="sm"
             icon="x"
-            aria-label="Dismiss"
+            aria-label={dismissLabel}
             onClick={onDismiss}
           />
         )}

@@ -7,27 +7,27 @@
 //   • Doctor   → <DoctorView/>   tone diagnosis: re-amp captures, spectral
 //                findings, one-click prescriptions.
 //   • Copy     → <CopyView/>     copy blocks between presets (staged off-device).
-//   • Songs    → <SongsView/>    device-backed songs + setlists CRUD; renders its
-//                own in-body EmptyState until the unit is connected.
+//   • Songs    → <SongsView/>    device-backed songs + setlists CRUD.
+// The four device tabs render the shared <DeviceState/> page until a unit connects.
 //   • Catalog  → <CatalogView/>  device-independent reference catalog.
 //   • Settings → <SettingsView/> instrument profiles + Tier-2 calibration.
 //
 // Connection is fully automatic: connect_device on mount, retry every 3 s on a
-// guarded interval (inert while connected, live again after an unplug), a
-// friendly "please connect your Tone Master Pro" gate when no device, and
-// actionable failures (e.g. "close Pro Control") surfaced as a red alert. The
-// backend hotplug watcher emits tmp://device-{attached,detached} so unplugging
-// drops the UI to disconnected and replugging reconnects immediately. Click-only:
-// no keyboard shortcuts, no command palette. The tab bar is a minimal click-only
-// bar reading the shared theme tokens.
+// guarded interval (inert while connected, live again after an unplug), and the
+// backend hotplug watcher's tmp://device-{attached,detached} events — all through ONE
+// single-flight attempt. There is no Connect, Disconnect or Scan button anywhere. While
+// no unit is connected, the device tabs show one DeviceState page picked by the last
+// failed connect's typed KIND (plug it in / another app is using it / couldn't connect);
+// the backend message only reaches the log. The toolbar's DeviceStatus says the same in
+// a few words. Click-only: no keyboard shortcuts, no command palette.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { useTheme } from "./theme/ThemeContext";
-import { AlertBanner } from "./ui/primitives";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
-import { DeviceStatus } from "./ui/DeviceStatus";
+import { DeviceStatus, type DeviceStatusState } from "./ui/DeviceStatus";
+import { Toolbar } from "./ui/Toolbar";
 import { Disclaimer } from "./views/Disclaimer";
 import { BugReportDialog } from "./views/BugReportDialog";
 import { LevelView } from "./views/level";
@@ -38,7 +38,7 @@ import { CatalogView } from "./views/CatalogView";
 import { SettingsView } from "./views/settings";
 import type { CategoryId } from "./views/settings";
 import { FirmwareGate } from "./views/FirmwareGate";
-import { LibraryScanErrorBanner } from "./views/LibraryScanErrorBanner";
+import { LibraryScanNotice } from "./views/LibraryScanNotice";
 import { firmwareGateActive, firmwareSupported } from "./lib/firmware";
 import { connectDevice, currentGraph, isTauri } from "./lib/invoke";
 import { useUpdater } from "./lib/useUpdater";
@@ -46,9 +46,9 @@ import { UpdateOverlay } from "./ui/UpdateOverlay";
 import { ensureLibraryScan, resetLibraryScan } from "./device/libraryScan";
 import { onDeviceDetached as resetLevelOnDetach } from "./views/level/levelRunStore";
 import { startScanAfterGraph } from "./lib/scheduleLibraryScan";
-import type { ActiveGraph } from "./lib/types";
-import { connectBannerMessage, errorKind } from "./lib/connectError";
-import { errMsg } from "./lib/format";
+import type { ActiveGraph, CommandErrorKind } from "./lib/types";
+import { errorKind, noUnitState } from "./lib/connectError";
+import { loadPlatform } from "./lib/platform";
 import { DISCLAIMER_PERM_KEY, DISCLAIMER_SESSION_KEY } from "./lib/gates";
 
 const RETRY_MS = 3000; // auto-connect retry interval (armed while disconnected).
@@ -61,7 +61,7 @@ type ConnStatus = "connecting" | "connected" | "disconnected";
 
 // Which tabs the firmware gate covers is decided by FW_UNGATED_TABS in
 // lib/firmware.ts, not here.
-const TABS: { id: Tab; label: string }[] = [
+const TABS: readonly { id: Tab; label: string }[] = [
   { id: "level", label: "Level" },
   { id: "doctor", label: "Doctor" },
   { id: "copy", label: "Copy" },
@@ -101,7 +101,10 @@ export default function App() {
   // Firmware the connected unit reported during the handshake (connect_device
   // resolves with it). Never cached across a disconnect — no unit, no version.
   const [firmware, setFirmware] = useState<string | null>(null);
-  const [connectError, setConnectError] = useState<string | null>(null);
+  // The typed KIND of the last failed connect (null once one succeeds, and after a
+  // detach). It picks the device tabs' page and the toolbar's words; the message text
+  // never reaches the screen (invoke() already logged it).
+  const [connectKind, setConnectKind] = useState<CommandErrorKind | null>(null);
   // The active graph from the combined handshake — delivered alongside the
   // firmware in a single burst so the signal chain renders immediately.
   const [initialGraph, setInitialGraph] = useState<ActiveGraph | null>(null);
@@ -117,7 +120,7 @@ export default function App() {
       setFirmware(result.firmware ?? null);
       setInitialGraph(result.graph ?? null);
       setStatus("connected");
-      setConnectError(null);
+      setConnectKind(null);
       // ONE library backup scan per connection, owned here so every device tab
       // (Level/Copy/Songs) consumes the SAME scan — switching tabs never re-triggers
       // it. Idempotent (module-scoped guard): a reconnect after detach scans fresh.
@@ -132,17 +135,15 @@ export default function App() {
         startScan: ensureLibraryScan,
       });
     } catch (e) {
-      // No unit, or a booting/just-replugged one whose first handshake send
-      // failed: the error's KIND routes it to the friendly gate, not a red
-      // banner; the retry loop reconnects once the unit is up.
-      setConnectError(connectBannerMessage(errorKind(e), errMsg(e)));
+      // The error's KIND picks the page (no unit or a booting one, another app
+      // holding it, anything else); the retry loop reconnects once that clears.
+      setConnectKind(errorKind(e));
       if (!connectedRef.current) setStatus("disconnected");
     }
   }, []);
 
-  // Guarded single-flight attempt — the ONE connect path, shared by the 3 s poll,
-  // the hotplug attached event and the manual "Scan for device". A no-op while
-  // connected or while another attempt runs.
+  // Guarded single-flight attempt — the ONE connect path, shared by the 3 s poll and
+  // the hotplug attached event. A no-op while connected or while another attempt runs.
   const attempt = useCallback(async () => {
     if (connectingRef.current || connectedRef.current) return;
     connectingRef.current = true;
@@ -173,14 +174,14 @@ export default function App() {
         setStatus("disconnected");
         setFirmware(null);
         setInitialGraph(null);
-        setConnectError(null);
+        setConnectKind(null);
         resetLibraryScan(); // next connection scans fresh
         resetLevelOnDetach(); // a reconnect can re-map the list indexes a run keyed on
       }),
       listen("tmp://device-attached", () => {
         // Fresh attach — try connecting immediately instead of waiting for the
         // next 3 s poll tick (the unit may still be booting; a SetReport-timeout
-        // failure is suppressed into the gate, and the poll keeps retrying).
+        // failure shows the plug-it-in page, and the poll keeps retrying).
         void attempt();
       }),
     ];
@@ -192,7 +193,12 @@ export default function App() {
     };
   }, [attempt]);
 
-  // ── Help → "Report a Bug…" (native menu item, bootstrap.rs) ───────────────
+  // Which OS this build runs on (the busy page's wording) — read once, device-free.
+  useEffect(() => {
+    void loadPlatform();
+  }, []);
+
+  // ── Report a bug: the native Help menu item (bootstrap.rs) and Settings › About ──
   const [bugReportOpen, setBugReportOpen] = useState(false);
   useEffect(() => {
     if (!isTauri()) return;
@@ -205,16 +211,6 @@ export default function App() {
       });
     };
   }, []);
-
-  // Manual retry ("Scan for device" on a no-device page) — an immediate attempt
-  // through the same single-flight guard. Only offered while disconnected; if a
-  // poll attempt is already in flight, that one settles the status.
-  const retry = useCallback(() => {
-    if (connectedRef.current) return;
-    setStatus("connecting");
-    setConnectError(null);
-    void attempt();
-  }, [attempt]);
 
   const connected = status === "connected";
 
@@ -238,16 +234,24 @@ export default function App() {
     setDisclaimerOk(true);
   };
 
-  // ── Device-status indicator — dot carries the link state, label carries the
-  //    firmware the unit reported (design handoff: firmware_status). ──────────
-  const statusNode = (
-    <DeviceStatus connected={connected} firmwareVersion={firmware} />
-  );
+  // What the device tabs show while no unit is connected, and the toolbar's words.
+  const noUnit = noUnitState(status === "connecting", connectKind);
+  const statusState: DeviceStatusState = connected
+    ? fwOk
+      ? "connected"
+      : "untested"
+    : noUnit === "connecting"
+      ? "connecting"
+      : noUnit === "busy"
+        ? "busy"
+        : "off";
+  const openBugReport = useCallback(() => {
+    setBugReportOpen(true);
+  }, []);
 
-  // The bug-report dialog is a Help-menu-native affordance — it must mount
-  // regardless of the disclaimer gate, else a click on the disclaimer screen
-  // sets bugReportOpen with nothing rendered and the dialog surprise-opens
-  // the instant the disclaimer is accepted.
+  // The bug-report dialog must mount regardless of the disclaimer gate (the Help menu
+  // reaches it there), else a click on the disclaimer screen sets bugReportOpen with
+  // nothing rendered and the dialog surprise-opens the instant the disclaimer is accepted.
   const bugReportDialog = bugReportOpen && (
     <BugReportDialog
       connected={connected}
@@ -265,9 +269,9 @@ export default function App() {
           display: "flex",
           flexDirection: "column",
           height: "100vh",
-          background: t.bg,
-          color: t.ink,
-          fontFamily: t.sans,
+          background: t.window,
+          color: t.text,
+          fontFamily: t.fontSans,
           overflow: "hidden",
         }}
       >
@@ -283,31 +287,22 @@ export default function App() {
         display: "flex",
         flexDirection: "column",
         height: "100vh",
-        background: t.bg,
-        color: t.ink,
-        fontFamily: t.sans,
+        background: t.window,
+        color: t.text,
+        fontFamily: t.fontSans,
         overflow: "hidden",
         position: "relative",
       }}
     >
-      <TabBar tab={tab} onSelect={selectTab} statusNode={statusNode} />
+      <Toolbar
+        tabs={TABS}
+        current={tab}
+        onSelect={selectTab}
+        status={<DeviceStatus state={statusState} firmwareVersion={firmware} />}
+      />
 
-      {/* Actionable connect error (e.g. "close Pro Control") — red alert. */}
-      {connectError && (
-        <AlertBanner
-          style={{
-            margin: `${String(t.space5)}px ${String(t.space8)}px 0`,
-            padding: `${String(t.space4)}px ${String(t.space6)}px`,
-            fontSize: t.fsUi,
-            flexShrink: 0,
-          }}
-        >
-          {connectError}
-        </AlertBanner>
-      )}
-
-      {/* A failed library scan — said once, app-wide, with Retry. */}
-      {connected && <LibraryScanErrorBanner />}
+      {/* A failed library scan — said once, app-wide, under the toolbar. */}
+      {connected && <LibraryScanNotice />}
 
       {/* Active workspace. A per-tab ErrorBoundary keyed on `tab` isolates a
           body crash to the workspace — the tab bar + connection state survive,
@@ -340,23 +335,23 @@ export default function App() {
               {tab === "level" && (
                 <LevelView
                   connected={connected}
-                  onScan={retry}
+                  deviceState={noUnit}
                   initialGraph={initialGraph}
                   onCalibrate={onCalibrate}
                 />
               )}
               {tab === "doctor" && (
-                <DoctorView connected={connected} onScan={retry} />
+                <DoctorView connected={connected} deviceState={noUnit} />
               )}
               {tab === "copy" && (
                 <CopyView
                   connected={connected}
-                  onScan={retry}
+                  deviceState={noUnit}
                   initialGraph={initialGraph}
                 />
               )}
               {tab === "songs" && (
-                <SongsView connected={connected} onScan={retry} />
+                <SongsView connected={connected} deviceState={noUnit} />
               )}
               {tab === "catalog" && <CatalogView />}
               {tab === "settings" && (
@@ -364,6 +359,7 @@ export default function App() {
                   connected={connected}
                   updater={updater}
                   initialCategory={settingsCategory}
+                  onReportBug={openBugReport}
                 />
               )}
             </>
@@ -375,59 +371,6 @@ export default function App() {
       <UpdateOverlay u={updater} />
 
       {bugReportDialog}
-    </div>
-  );
-}
-
-// ── Top tab bar (click-only, 6-tab IA) ────────────────────────────────────────
-interface TabBarProps {
-  tab: Tab;
-  onSelect: (t: Tab) => void;
-  statusNode: React.ReactNode;
-}
-
-function TabBar({ tab, onSelect, statusNode }: TabBarProps) {
-  const { t } = useTheme();
-  return (
-    <div
-      style={{
-        height: 46,
-        flexShrink: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: `0 ${String(t.space8)}px`,
-        borderBottom: `0.5px solid ${t.hairline}`,
-        background: t.titlebar,
-      }}
-    >
-      <div style={{ display: "flex", gap: t.space1 }}>
-        {TABS.map((tb) => {
-          const on = tb.id === tab;
-          return (
-            <button
-              key={tb.id}
-              onClick={() => {
-                onSelect(tb.id);
-              }}
-              style={{
-                border: "none",
-                cursor: "pointer",
-                fontFamily: t.sans,
-                fontSize: t.fsBody,
-                fontWeight: on ? 600 : 450,
-                color: on ? t.ink : t.mutedInk,
-                padding: `${String(t.space3)}px ${String(t.space6)}px`,
-                borderRadius: t.rBtn,
-                background: on ? t.accentSoft : "transparent",
-              }}
-            >
-              {tb.label}
-            </button>
-          );
-        })}
-      </div>
-      {statusNode}
     </div>
   );
 }

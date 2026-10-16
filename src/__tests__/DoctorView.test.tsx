@@ -1,7 +1,7 @@
 // src/__tests__/DoctorView.test.tsx — the Doctor tab stage machine (select → setup
 // → run → results), device mocked.
 //
-//   • Disconnected shows the connect-your-TMP empty state.
+//   • Disconnected shows the shared "Plug in your Tone Master Pro" page.
 //   • Connected renders the preset list from the mocked list/store/backup rows.
 //   • Ticking a preset offers "Check 1 sound…" (singular); the run fires ONE
 //     `doctor_check` carrying the right key/listIndex/nodes, then auto-advances to
@@ -165,10 +165,10 @@ describe("DoctorView — connection gating", () => {
     localStorage.clear();
   });
 
-  it("shows the connect-your-TMP empty state when disconnected", () => {
+  it("shows the shared plug-it-in page when disconnected", () => {
     renderView(false);
     expect(
-      screen.getByText("Doctor needs the Tone Master Pro"),
+      screen.getByText("Plug in your Tone Master Pro"),
     ).toBeInTheDocument();
   });
 });

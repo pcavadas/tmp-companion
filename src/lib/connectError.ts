@@ -1,19 +1,19 @@
-// Classifies a `connect_device` failure into "show the red banner" vs "show the
-// friendly please-connect gate", by the backend's typed error KIND (`error::AppError`,
-// `{ kind, message }` on the wire) — never by matching the message text.
+// Classifies a `connect_device` failure by the backend's typed error KIND
+// (`error::AppError`, `{ kind, message }` on the wire) — never by matching the message
+// text. The kind picks the page a device tab shows while no unit is connected; the
+// message itself only reaches the log (and so the bug report), never the screen.
 //
-// Two suppressed (gate, not error) kinds:
 //   • `not_connected` — no TMP enumerated: nothing plugged in yet.
 //   • `not_ready` — the unit is present and seized, but its USB stack refused a report
 //     write during the handshake. This is the COLD-BOOT window: the HID interface
 //     enumerates (so the hotplug watcher fires + the open/seize succeeds) seconds
 //     before tm-stomp-server is ready, so the first handshake send fails. It also
-//     covers the unit being pulled mid-handshake. Either way the fix is "wait / power
-//     it on" — exactly what the gate says — not a red error, and the retry reconnects
+//     covers the unit being pulled mid-handshake. Either way the fix is "wait / switch
+//     it on", so it shows the same page as nothing plugged in, and the retry reconnects
 //     once the unit is up.
-//
-// Everything else surfaces (red banner) — most importantly `busy`, the actionable
-// "close Fender Pro Control" hint when Pro Control holds the exclusive seize.
+//   • `busy` — another app holds the unit (Pro Control, or another TMP Companion
+//     window): "Another app is using your Tone Master Pro".
+//   • `other` — anything else: "Couldn't connect to your Tone Master Pro".
 //
 // Dependency-free on purpose (types only): `invoke.ts` imports this for its
 // quiet-logging rule, so importing `invoke.ts` back would close a module cycle.
@@ -42,17 +42,23 @@ export function errorKind(e: unknown): CommandErrorKind {
   return "other";
 }
 
-/** Whether a connect failure of this kind is the friendly gate's case (no unit, or
- * a unit still booting) rather than an error worth a banner or a log line. */
+/** Whether a connect failure of this kind is the plain "plug it in" case (no unit, or a
+ * unit still booting) — the steady state while unplugged, so not worth a log line. */
 export function isConnectGateKind(kind: CommandErrorKind): boolean {
   return kind === "not_connected" || kind === "not_ready";
 }
 
-/** The message to surface in the red AlertBanner for a connect failure, or `null`
- * to suppress it (the gate + the 3 s retry loop handle that kind). */
-export function connectBannerMessage(
-  kind: CommandErrorKind,
-  message: string,
-): string | null {
-  return isConnectGateKind(kind) ? null : message;
+/** What a device tab (Level, Doctor, Copy, Songs) shows while no unit is connected. */
+export type NoUnitState = "connecting" | "off" | "busy" | "failed";
+
+/** The no-unit page: "connecting" until the first attempt settles, then the last failed
+ * connect's kind (`null` = none since a detach or launch) decides it. */
+export function noUnitState(
+  connecting: boolean,
+  kind: CommandErrorKind | null,
+): NoUnitState {
+  if (connecting) return "connecting";
+  if (kind === "busy") return "busy";
+  if (kind === "other") return "failed";
+  return "off";
 }

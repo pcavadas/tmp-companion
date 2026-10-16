@@ -362,10 +362,10 @@ describe("CopyView — render", () => {
     mockCommands();
   });
 
-  it("shows the disconnected empty state when no unit", () => {
+  it("shows the shared plug-it-in page when no unit", () => {
     renderWithTheme(<CopyView connected={false} />);
     expect(
-      screen.getByText("Copy lives on the Tone Master Pro"),
+      screen.getByText("Plug in your Tone Master Pro"),
     ).toBeInTheDocument();
   });
 

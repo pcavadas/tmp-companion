@@ -1,33 +1,35 @@
-// src/views/ConnectionHelpSheet.tsx — the "Connection help" explainer behind the
-// no-device screen's secondary button (EmptyState). A calm, read-only sheet with the
-// checks that actually get the unit talking to the app: power + a data cable, Pro
-// Control closed (it holds the unit's one exclusive connection), a short wait while
-// the unit boots, then another port or cable. The app connects on its own, so there
-// is no Connect button to point at. No inputs, no persistence, no fetch.
+// src/views/ConnectionHelpSheet.tsx — the "Connection help" explainer behind the no-device
+// page's one button (DeviceState). A calm, read-only Dialog (look B, 460 wide) with the
+// four checks that actually get the unit talking to the app: a data cable and power, Pro
+// Control quit (it holds the unit's one exclusive connection), a short wait while the unit
+// starts up, then another port or cable. The app connects by itself, so there is no
+// Connect button to point at. No inputs, no persistence, no fetch. The backdrop closes it:
+// it guards no write.
 
 import { useTheme } from "../theme/ThemeContext";
 import { Dialog, DialogHeader, DialogBody, DialogFooter } from "../ui/Dialog";
 import { Button } from "../ui/primitives";
-import { Icon } from "../ui/Icon";
 
 const STEPS: readonly { title: string; body: string }[] = [
   {
-    title: "Plug it in and power it on",
-    body: "Connect the Tone Master Pro to this computer with a USB-C cable, then switch the unit on. Some cables only charge; use one that carries data.",
+    title: "Plug it in and switch it on",
+    body: "Use a USB-C cable that carries data. Some cables only charge.",
   },
   {
-    title: "Close Pro Control",
-    body: "Only one app can talk to the unit at a time. Quit Fender Tone Master Pro Control while you use this app.",
+    title: "Quit Pro Control",
+    body: "Only one app can talk to the Tone Master Pro at a time.",
   },
   {
     title: "Give it a few seconds",
-    body: "The unit takes a moment to start up. This app connects on its own as soon as it is ready; there is nothing to click.",
+    body: "It connects by itself once it has started up.",
   },
   {
     title: "Still nothing?",
-    body: "Try another USB port or another cable. The app finds the unit on its own once it is plugged in.",
+    body: "Try another USB port or another cable.",
   },
 ];
+
+const TITLE = "Connecting your Tone Master Pro";
 
 export interface ConnectionHelpSheetProps {
   onClose: () => void;
@@ -36,66 +38,49 @@ export interface ConnectionHelpSheetProps {
 export function ConnectionHelpSheet({ onClose }: ConnectionHelpSheetProps) {
   const { t } = useTheme();
   return (
-    <Dialog size="md" onClose={onClose} label="Connection help">
+    <Dialog size="sm" onClose={onClose} label={TITLE}>
       <DialogHeader>
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: t.space4,
-          }}
-        >
-          <Icon name="cable" size={16} stroke={t.accentDeep} />
-          <span style={{ fontFamily: t.serif, fontSize: 18, color: t.ink }}>
-            Connecting your Tone Master Pro
-          </span>
-        </span>
-      </DialogHeader>
-      <DialogBody>
-        <ol
+        <h2
           style={{
             margin: 0,
-            padding: 0,
-            listStyle: "none",
-            display: "flex",
-            flexDirection: "column",
-            gap: t.space7,
+            fontSize: t.fontLarge,
+            lineHeight: `${String(t.lineLarge)}px`,
+            fontWeight: t.weightSemibold,
+            color: t.text,
           }}
         >
+          {TITLE}
+        </h2>
+      </DialogHeader>
+      <DialogBody>
+        <ol style={{ margin: 0, padding: 0, listStyle: "none" }}>
           {STEPS.map((step, i) => (
-            <li key={step.title} style={{ display: "flex", gap: t.space6 }}>
+            <li
+              key={step.title}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "24px minmax(0, 1fr)",
+                gap: t.sp8 + t.sp2,
+                padding: `${String(t.sp8 + t.sp2)}px 0`,
+                borderTop: `1px solid ${t.separator}`,
+              }}
+            >
               <span
                 style={{
-                  fontFamily: t.mono,
-                  fontSize: t.fsData,
-                  color: t.accentDeep,
-                  minWidth: 14,
+                  fontWeight: t.weightSemibold,
+                  color: t.textSecondary,
+                  fontVariantNumeric: "tabular-nums",
                 }}
               >
                 {i + 1}
               </span>
               <span>
                 <span
-                  style={{
-                    display: "block",
-                    fontFamily: t.sans,
-                    fontSize: t.fsBody,
-                    fontWeight: 500,
-                    color: t.ink,
-                  }}
+                  style={{ display: "block", fontWeight: t.weightSemibold }}
                 >
                   {step.title}
                 </span>
-                <span
-                  style={{
-                    display: "block",
-                    marginTop: t.space2,
-                    fontFamily: t.sans,
-                    fontSize: t.fsUi,
-                    lineHeight: 1.5,
-                    color: t.ink2,
-                  }}
-                >
+                <span style={{ display: "block", color: t.textSecondary }}>
                   {step.body}
                 </span>
               </span>

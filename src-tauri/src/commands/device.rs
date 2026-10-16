@@ -55,8 +55,9 @@ pub(crate) struct ConnectResult {
 /// WITHOUT clearing so the monitor's own connect error / next snapshot surfaces.
 ///
 /// The ONE command whose error is typed ([`AppError`], `{ kind, message }` on the wire): the
-/// frontend shows its friendly "please connect" gate for `not_connected` / `not_ready` and a
-/// red banner for everything else, keyed on `kind`, not on the message text.
+/// frontend picks the page it shows by `kind`, never by the message text: "Plug in your Tone
+/// Master Pro" for `not_connected` / `not_ready`, "Another app is using your Tone Master Pro"
+/// for `busy`, "Couldn't connect" for `other`. The message itself only reaches the log.
 #[tauri::command]
 pub(crate) async fn connect_device(state: State<'_, AppState>) -> Result<ConnectResult, AppError> {
     let arc = state.session.clone();

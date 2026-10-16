@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { errMsg } from "./format";
+import { logUnlessCommandError } from "./invoke";
 
 export type LoadPhase =
   { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready" };
@@ -46,6 +47,9 @@ export function useDeviceLoad() {
         await body(isCurrent);
         if (isCurrent()) setPhase({ kind: "ready" });
       } catch (e) {
+        // The error page shows no backend text, so a throw that isn't a command's
+        // (already logged) rejection is logged here.
+        logUnlessCommandError("device load", e);
         if (isCurrent()) setPhase({ kind: "error", message: errMsg(e) });
       }
     },

@@ -80,7 +80,8 @@ struct AppliedStartupLive {
 
 static STARTUP_SNAPSHOT: OnceLock<Mutex<Option<StartupSnapshot>>> = OnceLock::new();
 /// The monitor's last failed connect, typed: `connect_device` hands its kind to the
-/// frontend (a "please connect" gate for no-device / not-ready, a red banner otherwise).
+/// frontend, which picks its page by kind (plug it in, another app is using it, or
+/// couldn't connect).
 static LAST_CONNECT_ERROR: OnceLock<Mutex<Option<DeviceError>>> = OnceLock::new();
 
 fn snapshot_slot() -> &'static Mutex<Option<StartupSnapshot>> {

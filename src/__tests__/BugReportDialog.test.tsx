@@ -1,13 +1,15 @@
-// The "Report a Bug" dialog — opened from the native Help menu — the manual
-// bug-report bundle export + the in-app "send report" flow.
+// The "Report a bug" dialog — opened from the native Help menu and Settings — the
+// manual bug-report bundle export + the in-app "send report" flow (look B).
 //
-//   • Renders the header + explainer + "Save bundle" button.
-//   • Disconnected (empty library scan) → the preset picker is a disabled hint.
-//   • Clicking the button calls save_support_bundle (firmware/presetJson/presetName
-//     all null with no preset picked) and, on success, surfaces the returned path.
-//   • "Send report": success shows the report ID; a send failure (non-200,
-//     network error, or the placeholder empty endpoint) automatically falls
-//     back to the local save and shows the saved path.
+//   • Renders the title + explainer + "Save to Downloads" and "Send report".
+//   • Disconnected (empty library scan) → the preset Select is disabled on "No preset"
+//     with the reason under it.
+//   • "Save to Downloads" calls save_support_bundle (firmware/presetJson/presetName all
+//     null with no preset picked) and says where the report went — never a file path,
+//     never backend text.
+//   • "Send report": disabled with its reason until something is described; success
+//     shows the report number; a send failure (non-200, network error, or the
+//     placeholder empty endpoint) automatically falls back to the local save.
 //   • The header close button fires onClose.
 //
 // Real timers (RTL's waitFor/findBy hang under vitest fake timers here).
@@ -40,19 +42,39 @@ describe("BugReportDialog", () => {
     vi.mocked(invoke).mockReset();
   });
 
-  it("renders the header, explainer, and disconnected picker hint", () => {
+  it("renders the title, explainer, and the disconnected preset Select", () => {
     renderDialog(false);
-    expect(screen.getByText("Report a Bug")).toBeInTheDocument();
     expect(
-      screen.getByText(/Bundles recent logs, device settings/i),
+      screen.getByRole("dialog", { name: "Report a bug" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /save bundle/i }),
+      screen.getByText(
+        "Describe what happened. The report adds recent logs, your Tone Master Pro's settings and the app version.",
+      ),
     ).toBeInTheDocument();
-    // No library scan (disconnected) → the picker is a disabled hint, not a menu.
     expect(
-      screen.getByText(/connect to include a preset/i),
+      screen.getByRole("button", { name: "Save to Downloads" }),
     ).toBeInTheDocument();
+    // No library scan (disconnected) → the Select shows what will be used, and why
+    // it can't change.
+    expect(
+      screen.getByRole("button", { name: "Include a preset: No preset" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText("Connect your Tone Master Pro to include a preset."),
+    ).toBeInTheDocument();
+  });
+
+  it("Send report stays disabled, with its reason, until something is described", async () => {
+    const user = userEvent.setup();
+    renderDialog(false);
+    expect(screen.getByRole("button", { name: "Send report" })).toBeDisabled();
+    expect(
+      screen.getByText("Describe what happened first."),
+    ).toBeInTheDocument();
+    await user.type(screen.getByLabelText("What happened?"), "It froze.");
+    expect(screen.getByRole("button", { name: "Send report" })).toBeEnabled();
+    expect(screen.queryByText("Describe what happened first.")).toBeNull();
   });
 
   it("fires onClose from the header close button", async () => {
@@ -62,13 +84,13 @@ describe("BugReportDialog", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("saves a bundle and shows the returned path", async () => {
+  it("saves a bundle and says it is in Downloads, without the path", async () => {
     const user = userEvent.setup();
     const path = "/Users/x/Downloads/tmp-companion-report-20260719-120000.tar";
     mockCommands({ save_support_bundle: () => ({ path }) });
     renderDialog(false);
 
-    await user.click(screen.getByRole("button", { name: /save bundle/i }));
+    await user.click(screen.getByRole("button", { name: "Save to Downloads" }));
 
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("save_support_bundle", {
       firmware: null,
@@ -76,11 +98,12 @@ describe("BugReportDialog", () => {
       presetName: null,
     });
     expect(
-      await screen.findByText(`Bundle saved to ${path}.`),
+      await screen.findByText("Report saved in your Downloads folder."),
     ).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(path))).toBeNull();
   });
 
-  it("shows an inline error when the save fails", async () => {
+  it("says the save failed in plain words, never the backend text", async () => {
     const user = userEvent.setup();
     mockCommands({
       save_support_bundle: () => {
@@ -89,9 +112,12 @@ describe("BugReportDialog", () => {
     });
     renderDialog(false);
 
-    await user.click(screen.getByRole("button", { name: /save bundle/i }));
+    await user.click(screen.getByRole("button", { name: "Save to Downloads" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/disk full/i);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't save the report. Try again.",
+    );
+    expect(screen.queryByText(/disk full/i)).toBeNull();
   });
 
   it("sends a report and shows the returned report ID", async () => {
@@ -108,12 +134,16 @@ describe("BugReportDialog", () => {
     renderDialog(false);
 
     await user.type(
-      screen.getByPlaceholderText(/what happened/i),
+      screen.getByLabelText("What happened?"),
       "The level meter froze.",
     );
     await user.click(screen.getByRole("button", { name: /send report/i }));
 
-    expect(await screen.findByText(/Report #42 sent/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Report 42 sent. Keep this number in case you need to ask about it.",
+      ),
+    ).toBeInTheDocument();
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
       "https://report.example/report",
       expect.objectContaining({
@@ -139,15 +169,21 @@ describe("BugReportDialog", () => {
     renderDialog(false);
 
     await user.type(
-      screen.getByPlaceholderText(/what happened/i),
+      screen.getByLabelText("What happened?"),
       "The level meter froze.",
     );
     await user.click(screen.getByRole("button", { name: /send report/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /couldn.t send/i,
+    expect(
+      await screen.findByText(
+        "Couldn't send the report, so it's saved in your Downloads folder. You can send it yourself.",
+      ),
+    ).toBeInTheDocument();
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      "save_support_bundle",
+      expect.anything(),
     );
-    expect(screen.getByRole("alert")).toHaveTextContent(path);
+    expect(screen.queryByText(new RegExp(path))).toBeNull();
   });
 
   it("a later save clears a prior send's report-ID message", async () => {
@@ -167,16 +203,16 @@ describe("BugReportDialog", () => {
     renderDialog(false);
 
     await user.type(
-      screen.getByPlaceholderText(/what happened/i),
+      screen.getByLabelText("What happened?"),
       "The level meter froze.",
     );
     await user.click(screen.getByRole("button", { name: /send report/i }));
-    expect(await screen.findByText(/Report #42 sent/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Report 42 sent/i)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /save bundle/i }));
+    await user.click(screen.getByRole("button", { name: "Save to Downloads" }));
     expect(
-      await screen.findByText(`Bundle saved to ${path}.`),
+      await screen.findByText("Report saved in your Downloads folder."),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Report #42 sent/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Report 42 sent/i)).not.toBeInTheDocument();
   });
 });

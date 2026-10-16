@@ -1,142 +1,109 @@
-// src/ui/DeviceStatus.tsx — the top-bar device indicator.
+// src/ui/DeviceStatus.tsx — the toolbar's device readout (look B): a Dot (or a spinner)
+// and one short phrase, 12 px secondary text, `role="status"`. A passive readout with no
+// click target: connection is fully automatic, so there are no Connect/Disconnect
+// controls anywhere.
 //
-// Three phases: hollow (disconnected) → amber-pulse ("reading firmware…") →
-// green ("connected · <fw>"). The tmp-fwpulse keyframes live in index.html.
-// Connection is fully automatic; there are no Connect/Disconnect controls.
+//   connecting  spinner + "Connecting…" (also the first 900 ms after every (re)connect)
+//   connected   good dot + "Connected · firmware {v}" ("Connected" when the unit gave none)
+//   untested    caution dot + "Untested firmware {v}" in caution (stays after "Use it anyway")
+//   busy        caution dot + "In use by another app"
+//   off         hollow dot + "Not connected" (also a connect that failed for another reason)
 
 import { useEffect, useState } from "react";
-import { useTheme } from "../theme/ThemeContext";
-import { Icon } from "./Icon";
-import { FW_MIN, firmwareSupported } from "../lib/firmware";
 
-/** Minimum time the "reading firmware…" phase stays visible. The version is
- * already in hand when `connected` flips (connect_device resolves with it), so
- * this floor is purely UX — the handshake read shouldn't flash by. */
+import { useTheme } from "../theme/ThemeContext";
+import { Dot } from "./Dot";
+import { Spinner } from "./Spinner";
+
+/** Minimum time "Connecting…" stays up after a connect lands. The version is already in
+ * hand when the unit connects (connect_device resolves with it), so this floor is purely
+ * UX — the handshake read shouldn't flash by. */
 const MIN_READING_MS = 900;
 
+export type DeviceStatusState =
+  "connecting" | "connected" | "untested" | "busy" | "off";
+
 export interface DeviceStatusProps {
-  connected: boolean;
-  /** Firmware the connected unit reported (e.g. "1.7.75"); null when unknown. */
+  state: DeviceStatusState;
+  /** Firmware the connected unit reported (e.g. "1.8.45"); null when unknown. */
   firmwareVersion: string | null;
 }
 
-type Phase = "off" | "reading" | "ready";
-
-/**
- * Device-status indicator (top-right of the tab bar, every page). The DOT
- * carries the link state — green = unit present, amber pulsing = reading it,
- * hollow = no unit — and the LABEL carries the most useful thing the link
- * tells us: the firmware the connected unit is running (`labeled` format from
- * the design handoff: `connected · 1.7.75`). Passive readout — no click target.
- */
-export function DeviceStatus({
-  connected,
-  firmwareVersion,
-}: DeviceStatusProps) {
+export function DeviceStatus({ state, firmwareVersion }: DeviceStatusProps) {
   const { t } = useTheme();
 
-  // Detection handshake: re-runs on every (re)connect — off → reading → ready.
-  // `phase` derives from `connected` + whether the min-reading window elapsed for
-  // the current connection. The elapsed flag is reset on a connection change via
-  // React's "adjust state during render" pattern (not in an effect), and the
-  // effect only flips it from inside the timer — never synchronously.
+  // Every (re)connect passes through "Connecting…" for the minimum window. The elapsed
+  // flag resets when the link comes up, via React's "adjust state during render"
+  // pattern (not in an effect), and only the timer flips it back.
+  const live = state === "connected" || state === "untested";
   const [minElapsed, setMinElapsed] = useState(false);
-  const [prevConnected, setPrevConnected] = useState(connected);
-  if (connected !== prevConnected) {
-    setPrevConnected(connected);
+  const [prevLive, setPrevLive] = useState(live);
+  if (live !== prevLive) {
+    setPrevLive(live);
     setMinElapsed(false);
   }
   useEffect(() => {
-    if (!connected) return;
+    if (!live) return;
     const id = setTimeout(() => {
       setMinElapsed(true);
     }, MIN_READING_MS);
     return () => {
       clearTimeout(id);
     };
-  }, [connected]);
-  const phase: Phase = !connected ? "off" : minElapsed ? "ready" : "reading";
+  }, [live]);
+  const shown: DeviceStatusState = live && !minElapsed ? "connecting" : state;
 
-  // Connected to a unit running firmware below the tested floor: the dot + label
-  // turn warn-toned and a static ⚠ trails the version — a persistent reminder
-  // that survives "use it anyway" (the gate notice itself lives in FirmwareGate).
-  const untested = phase === "ready" && !firmwareSupported(firmwareVersion);
-
-  const dotColor =
-    phase === "ready"
-      ? untested
-        ? t.warn
-        : t.good
-      : phase === "reading"
-        ? t.sevWarn
-        : "transparent";
-
-  let label: React.ReactNode;
-  if (phase === "off") {
-    label = <span style={{ color: t.faint }}>disconnected</span>;
-  } else if (phase === "reading") {
-    label = <span style={{ color: t.faint }}>reading firmware…</span>;
-  } else if (untested) {
-    label = (
-      <>
-        <span style={{ color: t.warn }}>untested</span>
-        {firmwareVersion && (
-          <span
-            style={{ color: t.warn, fontVariantNumeric: "tabular-nums" }}
-          >{` · ${firmwareVersion}`}</span>
-        )}
-        <Icon name="warn-tri" size={12} stroke={t.warn} />
-      </>
-    );
-  } else {
-    label = (
-      <>
-        <span style={{ color: t.mutedInk }}>connected</span>
-        {firmwareVersion && (
-          <span
-            style={{ color: t.faint, fontVariantNumeric: "tabular-nums" }}
-          >{` · ${firmwareVersion}`}</span>
-        )}
-      </>
-    );
+  let mark: React.ReactNode;
+  let words: React.ReactNode;
+  switch (shown) {
+    case "connecting":
+      mark = <Spinner size={11} stroke={t.textSecondary} strokeWidth={2.4} />;
+      words = "Connecting…";
+      break;
+    case "connected":
+      mark = <Dot tone="good" />;
+      words =
+        firmwareVersion != null
+          ? `Connected · firmware ${firmwareVersion}`
+          : "Connected";
+      break;
+    case "untested":
+      mark = <Dot tone="caution" />;
+      words = (
+        <span style={{ color: t.caution }}>
+          {firmwareVersion != null
+            ? `Untested firmware ${firmwareVersion}`
+            : "Untested firmware"}
+        </span>
+      );
+      break;
+    case "busy":
+      mark = <Dot tone="caution" />;
+      words = "In use by another app";
+      break;
+    case "off":
+      mark = <Dot tone="neutral" hollow />;
+      words = "Not connected";
+      break;
   }
 
-  const title =
-    phase === "ready"
-      ? firmwareVersion
-        ? untested
-          ? `Tone Master Pro · firmware ${firmwareVersion} — untested below ${FW_MIN}`
-          : `Tone Master Pro · firmware ${firmwareVersion}`
-        : "Tone Master Pro"
-      : phase === "reading"
-        ? "Reading firmware from unit…"
-        : "No unit connected";
-
   return (
-    <span
-      title={title}
+    <div
+      role="status"
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: t.space4,
-        fontFamily: t.mono,
-        fontSize: t.fsMeta,
-        letterSpacing: t.lsMeta,
+        gap: t.sp6,
+        fontFamily: t.fontSans,
+        fontSize: t.fontCaption,
+        lineHeight: `${String(t.lineCaption)}px`,
+        color: t.textSecondary,
+        fontVariantNumeric: "tabular-nums",
         whiteSpace: "nowrap",
       }}
     >
-      <span
-        className={phase === "reading" ? "tmp-fwpulse" : undefined}
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: t.rPill,
-          boxSizing: "border-box",
-          background: dotColor,
-          border: phase === "off" ? `1px solid ${t.faint}` : "none",
-        }}
-      />
-      {label}
-    </span>
+      {mark}
+      {words}
+    </div>
   );
 }

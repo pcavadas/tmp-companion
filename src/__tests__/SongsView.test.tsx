@@ -133,10 +133,13 @@ describe("SongsView (device-backed)", () => {
     renderMgr(true);
     const user = userEvent.setup();
 
-    expect(await screen.findByText("device offline")).toBeInTheDocument();
+    // The error page says it in plain words; the backend text stays in the log.
+    const failed = "Couldn't read your songs from your Tone Master Pro";
+    expect(await screen.findByText(failed)).toBeInTheDocument();
+    expect(screen.queryByText("device offline")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /try again/i }));
     await waitFor(() =>
-      expect(screen.queryByText("device offline")).not.toBeInTheDocument(),
+      expect(screen.queryByText(failed)).not.toBeInTheDocument(),
     );
     expect(
       await screen.findByRole("button", { name: /new song/i }),

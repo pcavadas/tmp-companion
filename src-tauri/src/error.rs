@@ -149,8 +149,15 @@ pub enum DeviceError {
     /// No TMP is enumerated: nothing plugged in.
     NotFound(String),
     /// Another handle holds the exclusive open (Pro Control, or another session or process).
-    /// The macOS open retries on this kind alone (`kIOReturnExclusiveAccess`).
+    /// The macOS open retries on this kind alone (`kIOReturnExclusiveAccess`); see
+    /// [`DeviceError::is_held_seize`].
     SeizeHeld(String),
+    /// The OS refused the open in the way another app holding the unit makes it refuse
+    /// (macOS `kIOReturnNotPermitted`, Windows `ERROR_ACCESS_DENIED`). The user is told the
+    /// same thing as for [`DeviceError::SeizeHeld`] (both are the `busy` kind), but the open
+    /// is not retried on it. Only the macOS and Windows transports raise it.
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+    OpenDenied(String),
     /// The unit opened, but the OS refused a report write during the handshake: its USB
     /// stack is not accepting reports yet (the cold-boot window), or it went away.
     NotReady(String),
@@ -164,9 +171,17 @@ impl DeviceError {
         match self {
             DeviceError::NotFound(m)
             | DeviceError::SeizeHeld(m)
+            | DeviceError::OpenDenied(m)
             | DeviceError::NotReady(m)
             | DeviceError::Other(m) => m,
         }
+    }
+
+    /// A held exclusive open: the one kind worth re-trying an open on (macOS re-enumerates
+    /// on it). An [`DeviceError::OpenDenied`] reads as busy to the user but is not retried.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn is_held_seize(&self) -> bool {
+        matches!(self, DeviceError::SeizeHeld(_))
     }
 
     /// The same kind with its message rewritten by `f` (context added around it).
@@ -174,6 +189,7 @@ impl DeviceError {
         match self {
             DeviceError::NotFound(m) => DeviceError::NotFound(f(m)),
             DeviceError::SeizeHeld(m) => DeviceError::SeizeHeld(f(m)),
+            DeviceError::OpenDenied(m) => DeviceError::OpenDenied(f(m)),
             DeviceError::NotReady(m) => DeviceError::NotReady(f(m)),
             DeviceError::Other(m) => DeviceError::Other(f(m)),
         }
@@ -208,7 +224,8 @@ impl From<DeviceError> for String {
 pub enum AppError {
     /// No device to talk to (nothing plugged in).
     NotConnected(String),
-    /// The device is held by someone else (Pro Control, another session or process).
+    /// The device is held by someone else (Pro Control, another session or process), or
+    /// the OS refused the open the way it does when another app holds it.
     Busy(String),
     /// The device is present but not ready yet (booting, or just went away).
     NotReady(String),
@@ -265,7 +282,7 @@ impl From<DeviceError> for AppError {
     fn from(e: DeviceError) -> Self {
         match e {
             DeviceError::NotFound(m) => AppError::NotConnected(m),
-            DeviceError::SeizeHeld(m) => AppError::Busy(m),
+            DeviceError::SeizeHeld(m) | DeviceError::OpenDenied(m) => AppError::Busy(m),
             DeviceError::NotReady(m) => AppError::NotReady(m),
             DeviceError::Other(m) => AppError::Other(m),
         }
@@ -318,6 +335,7 @@ mod tests {
         );
         for (e, kind) in [
             (DeviceError::SeizeHeld("x".into()), "busy"),
+            (DeviceError::OpenDenied("x".into()), "busy"),
             (DeviceError::NotReady("x".into()), "not_ready"),
             (DeviceError::Other("x".into()), "other"),
         ] {
@@ -328,6 +346,31 @@ mod tests {
         assert_eq!(
             serde_json::to_value(AppError::from("t".to_string())).unwrap()["kind"],
             "other"
+        );
+    }
+
+    /// macOS `kIOReturnNotPermitted` and Windows `ERROR_ACCESS_DENIED` are how the OS
+    /// refuses an open while another app holds the unit: they reach the user as `busy`
+    /// ("Another app is using your Tone Master Pro"), never the generic failure, yet the
+    /// open's retry still keys on a held seize alone, so their retry behaviour is unchanged.
+    #[test]
+    fn an_open_denial_is_busy_but_never_retried_as_a_held_seize() {
+        let denied = DeviceError::OpenDenied("IOHIDDeviceOpen failed: 0xe00002e2".into());
+        assert!(!denied.is_held_seize());
+        assert!(DeviceError::SeizeHeld("x".into()).is_held_seize());
+        for other in [
+            DeviceError::NotFound("x".into()),
+            DeviceError::NotReady("x".into()),
+            DeviceError::Other("x".into()),
+        ] {
+            assert!(!other.is_held_seize());
+        }
+        let app = AppError::from(denied);
+        assert_eq!(app.kind(), "busy");
+        assert_eq!(app.message(), "IOHIDDeviceOpen failed: 0xe00002e2");
+        assert_eq!(
+            DeviceError::OpenDenied("d".into()).map_message(|m| format!("open ({m})")),
+            DeviceError::OpenDenied("open (d)".into())
         );
     }
 

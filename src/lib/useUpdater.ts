@@ -49,9 +49,9 @@ export interface UpdaterApi {
   restart: () => void;
 }
 
-/** Release-notes markdown → plain bullet lines (the modal adds its own "•  "
- * prefix). Strips heading #s, [text](url) links, and leading bullets; drops
- * blank lines; caps at 10 lines. */
+/** Release-notes markdown → plain lines (the review dialog lists them as bullets).
+ * Strips heading #s, [text](url) links, and leading bullets; drops blank lines; caps
+ * at 10 lines. */
 export function formatReleaseNotes(notes: string): string[] {
   const out: string[] = [];
   for (const raw of notes.split(/\r?\n/)) {

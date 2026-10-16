@@ -9,7 +9,7 @@ import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
-import { PaneEmpty } from "../../ui/PaneEmpty";
+import { EmptyState } from "../../ui/EmptyState";
 import type { SetlistRecord, SongRecord } from "../../lib/types";
 import { LIST_COLS, IconBtn } from "./shared";
 import { InlineEdit } from "../../ui/InlineEdit";
@@ -368,7 +368,7 @@ export function SetlistDetail({
           Reading this setlist…
         </div>
       ) : rows.length === 0 ? (
-        <PaneEmpty
+        <EmptyState
           icon="music"
           title="No songs in this setlist yet"
           body="Add songs from your library — a song can sit in this setlist and others at the same time."

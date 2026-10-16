@@ -15,8 +15,8 @@
         "title": "TMP Companion",
         "width": 900,
         "height": 680,
-        "minWidth": 640,
-        "minHeight": 480,
+        "minWidth": 800,
+        "minHeight": 600,
         "resizable": true,
         "maximizable": true,
         "fullscreen": false

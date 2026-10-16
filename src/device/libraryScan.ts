@@ -15,12 +15,13 @@
 // progress readouts subscribe to the percent.
 //
 // A failed scan is not an empty library: it settles `ready` (so nothing waits on it
-// forever) with `error` set, and `retryLibraryScan` runs it again.
+// forever) with `error` set, and `retryLibraryScan` runs it again. `error` is the
+// failure's text for the log and a bug report only; the app-wide notice never shows it.
 
 import { useSyncExternalStore } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
-import { readLibraryViaBackup } from "../lib/invoke";
+import { logUnlessCommandError, readLibraryViaBackup } from "../lib/invoke";
 import { errMsg } from "../lib/format";
 import { onLive } from "../lib/liveEvents";
 import type {
@@ -318,8 +319,11 @@ export async function ensureLibraryScan(): Promise<void> {
     pendingJoinUnknown = false;
   } catch (e) {
     // Scene details stay unknown and whole-preset ticks degrade to Base-only, but
-    // say so: `error` keeps this from reading as an empty library. Already on disk
-    // via the central invoke-failure logger.
+    // say so: `error` keeps this from reading as an empty library. The screen says it
+    // in plain words only, so the text must reach the log: a backup-read rejection is
+    // already there (the central invoke-failure logger), a throw from the processing
+    // above is logged here.
+    logUnlessCommandError("library scan", e);
     failure = errMsg(e);
   } finally {
     // Only the CURRENT scan settles. A reset (detach) already cleared state + the

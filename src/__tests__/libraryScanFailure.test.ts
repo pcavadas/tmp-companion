@@ -3,7 +3,8 @@
 // failed backup read must say so (`error`) instead of reading as an empty library
 // and must be retryable (Copy shows it and its Retry re-runs the scan), a reset
 // mid-listen starts no stale read, and a progress tick must not notify DATA
-// subscribers.
+// subscribers. The screen never shows a failure's text (look B), so every failure must
+// reach the log: a throw in the scan's own processing too, not just a command's.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
@@ -101,6 +102,41 @@ describe("libraryScan — failure paths (#310)", () => {
         .mocked(invoke)
         .mock.calls.filter(([c]) => c === "read_library_via_backup"),
     ).toHaveLength(2); // the failed read, then the retry's
+  });
+
+  it("a throw while processing the backup is logged, not only kept in `error`", async () => {
+    const logged = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    // A reply the processing can't walk (no `presets` array) throws a TypeError inside
+    // the scan, after the command itself succeeded — nothing else logs that one.
+    mockBackup(() => Promise.resolve({} as BackupReadResult));
+
+    await ensureLibraryScan();
+
+    const s = getLibraryScan();
+    expect(s.ready).toBe(true);
+    expect(s.error).not.toBeNull();
+    expect(logged).toHaveBeenCalledWith(
+      expect.stringContaining("library scan failed:"),
+    );
+    logged.mockRestore();
+  });
+
+  it("a failed backup READ is logged once, by the invoke wrapper, not again by the scan", async () => {
+    const logged = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mockBackup(() => Promise.reject(new Error("backup timed out")));
+
+    await ensureLibraryScan();
+
+    const lines = logged.mock.calls.map(([m]) => String(m));
+    expect(lines.filter((m) => m.includes("backup timed out"))).toHaveLength(1);
+    expect(
+      lines.some((m) => m.startsWith("invoke(read_library_via_backup)")),
+    ).toBe(true);
+    logged.mockRestore();
   });
 
   it("a reset while a failing progress-listen is pending starts no stale backup read", async () => {

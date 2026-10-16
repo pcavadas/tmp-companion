@@ -126,7 +126,7 @@ export async function openLevel(page: Page): Promise<void> {
   await page.goto("/");
   const disclaimer = page.getByRole("button", { name: /backed up/i });
   if (await disclaimer.isVisible().catch(() => false)) await disclaimer.click();
-  await expect(page.getByText(/connected · \d+\.\d+/)).toBeVisible({
+  await expect(page.getByText(/Connected · firmware \d+\.\d+/)).toBeVisible({
     timeout: 20_000,
   });
 }
