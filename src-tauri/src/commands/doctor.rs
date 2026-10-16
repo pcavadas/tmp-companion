@@ -549,6 +549,7 @@ fn sound_result(
                 kind,
                 coverage.as_deref(),
             );
+            log_findings(item, &r.diags);
             r.integrated_lufs = Some(p.integrated_lufs);
             r.tail_ratio_db = Some(p.tail_ratio_db);
             r.balance_db = doctor::balance(&p.bands);
@@ -558,6 +559,29 @@ fn sound_result(
         }
     }
     r
+}
+
+/// Log each finding's technical reading (`Diag::detail`, `Rx::detail`): the
+/// Hz/dB behind the plain words, which the screen doesn't show.
+fn log_findings(item: &DoctorInput, diags: &[doctor::LeveledDiag]) {
+    for d in diags {
+        let fixes: Vec<&str> = d
+            .diag
+            .rx
+            .iter()
+            .map(|r| r.detail.as_str())
+            .filter(|t| !t.is_empty())
+            .collect();
+        log::info!(
+            "doctor_check {}: {} (z {:.1}, from {:?}): {}; fix settings: [{}]",
+            item.key,
+            d.diag.key,
+            d.diag.z,
+            d.from_level,
+            d.diag.detail,
+            fixes.join(" | ")
+        );
+    }
 }
 
 /// Group the run's sounds per preset in first-seen item order, then add each preset's

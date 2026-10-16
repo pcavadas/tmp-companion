@@ -42,13 +42,15 @@ use crate::profiles::PlaybackLevel;
 /// already uses.
 const BANDS_6: [(f32, f32); 6] = [
     (60.0, 120.0),     // Lows
-    (120.0, 400.0),    // Low-mids
+    (120.0, 400.0),    // Low mids
     (400.0, 1000.0),   // Mids
-    (1000.0, 3000.0),  // High-mids
+    (1000.0, 3000.0),  // High mids
     (3000.0, 6000.0),  // Highs
     (6000.0, 12000.0), // Air
 ];
-const LABELS_6: [&str; 6] = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
+/// The on-screen band names (the band meter's, and the words the fixes use).
+/// Display only: a band's identity is its index ([`Family::semantic_bands`]).
+const LABELS_6: [&str; 6] = ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"];
 
 /// The Bass VI layout: a (30,60) "Sub" band under the standard six. Bass VI
 /// fundamentals are E1 ≈ 41 Hz — invisible in the 60 Hz-floored 6-band layout —
@@ -57,18 +59,18 @@ const LABELS_6: [&str; 6] = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "
 const BANDS_7: [(f32, f32); 7] = [
     (30.0, 60.0),      // Sub
     (60.0, 120.0),     // Lows
-    (120.0, 400.0),    // Low-mids
+    (120.0, 400.0),    // Low mids
     (400.0, 1000.0),   // Mids
-    (1000.0, 3000.0),  // High-mids
+    (1000.0, 3000.0),  // High mids
     (3000.0, 6000.0),  // Highs
     (6000.0, 12000.0), // Air
 ];
 const LABELS_7: [&str; 7] = [
     "Sub",
     "Lows",
-    "Low-mids",
+    "Low mids",
     "Mids",
-    "High-mids",
+    "High mids",
     "Highs",
     "Air",
 ];
@@ -280,11 +282,11 @@ impl PlaybackOffsets {
 /// Per ⅓-octave frequency `f` in a band, the gain the ear adds going from 70
 /// to 80 phon, relative to 1 kHz, is `(L_f(f,70) − 70) − (L_f(f,80) − 80)`
 /// (ISO 226:2023 eq. 1, with its Table 1 α_f, L_U, T_f). The band value is the
-/// mean over the band's ⅓-octave points: Lows +3.39, Low-mids +1.77, Mids
-/// +0.39, High-mids −0.23, Highs −0.39, Air +0.18 dB. That vector goes through
-/// the rule metrics themselves — [`tilt_split`] reads Lows +0.71 and Low-mids
+/// mean over the band's ⅓-octave points: Lows +3.39, Low mids +1.77, Mids
+/// +0.39, High mids −0.23, Highs −0.39, Air +0.18 dB. That vector goes through
+/// the rule metrics themselves — [`tilt_split`] reads Lows +0.71 and Low mids
 /// 0.00 local (the contour change is mostly a tilt, −0.67 dB/oct), and
-/// [`centered_deviations`] reads Lows +3.00, Low-mids +1.38, High-mids −0.62 —
+/// [`centered_deviations`] reads Lows +3.00, Low mids +1.38, High mids −0.62 —
 /// and the fizzy metric (Air − Highs) moves +0.57. Each gate moves by minus its
 /// metric's shift, rounded to 0.1 dB. The 60 phon shifts mirror these within
 /// 0.03 dB, so Quiet is Stage negated. A sound's own deviation and this shift
@@ -292,8 +294,8 @@ impl PlaybackOffsets {
 /// local; the per-band mean ignores the sound's spectrum inside the band.
 ///
 /// `harsh` gets NO offset, decided rather than omitted: the 1–3 kHz contour is
-/// nearly level-independent (High-mids moves −0.23 dB), its local metric does
-/// not move at all, and its centered metric moves the OTHER way (High-mids
+/// nearly level-independent (High mids moves −0.23 dB), its local metric does
+/// not move at all, and its centered metric moves the OTHER way (High mids
 /// reads 0.62 dB less prominent against the body at Stage). Shifting it would
 /// relax harsh as playback gets louder, which breaks the louder-suffix model
 /// [`diagnose_levels`] rests on for a 0.6 dB change in one consensus space.
@@ -635,7 +637,7 @@ pub fn body_psd_span(channels: &[&[f32]], rate: u32, start: usize, end: usize) -
 /// doesn't absorb a single-band bump into the trend the way the old OLS fit did
 /// — so preset 11 is muddy+dark (a −5.0 dB/oct dark tilt plus a +7 dB low-mid
 /// bump on top of the guitar target). The one co-firing limit that remains: a
-/// SYMMETRIC 2-band low shelf (both Lows and Low-mids raised together) reads as
+/// SYMMETRIC 2-band low shelf (both Lows and Low mids raised together) reads as
 /// a tilt (dark), not a local bump — an accepted 6-point identifiability limit
 /// of a single slope+intercept fit. Verified by the `showcase_profile_diagnoses`
 /// test — keep those presets PLAIN and scene-less.
@@ -1529,13 +1531,29 @@ pub enum Sev {
     Med,
 }
 
+/// Which way a finding's bands are off: what the band meter says about them
+/// ("Low mids too strong", "Highs and Air too weak"). Every rule has one, the
+/// time-domain ones included (`washed` is too much tail, `buried` too little
+/// clean low end), so the wire field is never absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BandDirection {
+    /// Too much: muddy, boomy, harsh, fizzy, bright, boxy, resonant, washed.
+    Strong,
+    /// Too little: lost, thin, dark, buried.
+    Weak,
+}
+
+/// One finding. The words on screen are `label`, `explain` and each `rx`
+/// title, written to the app's voice: plain guitarist's words, no Hz figures,
+/// knob names on the unit. `detail` (and each `Rx::detail`) is the technical
+/// reading behind them, for the log only.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Diag {
     pub key: &'static str,
-    /// Card headline. `String` (not `&'static str`) because the localized
-    /// resonant/boxy rules name the MEASURED frequency (e.g. "Rings at 2.8
-    /// kHz") — every other rule's label is still a fixed string, just owned.
+    /// The finding's name ("Muddy", "Boxy", "Ringing"). Never carries a
+    /// frequency: the band meter shows where.
     pub label: String,
     /// Coarse tint (High/Med).
     pub sev: Sev,
@@ -1554,9 +1572,15 @@ pub struct Diag {
     /// Indices into the sound's family band layout ([`Family::bands`]) that
     /// light up in the UI; empty = a time-domain finding (washed / buried).
     pub bands: Vec<usize>,
-    /// The Hz/dB one-liner (progressive disclosure under the plain sentence).
+    /// Whether `bands` are too strong or too weak (the band meter's words).
+    pub direction: BandDirection,
+    /// The Hz/dB reading behind the finding ("buildup around 250–350 Hz
+    /// (+7.0 dB)"). For the log, not the screen.
     pub detail: String,
+    /// What the finding sounds like, in one plain sentence.
     pub explain: &'static str,
+    /// The fixes, simplest first: a knob on a block the preset already has,
+    /// then a block to add. Every fix after the first starts with "Or".
     pub rx: Vec<Rx>,
 }
 
@@ -1573,7 +1597,11 @@ pub enum RxKind {
 #[serde(rename_all = "camelCase")]
 pub struct Rx {
     pub kind: RxKind,
+    /// The step, as the player makes it on the unit ("Turn the amp's Bass
+    /// down 1 or 2."). No Hz figures and no knob values.
     pub title: String,
+    /// The exact settings behind the step (bands in Hz, dB, Q), for the log.
+    /// Empty when the title already says everything.
     pub detail: String,
     /// "no CPU change" | "+N.N% CPU" (real delta from the model-cpu table).
     pub cpu_note: String,
@@ -2084,7 +2112,8 @@ fn after_cab_anchor(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<CabAncho
     })
 }
 
-/// Player-facing frequency label: `90.0` → "90 Hz", `8000.0` → "8 kHz".
+/// A whole-number frequency for an `Rx::detail`: `90.0` → "90 Hz", `8000.0` →
+/// "8 kHz". Never on screen (no Hz figures there).
 fn freq_label(hz: f64) -> String {
     if hz >= 1000.0 {
         format!("{:.0} kHz", hz / 1000.0)
@@ -2093,7 +2122,7 @@ fn freq_label(hz: f64) -> String {
     }
 }
 
-/// Player-facing band label from an EQ-10 gain controlId:
+/// The band of an EQ-10 gain controlId, for an `Rx::detail`:
 /// `gain250hz` → "250 Hz", `gain2khz` → "2 kHz".
 fn eq_band_label(param: &str) -> String {
     let core = param.trim_start_matches("gain").trim_end_matches("hz");
@@ -2103,30 +2132,37 @@ fn eq_band_label(param: &str) -> String {
     }
 }
 
-/// Player-facing copy for an [`eq_move`], varying per diagnosis.
+/// The words for an [`eq_move`], per diagnosis: the player's step on each
+/// kind of EQ. A move that follows a simpler fix starts with "Or".
 struct EqCopy<'a> {
-    /// One-click title when a drivable EQ-10 is reused (known band values).
+    /// The step on a drivable EQ-10 already in the chain.
     reuse_title: &'a str,
-    reuse_detail: &'a str,
-    /// Chain title/detail when no EQ exists and one is inserted.
+    /// The step on a different EQ already in the chain (one the Doctor can't
+    /// drive value-aware).
+    other_title: &'a str,
+    /// The step that adds an EQ-10 after the cab.
     insert_title: &'a str,
-    insert_detail: &'a str,
-    /// Advisory detail when a non-drivable EQ is already present.
-    advise_detail: &'a str,
-    /// Title of the parametric notch ([`localized_cut_rx`]); empty for the
-    /// graphic-EQ moves that never notch.
-    notch_title: &'a str,
+}
+
+/// The bands and moves of an EQ-10 cut, for an `Rx::detail`:
+/// `[("gain250hz", -3.0)]` → "250 Hz -3 dB".
+fn eq_moves_text(gains: &[(&str, f64)]) -> String {
+    gains
+        .iter()
+        .map(|(p, v)| format!("{} {} dB", eq_band_label(p), db_amount(*v)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The muddy/harsh EQ move, in priority order:
 /// 1. A drivable EQ-10 stereo already in the chain → a value-aware one-click on
 ///    it. `gains` are RELATIVE moves (e.g. −3 = cut 3 dB): known band values get
-///    `current + move` clamped to the band range under `copy.reuse_title`; an
-///    unknown value writes the absolute and the title says so ("Set the 250 Hz
-///    band to −3 dB"). A fresh insert starts at 0 dB, so absolute == relative.
+///    `current + move` clamped to the band range; an unknown value writes the
+///    absolute, and the detail says so. A fresh insert starts at 0 dB, so
+///    absolute == relative.
 /// 2. A DIFFERENT EQ (7-band GE, parametric, mono 10-band) already present →
-///    `advisory(copy.reuse_title, copy.advise_detail)`: its bands aren't drivable
-///    value-aware, so we point the player at it rather than stacking a second EQ.
+///    an advisory to use it: its bands aren't drivable value-aware, so we
+///    point the player at it rather than stacking a second EQ.
 /// 3. Otherwise insert an EQ-10 anchored right AFTER the cab (not the chain tail).
 ///
 /// Returns None only when an insert is needed but fails the caps / has no anchor.
@@ -2136,6 +2172,7 @@ fn eq_move(
     copy: &EqCopy,
     gains: &[(&str, f64)],
 ) -> Option<Rx> {
+    let moves = eq_moves_text(gains);
     if let Some((group, node, current)) = &facts.eq10 {
         let known = gains.iter().all(|(p, _)| current.contains_key(*p));
         let ops = gains
@@ -2150,31 +2187,28 @@ fn eq_move(
                 },
             })
             .collect();
-        let title = if known {
-            copy.reuse_title.to_string()
+        // Unknown current values → the write is absolute; the detail says so.
+        let detail = if known {
+            format!("EQ-10 in the chain: {moves} from its current setting")
         } else {
-            // Unknown current values → the write is absolute, say so honestly.
-            let bands: Vec<String> = gains.iter().map(|(p, _)| eq_band_label(p)).collect();
-            format!(
-                "Set the {} band{} to {} dB",
-                bands.join(" and "),
-                if bands.len() > 1 { "s" } else { "" },
-                db_amount(gains[0].1)
-            )
+            format!("EQ-10 in the chain: {moves}, set outright (its current setting is unknown)")
         };
         return Some(Rx {
             kind: RxKind::OneClick,
-            title,
-            detail: copy.reuse_detail.to_string(),
+            title: copy.reuse_title.to_string(),
+            detail,
             cpu_note: "no CPU change".to_string(),
             ops,
             chain: None,
         });
     }
-    // A different EQ is already in the chain — advise using it (title reuses the
-    // cut description), never stack a second one we can't drive value-aware.
+    // A different EQ is already in the chain — advise using it, never stack a
+    // second one we can't drive value-aware.
     if facts.eq_other {
-        return Some(advisory(copy.reuse_title, copy.advise_detail));
+        return Some(advisory(
+            copy.other_title,
+            &format!("the EQ in the chain: about {moves}"),
+        ));
     }
     // No EQ to reuse → insert one, anchored right AFTER the cab so it shapes the
     // post-cab tone before any time-effects (not dumped at the chain's tail). No
@@ -2191,7 +2225,7 @@ fn eq_move(
     Some(Rx {
         kind: RxKind::Chain,
         title: copy.insert_title.to_string(),
-        detail: copy.insert_detail.to_string(),
+        detail: format!("EQ-10 after the cab: {moves}"),
         cpu_note,
         ops: vec![DoctorOp::InsertNode {
             group_id: anchor.group,
@@ -2203,7 +2237,7 @@ fn eq_move(
     })
 }
 
-/// Player-facing label for a MEASURED frequency (a `resonant`/`boxy` peak
+/// A MEASURED frequency for a `detail` (a `resonant`/`boxy` peak
 /// center, NOT an EQ-10 controlId — see [`eq_band_label`] for that): Hz below
 /// 1 kHz (no decimal), kHz above with ONE decimal — `380.0` → "380 Hz",
 /// `2_800.0` → "2.8 kHz". Distinct from [`freq_label`] (whole-number cab cut
@@ -2304,6 +2338,10 @@ const NOTCH_Q_RANGE: (f64, f64) = (2.0, 12.0);
 /// 3. An insert that fails the caps falls back to the graphic-EQ band cut
 ///    ([`eq_move`] on `eq10_band`).
 ///
+/// `place` names where the peak sits in the band meter's words ("the high
+/// mids"); the steps use it instead of the frequency, which only the details
+/// carry.
+///
 /// `nodes`/`facts` absent (no graph) → no Rx, like every other graph-dependent
 /// prescription in this file.
 #[allow(clippy::too_many_arguments)]
@@ -2315,7 +2353,7 @@ fn localized_cut_rx(
     eq10_band: &'static str,
     max_cut_db: f64,
     height_db: f64,
-    copy: &EqCopy,
+    place: &str,
 ) -> Vec<Rx> {
     let (Some(nodes), Some(facts)) = (nodes, facts.as_ref()) else {
         return Vec::new();
@@ -2330,7 +2368,11 @@ fn localized_cut_rx(
             (format!("filter{n}q"), q),
         ]
     };
-    let freq_text = measured_freq_label(freq_hz);
+    let setting = format!(
+        "{} dB at {}, Q {q}",
+        db_amount(gain),
+        measured_freq_label(freq_hz)
+    );
     if let Some((group, node, params)) = &facts.peq {
         let free = PEQ_NOTCH_BANDS.into_iter().find(|n| {
             params.get(&format!("filter{n}type")) == Some(&2.0)
@@ -2340,11 +2382,10 @@ fn localized_cut_rx(
         return vec![match free {
             Some(n) => Rx {
                 kind: RxKind::OneClick,
-                title: copy.notch_title.to_string(),
-                detail: format!(
-                    "Uses a free band of your parametric EQ: {} dB at {freq_text}, Q {q}.",
-                    db_amount(gain)
+                title: format!(
+                    "Cut a narrow notch in {place} with a free band of your parametric EQ."
                 ),
+                detail: format!("EQ-5 Parametric in the chain, band {n}: {setting}"),
                 cpu_note: "no CPU change".to_string(),
                 ops: band_params(n)
                     .into_iter()
@@ -2358,11 +2399,8 @@ fn localized_cut_rx(
                 chain: None,
             },
             None => advisory(
-                copy.notch_title,
-                &format!(
-                    "Your chain already runs a parametric EQ — set one of its bands to {} dB at {freq_text}, Q {q}, rather than adding a second EQ.",
-                    db_amount(gain)
-                ),
+                &format!("Cut a narrow notch in {place} on the parametric EQ you already have."),
+                &format!("EQ-5 Parametric in the chain, no free band: {setting}"),
             ),
         }];
     }
@@ -2377,11 +2415,8 @@ fn localized_cut_rx(
     if let (Some(anchor), Some(cpu_note)) = (anchor, insert_cpu_note(nodes, PARAM_EQ)) {
         return vec![Rx {
             kind: RxKind::Chain,
-            title: copy.notch_title.to_string(),
-            detail: format!(
-                "Puts a parametric EQ after the cab with one narrow cut right on the measured {freq_text}: {} dB, Q {q}.",
-                db_amount(gain)
-            ),
+            title: format!("Add a parametric EQ after the cab and cut a narrow notch in {place}."),
+            detail: format!("EQ-5 Parametric after the cab, band 2: {setting}"),
             cpu_note,
             ops: vec![DoctorOp::InsertNode {
                 group_id: anchor.group,
@@ -2392,14 +2427,25 @@ fn localized_cut_rx(
             chain: Some(chain_preview(nodes, "after · +EQ", PARAM_EQ, anchor.at)),
         }];
     }
-    eq_move(nodes, facts, copy, &[(eq10_band, gain)])
-        .into_iter()
-        .collect()
+    eq_move(
+        nodes,
+        facts,
+        &EqCopy {
+            reuse_title: &format!("Cut {place} on your 10-band EQ."),
+            other_title: &format!("Cut {place} on the EQ you already have."),
+            insert_title: &format!("Add a 10-band EQ after the cab and cut {place}."),
+        },
+        &[(eq10_band, gain)],
+    )
+    .into_iter()
+    .collect()
 }
 
 /// A cut-filter move on the existing cab (standalone only — the amp-embedded
 /// cab's `hpf`/`lpf` share the schema but ride the amp node; supported the
 /// same way) or an `ACD_HighLowPass` insert when the chain has no cab.
+/// `cab_title` is the step on the cab's own knob, `insert_title` the step that
+/// adds the filter block.
 fn cut_move(
     nodes: &[DoctorNode],
     facts: &GraphFacts,
@@ -2407,8 +2453,8 @@ fn cut_move(
     freq: f64,
     cab_title: &str,
     insert_title: &str,
-    detail: &str,
 ) -> Option<Rx> {
+    let knob = if is_low_cut { "Low Cut" } else { "High Cut" };
     if let Some((group, node, params)) = &facts.cab {
         // Both the standalone cab and CabIR amps expose `hpf` (20–500) /
         // `lpf` (1000–20000) — schema-verified, same controlIds.
@@ -2416,28 +2462,30 @@ fn cut_move(
         // Value-aware, like `eq_move` / the washed reverb-mix rule: a blind write
         // can push the cut the WRONG way. Low cut (hpf) TIGHTENS by RAISING toward
         // 90 Hz; high cut (lpf) tames fizz by LOWERING toward 8 kHz.
-        let title = match params.get(param).copied() {
+        let detail = match params.get(param).copied() {
             // Known AND already at/past the target → the one-click would move it
             // backwards (loosen a cut that's already there), worsening the problem.
             // Bail so the caller's advisory fallback fires instead.
             Some(cur) if (is_low_cut && cur >= freq) || (!is_low_cut && cur <= freq) => {
                 return None;
             }
-            // Known and on the WRONG side → the directional one-click (the caller's
-            // "Raise…" / "Lower…" title is honest here).
-            Some(_) => cab_title.to_string(),
-            // Unknown current value → keep today's blind write, but retitle
-            // honestly (it may raise OR lower): "Set the cab's …" like `eq_move`.
+            // Known and on the WRONG side → the directional move.
+            Some(cur) => format!(
+                "cab {knob} from {} to {}",
+                freq_label(cur),
+                freq_label(freq)
+            ),
+            // Unknown current value → a blind write that may raise OR lower it;
+            // the detail says so.
             None => format!(
-                "Set the cab's {} to {}",
-                if is_low_cut { "low cut" } else { "high cut" },
-                freq_label(freq),
+                "cab {knob} set to {} (its current setting is unknown)",
+                freq_label(freq)
             ),
         };
         return Some(Rx {
             kind: RxKind::OneClick,
-            title,
-            detail: detail.to_string(),
+            title: cab_title.to_string(),
+            detail,
             cpu_note: "no CPU change".to_string(),
             ops: vec![DoctorOp::Param {
                 group_id: group.clone(),
@@ -2454,7 +2502,7 @@ fn cut_move(
     Some(Rx {
         kind: RxKind::OneClick,
         title: insert_title.to_string(),
-        detail: detail.to_string(),
+        detail: format!("Low/High Cut Filter, {knob} {}", freq_label(freq)),
         cpu_note,
         ops: vec![DoctorOp::InsertNode {
             group_id: group,
@@ -2466,41 +2514,41 @@ fn cut_move(
     })
 }
 
-/// The comp-aware early-out shared by the compressor moves: an ACTIVE comp
-/// already in the chain → advisory to work its knob (per-caller copy); a
-/// BYPASSED one → advisory to switch it back on; none → None (the caller
-/// inserts one).
-fn comp_present_advisory(
-    facts: &GraphFacts,
-    active_title: &str,
-    active_detail: &str,
-    bypassed_detail: &str,
-) -> Option<Rx> {
-    match facts.comp {
-        Some(false) => Some(advisory(active_title, active_detail)),
-        Some(true) => Some(advisory("Switch your compressor back on", bypassed_detail)),
-        None => None,
+/// True when `rx` adds a block (any `InsertNode` op) rather than turning a
+/// knob on a block the preset already has.
+fn adds_a_block(rx: &Rx) -> bool {
+    rx.ops
+        .iter()
+        .any(|o| matches!(o, DoctorOp::InsertNode { .. }))
+}
+
+/// Simplest first: `fix` alone when it turns a knob on a block the preset
+/// already has; the amp-knob step `knob` and then `fix` when `fix` adds a
+/// block (so `fix`'s title starts with "Or"); `knob` alone when there's no fix.
+fn knob_first(knob: Rx, fix: Option<Rx>) -> Vec<Rx> {
+    match fix {
+        Some(f) if adds_a_block(&f) => vec![knob, f],
+        Some(f) => vec![f],
+        None => vec![knob],
     }
 }
 
-/// The compressor move (lost / buried). Comp-aware: an ACTIVE comp already in
-/// the chain → advisory to raise its sustain; a BYPASSED one → advisory to
-/// switch it back on; none → insert one in front.
+/// The compressor move (lost / buried), always the second fix after an amp or
+/// drive knob, so every title starts with "Or". Comp-aware: an ACTIVE comp
+/// already in the chain → advisory to raise its sustain; a BYPASSED one →
+/// advisory to switch it back on; none → insert one in front.
 fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
-    if let Some(a) = comp_present_advisory(
-        facts,
-        "Bring up the sustain on the compressor you already have",
-        "Your chain already runs a compressor — raising its sustain evens out your picking without adding another block.",
-        "There's a compressor in the chain but it's switched off — turning it back on evens out your picking.",
-    ) {
-        return Some(a);
+    match facts.comp {
+        Some(false) => return Some(advisory("Or turn up the Sustain on your compressor.", "")),
+        Some(true) => return Some(advisory("Or switch your compressor back on.", "")),
+        None => {}
     }
     let (group, first_node) = facts.front.clone()?;
     let cpu_note = insert_cpu_note(nodes, COMPRESSOR)?;
     Some(Rx {
         kind: RxKind::Chain,
-        title: "Add a compressor in front".to_string(),
-        detail: "Evens out your picking so the guitar holds a steady spot in the mix.".to_string(),
+        title: "Or add a compressor at the start of the chain.".to_string(),
+        detail: "Dynamic Compressor before the first block".to_string(),
         cpu_note,
         ops: vec![DoctorOp::InsertNode {
             group_id: group,
@@ -2555,109 +2603,79 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode]) -> Vec<Rx> {
 /// [`generate_rx`] for a finding `margin_db` past its gate (its severity): the
 /// muddy and harsh EQ cuts grow with the measured excess ([`sized_cut_db`]); every
 /// other prescription ignores it.
+///
+/// Each list runs simplest first: a knob on a block the preset already has
+/// (the amp's, a cab's, a reverb's), then a block to add, and every step after
+/// the first starts with "Or". Titles name the knob as the unit does and never
+/// carry a Hz figure; the exact settings ride each `Rx::detail`.
 pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -> Vec<Rx> {
     let facts = graph_facts(nodes);
     match diag_key {
         "muddy" => {
             let cut = sized_cut_db(MUDDY_CUT_DB, margin_db, MAX_SIZED_CUT_DB);
-            let amount = db_amount(cut);
-            let mut rx = Vec::new();
-            if let Some(m) = eq_move(
+            let mut rx = vec![advisory("Turn the amp's Bass down 1 or 2.", "")];
+            rx.extend(eq_move(
                 nodes,
                 &facts,
                 &EqCopy {
-                    reuse_title: &format!("Cut {amount} dB around 300 Hz on your EQ"),
-                    reuse_detail: "Dips the muddy low-mids on the EQ you already have — the note stays, the mud goes.",
-                    insert_title: &format!("Add a 10-band EQ and cut {amount} dB around 300 Hz"),
-                    insert_detail: "Puts a graphic EQ after the cab and dips the muddy low-mids — the note stays, the mud goes.",
-                    advise_detail: &format!("Your chain already runs a graphic EQ — pull its band nearest 300 Hz down about {amount} dB, rather than adding a second EQ."),
-                    notch_title: "",
+                    reuse_title: "Or cut the low mids on your 10-band EQ.",
+                    other_title: "Or cut the low mids on the EQ you already have.",
+                    insert_title: "Or add a 10-band EQ after the cab and cut the low mids.",
                 },
                 &[("gain250hz", -cut)],
-            ) {
-                rx.push(m);
-            }
-            rx.push(advisory(
-                "Or roll the amp's Bass back a notch",
-                "If you'd rather not add a block, turning Bass down 1–2 on the amp does most of the same job.",
             ));
             rx
         }
-        "boomy" => {
-            let mut rx: Vec<Rx> = cut_move(
+        "boomy" => knob_first(
+            advisory("Turn the amp's Bass down 1 or 2.", ""),
+            cut_move(
                 nodes,
                 &facts,
                 true,
                 90.0,
-                "Raise the cab's low cut to 90 Hz",
-                "Add a low cut at 90 Hz",
-                "Rolls off the sub-lows the speaker can't use anyway, so the low end tightens up.",
-            )
-            .into_iter()
-            .collect();
-            if rx.is_empty() {
-                rx.push(advisory(
-                    "Roll the amp's Bass back a notch",
-                    "If a low-cut block won't fit, turning Bass down 1–2 on the amp does most of the same job.",
-                ));
-            }
-            rx
-        }
+                "Raise the cab's Low Cut until the low end tightens up.",
+                "Or add a Low/High Cut Filter and raise its Low Cut.",
+            ),
+        ),
         "harsh" => {
             let mut rx = vec![advisory(
-                "Nudge Presence (and Treble) down a notch",
-                "This peak lives on the amp's Presence and Treble — easing them off by one is the quickest fix.",
+                "Turn the amp's Presence and Treble down 1 or 2.",
+                "",
             )];
             // Detection is band 3 (1–3 kHz), so the cut targets the SAME band:
             // the 1 kHz + 2 kHz EQ-10 bands.
             let cut = sized_cut_db(HARSH_CUT_DB, margin_db, MAX_SIZED_CUT_DB);
-            let amount = db_amount(cut);
-            let title = format!("Cut {amount} dB around 1–3 kHz");
-            if let Some(m) = eq_move(
+            rx.extend(eq_move(
                 nodes,
                 &facts,
                 &EqCopy {
-                    reuse_title: &title,
-                    reuse_detail: "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
-                    insert_title: &title,
-                    insert_detail: "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
-                    advise_detail: &format!("Your chain already runs a graphic EQ — pull its 1–3 kHz bands down about {amount} dB, rather than adding a second EQ."),
-                    notch_title: "",
+                    reuse_title: "Or cut the high mids on your 10-band EQ.",
+                    other_title: "Or cut the high mids on the EQ you already have.",
+                    insert_title: "Or add a 10-band EQ after the cab and cut the high mids.",
                 },
                 &[("gain1khz", -cut), ("gain2khz", -cut)],
-            ) {
-                rx.push(m);
-            }
+            ));
             rx
         }
-        "fizzy" => {
-            let mut rx: Vec<Rx> = cut_move(
+        "fizzy" => knob_first(
+            advisory("Turn the amp's Presence and Treble down 1 or 2.", ""),
+            cut_move(
                 nodes,
                 &facts,
                 false,
                 8000.0,
-                "Lower the cab's high cut to tame the fizz",
-                "Add a high cut at 8 kHz",
-                "Pulls the cabinet's high cut down to about 8 kHz, which is where the fizz lives.",
-            )
-            .into_iter()
-            .collect();
-            if rx.is_empty() {
-                rx.push(advisory(
-                    "Ease the amp's Presence/Treble",
-                    "If a high-cut block won't fit, backing Presence and Treble off a notch tames the fizz.",
-                ));
-            }
-            rx
-        }
+                "Lower the cab's High Cut until the fizz goes away.",
+                "Or add a Low/High Cut Filter and lower its High Cut.",
+            ),
+        ),
         "washed" => match &facts.reverb_mix {
             // Value-aware: only set the mix when it's KNOWN to sit above the
             // 25% target — a blind write on an already-low mix would RAISE it
             // (the wash is delay-driven then, not this reverb's).
             Some((group, node, param, Some(cur))) if *cur > 0.25 => vec![Rx {
                 kind: RxKind::OneClick,
-                title: "Bring the reverb mix down to 25%".to_string(),
-                detail: "Keeps the space but lets the dry note lead again.".to_string(),
+                title: "Turn the reverb's Mix down until the dry note leads again.".to_string(),
+                detail: format!("reverb {param} from {cur:.2} to 0.25"),
                 cpu_note: "no CPU change".to_string(),
                 ops: vec![DoctorOp::Param {
                     group_id: group.clone(),
@@ -2670,45 +2688,25 @@ pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -
             // Dwell-style springs (and delay wash) have no wet/dry mix to set;
             // an unknown or already-low mix means the wash lives elsewhere.
             _ => vec![advisory(
-                "Turn the reverb (or delay) down a touch",
-                "This one has no single mix knob Doctor can set — ease the reverb's dwell or the delay's level until the dry note leads again.",
+                "Turn the reverb or delay down until the dry note leads again.",
+                "",
             )],
         },
         "lost" => {
-            let mut rx = vec![advisory(
-                "Nudge Mids up a notch on the amp",
-                "Mids are what cut through a band — bringing them up one or two is the honest fix.",
-            )];
-            if let Some(m) = comp_front(nodes, &facts) {
-                rx.push(m);
-            }
+            let mut rx = vec![advisory("Turn the amp's Middle up 1 or 2.", "")];
+            rx.extend(comp_front(nodes, &facts));
             rx
         }
         // The handoff's parallel clean/driven split is NOT wire-expressible:
         // insert/replace/remove operate inside existing groups, and no session
         // op creates a new split topology — so Doctor prescribes the honest
-        // expressible fixes instead (comp in front + ease the drive).
+        // expressible fixes instead (ease the drive, then a comp in front).
         "buried" => {
-            let mut rx = Vec::new();
-            if let Some(m) = comp_front(nodes, &facts) {
-                // Only the INSERT variant gets the buried-specific detail — the
-                // comp-aware advisories keep their own copy.
-                let m = if m.kind == RxKind::Chain {
-                    Rx {
-                        detail:
-                            "Evens the picking out so the clean low end holds its spot under the drive."
-                                .to_string(),
-                        ..m
-                    }
-                } else {
-                    m
-                };
-                rx.push(m);
-            }
-            rx.push(advisory(
-                "Ease the drive's gain and bring its level up",
-                "Less gain, more level keeps the grit but stops it swallowing the clean low end.",
-            ));
+            let mut rx = vec![advisory(
+                "Turn your drive pedal's Gain down and its Level up.",
+                "",
+            )];
+            rx.extend(comp_front(nodes, &facts));
             rx
         }
         // dark/bright/thin are broadband tilt/local findings, not a single
@@ -2720,23 +2718,20 @@ pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -
         // exact-id-matching discipline (see the module doc) makes guessing one
         // (e.g. a `gain4khz`/`gain8khz`) too risky to ship unverified.
         "dark" => vec![
+            advisory("Raise the amp's Treble or Presence.", ""),
             advisory(
-                "Open the amp's treble and presence",
-                "A small treble or presence lift on the amp brings the whole tone forward — try that before reaching for an EQ.",
-            ),
-            advisory(
-                "Or tame the low end",
-                "If the lows are what's heavy, easing bass on the amp gets the same balance back.",
+                "Or, if the lows feel heavy, ease the amp's Bass instead.",
+                "",
             ),
         ],
         "bright" => vec![advisory(
-            "Ease the treble/presence on the amp",
-            "Backing Presence and Treble off a notch takes the brittle edge off without losing the amp's character.",
+            "Turn the amp's Treble and Presence down 1 or 2.",
+            "",
         )],
-        "thin" => vec![advisory(
-            "Bring up the amp's bass, or move toward the neck pickup",
-            "There's little happening below the low-mids — riding up the amp's Bass, or picking closer to the neck, fills it back in.",
-        )],
+        "thin" => vec![
+            advisory("Turn the amp's Bass up 1 or 2.", ""),
+            advisory("Or switch to your neck pickup.", ""),
+        ],
         // Generated inline in `apply_thresholds` ([`localized_cut_rx`]) — their
         // Rx needs the peak's MEASURED freq/height, which this key-only
         // signature can't carry. Explicit arms so the absence reads as a
@@ -2973,6 +2968,7 @@ fn apply_thresholds(
                     sev: Sev,
                     margin: f64,
                     bands: Vec<usize>,
+                    direction: BandDirection,
                     detail: String,
                     explain: &'static str| {
         let rx = nodes
@@ -2985,6 +2981,7 @@ fn apply_thresholds(
             severity: margin,
             z: margin / rule_sigma(key),
             bands,
+            direction,
             detail,
             explain,
             rx,
@@ -3011,8 +3008,9 @@ fn apply_thresholds(
             Sev::High,
             muddy_margin,
             vec![low_mids],
+            BandDirection::Strong,
             format!("buildup around 250–350 Hz ({:+.1} dB)", locals[low_mids]),
-            "There's a buildup in the low-mids that stacks up with the bass player.",
+            "The low mids build up and stack with the bass player.",
         );
     }
     let (boomy_margin, boomy_fires) = consensus(
@@ -3028,8 +3026,9 @@ fn apply_thresholds(
             Sev::Med,
             boomy_margin,
             vec![lows],
+            BandDirection::Strong,
             format!("excess energy below 100 Hz ({:+.1} dB)", locals[lows]),
-            "Too much deep low end — it booms and loses focus once you turn up.",
+            "The lows are too strong, so it booms and loses focus when you turn up.",
         );
     }
     let (harsh_margin, harsh_fires) = consensus(
@@ -3045,8 +3044,9 @@ fn apply_thresholds(
             Sev::High,
             harsh_margin,
             vec![high_mids],
+            BandDirection::Strong,
             format!("spike around 1–3 kHz ({:+.1} dB)", locals[high_mids]),
-            "A sharp peak in the high-mids makes it harsh and tiring to listen to.",
+            "A sharp peak in the high mids makes it harsh and tiring to listen to.",
         );
     }
     // Fizz is the Air band failing to roll off below the presence band — a
@@ -3066,11 +3066,12 @@ fn apply_thresholds(
             Sev::Med,
             fizzy_margin,
             vec![air],
+            BandDirection::Strong,
             format!(
                 "content above 6 kHz only {:.1} dB under the presence band",
                 -fizzy_db
             ),
-            "Fizzy, buzzy top end — the kind that sounds like radio static on the note tails.",
+            "The top end buzzes like radio static on the tail of each note.",
         );
     }
     let (lost_margin, lost_fires) = consensus(
@@ -3086,6 +3087,7 @@ fn apply_thresholds(
             Sev::High,
             lost_margin,
             vec![mids],
+            BandDirection::Weak,
             format!("mids scooped {:.1} dB around 800 Hz", -locals[mids]),
             "The mids are scooped, so it sounds big alone but disappears with a full band.",
         );
@@ -3098,19 +3100,23 @@ fn apply_thresholds(
         let tilt_bands = vec![highs, air];
         let tilt_margin = s.abs() - t.tilt_db_per_oct;
         if tilt_margin > 0.0 {
-            let (key, label, dir, explain) = if s < 0.0 {
+            // The meter lights the top bands: too weak when the tone leans
+            // dark, too strong when it leans bright.
+            let (key, label, dir, direction, explain) = if s < 0.0 {
                 (
                     "dark",
                     "Dark",
                     "darker",
-                    "The whole tone leans dark — the top end is shy across the board, so it sounds dull and boxed-in.",
+                    BandDirection::Weak,
+                    "The whole tone leans dark, so it sounds dull and boxed in.",
                 )
             } else {
                 (
                     "bright",
                     "Bright",
                     "brighter",
-                    "The whole tone leans bright — it gets brittle and tiring, with little warmth underneath.",
+                    BandDirection::Strong,
+                    "The whole tone leans bright, so it sounds brittle and tiring with little warmth underneath.",
                 )
             };
             push(
@@ -3119,6 +3125,7 @@ fn apply_thresholds(
                 Sev::Med,
                 tilt_margin,
                 tilt_bands,
+                direction,
                 format!(
                     "tilted {:.1} dB/octave {dir} than the target voicing",
                     s.abs()
@@ -3142,6 +3149,7 @@ fn apply_thresholds(
                     Sev::Med,
                     thin_margin,
                     vec![lows],
+                    BandDirection::Weak,
                     format!("low end {:.1} dB under the target voicing", -locals[lows]),
                     "The low end is missing, so the tone sounds small and never fills the room.",
                 );
@@ -3164,8 +3172,9 @@ fn apply_thresholds(
             Sev::Med,
             washed_margin,
             vec![],
+            BandDirection::Strong,
             detail,
-            "The reverb is drowning the note — it washes out instead of ringing clearly.",
+            "The reverb or delay drowns the note, so it washes out instead of ringing clearly.",
         );
     }
     let (buried_margin, buried_fires) = consensus(
@@ -3185,8 +3194,9 @@ fn apply_thresholds(
             Sev::Med,
             buried_margin,
             vec![],
+            BandDirection::Weak,
             "drive stacked in series".to_string(),
-            "Your clean low end is buried under the drive — common on a driven bass sound.",
+            "Your clean low end is buried under the drive. That's common on a driven bass sound.",
         );
     }
 
@@ -3266,40 +3276,29 @@ fn localized_diags(
         let band = band_index_for_freq(instrument, peak.freq_hz);
         if band.is_none_or(covered) {
             let freq = measured_freq_label(peak.freq_hz);
-            let band_id = nearest_boxy_band(peak.freq_hz);
-            let band_label = eq_band_label(band_id);
             localized.push(Diag {
                 key: "boxy",
-                label: format!("Boxy (a {freq} hump)"),
+                label: "Boxy".to_string(),
                 sev: Sev::Med,
                 severity: peak.height_db - BOXY_MIN_HEIGHT_DB,
                 z: (peak.height_db - BOXY_MIN_HEIGHT_DB) / rule_sigma("boxy"),
                 bands: band.into_iter().collect(),
+                direction: BandDirection::Strong,
                 detail: format!(
                     "{freq} hump, {:.1} dB above the surrounding spectrum",
                     peak.height_db
                 ),
-                explain: "A narrow bump in the low-mids reads as boxy — a closed-in, cardboard coloration rather than a broad muddy buildup.",
-                rx: {
-                    let title = format!("Cut the {band_label} band");
-                    localized_cut_rx(
-                        nodes,
-                        facts,
-                        peak.freq_hz,
-                        peak.q,
-                        band_id,
-                        4.0,
-                        peak.height_db,
-                        &EqCopy {
-                            reuse_title: &title,
-                            reuse_detail: "Dips the boxy hump right where it measures, on the EQ you already have.",
-                            insert_title: &title,
-                            insert_detail: "Puts a graphic EQ after the cab and dips the boxy hump right where it measures.",
-                            advise_detail: "Your chain already runs a graphic EQ — pull its band nearest the hump down, rather than adding a second EQ.",
-                            notch_title: &format!("Notch the {freq} hump"),
-                        },
-                    )
-                },
+                explain: "A narrow bump makes the tone sound closed in, like a cardboard box.",
+                rx: localized_cut_rx(
+                    nodes,
+                    facts,
+                    peak.freq_hz,
+                    peak.q,
+                    nearest_boxy_band(peak.freq_hz),
+                    4.0,
+                    peak.height_db,
+                    &band_place(instrument, band),
+                ),
             });
         }
     }
@@ -3323,44 +3322,43 @@ fn localized_diags(
         let band = band_index_for_freq(instrument, peak.freq_hz);
         if band.is_none_or(covered) {
             let freq = measured_freq_label(peak.freq_hz);
-            let band_id = nearest_eq10_band(peak.freq_hz);
-            let band_label = eq_band_label(band_id);
             localized.push(Diag {
                 key: "resonant",
-                label: format!("Rings at {freq}"),
+                label: "Ringing".to_string(),
                 sev: Sev::High,
                 severity: peak.height_db - RESONANT_MIN_HEIGHT_DB,
                 z: (peak.height_db - RESONANT_MIN_HEIGHT_DB) / rule_sigma("resonant"),
                 bands: band.into_iter().collect(),
+                direction: BandDirection::Strong,
                 detail: format!(
                     "{freq}, {:.1} dB above the surrounding spectrum, Q {:.1}",
                     peak.height_db, peak.q
                 ),
-                explain: "A narrow spectral peak rings out and colors the tone at that one frequency — a precise EQ cut right on it is the fix.",
-                rx: {
-                    let title = format!("Rings at {freq} — cut the {band_label} band");
-                    localized_cut_rx(
-                        nodes,
-                        facts,
-                        peak.freq_hz,
-                        peak.q,
-                        band_id,
-                        6.0,
-                        peak.height_db,
-                        &EqCopy {
-                            reuse_title: &title,
-                            reuse_detail: "Dips the ring right where it measures, on the EQ you already have.",
-                            insert_title: &title,
-                            insert_detail: "Puts a graphic EQ after the cab and dips the ring right where it measures.",
-                            advise_detail: "Your chain already runs a graphic EQ — pull its band nearest the ring down, rather than adding a second EQ.",
-                            notch_title: &format!("Rings at {freq} — notch it out"),
-                        },
-                    )
-                },
+                explain: "One narrow spot in the tone rings out over every note.",
+                rx: localized_cut_rx(
+                    nodes,
+                    facts,
+                    peak.freq_hz,
+                    peak.q,
+                    nearest_eq10_band(peak.freq_hz),
+                    6.0,
+                    peak.height_db,
+                    &band_place(instrument, band),
+                ),
             });
         }
     }
     localized
+}
+
+/// Where a localized peak sits, in the band meter's words for a fix's
+/// sentence: "the high mids". Every boxy/resonant scan frequency lies inside
+/// the family layout, so the fallback never shows in practice.
+fn band_place(instrument: Family, band: Option<usize>) -> String {
+    band.and_then(|i| instrument.labels().get(i)).map_or_else(
+        || "that spot".to_string(),
+        |label| format!("the {}", label.to_lowercase()),
+    )
 }
 
 /// A diagnosis plus the playback levels at which it fires. `from_level` is the
@@ -3611,46 +3609,64 @@ pub fn scene_consistency(
     if worst_delta.abs() <= t.scene_delta_db {
         return None;
     }
+    // The steps name the unit's knobs and the jump the player should aim for
+    // (the flag's own gate); the measured gap rides each `Rx::detail`.
+    let gap = format!("{worst_name} {worst_delta:+.1} dB against the main sound");
+    let aim = db_amount(t.scene_delta_db);
     let rx = if worst_delta < 0.0 {
-        // Quieter-than-base worst: trimming DOWN is wrong — leveling it UP is
-        // the Level tab's job, so advise instead of prescribing a SceneTrim.
+        // Quieter-than-base worst: trimming DOWN is wrong — bringing it UP is
+        // the fix (the Level tab levels it too), so advise, never a SceneTrim.
         vec![advisory(
-            &format!("{worst_name} is much quieter than the others"),
-            &format!(
-                "{worst_name} sits {:.1} dB under the base sound — if that's not intentional, bring it up from the Level tab.",
-                -worst_delta
-            ),
+            &match worst_scene {
+                Some(_) => format!(
+                    "If you didn't set it up that way, turn up the amp's Level in {worst_name}."
+                ),
+                None => format!(
+                    "If you didn't set it up that way, turn up the Level of the block that {worst_name} turns on."
+                ),
+            },
+            &gap,
         )]
     } else {
         match worst_scene {
             // A block-acting FOOTSWITCH sound louder than base: there's no
-            // wire scene index to trim, so advise leveling it (the Level tab
-            // levels footswitch sounds) or backing off the block's knob.
+            // wire scene index to trim, so advise backing off the block's knob
+            // (the Level tab levels footswitch sounds too).
             None => vec![advisory(
-                &format!("{worst_name} is much louder than the base sound"),
                 &format!(
-                    "{worst_name} jumps {worst_delta:+.1} dB when you step on it — pros keep it to +1–3 dB. Level it from the Level tab (it can level footswitch sounds), or back off the block's level knob."
+                    "Turn down the Level of the block that {worst_name} turns on until the jump is {aim} dB or less."
                 ),
+                &gap,
             )],
             // The open loadScene(0) anomaly: USB scene-0 recall can
             // materialize a different amp state than the physical footswitch
-            // tap, so its reading isn't trustworthy enough for a wire trim —
-            // ask for ears instead.
+            // tap, so its reading isn't trustworthy enough to act on — ask
+            // for ears instead.
             Some(0) => vec![advisory(
-                &format!("Verify {worst_name} by ear"),
                 &format!(
-                    "{worst_name} measured {worst_delta:+.1} dB vs the base scene, but the first scene's USB reading can differ from the footswitch (a known device quirk) — check it by ear before leveling."
+                    "Couldn't confirm the reading for {worst_name}. Check it by ear before you change it."
+                ),
+                &format!(
+                    "{gap}; the first scene's USB reading can differ from its footswitch (a known device quirk)"
                 ),
             )],
             // A louder scene: Doctor has no in-app scene trim (the wire can't
             // set scene loudness relative to base, and Level-tab leveling targets
             // an absolute LUFS), so ADVISE rather than promising a one-click.
-            Some(_) => vec![advisory(
-                &format!("{worst_name} is much louder than the base sound"),
-                &format!(
-                    "{worst_name} jumps {worst_delta:+.1} dB when you switch to it — pros keep lead sounds to +1–3 dB. Level it from the Level tab, or back off its amp level for that scene."
+            Some(_) => vec![
+                advisory(
+                    &format!(
+                        "Turn down the amp's Level in {worst_name} until the jump is {aim} dB or less."
+                    ),
+                    &gap,
                 ),
-            )],
+                advisory(
+                    &format!(
+                        "Or, to stand out in {worst_name}, raise the amp's Middle instead of its volume."
+                    ),
+                    "",
+                ),
+            ],
         }
     };
     Some(SceneConsistency {
@@ -3880,7 +3896,7 @@ mod tests {
     // #258: the coverage gate's floor estimate over the ~11,100-sample pre-onset
     // window. One 8192-point segment scattered 1.9 dB (Lows) to 0.2 dB (Air) on
     // guitar and 2.6 dB on Bass VI Sub; the short-segment average reads 1.2 / 1.5 dB
-    // there and ≤ 0.6 dB from Low-mids up. The narrow low bands can't reach 0.5 dB
+    // there and ≤ 0.6 dB from Low mids up. The narrow low bands can't reach 0.5 dB
     // over 230 ms of floor whatever the segmenting (bandwidth × duration bounds the
     // degrees of freedom), so the gate pins the ratio and the body-band ceiling.
     #[test]
@@ -4874,11 +4890,19 @@ mod tests {
 
     #[test]
     fn boomy_without_cab_inserts_highlowpass() {
+        // No cab → the amp's Bass is the simplest step; adding a filter block
+        // comes second, worded as the alternative.
         let p = chain(&["ACD_TweedDeluxe"], &[]);
         let rx = generate_rx("boomy", &p);
-        assert_eq!(rx.len(), 1);
-        assert_eq!(rx[0].title, "Add a low cut at 90 Hz");
-        match &rx[0].ops[0] {
+        assert_eq!(rx.len(), 2);
+        assert_eq!(rx[0].kind, RxKind::Advisory);
+        assert_eq!(rx[0].title, "Turn the amp's Bass down 1 or 2.");
+        assert_eq!(
+            rx[1].title,
+            "Or add a Low/High Cut Filter and raise its Low Cut."
+        );
+        assert_eq!(rx[1].detail, "Low/High Cut Filter, Low Cut 90 Hz");
+        match &rx[1].ops[0] {
             DoctorOp::InsertNode {
                 fender_id, params, ..
             } => {
@@ -4902,10 +4926,14 @@ mod tests {
 
     #[test]
     fn muddy_reuses_existing_eq10_else_inserts() {
+        // The amp's Bass comes first (simplest); the EQ move is the "Or".
         let with_eq = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
         let rx = generate_rx("muddy", &with_eq);
-        assert_eq!(rx[0].kind, RxKind::OneClick, "existing EQ → param write");
-        match &rx[0].ops[0] {
+        assert_eq!(rx[0].kind, RxKind::Advisory);
+        assert_eq!(rx[0].title, "Turn the amp's Bass down 1 or 2.");
+        assert_eq!(rx[1].kind, RxKind::OneClick, "existing EQ → param write");
+        assert_eq!(rx[1].title, "Or cut the low mids on your 10-band EQ.");
+        match &rx[1].ops[0] {
             DoctorOp::Param { param, value, .. } => {
                 assert_eq!(param, "gain250hz");
                 assert!((value + 3.0).abs() < f64::EPSILON);
@@ -4915,16 +4943,20 @@ mod tests {
 
         let without = chain(&["ACD_TweedDeluxe"], &[]);
         let rx = generate_rx("muddy", &without);
-        assert_eq!(rx[0].kind, RxKind::Chain, "no EQ → insert with preview");
-        assert!(rx[0].chain.is_some());
-        match &rx[0].ops[0] {
+        assert_eq!(rx.len(), 2);
+        assert_eq!(rx[0].kind, RxKind::Advisory, "the amp knob always leads");
+        assert_eq!(rx[1].kind, RxKind::Chain, "no EQ → insert with preview");
+        assert_eq!(
+            rx[1].title,
+            "Or add a 10-band EQ after the cab and cut the low mids."
+        );
+        assert!(rx[1].chain.is_some());
+        match &rx[1].ops[0] {
             DoctorOp::InsertNode { fender_id, .. } => {
                 assert_eq!(fender_id, "ACD_TenBandEQStereo");
             }
             other => panic!("expected InsertNode, got {other:?}"),
         }
-        // The advisory alternative always rides along.
-        assert!(rx.iter().any(|r| r.kind == RxKind::Advisory));
     }
 
     #[test]
@@ -4948,9 +4980,8 @@ mod tests {
             "no InsertNode op"
         );
         assert!(
-            rx.iter()
-                .any(|r| r.kind == RxKind::Advisory
-                    && r.title == "Cut 3 dB around 300 Hz on your EQ"),
+            rx.iter().any(|r| r.kind == RxKind::Advisory
+                && r.title == "Or cut the low mids on the EQ you already have."),
             "advises using the EQ already present"
         );
     }
@@ -5011,8 +5042,8 @@ mod tests {
                     "{key} must not insert a 2nd EQ when {eq} is present"
                 );
                 assert!(
-                    rx.iter()
-                        .any(|r| r.kind == RxKind::Advisory && r.title.starts_with("Cut")),
+                    rx.iter().any(|r| r.kind == RxKind::Advisory
+                        && r.title.ends_with("on the EQ you already have.")),
                     "{key} must advise using the {eq} already present"
                 );
             }
@@ -5179,9 +5210,8 @@ mod tests {
         );
         let rx = generate_rx("muddy", &p);
         assert!(inserts_nothing(&rx), "must not stack a 2nd EQ");
-        assert!(rx
-            .iter()
-            .any(|r| r.kind == RxKind::Advisory && r.title == "Cut 3 dB around 300 Hz on your EQ"));
+        assert!(rx.iter().any(|r| r.kind == RxKind::Advisory
+            && r.title == "Or cut the low mids on the EQ you already have."));
     }
 
     #[test]
@@ -5255,15 +5285,20 @@ mod tests {
     }
 
     // #256: a muddy or harsh finding far past its gate prescribes a deeper cut
-    // than one just past it, and the copy names the size it writes.
+    // than one just past it, and the fix's detail names the size it writes (the
+    // step on screen carries no figures).
     #[test]
     fn band_rule_cuts_scale_with_the_measured_excess() {
         let mut p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
         p[1].params.insert("gain250hz".into(), 0.0);
         p[1].params.insert("gain1khz".into(), 0.0);
         p[1].params.insert("gain2khz".into(), 0.0);
+        // The values of the one fix that writes (the EQ move; the amp-knob
+        // step before it has no ops).
         let param_values = |rx: &[Rx]| -> Vec<f64> {
-            rx[0]
+            rx.iter()
+                .find(|r| !r.ops.is_empty())
+                .expect("an EQ rx")
                 .ops
                 .iter()
                 .map(|op| match op {
@@ -5276,13 +5311,21 @@ mod tests {
         let far = generate_rx_sized("muddy", &p, 2.4);
         assert_eq!(param_values(&near), vec![-3.0]);
         assert_eq!(param_values(&far), vec![-5.5]);
-        assert_eq!(far[0].title, "Cut 5.5 dB around 300 Hz on your EQ");
+        assert_eq!(far[1].title, "Or cut the low mids on your 10-band EQ.");
+        assert_eq!(
+            far[1].detail,
+            "EQ-10 in the chain: 250 Hz -5.5 dB from its current setting"
+        );
         let harsh = generate_rx_sized("harsh", &p, 9.0);
         let eq = harsh
             .iter()
             .find(|r| !r.ops.is_empty())
             .expect("harsh EQ rx");
-        assert_eq!(eq.title, "Cut 6 dB around 1–3 kHz");
+        assert_eq!(eq.title, "Or cut the high mids on your 10-band EQ.");
+        assert_eq!(
+            eq.detail,
+            "EQ-10 in the chain: 1 kHz -6 dB, 2 kHz -6 dB from its current setting"
+        );
         assert_eq!(param_values(std::slice::from_ref(eq)), vec![-6.0, -6.0]);
         // The fired card carries the sized prescription.
         let t = Family::Guitar.thresholds();
@@ -5302,29 +5345,38 @@ mod tests {
 
     #[test]
     fn eq_move_is_value_aware_on_existing_eq10() {
-        // Known band value → relative cut on top of it, relative title kept.
+        // Known band value → relative cut on top of it, and the detail says so.
+        // rx[0] is the amp-knob step; the EQ move follows it.
         let mut p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
         p[1].params.insert("gain250hz".into(), 2.0);
         let rx = generate_rx("muddy", &p);
-        assert_eq!(rx[0].title, "Cut 3 dB around 300 Hz on your EQ");
-        match &rx[0].ops[0] {
+        assert_eq!(rx[1].title, "Or cut the low mids on your 10-band EQ.");
+        assert_eq!(
+            rx[1].detail,
+            "EQ-10 in the chain: 250 Hz -3 dB from its current setting"
+        );
+        match &rx[1].ops[0] {
             DoctorOp::Param { value, .. } => assert!((value - (-1.0)).abs() < 1e-9),
             other => panic!("expected Param, got {other:?}"),
         }
         // Clamped to the band range: −11 current − 3 → floor −12.
         p[1].params.insert("gain250hz".into(), -11.0);
         let rx = generate_rx("muddy", &p);
-        match &rx[0].ops[0] {
+        match &rx[1].ops[0] {
             DoctorOp::Param { value, .. } => {
                 assert!((value - (-EQ10_BAND_RANGE_DB)).abs() < 1e-9);
             }
             other => panic!("expected Param, got {other:?}"),
         }
-        // Unknown current value → absolute write + the absolute-truth title.
+        // Unknown current value → absolute write, and the detail says so.
         let p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
         let rx = generate_rx("muddy", &p);
-        assert_eq!(rx[0].title, "Set the 250 Hz band to -3 dB");
-        match &rx[0].ops[0] {
+        assert_eq!(rx[1].title, "Or cut the low mids on your 10-band EQ.");
+        assert_eq!(
+            rx[1].detail,
+            "EQ-10 in the chain: 250 Hz -3 dB, set outright (its current setting is unknown)"
+        );
+        match &rx[1].ops[0] {
             DoctorOp::Param { value, .. } => assert!((value + 3.0).abs() < f64::EPSILON),
             other => panic!("expected Param, got {other:?}"),
         }
@@ -5353,32 +5405,35 @@ mod tests {
     #[test]
     fn comp_moves_are_graph_aware() {
         // Active comp already in the chain → sustain advisory, never an insert.
+        // The amp's Middle leads; the comp step is the "Or".
+        let sustain = "Or turn up the Sustain on your compressor.";
         let mut p = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
         let rx = generate_rx("lost", &p);
-        assert!(rx
-            .iter()
-            .any(|r| r.kind == RxKind::Advisory && r.title.contains("sustain")));
+        assert_eq!(rx[0].title, "Turn the amp's Middle up 1 or 2.");
+        assert_eq!(rx[1].kind, RxKind::Advisory);
+        assert_eq!(rx[1].title, sustain);
         assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
         // Bypassed comp → "switch it back on" advisory.
         p[0].bypassed = true;
         let rx = generate_rx("lost", &p);
         assert!(rx
             .iter()
-            .any(|r| r.title == "Switch your compressor back on"));
+            .any(|r| r.title == "Or switch your compressor back on."));
         assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
         // Active wins over bypassed (order-independent).
         let mut p = chain(&["ACD_CS3", "ACD_Sustain", "ACD_TweedDeluxe"], &[]);
         p[0].bypassed = true;
         let rx = generate_rx("lost", &p);
-        assert!(rx
-            .iter()
-            .any(|r| r.title.contains("sustain on the compressor")));
-        // Buried takes the same comp-aware path.
+        assert!(rx.iter().any(|r| r.title == sustain));
+        // Buried takes the same comp-aware path, after easing the drive.
         let p = chain(&["ACD_DynaComp", "ACD_ModernBassOverdrive"], &[]);
         let rx = generate_rx("buried", &p);
-        assert!(rx
-            .iter()
-            .any(|r| r.kind == RxKind::Advisory && r.title.contains("sustain")));
+        assert_eq!(
+            rx[0].title,
+            "Turn your drive pedal's Gain down and its Level up."
+        );
+        assert_eq!(rx[1].kind, RxKind::Advisory);
+        assert_eq!(rx[1].title, sustain);
         assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
     }
 
@@ -5438,12 +5493,22 @@ mod tests {
         assert!((sc.worst_delta_db - 6.0).abs() < 1e-9);
         assert_eq!(sc.rows.len(), 3);
         assert!(sc.rows[0].is_ref);
-        assert!(sc.rx[0].title.contains("Crunch"));
         // A louder scene is ADVISED (Doctor has no in-app scene trim), never a
-        // one-click op — the guidance points at the Level tab.
-        assert_eq!(sc.rx[0].kind, RxKind::Advisory);
-        assert!(sc.rx[0].ops.is_empty());
-        assert!(sc.rx[0].detail.contains("Level tab"));
+        // one-click op: turn the amp down in that scene to the flag's own gate,
+        // or reach for the Middle to stand out instead. The gap rides the detail.
+        assert_eq!(
+            sc.rx[0].title,
+            "Turn down the amp's Level in Crunch until the jump is 3 dB or less."
+        );
+        assert_eq!(sc.rx[0].detail, "Crunch +6.0 dB against the main sound");
+        assert_eq!(
+            sc.rx[1].title,
+            "Or, to stand out in Crunch, raise the amp's Middle instead of its volume."
+        );
+        assert!(sc
+            .rx
+            .iter()
+            .all(|r| r.kind == RxKind::Advisory && r.ops.is_empty()));
         // All within 3 dB → no flag.
         let tame = vec![("Lead".to_string(), None, -18.0, Some(1u32))];
         assert!(scene_consistency("Rhythm", -20.0, &tame, Instrument::Guitar).is_none());
@@ -5462,9 +5527,14 @@ mod tests {
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("7 dB quieter still flags");
         assert!((sc.worst_delta_db + 7.0).abs() < 1e-9);
+        assert_eq!(sc.rx.len(), 1);
         assert_eq!(sc.rx[0].kind, RxKind::Advisory);
         assert!(sc.rx[0].ops.is_empty());
-        assert!(sc.rx[0].detail.contains("Level tab"));
+        assert_eq!(
+            sc.rx[0].title,
+            "If you didn't set it up that way, turn up the amp's Level in Ballad."
+        );
+        assert_eq!(sc.rx[0].detail, "Ballad -7.0 dB against the main sound");
     }
 
     #[test]
@@ -5479,9 +5549,13 @@ mod tests {
         )];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("6 dB jump flags");
+        assert_eq!(sc.rx.len(), 1);
         assert_eq!(sc.rx[0].kind, RxKind::Advisory);
         assert!(sc.rx[0].ops.is_empty());
-        assert!(sc.rx[0].title.contains("by ear"));
+        assert_eq!(
+            sc.rx[0].title,
+            "Couldn't confirm the reading for Lead. Check it by ear before you change it."
+        );
         // The same jump on wire index 1 is the plain louder advisory — advisory
         // too (no in-app scene trim), but NOT the by-ear copy.
         let scenes = vec![(
@@ -5494,7 +5568,9 @@ mod tests {
         assert_eq!(sc.rx[0].kind, RxKind::Advisory);
         assert!(sc.rx[0].ops.is_empty());
         assert!(!sc.rx[0].title.contains("by ear"));
-        assert!(sc.rx[0].title.contains("louder"));
+        assert!(sc.rx[0]
+            .title
+            .starts_with("Turn down the amp's Level in Lead"));
     }
 
     #[test]
@@ -5607,8 +5683,11 @@ mod tests {
         assert_eq!(sc.rx.len(), 1);
         assert_eq!(sc.rx[0].kind, RxKind::Advisory);
         assert!(sc.rx[0].ops.is_empty());
-        assert!(sc.rx[0].title.contains("louder than the base sound"));
-        assert!(sc.rx[0].detail.contains("Level tab"));
+        assert_eq!(
+            sc.rx[0].title,
+            "Turn down the Level of the block that Boost turns on until the jump is 3 dB or less."
+        );
+        assert_eq!(sc.rx[0].detail, "Boost +7.0 dB against the main sound");
     }
 
     #[test]
@@ -5629,7 +5708,9 @@ mod tests {
         assert_eq!(sc.worst_name, "Lead");
         assert_eq!(sc.rx[0].kind, RxKind::Advisory);
         assert!(sc.rx[0].ops.is_empty());
-        assert!(sc.rx[0].detail.contains("Level tab"));
+        assert!(sc.rx[0]
+            .title
+            .starts_with("Turn down the amp's Level in Lead"));
         assert!(sc.rows.iter().any(|r| r.name == "Boost"));
     }
 
@@ -5829,7 +5910,7 @@ mod tests {
         let onset = 4096usize;
         // Near-silent pre-onset floor (−54 dBFS noise, well above the Hann
         // sidelobe leakage floor so the comparison isn't a coin flip) + a
-        // 2 kHz sine body — the band containing 2 kHz (High-mids, 1–3 kHz)
+        // 2 kHz sine body — the band containing 2 kHz (High mids, 1–3 kHz)
         // must clear the floor; a distant band never excited by the sine
         // (Lows, 60–120 Hz) must not.
         let mut samples = lcg_noise(onset, 1e-3, 7);
@@ -5837,7 +5918,7 @@ mod tests {
         let body = body_psd(&samples, RATE, onset);
         let cov = output_coverage_with_body(&samples, RATE, onset, Family::Guitar, &body);
         assert_eq!(cov.len(), 6);
-        assert!(cov[3], "High-mids (1–3 kHz) should be covered: {cov:?}");
+        assert!(cov[3], "High mids (1–3 kHz) should be covered: {cov:?}");
         assert!(!cov[0], "Lows (60–120 Hz) should NOT be covered: {cov:?}");
     }
 
@@ -5853,7 +5934,7 @@ mod tests {
         // only_played_bands`), now on the Welch estimator.
         let samples = test_sine(2_000.0, 1.0, 96_000, 48_000.0);
         let cov = band_coverage(&samples, Family::Guitar);
-        assert!(cov[3], "High-mids should be covered: {cov:?}");
+        assert!(cov[3], "High mids should be covered: {cov:?}");
         assert!(!cov[0], "Lows should not be covered: {cov:?}");
         assert!(!cov[5], "Air should not be covered: {cov:?}");
     }
@@ -6018,17 +6099,25 @@ mod tests {
 
     #[test]
     fn boomy_cab_hpf_is_value_aware() {
-        // Unknown current hpf → blind write, honest "Set…" title (may raise OR lower).
+        // Unknown current hpf → blind write (may raise OR lower), and the
+        // detail says so. The cab's own knob is the one step: no amp step first.
+        let step = "Raise the cab's Low Cut until the low end tightens up.";
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         let rx = generate_rx("boomy", &p);
+        assert_eq!(rx.len(), 1);
         assert_eq!(rx[0].kind, RxKind::OneClick);
-        assert_eq!(rx[0].title, "Set the cab's low cut to 90 Hz");
+        assert_eq!(rx[0].title, step);
+        assert_eq!(
+            rx[0].detail,
+            "cab Low Cut set to 90 Hz (its current setting is unknown)"
+        );
         // Known + on the WRONG side (below 90) → the directional one-click at 90.
         let mut low = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         low[1].params.insert("hpf".into(), 40.0);
         let rx = generate_rx("boomy", &low);
         assert_eq!(rx[0].kind, RxKind::OneClick);
-        assert_eq!(rx[0].title, "Raise the cab's low cut to 90 Hz");
+        assert_eq!(rx[0].title, step);
+        assert_eq!(rx[0].detail, "cab Low Cut from 40 Hz to 90 Hz");
         match &rx[0].ops[0] {
             DoctorOp::Param { param, value, .. } => {
                 assert_eq!(param, "hpf");
@@ -6042,20 +6131,27 @@ mod tests {
         let rx = generate_rx("boomy", &high);
         assert_eq!(rx.len(), 1);
         assert_eq!(rx[0].kind, RxKind::Advisory);
+        assert_eq!(rx[0].title, "Turn the amp's Bass down 1 or 2.");
     }
 
     #[test]
     fn fizzy_cab_lpf_is_value_aware() {
-        // Unknown current lpf → blind write, honest "Set…" title.
+        // Unknown current lpf → blind write, and the detail says so.
+        let step = "Lower the cab's High Cut until the fizz goes away.";
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         let rx = generate_rx("fizzy", &p);
         assert_eq!(rx[0].kind, RxKind::OneClick);
-        assert_eq!(rx[0].title, "Set the cab's high cut to 8 kHz");
+        assert_eq!(rx[0].title, step);
+        assert_eq!(
+            rx[0].detail,
+            "cab High Cut set to 8 kHz (its current setting is unknown)"
+        );
         // Known + on the WRONG side (above 8 kHz) → the directional one-click at 8000.
         let mut hi = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         hi[1].params.insert("lpf".into(), 12000.0);
         let rx = generate_rx("fizzy", &hi);
-        assert_eq!(rx[0].title, "Lower the cab's high cut to tame the fizz");
+        assert_eq!(rx[0].title, step);
+        assert_eq!(rx[0].detail, "cab High Cut from 12 kHz to 8 kHz");
         match &rx[0].ops[0] {
             DoctorOp::Param { param, value, .. } => {
                 assert_eq!(param, "lpf");
@@ -6069,6 +6165,10 @@ mod tests {
         let rx = generate_rx("fizzy", &lo);
         assert_eq!(rx.len(), 1);
         assert_eq!(rx[0].kind, RxKind::Advisory);
+        assert_eq!(
+            rx[0].title,
+            "Turn the amp's Presence and Treble down 1 or 2."
+        );
     }
 
     // ── playback-level (Fletcher–Munson) threshold offsets ──
@@ -6212,7 +6312,7 @@ mod tests {
     }
 
     /// [`flagrant_ring`] at a boxy-range `freq_hz`, with its band levels put
-    /// on the shipped target plus a +3 dB Low-mids hump. The white-noise bed's
+    /// on the shipped target plus a +3 dB Low mids hump. The white-noise bed's
     /// own band shape is not the target's (the pitched-pluck target is far
     /// from flat), so on its own it may leave the hump's band uncorroborated;
     /// this keeps the fixture about the peak, which is what it tests.
@@ -6247,15 +6347,25 @@ mod tests {
                     keys(&diags)
                 )
             });
-        assert_eq!(
-            d.label,
-            format!("Rings at {}", measured_freq_label(peak.freq_hz))
+        // The name carries no frequency: the band meter shows where (2.6 kHz
+        // is in the high mids), and the measured frequency rides the detail.
+        assert_eq!(d.label, "Ringing");
+        assert_eq!(d.bands, vec![3], "2.6 kHz lights the high mids");
+        assert_eq!(d.direction, BandDirection::Strong);
+        assert!(
+            d.detail.starts_with(&measured_freq_label(peak.freq_hz)),
+            "{}",
+            d.detail
         );
         assert!(d.severity > 0.0, "severity {}", d.severity);
         let rx =
             d.rx.iter()
                 .find(|r| r.kind == RxKind::Chain)
                 .expect("a parametric EQ insert Rx");
+        assert_eq!(
+            rx.title,
+            "Add a parametric EQ after the cab and cut a narrow notch in the high mids."
+        );
         match &rx.ops[0] {
             DoctorOp::InsertNode {
                 fender_id, params, ..
@@ -6311,6 +6421,13 @@ mod tests {
         assert_eq!(d.rx.len(), 1);
         let rx = &d.rx[0];
         assert_eq!(rx.kind, RxKind::OneClick);
+        assert_eq!(
+            rx.title,
+            "Cut a narrow notch in the high mids with a free band of your parametric EQ."
+        );
+        assert!(rx
+            .detail
+            .starts_with("EQ-5 Parametric in the chain, band 3: "));
         let written: Vec<&str> = rx
             .ops
             .iter()
@@ -6336,6 +6453,10 @@ mod tests {
         assert_eq!(d.rx.len(), 1);
         assert_eq!(d.rx[0].kind, RxKind::Advisory);
         assert!(d.rx[0].ops.is_empty());
+        assert_eq!(
+            d.rx[0].title,
+            "Cut a narrow notch in the high mids on the parametric EQ you already have."
+        );
     }
 
     #[test]
@@ -6359,9 +6480,16 @@ mod tests {
         assert!(keys.contains(&"boxy"), "{keys:?}");
         assert!(!keys.contains(&"resonant"), "{keys:?}");
         let d = diags.iter().find(|d| d.key == "boxy").unwrap();
+        assert_eq!(d.label, "Boxy", "no frequency in the name");
+        assert!(
+            d.detail.starts_with(&measured_freq_label(peak.freq_hz)),
+            "{}",
+            d.detail
+        );
+        // 380 Hz sits in the low mids: the fix names that band, never the Hz.
         assert_eq!(
-            d.label,
-            format!("Boxy (a {} hump)", measured_freq_label(peak.freq_hz))
+            d.rx[0].title,
+            "Add a parametric EQ after the cab and cut a narrow notch in the low mids."
         );
     }
 
@@ -6394,9 +6522,9 @@ mod tests {
                 )
             });
         assert!(
-            d.label.contains(&measured_freq_label(2_600.0)) || d.label.contains("kHz"),
+            d.detail.starts_with(&measured_freq_label(2_600.0)),
             "resonant must anchor on the 2.6 kHz ring, not the boxy peak: {}",
-            d.label
+            d.detail
         );
     }
 
@@ -6704,5 +6832,269 @@ mod tests {
         assert_eq!(diag_set(11), vec!["dark", "muddy"]); // Tweed Warm
         assert_eq!(diag_set(167), vec!["fizzy", "harsh"]); // Direct Acoustic
         assert!(diag_set(0).is_empty()); // any other preset → all clear
+    }
+
+    // ── on-screen words: the app's voice (look B) ──
+
+    /// Every text a finding puts on screen (its name, its sentence and each
+    /// step) reads in the app's voice: no Hz figures, no knob values or
+    /// percentages, no dashes, semicolons or exclamation marks, no hedging.
+    /// `allow_db` admits the one dB figure scene advice aims at.
+    fn assert_app_voice(text: &str, allow_db: bool) {
+        assert!(!text.is_empty(), "empty on-screen text");
+        for banned in [
+            "Hz",
+            "%",
+            "\u{2014}",
+            "\u{2013}",
+            ";",
+            "!",
+            "LUFS",
+            " may ",
+            "usually",
+            "a touch",
+            "a little",
+            "probably",
+            "notch it out",
+            "Low mids",
+            "High mids",
+            "low-mids",
+            "high-mids",
+            "base sound",
+        ] {
+            assert!(!text.contains(banned), "{banned:?} in {text:?}");
+        }
+        if !allow_db {
+            assert!(!text.contains("dB"), "a dB figure in {text:?}");
+        }
+    }
+
+    /// The graphs every rule's fixes are generated against: each carrier a
+    /// fix can reuse, and the inserts when there's none.
+    fn voice_graphs() -> Vec<Vec<DoctorNode>> {
+        let amp_cab = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        let mut cab_known = amp_cab.clone();
+        cab_known[1].params.insert("hpf".into(), 40.0);
+        cab_known[1].params.insert("lpf".into(), 12_000.0);
+        let mut eq10 = chain(
+            &["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_TenBandEQStereo"],
+            &[],
+        );
+        eq10[2].params.insert("gain250hz".into(), 0.0);
+        let mut comp_off = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
+        comp_off[0].bypassed = true;
+        let mut wet = chain(&["ACD_TweedDeluxe", "ACD_TMLargeRoom"], &[]);
+        wet[1].params.insert("mix".into(), 0.6);
+        let mut peq_free = amp_cab.clone();
+        peq_free.push(peq_node(&[(2, 2.0, 0.0, 0.0)]));
+        let mut peq_busy = amp_cab.clone();
+        peq_busy.push(peq_node(&[(2, 2.0, 0.0, 3.0)]));
+        vec![
+            Vec::new(),
+            chain(&["ACD_TweedDeluxe"], &[]),
+            amp_cab,
+            cab_known,
+            eq10,
+            chain(
+                &["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_TenBandEQStereo"],
+                &[],
+            ),
+            chain(
+                &["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_MustangSevenBandEq"],
+                &[],
+            ),
+            chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]),
+            comp_off,
+            chain(&["ACD_ModernBassOverdrive", "ACD_TweedDeluxe"], &[]),
+            wet,
+            chain(&["ACD_Spring65"], &[]),
+            peq_free,
+            peq_busy,
+        ]
+    }
+
+    /// A later fix's opening word ("Or add…", "Or, if the lows…").
+    fn starts_with_or(title: &str) -> bool {
+        title.starts_with("Or ") || title.starts_with("Or, ")
+    }
+
+    /// The fixes run simplest first: the first is a plain step, every later
+    /// one starts with "Or", and each is one sentence ending in a full stop.
+    fn assert_simplest_first(what: &str, rx: &[Rx]) {
+        for (i, r) in rx.iter().enumerate() {
+            assert_app_voice(&r.title, false);
+            assert!(r.title.ends_with('.'), "{what}: {:?}", r.title);
+            assert_eq!(
+                starts_with_or(&r.title),
+                i > 0,
+                "{what}: step {i} {:?} in {:?}",
+                r.title,
+                rx.iter().map(|r| r.title.as_str()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn every_fix_reads_simplest_first_in_the_app_voice() {
+        for key in [
+            "muddy", "boomy", "harsh", "fizzy", "washed", "lost", "buried", "dark", "bright",
+            "thin",
+        ] {
+            for (g, nodes) in voice_graphs().iter().enumerate() {
+                let rx = generate_rx_sized(key, nodes, 2.0);
+                assert!(!rx.is_empty(), "{key} on graph {g} has no fix");
+                assert_simplest_first(&format!("{key} on graph {g}"), &rx);
+            }
+        }
+        for (name, profile) in [
+            ("resonant", flagrant_ring(2_600.0)),
+            ("boxy", boxy_ring(380.0)),
+        ] {
+            for (g, nodes) in voice_graphs().iter().enumerate() {
+                let diags = localized_for(&profile, Some(nodes));
+                let d = diags.iter().find(|d| d.key == name).expect("fires");
+                if nodes.is_empty() {
+                    continue; // no graph → no fix, like every graph-driven rule
+                }
+                assert_simplest_first(&format!("{name} on graph {g}"), &d.rx);
+            }
+        }
+    }
+
+    #[test]
+    fn every_finding_names_itself_without_figures_and_says_which_way_its_bands_lean() {
+        let g = Family::Guitar.thresholds();
+        let past = |a: f64, b: f64| a.max(b) + 2.0;
+        let mut hash = resid_profile(Family::Guitar, 2, 0.0);
+        hash.bands[5] = hash.bands[4];
+        let mut wet = resid_profile(Family::Guitar, 2, 0.0);
+        wet.tail_ratio_db = g.wash_tail_db + 5.0;
+        let bind = BASS.buried_lows_db.max(BASS.buried_centered_db);
+        let driven = chain(&["ACD_ModernBassOverdrive", "ACD_TweedDeluxe"], &[]);
+        let amp_cab = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        let guitar = |p: &SoundProfile| diagnose(p, Some(&amp_cab), Family::Guitar);
+        let mut found: Vec<Diag> = Vec::new();
+        found.extend(guitar(&resid_profile(
+            Family::Guitar,
+            1,
+            past(g.muddy_db, g.muddy_centered_db),
+        )));
+        found.extend(guitar(&resid_profile(
+            Family::Guitar,
+            0,
+            past(g.boomy_db, g.boomy_centered_db),
+        )));
+        found.extend(guitar(&resid_profile(
+            Family::Guitar,
+            3,
+            past(g.harsh_db, g.harsh_centered_db),
+        )));
+        found.extend(guitar(&resid_profile(
+            Family::Guitar,
+            2,
+            -past(g.lost_db, g.lost_centered_db),
+        )));
+        found.extend(guitar(&resid_profile(
+            Family::Guitar,
+            0,
+            -past(g.thin_db, g.thin_centered_db),
+        )));
+        found.extend(guitar(&hash));
+        found.extend(diagnose(&wet, None, Family::Guitar));
+        found.extend(guitar(&oracle_profile(&tilted(-(g.tilt_db_per_oct + 2.0)))));
+        found.extend(guitar(&oracle_profile(&tilted(g.tilt_db_per_oct + 2.0))));
+        found.extend(diagnose(
+            &resid_profile(Family::Bass, 0, -(bind + 1.0)),
+            Some(&driven),
+            Family::Bass,
+        ));
+        found.extend(localized_for(&flagrant_ring(2_600.0), Some(&amp_cab)));
+        found.extend(localized_for(&boxy_ring(380.0), Some(&amp_cab)));
+
+        let expect = [
+            ("muddy", "Muddy", BandDirection::Strong),
+            ("boomy", "Boomy", BandDirection::Strong),
+            ("harsh", "Harsh", BandDirection::Strong),
+            ("fizzy", "Fizzy", BandDirection::Strong),
+            ("lost", "Gets lost in the mix", BandDirection::Weak),
+            ("dark", "Dark", BandDirection::Weak),
+            ("bright", "Bright", BandDirection::Strong),
+            ("thin", "Thin", BandDirection::Weak),
+            ("washed", "Washed out", BandDirection::Strong),
+            ("buried", "Buried clean tone", BandDirection::Weak),
+            ("boxy", "Boxy", BandDirection::Strong),
+            ("resonant", "Ringing", BandDirection::Strong),
+        ];
+        for (key, label, direction) in expect {
+            let d = found
+                .iter()
+                .find(|d| d.key == key)
+                .unwrap_or_else(|| panic!("{key} never fired: {:?}", keys(&found)));
+            assert_eq!(d.label, label, "{key}");
+            assert_eq!(d.direction, direction, "{key}");
+            assert_app_voice(&d.label, false);
+            assert!(!d.label.ends_with('.'), "{key}: a name, not a sentence");
+            assert_app_voice(d.explain, false);
+            assert!(d.explain.ends_with('.'), "{key}: {:?}", d.explain);
+        }
+        // Every finding in the sweep, not just the first of each key.
+        for d in &found {
+            assert_app_voice(&d.label, false);
+            assert_app_voice(d.explain, false);
+            for r in &d.rx {
+                assert_app_voice(&r.title, false);
+            }
+        }
+    }
+
+    #[test]
+    fn scene_advice_reads_in_the_app_voice() {
+        // (name, integrated LUFS, wire scene index): a louder scene, a louder
+        // first scene (the by-ear case), a louder footswitch, and the quieter
+        // scene and footswitch.
+        let cases: [(&str, f64, Option<u32>); 5] = [
+            ("Chorus", -14.0, Some(1)),
+            ("Intro", -14.0, Some(0)),
+            ("Boost", -13.0, None),
+            ("Ballad", -27.0, Some(1)),
+            ("Clean", -27.0, None),
+        ];
+        for (name, lufs, scene) in cases {
+            let others = vec![(name.to_string(), None, lufs, scene)];
+            let sc = scene_consistency("Rhythm", -20.0, &others, Instrument::Guitar)
+                .expect("a big jump flags");
+            for (i, r) in sc.rx.iter().enumerate() {
+                assert_app_voice(&r.title, true);
+                assert!(r.title.ends_with('.'), "{:?}", r.title);
+                assert_eq!(starts_with_or(&r.title), i > 0, "{:?}", r.title);
+            }
+        }
+    }
+
+    #[test]
+    fn band_labels_are_the_band_meters_words() {
+        assert_eq!(
+            Family::Guitar.labels(),
+            ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"]
+        );
+        assert_eq!(Family::Bass.labels(), Family::Guitar.labels());
+        assert_eq!(&Family::BassVi.labels()[1..], Family::Guitar.labels());
+        // The fix sentences name a band in lower case after "the".
+        assert_eq!(band_place(Family::Guitar, Some(1)), "the low mids");
+        assert_eq!(band_place(Family::BassVi, Some(4)), "the high mids");
+        assert_eq!(band_place(Family::Guitar, None), "that spot");
+    }
+
+    #[test]
+    fn a_finding_tells_the_wire_which_way_its_bands_lean() {
+        let p = resid_profile(
+            Family::Guitar,
+            2,
+            -(GUITAR.lost_db.max(GUITAR.lost_centered_db) + 2.0),
+        );
+        let lost = find(&diagnose(&p, None, Family::Guitar), "lost");
+        let wire = serde_json::to_value(&lost).expect("serializes");
+        assert_eq!(wire["direction"], "weak");
+        assert_eq!(wire["label"], "Gets lost in the mix");
     }
 }

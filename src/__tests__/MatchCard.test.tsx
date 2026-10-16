@@ -21,7 +21,7 @@ import { MatchCard } from "../views/doctor/MatchCard";
 import type { DoctorSoundResult, GraphNode } from "../lib/types";
 import { renderWithTheme } from "./testKit";
 
-const LABELS = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
+const LABELS = ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"];
 
 function sound(balanceDb: number[]): DoctorSoundResult {
   return {

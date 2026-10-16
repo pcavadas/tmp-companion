@@ -133,9 +133,9 @@ function mockOnePreset(
               balanceDb: [],
               bandLabels: [
                 "Lows",
-                "Low-mids",
+                "Low mids",
                 "Mids",
-                "High-mids",
+                "High mids",
                 "Highs",
                 "Air",
               ],

@@ -26,7 +26,7 @@ import {
 //
 // ONLINE e2e suite consolidation (8→4 files): this file's first test below now runs
 // OFFLINE ONLY (test.skip'd online) — its online-specific assertions (the E2E Edge
-// EQ-ring chip + "notch it out" prescription) moved to `doctor.online.spec.ts`, which runs
+// EQ-ring chip + its notch prescription) moved to `doctor.online.spec.ts`, which runs
 // Edge alone online; the cross-card ring-chip scoping proof is Vitest's
 // (`DoctorResults.test.tsx`). The offline FLOW proof here (select → check → run → Results,
 // three presets' cards render) is unaffected. It also reads E2E Rig's two leveling-damage

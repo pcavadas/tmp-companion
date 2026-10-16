@@ -5,7 +5,34 @@
 // now).
 
 import { useTheme } from "../../theme/ThemeContext";
+import type { DoctorBandDirection } from "../../lib/types";
 import { sevTone, type Sev } from "./severity";
+
+const DIRECTION_WORDS: Record<DoctorBandDirection, string> = {
+  strong: "too strong",
+  weak: "too weak",
+};
+
+/** "Low mids", "Highs and Air", "Lows, Mids and Air". */
+function listWords(words: string[]): string {
+  const last = words.slice(-1).join("");
+  const rest = words.slice(0, -1);
+  return rest.length === 0 ? last : `${rest.join(", ")} and ${last}`;
+}
+
+/** The meter's accessible name: the finding's bands and which way they're
+ *  off ("Tone by band: Low mids too strong"). */
+function meterLabel(
+  bandLabels: string[],
+  bands: number[],
+  direction: DoctorBandDirection,
+): string {
+  const hot = bands
+    .filter((i) => i >= 0 && i < bandLabels.length)
+    .map((i) => bandLabels[i]);
+  if (hot.length === 0) return "Tone by band";
+  return `Tone by band: ${listWords(hot)} ${DIRECTION_WORDS[direction]}`;
+}
 
 // Map a per-band balance (dB) to a bar-height %. The capture's balanceDb spans
 // roughly −30…+15 dB; project that onto 8…100% so a silent band still shows a stub
@@ -25,6 +52,8 @@ export interface BandMeterProps {
   bandLabels: string[];
   /** Problem band indices from the diagnosis — filled + ringed in the sev color. */
   bands: number[];
+  /** Whether those bands are too strong or too weak (`DoctorDiag.direction`). */
+  direction: DoctorBandDirection;
   sev: Sev;
 }
 
@@ -32,6 +61,7 @@ export function BandMeter({
   balanceDb,
   bandLabels,
   bands,
+  direction,
   sev,
 }: BandMeterProps) {
   const { t } = useTheme();
@@ -40,7 +70,11 @@ export function BandMeter({
   const faint = "rgba(15,17,21,0.10)";
 
   return (
-    <div style={{ marginTop: t.space5 }}>
+    <div
+      role="img"
+      aria-label={meterLabel(bandLabels, bands, direction)}
+      style={{ marginTop: t.space5 }}
+    >
       <div
         style={{
           display: "flex",

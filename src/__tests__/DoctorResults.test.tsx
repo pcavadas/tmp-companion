@@ -65,9 +65,9 @@ function fixture(): DoctorCheckResult {
             balanceDb: [],
             bandLabels: [
               "Lows",
-              "Low-mids",
+              "Low mids",
               "Mids",
-              "High-mids",
+              "High mids",
               "Highs",
               "Air",
             ],
@@ -97,10 +97,11 @@ function fixture(): DoctorCheckResult {
                 severity: 4.2,
                 z: 10.5,
                 bands: [1],
+                direction: "strong",
                 detail: "+4.2 dB around 250 Hz",
                 fromLevel: "rehearsal",
                 explain:
-                  "Low-mids are piling up and swallowing your note definition.",
+                  "The low mids build up and stack with the bass player.",
                 rx: [
                   {
                     kind: "oneclick",
@@ -134,9 +135,9 @@ function fixture(): DoctorCheckResult {
             balanceDb: [-6, 4, -2, -8, -12, -18],
             bandLabels: [
               "Lows",
-              "Low-mids",
+              "Low mids",
               "Mids",
-              "High-mids",
+              "High mids",
               "Highs",
               "Air",
             ],
@@ -159,6 +160,7 @@ function fixture(): DoctorCheckResult {
                 severity: 6,
                 z: 15,
                 bands: [],
+                direction: "strong",
                 detail: "tail 6 dB over dry",
                 fromLevel: "quiet",
                 explain: "The reverb tail is burying the dry signal.",
@@ -190,9 +192,9 @@ function fixture(): DoctorCheckResult {
             balanceDb: [-4, -2, 0, -3, -5, -7],
             bandLabels: [
               "Lows",
-              "Low-mids",
+              "Low mids",
               "Mids",
-              "High-mids",
+              "High mids",
               "Highs",
               "Air",
             ],
@@ -239,9 +241,9 @@ function fixture(): DoctorCheckResult {
             balanceDb: [],
             bandLabels: [
               "Lows",
-              "Low-mids",
+              "Low mids",
               "Mids",
-              "High-mids",
+              "High mids",
               "Highs",
               "Air",
             ],
@@ -353,9 +355,9 @@ describe("DoctorResults — summary + cards", () => {
               balanceDb: [],
               bandLabels: [
                 "Lows",
-                "Low-mids",
+                "Low mids",
                 "Mids",
-                "High-mids",
+                "High mids",
                 "Highs",
                 "Air",
               ],
@@ -408,9 +410,9 @@ describe("DoctorResults — summary + cards", () => {
               balanceDb: [],
               bandLabels: [
                 "Lows",
-                "Low-mids",
+                "Low mids",
                 "Mids",
-                "High-mids",
+                "High mids",
                 "Highs",
                 "Air",
               ],
@@ -477,8 +479,7 @@ describe("DoctorResults — summary + cards", () => {
   it("expands a problem row to show its explanation, detail, and fix; collapses on a second click", async () => {
     const user = userEvent.setup();
     renderResults();
-    const explain =
-      "Low-mids are piling up and swallowing your note definition.";
+    const explain = "The low mids build up and stack with the bass player.";
     expect(screen.queryByText(explain)).not.toBeInTheDocument();
 
     await user.click(screen.getByText("Rhythm Crunch"));
@@ -551,11 +552,12 @@ describe("DoctorResults — filter", () => {
     const user = userEvent.setup();
     const ring: DoctorDiag = {
       key: "resonant",
-      label: "Rings at 2.6 kHz",
+      label: "Ringing",
       sev: "med",
       severity: 3,
       z: 8,
       bands: [3],
+      direction: "strong",
       detail: "a narrow peak at 2.6 kHz",
       fromLevel: "quiet",
       explain: "A narrow peak rings over every note.",
@@ -580,11 +582,11 @@ describe("DoctorResults — filter", () => {
       return el;
     };
     expect(
-      within(card(flagged.listIndex)).getAllByText("Rings at 2.6 kHz"),
+      within(card(flagged.listIndex)).getAllByText("Ringing"),
     ).toHaveLength(flagged.sounds.length);
     for (const sibling of [clean, broken]) {
       expect(
-        within(card(sibling.listIndex)).queryByText(/Rings at/),
+        within(card(sibling.listIndex)).queryByText("Ringing"),
       ).not.toBeInTheDocument();
     }
   });
@@ -613,9 +615,10 @@ describe("DoctorResults — healthy collapse", () => {
       severity: 4,
       z: 10,
       bands: [1],
+      direction: "strong",
       detail: "+4 dB around 250 Hz",
       fromLevel: "quiet",
-      explain: "Low-mids are piling up.",
+      explain: "The low mids build up.",
       rx: [
         {
           kind: "advisory",
@@ -646,9 +649,9 @@ describe("DoctorResults — healthy collapse", () => {
               balanceDb: [-6, 4, -2, -8, -12, -18],
               bandLabels: [
                 "Lows",
-                "Low-mids",
+                "Low mids",
                 "Mids",
-                "High-mids",
+                "High mids",
                 "Highs",
                 "Air",
               ],
@@ -671,9 +674,9 @@ describe("DoctorResults — healthy collapse", () => {
               balanceDb: [-4, -2, 0, -3, -5, -7],
               bandLabels: [
                 "Lows",
-                "Low-mids",
+                "Low mids",
                 "Mids",
-                "High-mids",
+                "High mids",
                 "Highs",
                 "Air",
               ],
@@ -744,7 +747,7 @@ function baseSound(
     integratedLufs: -20,
     tailRatioDb: 0,
     balanceDb: [0, 0, 0, 0, 0, 0],
-    bandLabels: ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"],
+    bandLabels: ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"],
     cutThrough: null,
     error: null,
     skippedBandCount: 0,
@@ -1264,9 +1267,10 @@ describe("DoctorResults — shared-block caption", () => {
       severity: 4,
       z: 10,
       bands: [1],
+      direction: "strong",
       detail: "+4 dB around 250 Hz",
       fromLevel: "quiet",
-      explain: "Low-mids are piling up.",
+      explain: "The low mids build up.",
       rx: [
         {
           kind: "oneclick",
@@ -1298,7 +1302,7 @@ describe("DoctorResults — shared-block caption", () => {
       integratedLufs: -18,
       tailRatioDb: 0,
       balanceDb: [-6, 4, -2, -8, -12, -18],
-      bandLabels: ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"],
+      bandLabels: ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"],
       cutThrough: null,
       error: null,
       skippedBandCount: 0,
@@ -1486,6 +1490,7 @@ describe("DoctorResults — severity (possible verdicts)", () => {
       severity,
       z: severity / 0.4,
       bands: [],
+      direction: "strong",
       detail: `${label} detail`,
       fromLevel: "quiet",
       explain: `${label} explanation.`,
@@ -1521,9 +1526,9 @@ describe("DoctorResults — severity (possible verdicts)", () => {
               balanceDb: [0, 0, 0, 0, 0, 0],
               bandLabels: [
                 "Lows",
-                "Low-mids",
+                "Low mids",
                 "Mids",
-                "High-mids",
+                "High mids",
                 "Highs",
                 "Air",
               ],

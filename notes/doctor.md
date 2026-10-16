@@ -274,8 +274,8 @@ right **after the cab** (`after_cab_anchor` — the wire anchor is the
 neighbour's FenderId, NOT its node_id; a duplicated-model neighbour used to
 silently drop the anchor). Param one-clicks are **value-aware** wherever the
 current value rides the graph allowlist: a write that would move a known value
-the WRONG way is dropped, and a blind write on an UNKNOWN value keeps an
-honest "Set …" title. Apply (`doctor_apply`) edits the device edit buffer
+the WRONG way is dropped, and a blind write on an UNKNOWN value says so in its
+`Rx::detail`. Apply (`doctor_apply`) edits the device edit buffer
 under the DIAGNOSED scene/footswitch isolation — nothing persists until
 `doctor_save`, which **rebuilds SAVED+ops from scratch** (restore → fresh
 confirmed session → re-apply exactly `ops` → save), so intermediate
@@ -366,14 +366,42 @@ advisory still surfaces under "Needs a look".
   equivalence arm was retired once the offline/live isolation equivalence got
   its hardware-free pin in `commands/doctor_tests.rs`.)
 
+## Words on screen
+
+`doctor.rs` writes every Doctor sentence the app shows: each finding's `label`
+and `explain`, and each fix's `Rx::title`. They follow the app's voice: plain
+guitarist's words, one idea per sentence, no dashes, semicolons or hedging
+("may", "a touch"), no Hz figures or knob values, and the band names the band
+meter shows (`LABELS_6`: Lows, Low mids, Mids, High mids, Highs, Air — display
+only; a band's identity is its index, `Family::semantic_bands`). A finding's
+name never carries a frequency ("Boxy", "Ringing"); where a fix has to say
+where, it names the band ("cut a narrow notch in the high mids").
+
+Fixes come **simplest first**: a knob on a block the preset already has (the
+amp's, a cab's, an EQ's, a reverb's, a compressor's), then a block to add, and
+every fix after the first starts with "Or". `knob_first` puts the amp-knob
+step ahead of a cab-filter fix that has to insert a block; muddy, harsh, lost
+and buried always lead with their knob step. The exact settings behind each
+step (bands in Hz, dB, Q, the cab filter's frequency, whether a write is
+relative or outright) ride `Rx::detail`, and the reading behind each finding
+rides `Diag::detail`; neither is for the screen, and `doctor_check` logs both
+(`log_findings`). `Diag::direction` (`strong` | `weak`) says whether the
+finding's bands are too strong or too weak, for the band meter's words. The
+voice tests in `doctor.rs` (`every_fix_reads_simplest_first_in_the_app_voice`,
+`every_finding_names_itself_without_figures_and_says_which_way_its_bands_lean`,
+`scene_advice_reads_in_the_app_voice`) pin all of this.
+
 ## Scene consistency
 
 Separate from tonal rules: a scene whose loudness jumps ≥ `scene_delta_db` = 3 dB
 from Base is flagged as an **advisory-only** `SceneConsistency` — Doctor has no
 in-app scene trim (the wire can't set a scene's loudness relative to Base, and
-Level-tab leveling targets an absolute LUFS), so every branch (louder scene,
-quieter scene, block-acting footswitch, the scene-0 USB anomaly) advises leveling
-it from the Level tab rather than promising a one-click. `DoctorOp` carries no
+Level-tab leveling targets an absolute LUFS), so every branch advises a step on
+the unit rather than promising a one-click: a louder scene turns its amp's Level
+down until the jump is within the gate (or raises the Middle to stand out
+instead), a louder footswitch sound turns down the block it turns on, a quieter
+one is turned up if it isn't on purpose, and the scene-0 USB anomaly asks for a
+check by ear. The app adds the Level-tab step itself. `DoctorOp` carries no
 `SceneTrim` variant.
 
 Only MEASURED sounds enter consistency. A Stop returns the sounds the run never

@@ -9,7 +9,7 @@ import { BandMeter } from "../views/doctor/BandMeter";
 import { BandSpark } from "../views/doctor/BandSpark";
 import { renderWithTheme } from "./testKit";
 
-const GUITAR_LABELS = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
+const GUITAR_LABELS = ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"];
 const BASSVI_LABELS = ["Sub", ...GUITAR_LABELS];
 
 describe("BandMeter", () => {
@@ -19,6 +19,7 @@ describe("BandMeter", () => {
         balanceDb={[-6, 4, -2, -8, -12, -18]}
         bandLabels={GUITAR_LABELS}
         bands={[1]}
+        direction="strong"
         sev="high"
       />,
     );
@@ -27,17 +28,50 @@ describe("BandMeter", () => {
     }
   });
 
+  it("names the finding's bands and which way they're off", () => {
+    renderWithTheme(
+      <BandMeter
+        balanceDb={[-6, 4, -2, -8, -12, -18]}
+        bandLabels={GUITAR_LABELS}
+        bands={[1]}
+        direction="strong"
+        sev="high"
+      />,
+    );
+    expect(
+      screen.getByRole("img", { name: "Tone by band: Low mids too strong" }),
+    ).toBeInTheDocument();
+  });
+
+  it("says too weak, and lists several bands, for a finding that lacks them", () => {
+    renderWithTheme(
+      <BandMeter
+        balanceDb={[-6, 4, -2, -8, -12, -18]}
+        bandLabels={GUITAR_LABELS}
+        bands={[3, 4, 5]}
+        direction="weak"
+        sev="med"
+      />,
+    );
+    expect(
+      screen.getByRole("img", {
+        name: "Tone by band: High mids, Highs and Air too weak",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("renders 7 labels for a bass-vi sound, with Sub first", () => {
     renderWithTheme(
       <BandMeter
         balanceDb={[-10, -6, 4, -2, -8, -12, -18]}
         bandLabels={BASSVI_LABELS}
         bands={[0]}
+        direction="strong"
         sev="high"
       />,
     );
     const rendered = screen.getAllByText(
-      /^(Sub|Lows|Low-mids|Mids|High-mids|Highs|Air)$/,
+      /^(Sub|Lows|Low mids|Mids|High mids|Highs|Air)$/,
     );
     expect(rendered).toHaveLength(7);
     expect(rendered[0]).toHaveTextContent("Sub");

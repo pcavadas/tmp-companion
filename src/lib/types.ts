@@ -1120,12 +1120,20 @@ export interface DoctorChainPreview {
 /** One prescription (`doctor::Rx`). `ops` is empty for advisory cards. */
 export interface DoctorRx {
   kind: DoctorRxKind;
+  /** The step, as the player makes it on the unit ("Turn the amp's Bass down
+   *  1 or 2."). Fixes come simplest first; every later one starts with "Or". */
   title: string;
+  /** The exact settings behind the step (Hz, dB, Q), for the log. Empty when
+   *  the title says everything. */
   detail: string;
   cpuNote: string;
   ops: DoctorOp[];
   chain?: DoctorChainPreview;
 }
+
+/** Which way a finding's bands are off (`doctor::BandDirection`): the band
+ * meter's "too strong" or "too weak". */
+export type DoctorBandDirection = "strong" | "weak";
 
 /** One diagnosis (`doctor::LeveledDiag` — a flattened `Diag` plus `fromLevel`).
  * `bands` indexes the sound's band layout (`DoctorSoundResult.bandLabels` — 6
@@ -1135,6 +1143,7 @@ export interface DoctorRx {
  * `"rehearsal"`/`"stage"` = only appears at that volume and louder. */
 export interface DoctorDiag {
   key: string;
+  /** The finding's name ("Muddy", "Boxy", "Ringing"), never with a frequency. */
   label: string;
   sev: DoctorSev;
   /** Magnitude past the fire threshold in the rule's natural unit (dB, or
@@ -1145,7 +1154,11 @@ export interface DoctorDiag {
    *  muted; cards sort by it. */
   z: number;
   bands: number[];
+  /** Whether `bands` are too strong or too weak. */
+  direction: DoctorBandDirection;
+  /** The Hz/dB reading behind the finding, for the log. */
   detail: string;
+  /** What the finding sounds like, in one plain sentence. */
   explain: string;
   rx: DoctorRx[];
   fromLevel: PlaybackLevel;
@@ -1183,8 +1196,9 @@ export interface DoctorSoundResult {
   integratedLufs: number | null;
   tailRatioDb: number | null;
   balanceDb: number[];
-  /** Display labels for this sound's band layout — 6 for guitar/bass ("Lows" …
-   *  "Air") or 7 for bass-vi ("Sub" + the same six). `balanceDb.length` and
+  /** Display labels for this sound's band layout — 6 for guitar/bass ("Lows",
+   *  "Low mids", "Mids", "High mids", "Highs", "Air") or 7 for bass-vi ("Sub" +
+   *  the same six). `balanceDb.length` and
    *  `DoctorDiag.bands` indices both index this same layout. */
   bandLabels: string[];
   /** Null when this sound's capture failed or the ratio was degenerate (e.g.

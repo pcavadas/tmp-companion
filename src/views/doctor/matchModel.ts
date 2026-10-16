@@ -22,9 +22,9 @@ export const BAND_CENTER_HZ: Partial<Record<string, number>> = {
   // mapped to a band we can't confirm actually moves — a deliberate
   // divergence from the Rust EQ10_BANDS mirror.
   Lows: Math.sqrt(60 * 120),
-  "Low-mids": Math.sqrt(120 * 400),
+  "Low mids": Math.sqrt(120 * 400),
   Mids: Math.sqrt(400 * 1000),
-  "High-mids": Math.sqrt(1000 * 3000),
+  "High mids": Math.sqrt(1000 * 3000),
   Highs: Math.sqrt(3000 * 6000),
   Air: Math.sqrt(6000 * 12000),
 };

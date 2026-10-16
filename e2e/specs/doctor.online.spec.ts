@@ -47,7 +47,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", ()
 
   interface DoctorSoundResult {
     key: string;
-    diags: { key: string; label: string }[];
+    diags: { key: string; label: string; detail: string }[];
     integratedLufs: number;
     error: string | null;
   }
@@ -303,14 +303,19 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", ()
       "every requested sound must come back, none dropped mid-run",
     ).toEqual(items.map((i) => i.key));
     // The ring lives in Edge's BASE graph, so every played sound carries it. Hedged counts:
-    // the backend's key is `resonant` whatever the z (the "Possible" prefix is the UI's).
+    // the backend's key is `resonant` whatever the z (the hedge word is the UI's). The name
+    // on screen carries no frequency ("Ringing"); the measured frequency leads the
+    // finding's log-only `detail` ("2.6 kHz, 17.0 dB above …").
     for (const sound of preset.sounds) {
       expect(sound.error, `${sound.key} must not have errored`).toBeNull();
       const ring = sound.diags.find((d) => d.key === "resonant");
       expect(
         ring?.label,
-        `${sound.key} diags [${sound.diags.map((d) => d.key).join(", ")}] must ring at 2.x kHz`,
-      ).toMatch(/^Rings at 2\.\d kHz$/);
+        `${sound.key} diags [${sound.diags.map((d) => d.key).join(", ")}] must ring`,
+      ).toBe("Ringing");
+      expect(ring?.detail, `${sound.key} must ring at 2.x kHz`).toMatch(
+        /^2\.\d kHz, /,
+      );
     }
 
     await expectReampBalanced(page, reampBase);

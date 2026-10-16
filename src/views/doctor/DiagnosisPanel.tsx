@@ -103,6 +103,7 @@ export function DiagnosisPanel({
           balanceDb={sound.balanceDb}
           bandLabels={sound.bandLabels}
           bands={diag.bands}
+          direction={diag.direction}
           sev={diag.sev}
         />
       )}

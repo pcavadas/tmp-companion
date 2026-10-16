@@ -50,6 +50,7 @@ function diag(sev: "high" | "med", severity: number): DoctorDiag {
     // A band rule: σ 0.4 dB.
     z: severity / 0.4,
     bands: [],
+    direction: "strong",
     detail: "",
     explain: "",
     rx: [],

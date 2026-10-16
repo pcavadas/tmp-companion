@@ -14,7 +14,7 @@ import {
 } from "../views/doctor/matchModel";
 import type { GraphNode } from "../lib/types";
 
-const GUITAR_LABELS = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
+const GUITAR_LABELS = ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"];
 
 /** `balanceDb` as the backend builds it: each band's dB minus the mean of ALL
  *  bands (`doctor.rs`'s `balance`). */
@@ -60,7 +60,7 @@ describe("matchDeltas", () => {
 
   it("centres an even body count on the mean of its two middle deltas", () => {
     // Labels outside the known set count as body; four body bands here.
-    const labels = ["Lows", "Low-mids", "Mids", "High-mids"];
+    const labels = ["Lows", "Low mids", "Mids", "High mids"];
     expect(matchDeltas([1, 2, 3, 10], [0, 0, 0, 0], labels)).toEqual([
       -1.5, -0.5, 0.5, 7.5,
     ]);
@@ -69,16 +69,16 @@ describe("matchDeltas", () => {
 
 describe("eqMovesFor", () => {
   // Hand-derived: each 6-band guitar center's log-nearest EQ-10 band (see
-  // matchModel.ts's BAND_CENTER_HZ/EQ10_BANDS) is Lows→62Hz, Low-mids→250Hz,
-  // Mids→500Hz, High-mids→2kHz, Highs→4kHz, Air→8kHz — all distinct, so this
+  // matchModel.ts's BAND_CENTER_HZ/EQ10_BANDS) is Lows→62Hz, Low mids→250Hz,
+  // Mids→500Hz, High mids→2kHz, Highs→4kHz, Air→8kHz — all distinct, so this
   // case exercises straight clamp/round/drop with no band collisions.
   it("maps each family band to its log-nearest EQ-10 band, clamped + rounded + drop-filtered", () => {
     const deltas = [3, -8, 0.5, 6, -2, 1];
     const moves = eqMovesFor(deltas, GUITAR_LABELS);
     expect(moves).toEqual([
       { controlId: "gain62hz", gainDb: 3 }, // Lows: 3 → unclamped, exact
-      { controlId: "gain250hz", gainDb: -6 }, // Low-mids: -8 clamped to -6
-      { controlId: "gain2khz", gainDb: 6 }, // High-mids: 6 → unclamped
+      { controlId: "gain250hz", gainDb: -6 }, // Low mids: -8 clamped to -6
+      { controlId: "gain2khz", gainDb: 6 }, // High mids: 6 → unclamped
       { controlId: "gain4khz", gainDb: -2 }, // Highs: -2 → unclamped
       // Mids (0.5) and Air (1) are both < 1.5 dB → dropped.
     ]);
