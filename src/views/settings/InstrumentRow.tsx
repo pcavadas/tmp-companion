@@ -1,36 +1,60 @@
-// src/views/settings/InstrumentRow.tsx — status dot + serif name + "Type ·
-// Pickup" + status sub-line; right side = the calibrate control + a ⋯ menu (Edit
-// / Move up / Move down / Delete — reorder is click-only, so the row carries no
-// drag grip). The calibration state machine is ./useCalibration (one tagged union,
-// local per row; never disables other rows). Every attempt gets its own token, so a
-// cancelled capture that resolves late can't touch a newer attempt's timers or result.
+// src/views/settings/InstrumentRow.tsx — one instrument in the Instruments Group (look
+// B): a two-line block, not a 36 px Row. Left: the name (13/600), its "{type} ·
+// {pickup}" caption and a status Badge ("Recorded" / "Not recorded"), then — when there
+// is something to say — note lines (the last take's caveats, or why it failed), the
+// last take's bands as words with dots, and what leveling uses. Right: the row's control
+// (Record / Record again, the countdown, the recording's progress, or Try again) and
+// a ⋯ menu (Edit instrument / Move up / Move down / Delete instrument; reorder is
+// click-only, so the row carries no drag grip). While the unit is away, Record is shown
+// disabled and the page's one Notice says why.
+//
+// The recording's state machine is ./useCalibration (one tagged union, local per row;
+// never disables other rows). Every attempt gets its own token, so a cancelled capture
+// that resolves late can't touch a newer attempt's timers or result.
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Icon } from "../../ui/Icon";
-import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
-import { Menu } from "../../ui/Menu";
+import { Badge } from "../../ui/Badge";
+import { Dot } from "../../ui/Dot";
+import { MoreMenu } from "../../ui/MoreMenu";
+import { ProgressBar } from "../../ui/ProgressBar";
+import { Button, MenuDivider, MenuItem } from "../../ui/primitives";
+import { instrumentCaption } from "../../lib/instrumentTypes";
 import type { Profile, TopologyInfo } from "../../lib/types";
-import { NeedsDevicePill } from "./NeedsDevicePill";
 import {
   CALIBRATE_SECS,
   stimulusSource,
   useCalibration,
 } from "./useCalibration";
 
-// ===========================================================================
-// InstrumentRow
-// ===========================================================================
+/** Text only a screen reader reads ("Lows played"): the dot beside a band says it to
+ *  the eye. */
+const SR_ONLY: CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  overflow: "hidden",
+  clip: "rect(0 0 0 0)",
+  whiteSpace: "nowrap",
+};
 
-interface InstrumentRowProps {
+/** A take's band label as it reads on screen ("Low-mids" → "Low mids"). The backend's
+ *  labels stay the keys. */
+function bandName(label: string): string {
+  return label.replace(/-/g, " ");
+}
+
+export interface InstrumentRowProps {
   profile: Profile;
   topology: TopologyInfo | null;
   connected: boolean;
   onCalibrated: () => void;
   onEdit: () => void;
   onDelete: () => void;
-  onMove: (dir: -1 | 1) => void;
+  /** Click-only reorder; undefined at the list's edge (the item is hidden). */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }
 
 export function InstrumentRow({
@@ -40,64 +64,45 @@ export function InstrumentRow({
   onCalibrated,
   onEdit,
   onDelete,
-  onMove,
+  onMoveUp,
+  onMoveDown,
 }: InstrumentRowProps) {
   const { t } = useTheme();
-
   const [menu, setMenu] = useState(false);
   const { cal, start, cancel } = useCalibration(profile.id, onCalibrated);
+  const pick = (fn: () => void) => () => {
+    setMenu(false);
+    fn();
+  };
   const startCountdown = () => {
     setMenu(false);
     start();
   };
-  // The render reads the union through these views of it.
-  const phase = cal.kind;
-  const count = cal.kind === "countdown" ? cal.n : 3;
-  const rec = cal.kind === "recording" ? cal.secs : 0;
-  const calibErr = cal.kind === "error" ? cal.message : null;
-  const calibWarn = cal.kind === "idle" ? cal.warn : null;
-  const calibResult = cal.kind === "idle" ? cal.result : null;
 
-  const calibrated = profile.calibration_lufs != null;
+  const recorded = profile.calibration_lufs != null;
+  const busy = cal.kind === "countdown" || cal.kind === "recording";
+  // The last take's readout — SESSION-ONLY (a CalibrateResult isn't persisted), so it
+  // shows right after a recording and clears on the next attempt.
+  const result = cal.kind === "idle" ? cal.result : null;
+  const warnings = cal.kind === "idle" ? cal.warnings : [];
+  // The "sparse take" note ignores the Air band (6–12 kHz): a passive pickup's DI has
+  // no energy up there however the take is played, so an unplayed Air is physics, not
+  // a playing gap. The band list still shows it unplayed (honest data).
+  const sparse =
+    result?.band_coverage.some(
+      (covered, i) => !covered && result.band_labels[i] !== "Air",
+    ) ?? false;
 
-  // The status dot and the status sub-line share one phase-derived colour.
-  const statusColor =
-    phase === "error"
-      ? t.warn
-      : phase === "recording"
-        ? t.record
-        : calibrated && phase === "idle"
-          ? calibWarn != null
-            ? t.sevWarn
-            : t.good
-          : t.sevWarn;
-
-  const sub =
-    phase === "countdown"
-      ? "get ready to play…"
-      : phase === "recording"
-        ? "recording — play steadily"
-        : phase === "error"
-          ? (calibErr ?? "too quiet to read — the last attempt failed")
-          : calibrated
-            ? `calibrated ${profile.calibration_lufs?.toFixed(1) ?? ""} LUFS${
-                calibWarn != null ? ` — ${calibWarn}` : ""
-              }`
-            : "not calibrated";
-  // What leveling re-amps (#361): its own line, shown in every phase.
-  const source = stimulusSource(profile);
-
-  // Type = the topology's instrument label; Pickup = the topology's label.
-  const typeLabel = topology?.instrument ?? null;
-  const pickupLabel = topology?.label ?? null;
-  const caption =
-    typeLabel && pickupLabel
-      ? `${typeLabel} · ${pickupLabel}`
-      : (typeLabel ?? pickupLabel ?? null);
-
-  const closeMenuThen = (fn: () => void) => () => {
-    setMenu(false);
-    fn();
+  const caption = topology ? instrumentCaption(topology) : null;
+  const secondary: CSSProperties = {
+    fontSize: t.fontCaption,
+    lineHeight: `${String(t.lineCaption)}px`,
+    color: t.textSecondary,
+  };
+  const note: CSSProperties = {
+    fontSize: t.fontCaption,
+    lineHeight: `${String(t.lineCaption)}px`,
+    color: t.text,
   };
 
   return (
@@ -105,349 +110,205 @@ export function InstrumentRow({
       style={{
         display: "flex",
         alignItems: "center",
-        justifyContent: "space-between",
-        gap: t.space7,
-        padding: `${String(t.space5)}px ${String(t.space6)}px ${String(t.space5)}px ${String(t.space4)}px`,
-        borderRadius: t.rCard,
-        border: `0.5px solid ${phase === "error" ? t.warnBorderSoft : t.hairline}`,
-        background: t.bg,
-        marginBottom: t.space4,
-        minHeight: 60,
+        gap: t.sp12,
+        padding: `${String(t.sp8 + 2)}px ${String(t.sp12)}px`,
+        borderTop: `1px solid ${t.separator}`,
+        background: menu ? t.rowSelected : "transparent",
       }}
     >
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: t.space4,
-          minWidth: 0,
           flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: t.sp2,
         }}
       >
         <span
-          className={phase === "recording" ? "tmp-pulse" : undefined}
           style={{
-            width: 7,
-            height: 7,
-            borderRadius: t.rPill,
-            background: statusColor,
-            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: t.sp8,
+            minWidth: 0,
           }}
-        />
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "baseline", minWidth: 0 }}>
-            <span
-              style={{
-                fontFamily: t.serif,
-                fontSize: t.fsName,
-                color: t.ink,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                minWidth: 0,
-                flex: "0 1 auto",
-              }}
-            >
-              {profile.name}
-            </span>
-            {caption && (
-              <span
-                style={{
-                  fontFamily: t.mono,
-                  fontSize: t.fsMicro,
-                  color: t.faint,
-                  letterSpacing: t.lsMeta,
-                  whiteSpace: "nowrap",
-                  flexShrink: 0,
-                  marginLeft: t.space4,
-                }}
-              >
-                {caption}
-              </span>
-            )}
-          </div>
-          <div
-            title={sub}
+        >
+          <span
             style={{
-              fontFamily: t.mono,
-              fontSize: t.fsData2,
-              marginTop: t.space1,
+              fontSize: t.fontBody,
+              fontWeight: t.weightSemibold,
+              whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              color: statusColor,
+              minWidth: 0,
             }}
           >
-            {sub}
-          </div>
-          <div
-            style={{
-              fontFamily: t.mono,
-              fontSize: t.fsData2,
-              marginTop: t.space1,
-              whiteSpace: "nowrap",
-              color: t.faint,
-            }}
-          >
-            {source}
-          </div>
-          {/* What-was-captured readout — SESSION-ONLY (calibResult isn't persisted),
-              so it's visible right after a calibration and clears on the next attempt. */}
-          {phase === "idle" && calibResult && (
-            <div
-              style={{
-                marginTop: t.space2,
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "center",
-                gap: t.space4,
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: t.mono,
-                  fontSize: t.fsMicro,
-                  color: t.faint,
-                }}
-              >
-                spread {calibResult.spread_lu.toFixed(1)} LU
-              </span>
-              {calibResult.band_labels.map((label, i) => {
-                const covered = calibResult.band_coverage[i];
-                return (
-                  <span
-                    // Index-qualified: band labels are backend-provided, not
-                    // guaranteed unique.
-                    key={`${String(i)}:${label}`}
-                    title={`${label} — ${covered ? "played" : "not played"}`}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: t.space2,
-                      fontFamily: t.mono,
-                      fontSize: t.fsMicro,
-                      color: covered ? t.ink2 : t.faint,
-                      opacity: covered ? 1 : 0.45,
-                    }}
-                  >
-                    ● {label}
-                  </span>
-                );
-              })}
-            </div>
+            {profile.name}
+          </span>
+          {caption && (
+            <span style={{ ...secondary, whiteSpace: "nowrap", flexShrink: 0 }}>
+              {caption}
+            </span>
           )}
-          {/* The "sparse take" caveat ignores the Air band (6–12 kHz): a passive
-              pickup's DI has no energy up there no matter how the take is played,
-              so an uncovered Air is physics, not a playing gap. The chip row above
-              still shows it dimmed (honest data); only the warning is gated. */}
-          {phase === "idle" &&
-            calibResult &&
-            calibResult.band_coverage.some(
-              (c, i) => !c && calibResult.band_labels[i] !== "Air",
-            ) && (
-              <div
-                style={{
-                  marginTop: t.space2,
-                  fontFamily: t.sans,
-                  fontSize: t.fsMicro,
-                  color: t.mutedInk,
-                  lineHeight: 1.4,
-                }}
-              >
-                some bands weren&rsquo;t played — a sparse take (for example,
-                only EBow drones) limits tone analysis
-              </div>
-            )}
-        </div>
+          {cal.kind !== "recording" &&
+            (recorded ? (
+              <Badge tone="good" icon="check">
+                Recorded
+              </Badge>
+            ) : (
+              <Badge tone="caution">Not recorded</Badge>
+            ))}
+        </span>
+
+        {cal.kind === "error" && (
+          <span style={{ ...note, color: t.danger }}>
+            Couldn&rsquo;t record it. Check that your instrument is plugged into
+            the Tone Master Pro, then try again.
+          </span>
+        )}
+        {warnings.map((w) => (
+          <span key={w} style={note}>
+            {w}
+          </span>
+        ))}
+        {sparse && (
+          <span style={note}>
+            Some ranges weren&rsquo;t played, so Doctor sees less of your tone.
+            Record again with chords and lead.
+          </span>
+        )}
+        {result && result.band_labels.length > 0 && (
+          <span
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              columnGap: t.sp8 + 2,
+              rowGap: t.sp2,
+            }}
+          >
+            {result.band_labels.map((label, i) => {
+              const played = result.band_coverage[i];
+              return (
+                <span
+                  // Index-qualified: band labels are backend-provided, not
+                  // guaranteed unique.
+                  key={`${String(i)}:${label}`}
+                  style={{
+                    ...secondary,
+                    position: "relative",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: t.sp4,
+                  }}
+                >
+                  <Dot size={6} tone="neutral" hollow={!played} />
+                  {bandName(label)}
+                  <span style={SR_ONLY}>
+                    {played ? " played" : " not played"}
+                  </span>
+                </span>
+              );
+            })}
+          </span>
+        )}
+        <span style={secondary}>{stimulusSource(profile)}</span>
       </div>
 
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          gap: t.space3,
+          gap: t.sp8 + 2,
           flexShrink: 0,
         }}
       >
-        {phase === "idle" &&
-          (connected ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={calibrated ? "refresh" : "gauge"}
-              onClick={startCountdown}
-              style={{ whiteSpace: "nowrap" }}
-            >
-              {calibrated ? "Re-calibrate" : "Calibrate…"}
-            </Button>
-          ) : (
-            <NeedsDevicePill />
-          ))}
-
-        {phase === "countdown" && (
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: t.space4,
-              fontFamily: t.mono,
-              fontSize: t.fsData,
-              color: t.sevWarn,
-            }}
-          >
-            Get ready
-            <span
-              style={{
-                fontFamily: t.mono,
-                fontSize: t.fsCard,
-                color: t.ink,
-                fontVariantNumeric: "tabular-nums",
-                minWidth: 12,
-                textAlign: "center",
-              }}
-            >
-              {count}
-            </span>
-            <Button
-              variant="bare"
-              aria-label="Cancel"
-              onClick={cancel}
-              title="Cancel"
-              style={{ display: "inline-flex" }}
-            >
-              <Icon name="x" size={12} stroke={t.mutedInk} />
-            </Button>
-          </span>
-        )}
-
-        {phase === "recording" && (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "flex-end",
-              gap: t.space3,
-            }}
-          >
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: t.space4,
-                fontFamily: t.mono,
-                fontSize: t.fsMeta,
-                color: t.record,
-              }}
-            >
-              <span
-                className="tmp-pulse"
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: t.rPill,
-                  background: t.record,
-                }}
-              />
-              Recording {rec.toFixed(1)} / {CALIBRATE_SECS}s
-              <Button
-                variant="bare"
-                aria-label="Cancel"
-                onClick={cancel}
-                title="Cancel"
-                style={{
-                  display: "inline-flex",
-                  marginLeft: t.space1,
-                }}
-              >
-                <Icon name="x" size={11} stroke={t.mutedInk} />
-              </Button>
-            </span>
-            <div
-              style={{
-                width: 144,
-                height: 3,
-                borderRadius: t.rPill,
-                background: t.recordSoft,
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  width: `${String((rec / CALIBRATE_SECS) * 100)}%`,
-                  height: "100%",
-                  background: t.record,
-                  borderRadius: t.rPill,
-                  transition: "width 0.1s linear",
-                }}
-              />
-            </div>
-          </div>
-        )}
-
-        {phase === "error" &&
-          (connected ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="refresh"
-              onClick={startCountdown}
-            >
-              Retry
-            </Button>
-          ) : (
-            <NeedsDevicePill />
-          ))}
-
-        {/* per-row menu: edit / reorder / delete */}
-        <div style={{ position: "relative", display: "flex" }}>
+        {cal.kind === "idle" && (
           <Button
-            variant="bare"
-            aria-label={`More actions for ${profile.name}`}
-            aria-haspopup="menu"
-            aria-expanded={menu}
-            onClick={() => {
-              setMenu((o) => !o);
-            }}
-            title="More"
-            style={{
-              display: "flex",
-              color: t.faint,
-              padding: t.space1,
-              borderRadius: t.rMenuItem,
-            }}
+            variant="secondary"
+            size="sm"
+            disabled={!connected}
+            onClick={startCountdown}
           >
-            <Icon name="more" size={16} stroke="currentColor" />
+            {recorded ? "Record again" : "Record"}
           </Button>
-          {menu && (
-            <Menu
-              onClose={() => {
-                setMenu(false);
-              }}
-              zIndex={9}
-              minWidth={148}
+        )}
+
+        {cal.kind === "countdown" && (
+          <>
+            <span
+              role="status"
+              style={{ ...note, fontVariantNumeric: "tabular-nums" }}
             >
-              <MenuItem label="Edit…" onClick={closeMenuThen(onEdit)} />
-              <MenuItem
-                label="Move up"
-                onClick={closeMenuThen(() => {
-                  onMove(-1);
-                })}
-              />
-              <MenuItem
-                label="Move down"
-                onClick={closeMenuThen(() => {
-                  onMove(1);
-                })}
-              />
-              <MenuDivider />
-              <MenuItem
-                label="Delete"
-                onClick={closeMenuThen(onDelete)}
-                danger
-              />
-            </Menu>
-          )}
-        </div>
+              Start playing in {cal.n}
+            </span>
+            <Button variant="secondary" size="sm" onClick={cancel}>
+              Cancel
+            </Button>
+          </>
+        )}
+
+        {cal.kind === "recording" && (
+          <>
+            <span className="tmp-pulse" style={{ display: "flex" }}>
+              <Dot tone="danger" />
+            </span>
+            <span
+              role="status"
+              style={{
+                ...note,
+                whiteSpace: "nowrap",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              Recording {cal.secs.toFixed(1)} of {CALIBRATE_SECS} s
+            </span>
+            <span
+              role="progressbar"
+              aria-label="Recording"
+              aria-valuemin={0}
+              aria-valuemax={CALIBRATE_SECS}
+              aria-valuenow={cal.secs}
+              style={{ width: 120, flexShrink: 0 }}
+            >
+              <ProgressBar percent={(cal.secs / CALIBRATE_SECS) * 100} />
+            </span>
+            <Button variant="secondary" size="sm" onClick={cancel}>
+              Cancel
+            </Button>
+          </>
+        )}
+
+        {cal.kind === "error" && (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!connected}
+            onClick={startCountdown}
+          >
+            Try again
+          </Button>
+        )}
+
+        {!busy && (
+          <MoreMenu
+            label={`More for ${profile.name}`}
+            open={menu}
+            onOpenChange={setMenu}
+          >
+            <MenuItem label="Edit instrument" onClick={pick(onEdit)} />
+            {onMoveUp && <MenuItem label="Move up" onClick={pick(onMoveUp)} />}
+            {onMoveDown && (
+              <MenuItem label="Move down" onClick={pick(onMoveDown)} />
+            )}
+            <MenuDivider />
+            <MenuItem
+              label="Delete instrument"
+              danger
+              onClick={pick(onDelete)}
+            />
+          </MoreMenu>
+        )}
       </div>
     </div>
   );

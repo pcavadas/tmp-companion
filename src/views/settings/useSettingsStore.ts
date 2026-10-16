@@ -7,20 +7,21 @@
 // is ready, because save_targets / save_profiles replace the WHOLE list (and
 // save_profiles unlinks the captures of every "removed" profile), so an add against
 // the initial empty arrays would overwrite the stored list. A failed load is retried
-// with `retryLoad`; a failed save sets `saveError` and re-reads the store, so the page
-// shows what is actually stored. Every save is optimistic: the list updates at once.
+// with `retryLoad`; a failed save sets `saveError` (WHAT failed to save, never the
+// backend's text, which is in the log) and re-reads the store, so the page shows what
+// is actually stored. Every save is optimistic: the list updates at once.
 
 import { useEffect, useRef, useState } from "react";
 
 import {
   getStore,
   listPickupTopologies,
+  logUnlessCommandError,
   saveProfiles,
   saveTargets,
   setPlaybackChannels,
   setPlaybackLevel,
 } from "../../lib/invoke";
-import { errMsg } from "../../lib/format";
 import type {
   PlaybackChannels,
   PlaybackLevel,
@@ -41,14 +42,19 @@ const stripUid = (rows: UiTarget[]): Target[] =>
 
 /** The initial read of the store + topologies. */
 export type LoadState =
-  { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready" };
+  { kind: "loading" } | { kind: "error" } | { kind: "ready" };
+
+/** What a failed save was saving, in the words the page uses ("Couldn't save your
+ *  {what}."). */
+export type SaveWhat =
+  "instruments" | "loudness targets" | "playback setting" | "speaker setting";
 
 export interface SettingsStore {
   load: LoadState;
   ready: boolean;
   retryLoad: () => void;
-  /** The last failed save, shown until the next save succeeds. */
-  saveError: string | null;
+  /** What the last failed save was saving, shown until the next save succeeds. */
+  saveError: SaveWhat | null;
   profiles: Profile[];
   targets: UiTarget[];
   playback: PlaybackLevel;
@@ -73,7 +79,7 @@ export function useSettingsStore(): SettingsStore {
   const [channels, setChannels] = useState<PlaybackChannels>("stereo");
   const [topologies, setTopologies] = useState<TopologyInfo[]>([]);
   const [load, setLoad] = useState<LoadState>({ kind: "loading" });
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<SaveWhat | null>(null);
   // Monotonic counter for transient target uids.
   const uidRef = useRef(0);
   const newUid = () => `t${String(uidRef.current++)}`;
@@ -113,7 +119,8 @@ export function useSettingsStore(): SettingsStore {
         setLoad({ kind: "ready" });
       })
       .catch((e: unknown) => {
-        if (current) setLoad({ kind: "error", message: errMsg(e) });
+        logUnlessCommandError("settings load", e);
+        if (current) setLoad({ kind: "error" });
       });
     return () => {
       current = false;
@@ -127,10 +134,9 @@ export function useSettingsStore(): SettingsStore {
 
   // A save failed: say so, and re-read the store so the lists show what is
   // stored rather than the change that never landed.
-  function saveFailed(what: string, e: unknown) {
-    setSaveError(
-      `Couldn't save your ${what}: ${errMsg(e)}. Showing what is saved instead.`,
-    );
+  function saveFailed(what: SaveWhat, e: unknown) {
+    logUnlessCommandError("settings save", e);
+    setSaveError(what);
     setReadGen((g) => g + 1);
   }
 
@@ -180,7 +186,7 @@ export function useSettingsStore(): SettingsStore {
       await setPlaybackLevel(level);
       setSaveError(null);
     } catch (e) {
-      saveFailed("playback level", e);
+      saveFailed("playback setting", e);
     }
   }
 
@@ -191,7 +197,7 @@ export function useSettingsStore(): SettingsStore {
       await setPlaybackChannels(next);
       setSaveError(null);
     } catch (e) {
-      saveFailed("outputs", e);
+      saveFailed("speaker setting", e);
     }
   }
 

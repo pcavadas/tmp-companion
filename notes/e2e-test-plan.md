@@ -301,28 +301,36 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 
 ### Functional
 
-- **E1 — Loudness targets render** from store; empty "No targets yet".
-- **E2 — Add target** — appends "New target" @ −22, opens in rename mode ⌨️.
-- **E3 — Rename target** ⌨️ — double-click name → input; Enter/blur commit, Esc cancel;
-  empty/whitespace reverts to old.
-- **E4 — Target slider** 🖱️drag — pointer drag, bounds TMIN −32 / TMAX −16, 0.1 steps, commits once
-  on pointerup; no upper ceiling beyond track domain. _Needs pointer events._
-- **E5 — Reorder targets** 🖱️drag — HTML5 DnD grip; disabled while name-editing; no-op on self.
-- **E6 — Target ⋯ menu** — Rename / Delete; delete-last → empty state.
-- **E7 — Playback level** — SegmentedControl Quiet/Rehearsal/Stage; persists; comp caption (bass
-  +1.5 / +0.5 / no-comp).
-- **E8 — Add instrument** ⌨️ — disabled if topologies empty; InstrumentForm (name ⌨️ + type chips +
-  pickup chips); Save disabled until name+topology valid; type change re-defaults pickup.
-- **E9 — Edit / move / delete instrument** — ⋯ menu Edit / Move up / Move down (no-op at bounds) /
-  Delete.
-- **E10 — Tier-2 calibration** (device) — Calibrate → countdown 3→2→1 (~850 ms) → recording
-  "{rec}/8s" + determinate bar; backend result wins the phase; re-reads `calibration_lufs`. Disconnected
-  → "Needs device" pill. _No UI flow test anywhere._
+- **E1 — Loudness targets render** from store as Group rows (grip · name · "Quieter" slider
+  "Louder" · "−23.0 dB" · ⋯); empty → "No targets yet" / "Leveling needs at least one target.".
+- **E2 — Add target** (page head) — appends "New target" @ −19, opens in rename mode ⌨️.
+- **E3 — Rename target** ⌨️ — ⋯ Rename or double-click the name → input; Enter/blur commit, Esc
+  cancel; empty/whitespace reverts to old.
+- **E4 — Target slider** 🖱️drag — pointer drag, bounds TMIN −29 / TMAX −13, 0.1 steps, commits once
+  on pointerup; a pointercancel restores the start value; no upper ceiling beyond the track domain.
+  _Needs pointer events._
+- **E5 — Reorder targets** 🖱️drag — HTML5 DnD grip (role img, "Move {name}"); disabled while
+  name-editing; no-op on self. The click path is E6.
+- **E6 — Target ⋯ menu** ("More for {name}") — Rename / Move up / Move down (hidden at the ends) /
+  Delete target; delete-last → empty state.
+- **E7 — Playback** — two Groups: "How loud you play" (Quiet/Rehearsal/Stage, one fixed body line
+  naming the bass offsets) and "How your speakers are connected" (Stereo/Mono (both outputs)/Left
+  output only, a body line per choice); each persists on click.
+- **E8 — Add instrument** ⌨️ — disabled if topologies are empty; InstrumentForm (Name ⌨️ + Type
+  segmented Guitar/Bass/Bass VI + Pickup Select); Save disabled until name + pickup; a type change
+  moves to that type's first pickup; a saved pickup no longer offered shows the empty attention
+  Select and a note, never `options[0]`.
+- **E9 — Edit / move / delete instrument** — ⋯ menu Edit instrument / Move up / Move down (hidden
+  at the ends) / Delete instrument.
+- **E10 — Tier-2 calibration ("Record")** (device) — Record → "Start playing in 3…1" (~850 ms) →
+  "Recording {secs} of 8 s" + determinate bar; backend result wins the phase; re-reads
+  `calibration_lufs` (Badge "Recorded"). Disconnected → Record disabled + one page Notice. A failed
+  take → "Couldn't record it…" + Try again (no backend text). _No UI flow test anywhere._
 
 ### Monkey/chaos
 
-- **M-E1 — Cancel calibration** at countdown vs recording (✕) — `abortedRef` ignores a late backend
-  result; timers cleared.
+- **M-E1 — Cancel recording** at countdown vs recording (Cancel) — the per-attempt token ignores a
+  late backend result; timers cleared.
 - **M-E2 — Tab-switch away mid-recording** — mounted guard + clearTimers on unmount; no late setState.
 - **M-E3 — Drag a target onto itself / delete a target mid-rename / rename to whitespace** — all
   no-op safely.

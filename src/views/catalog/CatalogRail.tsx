@@ -27,7 +27,6 @@ export function CatalogRail({ sel, choose }: CatalogRailProps) {
   return (
     <>
       <RailItem
-        nav="current"
         label="All models"
         meta={TOTAL}
         active={sel.cat === "all"}
@@ -49,7 +48,6 @@ interface CategoryItemsProps extends CatalogRailProps {
 function CategoryItems({ cat, sel, choose }: CategoryItemsProps) {
   const item = (
     <RailItem
-      nav="current"
       label={sentenceCase(cat)}
       meta={catCount[cat] ?? 0}
       active={sel.cat === cat && sel.sub === null}
@@ -65,7 +63,6 @@ function CategoryItems({ cat, sel, choose }: CategoryItemsProps) {
       {SUB_ORDER.map((s) => (
         <RailItem
           key={s}
-          nav="current"
           indent
           label={s}
           meta={subCount[s] ?? 0}

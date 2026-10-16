@@ -169,14 +169,8 @@ describe("SplitView", () => {
   it("indents a child RailItem 22 px and marks the current one", () => {
     renderWithTheme(
       <>
+        <RailItem label="Effects" active={false} onClick={() => undefined} />
         <RailItem
-          nav="current"
-          label="Effects"
-          active={false}
-          onClick={() => undefined}
-        />
-        <RailItem
-          nav="current"
           indent
           label="Reverb"
           meta={28}

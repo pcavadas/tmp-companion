@@ -1,14 +1,15 @@
-// src/views/songs/MoreMenu.tsx — the Songs tab's "⋯" button and the menu it opens
-// (look B): a plain 22 px icon button in a row ("More for {name}"), or a secondary
-// 28 px one beside a page title ("Setlist options"). The menu is the DS `Menu`, 180
-// wide, anchored to the button with right edges flush. The caller owns `open`, so a
-// row can show `rowSelected` while its menu is open, and passes the MenuItems. While a
-// device write is busy the button is disabled and the menu stays shut.
+// src/ui/MoreMenu.tsx — a row's or a page's "⋯" button and the menu it opens (look B;
+// Songs and Settings): a plain 22 px icon button in a row ("More for {name}"), or a
+// secondary 28 px one beside a page title ("Setlist options"). The menu is the DS
+// `Menu`, 180 wide, anchored to the button with right edges flush. The caller owns
+// `open`, so a row can show `rowSelected` while its menu is open, and passes the
+// MenuItems. While a device write is busy the button is disabled and the menu stays
+// shut.
 
 import type { ReactNode } from "react";
 
-import { Button } from "../../ui/primitives";
-import { Menu } from "../../ui/Menu";
+import { Button } from "./primitives";
+import { Menu } from "./Menu";
 
 export interface MoreMenuProps {
   /** The button's accessible name ("More for Higher Ground", "Setlist options"). */

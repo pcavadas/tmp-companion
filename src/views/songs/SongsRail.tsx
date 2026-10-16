@@ -89,7 +89,6 @@ export function SongsRail({
         />
       </div>
       <RailItem
-        nav="current"
         label="All songs"
         meta={songCount}
         active={view.mode === "all"}
@@ -103,7 +102,6 @@ export function SongsRail({
           <div style={list}>
             {setlists.map((l) => (
               <RailItem
-                nav="current"
                 key={l.slot}
                 label={l.name}
                 meta={membership.get(l.slot)?.length ?? DASH}
@@ -175,7 +173,6 @@ export function SongsRail({
             ) : (
               lib.presets.map((p) => (
                 <RailItem
-                  nav="current"
                   key={p.slot}
                   label={p.name}
                   meta={
