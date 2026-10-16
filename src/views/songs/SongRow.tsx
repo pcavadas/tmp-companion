@@ -1,104 +1,117 @@
-// src/views/songs/SongRow.tsx — one song row for the Songs tables (Library /
-// Setlist detail / Preset detail). Shared anatomy: № · name+notes · bpm. Divergent
-// affordances flow through the leading (drag handle) / trailing (⋯ menu · remove ✗)
-// slots; drag-and-drop props spread onto the row root via rootProps.
-//
-// bpm alignment and the "<n> bpm" suffix are independent props (Setlist / Preset
-// pass both; the Library passes neither and renders the bare number). All render
-// DASH when the song has no active BPM.
+// src/views/songs/SongRow.tsx — one song row for the Songs lists (All songs, a setlist,
+// a preset's songs), on the look B `Row`: the position ("01", tabular), the name
+// 13/500, the notes (if any) in secondary text after it on the same line, the tempo
+// ("120 BPM", only when the song has an active tempo) at the right, and an optional
+// trailing control (the ⋯). A setlist row adds a leading grip and is draggable
+// (`rootProps` spread onto the row root). The notes give way first, then the name, so
+// the tempo and the ⋯ always stay in view.
+
 import type { HTMLAttributes, ReactNode } from "react";
+
 import { useTheme } from "../../theme/ThemeContext";
-import { DASH, pad2 } from "../../lib/format";
+import { Row } from "../../ui/List";
+import { pad2 } from "../../lib/format";
 import type { SongRecord } from "../../lib/types";
-import { songBpm, bpmStr } from "./songUtil";
+import { tempoLabel } from "./songUtil";
 
 export interface SongRowProps {
   song: SongRecord;
+  /** 0-based position in the list; shown 1-based as "01". */
   idx: number;
-  /** grid-template-columns — must match the caller's ListHeader cols. */
-  gridCols: string;
-  /** left cell before № (e.g. the drag handle); omitted → no cell. */
+  /** Before the position (a setlist row's grip). */
   leading?: ReactNode;
-  /** right cell after bpm (e.g. the ⋯ menu / remove ✗); omitted → no cell. */
+  /** After the tempo (the row's ⋯ and its menu). */
   trailing?: ReactNode;
-  /** right-align the bpm cell. */
-  bpmAlign?: "right";
-  /** render "<n> bpm" instead of the bare number. */
-  bpmSuffix?: boolean;
-  /** drag-and-drop (or other) props spread onto the row root. */
-  rootProps?: HTMLAttributes<HTMLDivElement>;
+  /** Its menu is open: the grey `rowSelected` fill. */
+  selected?: boolean;
+  /** The entry names no known song: the name is drawn in secondary text. */
+  unknown?: boolean;
+  /** Drag-and-drop (or other) props spread onto the row root. */
+  rootProps?: Omit<HTMLAttributes<HTMLDivElement>, "style" | "onClick">;
 }
 
 export function SongRow({
   song,
   idx,
-  gridCols,
   leading,
   trailing,
-  bpmAlign,
-  bpmSuffix,
+  selected = false,
+  unknown = false,
   rootProps,
 }: SongRowProps) {
   const { t } = useTheme();
-  const bpm = songBpm(song);
+  const tempo = tempoLabel(song);
+  const secondary = {
+    fontSize: t.fontCaption,
+    color: t.textSecondary,
+    whiteSpace: "nowrap",
+  } as const;
   return (
-    <div
-      {...rootProps}
-      style={{
-        display: "grid",
-        gridTemplateColumns: gridCols,
-        alignItems: "center",
-        height: 48,
-        padding: `0 ${String(t.space8)}px 0 ${String(t.space8)}px`,
-        borderBottom: `0.5px solid ${t.hairline}`,
-      }}
-    >
+    <Row {...rootProps} selected={selected}>
       {leading}
       <span
-        style={{ fontFamily: t.mono, fontSize: t.fsData, color: t.mutedInk }}
+        style={{
+          ...secondary,
+          width: 30,
+          flexShrink: 0,
+          fontVariantNumeric: "tabular-nums",
+        }}
       >
         {pad2(idx + 1)}
       </span>
-      <div style={{ minWidth: 0, paddingRight: t.space6 }}>
-        <div
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          alignItems: "baseline",
+          gap: t.sp8,
+          overflow: "hidden",
+        }}
+      >
+        <span
           style={{
-            fontFamily: t.serif,
-            fontSize: t.fsName,
-            color: t.ink,
+            // Keeps its full width while the notes give way; truncates only
+            // once it alone is wider than the line.
+            flexShrink: 0,
+            maxWidth: "100%",
+            minWidth: 0,
+            fontWeight: t.weightMedium,
+            color: unknown ? t.textSecondary : t.text,
+            whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
           }}
         >
           {song.name}
-        </div>
+        </span>
         {song.notes && (
-          <div
+          <span
             style={{
-              fontFamily: t.sans,
-              fontSize: t.fsLabel,
-              color: t.mutedInk,
-              marginTop: t.space1,
+              ...secondary,
+              // Gives way first.
+              flex: "0 1 auto",
+              minWidth: 0,
               overflow: "hidden",
               textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
             }}
           >
             {song.notes}
-          </div>
+          </span>
         )}
-      </div>
-      <span
-        style={{
-          fontFamily: t.mono,
-          fontSize: t.fsLabel,
-          color: bpm != null ? t.ink2 : t.faint,
-          ...(bpmAlign === "right" ? { textAlign: "right" } : {}),
-        }}
-      >
-        {bpmSuffix ? (bpm != null ? `${String(bpm)} bpm` : DASH) : bpmStr(bpm)}
       </span>
+      {tempo != null && (
+        <span
+          style={{
+            ...secondary,
+            flexShrink: 0,
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {tempo}
+        </span>
+      )}
       {trailing}
-    </div>
+    </Row>
   );
 }

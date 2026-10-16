@@ -3,7 +3,9 @@
 // shown view, the FIFO of device ops (`runDeviceOp`, one op on the wire at a time),
 // every song / setlist / membership write, and the toast that surfaces a failure.
 // See SongsView's header for the read-back-after-write and slot-shift rules these
-// callbacks implement.
+// callbacks implement. Toasts say what happened in plain words, chosen by kind (a
+// failed write or read, a taken name, a tempo that didn't land); the backend's own
+// text goes to the log, never on screen.
 
 import {
   useCallback,
@@ -28,17 +30,21 @@ import {
   addSetlistSongs as apiAddSetlistSongs,
   removeSetlistSong as apiRemoveSetlistSong,
   moveSetlistSong as apiMoveSetlistSong,
+  logUnlessCommandError,
 } from "../../lib/invoke";
-import { errMsg } from "../../lib/format";
+import { logError } from "../../lib/log";
 import { useDeviceLoad } from "../../lib/useDeviceLoad";
-import type { SongRecord, SetlistRecord } from "../../lib/types";
+import type {
+  SongRecord,
+  SetlistRecord,
+  SongSaveOutcome,
+} from "../../lib/types";
 import {
   songBpm,
   shiftMembershipAfterDelete,
   slotAfterDeletes,
 } from "./songUtil";
-import type { SetlistEntry } from "./songUtil";
-import type { SongDraft } from "./shared";
+import type { SetlistEntry, SongDraft } from "./songUtil";
 import {
   subscribeLibraryScan,
   getLibraryScan,
@@ -53,6 +59,18 @@ export type SongsPane =
   | { mode: "setlist"; slot: number }
   | { mode: "preset"; slot: number };
 type DeviceOpEffect = "read" | "write" | "shiftsSongs";
+
+/** A write the unit refused or that failed on the wire. */
+export const WRITE_FAILED =
+  "Couldn't save that change to your Tone Master Pro.";
+/** A setlist's songs couldn't be read (the one read that runs on the op queue). */
+export const READ_FAILED =
+  "Couldn't read this setlist from your Tone Master Pro. Open it again to try again.";
+/** The song saved but its tempo didn't land (the warning's text goes to the log). */
+export const TEMPO_FAILED = "Song saved, but its tempo didn't. Set it again.";
+/** A create whose name another song already had (the unit keeps both). */
+export const nameTaken = (name: string) =>
+  `You already have a song called ${name}.`;
 
 export function useSongsDevice(connected: boolean) {
   const { phase, runLoad } = useDeviceLoad();
@@ -200,7 +218,11 @@ export function useSongsDevice(connected: boolean) {
             if (effect === "shiftsSongs") invalidateSongPresetJoin();
           }
         } catch (e) {
-          if (mountedRef.current) showToast(errMsg(e), "err");
+          // A command's failure is already in the log (the invoke wrapper); this
+          // catches anything else that threw around it.
+          logUnlessCommandError("songs device op", e);
+          if (mountedRef.current)
+            showToast(effect === "read" ? READ_FAILED : WRITE_FAILED, "err");
         } finally {
           pendingRef.current -= 1;
           if (pendingRef.current === 0) setBusy(false);
@@ -244,11 +266,16 @@ export function useSongsDevice(connected: boolean) {
     [loadMembership],
   );
 
-  // BPM is best-effort on the unit (active-song tap tempo, can fail to settle) —
-  // the batched transactions keep the saved song and surface a warning instead.
-  const warnBpm = useCallback(
-    (warning: string | null) => {
-      if (warning) showToast(`Saved, but BPM didn't stick: ${warning}`, "warn");
+  // What a saved song still needs to say, by kind: a create on a name another song
+  // already had (its notes, tempo and setlist were skipped), or a tempo that didn't land
+  // (BPM is best-effort on the unit — the active-song tap tempo can fail to settle — so
+  // the batched transactions keep the saved song and report it instead).
+  const reportSave = useCallback(
+    (out: SongSaveOutcome, name: string) => {
+      if (out.bpm_warning)
+        logError(`song tempo didn't save: ${out.bpm_warning}`);
+      if (out.duplicate_name) showToast(nameTaken(name), "warn");
+      else if (out.bpm_warning) showToast(TEMPO_FAILED, "warn");
     },
     [showToast],
   );
@@ -268,12 +295,12 @@ export function useSongsDevice(connected: boolean) {
           setSongs(out.songs);
           setMembership(new Map());
           invalidateSongPresetJoin(); // slots shifted → backup song↔preset join is stale
-          warnBpm(out.bpm_warning);
+          reportSave(out, d.name);
         },
         "shiftsSongs",
       );
     },
-    [runDeviceOp, warnBpm],
+    [runDeviceOp, reportSave],
   );
 
   // Edit = ONE batched transaction over the CHANGED fields only (null =
@@ -288,11 +315,11 @@ export function useSongsDevice(connected: boolean) {
         () => apiUpdateSongFull(rec.slot, rec.name, songs, name, notes, bpm),
         (out) => {
           setSongs(out.songs);
-          warnBpm(out.bpm_warning);
+          reportSave(out, d.name);
         },
       );
     },
-    [runDeviceOp, warnBpm, songs],
+    [runDeviceOp, reportSave, songs],
   );
 
   const doDeleteSong = useCallback(
@@ -412,8 +439,8 @@ export function useSongsDevice(connected: boolean) {
   // batched transaction (create_song_full with add_to_setlist). The create shifts
   // every song slot, so re-apply songs AND keep only this setlist's fresh
   // membership (others are re-read on select). `members` comes back null only when
-  // the backend couldn't resolve the created song by name (duplicate-name edge) —
-  // then clear the cache so the membership is re-read on select.
+  // the backend couldn't resolve the created song by name (`duplicate_name`) — then
+  // clear the cache so the membership is re-read on select.
   const createAndAdd = useCallback(
     (list: SetlistRecord, d: SongDraft) => {
       void runDeviceOp(
@@ -433,12 +460,12 @@ export function useSongsDevice(connected: boolean) {
               : new Map(),
           );
           invalidateSongPresetJoin(); // create shifted slots → stale backup join
-          warnBpm(out.bpm_warning);
+          reportSave(out, d.name);
         },
         "shiftsSongs",
       );
     },
-    [runDeviceOp, warnBpm, setlists],
+    [runDeviceOp, reportSave, setlists],
   );
 
   return {

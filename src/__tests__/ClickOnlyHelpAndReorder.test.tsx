@@ -43,21 +43,28 @@ describe("SetlistDetail — click-only reorder (#302)", () => {
     const onReorder = renderDetail();
     const user = userEvent.setup();
 
-    await user.click(screen.getAllByTitle("Move")[0]);
-    expect(screen.queryByText("Move up")).toBeNull();
-    await user.click(screen.getByText("Move down"));
+    // Each row's ⋯ holds its moves, then Remove from setlist.
+    await user.click(screen.getByRole("button", { name: "More for Song A" }));
+    expect(screen.queryByRole("menuitem", { name: "Move up" })).toBeNull();
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual([
+      "Move down",
+      "Remove from setlist",
+    ]);
+    await user.click(screen.getByRole("menuitem", { name: "Move down" }));
     expect(onReorder).toHaveBeenLastCalledWith(entries[0], entries[1]);
 
-    await user.click(screen.getAllByTitle("Move")[1]);
-    expect(screen.queryByText("Move down")).toBeNull();
-    await user.click(screen.getByText("Move up"));
+    await user.click(screen.getByRole("button", { name: "More for Song B" }));
+    expect(screen.queryByRole("menuitem", { name: "Move down" })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Move up" }));
     expect(onReorder).toHaveBeenLastCalledWith(entries[1], entries[0]);
   });
 
   it("the move menu stays shut while a device write is busy", async () => {
     const onReorder = renderDetail(true);
-    await userEvent.click(screen.getAllByTitle("Move")[0]);
-    expect(screen.queryByText("Move down")).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: "More for Song A" }),
+    );
+    expect(screen.queryByRole("menuitem", { name: "Move down" })).toBeNull();
     expect(onReorder).not.toHaveBeenCalled();
   });
 });

@@ -2292,6 +2292,11 @@ fn offline_batched_song_saves_open_one_connection_each() {
         "create: one connection for the work: {created}"
     );
     assert_eq!(created["bpm_warning"], serde_json::Value::Null, "{created}");
+    assert_eq!(
+        created["duplicate_name"],
+        serde_json::json!(false),
+        "{created}"
+    );
     let slot = sim
         .song_names()
         .iter()
@@ -2337,12 +2342,9 @@ fn offline_batched_song_saves_open_one_connection_each() {
         }),
     )
     .expect("create_song_full (duplicate name)");
-    assert!(
-        dup["bpm_warning"]
-            .as_str()
-            .is_some_and(|w| w.contains("isn't unique")),
-        "{dup}"
-    );
+    // Reported by kind, not as warning text: the UI words it on its own.
+    assert_eq!(dup["duplicate_name"], serde_json::json!(true), "{dup}");
+    assert_eq!(dup["bpm_warning"], serde_json::Value::Null, "{dup}");
     assert_eq!(dup["members"], serde_json::Value::Null, "{dup}");
     assert_eq!(sim.song(2).unwrap(), encore_before);
 }

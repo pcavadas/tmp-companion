@@ -230,23 +230,27 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 - **S2 — Rail pivot** — Seg "Setlists ⇄ Presets" toggles `railAxis` and resets view to "all".
 - **S3 — Create song** ⌨️ — New song → SongForm (name/BPM/notes); read-back returns fresh list.
 - **S4 — Edit song** ⌨️ — diffs changed fields only; **no-change edit issues no device op**.
-- **S5 — Delete song** — confirm Modal ("DESTRUCTIVE · WRITES TO THE TONE MASTER PRO"); Cancel vs
-  Delete; removes from unit + every setlist.
+- **S5 — Delete song** — row ⋯ → Delete song → confirm Modal ("Delete {name}?", backdrop inert);
+  Cancel vs "Delete song"; removes from unit + every setlist.
 - **S6 — BPM validation** ⌨️ — strips non-digits, clamps 20–400; blank → null.
 - **S7 — Create setlist** ⌨️ — inline name input (Enter commit / Esc / check / ×); empty name no-ops.
-- **S8 — Rename setlist** ⌨️ — click title → inline input; commits on blur AND Enter; empty/unchanged
-  → no op.
-- **S9 — Delete setlist** — ⋯ menu or detail; confirm Modal; keeps songs, drops the membership entry.
-- **S10 — Add songs to setlist** — AddSongs popover ⌨️(filter); multi-select; "Add {n}" (disabled at
-  0); batched multi-add; read-back members. _(e2e currently only creates/deletes an EMPTY setlist —
+- **S8 — Rename setlist** ⌨️ — click title (or ⋯ → Rename setlist) → inline input with ✓ / ✕;
+  commits on Enter or ✓ (not on blur); empty/unchanged → no op.
+- **S9 — Delete setlist** — setlist ⋯ → Delete setlist; confirm Modal (backdrop inert); keeps songs,
+  drops the membership entry.
+- **S10 — Add songs to setlist** — AddSongs popover ⌨️(filter); multi-select; "Add {n}" ("Add",
+  disabled, at 0); stays open on an outside click, closes on Add or Cancel; batched multi-add;
+  read-back members. _(e2e currently only creates/deletes an EMPTY setlist —
   add-to-setlist is uncovered.)_
 - **S11 — Create-and-add** ⌨️ — from AddSongs footer; create + add in one batched txn; duplicate-name
-  edge returns `members=null` → cache cleared, re-read on next select.
+  edge returns `duplicate_name: true` and `members=null` → "You already have a song called {name}.",
+  cache cleared, re-read on next select.
 - **S12 — Reorder setlist songs** 🖱️drag — grip drag-reorder (1-based positions); no-op on same pos.
   _Needs DnD events (not plain clicks); e2e-uncovered._
-- **S13 — Remove from setlist** — × on member row; 1-based position.
-- **S14 — Presets axis (read-only)** — songs-per-preset counts; PresetDetail non-interactive;
-  "managed on the unit in Pro Control" note. Counts show `—` until first read.
+- **S13 — Remove from setlist** — the member row's ⋯ (with Move up / Move down); 1-based position.
+- **S14 — Presets axis (read-only)** — songs-per-preset counts; PresetDetail non-interactive (no ⋯);
+  "Which songs use a preset is set on your Tone Master Pro." caption. Counts show `—` until first
+  read.
 
 ### Monkey/chaos
 
@@ -255,9 +259,9 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 - **M-S2 — Write-failure Toast** — induce a failed write (e.g. disconnect mid-op) → err Toast,
   **state NOT mutated** (read-back failed, UI keeps prior authoritative list). _vitest covers the
   mock; verify live._
-- **M-S3 — BPM "didn't stick" warn** — the non-fatal warn Toast path ("Saved, but BPM didn't
-  stick"); `bpm_warning` is always null in tests → entirely unexercised. Try a BPM the firmware
-  rejects.
+- **M-S3 — Tempo didn't save warn** — the non-fatal warn Toast path ("Song saved, but its tempo
+  didn't. Set it again."; the warning text goes to the log); Vitest covers it with a mocked
+  `bpm_warning`, the e2e never triggers it. Try a BPM the firmware rejects.
 - **M-S4 — Delete the currently-viewed setlist** — view drops to "all" cleanly; no dangling
   membership read.
 

@@ -1,31 +1,21 @@
-// src/views/songs/PresetDetail.tsx — the Presets-axis detail: a READ-ONLY list of the
-// songs that use one preset ("songs per preset"). Which songs use a preset is set ON
-// THE UNIT (Pro Control); this view only displays it, sourced from the startup backup
-// scan. No add / remove / edit controls — reinforced with an "on unit" lock badge + a
-// footer note.
-
-import type { CSSProperties } from "react";
+// src/views/songs/PresetDetail.tsx — the Presets side's page (look B): a READ-ONLY list
+// of the songs that use one preset. Which songs use a preset is set ON THE UNIT; this
+// page only shows it, from the startup backup scan, so its rows have no ⋯ and no click,
+// and one caption under the list says where it is set. The title is the preset's name,
+// the subtitle how many songs use it (hidden while that is unknown, and at none).
 
 import { useTheme } from "../../theme/ThemeContext";
+import { Group } from "../../ui/List";
 import { EmptyState } from "../../ui/EmptyState";
-import { UnitBadge } from "./UnitBadge";
-import { slotLabel } from "../../lib/format";
 import type { SongRecord } from "../../lib/types";
+import { songCount } from "./songUtil";
 import { SongRow } from "./SongRow";
-import { ListHeader } from "./ListHeader";
+import { SongsPage } from "./SongsPage";
 
-// The Presets-axis song table shares SongList's grid columns for the read-only rows.
-const PRESET_COLS = "34px 1fr 78px";
-
-// Single-line ellipsis — shared by the title, song name, and notes.
-const truncate: CSSProperties = {
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
+const SET_ON_UNIT = "Which songs use a preset is set on your Tone Master Pro.";
 
 export interface PresetDetailProps {
-  /** `slot` is the 0-based My-Presets list index; `slotLabel` renders it as `058`. */
+  /** `slot` is the 0-based My-Presets list index. */
   preset: { slot: number; name: string };
   /** The songs that use this preset (read-only); null = UNKNOWN, because a song was
    *  added or removed since the startup scan and the song slots it joined on shifted. */
@@ -34,106 +24,51 @@ export interface PresetDetailProps {
 
 export function PresetDetail({ preset, members }: PresetDetailProps) {
   const { t } = useTheme();
-  const n = members?.length ?? 0;
   return (
-    <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <div
-        style={{
-          padding: `${String(t.space8)}px ${String(t.space8)}px ${String(t.space6)}px`,
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: t.space4,
-            fontFamily: t.mono,
-            fontSize: t.fsMicro,
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            color: t.accentDeep,
-          }}
-        >
-          <span>Preset · slot {slotLabel(preset.slot)}</span>
-          <UnitBadge />
-        </div>
-        <div
-          style={{
-            marginTop: t.space2,
-            fontFamily: t.serif,
-            fontSize: t.fsTitle,
-            color: t.ink,
-            ...truncate,
-          }}
-        >
-          {preset.name}
-        </div>
-        <div
-          style={{
-            marginTop: t.space3,
-            fontFamily: t.mono,
-            fontSize: t.fsMeta,
-            color: t.mutedInk,
-          }}
-        >
-          {members == null
-            ? "Songs using this preset: unknown"
-            : `${String(n)} song${n === 1 ? "" : "s"} use${n === 1 ? "s" : ""} this preset`}
-        </div>
-      </div>
-
+    <SongsPage
+      title={preset.name}
+      // Hidden while unknown, and when no song uses it (its empty state says so).
+      subtitle={
+        members == null || members.length === 0
+          ? undefined
+          : `Used by ${songCount(members.length)}`
+      }
+    >
       {members == null ? (
-        <EmptyState
-          icon="wave"
-          title="Not known since a song was added or removed"
-          body="Adding or removing a song renumbers the unit's songs, so the list read at connect no longer matches. Reconnect the unit to read it again."
-        />
-      ) : n === 0 ? (
-        <EmptyState
-          icon="wave"
-          title="No songs use this preset"
-          body="Which songs use a preset is set on the unit in Pro Control. This view stays in sync with the device."
-        />
+        <Group>
+          <EmptyState
+            icon="wave"
+            title="Not known right now"
+            body="Adding or removing a song renumbers your songs. Reconnect your Tone Master Pro to read this again."
+          />
+        </Group>
+      ) : members.length === 0 ? (
+        <Group>
+          <EmptyState
+            icon="wave"
+            title="No songs use this preset"
+            body={SET_ON_UNIT}
+          />
+        </Group>
       ) : (
         <>
-          <ListHeader
-            cols={PRESET_COLS}
-            cells={[
-              { label: "№" },
-              { label: "song" },
-              { label: "bpm", align: "right" },
-            ]}
-          />
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+          <Group label={`Songs that use ${preset.name}`}>
             {members.map((s, i) => (
-              <SongRow
-                key={s.slot}
-                song={s}
-                idx={i}
-                gridCols={PRESET_COLS}
-                bpmAlign="right"
-                bpmSuffix
-              />
+              <SongRow key={s.slot} song={s} idx={i} />
             ))}
-          </div>
-          <div
+          </Group>
+          <p
             style={{
-              flexShrink: 0,
-              height: 38,
-              display: "flex",
-              alignItems: "center",
-              padding: `0 ${String(t.space8)}px`,
-              borderTop: `0.5px solid ${t.hairline}`,
-              background: t.window,
-              fontFamily: t.mono,
-              fontSize: t.fsData2,
-              color: t.faint,
+              margin: 0,
+              fontSize: t.fontCaption,
+              lineHeight: `${String(t.lineCaption)}px`,
+              color: t.textSecondary,
             }}
           >
-            Song ↔ preset assignments are managed on the unit
-          </div>
+            {SET_ON_UNIT}
+          </p>
         </>
       )}
-    </div>
+    </SongsPage>
   );
 }

@@ -1,16 +1,28 @@
-// src/views/songs/songUtil.ts — pure helpers for the Songs view, split from
-// ./shared so that file exports only the IconBtn component (React Fast Refresh's
-// component-boundary rule) without disabling it. PRIVATE to the songs view.
-import { DASH } from "../../lib/format";
+// src/views/songs/songUtil.ts — pure helpers and types for the Songs view. PRIVATE to
+// the songs view (not re-exported from index.ts).
 import type { SongRecord } from "../../lib/types";
+
+/** Inline-edit draft of a song (the create/edit form's working values). */
+export interface SongDraft {
+  name: string;
+  notes: string;
+  bpm: number | null;
+}
 
 /** The editable BPM of a device song: the numeric value when active, else null. */
 export function songBpm(rec: SongRecord): number | null {
   return rec.bpm_active ? rec.bpm : null;
 }
 
-export function bpmStr(b: number | null): string {
-  return b != null ? String(b) : DASH;
+/** A song's tempo as a row shows it ("120 BPM"), or null when it has none. */
+export function tempoLabel(rec: SongRecord): string | null {
+  const bpm = songBpm(rec);
+  return bpm != null ? `${String(bpm)} BPM` : null;
+}
+
+/** "1 song" / "{n} songs". */
+export function songCount(n: number): string {
+  return `${String(n)} song${n === 1 ? "" : "s"}`;
 }
 
 /** One setlist entry as the device holds it: its 1-based `position` (what remove and

@@ -17,6 +17,9 @@ const SETLIST_NEW = `E2E Set ${RUN} R2`;
 // create exercises the fresh-assign path; the edit, the existing-binding path.
 const BPM = "97";
 const BPM2 = "132";
+// The toast a save shows when its tempo didn't land. Matched EXACTLY: a pattern for
+// wording the app no longer uses would pass `toHaveCount(0)` without testing anything.
+const TEMPO_TOAST = "Song saved, but its tempo didn't. Set it again.";
 
 // This run's setlists — swept in afterEach, so a failed assertion can't strand one on
 // the unit (`clearScenario` doesn't touch setlists). Removed highest slot first, each
@@ -44,11 +47,13 @@ async function removeTestSetlists(
   }
 }
 
+// A song's row line: the innermost div holding its ⋯ ("More for {name}").
+const moreFor = (page: import("@playwright/test").Page, name: string) =>
+  page.getByRole("button", { name: `More for ${name}`, exact: true });
 const songRow = (page: import("@playwright/test").Page, name: string) =>
   page
     .locator("div")
-    .filter({ has: page.getByText(name, { exact: true }) })
-    .filter({ has: page.getByTitle("More") })
+    .filter({ has: moreFor(page, name) })
     .last();
 
 test.describe("Songs — full CRUD (self-cleaning)", () => {
@@ -68,32 +73,32 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
     await page.getByRole("button", { name: "Songs", exact: true }).click();
 
-    // CREATE song with a BPM → read-back shows the BPM, with no "didn't stick" warning.
+    // CREATE song with a BPM → read-back shows the BPM, with no "tempo didn't" toast.
     await page.getByRole("button", { name: "New song" }).click();
-    await page.getByPlaceholder("Song name").fill(SONG);
-    await page.getByPlaceholder("—", { exact: true }).fill(BPM);
-    await page.getByTitle("Save").click();
+    await page.getByLabel("Song name").fill(SONG);
+    await page.getByLabel("Tempo").fill(BPM);
+    await page.getByRole("button", { name: "Save song" }).click();
     await expect(page.getByText(SONG, { exact: true })).toBeVisible({
       timeout: 30_000,
     });
     await expect(
-      songRow(page, SONG).getByText(BPM, { exact: true }),
+      songRow(page, SONG).getByText(`${BPM} BPM`, { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText(/BPM didn't stick/)).toHaveCount(0);
+    await expect(page.getByText(TEMPO_TOAST, { exact: true })).toHaveCount(0);
 
     // UPDATE (rename + BPM) → read-back shows the new name and BPM, old name gone.
-    await songRow(page, SONG).getByTitle("More").click();
-    await page.getByText("Edit song…").click();
-    await page.getByPlaceholder("Song name").fill(SONG2);
-    await page.getByPlaceholder("—", { exact: true }).fill(BPM2);
-    await page.getByTitle("Save").click();
+    await moreFor(page, SONG).click();
+    await page.getByRole("menuitem", { name: "Edit song" }).click();
+    await page.getByLabel("Song name").fill(SONG2);
+    await page.getByLabel("Tempo").fill(BPM2);
+    await page.getByRole("button", { name: "Save song" }).click();
     await expect(page.getByText(SONG2, { exact: true })).toBeVisible({
       timeout: 30_000,
     });
     await expect(
-      songRow(page, SONG2).getByText(BPM2, { exact: true }),
+      songRow(page, SONG2).getByText(`${BPM2} BPM`, { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText(/BPM didn't stick/)).toHaveCount(0);
+    await expect(page.getByText(TEMPO_TOAST, { exact: true })).toHaveCount(0);
     // …and the old name is GONE — a rename that appended instead of replacing would leave
     // both visible (and break net-zero), yet pass a new-name-visible check alone.
     await expect(page.getByText(SONG, { exact: true })).toHaveCount(0, {
@@ -104,19 +109,22 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     await page
       .getByRole("button", { name: "New setlist", exact: true })
       .click();
-    await page.getByPlaceholder("Name this setlist").fill(SETLIST);
-    await page.getByTitle("Create").click();
+    await page.getByPlaceholder("Setlist name").fill(SETLIST);
+    await page.getByRole("button", { name: "Create setlist" }).click();
     await expect(page.getByText(SETLIST, { exact: true })).toBeVisible({
       timeout: 30_000,
     });
 
-    // RENAME the setlist from its detail title. Selecting reads the setlist's membership
-    // ("reading this setlist…" = busy) — wait for it to settle first.
+    // RENAME the setlist from its page title (a click on it renames). Selecting reads
+    // the setlist's membership ("reading this setlist…" = busy) — wait for it first.
     await page.getByText(SETLIST, { exact: true }).click();
     await expect(page.getByText(/reading this setlist/i)).toHaveCount(0, {
       timeout: 30_000,
     });
-    await page.getByTitle("Rename").click();
+    await page
+      .getByRole("heading", { name: SETLIST, exact: true })
+      .getByRole("button")
+      .click();
     // The title editor opens focused on the current name.
     const title = page.locator("input:focus");
     await title.fill(SETLIST_NEW);
@@ -142,17 +150,18 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     await expect(page.getByText(/reading this setlist/i)).toHaveCount(0, {
       timeout: 30_000,
     });
-    await page.getByTitle("Setlist options").click();
-    await page.getByText(/Delete setlist/).click();
-    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Setlist options" }).click();
+    await page.getByRole("menuitem", { name: "Delete setlist" }).click();
+    // The confirm names the action; its backdrop does nothing.
+    await page.getByRole("button", { name: "Delete setlist" }).click();
     await expect(page.getByText(SETLIST_NEW, { exact: true })).toHaveCount(0, {
       timeout: 30_000,
     });
 
     // DELETE song — cleanup → read-back gone (net-zero).
-    await songRow(page, SONG2).getByTitle("More").click();
-    await page.getByText(/Delete song/).click();
-    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await moreFor(page, SONG2).click();
+    await page.getByRole("menuitem", { name: "Delete song" }).click();
+    await page.getByRole("button", { name: "Delete song" }).click();
     await expect(page.getByText(SONG2, { exact: true })).toHaveCount(0, {
       timeout: 30_000,
     });

@@ -1,23 +1,40 @@
-// src/views/songs/SongForm.tsx — inline create / edit form: name + optional notes + BPM.
-import { useState } from "react";
-import { useTheme } from "../../theme/ThemeContext";
-import { Icon } from "../../ui/Icon";
-import { plainButton, plainInput } from "../../theme/tokens";
-import type { SongDraft } from "./shared";
+// src/views/songs/SongForm.tsx — the create / edit song form (look B): "Song name" and
+// "Tempo" side by side (name flexible, tempo 110 px), "Notes" under them, then
+// right-aligned "Cancel" and "Save song". Save is disabled while the name is empty.
+// Enter in a field saves and Escape cancels: the text-field carve-out, acting only on
+// this form's own edit while one of its fields has focus.
+//
+// `card` draws it as a white card with a control edge (New song, above the list);
+// without it, it is just the fields, for a caller that already gives it a surface (in
+// place of a song's row, in the Add songs picker).
 
-interface SongFormProps {
+import { useState } from "react";
+import type { KeyboardEvent } from "react";
+
+import { useTheme } from "../../theme/ThemeContext";
+import { Button, TextField } from "../../ui/primitives";
+import type { SongDraft } from "./songUtil";
+
+export interface SongFormProps {
   initial?: SongDraft;
   onSave: (d: SongDraft) => void;
   onCancel: () => void;
+  card?: boolean;
 }
 
-export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
+export function SongForm({
+  initial,
+  onSave,
+  onCancel,
+  card = false,
+}: SongFormProps) {
   const { t } = useTheme();
   const [name, setName] = useState(initial ? initial.name : "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [bpm, setBpm] = useState(
     initial?.bpm != null ? String(initial.bpm) : "",
   );
+  const canSave = name.trim() !== "";
 
   const save = () => {
     const n = name.trim();
@@ -28,9 +45,16 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
         : Math.max(20, Math.min(400, parseInt(bpm, 10) || 0));
     onSave({ name: n, notes: notes.trim(), bpm: b });
   };
-  const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") save();
-    if (e.key === "Escape") onCancel();
+  const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    // An IME's Enter confirms a candidate, not the form.
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      save();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+    }
   };
 
   return (
@@ -38,100 +62,58 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: t.space4,
-        border: `0.5px solid ${t.accent}`,
-        borderRadius: t.rLg,
-        padding: `${String(t.space4)}px ${String(t.space4)}px ${String(t.space4)}px ${String(t.space6)}px`,
-        background: t.bg,
-        boxShadow: t.shadowAccentEdge,
+        gap: t.sp8 + 2,
+        padding: t.sp12 + 2,
+        ...(card
+          ? {
+              background: t.surface,
+              border: `1px solid ${t.controlBorder}`,
+              borderRadius: t.radiusGroup,
+            }
+          : {}),
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: t.space3 }}>
-        <input
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) 110px",
+          gap: t.sp12,
+        }}
+      >
+        <TextField
+          label="Song name"
           autoFocus
           value={name}
-          onChange={(e) => {
-            setName(e.target.value);
+          onChange={setName}
+          onKeyDown={onKey}
+        />
+        <TextField
+          label="Tempo"
+          placeholder="Optional"
+          inputMode="numeric"
+          maxLength={3}
+          value={bpm}
+          onChange={(v) => {
+            setBpm(v.replace(/[^0-9]/g, ""));
           }}
           onKeyDown={onKey}
-          placeholder="Song name"
-          style={plainInput(t, {
-            flex: 1,
-            minWidth: 0,
-            fontFamily: t.serif,
-            fontSize: t.fsName,
-          })}
         />
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: t.space3,
-            borderLeft: `0.5px solid ${t.hairline}`,
-            paddingLeft: t.space5,
-            marginLeft: t.space2,
-          }}
-        >
-          <input
-            value={bpm}
-            onChange={(e) => {
-              setBpm(e.target.value.replace(/[^0-9]/g, ""));
-            }}
-            onKeyDown={onKey}
-            placeholder="—"
-            inputMode="numeric"
-            style={plainInput(t, {
-              width: 40,
-              fontFamily: t.mono,
-              fontSize: t.fsControl,
-              textAlign: "right",
-            })}
-          />
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: t.fsMicro2,
-              letterSpacing: t.lsWide,
-              color: t.faint,
-            }}
-          >
-            BPM
-          </span>
-        </div>
-        <button
-          type="button"
-          aria-label="Save"
-          onClick={save}
-          title="Save"
-          style={plainButton({ display: "flex", padding: t.space2 })}
-        >
-          <Icon name="check" size={15} stroke={t.accentDeep} />
-        </button>
-        <button
-          type="button"
-          aria-label="Cancel"
-          onClick={onCancel}
-          title="Cancel"
-          style={plainButton({ display: "flex", padding: t.space2 })}
-        >
-          <Icon name="x" size={13} stroke={t.faint} />
-        </button>
       </div>
-      <input
+      <TextField
+        label="Notes"
+        placeholder="Optional, for example: capo 2"
         value={notes}
-        onChange={(e) => {
-          setNotes(e.target.value);
-        }}
+        onChange={setNotes}
         onKeyDown={onKey}
-        placeholder="Notes (optional) — e.g. capo 2 · lead at 2nd chorus"
-        style={plainInput(t, {
-          borderTop: `0.5px solid ${t.hairline}`,
-          paddingTop: t.space4,
-          fontFamily: t.sans,
-          fontSize: t.fsControl,
-          color: t.ink2,
-        })}
       />
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: t.sp8 }}>
+        <Button variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button variant="primary" disabled={!canSave} onClick={save}>
+          Save song
+        </Button>
+      </div>
     </div>
   );
 }

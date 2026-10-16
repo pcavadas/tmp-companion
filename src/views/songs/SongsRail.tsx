@@ -1,18 +1,18 @@
-// src/views/songs/SongsRail.tsx — the Songs tab's left rail (the DS Rail, shared with
-// the Settings category sidebar): the Setlists | Presets axis switch, "All songs", then
-// either the unit's setlists (+ "New setlist") or its presets (read-only, from the
-// startup backup scan), each with its song count.
+// src/views/songs/SongsRail.tsx — the Songs tab's sidebar contents (look B; `SplitView`
+// draws the column): the Setlists | Presets switch, "All songs" with the song count,
+// then either the unit's setlists (each with its song count, the list scrolling on its
+// own, and "New setlist" pinned at the foot) or its presets (read-only, from the
+// startup backup scan, each with how many songs use it).
 
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Rail, RailItem, RailLabel } from "../../ui/Rail";
+import { RailItem, RailLabel } from "../../ui/Rail";
 import { Button, SegmentedControl } from "../../ui/primitives";
 import { InlineEdit } from "../../ui/InlineEdit";
 import { DASH } from "../../lib/format";
 import type { SetlistRecord, SongRecord } from "../../lib/types";
 import type { LibraryScan } from "../../device/libraryScan";
-import { UnitBadge } from "./UnitBadge";
 import type { SongsPane } from "./useSongsDevice";
 
 export type RailAxis = "setlists" | "presets";
@@ -54,40 +54,37 @@ export function SongsRail({
   onCommitList,
 }: SongsRailProps) {
   const { t } = useTheme();
-  // Shared rail styles (the setlists + presets sections share their scroll
-  // container and empty-hint markup; the section label is the DS RailLabel).
-  const railScroll: CSSProperties = {
+  // The setlists (or presets) scroll on their own, under the fixed top and above the
+  // pinned foot.
+  const list: CSSProperties = {
     flex: 1,
     minHeight: 0,
     overflowY: "auto",
     display: "flex",
     flexDirection: "column",
-    gap: t.space1,
-    margin: `0 -${String(t.space1)}px`,
-    padding: `0 ${String(t.space1)}px`,
+    gap: t.sp2,
   };
-  const railHint: CSSProperties = {
-    fontFamily: t.sans,
-    fontSize: t.fsLabel,
-    color: t.faint,
-    padding: `${String(t.space2)}px ${String(t.space5)}px`,
-    lineHeight: 1.5,
+  const caption: CSSProperties = {
+    fontSize: t.fontCaption,
+    lineHeight: `${String(t.lineCaption)}px`,
+    color: t.textSecondary,
+    padding: `${String(t.sp4)}px ${String(t.sp8)}px`,
+  };
+  const label: CSSProperties = {
+    padding: `${String(t.sp8 + 2)}px ${String(t.sp8)}px ${String(t.sp2)}px`,
   };
 
   return (
-    <Rail style={{ gap: t.space1 }}>
-      <div
-        style={{
-          padding: `${String(t.space1)}px ${String(t.space1)}px ${String(t.space5)}px`,
-        }}
-      >
+    <>
+      <div style={{ marginBottom: t.sp8 }}>
         <SegmentedControl
           value={axis}
           ariaLabel="Browse by"
+          size="sm"
           onChange={onAxis}
           options={[
-            { value: "setlists", label: "Setlists", icon: "list" },
-            { value: "presets", label: "Presets", icon: "wave" },
+            { value: "setlists", label: "Setlists" },
+            { value: "presets", label: "Presets" },
           ]}
         />
       </div>
@@ -102,14 +99,8 @@ export function SongsRail({
       />
       {axis === "setlists" ? (
         <>
-          <RailLabel
-            style={{
-              padding: `${String(t.space8)}px ${String(t.space4)}px ${String(t.space4)}px`,
-            }}
-          >
-            Setlists
-          </RailLabel>
-          <div style={railScroll}>
+          <RailLabel style={label}>Setlists</RailLabel>
+          <div style={list}>
             {setlists.map((l) => (
               <RailItem
                 nav="current"
@@ -123,14 +114,14 @@ export function SongsRail({
               />
             ))}
             {setlists.length === 0 && (
-              <div style={railHint}>No setlists on the unit.</div>
+              <div style={caption}>No setlists yet.</div>
             )}
           </div>
-          <div style={{ paddingTop: t.space4 }}>
+          <div style={{ marginTop: "auto", paddingTop: t.sp8 }}>
             {creatingList ? (
               <InlineEdit
                 initial=""
-                placeholder="Name this setlist"
+                placeholder="Setlist name"
                 // The ✓ / ✕ beside the field are its click path, so a blur
                 // (e.g. onto ✕) must not create the setlist.
                 commitOnBlur={false}
@@ -141,25 +132,26 @@ export function SongsRail({
                 style={{
                   flex: 1,
                   minWidth: 0,
-                  fontFamily: t.serif,
-                  fontSize: t.fsBody2,
+                  fontFamily: t.fontSans,
+                  fontSize: t.fontBody,
                 }}
                 wrapStyle={{
                   display: "flex",
                   alignItems: "center",
-                  gap: t.space3,
-                  border: `0.5px solid ${t.accent}`,
-                  borderRadius: t.rMd,
-                  padding: `${String(t.space2)}px ${String(t.space3)}px ${String(t.space2)}px ${String(t.space4)}px`,
-                  background: t.bg,
+                  gap: t.sp6,
+                  height: t.control,
+                  boxSizing: "border-box",
+                  border: `1px solid ${t.controlBorder}`,
+                  borderRadius: t.radiusControl,
+                  padding: `0 ${String(t.sp6)}px 0 ${String(t.sp8)}px`,
+                  background: t.surface,
                 }}
-                commitLabel="Create"
+                commitLabel="Create setlist"
               />
             ) : (
               <Button
-                variant="ghost"
+                variant="plain"
                 icon="plus"
-                size="sm"
                 disabled={busy}
                 onClick={() => {
                   onCreatingList(true);
@@ -172,23 +164,13 @@ export function SongsRail({
         </>
       ) : (
         <>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: `${String(t.space8)}px ${String(t.space4)}px ${String(t.space4)}px`,
-            }}
-          >
-            <RailLabel>Presets</RailLabel>
-            <UnitBadge />
-          </div>
-          <div style={railScroll}>
+          <RailLabel style={label}>Presets on your Tone Master Pro</RailLabel>
+          <div style={list}>
             {!lib.ready || lib.presets.length === 0 ? (
-              <div style={railHint}>
+              <div style={caption}>
                 {lib.ready
-                  ? "No presets on the unit."
-                  : "Reading presets from the unit…"}
+                  ? "No presets on your Tone Master Pro."
+                  : "Reading presets…"}
               </div>
             ) : (
               lib.presets.map((p) => (
@@ -211,6 +193,6 @@ export function SongsRail({
           </div>
         </>
       )}
-    </Rail>
+    </>
   );
 }

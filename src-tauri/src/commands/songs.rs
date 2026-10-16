@@ -92,15 +92,20 @@ pub(crate) async fn remove_song(
 // only song add/remove do, and a transaction does at most one add (first).
 
 /// Result of a batched song save: the fresh authoritative song list, the fresh
-/// membership of `add_to_setlist` (when requested), and the best-effort BPM
-/// warning (BPM is the active-song tap tempo on the unit; when it doesn't land the
-/// song itself is kept, mirroring the UI's previous per-call behavior).
+/// membership of `add_to_setlist` (when requested), whether a create landed on a name
+/// another song already had, and the best-effort BPM warning (BPM is the active-song tap
+/// tempo on the unit; when it doesn't land the song itself is kept, mirroring the UI's
+/// previous per-call behavior). The two outcomes are separate fields so the UI words
+/// each by kind, never by the warning's text.
 #[derive(serde::Serialize)]
 pub(crate) struct SongSaveOutcome {
     songs: Vec<session::SongRecord>,
     /// `Some` only when `add_to_setlist` was requested: that setlist's fresh
     /// ordered member song slots.
     members: Option<Vec<u32>>,
+    /// A create whose name another song already had: the device accepts it, but the new
+    /// song can't be told from the older one, so its notes, BPM and setlist were skipped.
+    duplicate_name: bool,
     bpm_warning: Option<String>,
 }
 
@@ -174,13 +179,15 @@ pub(crate) async fn create_song_full(
             // the first of several could be an older one, and the writes below would land
             // on it. Not resolvable → return the fresh list, skip the optional fields.
             let Ok(slot) = find_song_slot(&listed, &name) else {
+                log::warn!(
+                    "song {name:?} created, but its name isn't unique — notes, BPM and \
+                     setlist skipped"
+                );
                 return Ok(SongSaveOutcome {
                     songs: listed,
                     members: None,
-                    bpm_warning: Some(format!(
-                        "song {name:?} created, but its name isn't unique — notes, BPM and \
-                         setlist skipped"
-                    )),
+                    duplicate_name: true,
+                    bpm_warning: None,
                 });
             };
             let mut songs = Some(listed);
@@ -271,6 +278,7 @@ fn finish_song_save(
     Ok(SongSaveOutcome {
         songs,
         members,
+        duplicate_name: false,
         bpm_warning,
     })
 }
