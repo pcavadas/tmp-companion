@@ -1,9 +1,12 @@
-// PresetList (scene-tree selection) — the row contract.
+// PresetList (look B, scene-tree selection) — the row contract.
 //
-// Locks: the loading skeleton; the background scene-scan strip + parent-row meta
-// (loading… / N scenes · M footswitches / nothing); select-on-row-click; whole-preset
-// checkbox select; select-all; empty rows; caret expand → scene + footswitch sub-rows →
-// per-child toggle; inert carets until `ready`.
+// Locks: the loading skeleton; the filter bar's caption (count, "N of M shown", reading
+// progress); the parent-row meta (Reading… / "2 scenes, 1 footswitch" / "1 of 4 chosen"
+// / nothing); the Checkbox choosing a whole preset; the NAME opening a preset with scenes
+// and choosing any other (Q6); "Select all N shown" acting on the presets the filter shows
+// only (Q7); the no-match state; empty slots; Caret → main sound + scene + footswitch
+// sub-rows → per-sound toggle; no carets until `ready`; the "Loaded" badge; CPU on preset
+// rows only; and BUG 1 (a footswitch with no volume knob is shown, disabled, reasoned).
 
 import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
@@ -27,7 +30,7 @@ const ROWS: PresetRow[] = [
   { slot: 3, name: "Tweed Warm", empty: false },
 ];
 
-// slot 0: 2 FS scenes + 1 footswitch; slot 1: nothing; slot 3: 1 footswitch only —
+// slot 0: 2 scenes + 1 footswitch; slot 1: nothing; slot 3: 1 footswitch only —
 // all known after the backup read.
 const SCENES = new Map<number, SceneInfo[]>([
   [
@@ -83,12 +86,12 @@ function fswNoLevel(sw: number, label: string): FootswitchInfo {
   };
 }
 const FOOTSWITCHES = new Map<number, FootswitchInfo[]>([
-  [0, [fsw(4, "Solo")]], // tag FS5
-  [3, [fsw(0, "Drive")]], // tag FS1
+  [0, [fsw(4, "Solo")]], // footswitch 5
+  [3, [fsw(0, "Drive")]], // footswitch 1
 ]);
 
-function renderList(over: ListOverrides = {}) {
-  const props: PresetListProps = {
+function listProps(over: ListOverrides = {}): PresetListProps {
+  return {
     rows: ROWS,
     sel: new Set<string>(),
     pendingWhole: new Set<number>(),
@@ -108,105 +111,232 @@ function renderList(over: ListOverrides = {}) {
     onToggleAll: noop,
     ...over,
   };
-  return renderWithTheme(<PresetList {...props} />);
 }
 
-describe("PresetList (scene tree)", () => {
-  it("shows the loading skeleton (no rows) while loading", () => {
+function renderList(over: ListOverrides = {}) {
+  return renderWithTheme(<PresetList {...listProps(over)} />);
+}
+
+const selectAll = () => screen.getByRole("checkbox", { name: /^Select all/ });
+
+describe("PresetList (look B scene tree)", () => {
+  it("shows the loading skeleton (no rows) while loading, with select-all and the filter disabled", () => {
     renderList({ loading: true });
     expect(screen.queryByText("Clean DI")).toBeNull();
-    expect(screen.getByText("Reading presets…")).toBeTruthy();
+    expect(screen.getByText("Reading presets…")).toBeInTheDocument();
+    expect(selectAll()).toBeDisabled();
+    expect(screen.getByLabelText("Filter by name or slot")).toBeDisabled();
   });
 
-  it("renders preset rows + the empty marker", () => {
+  it('renders preset rows and an empty slot as "Empty" with no checkbox', () => {
     renderList();
-    expect(screen.getByText("Clean DI")).toBeTruthy();
-    expect(screen.getByText("Plexi Crunch")).toBeTruthy();
-    expect(screen.getByText("—— empty ——")).toBeTruthy();
+    expect(screen.getByText("Clean DI")).toBeInTheDocument();
+    expect(screen.getByText("Plexi Crunch")).toBeInTheDocument();
+    expect(screen.getByText("Empty")).toBeInTheDocument();
+    // Three presets, three preset checkboxes (the empty slot has none).
+    expect(screen.getAllByRole("checkbox", { name: /^Choose / })).toHaveLength(
+      3,
+    );
   });
 
-  it("shows the scan strip while the background read runs", () => {
+  it('captions the count of presets (empty slots excluded), and "N of M shown" while filtering', () => {
+    const { rerender } = renderList();
+    expect(screen.getByText("3 presets")).toBeInTheDocument();
+    rerender(<PresetList {...listProps({ filter: "tweed" })} />);
+    expect(screen.getByText("1 of 3 shown")).toBeInTheDocument();
+  });
+
+  it("shows the reading progress in the filter bar while the scan runs", () => {
     // The % comes from the scan's own progress store (0 until a tick arrives;
     // libraryScan.test.ts drives the ticks), not from a prop.
-    renderList({ scan: { scanning: true } });
-    expect(screen.getByText("Reading preset details…")).toBeTruthy();
-    expect(screen.getByText("0%")).toBeTruthy();
+    renderList({ scan: { scanning: true }, ready: false });
+    expect(screen.getByText("Reading preset details")).toBeInTheDocument();
+    expect(screen.getByText("0%")).toBeInTheDocument();
   });
 
-  it("parent meta: scene + footswitch breakdown once known", () => {
+  it("parent meta: what the preset holds once known, joined with a comma", () => {
     renderList();
-    // slot 0: 2 FS scenes + 1 footswitch; slot 3: 1 footswitch only; slot 1: nothing.
-    expect(screen.getByText("2 scenes · 1 footswitch")).toBeTruthy();
-    expect(screen.getByText("1 footswitch")).toBeTruthy();
-    // A preset with no scenes AND no footswitches shows no meta (no "base only").
-    expect(screen.queryByText("base only")).toBeNull();
+    expect(screen.getByText("2 scenes, 1 footswitch")).toBeInTheDocument();
+    expect(screen.getByText("1 footswitch")).toBeInTheDocument();
   });
 
-  it("parent meta: loading… while not ready", () => {
+  it('parent meta: "Reading…" and no carets while the scan reads', () => {
     renderList({ ready: false });
-    expect(screen.getAllByText("loading…").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Reading…")).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: /^Open / })).toBeNull();
   });
 
-  it("row-body click selects the whole preset (no recall)", async () => {
-    const onTogglePreset = vi.fn();
-    renderList({ onTogglePreset });
-    await userEvent.click(screen.getByText("Plexi Crunch"));
-    expect(onTogglePreset).toHaveBeenCalledWith(1);
+  it('parent meta: "1 of 4 chosen" on a partly chosen preset', () => {
+    renderList({ sel: new Set(["s0:1"]) });
+    expect(screen.getByText("1 of 4 chosen")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "Choose Clean DI" }),
+    ).toHaveAttribute("aria-checked", "mixed");
   });
 
-  it("checkbox selects the whole preset", async () => {
+  it("the checkbox chooses the whole preset", async () => {
     const onTogglePreset = vi.fn();
     renderList({ onTogglePreset });
-    await userEvent.click(screen.getAllByTitle("Select preset to level")[0]);
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "Choose Clean DI" }),
+    );
     expect(onTogglePreset).toHaveBeenCalledWith(0);
   });
 
-  it("select-all header toggles every preset", async () => {
-    const onToggleAll = vi.fn();
-    renderList({ onToggleAll });
-    await userEvent.click(screen.getByTitle("Select all"));
-    expect(onToggleAll).toHaveBeenCalled();
+  describe("the preset's name (Q6)", () => {
+    it("opens a preset that has scenes", async () => {
+      const onToggleExpand = vi.fn();
+      const onTogglePreset = vi.fn();
+      renderList({ onToggleExpand, onTogglePreset });
+      await userEvent.click(screen.getByRole("button", { name: "Clean DI" }));
+      expect(onToggleExpand).toHaveBeenCalledWith(0);
+      expect(onTogglePreset).not.toHaveBeenCalled();
+    });
+
+    it("chooses a preset with footswitches but no scenes", async () => {
+      const onToggleExpand = vi.fn();
+      const onTogglePreset = vi.fn();
+      renderList({ onToggleExpand, onTogglePreset });
+      await userEvent.click(screen.getByRole("button", { name: "Tweed Warm" }));
+      expect(onTogglePreset).toHaveBeenCalledWith(3);
+      expect(onToggleExpand).not.toHaveBeenCalled();
+    });
+
+    it("chooses a preset with no scenes or footswitches", async () => {
+      const onTogglePreset = vi.fn();
+      renderList({ onTogglePreset });
+      await userEvent.click(
+        screen.getByRole("button", { name: "Plexi Crunch" }),
+      );
+      expect(onTogglePreset).toHaveBeenCalledWith(1);
+    });
+
+    it("chooses the whole preset while the scan still reads its scenes", async () => {
+      const onToggleExpand = vi.fn();
+      const onTogglePreset = vi.fn();
+      renderList({ ready: false, onToggleExpand, onTogglePreset });
+      await userEvent.click(screen.getByRole("button", { name: "Clean DI" }));
+      expect(onTogglePreset).toHaveBeenCalledWith(0);
+      expect(onToggleExpand).not.toHaveBeenCalled();
+    });
   });
 
-  it("caret expands → reveals Base + scene + footswitch sub-rows", async () => {
+  describe("Select all N shown (Q7)", () => {
+    it("is named for the presets shown and hands their slots to the toggle", async () => {
+      const onToggleAll = vi.fn();
+      const { rerender } = renderList({ onToggleAll });
+      await userEvent.click(
+        screen.getByRole("checkbox", { name: "Select all 3 shown" }),
+      );
+      expect(onToggleAll).toHaveBeenLastCalledWith([0, 1, 3]);
+      rerender(<PresetList {...listProps({ onToggleAll, filter: "tweed" })} />);
+      await userEvent.click(
+        screen.getByRole("checkbox", { name: "Select all 1 shown" }),
+      );
+      expect(onToggleAll).toHaveBeenLastCalledWith([3]);
+    });
+
+    it("reads its state over the shown presets only", () => {
+      // Clean DI is fully chosen but hidden by the filter: the one shown preset (Tweed
+      // Warm) is not chosen, so the box is off — not mixed.
+      const all = ["p0", "s0:0", "s0:1", "f0:0"];
+      const { rerender } = renderList({
+        filter: "tweed",
+        sel: new Set(all),
+      });
+      expect(selectAll()).toHaveAttribute("aria-checked", "false");
+      // Tweed Warm chosen too → every SHOWN preset is on.
+      rerender(
+        <PresetList
+          {...listProps({
+            filter: "tweed",
+            sel: new Set([...all, "p3", "f3:0"]),
+          })}
+        />,
+      );
+      expect(selectAll()).toHaveAttribute("aria-checked", "true");
+      // No filter: Plexi Crunch is not chosen → mixed.
+      rerender(
+        <PresetList {...listProps({ sel: new Set([...all, "p3", "f3:0"]) })} />,
+      );
+      expect(selectAll()).toHaveAttribute("aria-checked", "mixed");
+    });
+
+    it("counts a preset ticked whole during the scan as chosen", () => {
+      renderList({
+        ready: false,
+        sceneInfo: new Map(),
+        footswitchInfo: new Map(),
+        pendingWhole: new Set([0, 1, 3]),
+      });
+      expect(selectAll()).toHaveAttribute("aria-checked", "true");
+    });
+  });
+
+  it("filter matching nothing: a message, Clear filter, and select-all disabled", async () => {
+    const onFilterChange = vi.fn();
+    renderList({ filter: "fuzzz ", onFilterChange });
+    expect(screen.getByText('No presets match "fuzzz"')).toBeInTheDocument();
+    expect(
+      screen.getByText("Search by preset name or slot number."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("0 of 3 shown")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "Select all 0 shown" }),
+    ).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+    expect(onFilterChange).toHaveBeenCalledWith("");
+  });
+
+  it("caret opens → main sound + scene + footswitch sub-rows", async () => {
     const onToggleExpand = vi.fn();
-    // collapsed: clicking the caret asks to expand.
     const { rerender } = renderList({ onToggleExpand });
-    await userEvent.click(screen.getAllByTitle("Show Base Preset + sounds")[0]);
-    expect(onToggleExpand).toHaveBeenCalledWith(0);
-    // expanded: the Base + FS scene + footswitch sub-rows render.
-    rerender(
-      <PresetList
-        rows={ROWS}
-        sel={new Set<string>()}
-        pendingWhole={new Set<number>()}
-        expanded={new Set<number>([0])}
-        ready
-        activeSlot={null}
-        filter=""
-        scan={{ scanning: false }}
-        sceneInfo={SCENES}
-        footswitchInfo={FOOTSWITCHES}
-        graphByIndex={new Map()}
-        onFilterChange={noop}
-        onTogglePreset={noop}
-        onToggleExpand={noop}
-        onToggleKey={noop}
-        onToggleAll={noop}
-      />,
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open Clean DI" }),
     );
-    expect(screen.getByText("Base Preset")).toBeTruthy();
-    expect(screen.getByText("Bright")).toBeTruthy();
-    expect(screen.getByText("Lead")).toBeTruthy();
-    // the footswitch rides as a sibling row: its label + accent FS tag.
-    expect(screen.getByText("Solo")).toBeTruthy();
-    expect(screen.getByText("FS5")).toBeTruthy();
+    expect(onToggleExpand).toHaveBeenCalledWith(0);
+    rerender(<PresetList {...listProps({ expanded: new Set<number>([0]) })} />);
+    expect(
+      screen.getByRole("button", { name: "Close Clean DI" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    for (const sound of ["Main sound", "Bright", "Lead", "Solo"]) {
+      expect(
+        screen.getByRole("checkbox", { name: `Choose ${sound} in Clean DI` }),
+      ).toBeInTheDocument();
+    }
+    // A footswitch says which one it is, in words.
+    expect(screen.getByText("footswitch 5")).toBeInTheDocument();
   });
 
-  it("shows the real per-preset CPU on base rows only — never scene sub-rows", () => {
+  it("only a preset with scenes or footswitches has a caret", () => {
+    renderList();
+    expect(screen.getByRole("button", { name: "Open Clean DI" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Open Tweed Warm" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Open Plexi Crunch" }),
+    ).toBeNull();
+  });
+
+  it("clicking a scene sub-row toggles that one key", async () => {
+    const onToggleKey = vi.fn();
+    renderList({ expanded: new Set<number>([0]), onToggleKey });
+    await userEvent.click(screen.getByText("Bright"));
+    expect(onToggleKey).toHaveBeenCalledWith("s0:0");
+  });
+
+  it("clicking a footswitch sub-row toggles its `f` key", async () => {
+    const onToggleKey = vi.fn();
+    renderList({ expanded: new Set<number>([0]), onToggleKey });
+    await userEvent.click(screen.getByText("Solo"));
+    expect(onToggleKey).toHaveBeenCalledWith("f0:0");
+  });
+
+  it("shows the real per-preset CPU on preset rows only — never on sub-rows", () => {
     // ACD_TweedDeluxe costs 20.7% (model-cpu.json). A graph only for slot 0 means
-    // exactly one base row carries a CPU readout; expanding it adds Base + scene +
-    // footswitch sub-rows, and none of those gain a readout.
+    // exactly one preset row carries a CPU figure; opening it adds the main sound +
+    // scene + footswitch sub-rows, and none of those gain one.
     const graph: ActiveGraph = {
       name: null,
       slot: null,
@@ -227,39 +357,19 @@ describe("PresetList (scene tree)", () => {
       expanded: new Set<number>([0]),
       graphByIndex: new Map<number, ActiveGraph>([[0, graph]]),
     });
-    expect(screen.getByText("20.7%")).toBeTruthy();
-    // Exactly one readout total — the base row, not any of its expanded sub-rows.
-    expect(screen.getAllByTitle(/^Preset CPU —/)).toHaveLength(1);
+    expect(screen.getAllByText("20.7%")).toHaveLength(1);
   });
 
-  it("the caret is inert until ready", () => {
-    renderList({ ready: false });
-    // Not-ready carets carry the loading title, not the expand affordance.
-    expect(screen.queryByTitle("Show Base Preset + sounds")).toBeNull();
-    expect(screen.getAllByTitle("Loading sounds…").length).toBeGreaterThan(0);
-  });
-
-  it("clicking a scene sub-row toggles that one key", async () => {
-    const onToggleKey = vi.fn();
-    renderList({ expanded: new Set<number>([0]), onToggleKey });
-    await userEvent.click(screen.getByText("Bright"));
-    expect(onToggleKey).toHaveBeenCalledWith("s0:0");
-  });
-
-  it("clicking a footswitch sub-row toggles its `f` key", async () => {
-    const onToggleKey = vi.fn();
-    renderList({ expanded: new Set<number>([0]), onToggleKey });
-    await userEvent.click(screen.getByText("Solo"));
-    expect(onToggleKey).toHaveBeenCalledWith("f0:0");
-  });
-
-  it("marks the active row", () => {
-    const { container } = renderList({ activeSlot: 1 });
-    expect(container.querySelector('[data-active="1"]')).toBeTruthy();
+  it("badges the preset loaded on the unit", () => {
+    renderList({ activeSlot: 1 });
+    expect(screen.getByText("Loaded")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^Plexi Crunch/ }),
+    ).toHaveTextContent("Loaded");
   });
 
   // ── BUG 1: a footswitch with no level-class parameter — shown, disabled, reasoned ──
-  describe("a footswitch with no level control (BUG 1)", () => {
+  describe("a footswitch with no volume knob (BUG 1)", () => {
     const FSW_WITH_UNLEVELABLE = new Map<number, FootswitchInfo[]>([
       [0, [fsw(4, "Solo"), fswNoLevel(1, "PHASER")]],
     ]);
@@ -269,7 +379,7 @@ describe("PresetList (scene tree)", () => {
         footswitchInfo: FSW_WITH_UNLEVELABLE,
         expanded: new Set<number>([0]),
       });
-      expect(await screen.findByText("PHASER")).toBeTruthy();
+      expect(await screen.findByText("PHASER")).toBeInTheDocument();
     });
 
     it("is visibly disabled and NOT toggleable", async () => {
@@ -279,7 +389,10 @@ describe("PresetList (scene tree)", () => {
         expanded: new Set<number>([0]),
         onToggleKey,
       });
-      const row = await screen.findByText("PHASER");
+      const row = screen.getByRole("checkbox", {
+        name: "Choose PHASER in Clean DI",
+      });
+      expect(row).toBeDisabled();
       await userEvent.click(row);
       expect(onToggleKey).not.toHaveBeenCalled();
     });
@@ -289,22 +402,27 @@ describe("PresetList (scene tree)", () => {
         footswitchInfo: FSW_WITH_UNLEVELABLE,
         expanded: new Set<number>([0]),
       });
-      expect(await screen.findByText(/no level control/i)).toBeTruthy();
+      expect(
+        await screen.findByText("No volume knob to level"),
+      ).toBeInTheDocument();
     });
 
-    it("is excluded from the preset's select-all count (childKeys/row-builder agree)", () => {
+    it("is excluded from the preset's count (childKeys/row-builder agree)", () => {
       renderList({
         footswitchInfo: FSW_WITH_UNLEVELABLE,
-        // No FS scenes here so the only children are the two footswitches — isolates
+        // No scenes here so the only children are the two footswitches — isolates
         // the count to exactly what's under test.
         sceneInfo: new Map([[0, []]]),
         expanded: new Set<number>([0]),
-        // Everything selectABLE already ticked (Base + the levelable Solo switch) —
-        // if PHASER were still counted as selectable, this would read indeterminate
-        // ("1 of 2 selected") instead of fully checked (no meta at all).
+        // Everything selectABLE already ticked (main sound + the levelable Solo switch)
+        // — if PHASER were still counted as selectable, this would read partly chosen
+        // ("2 of 3 chosen") instead of fully checked.
         sel: new Set(["p0", "f0:0"]),
       });
-      expect(screen.queryByText(/selected$/)).toBeNull();
+      expect(screen.queryByText(/chosen$/)).toBeNull();
+      expect(
+        screen.getByRole("checkbox", { name: "Choose Clean DI" }),
+      ).toHaveAttribute("aria-checked", "true");
     });
   });
 });

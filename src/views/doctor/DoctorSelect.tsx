@@ -2,10 +2,10 @@
 //
 // The tab's default body: a "what Doctor does" info row, the shared preset→scene
 // tree (PresetList), and a selection-aware footer. Stays MOUNTED under the run
-// modal, so the check reads as an overlay. The list is READ-ONLY (clicking a row
-// selects it, never recalls it on the unit); it shows a scene summary / "N of M
-// selected" on the right, never CPU — an empty graph map suppresses the readout
-// with no PresetList change.
+// modal, so the check reads as an overlay. The list is READ-ONLY (choosing a preset
+// never recalls it on the unit); it shows a scene summary / "N of M chosen" on the
+// right, never CPU — an empty graph map suppresses the readout with no PresetList
+// change.
 
 import { useTheme } from "../../theme/ThemeContext";
 import { ActionBar } from "../../ui/ActionBar";
@@ -40,7 +40,8 @@ export interface DoctorSelectProps {
   onTogglePreset: (slot: number) => void;
   onToggleExpand: (slot: number) => void;
   onToggleKey: (key: string) => void;
-  onToggleAll: () => void;
+  /** Select all: receives the slots of the presets the filter shows. */
+  onToggleAll: (slots: readonly number[]) => void;
   /** Select → Set up. */
   onCheck: () => void;
 }
@@ -130,7 +131,6 @@ export function DoctorSelect(props: DoctorSelectProps) {
           onToggleExpand={onToggleExpand}
           onToggleKey={onToggleKey}
           onToggleAll={onToggleAll}
-          selectTitle="Select preset to check"
         />
       </div>
 

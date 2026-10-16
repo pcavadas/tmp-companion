@@ -122,14 +122,21 @@ backup ack is an inline checkbox in the Setup footer, see §8). Most monkey-valu
 - **L1 — Hero diagram.** Active preset renders in ActiveSignalChainView; scene tag + slot badge
   correct. Skeleton on load; "Scene recalled — signal view didn't refresh" + Retry on the watchdog.
 - **L2 — Preset list paint.** List populates on connect rising-edge (plug in after launch still
-  populates). Backup-scan strip shows determinate %; carets inert until `ready`.
-- **L3 — Selection model.** Whole-preset checkbox selects ALL children (Base + FS scenes +
-  footswitches). Indeterminate when 0<sel<total. Select-all header checkbox + indeterminate.
-- **L4 — Scene tree.** Expand caret reveals Base / FS-scene / footswitch child rows; "N scenes ·
-  M footswitches" breakdown collapsed; toggle individual child keys; empty slot = inert "— empty —".
+  populates). While the backup scan reads, the filter bar shows "Reading preset details" + bar +
+  %, every row says "Reading…", there are no carets, and Level waits busy ("You can start when
+  reading finishes").
+- **L3 — Selection model.** Whole-preset checkbox ("Choose <name>") selects ALL children (main
+  sound + scenes + footswitches); mixed when 0<sel<total ("2 of 6 chosen"). "Select all N shown"
+  acts on the presets the filter shows only, and its mixed state is computed over them (Q7).
+  The footer's Level button is always there: greyed with its reason, else "Level N sounds".
+- **L4 — Scene tree.** The caret ("Open <name>") and the NAME of a preset with scenes open its
+  sub-rows (main sound / scenes / footswitches, each "Choose <sound> in <preset>"); the name of a
+  preset without scenes chooses it (Q6). Collapsed caption "3 scenes, 1 footswitch"; toggle
+  individual sounds; empty slot = inert "Empty".
 - **L5 — Filter** ⌨️ — type a name; selection persists across filter changes; input disabled while
-  loading.
-- **L6 — "How leveling works" sheet** — opens, Got it / X / backdrop / Escape all close it.
+  loading; "X of N shown"; matching nothing shows `No presets match "…"` with Clear filter.
+- **L6 — "How leveling works" dialog** — opens from "How it works"; Done or the scrim closes it
+  (no × button, no key handling).
 - **L7 — Setup: apply-to-all** — bulk Instrument + Target pickers brush all ticked rows; "Clear
   ticks"; per-row overrides (Instrument / Target / FsParamPick).
 - **L8 — Setup: backup ack gating** — "Level N sounds" disabled until backup checkbox ticked (fresh

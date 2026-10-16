@@ -1,118 +1,87 @@
-// src/views/level/ContextFooter.tsx — the Level-view selection-aware footer.
+// src/views/level/ContextFooter.tsx — the Level list's Footer, look B.
 //
-// Renders inside the shared ActionBar (the one bottom-bar style across the app — Copy's
-// two steps use it too). Two states (Level is the ONLY batch action; the list selects
-// scenes via the scene tree, the dialog only configures them):
-//   • idle (no selection) — a faint hint on the left + a per-scene-type targets readout
-//     on the right (the store's named targets).
-//   • selection — `{presetCount} preset(s) · {sceneCount} scene(s) selected` + the
-//     primary **Level N preset(s)…** button (once `ready`), else the disabled
-//     **"Reading presets…"** pill while the background scene load runs.
+// Left: "How it works" (a plain button that opens the How leveling works dialog). Right:
+// a caption, then the one main action, which is ALWAYS there and counts SOUNDS:
+//   • nothing chosen (or the list still loading) — "Choose presets or sounds to level"
+//     beside a greyed "Level";
+//   • the backup scan still reading — "You can start when reading finishes" beside a busy,
+//     greyed "Level", whatever is already chosen;
+//   • sounds chosen — "2 presets" beside "Level 6 sounds".
+// No loudness numbers here: targets live in Settings.
 
-import { useTheme } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
-import { Icon } from "../../ui/Icon";
-import { ActionBar } from "../../ui/ActionBar";
-import { ReadingPill } from "../../ui/ReadingPill";
-import type { Store } from "../../lib/types";
+import { Footer } from "../../ui/Footer";
+import { useTheme } from "../../theme/ThemeContext";
 
 export interface ContextFooterProps {
-  store: Store | null;
-  /** Distinct presets with any selected scene. */
-  presetCount: number;
-  /** Total selected scene keys (Base counts as a scene). */
-  sceneCount: number;
-  /** Background scene load settled — gates the Level button vs the pill. */
+  /** The preset list itself is still arriving. */
+  loading: boolean;
+  /** Background scene load settled — until then "Level" waits, busy. */
   ready: boolean;
+  /** Distinct presets with any chosen sound. */
+  presetCount: number;
+  /** Chosen sounds (the main sound, each scene, each footswitch). */
+  soundCount: number;
   onLevel: () => void;
-  /** Opens the "How leveling works" sheet. */
+  /** Opens the "How leveling works" dialog. */
   onHelp: () => void;
 }
 
 export function ContextFooter({
-  store,
-  presetCount,
-  sceneCount,
+  loading,
   ready,
+  presetCount,
+  soundCount,
   onLevel,
   onHelp,
 }: ContextFooterProps) {
   const { t } = useTheme();
-  const count = presetCount;
+  const captionStyle = {
+    fontSize: t.fontCaption,
+    color: t.textSecondary,
+    whiteSpace: "nowrap",
+  } as const;
 
-  if (count === 0) {
-    const targets = store?.targets ?? [];
-    return (
-      <ActionBar
-        left={
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: t.space6,
-            }}
-          >
-            <Button variant="ghost" size="sm" onClick={onHelp}>
-              How it works
-            </Button>
-            <span
-              style={{ fontFamily: t.mono, fontSize: t.fsMeta, color: t.faint }}
-            >
-              Select presets to level · click a row to pick it
-            </span>
-          </span>
-        }
-        right={
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: t.fsMeta,
-              color: t.mutedInk,
-              display: "inline-flex",
-              gap: t.space4,
-              alignItems: "center",
-            }}
-          >
-            <Icon name="gauge" size={13} stroke={t.accentDeep} />
-            {targets.length === 0
-              ? "Targets · none set"
-              : `Targets · ${targets.map((tg) => `${tg.name} ${tg.lufs.toFixed(0)}`).join(" · ")}`}
-          </span>
-        }
-      />
+  let right;
+  if (!loading && !ready) {
+    right = (
+      <>
+        <span style={captionStyle}>You can start when reading finishes</span>
+        <Button variant="secondary" size="lg" busy>
+          Level
+        </Button>
+      </>
+    );
+  } else if (loading || soundCount === 0) {
+    right = (
+      <>
+        <span style={captionStyle}>Choose presets or sounds to level</span>
+        <Button variant="primary" size="lg" disabled>
+          Level
+        </Button>
+      </>
+    );
+  } else {
+    right = (
+      <>
+        <span style={captionStyle}>
+          {`${String(presetCount)} ${presetCount === 1 ? "preset" : "presets"}`}
+        </span>
+        <Button variant="primary" size="lg" onClick={onLevel}>
+          {`Level ${String(soundCount)} ${soundCount === 1 ? "sound" : "sounds"}`}
+        </Button>
+      </>
     );
   }
 
-  const noun = count === 1 ? "preset" : "presets";
-  const sceneNoun = sceneCount === 1 ? "scene" : "scenes";
   return (
-    <ActionBar
+    <Footer
       left={
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsLabel,
-            color: t.ink2,
-            whiteSpace: "nowrap",
-          }}
-        >
-          <strong style={{ color: t.ink }}>{count}</strong> {noun}
-          <span style={{ color: t.mutedInk }}>
-            {" · "}
-            <strong style={{ color: t.ink }}>{sceneCount}</strong> {sceneNoun}{" "}
-            selected
-          </span>
-        </span>
+        <Button variant="plain" onClick={onHelp}>
+          How it works
+        </Button>
       }
-      right={
-        ready ? (
-          <Button variant="primary" size="sm" icon="gauge" onClick={onLevel}>
-            {`Level ${String(count)} ${noun}…`}
-          </Button>
-        ) : (
-          <ReadingPill />
-        )
-      }
+      right={right}
     />
   );
 }

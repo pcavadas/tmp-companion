@@ -31,14 +31,15 @@ import { createPortal } from "react-dom";
 import { useTheme } from "../theme/ThemeContext";
 import { DialogCardCtx } from "./dialogContext";
 
-/** The dialog width scale. xs = a confirm (Stop, Delete), sm = forms / progress, md = the
- *  explainer sheet, lg = the Doctor run (a wide table). (Add xl here when a wider dialog
- *  needs one.) */
-export type DialogSize = "xs" | "sm" | "md" | "lg";
+/** The dialog width scale. xs = a confirm (Stop, Delete), sm = forms / progress,
+ *  explainer = the How leveling works sheet (its two-column table), md = the Doctor run
+ *  wizard, lg = a wide table. (Add xl here when a wider dialog needs one.) */
+export type DialogSize = "xs" | "sm" | "explainer" | "md" | "lg";
 
 const DIALOG_WIDTH: Record<DialogSize, number> = {
   xs: 380,
   sm: 460,
+  explainer: 500,
   md: 560,
   lg: 780,
 };

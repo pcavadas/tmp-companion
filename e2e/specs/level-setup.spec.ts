@@ -8,11 +8,14 @@ import {
   invoke,
   isOnline,
   LEVEL_T,
+  levelButton,
   openLevel,
+  openPreset,
   reampCounters,
   reampOff,
   selectBaseOnly,
   simEvents,
+  soundBox,
 } from "../fixtures/scenario";
 
 // New P4-B (rebuilt-fixture) coverage that lives at the SETUP step (before any run) or is
@@ -171,10 +174,7 @@ test.describe("Level Setup — Other-class filtering, unlabeled naming (list-lev
 
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     await filter.fill(SCENARIO[0].name); // E2E Rig
-    await page
-      .getByTitle(/Show Base/)
-      .first()
-      .click();
+    await openPreset(page, SCENARIO[0].name);
 
     // The collapsed breakdown counts the WHOLE roster — all 6 block-acting switches, not just
     // the levelable ones. Only DRIVE and the unlabeled Boost stay levelable: WAH and WAH SWEEP
@@ -185,7 +185,7 @@ test.describe("Level Setup — Other-class filtering, unlabeled naming (list-lev
     // both go through the SAME per-node `level_candidates_for_node` enumeration in
     // `enumerate_block_footswitches`, so both lose their sole candidate together). All four
     // non-levelable rows are counted here precisely because the user must see that they exist.
-    await expect(page.getByText("4 scenes · 6 footswitches")).toBeVisible({
+    await expect(page.getByText("4 scenes, 6 footswitches")).toBeVisible({
       timeout: 60_000,
     });
 
@@ -198,7 +198,7 @@ test.describe("Level Setup — Other-class filtering, unlabeled naming (list-lev
     // WAH/WAH SWEEP (Other-class) and SPRING/VERB KILL (WetMix-only, issue 3) all say WHY
     // they cannot be leveled rather than disappearing. Counted, so a regression that drops
     // one row is caught too.
-    await expect(page.getByText("no level control")).toHaveCount(4);
+    await expect(page.getByText("No volume knob to level")).toHaveCount(4);
     // …and none of the four can be selected: no pick, so no `options[0]` fallback is
     // reachable (danger.md's Pick trap, closed from the absence side as before).
     await expect(page.getByRole("checkbox", { disabled: true })).toHaveCount(4);
@@ -234,16 +234,13 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
 
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     await filter.fill(SCENARIO[0].name);
-    await page
-      .getByTitle(/Show Base/)
-      .first()
-      .click();
+    await openPreset(page, SCENARIO[0].name);
     for (const scene of ["Rhythm", "Ceiling", "Shared"]) {
       await page.getByText(scene, { exact: true }).click();
     }
     await filter.fill("");
 
-    await page.getByRole("button", { name: /Level 1 preset/ }).click();
+    await levelButton(page, 3).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
     // Scoped by the row's OWN `data-setup-row` hook (`setupRowHookKey`, leveling.ts):
@@ -360,14 +357,11 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
 
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     await filter.fill(SCENARIO[2].name); // E2E Edge
-    await page
-      .getByTitle(/Show Base/)
-      .first()
-      .click();
+    await openPreset(page, SCENARIO[2].name);
     await page.getByText("Solo", { exact: true }).click();
     await filter.fill("");
 
-    await page.getByRole("button", { name: /Level 1 preset/ }).click();
+    await levelButton(page, 1).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
     // s402:3 = Solo (0-based scenes[] index == wire sceneSlot, same identity as 400's rows).
@@ -408,14 +402,11 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
 
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     await filter.fill(SCENARIO[2].name); // E2E Edge
-    await page
-      .getByTitle(/Show Base/)
-      .first()
-      .click();
+    await openPreset(page, SCENARIO[2].name);
     await page.getByText("Solo", { exact: true }).click();
     await filter.fill("");
 
-    await page.getByRole("button", { name: /Level 1 preset/ }).click();
+    await levelButton(page, 1).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
     // s402:3 = Solo (same row identity as the offer test above). UNTOUCHED — never opened
@@ -478,7 +469,7 @@ test.describe("Level Setup — instant candidates from the backup scan (no devic
 
     await selectBaseOnly(page, SCENARIO[0].name); // E2E Rig
 
-    await page.getByRole("button", { name: /Level 1 preset/ }).click();
+    await levelButton(page, 1).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
     // p400 = the base row (`baseKey`, leveling.ts).
@@ -543,37 +534,29 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
 
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     await filter.fill(SCENARIO[0].name);
-    await page
-      .getByTitle(/Show Base/)
-      .first()
-      .click();
+    await openPreset(page, SCENARIO[0].name);
 
-    // SPRING at the LIST level: labelled "no level control" and its checkbox is disabled
-    // (mirrors the WAH/WAH SWEEP pattern in "Level Setup — Other-class filtering..." above,
-    // but reached by a DIFFERENT predicate — WetMix-only, not Other-class). Scoped to
-    // SPRING's own row (two ancestors up from its exact-text name span) rather than the
-    // page-wide count that test already covers, so this failure names SPRING specifically.
-    // The row IS the checkbox (`SceneRow` renders one role="checkbox" button).
-    const springRow = page
-      .getByText("SPRING", { exact: true })
-      .locator("xpath=../..");
-    await expect(springRow.getByText("no level control")).toBeVisible();
-    await expect(springRow).toHaveAttribute("role", "checkbox");
-    const springCheckbox = springRow;
-    await expect(springCheckbox).toBeDisabled();
-    // Clicking the row is a no-op (`SceneRow`'s `onClick={disabled ? undefined : onToggle}`)
-    // — the danger-rule Pick trap closed from the absence side: nothing to click through to
-    // an `options[0]` fallback because the row can never become selected. `force`: the row is
-    // `aria-disabled` (kept focusable for its reason tooltip), which Playwright's actionability
-    // check treats as disabled and would wait on forever — the click must still LAND so this
-    // proves the handler is absent, not merely that the click was never sent.
+    // SPRING at the LIST level: labelled "No volume knob to level" and its checkbox is
+    // disabled (mirrors the WAH/WAH SWEEP pattern in "Level Setup — Other-class
+    // filtering..." above, but reached by a DIFFERENT predicate — WetMix-only, not
+    // Other-class). Scoped to SPRING's own row rather than the page-wide count that test
+    // already covers, so this failure names SPRING specifically. The row IS the checkbox
+    // (`SceneRow` renders one role="checkbox" button, "Choose SPRING in E2E Rig").
+    const springRow = soundBox(page, "SPRING", SCENARIO[0].name);
+    await expect(springRow.getByText("No volume knob to level")).toBeVisible();
+    await expect(springRow).toBeDisabled();
+    // Clicking the row is a no-op (a natively `disabled` button) — the danger-rule Pick
+    // trap closed from the absence side: nothing to click through to an `options[0]`
+    // fallback because the row can never become selected. `force`: Playwright's
+    // actionability check would otherwise wait on the disabled row forever — the click
+    // must still be SENT so this proves it changes nothing.
     await springRow.click({ force: true });
-    await expect(springCheckbox).not.toBeChecked();
+    await expect(springRow).not.toBeChecked();
 
-    await page.getByText("Boost", { exact: true }).click();
+    await soundBox(page, "Boost", SCENARIO[0].name).click();
     await filter.fill("");
 
-    await page.getByRole("button", { name: /Level 1 preset/ }).click();
+    await levelButton(page, 1).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
     // Footswitch hooks are keyed by DEVICE SWITCH NUMBER (`setupRowHookKey`,

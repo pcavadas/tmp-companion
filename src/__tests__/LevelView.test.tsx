@@ -1,12 +1,16 @@
-// Presets view (scene-tree selection) — connection gating, crash regression,
-// and the unified leveling WIZARD (setup → run → summary in one frame).
+// Level view (look B list, scene-tree selection) — connection gating, crash regression,
+// choosing on the list, and the unified leveling WIZARD (setup → run → summary).
 //
 //   • The view must not load until `connected`, and must load on the rising edge.
 //   • The error→ready transition (Try again) must not crash (hook-count regression).
-//   • Clicking a row selects the preset (NOT recall); the checkbox selects it too.
-//   • Selecting + "Level N presets…" opens the wizard directly at Set up; the footer's
-//     inline backup acknowledgment gates the commit, then run auto-advances to the
-//     summary on a natural finish.
+//   • The checkbox chooses a preset; its name opens a preset with scenes and chooses any
+//     other (Q6); choosing never recalls a preset on the unit.
+//   • "Select all N shown" chooses only the presets the filter shows (Q7, bug fix).
+//   • The Level button is always there: greyed with its reason when nothing is chosen
+//     or the scan still reads, else "Level N sounds" (it counts sounds).
+//   • "Level N sounds" opens the wizard directly at Set up; the footer's inline backup
+//     acknowledgment gates the commit, then run auto-advances to the summary on a
+//     natural finish.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, waitFor, act } from "@testing-library/react";
@@ -19,6 +23,7 @@ import { resetLiveDevice } from "../device/useLiveDevice";
 import type {
   ActiveGraph,
   BackupPresetRow,
+  BackupReadResult,
   FootswitchInfo,
   FootswitchLevelResult,
   LevelBlock,
@@ -144,13 +149,13 @@ describe("LevelView — list + leveling entry", () => {
     expect(await screen.findByText("Studio Clean")).toBeInTheDocument();
   });
 
-  it("row click selects the preset and does NOT recall it on the unit", async () => {
+  it("clicking a scene-less preset's name chooses it and does NOT recall it on the unit", async () => {
     renderView(true);
     const user = userEvent.setup();
     await user.click(await screen.findByText("Studio Clean"));
     // Selecting enables the Level button…
     expect(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     ).toBeInTheDocument();
     // …and the list never touches the unit (no preset recall).
     expect(
@@ -164,9 +169,11 @@ describe("LevelView — list + leveling entry", () => {
     await screen.findByText("Studio Clean");
     // A scene-less, footswitch-less preset shows no child meta — the Level button only
     // appears once `ready` (findByRole below waits for it), so no extra ready-anchor.
-    await user.click(screen.getAllByTitle("Select preset to level")[0]);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     // The wizard opens directly at the Set-up step — there is no separate Back-up step.
     expect(
@@ -176,6 +183,159 @@ describe("LevelView — list + leveling entry", () => {
     expect(screen.getByText("Whole preset")).toBeInTheDocument();
     // The backup acknowledgment is an inline gate in the footer.
     expect(screen.getByText(/backed up with Pro Control/i)).toBeInTheDocument();
+  });
+});
+
+// ── Choosing on the list (look B) ─────────────────────────────────────────────
+
+/** Three scene-less presets at device slots 1–3 (list indices 0–2). */
+const THREE_PRESETS = ["Clean Room", "Crunch One", "Crunch Two"];
+function mockThreePresets(
+  readBackup?: () => Promise<BackupReadResult> | BackupReadResult,
+) {
+  mockCommands({
+    list_presets: () => THREE_PRESETS.map((name, slot) => ({ slot, name })),
+    get_store: () => RHYTHM_STORE,
+    read_library_via_backup:
+      readBackup ??
+      (() =>
+        makeBackupRead({
+          total_rows: 3,
+          presets: THREE_PRESETS.map((name, i) =>
+            makeBackupPresetRow({ slot: i + 1, name }),
+          ),
+        })),
+  });
+}
+
+describe("LevelView — choosing on the list", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockClear();
+    resetLibraryScan();
+    resetLiveDevice();
+  });
+
+  // BUG→GATE (owner Q7, 2026-10-16): Select all ignored the filter and chose the whole
+  // library, so leveling a bank meant ticking each preset by hand.
+  it("Select all chooses only the presets the filter shows (Q7)", async () => {
+    mockThreePresets();
+    renderView(true);
+    const user = userEvent.setup();
+    await screen.findByText("3 presets"); // the list is in
+    await waitFor(() => {
+      expect(screen.queryAllByText("Reading…")).toHaveLength(0);
+    });
+    await user.type(screen.getByLabelText("Filter by name or slot"), "crunch");
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all 2 shown" }),
+    );
+    // Both shown presets' sounds are chosen…
+    expect(
+      await screen.findByRole("button", { name: /^level 2 sounds$/i }),
+    ).toBeEnabled();
+    await user.clear(screen.getByLabelText("Filter by name or slot"));
+    expect(
+      screen.getByRole("checkbox", { name: "Choose Crunch One" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByRole("checkbox", { name: "Choose Crunch Two" }),
+    ).toHaveAttribute("aria-checked", "true");
+    // …and the hidden one is not.
+    expect(
+      screen.getByRole("checkbox", { name: "Choose Clean Room" }),
+    ).toHaveAttribute("aria-checked", "false");
+    // Unfiltered, the box is mixed, and a click there chooses the rest.
+    const all = screen.getByRole("checkbox", { name: "Select all 3 shown" });
+    expect(all).toHaveAttribute("aria-checked", "mixed");
+    await user.click(all);
+    expect(
+      screen.getByRole("button", { name: /^level 3 sounds$/i }),
+    ).toBeEnabled();
+    // A filtered Select all over fully chosen presets unchooses only those.
+    await user.type(screen.getByLabelText("Filter by name or slot"), "clean");
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select all 1 shown" }),
+    );
+    expect(
+      screen.getByRole("button", { name: /^level 2 sounds$/i }),
+    ).toBeEnabled();
+  });
+
+  it("the Level button is always there, greyed with its reason until something is chosen", async () => {
+    mockThreePresets();
+    renderView(true);
+    const user = userEvent.setup();
+    await screen.findByText("3 presets");
+    await waitFor(() => {
+      expect(screen.queryAllByText("Reading…")).toHaveLength(0);
+    });
+    expect(
+      screen.getByText("Choose presets or sounds to level"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^level$/i })).toBeDisabled();
+    await user.click(
+      screen.getByRole("checkbox", { name: "Choose Crunch One" }),
+    );
+    // It counts sounds, and names the presets beside it.
+    expect(
+      screen.getByRole("button", { name: /^level 1 sound$/i }),
+    ).toBeEnabled();
+    expect(screen.getByText("1 preset")).toBeInTheDocument();
+    // No loudness numbers on the list: the old targets readout is gone.
+    expect(screen.queryByText(/Targets/)).toBeNull();
+  });
+
+  it("while the scan reads, ticks wait and Level stays busy with its reason", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((res) => {
+      finish = res;
+    });
+    mockThreePresets(() =>
+      gate.then(() =>
+        makeBackupRead({
+          total_rows: 3,
+          presets: THREE_PRESETS.map((name, i) =>
+            makeBackupPresetRow({ slot: i + 1, name }),
+          ),
+        }),
+      ),
+    );
+    renderView(true);
+    const user = userEvent.setup();
+    await screen.findByText("Crunch One");
+    expect(screen.getAllByText("Reading…")).toHaveLength(3);
+    // A tick from the name chooses the whole preset while its sounds are unknown.
+    await user.click(screen.getByRole("button", { name: "Crunch One" }));
+    expect(
+      screen.getByRole("checkbox", { name: "Choose Crunch One" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByText("You can start when reading finishes"),
+    ).toBeInTheDocument();
+    const busy = screen.getByRole("button", { name: /^level$/i });
+    expect(busy).toBeDisabled();
+    expect(busy).toHaveAttribute("aria-busy", "true");
+    finish();
+    expect(
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
+    ).toBeEnabled();
+  });
+
+  it("How it works opens the explainer; Done closes it", async () => {
+    mockThreePresets();
+    renderView(true);
+    const user = userEvent.setup();
+    await screen.findByText("3 presets");
+    await user.click(screen.getByRole("button", { name: "How it works" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "How leveling works",
+    });
+    expect(dialog).toHaveTextContent("Which knob it turns");
+    expect(dialog).toHaveTextContent("The preset's level");
+    // No close (×) button: Done closes it.
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 
@@ -339,19 +499,22 @@ function mockLevelingFixture(
   });
 }
 
-// Expand Plexi's caret and tick just its Base scene → setup with 1 sound.
+// Open Plexi with its caret and tick just its main sound → setup with 1 sound.
 async function selectBaseOnly(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText("Plexi");
   await screen.findByText("2 scenes"); // 2 FS scenes (count excludes Base), backup ready
-  await user.click(screen.getByTitle("Show Base Preset + sounds"));
-  await user.click(await screen.findByText("Base Preset")); // toggles the Base key only
+  await user.click(screen.getByRole("button", { name: "Open Plexi" }));
+  // Toggles the main sound's key only.
+  await user.click(
+    await screen.findByRole("checkbox", { name: "Choose Main sound in Plexi" }),
+  );
 }
 
 // Tick the WHOLE Plexi preset (checkbox) → Base + both FS scenes selected.
 async function selectWholePreset(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText("Plexi");
   await screen.findByText("2 scenes");
-  await user.click(screen.getAllByTitle("Select preset to level")[0]);
+  await user.click(screen.getByRole("checkbox", { name: "Choose Plexi" }));
 }
 
 describe("LevelView — hero recovers from a graphless connect", () => {
@@ -415,7 +578,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await selectBaseOnly(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     // The wizard opens directly at Set up; the footer ack gates the commit.
     expect(
@@ -438,7 +601,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await selectBaseOnly(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     await ackBackup(user);
     await user.click(
@@ -452,7 +615,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(fired("level_preset")).toBe(true);
     await user.click(screen.getByRole("button", { name: /done/i }));
     expect(
-      await screen.findByText(/select presets to level/i),
+      await screen.findByText("Choose presets or sounds to level"),
     ).toBeInTheDocument();
   });
 
@@ -462,7 +625,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await selectWholePreset(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 3 sounds$/i }),
     );
     await ackBackup(user);
     // Base + Rhythm + Lead → "Level 3 sounds".
@@ -501,7 +664,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     // First run.
     await selectWholePreset(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 3 sounds$/i }),
     );
     await ackBackup(user);
     await user.click(
@@ -519,7 +682,7 @@ describe("LevelView — full leveling wizard e2e", () => {
 
     await selectWholePreset(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 3 sounds$/i }),
     );
     await ackBackup(user);
     await user.click(
@@ -542,7 +705,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await selectBaseOnly(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     await ackBackup(user);
     await user.click(
@@ -565,7 +728,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await selectBaseOnly(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     await ackBackup(user);
     await user.click(
@@ -591,7 +754,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await selectBaseOnly(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     await ackBackup(user);
     await user.click(
@@ -617,7 +780,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await selectBaseOnly(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     await ackBackup(user);
     await user.click(
@@ -638,12 +801,12 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await screen.findByText("Plexi");
     // Collapsed meta shows the scene + footswitch breakdown.
-    await screen.findByText("2 scenes · 1 footswitch");
-    await user.click(screen.getByTitle("Show Base Preset + sounds"));
+    await screen.findByText("2 scenes, 1 footswitch");
+    await user.click(screen.getByRole("button", { name: "Open Plexi" }));
     // Tick ONLY the footswitch row (its own `f` key), not Base/scenes.
     await user.click(await screen.findByText("Solo"));
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     await ackBackup(user);
     expect(
@@ -688,9 +851,11 @@ describe("LevelView — full leveling wizard e2e", () => {
     renderView(true);
     const user = userEvent.setup();
     await screen.findByText("Studio Clean");
-    await user.click(screen.getAllByTitle("Select preset to level")[0]);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     await ackBackup(user);
     await user.click(
@@ -720,7 +885,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await selectWholePreset(user); // Base + 2 FS scenes selected
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 3 sounds$/i }),
     );
     await ackBackup(user);
     await user.click(
@@ -735,13 +900,13 @@ describe("LevelView — full leveling wizard e2e", () => {
     await user.click(relevel);
     await screen.findByText("Level these again");
     // Cancel out of the re-level setup — the leveled sounds must be deselected, so the
-    // list returns to the empty prompt (NOT still offering "Level 1 preset…").
+    // list returns to the empty prompt (NOT still offering "Level 3 sounds").
     await user.click(screen.getByRole("button", { name: /^cancel$/i }));
     expect(
-      await screen.findByText(/select presets to level/i),
+      await screen.findByText("Choose presets or sounds to level"),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /level 1 preset/i }),
+      screen.queryByRole("button", { name: /^level \d+ sounds?$/i }),
     ).toBeNull();
   });
 
@@ -763,7 +928,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     const user = userEvent.setup();
     await selectWholePreset(user);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      await screen.findByRole("button", { name: /^level 3 sounds$/i }),
     );
     await ackBackup(user);
     await user.click(

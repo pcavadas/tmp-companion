@@ -7,13 +7,16 @@ import {
   ensureScenario,
   expectReampBalanced,
   isOnline,
+  levelButton,
   openLevel,
+  openPreset,
   pickBaseTarget,
   reampCounters,
   reampOff,
   selectBaseOnly,
   selectPresetsForLevel,
   simEvents,
+  soundBox,
   waitForCaptureInFlight,
 } from "../fixtures/scenario";
 
@@ -107,7 +110,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await openLevel(page);
     await selectBaseOnly(page, SCENARIO[1].name); // E2E Pedalboard
 
-    await page.getByRole("button", { name: /Level 1 preset/ }).click();
+    await levelButton(page, 1).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click(); // the inline commit gate
     await pickBaseTarget(page, SCENARIO[1].slot, "Lead"); // the loud default — now REACHED via boost
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
@@ -166,18 +169,14 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await selectBaseOnly(page, SCENARIO[1].name); // 401 Base
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     await filter.fill(SCENARIO[2].name);
-    await page
-      .getByTitle(/Show Base/)
-      .first()
-      .click();
-    const list = page.locator("[data-preset-list]");
-    await list.getByText("Base Preset", { exact: true }).click(); // 402 Base
-    await list.getByText("OUT2", { exact: true }).click(); // 402 switch 2
+    await openPreset(page, SCENARIO[2].name);
+    await soundBox(page, "Main sound", SCENARIO[2].name).click(); // 402 Base
+    await soundBox(page, "OUT2", SCENARIO[2].name).click(); // 402 switch 2
     await filter.fill("");
 
     await armCaptureFault(page, SCENARIO[2].slot); // silence 402's next capture (one-shot)
 
-    await page.getByRole("button", { name: /Level 2 preset/ }).click();
+    await levelButton(page, 3).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
     await page.getByRole("button", { name: /Start.*3 sound/ }).click(); // defaults; 401 solves, 402 faults
     await expect(
@@ -238,7 +237,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await selectPresetsForLevel(page, [SCENARIO[1], SCENARIO[2]]);
 
-    await page.getByRole("button", { name: /Level 2 preset/ }).click();
+    await levelButton(page, "any").click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
     await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
     await waitForCaptureInFlight(page, reampBase);
@@ -281,7 +280,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await selectPresetsForLevel(page, [SCENARIO[1], SCENARIO[2]]);
 
-    await page.getByRole("button", { name: /Level 2 preset/ }).click();
+    await levelButton(page, "any").click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
     await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
     await waitForCaptureInFlight(page, reampBase);

@@ -189,7 +189,9 @@ describe("DoctorView — select → setup → run → results", () => {
     await screen.findByText("Studio Clean");
 
     // Tick the preset → a single "Whole preset" sound → "Check 1 sound…" (singular).
-    await user.click(screen.getAllByTitle("Select preset to check")[0]);
+    await user.click(
+      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
+    );
     await user.click(
       await screen.findByRole("button", { name: /check 1 sound…/i }),
     );
@@ -240,7 +242,9 @@ describe("DoctorView — select → setup → run → results", () => {
     await screen.findByText("Studio Clean");
 
     // Whole-row select includes Base + the footswitch child key → 2 sounds.
-    await user.click(screen.getAllByTitle("Select preset to check")[0]);
+    await user.click(
+      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
+    );
     await user.click(
       await screen.findByRole("button", { name: /check 2 sounds…/i }),
     );
@@ -280,7 +284,9 @@ describe("DoctorView — select → setup → run → results", () => {
     // Whole-row select: Base + the one SELECTABLE footswitch child (Solo) → 2 sounds.
     // The bare Tuner switch has no level candidate, so it's not offered as its own
     // row — it should still ride along on every sound's `footswitches` roster.
-    await user.click(screen.getAllByTitle("Select preset to check")[0]);
+    await user.click(
+      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
+    );
     await user.click(
       await screen.findByRole("button", { name: /check 2 sounds…/i }),
     );
@@ -309,7 +315,9 @@ describe("DoctorView — select → setup → run → results", () => {
     const user = userEvent.setup();
 
     await screen.findByText("Studio Clean");
-    await user.click(screen.getAllByTitle("Select preset to check")[0]);
+    await user.click(
+      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
+    );
     await user.click(
       await screen.findByRole("button", { name: /check 1 sound…/i }),
     );

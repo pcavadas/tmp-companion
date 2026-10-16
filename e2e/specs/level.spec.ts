@@ -5,10 +5,15 @@ import {
   ensureScenario,
   expectReampBalanced,
   isOnline,
+  levelButton,
+  openLevel,
+  openPreset,
+  presetBox,
   reampCounters,
   reampOff,
   runBaseLevel,
   simEvents,
+  soundBox,
 } from "../fixtures/scenario";
 
 // Level scenarios — run identically offline (fake re-amp) and online (real re-amp).
@@ -89,13 +94,13 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     await filter.fill(SCENARIO[0].name); // E2E Rig
 
-    // Reveal its children (Base + scene rows + footswitch rows), then tick the WHOLE
-    // preset → every child selected.
-    await page.getByTitle(/Show Base/).click();
-    await page.getByTitle("Select preset to level").first().click();
+    // Reveal its children (main sound + scene rows + footswitch rows), then tick the
+    // WHOLE preset → every child selected.
+    await openPreset(page, SCENARIO[0].name);
+    await presetBox(page, SCENARIO[0].name).click();
     await filter.fill("");
 
-    await page.getByRole("button", { name: /Level 1 preset/ }).click();
+    await levelButton(page, "any").click();
     // The wizard opens directly at Set up; tick the inline footer ack that gates the commit.
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
@@ -143,19 +148,23 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     await filter.fill(SCENARIO[4].name);
     // The collapsed breakdown — the scan's own count, before any expansion.
-    await expect(page.getByText("4 scenes · 4 footswitches")).toBeVisible({
+    await expect(page.getByText("4 scenes, 4 footswitches")).toBeVisible({
       timeout: 60_000,
     });
 
-    await page.getByTitle(/Show Base/).click();
-    // Base + 4 footswitch scenes + 4 block-acting footswitches = 9 child rows.
-    await expect(page.getByText("main preset sound")).toHaveCount(1);
-    await expect(page.getByText("footswitch scene")).toHaveCount(4);
-    await expect(page.getByText("footswitch", { exact: true })).toHaveCount(4);
+    await openPreset(page, SCENARIO[4].name);
+    // Main sound + 4 scenes + 4 block-acting footswitches = 9 sound sub-rows, each one
+    // checkbox named "Choose <sound> in <preset>"; each footswitch says which one it is.
+    await expect(
+      page.getByRole("checkbox", {
+        name: new RegExp(` in ${SCENARIO[4].name}$`),
+      }),
+    ).toHaveCount(9);
+    await expect(page.getByText(/^footswitch \d+$/)).toHaveCount(4);
     // The 4th scene is a real overlay named "Base Scene" — it must appear as its OWN row,
-    // distinct from the "Base Preset" row (the sentinel).
-    await expect(page.getByText("Base Scene", { exact: true })).toHaveCount(1);
-    await expect(page.getByText("Base Preset", { exact: true })).toHaveCount(1);
+    // distinct from the "Main sound" row (the sentinel).
+    await expect(soundBox(page, "Base Scene", SCENARIO[4].name)).toHaveCount(1);
+    await expect(soundBox(page, "Main sound", SCENARIO[4].name)).toHaveCount(1);
   });
 
   // Consecutive-runs idempotency gate — the PR #74 requirement ("2 consecutive leveling
@@ -235,5 +244,102 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     ).toBe(false);
 
     await expectReampBalanced(page, reampBase);
+  });
+});
+
+// Choosing what to level, look B: the first three of `B-LevelFlow`'s four scenarios, walked
+// up to the Level click with every click counted. What to level is chosen once, here: the
+// checkbox ticks a whole preset, the NAME of a preset with scenes opens it (Q6), and
+// "Select all N shown" acts only on what the filter shows (Q7 — a bug fix: it used to choose
+// the whole library). List-and-Set-up only, so it costs seconds; OFFLINE ONLY like the
+// list-rendering test above (no device write happens before Start).
+test.describe("Level list — choosing, scenario by scenario", () => {
+  const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S: scenes Rhythm / Lead / Base Scene
+
+  test.beforeEach(async ({ page }) => {
+    test.skip(await isOnline(page), "list-only — offline");
+    await ensureScenario(page);
+    await openLevel(page);
+    // The backup scan has settled once a preset's sounds are counted.
+    await expect(page.getByText("4 scenes, 6 footswitches")).toBeVisible({
+      timeout: 60_000,
+    });
+  });
+
+  test("scenario 1, level one preset: Checkbox · Level N sounds = 2 clicks", async ({
+    page,
+  }) => {
+    expect(FRIEDMAN.name).toBe("E2E Friedman 3S");
+    // Not part of the walk: learn how many sounds the preset holds (every enabled sub-row),
+    // then close it again.
+    await openPreset(page, FRIEDMAN.name);
+    const sounds = await page
+      .getByRole("checkbox", { name: new RegExp(` in ${FRIEDMAN.name}$`) })
+      .and(page.locator(":enabled"))
+      .count();
+    await page
+      .getByRole("button", { name: `Close ${FRIEDMAN.name}`, exact: true })
+      .click();
+    expect(sounds).toBeGreaterThan(3); // main sound + 3 scenes (+ footswitches)
+
+    let clicks = 0;
+    await presetBox(page, FRIEDMAN.name).click(); // 1 Checkbox
+    clicks++;
+    await expect(page.getByText("1 preset", { exact: true })).toBeVisible();
+    await levelButton(page, sounds).click(); // 2 Level N sounds
+    clicks++;
+    await expect(
+      page.getByText(/I.ve backed up with Pro Control/i),
+    ).toBeVisible();
+    expect(clicks).toBe(2);
+  });
+
+  test("scenario 2, level a bank: Type · Select all shown · Level = 3 actions, hidden presets untouched", async ({
+    page,
+  }) => {
+    let actions = 0;
+    await page.getByPlaceholder("Filter by name or slot").fill("E2E Hiwatt"); // 1 Type
+    actions++;
+    await expect(page.getByText("2 of 11 shown")).toBeVisible();
+    await page.getByRole("checkbox", { name: "Select all 2 shown" }).click(); // 2
+    actions++;
+    // Only the two shown presets were chosen (the caption counts every chosen preset,
+    // hidden ones included) — the old Select all chose all eleven.
+    await expect(page.getByText("2 presets", { exact: true })).toBeVisible();
+    await levelButton(page, "any").click(); // 3 Level N sounds
+    actions++;
+    await expect(
+      page.getByText(/I.ve backed up with Pro Control/i),
+    ).toBeVisible();
+    expect(actions).toBe(3);
+  });
+
+  test("scenario 3, some scenes of one preset: Name · Scene · Scene · Level 2 sounds = 4 clicks", async ({
+    page,
+  }) => {
+    let clicks = 0;
+    // 1 The name of a preset with scenes OPENS it (Q6); it chooses nothing by itself.
+    await page
+      .getByRole("button", { name: FRIEDMAN.name, exact: true })
+      .click();
+    clicks++;
+    await expect(presetBox(page, FRIEDMAN.name)).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    await soundBox(page, "Rhythm", FRIEDMAN.name).click(); // 2 Scene
+    clicks++;
+    await soundBox(page, "Lead", FRIEDMAN.name).click(); // 3 Scene
+    clicks++;
+    await expect(presetBox(page, FRIEDMAN.name)).toHaveAttribute(
+      "aria-checked",
+      "mixed",
+    );
+    await levelButton(page, 2).click(); // 4 Level 2 sounds
+    clicks++;
+    await expect(
+      page.getByText(/I.ve backed up with Pro Control/i),
+    ).toBeVisible();
+    expect(clicks).toBe(4);
   });
 });

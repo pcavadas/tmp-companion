@@ -130,9 +130,11 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
     expect(screen.queryByText("Set instrument & target")).toBeNull();
 
     // ── 2. select the whole preset → open the wizard directly at Set up ──────────
-    await user.click(screen.getAllByTitle("Select preset to level")[0]);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      screen.getByRole("checkbox", { name: "Choose Stadium Lead" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /^level 3 sounds$/i }),
     );
     // Opens straight at Set up — there is no separate Back-up step.
     expect(
@@ -161,7 +163,7 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
     // ── 6. Done → footer returns to the idle hint ───────────────────────────────
     await user.click(screen.getByRole("button", { name: /done/i }));
     expect(
-      await screen.findByText(/select presets to level/i),
+      await screen.findByText("Choose presets or sounds to level"),
     ).toBeInTheDocument();
 
     // ── assertions: the three device commands fired ─────────────────────────────
@@ -185,9 +187,11 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
 
     await screen.findByText("Stadium Lead");
     await screen.findByText("2 scenes");
-    await user.click(screen.getAllByTitle("Select preset to level")[0]);
     await user.click(
-      await screen.findByRole("button", { name: /level 1 preset/i }),
+      screen.getByRole("checkbox", { name: "Choose Stadium Lead" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /^level 3 sounds$/i }),
     );
     await ackBackup(user);
     await user.click(

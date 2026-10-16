@@ -98,24 +98,26 @@ describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression gu
     void ensureLibraryScan();
 
     await screen.findByText("Studio Clean");
-    await user.click(await screen.findByTitle("Show Base Preset + sounds"));
+    await user.click(
+      await screen.findByRole("button", { name: "Open Studio Clean" }),
+    );
 
     // Both switches render as rows…
     expect(await screen.findByText("Solo")).toBeInTheDocument();
     expect(await screen.findByText("Tuner")).toBeInTheDocument();
     // …but "Tuner" is disabled with a short reason (BUG 1's required behaviour),
     // never silently omitted.
-    expect(screen.getByText(/no level control/i)).toBeInTheDocument();
+    expect(screen.getByText("No volume knob to level")).toBeInTheDocument();
 
     // And it must not be COUNTED as selectable: ticking the whole preset (Base +
     // every child `childKeys` considers selectable) must read as fully checked, not
     // indeterminate — if "Tuner" were still counted, it could never be ticked
     // (disabled), so the preset checkbox would be stuck "N of M" forever.
-    const presetCheckboxWrap = screen.getAllByTitle(
-      "Select preset to level",
-    )[0];
-    await user.click(presetCheckboxWrap);
-    expect(presetCheckboxWrap).toHaveAttribute("aria-checked", "true");
+    const presetCheckbox = screen.getByRole("checkbox", {
+      name: "Choose Studio Clean",
+    });
+    await user.click(presetCheckbox);
+    expect(presetCheckbox).toHaveAttribute("aria-checked", "true");
   });
 
   it("Doctor's list shows ONLY the levelable switch — the bare one never appears at all", async () => {
@@ -126,13 +128,15 @@ describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression gu
     void ensureLibraryScan();
 
     await screen.findByText("Studio Clean");
-    await user.click(await screen.findByTitle("Show Base Preset + sounds"));
+    await user.click(
+      await screen.findByRole("button", { name: "Open Studio Clean" }),
+    );
 
     // The levelable switch is offered as its own checkable "sound"…
     expect(await screen.findByText("Solo")).toBeInTheDocument();
     // …the bare one is not shown here at all (not even disabled) — Doctor's SELECT
     // list stays exactly what it was before the Level-side fix.
     expect(screen.queryByText("Tuner")).toBeNull();
-    expect(screen.queryByText(/no level control/i)).toBeNull();
+    expect(screen.queryByText("No volume knob to level")).toBeNull();
   });
 });

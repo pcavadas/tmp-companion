@@ -98,9 +98,7 @@ describe("presetRowPropsEqual — row-scoped selection equality", () => {
         },
       }),
     ).toBe(false);
-    expect(presetRowPropsEqual(base, { ...base, selectTitle: "x" })).toBe(
-      false,
-    );
+    expect(presetRowPropsEqual(base, { ...base, active: true })).toBe(false);
   });
 });
 
@@ -166,28 +164,27 @@ describe("regression: one preset tick re-renders only that row (#315)", () => {
     expect(slotRenders).toHaveLength(N);
 
     slotRenders.length = 0;
-    await user.click(screen.getByRole("checkbox", { name: "Preset 7" }));
+    await user.click(screen.getByRole("checkbox", { name: "Choose Preset 7" }));
     expect(slotRenders).toEqual([7]);
-    expect(screen.getByRole("checkbox", { name: "Preset 7" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
+    expect(
+      screen.getByRole("checkbox", { name: "Choose Preset 7" }),
+    ).toHaveAttribute("aria-checked", "true");
 
     slotRenders.length = 0;
-    await user.click(screen.getByRole("checkbox", { name: "Preset 42" }));
+    await user.click(
+      screen.getByRole("checkbox", { name: "Choose Preset 42" }),
+    );
     expect(slotRenders).toEqual([42]);
     // The earlier tick survived the row skipping its re-render.
-    expect(screen.getByRole("checkbox", { name: "Preset 7" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
+    expect(
+      screen.getByRole("checkbox", { name: "Choose Preset 7" }),
+    ).toHaveAttribute("aria-checked", "true");
 
     slotRenders.length = 0;
-    await user.click(screen.getByRole("checkbox", { name: "Preset 7" }));
+    await user.click(screen.getByRole("checkbox", { name: "Choose Preset 7" }));
     expect(slotRenders).toEqual([7]);
-    expect(screen.getByRole("checkbox", { name: "Preset 7" })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
+    expect(
+      screen.getByRole("checkbox", { name: "Choose Preset 7" }),
+    ).toHaveAttribute("aria-checked", "false");
   });
 });

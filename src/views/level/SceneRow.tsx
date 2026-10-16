@@ -1,84 +1,74 @@
-// src/views/level/SceneRow.tsx — one scene sub-row (Base or a footswitch scene).
+// src/views/level/SceneRow.tsx — one sound sub-row under an open preset, look B: the
+// main sound, a scene or a footswitch.
 //
-// Revealed under a PresetRow when its caret is expanded. Grid `34px 1fr`, height 38,
-// indented to align under the preset name. The whole row is ONE role="checkbox"
-// button that toggles that one scene key.
-//   • Base child: tag BASE (muted), name "Base Preset", sub "main preset sound".
-//   • FS child:   tag FS{n} (terracotta), name = scene name, sub "footswitch scene".
+// A 30 px compact Row with the grey `rowSelected` fill, indented 64 px under the preset's
+// name. The WHOLE row is one role="checkbox" button named "Choose <sound> in <preset>"
+// (unique on the page): a box, the sound's name (13/400) and, for a footswitch, a caption
+// at the right ("footswitch 3"). A footswitch with no volume knob to level (BUG 1) is
+// disabled: an empty grey box, the name in `textDisabled`, the caption saying why, and
+// the click does nothing.
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Button, CheckboxMark } from "../../ui/primitives";
-import { Tag } from "../../ui/Tag";
+import { plainButton } from "../../theme/tokens";
+import { CheckboxMark } from "../../ui/primitives";
+import { Row } from "../../ui/List";
+
+/** The sub-row's left inset: its box sits under the preset's slot column. */
+const SUB_ROW_INDENT = 64;
 
 export interface SceneRowProps {
-  kind: "base" | "fs";
-  /** Tag chip text: "BASE" | `FS${n}` | "—". */
-  tag: string;
+  /** The sound's name ("Main sound", the scene's name, the footswitch's label). */
   name: string;
-  sub: string;
+  /** The preset it belongs to — completes the accessible name. */
+  preset: string;
+  /** A short caption at the right: "footswitch 3", or why it can't be chosen. */
+  caption?: string;
   selected: boolean;
   onToggle: () => void;
-  /** Not selectable at all (BUG 1 — a footswitch with no level control to adjust):
-   *  greyed out, the checkbox renders inert, and the click is a no-op. `sub` is
-   *  expected to carry the short reason in this state (the caller swaps its text). */
+  /** Not selectable at all (BUG 1 — a footswitch with no volume knob to level): greyed
+   *  out, the box renders empty, and the click is a no-op. `caption` is expected to
+   *  carry the reason in this state. */
   disabled?: boolean;
-  /** A full-sentence reason, shown as the row's title tooltip when `disabled`. */
-  disabledTitle?: string;
 }
 
 export function SceneRow({
-  kind,
-  tag,
   name,
-  sub,
+  preset,
+  caption,
   selected,
   onToggle,
-  disabled,
-  disabledTitle,
+  disabled = false,
 }: SceneRowProps) {
   const { t } = useTheme();
-  const isBase = kind === "base";
-
   return (
-    // aria-disabled (not native `disabled`) keeps the disabled row's reason tooltip.
-    <Button
-      variant="bare"
-      role="checkbox"
-      aria-checked={selected}
-      aria-disabled={disabled ? true : undefined}
-      onClick={disabled ? undefined : onToggle}
-      title={disabled ? disabledTitle : undefined}
-      style={{
-        width: "100%",
-        textAlign: "left",
-        display: "grid",
-        gridTemplateColumns: "34px 1fr",
-        alignItems: "center",
-        height: 38,
-        padding: `0 ${String(t.space8)}px 0 58px`,
-        borderBottom: `0.5px solid ${t.hairline}`,
-        background: !disabled && selected ? t.rowSel : t.window,
-        opacity: disabled ? 0.55 : 1,
-        cursor: disabled ? "default" : "pointer",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", height: "100%" }}>
-        <CheckboxMark checked={selected} disabled={disabled} />
-      </div>
-      <span
-        style={{
+    <Row size="compact" selected style={{ padding: 0 }}>
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={!disabled && selected}
+        aria-label={`Choose ${name} in ${preset}`}
+        disabled={disabled}
+        onClick={onToggle}
+        style={plainButton({
+          flex: 1,
+          minWidth: 0,
+          height: "100%",
           display: "flex",
           alignItems: "center",
-          gap: t.space4,
-          minWidth: 0,
-        }}
+          gap: t.sp8 + t.sp2,
+          padding: `0 ${String(t.sp12)}px 0 ${String(SUB_ROW_INDENT)}px`,
+          textAlign: "left",
+          cursor: disabled ? "default" : "pointer",
+        })}
       >
-        <Tag tone={isBase ? "neutral" : "accent"}>{tag}</Tag>
+        <CheckboxMark checked={selected} disabled={disabled} />
         <span
           style={{
-            fontFamily: t.serif,
-            fontSize: t.fsName2,
-            color: t.ink2,
+            flex: 1,
+            minWidth: 0,
+            fontSize: t.fontBody,
+            fontWeight: t.weightRegular,
+            color: disabled ? t.textDisabled : t.text,
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -86,20 +76,19 @@ export function SceneRow({
         >
           {name}
         </span>
-        <span style={{ flex: 1 }} />
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsMicro,
-            letterSpacing: "0.03em",
-            color: t.faint,
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-          }}
-        >
-          {sub}
-        </span>
-      </span>
-    </Button>
+        {caption != null && (
+          <span
+            style={{
+              fontSize: t.fontCaption,
+              color: t.textSecondary,
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+            }}
+          >
+            {caption}
+          </span>
+        )}
+      </button>
+    </Row>
   );
 }

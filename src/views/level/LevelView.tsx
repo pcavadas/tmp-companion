@@ -1,20 +1,22 @@
-// src/views/level/LevelView.tsx — the Level view (scene-tree selection).
+// src/views/level/LevelView.tsx — the Level view (look B): the preset list.
 //
-// Layout: hero signal-path strip (live) → preset list (instant) + a background
-// scene-scan strip (the whole library via one ~22 s device backup) → selection
-// footer → the leveling flow (setup → run → summary).
+// Layout, top to bottom: the signal path of the preset loaded on the unit (live,
+// `ActiveSignalChainView` on white, scaled down to fit a long chain by SignalPathFit) →
+// the preset list (filter bar + one Group of presets; the whole library's scenes and
+// footswitches arrive via one background backup scan) → the Footer ("How it works" on the
+// left; the caption and the one main action, "Level N sounds", on the right) → the
+// leveling flow (setup → run → summary).
 //
-// The list is a SCENE TREE: each preset row is a parent of its scenes (Base + each
-// footswitch scene). The row checkbox selects the whole preset, the caret reveals the
-// scenes for individual selection, and clicking the row body toggles that preset's
-// selection (it does NOT recall the preset on the unit — app-driven recall was removed;
-// recall is owned by Pro Control / the footswitches). The setup dialog only configures
-// (instrument + target) what the list picked;
-// its footer's backup acknowledgment gates the "Level" commit.
+// The list is a SCENE TREE: each preset row is a parent of its sounds (the main sound,
+// each scene, each footswitch). The row checkbox chooses the whole preset, the caret opens
+// it to choose sounds one by one, and the preset's NAME opens a preset that has scenes or
+// chooses any other (it does NOT recall the preset on the unit — app-driven recall was
+// removed; recall is owned by Pro Control / the footswitches). What to level is chosen
+// here, once; Set up only configures it, and its backup acknowledgment gates the run.
 //
 // HARD RULES: every device WRITE (leveling save) fires only after the backup
-// acknowledgment, in the run. Reads (list / store / the backup scene read) + recalls
-// are the only other device touches. No fabricated data; click-only.
+// acknowledgment, in the run. Reads (list / store / the backup scene read) are the only
+// other device touches. No fabricated data; click-only.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -30,6 +32,7 @@ import { DeviceState } from "../DeviceState";
 import type { NoUnitState } from "../../lib/connectError";
 import { LevelingWizard } from "../overlays";
 import { HowLevelingSheet } from "./HowLevelingSheet";
+import { SignalPathFit } from "./SignalPathFit";
 import { instrumentOptions, instrumentName, NO_INSTRUMENT } from "./leveling";
 import type { PickOption } from "../overlays/Pick";
 import type { ActiveGraph } from "../../lib/types";
@@ -70,7 +73,7 @@ export function LevelView({
     expanded,
     ready,
     presetCount,
-    sceneCount,
+    sceneCount: soundCount,
     sceneInfo,
     footswitchInfo,
     ampCandidates,
@@ -97,7 +100,7 @@ export function LevelView({
   // scene push says so) — the hero tag reads "BASE" then, else the scene's own name.
   const [onBase, setOnBase] = useState(false);
   const [diagError, setDiagError] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false); // "How leveling works" sheet
+  const [helpOpen, setHelpOpen] = useState(false); // "How leveling works" dialog
   // Prefer the LIVE graph over the connect-time seed: on a tab-switch remount the
   // live store still holds the unit's CURRENT preset, while `initialGraph` is the
   // stale handshake graph — seeding from it would revert the hero to that preset.
@@ -216,7 +219,7 @@ export function LevelView({
     }
   }, []);
 
-  // The help sheet's close handler (the sheet closes only by click — no key handling).
+  // The help dialog's close handler (it closes only by click — no key handling).
   const closeHelp = useCallback(() => {
     setHelpOpen(false);
   }, []);
@@ -264,10 +267,18 @@ export function LevelView({
   }, [activeHasScenes, live.syncing, onBase, liveSceneName, t]);
 
   const { openFlow } = flow;
+  // The Footer only offers "Level N sounds" once the scan has settled, when every
+  // whole-preset tick has been folded into `sel`.
   const handleLevel = useCallback(() => {
-    if (sel.size === 0 && pendingWhole.size === 0) return;
+    if (sel.size === 0) return;
     openFlow(sel);
-  }, [sel, pendingWhole, openFlow]);
+  }, [sel, openFlow]);
+
+  const heroName = heroGraph?.name ?? null;
+  const heroLabel =
+    heroName != null && heroName !== ""
+      ? `Signal path of ${heroName}, the preset loaded on your Tone Master Pro`
+      : "Signal path of the preset loaded on your Tone Master Pro";
 
   // ── render ──────────────────────────────────────────────────────────────────
   if (!connected) return <DeviceState state={deviceState} />;
@@ -291,17 +302,19 @@ export function LevelView({
         position: "relative",
       }}
     >
-      <ActiveSignalChainView
-        graph={heroGraph}
-        slot={activeSlot}
-        presetLoading={heroPresetLoading}
-        diagramLoading={heroDiagramLoading}
-        sceneTag={sceneTag}
-        diagramError={diagError}
-        onRetryDiagram={() => {
-          void handleRetryDiagram();
-        }}
-      />
+      <SignalPathFit label={heroLabel}>
+        <ActiveSignalChainView
+          graph={heroGraph}
+          slot={activeSlot}
+          presetLoading={heroPresetLoading}
+          diagramLoading={heroDiagramLoading}
+          sceneTag={sceneTag}
+          diagramError={diagError}
+          onRetryDiagram={() => {
+            void handleRetryDiagram();
+          }}
+        />
+      </SignalPathFit>
 
       <div style={{ flex: 1, minHeight: 0 }}>
         <PresetList
@@ -326,10 +339,10 @@ export function LevelView({
       </div>
 
       <ContextFooter
-        store={store}
-        presetCount={presetCount}
-        sceneCount={sceneCount}
+        loading={presetsLoading}
         ready={ready}
+        presetCount={presetCount}
+        soundCount={soundCount}
         onLevel={handleLevel}
         onHelp={() => {
           setHelpOpen(true);

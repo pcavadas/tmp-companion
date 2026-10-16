@@ -131,7 +131,9 @@ test.describe("Marketing screenshots", () => {
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     for (const name of ["Scooped Verse", "Tweed Warm", "Direct Acoustic"]) {
       await filter.fill(name);
-      await page.getByTitle("Select preset to check").first().click();
+      await page
+        .getByRole("checkbox", { name: `Choose ${name}`, exact: true })
+        .click();
     }
     await filter.fill("");
     await page.getByRole("button", { name: /Check 3 sounds/ }).click();

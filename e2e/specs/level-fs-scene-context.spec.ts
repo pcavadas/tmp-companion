@@ -5,10 +5,13 @@ import {
   ensureScenario,
   expectReampBalanced,
   isOnline,
+  levelButton,
   openLevel,
+  openPreset,
   reampCounters,
   reampOff,
   simEvents,
+  soundBox,
 } from "../fixtures/scenario";
 
 // PR #144 NEW COVERAGE — the D3 scene-context picker (`FsRowControls` in SetupPage.tsx)
@@ -74,24 +77,18 @@ test.describe("Level Setup — footswitch scene-context override rides the wire 
 
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     await filter.fill(combined.name);
-    await page
-      .getByTitle(/Show Base/)
-      .first()
-      .click();
+    await openPreset(page, combined.name);
     // BOOST alone — never Base, never a scene row — so the run's event slice belongs to
-    // this one footswitch only. Scoped to the list's OWN scroll body
-    // (`[data-preset-list]`, PresetList.tsx): the app's persistent signal-chain strip
-    // chrome renders its own compact "BOOST" chip for the device's currently-loaded
-    // preset regardless of what the Level tab's filtered list shows, so a bare
-    // page-wide text match collides with it.
-    const list = page.locator("[data-preset-list]");
-    await list.getByText("BOOST", { exact: true }).click();
+    // this one footswitch only. Addressed by its sub-row's own accessible name ("Choose
+    // BOOST in E2E Combined Level"): the app's persistent signal-chain strip chrome
+    // renders its own compact "BOOST" chip for the device's currently-loaded preset
+    // regardless of what the Level tab's filtered list shows, so a bare page-wide text
+    // match would collide with it.
+    await soundBox(page, "BOOST", combined.name).click();
     await filter.fill("");
 
-    // The OPENING trigger counts distinct PRESETS represented in the selection (one, 406,
-    // regardless of how many of its child rows are ticked) — the RUNNING button below is
-    // what counts actual leveling rows ("sound").
-    await page.getByRole("button", { name: /Level 1 preset/ }).click();
+    // The list's main action counts the chosen SOUNDS: this one footswitch.
+    await levelButton(page, 1).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
     // `f406:sw2` (setupRowHookKey, leveling.ts): BOOST is `ftsw[2]`.

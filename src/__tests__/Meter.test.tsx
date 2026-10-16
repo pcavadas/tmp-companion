@@ -104,9 +104,9 @@ describe("the CPU meter where the rule is applied", () => {
   it("Level's RowCpu says Over at exactly 76.5", () => {
     renderWithTheme(<RowCpu value={76.5} />);
     expect(screen.getByText("Over")).toBeTruthy();
-    expect(
-      screen.getByTitle(`Preset CPU — 76.5% of ${String(CPU_BUDGET)}%`),
-    ).toBeTruthy();
+    expect(screen.getByText("76.5%")).toBeTruthy();
+    // No hover title: the figure says it (look B).
+    expect(document.querySelector("[title]")).toBeNull();
   });
 
   it("Level's RowCpu stays quiet under the budget", () => {

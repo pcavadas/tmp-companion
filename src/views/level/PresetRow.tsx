@@ -1,56 +1,59 @@
-// src/views/level/PresetRow.tsx — one preset row (parent of its scenes).
+// src/views/level/PresetRow.tsx — one preset row on the Level (and Doctor) list, look B.
 //
-// A preset is a PARENT of its scenes: the Base scene + each footswitch scene. The
-// caret reveals them; the checkbox selects/clears the WHOLE preset (its state is
-// DERIVED from the children — checked when all are on, indeterminate when some are).
-// Grid `34px 26px 52px 1fr`, height 44:
-//   • checkbox — selects all child scene keys (stops propagation).
-//   • caret    — shown when the preset has FS scenes; inert + faint until `ready`.
-//   • slot     — zero-padded to 3, muted (faint on empty).
-//   • name + ACTIVE badge + right-side meta (loading… / base only / N scenes / K of N).
-// Clicking the row body (not the caret) selects the whole preset. Empty slots render
-// "—— empty ——" and aren't interactive. Clicking a row does NOT recall it on the
-// unit — preset recall is owned by Pro Control / the footswitches, not this list.
+// A preset is a PARENT of its sounds: the main sound, each scene and each footswitch. One
+// 36 px Row, left to right: the Checkbox ("Choose <name>") that chooses or unchooses the
+// whole preset (its state is DERIVED from the children — on when all are, mixed when some
+// are); the Caret that opens the sub-rows (only on a preset with scenes or footswitches,
+// once the backup scan has read them — an 18 px blank otherwise); the slot; the name; a
+// caption ("3 scenes, 1 footswitch", "2 of 6 chosen", "Reading…"); and the CPU meter.
+//
+// The NAME is a real button. On a preset with scenes it opens or closes the preset, like
+// the Caret; on a preset without scenes (footswitches only, or nothing) it chooses it, like
+// the Checkbox. While the scan reads (children unknown) it chooses the whole preset. A
+// chosen (fully or partly) or open preset has the grey `rowSelected` fill. The preset
+// loaded on the unit carries a neutral "Loaded" badge after its name. Empty slots show
+// "Empty", with no Checkbox or Caret, and take no click. Clicking a row never recalls the
+// preset on the unit — recall is owned by Pro Control and the footswitches.
 
 import { memo } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Button, CheckboxMark } from "../../ui/primitives";
-import { Icon } from "../../ui/Icon";
-import { Tag } from "../../ui/Tag";
-import { Spinner } from "../../ui/Spinner";
+import { plainButton } from "../../theme/tokens";
+import { Checkbox } from "../../ui/primitives";
+import { Badge } from "../../ui/Badge";
+import { Caret, Row } from "../../ui/List";
 import { SlotLabel } from "../../ui/SlotLabel";
 import {
   baseKey,
-  childKeys,
   footswitchLevelable,
   footswitchName,
   fswKey,
   sceneKeyOf,
   type PresetRow as PresetRowData,
 } from "./leveling";
+import { presetChoice, presetKeys } from "./presetChoice";
 import { SceneRow } from "./SceneRow";
 import { presetRowPropsEqual } from "./presetRowEqual";
 import { RowCpu } from "./RowCpu";
 import type { FootswitchInfo, SceneInfo } from "../../lib/types";
 
-const COLUMNS = "34px 26px 52px 1fr";
-/** The slot + name tracks of COLUMNS, re-declared on the button that spans them. */
-const NAME_COLUMNS = "52px 1fr";
+/** The caret's width; a preset with nothing to open keeps the same blank. */
+const CARET_W = 18;
+/** The checkbox's width; an empty slot keeps the same blank so its slot lines up. */
+const CHECK_W = 14;
 
 export interface PresetRowProps {
   row: PresetRowData;
-  /** The unit's currently-loaded preset (terracotta left rule + ACTIVE badge). */
+  /** The unit's currently-loaded preset ("Loaded" badge). */
   active: boolean;
-  /** Background scene load has settled — releases the caret + the real meta. */
+  /** Background scene load has settled — releases the caret, the meta and the CPU. */
   ready: boolean;
   /** This preset's scenes from the backup, or undefined while still unknown. */
   scenes: SceneInfo[] | undefined;
-  /** This preset's levelable footswitches from the backup (undefined when none/unknown).
-   *  Rendered as sibling rows to the scenes — same accent FS tag, name = the player's
-   *  own footswitch label. */
+  /** This preset's footswitches from the backup (undefined when none/unknown). Each is a
+   *  sub-row after the scenes; one with no level control is shown disabled. */
   footswitches: FootswitchInfo[] | undefined;
-  /** Whether this preset's drawer is expanded. */
+  /** Whether this preset's sub-rows are open. */
   expanded: boolean;
   /** The full selection set (scene keys). Only this row's own keys matter to its
    *  memo (`presetRowPropsEqual`, in `presetRowEqual.ts`), so a toggle elsewhere
@@ -58,16 +61,13 @@ export interface PresetRowProps {
   sel: Set<string>;
   /** Ticked WHOLE during the load (scenes not yet known) — drives the checkbox then. */
   pendingWhole: boolean;
-  /** Real per-preset CPU % (from the startup backup graph); null hides the readout. */
+  /** Real per-preset CPU % (from the startup backup graph); null hides the meter. */
   cpu: number | null;
   /** The three toggles must be STABLE (`usePresetData`'s are `useCallback([])`) —
    *  a fresh function per render defeats the row's `memo`. */
   onTogglePreset: (slot: number) => void;
   onToggleExpand: (slot: number) => void;
   onToggleKey: (key: string) => void;
-  /** Checkbox tooltip verb — the row is shared across tabs (Level "…to level",
-   *  Doctor "…to check"). Defaults to the Level wording. */
-  selectTitle?: string;
 }
 
 export const PresetRow = memo(function PresetRow({
@@ -83,223 +83,139 @@ export const PresetRow = memo(function PresetRow({
   onTogglePreset,
   onToggleExpand,
   onToggleKey,
-  selectTitle = "Select preset to level",
 }: PresetRowProps) {
   const { t } = useTheme();
-  const empty = row.empty;
+
+  if (row.empty) {
+    return (
+      <Row>
+        <span aria-hidden style={{ width: CHECK_W, flexShrink: 0 }} />
+        <span aria-hidden style={{ width: CARET_W, flexShrink: 0 }} />
+        <SlotLabel
+          index={row.slot}
+          faint
+          style={{ width: 30, flexShrink: 0 }}
+        />
+        <span style={{ color: t.textDisabled }}>Empty</span>
+      </Row>
+    );
+  }
+
   const scenesArr = scenes ?? [];
   const fswArr = footswitches ?? [];
-  const hasFs = !empty && scenesArr.length > 0;
-  const hasFootswitches = !empty && fswArr.length > 0;
+  const hasScenes = scenesArr.length > 0;
   // Scenes and footswitches both hang under the caret — either one makes the preset a
-  // parent with selectable children.
-  const hasChildren = hasFs || hasFootswitches;
+  // parent with sub-rows to open.
+  const hasChildren = hasScenes || fswArr.length > 0;
+  const canOpen = hasChildren && ready;
 
-  // Checkbox state — derived from the children once scenes are known; during the
-  // load it reflects the whole-preset "pending" tick (no indeterminate possible).
-  // Scenes drive `known` (footswitches arrive in the SAME backup pass).
-  const known = scenes !== undefined;
-  const keys = known && !empty ? childKeys(row.slot, scenesArr, fswArr) : [];
-  const selCount = keys.reduce((a, k) => a + (sel.has(k) ? 1 : 0), 0);
-  const total = keys.length;
-  const allOn = known ? total > 0 && selCount === total : pendingWhole;
-  const indeterminate = known && selCount > 0 && selCount < total;
+  const keys = presetKeys(row.slot, scenes, footswitches, ready);
+  const choice = presetChoice(row.slot, keys, sel, pendingWhole);
+  const selCount = keys ? keys.filter((k) => sel.has(k)).length : 0;
 
-  // Right-side meta: while details load → "loading…"; after → a scene summary.
-  let meta: React.ReactNode = null;
-  if (empty) {
-    meta = null;
-  } else if (!ready) {
-    meta = (
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: t.space3,
-          fontFamily: t.mono,
-          fontSize: t.fsMicro,
-          color: t.faint,
-          whiteSpace: "nowrap",
-          flexShrink: 0,
-        }}
-      >
-        <Spinner size={10} stroke={t.faint} />
-        loading…
-      </span>
-    );
-  } else if (!hasChildren) {
-    meta = null;
-  } else if (indeterminate) {
-    meta = (
-      <span style={metaStyle(t, t.accentDeep)}>
-        {selCount} of {total} selected
-      </span>
-    );
-  } else {
-    // "N scenes · M footswitches" — only the parts that exist.
+  // The caption: "Reading…" while the scan reads, the chosen count on a partly chosen
+  // preset, else what it holds ("3 scenes, 1 footswitch"), or nothing.
+  let meta: string | null = null;
+  if (!ready) {
+    meta = "Reading…";
+  } else if (choice === "some" && keys) {
+    meta = `${String(selCount)} of ${String(keys.length)} chosen`;
+  } else if (hasChildren) {
     const parts: string[] = [];
-    if (hasFs)
+    if (hasScenes)
       parts.push(
         `${String(scenesArr.length)} scene${scenesArr.length === 1 ? "" : "s"}`,
       );
-    if (hasFootswitches)
+    if (fswArr.length > 0)
       parts.push(
         `${String(fswArr.length)} footswitch${fswArr.length === 1 ? "" : "es"}`,
       );
-    meta = <span style={metaStyle(t, t.mutedInk)}>{parts.join(" · ")}</span>;
+    meta = parts.join(", ");
   }
 
-  // Caret — present when the preset has children (scenes and/or footswitches); inert +
-  // faint until `ready`.
-  const caretActive = hasChildren && ready;
-  const caret = hasChildren ? (
-    <Button
-      variant="bare"
-      aria-expanded={expanded}
-      aria-label={`${row.name} sounds`}
-      disabled={!caretActive}
-      onClick={() => {
-        onToggleExpand(row.slot);
-      }}
-      title={
-        caretActive
-          ? expanded
-            ? "Hide sounds"
-            : "Show Base Preset + sounds"
-          : "Loading sounds…"
-      }
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100%",
-        opacity: caretActive ? 1 : 0.4,
-      }}
-    >
-      <Icon
-        name={expanded ? "chev-down" : "chev-right"}
-        size={13}
-        stroke={caretActive ? t.mutedInk : t.faint}
-        strokeWidth={2}
-      />
-    </Button>
-  ) : (
-    <div />
-  );
+  // The name opens a preset with scenes, and chooses any other preset (and every preset
+  // while the scan still reads its children).
+  const nameOpens = hasScenes && ready;
+  const onName = () => {
+    if (nameOpens) onToggleExpand(row.slot);
+    else onTogglePreset(row.slot);
+  };
+  const open = expanded && canOpen;
 
   return (
     <>
-      <div
-        data-active={active ? "1" : undefined}
-        style={{
-          position: "relative",
-          display: "grid",
-          gridTemplateColumns: COLUMNS,
-          alignItems: "center",
-          height: 44,
-          padding: `0 ${String(t.space8)}px 0 ${String(t.space7)}px`,
-          borderBottom: `0.5px solid ${t.hairline}`,
-          background: allOn || indeterminate ? t.rowSel : "transparent",
-          borderLeft: active
-            ? `2px solid ${t.accent}`
-            : "2px solid transparent",
-          opacity: empty ? 0.5 : 1,
-        }}
-      >
-        <Button
-          variant="bare"
-          role="checkbox"
-          aria-checked={indeterminate ? "mixed" : allOn}
-          aria-label={row.name}
-          disabled={empty}
-          onClick={() => {
+      <Row selected={choice !== "off" || open}>
+        <Checkbox
+          checked={choice === "on"}
+          indeterminate={choice === "some"}
+          onChange={() => {
             onTogglePreset(row.slot);
           }}
-          title={selectTitle}
-          style={{
+          label={`Choose ${row.name}`}
+          labelHidden
+        />
+        {canOpen ? (
+          <Caret
+            open={open}
+            name={row.name}
+            onToggle={() => {
+              onToggleExpand(row.slot);
+            }}
+          />
+        ) : (
+          <span aria-hidden style={{ width: CARET_W, flexShrink: 0 }} />
+        )}
+        <SlotLabel index={row.slot} style={{ width: 30, flexShrink: 0 }} />
+        <button
+          type="button"
+          aria-expanded={nameOpens ? open : undefined}
+          onClick={onName}
+          style={plainButton({
+            flex: 1,
+            minWidth: 0,
+            height: "100%",
             display: "flex",
             alignItems: "center",
-            height: "100%",
-          }}
-        >
-          {!empty && (
-            <CheckboxMark checked={allOn} indeterminate={indeterminate} />
-          )}
-        </Button>
-
-        {caret}
-
-        {/* Slot + name: a mouse-only duplicate of the checkbox (the keyboard / VoiceOver
-            control is the checkbox cell above), spanning the last two grid tracks. */}
-        <Button
-          variant="bare"
-          tabIndex={-1}
-          aria-hidden
-          disabled={empty}
-          onClick={() => {
-            onTogglePreset(row.slot);
-          }}
-          style={{
-            gridColumn: "3 / 5",
-            display: "grid",
-            gridTemplateColumns: NAME_COLUMNS,
-            alignItems: "center",
-            height: "100%",
-            minWidth: 0,
+            gap: t.sp8,
             textAlign: "left",
-          }}
+            fontFamily: t.fontSans,
+            fontSize: t.fontBody,
+            fontWeight: t.weightMedium,
+            color: t.text,
+          })}
         >
-          <SlotLabel index={row.slot} faint={empty} />
-
           <span
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: t.space4,
               minWidth: 0,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
             }}
           >
-            <span
-              style={{
-                fontFamily: empty ? t.mono : t.serif,
-                fontSize: empty ? t.fsUi : t.fsName,
-                color: empty ? t.faint : t.ink,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                flexShrink: 1,
-                minWidth: 0,
-              }}
-            >
-              {empty ? "—— empty ——" : row.name}
-            </span>
-            {active && <Tag tone="good">ACTIVE</Tag>}
-            <span style={{ flex: 1 }} />
-            {meta}
-            {/* Real per-preset CPU bar — base rows only, once the backup graph is ready.
-              The space8 (16px) gap keeps the scene-summary meta off the bar. */}
-            {!empty && ready && cpu != null && (
-              <span
-                style={{
-                  display: "inline-flex",
-                  marginLeft: meta ? t.space8 : 0,
-                  flexShrink: 0,
-                }}
-              >
-                <RowCpu value={cpu} />
-              </span>
-            )}
+            {row.name}
           </span>
-        </Button>
-      </div>
+          {active && <Badge>Loaded</Badge>}
+        </button>
+        {meta != null && (
+          <span
+            style={{
+              fontSize: t.fontCaption,
+              color: t.textSecondary,
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+            }}
+          >
+            {meta}
+          </span>
+        )}
+        {ready && cpu != null && <RowCpu value={cpu} />}
+      </Row>
 
-      {expanded && caretActive && (
+      {open && (
         <>
           <SceneRow
-            kind="base"
-            tag="BASE"
-            name="Base Preset"
-            sub="main preset sound"
+            name="Main sound"
+            preset={row.name}
             selected={sel.has(baseKey(row.slot))}
             onToggle={() => {
               onToggleKey(baseKey(row.slot));
@@ -308,10 +224,8 @@ export const PresetRow = memo(function PresetRow({
           {scenesArr.map((sc, i) => (
             <SceneRow
               key={`s${String(i)}`}
-              kind="fs"
-              tag={sc.fs != null ? `FS${String(sc.fs)}` : "—"}
               name={sc.name}
-              sub="footswitch scene"
+              preset={row.name}
               selected={sel.has(sceneKeyOf(row.slot, i))}
               onToggle={() => {
                 onToggleKey(sceneKeyOf(row.slot, i));
@@ -328,20 +242,18 @@ export const PresetRow = memo(function PresetRow({
             return (
               <SceneRow
                 key={`f${String(i)}`}
-                kind="fs"
-                tag={`FS${String(f.switch + 1)}`}
                 name={footswitchName(f)}
-                sub={levelable ? "footswitch" : "no level control"}
+                preset={row.name}
+                caption={
+                  levelable
+                    ? `footswitch ${String(f.switch + 1)}`
+                    : "No volume knob to level"
+                }
                 selected={sel.has(fswKey(row.slot, i))}
                 onToggle={() => {
                   onToggleKey(fswKey(row.slot, i));
                 }}
                 disabled={!levelable}
-                disabledTitle={
-                  levelable
-                    ? undefined
-                    : "This footswitch has no level control to adjust"
-                }
               />
             );
           })}
@@ -350,17 +262,3 @@ export const PresetRow = memo(function PresetRow({
     </>
   );
 }, presetRowPropsEqual);
-
-function metaStyle(
-  t: ReturnType<typeof useTheme>["t"],
-  color: string,
-): React.CSSProperties {
-  return {
-    fontFamily: t.mono,
-    fontSize: t.fsMicro,
-    letterSpacing: t.lsMeta,
-    color,
-    whiteSpace: "nowrap",
-    flexShrink: 0,
-  };
-}

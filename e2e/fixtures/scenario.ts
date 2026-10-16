@@ -137,19 +137,46 @@ export async function openLevel(page: Page): Promise<void> {
  *  rows (scenes/footswitches) that preset also has selected. */
 export const baseRowKey = (slot: number): string => `p${String(slot)}`;
 
-/** Select ONLY a preset's Base row (never its scenes/footswitches) — expand the caret, then
- *  tick the "Base Preset" child row alone. Kept even though the target picker no longer
- *  collides across a preset's other rows (each row now has its own `target:<rowKey>`
- *  selector) — this still isolates a base-clamp test to exactly the one row it means to
- *  drive. */
+/** Open a preset on the Level (or Doctor) list with its caret ("Open <name>"). The caret
+ *  is there only once the backup scan has read the preset's scenes and footswitches, so
+ *  this also waits for the scan. */
+export async function openPreset(page: Page, name: string): Promise<void> {
+  await page
+    .getByRole("button", { name: `Open ${name}`, exact: true })
+    .click({ timeout: 60_000 });
+}
+
+/** The list's checkbox for one sound of a preset ("Choose Rhythm in E2E Rig"). */
+export const soundBox = (page: Page, sound: string, preset: string) =>
+  page.getByRole("checkbox", {
+    name: `Choose ${sound} in ${preset}`,
+    exact: true,
+  });
+
+/** The list's checkbox for a whole preset ("Choose E2E Rig"). */
+export const presetBox = (page: Page, preset: string) =>
+  page.getByRole("checkbox", { name: `Choose ${preset}`, exact: true });
+
+/** The Level list's main action once something is chosen: "Level N sounds" (it counts
+ *  SOUNDS — the main sound, each scene, each footswitch). */
+export const levelButton = (page: Page, sounds: number | "any") =>
+  page.getByRole("button", {
+    name:
+      sounds === "any"
+        ? /^Level \d+ sounds?$/
+        : new RegExp(`^Level ${String(sounds)} sounds?$`),
+  });
+
+/** Select ONLY a preset's main sound (never its scenes/footswitches) — open it with the
+ *  caret, then tick the "Main sound" sub-row alone. Kept even though the target picker no
+ *  longer collides across a preset's other rows (each row now has its own
+ *  `target:<rowKey>` selector) — this still isolates a base-clamp test to exactly the one
+ *  row it means to drive. */
 export async function selectBaseOnly(page: Page, name: string): Promise<void> {
   const filter = page.getByPlaceholder(/Filter by name or slot/i);
   await filter.fill(name);
-  await page
-    .getByTitle(/Show Base/)
-    .first()
-    .click();
-  await page.getByText("Base Preset", { exact: true }).click();
+  await openPreset(page, name);
+  await soundBox(page, "Main sound", name).click();
   await filter.fill("");
 }
 
@@ -200,9 +227,7 @@ export async function runBaseLevel(
     await selectBaseOnly(page, preset.name);
   }
   const n = String(targets.length);
-  await page
-    .getByRole("button", { name: new RegExp(`Level ${n} preset`) })
-    .click();
+  await levelButton(page, targets.length).click();
   await page.getByText(/I.ve backed up with Pro Control/i).click();
   for (const { preset, label } of targets) {
     await ensurePresetGroupOpen(page, preset.slot);
@@ -225,8 +250,8 @@ export async function runBaseLevel(
   });
 }
 
-/** Select each preset in `presets` on the Level tab by name (filter → "Select preset to
- *  level" → clear filter) — the Level twin of `selectPresetsForCheck`. */
+/** Choose each preset in `presets` WHOLE on the Level tab by name (filter → its
+ *  "Choose <name>" checkbox → clear filter) — the Level twin of `selectPresetsForCheck`. */
 export async function selectPresetsForLevel(
   page: Page,
   presets: Preset[],
@@ -234,25 +259,24 @@ export async function selectPresetsForLevel(
   const filter = page.getByPlaceholder(/Filter by name or slot/i);
   for (const p of presets) {
     await filter.fill(p.name);
-    await page.getByTitle("Select preset to level").first().click();
+    await presetBox(page, p.name).click();
   }
   await filter.fill("");
 }
 
-/** Open Doctor and select each preset in `presets` by name (filter → click "Select preset
- *  to check" → clear filter). Shared by every doctor spec's selection step (was a
+/** Open Doctor and select each preset in `presets` by name (filter → its "Choose <name>"
+ *  checkbox → clear filter). Shared by every doctor spec's selection step (was a
  *  byte-identical loop in doctor.spec.ts and doctor.online.spec.ts). */
 export async function selectPresetsForCheck(
   page: Page,
   presets: Preset[],
 ): Promise<void> {
-  // `exact`: the Level list's per-preset "<name> sounds" disclosure (E2E Doctor Oracle)
-  // also contains the word.
+  // `exact`: the Level list's "E2E Doctor Oracle" name button also contains the word.
   await page.getByRole("button", { name: "Doctor", exact: true }).click();
   const filter = page.getByPlaceholder(/Filter by name or slot/i);
   for (const p of presets) {
     await filter.fill(p.name);
-    await page.getByTitle("Select preset to check").first().click();
+    await presetBox(page, p.name).click();
   }
   await filter.fill("");
 }

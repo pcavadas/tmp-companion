@@ -1,18 +1,16 @@
-// src/views/level/HowLevelingSheet.tsx — the "How leveling works" explainer.
+// src/views/level/HowLevelingSheet.tsx — the "How leveling works" dialog, look B.
 //
-// A calm, read-only one-screen sheet opened from the "How it works" button in the Level
-// footer status bar. Recreated from the Claude Design handoff (reference/HowLevelingSheet.jsx) with
-// this codebase's theme tokens + Icon + Button. No inputs, no persistence, no fetch.
+// A calm, read-only Dialog (500 wide) opened from "How it works" in the Level list's
+// Footer: the three steps every run takes, then "Which knob it turns" — a two-column
+// table naming the one control leveling turns for each kind of sound — and one closing
+// line. "Done" or a click on the scrim closes it (it guards no write). No close (×)
+// button, no inputs, no persistence, no fetch.
 //
-// One deliberate copy change from the handoff: the "Two amps in parallel" case SETS
-// "Both amps' volume" (not the handoff's "Output level") — the rebalance algorithm
-// adjusts both amps' outputLevel (same control as the scene case), then balances them;
-// it never touches the preset's master level, and "Output level" collided with the
-// whole-preset row.
-
-import { Fragment } from "react";
+// "Two amps at once" turns "Both amps' volume" (not the preset's level): the rebalance
+// adjusts both amps' output, the same control as the scene case, then levels the pair.
 
 import { useTheme } from "../../theme/ThemeContext";
+import { sectionLabel } from "../../theme/tokens";
 import {
   Dialog,
   DialogHeader,
@@ -20,319 +18,101 @@ import {
   DialogFooter,
 } from "../../ui/Dialog";
 import { Button } from "../../ui/primitives";
-import { Icon } from "../../ui/Icon";
-import type { IconName } from "../../ui/Icon";
 
-// The one rhythm every run follows: play → measure → set.
-const LEVEL_BEATS: readonly (readonly [IconName, string, string])[] = [
-  ["wave", "Plays a test tone", "through your rig"],
-  ["gauge", "Measures how loud", "the real output is"],
-  ["settings", "Sets one control", "to hit your target"],
+const TITLE = "How leveling works";
+/** Vertical padding of each "Which knob it turns" row (the frame's 7 px). */
+const KNOB_ROW_PAD_Y = 7;
+
+// The three steps every run takes.
+const STEPS: readonly string[] = [
+  "A short test tone plays through the sound.",
+  "The app listens to how loud it comes out.",
+  "It turns one knob until the sound reaches your target.",
 ];
 
-// The four cases, each naming the single control leveling adjusts.
-const LEVEL_CASES: readonly { name: string; sub: string; sets: string }[] = [
+// Each kind of sound, and the one knob leveling turns for it.
+const KNOBS: readonly { sound: string; knob: string }[] = [
+  { sound: "Main sound", knob: "The preset's level" },
   {
-    name: "The whole preset",
-    sub: "another preset in your list",
-    sets: "Output level",
+    sound: "A scene",
+    knob: "The amp's output, or the block the scene turns on",
   },
-  {
-    name: "A scene",
-    sub: "a different sound on a footswitch",
-    sets: "Amp volume",
-  },
-  {
-    name: "A footswitch",
-    sub: "a switch that turns a block on or off",
-    sets: "A block parameter",
-  },
-  {
-    name: "Two amps in parallel",
-    sub: "two amps running at once",
-    sets: "Both amps’ volume",
-  },
+  { sound: "A footswitch", knob: "A knob on the block it turns on" },
+  { sound: "Two amps at once", knob: "Both amps' volume" },
 ];
 
-function LevelBeatStrip() {
-  const { t } = useTheme();
-  return (
-    <div style={{ display: "flex", alignItems: "stretch", gap: t.space4 }}>
-      {LEVEL_BEATS.map(([icon, title, sub], i) => (
-        <Fragment key={title}>
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              flexDirection: "column",
-              gap: t.space3,
-              padding: `${String(t.space5)}px ${String(t.space6)}px`,
-              background: t.window,
-              border: `0.5px solid ${t.hairline}`,
-              borderRadius: 9,
-            }}
-          >
-            <div
-              style={{ display: "flex", alignItems: "center", gap: t.space4 }}
-            >
-              <span
-                style={{
-                  width: 22,
-                  height: 22,
-                  borderRadius: 6,
-                  background: t.accentSoft,
-                  display: "grid",
-                  placeItems: "center",
-                  flexShrink: 0,
-                }}
-              >
-                <Icon name={icon} size={13} stroke={t.accentDeep} />
-              </span>
-              <span
-                style={{
-                  fontFamily: t.mono,
-                  fontSize: 9,
-                  letterSpacing: "0.12em",
-                  color: t.faint,
-                }}
-              >
-                {i + 1}
-              </span>
-            </div>
-            <span
-              style={{
-                fontFamily: t.sans,
-                fontSize: 13,
-                fontWeight: 600,
-                color: t.ink,
-                lineHeight: 1.2,
-              }}
-            >
-              {title}
-            </span>
-            <span
-              style={{
-                fontFamily: t.sans,
-                fontSize: 11.5,
-                color: t.mutedInk,
-                lineHeight: 1.3,
-              }}
-            >
-              {sub}
-            </span>
-          </div>
-          {i < LEVEL_BEATS.length - 1 && (
-            <span
-              style={{
-                alignSelf: "center",
-                color: t.faint,
-                flexShrink: 0,
-                display: "flex",
-              }}
-            >
-              <Icon name="chev-right" size={14} stroke={t.faint} />
-            </span>
-          )}
-        </Fragment>
-      ))}
-    </div>
-  );
-}
-
-interface HowLevelingSheetProps {
+export interface HowLevelingSheetProps {
   onClose: () => void;
 }
 
 export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
   const { t } = useTheme();
-
   return (
-    <Dialog size="md" onClose={onClose} label="How leveling works">
+    <Dialog size="explainer" onClose={onClose} label={TITLE}>
       <DialogHeader>
-        <span
+        <h2
           style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: t.space4,
+            margin: 0,
+            fontSize: t.fontLarge,
+            lineHeight: `${String(t.lineLarge)}px`,
+            fontWeight: t.weightSemibold,
+            color: t.text,
           }}
         >
-          <span
-            style={{
-              width: 24,
-              height: 24,
-              borderRadius: 7,
-              background: t.accentSoft,
-              display: "grid",
-              placeItems: "center",
-            }}
-          >
-            <Icon name="gauge" size={15} stroke={t.accentDeep} />
-          </span>
-          <span style={{ fontFamily: t.serif, fontSize: 18, color: t.ink }}>
-            How leveling works
-          </span>
-        </span>
-        <button
-          type="button"
-          onClick={onClose}
-          title="Close"
-          aria-label="Close"
-          style={{
-            border: "none",
-            background: "transparent",
-            cursor: "pointer",
-            display: "flex",
-            padding: t.space2,
-            color: t.faint,
-          }}
-        >
-          <Icon name="x" size={16} />
-        </button>
+          {TITLE}
+        </h2>
       </DialogHeader>
-
       <DialogBody>
         <div
-          style={{
-            fontFamily: t.sans,
-            fontSize: 13.5,
-            lineHeight: 1.5,
-            color: t.ink2,
-            marginBottom: t.space6,
-          }}
+          style={{ display: "flex", flexDirection: "column", gap: t.sp12 + 2 }}
         >
-          Every leveling run does the same three things:
-        </div>
-        <LevelBeatStrip />
-        <div
-          style={{
-            fontFamily: t.sans,
-            fontSize: 13.5,
-            lineHeight: 1.5,
-            color: t.ink2,
-            margin: `${String(t.space8)}px 0 ${String(t.space5)}px`,
-          }}
-        >
-          The control it sets depends on what you&rsquo;re leveling:
-        </div>
-        <div
-          style={{ display: "flex", flexDirection: "column", gap: t.space4 }}
-        >
-          {LEVEL_CASES.map((c) => (
-            <div
-              key={c.name}
+          <ol
+            style={{
+              margin: 0,
+              paddingLeft: t.sp16 + t.sp4,
+              display: "flex",
+              flexDirection: "column",
+              gap: t.sp4,
+            }}
+          >
+            {STEPS.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+          <div>
+            <h3
               style={{
-                display: "flex",
-                alignItems: "center",
-                gap: t.space6,
-                padding: `${String(t.space5)}px ${String(t.space6)}px`,
-                background: t.window,
-                border: `0.5px solid ${t.hairline}`,
-                borderRadius: 10,
+                ...sectionLabel(t),
+                margin: `0 0 ${String(t.sp4)}px`,
               }}
             >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  style={{
-                    fontFamily: t.serif,
-                    fontSize: 15,
-                    color: t.ink,
-                    lineHeight: 1.2,
-                  }}
-                >
-                  {c.name}
-                </div>
-                <div
-                  style={{
-                    fontFamily: t.sans,
-                    fontSize: 11.5,
-                    color: t.mutedInk,
-                    marginTop: t.space1,
-                  }}
-                >
-                  {c.sub}
-                </div>
+              Which knob it turns
+            </h3>
+            {KNOBS.map((k) => (
+              <div
+                key={k.sound}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "150px minmax(0, 1fr)",
+                  gap: t.sp12,
+                  padding: `${String(KNOB_ROW_PAD_Y)}px 0`,
+                  borderTop: `1px solid ${t.separator}`,
+                }}
+              >
+                <span style={{ fontWeight: t.weightMedium }}>{k.sound}</span>
+                <span style={{ color: t.textSecondary }}>{k.knob}</span>
               </div>
-              <div style={{ flexShrink: 0, textAlign: "right" }}>
-                <div
-                  style={{
-                    fontFamily: t.mono,
-                    fontSize: 8.5,
-                    letterSpacing: "0.1em",
-                    textTransform: "uppercase",
-                    color: t.faint,
-                  }}
-                >
-                  Sets
-                </div>
-                <div
-                  style={{
-                    fontFamily: t.sans,
-                    fontSize: 12.5,
-                    fontWeight: 600,
-                    color: t.accentDeep,
-                    marginTop: t.space1,
-                  }}
-                >
-                  {c.sets}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div
-          style={{
-            display: "flex",
-            gap: t.space4,
-            alignItems: "flex-start",
-            padding: `${String(t.space5)}px ${String(t.space6)}px`,
-            background: t.warnSoft,
-            border: "0.5px solid rgba(167,70,31,0.32)",
-            borderRadius: 10,
-            marginTop: t.space6,
-          }}
-        >
-          <span
-            style={{
-              color: t.warn,
-              flexShrink: 0,
-              display: "flex",
-              paddingTop: t.space1,
-            }}
-          >
-            <Icon name="warn-tri" size={15} stroke={t.warn} />
-          </span>
-          <span
-            style={{
-              fontFamily: t.sans,
-              fontSize: 12.5,
-              lineHeight: 1.5,
-              color: t.ink2,
-              textWrap: "pretty",
-            }}
-          >
-            For two amps, it balances them to equal loudness first, then levels
-            the pair. If your target is out of reach, it sets the loudest level
-            it can. It also tells you the exact number it reached.
-          </span>
+            ))}
+          </div>
+          <p style={{ margin: 0 }}>
+            You can check and change the block and knob for each sound before
+            you start.
+          </p>
         </div>
       </DialogBody>
-
-      <DialogFooter
-        start={
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: 10,
-              letterSpacing: "0.04em",
-              color: t.faint,
-            }}
-          >
-            Play &rarr; measure &rarr; set
-          </span>
-        }
-      >
-        <Button variant="primary" size="sm" onClick={onClose}>
-          Got it
+      <DialogFooter>
+        <Button variant="primary" onClick={onClose}>
+          Done
         </Button>
       </DialogFooter>
     </Dialog>
