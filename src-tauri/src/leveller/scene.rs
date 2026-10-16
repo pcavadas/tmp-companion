@@ -19,7 +19,12 @@ pub struct BatchedSceneOutcome {
     pub windows: u32,
     pub writes: u32,
     pub elapsed_ms: u128,
+    /// Why this scene was not leveled (its reason text, for the log and bug report); `None`
+    /// for a leveled scene.
     pub failure: Option<String>,
+    /// The typed kind of `failure` ([`SkipKind`]) — what the frontend chooses the row's
+    /// message by. Set exactly when `failure` is.
+    pub failure_kind: Option<SkipKind>,
     /// Dynamics spread of the scene's measure capture (LU); `None` where the
     /// measuring path has no full-capture meter (the live-window runner) or the
     /// scene failed. See `LevelResult::dynamic_spread_lu`.
@@ -72,9 +77,9 @@ pub struct SceneJob {
     pub target_lufs: f64,
     pub knobs: Vec<KnobTarget>,
     /// When `Some`, this scene can't be safely leveled (mic/split/no-active-amp/etc.);
-    /// the runner reports it as a skipped (failed) outcome and moves on, never aborting
-    /// the whole run. `knobs` is empty in that case.
-    pub skip: Option<String>,
+    /// the runner reports it as a skipped (failed) outcome — with the refusal's kind — and
+    /// moves on, never aborting the whole run. `knobs` is empty in that case.
+    pub skip: Option<Refusal>,
     /// True only for a parallel scene whose lanes RE-MERGE (≥2 knobs feeding one summed
     /// output) — the rebalance flow may adjust the lanes' mix. False for series, single
     /// amp, and split-OUTPUT scenes (separate physical outs have no shared mix).
@@ -576,7 +581,7 @@ pub(super) fn run_scene_jobs(
                 failed_scene_outcome(
                     job.scene_slot,
                     job.target_lufs,
-                    e.to_string(),
+                    e.refusal(),
                     t0.elapsed().as_millis(),
                 )
             }
@@ -620,31 +625,25 @@ pub(super) fn run_scene_jobs(
     // discards the pair whole, so reporting a landed trade there would be a lie.
     let trade_persisted = save && attempted && hold.is_some();
     // The batch's ONE persist — after the re-amp OFF, on its own clean connection.
-    // Fired on the stopped path too, so already-reported scenes are never lost.
+    // Fired on the stopped path too, so already-reported scenes are never lost. Its verdict
+    // is REPORTED on every path, the stopped one included: a save that fails (its retry
+    // too) marks every written scene `persist_mismatch`, and a save that lands is re-read
+    // so a value it did not keep is marked the same way. Nothing here sends a load: the
+    // save is the first device command after the re-amp OFF, as it always was.
     if save && attempted {
-        if stopped {
-            // The callee already warns internally on its own first failure; this
-            // catches the case where its retry ALSO failed (cancelled path only —
-            // the non-cancelled `?` below still surfaces a hard error to the caller).
-            on_tail("Saving preset…");
-            if let Err(e) = save_deferred_scene_writes(slot, restore_scene, &reasserts) {
-                log::warn!("save_deferred_scene_writes failed on cancel (slot {slot}): {e}");
-            }
-            // A cancelled run that LANDED A TRADE returns its outcomes (see below), so they
-            // need the same persist verdict a completed run's get.
-            if trade_persisted {
+        on_tail("Saving preset…");
+        let saved_result = save_deferred_scene_writes(slot, restore_scene, &reasserts);
+        report_batch_save(
+            slot,
+            stopped,
+            saved_result,
+            &written,
+            &mut outcomes,
+            |outcomes| {
                 on_tail("Verifying…");
-                verify_persisted_writes(slot, &written, &force_bypass_restore, &mut outcomes);
-            }
-        } else {
-            on_tail("Saving preset…");
-            save_deferred_scene_writes(slot, restore_scene, &reasserts)?;
-            // Confirm the save kept what the run reports — no re-capture, one field-8 read,
-            // after every audio step. A stopped run with no trade returns a cancel below and
-            // its outcomes are discarded, so it is not worth a read.
-            on_tail("Verifying…");
-            verify_persisted_writes(slot, &written, &force_bypass_restore, &mut outcomes);
-        }
+                verify_persisted_writes(slot, &written, &force_bypass_restore, outcomes);
+            },
+        );
     }
     // ⟦3b⟧ CANCELLED BEFORE THE FIRST SOLVE. Nothing was deferred, so `save && attempted` above
     // is false and NO `save_deferred_scene_writes` ran — which makes this reload safe under
@@ -658,29 +657,65 @@ pub(super) fn run_scene_jobs(
         }
     }
     if stopped {
-        // ⟦3a⟧ CANCEL AFTER A LANDED TRADE: PERSIST AND DISCLOSE, never silently.
+        // ⟦3a⟧ A STOPPED RUN THAT SAVED RETURNS ITS OUTCOMES — never a bare cancel, whose
+        // results the command drops. The save above persisted every scene this run already
+        // reported, and its verdict (`persist_mismatch`) is on those outcomes: dropping them
+        // would hide a save that did not hold behind "Everything matched so far stays saved."
         //
-        // The save above has just persisted the raised `presetLevel` + the base fader that
-        // holds base on target. Backing the trade out HERE was the alternative and it is
-        // WRONG: every scene this run already solved was solved AT the raised level, so
-        // lowering `presetLevel` again would leave those persisted values off target by
-        // exactly `raise_db` while the run reported them on target — silently wrong numbers,
-        // the one outcome this codebase refuses. Skipped benefiting scenes DO end up
-        // `raise_db` louder than authored, which is a real cost — so the run returns its
-        // outcomes (rather than the historical cancel error, whose results the command drops)
-        // and the trade summary rides along, giving the UI both the disclosure and the
-        // pre-trade values to restore from. danger.md's cancel contract is intact either way:
-        // nothing early-returns past the re-amp engage and the cleanup above ran whole.
-        if trade_persisted {
-            log::warn!(
-                "slot {slot}: cancelled AFTER a headroom trade landed — the raised base pair is \
-                 persisted and reported, not silently backed out"
-            );
+        // With a LANDED TRADE it is also the disclosure. The save persisted the raised
+        // `presetLevel` + the base fader that holds base on target. Backing the trade out HERE
+        // was the alternative and it is WRONG: every scene this run already solved was solved
+        // AT the raised level, so lowering `presetLevel` again would leave those persisted
+        // values off target by exactly `raise_db` while the run reported them on target —
+        // silently wrong numbers, the one outcome this codebase refuses. Skipped benefiting
+        // scenes DO end up `raise_db` louder than authored, which is a real cost — so the
+        // trade summary rides along, giving the UI both the disclosure and the pre-trade
+        // values to restore from. danger.md's cancel contract is intact either way: nothing
+        // early-returns past the re-amp engage and the cleanup above ran whole.
+        if save && attempted {
+            if trade_persisted {
+                log::warn!(
+                    "slot {slot}: cancelled AFTER a headroom trade landed — the raised base pair \
+                     is persisted and reported, not silently backed out"
+                );
+            }
             return Ok(outcomes);
         }
         return Err(LevelError::Cancelled);
     }
     Ok(outcomes)
+}
+
+/// The batch save's verdict, onto the outcomes it covers: a save that landed is re-read
+/// (`verify`, which stamps `persist_mismatch` per written scene), and one that failed — its
+/// retry included — marks every scene this batch WROTE as not held, since the stored preset
+/// cannot be holding a value the save never wrote. A scene that wrote nothing is left alone
+/// (`None`, nothing to hold). The failure is only logged beyond that: the outcomes are the
+/// report, so the Summary says "the save didn't hold" on exactly those rows, on a stopped
+/// run too. Pure apart from `verify`, so the policy is unit-gated.
+pub(super) fn report_batch_save(
+    slot: ListIndex,
+    stopped: bool,
+    saved: Result<(), LevelError>,
+    written: &[PersistedWrite],
+    outcomes: &mut [BatchedSceneOutcome],
+    verify: impl FnOnce(&mut [BatchedSceneOutcome]),
+) {
+    match saved {
+        Ok(()) => verify(outcomes),
+        Err(e) => {
+            log::warn!(
+                "save_deferred_scene_writes failed{} (slot {slot}): {e} — every written scene \
+                 is reported as not held",
+                if stopped { " on cancel" } else { "" }
+            );
+            for o in outcomes.iter_mut() {
+                if written.iter().any(|w| w.scene_slot == o.scene_slot) {
+                    o.persist_mismatch = Some(true);
+                }
+            }
+        }
+    }
 }
 
 /// The scene batch's ONE persist: recall the preset's original active scene (a save stamps
@@ -1377,7 +1412,7 @@ pub(super) fn handle_one_scene(
 ) -> Result<SceneSolve, LevelError> {
     // CLASS GATE, before any device work — the same refusal wording every lane shares.
     if let Some(refusal) = handle.refuse_if_not_a_level_control() {
-        return Err(LevelError::from(refusal));
+        return Err(LevelError::refused(SkipKind::UnsupportedKnob, refusal));
     }
     let kt = match job.knobs.as_slice() {
         [one] => one,
@@ -1849,6 +1884,7 @@ pub(super) fn solved_scene_outcome(
         writes: s.writes,
         elapsed_ms,
         failure: None,
+        failure_kind: None,
         dynamic_spread_lu: Some(s.spread),
         clamp_kind: s.clamp_kind,
         clamp_reason: s.clamp_reason,
@@ -1858,11 +1894,11 @@ pub(super) fn solved_scene_outcome(
     }
 }
 
-/// Build a failed/skipped per-scene outcome.
+/// Build a failed/skipped per-scene outcome: the refusal's text and its kind.
 pub(super) fn failed_scene_outcome(
     scene_slot: u32,
     target_lufs: f64,
-    failure: String,
+    failure: Refusal,
     elapsed_ms: u128,
 ) -> BatchedSceneOutcome {
     BatchedSceneOutcome {
@@ -1874,7 +1910,8 @@ pub(super) fn failed_scene_outcome(
         windows: 0,
         writes: 0,
         elapsed_ms,
-        failure: Some(failure),
+        failure_kind: Some(failure.kind),
+        failure: Some(failure.reason),
         dynamic_spread_lu: None,
         // A FAILED row is not a clamped row: it never produced a verdict to name.
         ..Default::default()
@@ -2180,5 +2217,77 @@ mod scene_handle_asis_seed_tests {
         let (_, without) = flat(None);
         assert!(without.clamped);
         assert_eq!(without.final_value, param.at_fraction(0.25));
+    }
+}
+
+#[cfg(test)]
+mod batch_save_report_tests {
+    use super::*;
+
+    fn written(scene_slot: u32) -> PersistedWrite {
+        PersistedWrite {
+            scene_slot,
+            overlay: Some(scene_slot),
+            node_id: "amp".into(),
+            parameter_id: "outputLevel".into(),
+            value: 0.5,
+        }
+    }
+
+    fn outcome(scene_slot: u32) -> BatchedSceneOutcome {
+        BatchedSceneOutcome {
+            scene_slot,
+            ..Default::default()
+        }
+    }
+
+    /// OWNER-ANSWERS 4 — "the save didn't hold" must reach the Summary on EVERY save,
+    /// the one after a Stop included. A batch save that failed (its retry too) marks every
+    /// scene the batch wrote as not held; a scene that wrote nothing keeps no verdict, and
+    /// nothing is verified against a save that never landed. Before, the stopped path only
+    /// logged the failure and the scenes read as leveled.
+    #[test]
+    fn a_failed_batch_save_marks_every_written_scene_as_not_held_on_a_stop_too() {
+        for stopped in [true, false] {
+            let mut outcomes = vec![outcome(0), outcome(1), outcome(2)];
+            let mut verified = false;
+            report_batch_save(
+                ListIndex(3),
+                stopped,
+                Err(LevelError::Device("save dropped".into())),
+                &[written(0), written(2)],
+                &mut outcomes,
+                |_| verified = true,
+            );
+            assert!(!verified, "nothing to re-read after a failed save");
+            let verdicts: Vec<Option<bool>> = outcomes.iter().map(|o| o.persist_mismatch).collect();
+            assert_eq!(
+                verdicts,
+                [Some(true), None, Some(true)],
+                "stopped={stopped}"
+            );
+        }
+    }
+
+    /// A save that landed is re-read — on a stopped run as on a finished one — and the
+    /// re-read's verdict is what the outcomes carry.
+    #[test]
+    fn a_landed_batch_save_is_verified_on_a_stop_too() {
+        for stopped in [true, false] {
+            let mut outcomes = vec![outcome(0)];
+            report_batch_save(
+                ListIndex(3),
+                stopped,
+                Ok(()),
+                &[written(0)],
+                &mut outcomes,
+                |os| os[0].persist_mismatch = Some(false),
+            );
+            assert_eq!(
+                outcomes[0].persist_mismatch,
+                Some(false),
+                "stopped={stopped}"
+            );
+        }
     }
 }

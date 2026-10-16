@@ -69,6 +69,16 @@ pub struct FootswitchLevelResult {
     /// The run-end re-amp warning, as on [`LevelResult::reamp_warning`]. Omitted when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reamp_warning: Option<String>,
+    /// Re-amp may still be on, as on [`LevelResult::reamp_still_on`].
+    pub reamp_still_on: bool,
+}
+
+impl FootswitchLevelResult {
+    /// Record the run-end re-amp verdict on this row: the typed flag and its text.
+    pub(crate) fn stamp_reamp(&mut self, out: ReampOffOutcome) {
+        self.reamp_still_on = out.still_on();
+        self.reamp_warning = out.warning();
+    }
 }
 
 /// How to write the leveling `param` function — resolved by the caller, which only ever EDITS
@@ -224,7 +234,7 @@ impl FsParamTarget {
     ) -> Result<Self, LevelError> {
         let target = Self::new(&Self::fender_id_of(preset, node_id), param, authored);
         match target.refuse_if_not_a_level_control() {
-            Some(refusal) => Err(LevelError::from(refusal)),
+            Some(refusal) => Err(LevelError::refused(SkipKind::UnsupportedKnob, refusal)),
             None => Ok(target),
         }
     }
@@ -725,6 +735,7 @@ pub fn fs_result_from_ceiling(
         method: method.to_string(),
         persist_mismatch: None,
         reamp_warning: None,
+        reamp_still_on: false,
     }
 }
 
@@ -960,6 +971,7 @@ impl ParamSolve {
             method: method.into(),
             persist_mismatch: None,
             reamp_warning: None,
+            reamp_still_on: false,
         }
     }
 }
@@ -1016,7 +1028,7 @@ pub(super) fn solve_param_secant(
     // the player wrote, not its loudness — refuse instead of "levelling" it. Surfaces as a
     // clean per-switch `status: "error"` item (the batched command's `Err` arm).
     if let Some(refusal) = param.refuse_if_not_a_level_control() {
-        return Err(LevelError::from(refusal));
+        return Err(LevelError::refused(SkipKind::UnsupportedKnob, refusal));
     }
     // The wet floor anchors on the ENGAGED value when the switch already has one (see
     // `anchored`'s doc); applied here, not at call sites, so it cannot be forgotten.

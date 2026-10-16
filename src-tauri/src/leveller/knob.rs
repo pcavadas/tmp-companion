@@ -309,13 +309,16 @@ pub(super) fn set_knobs(
                 // document, so having none is this caller's own gap, and it keeps its own
                 // wording.
                 let Some(sv) = saved else {
-                    return Err(LevelError::Device(format!(
-                        "set_knobs: refusing to write {group_id}/{node_id} in scene {scene} — \
-                         the saved preset does not say whether that node already has a scene \
-                         overlay (no saved-preset read), and both write shapes corrupt it \
-                         (enable reseeds an existing overlay from base; omitting it leaks the \
-                         write to base)"
-                    )));
+                    return Err(LevelError::refused(
+                        SkipKind::SceneWriteRefused,
+                        format!(
+                            "set_knobs: refusing to write {group_id}/{node_id} in scene {scene} — \
+                             the saved preset does not say whether that node already has a \
+                             scene overlay (no saved-preset read), and both write shapes \
+                             corrupt it (enable reseeds an existing overlay from base; \
+                             omitting it leaks the write to base)"
+                        ),
+                    ));
                 };
                 match scene_write_verdict_for_param(sv, scene, node_id, parameter_id) {
                     SceneWriteVerdict::WriteDirect { .. } => {}
@@ -326,7 +329,10 @@ pub(super) fn set_knobs(
                         }
                     }
                     SceneWriteVerdict::Refuse { reason, .. } => {
-                        return Err(LevelError::Device(format!("set_knobs: {reason}")))
+                        return Err(LevelError::refused(
+                            SkipKind::SceneWriteRefused,
+                            format!("set_knobs: {reason}"),
+                        ))
                     }
                 }
             }

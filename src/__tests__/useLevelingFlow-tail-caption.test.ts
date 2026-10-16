@@ -82,6 +82,7 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
         status: "active",
         result: null,
         message: null,
+        skipKind: null,
         tail: "Saving…",
       });
     });
@@ -127,6 +128,7 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
           dynamic_spread_lu: null,
         }),
         message: null,
+        skipKind: null,
       });
     });
     expect(result.current.run.tailMessage).toBeNull();
@@ -137,6 +139,7 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
         status: "active",
         result: null,
         message: null,
+        skipKind: null,
         tail: "Verifying…",
       });
     });

@@ -262,29 +262,31 @@ pub(crate) fn try_hold_for_monitor_connect() -> Option<std::sync::MutexGuard<'st
 /// competing seize while they run. Re-establishes a live session for the UI
 /// afterward regardless of outcome, so the connection/preset list survive. This
 /// release→work→reconnect bookend is shared by every command that drives the
-/// device through its own connections.
-pub(crate) async fn with_released_seize<T, F>(
+/// device through its own connections. Generic over the work's error, so a command with a
+/// typed error (`error::AppError`) keeps it through the bookend.
+pub(crate) async fn with_released_seize<T, E, F>(
     arc: Arc<Mutex<Option<Session>>>,
     work: F,
-) -> Result<T, String>
+) -> Result<T, E>
 where
     T: Send + 'static,
-    F: FnOnce() -> Result<T, String> + Send + 'static,
+    E: From<String> + Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
 {
     tauri::async_runtime::spawn_blocking(move || with_released_seize_blocking(arc, work))
         .await
-        .map_err(|e| format!("device task failed: {e}"))?
+        .map_err(|e| E::from(format!("device task failed: {e}")))?
 }
 
 /// Blocking core of [`with_released_seize`] — split out so commands that try the
 /// monitor's live command lane first (`monitor::try_live_op`) can fall back to the
 /// release→work→reconnect bookend inside their own `spawn_blocking`.
-pub(crate) fn with_released_seize_blocking<T, F>(
+pub(crate) fn with_released_seize_blocking<T, E, F>(
     arc: Arc<Mutex<Option<Session>>>,
     work: F,
-) -> Result<T, String>
+) -> Result<T, E>
 where
-    F: FnOnce() -> Result<T, String>,
+    F: FnOnce() -> Result<T, E>,
 {
     let _op = lock_device_op(); // serialize the whole release→work→reconnect
     *lock_ok(&arc) = None;

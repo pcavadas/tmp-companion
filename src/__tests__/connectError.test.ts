@@ -8,6 +8,8 @@
 import { describe, it, expect } from "vitest";
 import {
   errorKind,
+  errorReampStillOn,
+  errorSkipKind,
   isCommandErrorKind,
   isConnectGateKind,
   noUnitState,
@@ -76,7 +78,70 @@ describe("errorKind", () => {
     for (const k of ["not_connected", "busy", "not_ready", "other"]) {
       expect(isCommandErrorKind(k)).toBe(true);
     }
-    expect(isCommandErrorKind("cancelled")).toBe(false);
+    // The leveling commands' kinds (`error::SkipKind`, pinned on the Rust side by
+    // `a_skip_kind_serializes_as_its_wire_token`).
+    for (const k of [
+      "preset_unreadable",
+      "footswitches_unreadable",
+      "no_active_amp",
+      "level_manually",
+      "scene_write_refused",
+      "unsupported_knob",
+      "knob_missing",
+      "block_off",
+      "scene_change_discards",
+      "no_stimulus",
+      "clipped_capture",
+      "no_signal",
+      "connection_lost",
+      "cancelled",
+    ]) {
+      expect(isCommandErrorKind(k)).toBe(true);
+    }
+    expect(isCommandErrorKind("skipped")).toBe(false);
     expect(isCommandErrorKind(3)).toBe(false);
+  });
+});
+
+describe("errorSkipKind", () => {
+  it("reads a leveling command's typed kind, never its text", () => {
+    expect(
+      errorSkipKind(
+        new CommandError("level_preset", "x", "footswitches_unreadable"),
+      ),
+    ).toBe("footswitches_unreadable");
+    expect(errorSkipKind({ kind: "connection_lost", message: "x" })).toBe(
+      "connection_lost",
+    );
+    // Text that names a kind picks nothing.
+    expect(errorSkipKind(new Error("no active guitar amp in scene"))).toBe(
+      "other",
+    );
+    expect(errorSkipKind("preset_unreadable")).toBe("other");
+  });
+
+  it("folds the connect kinds into other: no leveling failure is one", () => {
+    for (const k of ["not_connected", "busy", "not_ready"] as const)
+      expect(errorSkipKind(new CommandError("level_preset", "x", k))).toBe(
+        "other",
+      );
+  });
+});
+
+describe("errorReampStillOn", () => {
+  it("is true only for a rejection that says so", () => {
+    expect(
+      errorReampStillOn(
+        new CommandError("level_preset", "x", "no_signal", true),
+      ),
+    ).toBe(true);
+    expect(
+      errorReampStillOn({ kind: "other", message: "x", reampStillOn: true }),
+    ).toBe(true);
+    expect(errorReampStillOn(new CommandError("level_preset", "x"))).toBe(
+      false,
+    );
+    expect(errorReampStillOn({ reampStillOn: "yes" })).toBe(false);
+    expect(errorReampStillOn("Re-amp may still be on.")).toBe(false);
   });
 });

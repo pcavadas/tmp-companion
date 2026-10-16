@@ -489,7 +489,7 @@ pub fn redistribute_clamped_headroom(
                 failed_scene_outcome(
                     job.scene_slot,
                     job.target_lufs,
-                    e.to_string(),
+                    e.refusal(),
                     t0.elapsed().as_millis(),
                 )
             }

@@ -266,6 +266,10 @@ fn the_scene_batch_levels_each_scene_and_saves_once_on_a_private_rig() {
 /// 0.45), which reads off target, so the correction capture is cancelled. The cancel path's ONE
 /// save must persist scene 0's solve and scene 1 as the
 /// player left it, not the probe.
+///
+/// A stopped run that saved returns the scenes it leveled, with the save's verdict on them
+/// (OWNER-ANSWERS 4: the Summary must hear when the save after a Stop did not hold) — never a
+/// bare cancel, whose outcomes the command used to drop.
 #[test]
 fn a_stopped_scene_is_rolled_back_before_the_batch_save() {
     let dev = SimDevice::new().with_saved_preset_json(&rig_preset_json());
@@ -325,7 +329,19 @@ fn a_stopped_scene_is_rolled_back_before_the_batch_save() {
         )
         .map_err(|e| e.to_string())
     });
-    assert!(r.is_err(), "a Stop ends the batch as a cancel: {r:?}");
+    let outcomes = r.expect("a stopped run that saved returns what it leveled");
+    assert_eq!(
+        outcomes.iter().map(|o| o.scene_slot).collect::<Vec<_>>(),
+        [0],
+        "only the scene that finished before the Stop: {outcomes:?}"
+    );
+    // The rig's stored document is static (`with_saved_preset_json`), so the re-read's
+    // verdict says nothing here about the save itself — only that the verify RAN on the
+    // stopped path and its verdict rides the outcome.
+    assert!(
+        outcomes[0].persist_mismatch.is_some(),
+        "the stopped path's save is verified and reported: {outcomes:?}"
+    );
     let twin = dev
         .param_write(1, "G1", AMPS[1], "outputLevel")
         .expect("scene 1's Twin was written");
@@ -370,6 +386,7 @@ fn the_footswitch_batch_solves_its_row_on_a_private_rig() {
             0.0,
             &mut |item| progress.push(item),
             &|| false,
+            crate::watcher::DetachWatch::start(),
         )
     })
     .expect("footswitch batch");

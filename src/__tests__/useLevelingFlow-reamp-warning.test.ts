@@ -1,5 +1,6 @@
-// src/__tests__/useLevelingFlow-reamp-warning.test.ts — the run-end re-amp warning a
-// command returns (`reamp_warning`) reaches every run item of its call, on all three lanes:
+// src/__tests__/useLevelingFlow-reamp-warning.test.ts — the run-end re-amp verdict a
+// command returns reaches every run item of its call, on all three lanes — the typed
+// `reamp_still_on` (what the screen reads) and the `reamp_warning` text (the log's):
 // the base row's own result, and a scene/footswitch batch's RETURNED rows (its per-row
 // results stream over the channel before the run-end OFF, so the return value is the only
 // carrier).
@@ -21,7 +22,7 @@ import {
   mockCommands,
 } from "./commandMocks";
 
-const WARNING = "Re-amp may still be on. Unplug and replug the unit.";
+const WARNING = "Re-amp may still be on. Restart your Tone Master Pro.";
 
 const deps = makeLevelingFlowDeps();
 
@@ -48,6 +49,7 @@ describe("run-end re-amp warning", () => {
           constant_c: -10,
           dynamic_spread_lu: 1,
           reamp_warning: WARNING,
+          reamp_still_on: true,
         }),
     });
     const { result } = renderHook(() => useLevelingFlow(deps));
@@ -58,6 +60,7 @@ describe("run-end re-amp warning", () => {
       expect(isRunOver(result.current.run.phase)).toBe(true);
     });
     expect(result.current.run.items[0].reampWarning).toBe(WARNING);
+    expect(result.current.run.items[0].reampStillOn).toBe(true);
   });
 
   it.each(["scene", "footswitch"] as const)(
@@ -67,12 +70,18 @@ describe("run-end re-amp warning", () => {
         lane === "scene"
           ? {
               level_scenes_apply_batched: () => [
-                makeLevelResult({ reamp_warning: WARNING }),
+                makeLevelResult({
+                  reamp_warning: WARNING,
+                  reamp_still_on: true,
+                }),
               ],
             }
           : {
               level_footswitches_apply: () => [
-                makeFootswitchLevelResult({ reamp_warning: WARNING }),
+                makeFootswitchLevelResult({
+                  reamp_warning: WARNING,
+                  reamp_still_on: true,
+                }),
               ],
             },
       );
@@ -87,6 +96,7 @@ describe("run-end re-amp warning", () => {
       });
       for (const row of result.current.run.items) {
         expect(row.reampWarning).toBe(WARNING);
+        expect(row.reampStillOn).toBe(true);
       }
     },
   );
@@ -100,5 +110,6 @@ describe("run-end re-amp warning", () => {
       expect(isRunOver(result.current.run.phase)).toBe(true);
     });
     expect(result.current.run.items[0].reampWarning).toBeUndefined();
+    expect(result.current.run.items[0].reampStillOn).toBeUndefined();
   });
 });

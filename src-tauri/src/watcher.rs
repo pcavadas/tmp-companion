@@ -24,11 +24,72 @@
 //! On removal (all supported platforms) it also clears the shared session slot: the
 //! seized handle is dead once the device is gone, and dropping it keeps a
 //! later reconnect from colliding with our own stale exclusive handle
-//! (`0xe00002c5` on macOS; the `flock` on Linux).
+//! (`0xe00002c5` on macOS; the `flock` on Linux). It also counts the detach
+//! ([`note_detached`]), so a leveling run in flight can report a failure after an
+//! unplug as a lost connection by type ([`DetachWatch`]), never from its text.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::error::{AppError, LevelError, SkipKind};
 use crate::session::Session;
+
+/// How many physical detaches this process has seen. Bumped by every platform's removal
+/// path ([`note_detached`]) before the frontend hears of it; read through [`DetachWatch`].
+static DETACHES: AtomicU64 = AtomicU64::new(0);
+
+/// Record one physical detach. Called by every platform's removal path below, so a run in
+/// flight can tell a lost connection from a refusal.
+pub(crate) fn note_detached() {
+    DETACHES.fetch_add(1, Ordering::SeqCst);
+}
+
+/// "Was the unit unplugged since this run began?" — taken at a leveling command's start and
+/// consulted when a row or the run fails. A failure after a detach is a lost connection
+/// whatever its text says, so the typed kind is decided here, from the watcher's own count,
+/// never from an error message. Platforms without a watcher never detach, so their failures
+/// keep the kind the code gave them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DetachWatch(u64);
+
+impl DetachWatch {
+    pub(crate) fn start() -> Self {
+        Self(DETACHES.load(Ordering::SeqCst))
+    }
+
+    /// Whether a detach happened since [`Self::start`].
+    pub(crate) fn detached(self) -> bool {
+        DETACHES.load(Ordering::SeqCst) != self.0
+    }
+
+    /// `kind`, or [`SkipKind::ConnectionLost`] when the unit was unplugged since the run began
+    /// and the kind is one a lost connection can cause ([`SkipKind::can_be_a_lost_connection`]:
+    /// a failed read or capture, not a fact about the saved preset or a Stop).
+    pub(crate) fn refine(self, kind: SkipKind) -> SkipKind {
+        refine_after(self.detached(), kind)
+    }
+
+    /// A leveling command's error for a failure that returned BEFORE its run-end re-amp
+    /// backstop (a refusal or a read, nothing engaged): the failure's kind, refined here, its
+    /// text, and re-amp known off.
+    pub(crate) fn error(self, e: LevelError) -> AppError {
+        AppError::Leveling {
+            kind: self.refine(e.skip_kind()),
+            message: e.to_string(),
+            reamp_still_on: false,
+        }
+    }
+}
+
+/// [`DetachWatch::refine`]'s rule, with the detach already answered — pure, so it is
+/// unit-gated without touching the process-wide count other tests' runs read.
+fn refine_after(detached: bool, kind: SkipKind) -> SkipKind {
+    if detached && kind.can_be_a_lost_connection() {
+        SkipKind::ConnectionLost
+    } else {
+        kind
+    }
+}
 
 /// Event names the frontend listens for (`@tauri-apps/api/event`).
 ///
@@ -172,6 +233,7 @@ mod imp {
         // lock_ok (never .unwrap()): a poison-panic here would unwind across the
         // extern "C" boundary = abort.
         *crate::lock_ok(&ctx.session) = None;
+        note_detached();
         crate::monitor::reset_startup_state();
         // An offline unit can be edited elsewhere (Pro Control, the unit itself) --
         // the Doctor's cached BEFORE clip can no longer be trusted.
@@ -302,6 +364,7 @@ mod imp {
             // Same cleanup order as macOS: release the stale handle, reset the
             // monitor and Doctor caches, then notify the frontend.
             *crate::lock_ok(session) = None;
+            note_detached();
             crate::monitor::reset_startup_state();
             crate::commands::doctor::clear_doctor_before_cache();
             log::info!("hotplug: TMP detached — session released");
@@ -344,6 +407,41 @@ fn observe_notifications(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failure after the unit was unplugged reads as a lost connection — but only when a
+    /// lost connection can explain it; a refusal decided from the saved preset or the unit's
+    /// settings, and a Stop, keep their own kind. With no detach every kind stands.
+    #[test]
+    fn a_detach_relabels_only_the_failures_a_lost_connection_can_cause() {
+        for kind in [
+            SkipKind::PresetUnreadable,
+            SkipKind::NoSignal,
+            SkipKind::NoStimulus,
+            SkipKind::Other,
+        ] {
+            assert_eq!(
+                refine_after(true, kind),
+                SkipKind::ConnectionLost,
+                "{kind:?}"
+            );
+            assert_eq!(refine_after(false, kind), kind, "{kind:?}");
+        }
+        for kind in [
+            SkipKind::NoActiveAmp,
+            SkipKind::LevelManually,
+            SkipKind::SceneWriteRefused,
+            SkipKind::BlockOff,
+            SkipKind::SceneChangeDiscards,
+            SkipKind::Cancelled,
+        ] {
+            assert_eq!(refine_after(true, kind), kind, "{kind:?}");
+        }
+        // A watch started now has seen no detach of its own.
+        let watch = DetachWatch::start();
+        let e = watch.error(LevelError::refused(SkipKind::KnobMissing, "gone"));
+        assert_eq!(e.kind(), "knob_missing");
+        assert_eq!(e.message(), "gone");
+    }
 
     #[test]
     fn fast_replug_between_present_polls_still_emits_detach_then_attach() {

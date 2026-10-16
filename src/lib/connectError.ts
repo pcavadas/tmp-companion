@@ -15,15 +15,34 @@
 //     window): "Another app is using your Tone Master Pro".
 //   • `other` — anything else: "Couldn't connect to your Tone Master Pro".
 //
+// The three leveling commands reject with the same typed shape, their kind a `SkipKind`
+// (why the run was not leveled) plus `reampStillOn`; `errorSkipKind` and
+// `errorReampStillOn` read those for the run engine, again never from the text.
+//
 // Dependency-free on purpose (types only): `invoke.ts` imports this for its
 // quiet-logging rule, so importing `invoke.ts` back would close a module cycle.
 
-import type { CommandErrorKind } from "./types";
+import type { CommandErrorKind, SkipKind } from "./types";
 
 const KINDS: readonly CommandErrorKind[] = [
   "not_connected",
   "busy",
   "not_ready",
+  // The leveling commands' kinds (`SkipKind`): why a run or a sound was not leveled.
+  "preset_unreadable",
+  "footswitches_unreadable",
+  "no_active_amp",
+  "level_manually",
+  "scene_write_refused",
+  "unsupported_knob",
+  "knob_missing",
+  "block_off",
+  "scene_change_discards",
+  "no_stimulus",
+  "clipped_capture",
+  "no_signal",
+  "connection_lost",
+  "cancelled",
   "other",
 ];
 
@@ -40,6 +59,25 @@ export function errorKind(e: unknown): CommandErrorKind {
     if (isCommandErrorKind(k)) return k;
   }
   return "other";
+}
+
+/** WHY a caught leveling failure was not leveled: the typed kind a leveling command
+ * rejected with (`CommandError.kind`), or `"other"` for anything that carries none — a
+ * bare-string rejection, a JS throw, or a connect kind no leveling command sends. */
+export function errorSkipKind(e: unknown): SkipKind {
+  const k = errorKind(e);
+  return k === "not_connected" || k === "busy" || k === "not_ready"
+    ? "other"
+    : k;
+}
+
+/** Whether a rejected LEVELING command says re-amp may still be on (`reampStillOn` on
+ * the typed `{ kind, message, reampStillOn }` rejection): the run failed AND its run-end
+ * re-amp OFF never read back OFF. `false` for anything without the flag. */
+export function errorReampStillOn(e: unknown): boolean {
+  if (typeof e === "object" && e !== null && "reampStillOn" in e)
+    return (e as { reampStillOn?: unknown }).reampStillOn === true;
+  return false;
 }
 
 /** Whether a connect failure of this kind is the plain "plug it in" case (no unit, or a

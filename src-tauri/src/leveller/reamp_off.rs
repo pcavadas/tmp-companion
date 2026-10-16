@@ -4,9 +4,14 @@
 
 use super::*;
 
-/// What the user is told when [`reamp_off_guaranteed`] cannot read the Mixer store back OFF.
+/// The run-result text when [`reamp_off_guaranteed`] cannot read the Mixer store back OFF —
+/// for the log and the bug report; the frontend reads the typed flag
+/// ([`ReampOffOutcome::still_on`], `reamp_still_on` on the wire), never this text. Re-amp
+/// replaces Inputs 1 and 2, so the guitar goes unheard until it is off. A USB unplug/replug
+/// does NOT clear it (nothing resets re-amp when a connection closes); a restart does (the
+/// firmware forces it off at boot) — static evidence, fw 1.8.58: `notes/gotchas.md`.
 pub(crate) const REAMP_STILL_ON_WARNING: &str =
-    "Re-amp may still be on. Unplug and replug the unit.";
+    "Re-amp may still be on. Restart your Tone Master Pro.";
 
 /// How a [`reamp_off_guaranteed`] run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,9 +22,15 @@ pub(crate) struct ReampOffOutcome {
 }
 
 impl ReampOffOutcome {
+    /// Re-amp may still be on: the OFF never read back OFF. The typed signal every leveling
+    /// result carries (`reamp_still_on`), beside the [`Self::warning`] text.
+    pub(crate) fn still_on(self) -> bool {
+        !self.verified
+    }
+
     /// The run-result warning: [`REAMP_STILL_ON_WARNING`] unless the OFF was verified.
     pub(crate) fn warning(self) -> Option<String> {
-        (!self.verified).then(|| REAMP_STILL_ON_WARNING.to_string())
+        self.still_on().then(|| REAMP_STILL_ON_WARNING.to_string())
     }
 
     /// `e` with the warning appended, for a run that failed AND left re-amp unverified. A
@@ -46,6 +57,34 @@ impl ReampOffOutcome {
             Err(e) => Err(self.annotate_err(e.into()).to_string()),
         }
     }
+
+    /// [`Self::stamp`] for a leveling command with a TYPED error: `rows` gets this outcome
+    /// (each row records [`Self::still_on`] and the warning), and a failure becomes an
+    /// [`AppError::Leveling`] carrying the failure's own [`SkipKind`] — or
+    /// [`SkipKind::ConnectionLost`] when the unit was unplugged since `watch` started — the
+    /// text with the warning appended, and the typed `reamp_still_on`.
+    pub(crate) fn stamp_leveling<T, E: Into<LevelError>>(
+        self,
+        result: Result<T, E>,
+        watch: crate::watcher::DetachWatch,
+        rows: impl FnOnce(&mut T, ReampOffOutcome),
+    ) -> Result<T, AppError> {
+        match result {
+            Ok(mut r) => {
+                rows(&mut r, self);
+                Ok(r)
+            }
+            Err(e) => {
+                let e = e.into();
+                let kind = watch.refine(e.skip_kind());
+                Err(AppError::Leveling {
+                    kind,
+                    message: self.annotate_err(e).to_string(),
+                    reamp_still_on: self.still_on(),
+                })
+            }
+        }
+    }
 }
 
 /// GUARANTEED re-amp OFF on a fresh connection — the run-end backstop every
@@ -54,9 +93,10 @@ impl ReampOffOutcome {
 /// than ~1 s of idle was silently dropped (HW-bisected: 300 ms lands, 1 s+ drops), and on
 /// fw 1.8.58 an OFF to a lapsed session draws ConnectionError(0) and is discarded
 /// (device-confirmed). `TrackedHid` reopens a client after 600 ms of silence, which
-/// covers the known lapse shapes. A unit stranded re-amp-ON is input-muted; it recovers
-/// with `probe --reamp-off`, not a power-cycle (`danger.md`). `tag` names the calling
-/// lane in the log lines.
+/// covers the known lapse shapes. A unit stranded re-amp-ON is input-muted; a developer
+/// recovers it with `probe --reamp-off`, a user by restarting the unit — a USB
+/// unplug/replug does not clear it (`danger.md`, `notes/gotchas.md`). `tag` names the
+/// calling lane in the log lines.
 ///
 /// The OFF is read back: after it, the Mixer store is read on the same session
 /// ([`Session::read_reamp_state`]), and a store still ON (or silent) climbs a ladder —
@@ -335,6 +375,73 @@ mod reamp_off_ladder_tests {
             out.stamp(Err::<(), _>(LevelError::Cancelled), |_, _| {}),
             Err("cancelled".to_string())
         );
+        assert!(out.still_on(), "the typed signal the frontend reads");
+    }
+
+    /// The typed half of the run-end verdict (OWNER-ANSWERS 8): every returned row records
+    /// `reamp_still_on`, and a failed leveling command's typed error carries it beside its
+    /// skip kind — the kind of the failure itself, decided before the warning text is
+    /// appended, so the frontend never reads the text for either.
+    #[test]
+    fn a_leveling_command_carries_the_reamp_verdict_typed_on_rows_and_errors() {
+        let stuck = ReampOffOutcome { verified: false };
+        let clean = ReampOffOutcome { verified: true };
+        let watch = crate::watcher::DetachWatch::start();
+
+        let mut seen = None;
+        let rows = stuck.stamp_leveling(Ok::<_, LevelError>(vec![1, 2]), watch, |_, out| {
+            seen = Some(out)
+        });
+        assert_eq!(rows.expect("rows"), [1, 2]);
+        assert_eq!(seen, Some(stuck), "the rows get the outcome itself");
+
+        let err = stuck
+            .stamp_leveling(
+                Err::<(), _>(LevelError::refused(SkipKind::PresetUnreadable, "no read")),
+                watch,
+                |_, _| {},
+            )
+            .expect_err("a failed run");
+        assert_eq!(
+            err,
+            AppError::Leveling {
+                kind: SkipKind::PresetUnreadable,
+                message: format!("no read — {REAMP_STILL_ON_WARNING}"),
+                reamp_still_on: true,
+            }
+        );
+        let err = clean
+            .stamp_leveling(Err::<(), _>(LevelError::NoSignal), watch, |_, _| {})
+            .expect_err("a failed run");
+        assert_eq!(
+            err,
+            AppError::Leveling {
+                kind: SkipKind::NoSignal,
+                message: "no signal captured".into(),
+                reamp_still_on: false,
+            }
+        );
+        // A Stop stays a Stop, with its own text, and still reports the flag.
+        let err = stuck
+            .stamp_leveling(Err::<(), _>(LevelError::Cancelled), watch, |_, _| {})
+            .expect_err("a stopped run");
+        assert_eq!(err.kind(), "cancelled");
+        assert_eq!(err.message(), "cancelled");
+        assert!(matches!(
+            err,
+            AppError::Leveling {
+                reamp_still_on: true,
+                ..
+            }
+        ));
+    }
+
+    /// The user's recovery is a restart of the unit: a USB unplug/replug does not clear a
+    /// stuck re-amp (static evidence, fw 1.8.58 — `notes/gotchas.md`).
+    #[test]
+    fn the_stuck_reamp_warning_says_restart_never_replug() {
+        assert!(REAMP_STILL_ON_WARNING.contains("Restart your Tone Master Pro"));
+        assert!(!REAMP_STILL_ON_WARNING.to_lowercase().contains("plug"));
     }
 
     /// #261: a panic after an engage unwinds through the guard, which sends the OFF ladder

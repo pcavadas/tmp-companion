@@ -19,7 +19,11 @@ import type {
   FootswitchLevelApplyArgs,
   SceneLevelApplyArgs,
 } from "./commands";
-import { errorKind, isConnectGateKind } from "./connectError";
+import {
+  errorKind,
+  errorReampStillOn,
+  isConnectGateKind,
+} from "./connectError";
 import { errMsg } from "./format";
 import { logError } from "./log";
 import type {
@@ -67,8 +71,9 @@ export { isTauri } from "./log";
  * A rejected backend command. Most commands return `Result<_, String>`, so a
  * rejection reaches JS as a bare STRING — and `e instanceof Error ? e.message :
  * "generic text"` at a call site silently threw the backend's real reason away.
- * A command migrated to the typed error (`error::AppError`, today `connect_device`)
- * rejects with `{ kind, message }` instead. `invoke` normalizes BOTH shapes into
+ * A command migrated to the typed error (`error::AppError`: `connect_device` and the
+ * three leveling commands) rejects with `{ kind, message }` instead — the leveling
+ * ones add `reampStillOn`. `invoke` normalizes BOTH shapes into
  * this one `Error` subclass at the seam, so a `catch` always gets an `Error` whose
  * `message` is the backend text and whose `kind` says what failed (`"other"` for a
  * bare string). Branch on `kind`, never on the message text.
@@ -76,14 +81,24 @@ export { isTauri } from "./log";
 export class CommandError extends Error {
   /** The backend command that rejected (e.g. `doctor_apply`). */
   readonly cmd: string;
-  /** What failed, for a caller that presents kinds differently. */
+  /** What failed, for a caller that presents kinds differently. A leveling command's
+   *  kind is a `SkipKind` (why the run, or the sound, was not leveled). */
   readonly kind: CommandErrorKind;
+  /** A failed leveling command whose run-end re-amp OFF never read back OFF: the unit's
+   *  guitar input may still be muted. `false` for every other rejection. */
+  readonly reampStillOn: boolean;
 
-  constructor(cmd: string, message: string, kind: CommandErrorKind = "other") {
+  constructor(
+    cmd: string,
+    message: string,
+    kind: CommandErrorKind = "other",
+    reampStillOn = false,
+  ) {
     super(message);
     this.name = "CommandError";
     this.cmd = cmd;
     this.kind = kind;
+    this.reampStillOn = reampStillOn;
   }
 }
 
@@ -121,7 +136,7 @@ function invokeCommand<K extends CommandName>(
     // so the connect gate's kinds (no unit / unit still booting) stay quiet.
     if (cmd !== "connect_device" || !isConnectGateKind(kind))
       logError(`invoke(${cmd}) failed: ${message}`);
-    throw new CommandError(cmd, message, kind);
+    throw new CommandError(cmd, message, kind, errorReampStillOn(e));
   });
 }
 
@@ -294,6 +309,15 @@ export const setPlaybackChannels = (
 /** Settings — persist the auto-install-updates preference. */
 export const setAutoInstallUpdates = (on: boolean): Promise<void> =>
   invokeCommand("set_auto_install_updates", { on });
+
+/** Remember the instrument chosen for one preset (0-based list index) in the app's own
+ * store on this computer — never on the unit. `profileId` is a profile id or
+ * `NO_INSTRUMENT` ("none"), an explicit "None" that is saved and counts as chosen; a
+ * later choice overwrites it. Read back as `Store.profile_by_slot`. */
+export const setPresetInstrument = (
+  slot: number,
+  profileId: string,
+): Promise<void> => invokeCommand("set_preset_instrument", { slot, profileId });
 
 /** Settings — Tier-2 calibration: capture dry instrument for `secs` (clamped
  * 2..30), store K-weighted LUFS, return it + clip/stimulus-ceiling caveats.

@@ -5,8 +5,8 @@ use crate::{
     audiograph, commands::level_scenes::LevelBlockArg, commands::presets::decode_preset_scenes,
     footswitch, scene_jobs::base_handle_candidates_scanned, scene_jobs::filter_amp_candidates,
     scene_jobs::is_amp_model_id, scene_jobs::is_amp_output_level_param,
-    scene_jobs::scan_node_graph, scene_jobs::scene_handle_rows_scanned, session,
-    SceneHandleCandidate, SceneHandleRow,
+    scene_jobs::scan_node_graph, scene_jobs::scene_drives, scene_jobs::scene_handle_rows_scanned,
+    scene_jobs::SceneDrive, session, SceneHandleCandidate, SceneHandleRow,
 };
 use serde::Serialize;
 
@@ -102,6 +102,16 @@ pub struct BackupPresetRow {
     /// opened the row's picker, and it costs no `list_footswitch_scene_contexts` device read.
     /// Empty for an unparseable row.
     pub fs_scene_contexts: Vec<footswitch::FsSceneContext>,
+    /// Per scene (wire index), what a leveling run drives when the scene's row keeps its
+    /// default control: the amp(s) whose output level it turns, or why it turns none
+    /// ([`crate::scene_jobs::scene_drives`] — the SAME planner the run's job builder uses, off
+    /// the same `presetJson` and `amp_candidates`), so Set up shows exactly what will be used
+    /// with no device round trip. Empty for a scene-less or unparseable row.
+    pub scene_drives: Vec<SceneDrive>,
+    /// Whether the rebalance flow ("Balance its two amps first") can act on this preset: at
+    /// least one scene drives two or more lane amps that re-merge into one output. `false`
+    /// for a scene-less or unparseable row.
+    pub rebalanceable: bool,
 }
 
 /// A7, PURE: [`BackupPresetRow::base_active_amp_count`]'s derivation — DISTINCT
@@ -888,6 +898,11 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
         // `base_handle_candidates` (Base) and `scene_handle_rows` (Scene) used to each rebuild their own nodeId→params map and
         // roster on this SAME preset, back-to-back; the scan is shared and passed by
         // reference into both `*_scanned` cores instead.
+        // What a run drives per scene, through the run's own planner — see the field's doc.
+        let drive = parsed_graph
+            .as_ref()
+            .map(|g| scene_drives(g, &amp_candidates))
+            .unwrap_or_default();
         let handle_start = std::time::Instant::now();
         let (scene_handles, base_handles, scene_overrides) = match parsed_graph.as_ref() {
             Some(g) => {
@@ -924,6 +939,8 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
                 .as_ref()
                 .map(footswitch::scene_contexts_for_switches)
                 .unwrap_or_default(),
+            scene_drives: drive.scenes,
+            rebalanceable: drive.rebalanceable,
         });
     }
     log::info!(

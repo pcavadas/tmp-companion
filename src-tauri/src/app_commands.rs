@@ -28,6 +28,7 @@ macro_rules! with_app_commands {
             settings::set_playback_level,
             settings::set_playback_channels,
             settings::set_auto_install_updates,
+            settings::set_preset_instrument,
             level_preset::calibrate_profile,
             level_preset::level_preset,
             level_preset::list_level_blocks,

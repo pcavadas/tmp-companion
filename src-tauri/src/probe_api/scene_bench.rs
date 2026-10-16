@@ -291,7 +291,7 @@ pub fn probe_bench_scene_leveling(
                             final_output_level: None,
                             clamped: false,
                             saved: false,
-                            failure: Some(e.clone()),
+                            failure: Some(e.to_string()),
                         };
                         emit(&row);
                         rows.push(row);
@@ -665,6 +665,7 @@ fn level_scenes_live_batched(
                     writes,
                     elapsed_ms: t0.elapsed().as_millis(),
                     failure: None,
+                    failure_kind: None,
                     dynamic_spread_lu: None, // live windows carry no full-capture meter
                     clamp_reason: None,
                     verify_by_ear: false,
@@ -686,6 +687,7 @@ fn level_scenes_live_batched(
                     writes,
                     elapsed_ms: t0.elapsed().as_millis(),
                     failure: Some(e.to_string()),
+                    failure_kind: Some(e.skip_kind()),
                     ..Default::default()
                 },
             };

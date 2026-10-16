@@ -107,6 +107,7 @@ export const makeLevelResult = (
   clamp_kind: null,
   trade: null,
   base_boost: null,
+  reamp_still_on: false,
   ...over,
 });
 
@@ -130,6 +131,7 @@ export const makeFootswitchLevelResult = (
   method: "baked",
   persist_mismatch: null,
   clamp_kind: null,
+  reamp_still_on: false,
   ...over,
 });
 
@@ -165,6 +167,8 @@ export const makeBackupPresetRow = (
   base_handles: [],
   scene_overrides: [],
   fs_scene_contexts: [],
+  scene_drives: [],
+  rebalanceable: false,
   ...over,
 });
 
@@ -341,6 +345,7 @@ export const DEFAULT_HANDLERS: Handlers = {
   set_playback_level: none,
   set_playback_channels: none,
   set_auto_install_updates: none,
+  set_preset_instrument: none,
   calibrate_profile: () => makeCalibrateResult(),
   list_pickup_topologies: () => [],
   save_support_bundle: () => ({ path: "/tmp/support-bundle.tar" }),

@@ -7,7 +7,7 @@ import { screen } from "@testing-library/react";
 
 import { base, renderSummary } from "./summaryTestUtils";
 
-const WARNING = "Re-amp may still be on. Unplug and replug the unit.";
+const WARNING = "Re-amp may still be on. Restart your Tone Master Pro.";
 
 describe("Summary re-amp warning", () => {
   it("shows one banner when any row carries the warning", () => {

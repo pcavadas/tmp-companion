@@ -1,6 +1,7 @@
 // src/__tests__/useLevelingFlow-skip-reason.test.ts — a failed command's own reason
-// reaches the rows it skipped, on all three lanes; a cancel or a client-side skip
-// invents none.
+// reaches the rows it skipped, on all three lanes, with its TYPED kind (`skipKind`, E2:
+// the screen picks its words by kind, never by the text); a cancel or a client-side skip
+// invents no reason.
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -51,6 +52,31 @@ describe("leveling failure reasons", () => {
     expect(result.current.run.items[0]).toMatchObject({
       outcome: "skipped",
       skipReason: "cannot hold endpoint at unity",
+      skipKind: "other",
+    });
+  });
+
+  it("carries a typed leveling rejection's kind and re-amp flag through invoke", async () => {
+    mockCommands({
+      level_preset: () =>
+        rejectWith({
+          kind: "footswitches_unreadable",
+          message: "could not read preset 1's footswitch assignments",
+          reampStillOn: true,
+        }),
+    });
+    const { result } = renderHook(() => useLevelingFlow(deps));
+    act(() => {
+      result.current.onSetupStart(choices([option("base")]));
+    });
+    await waitFor(() => {
+      expect(isRunOver(result.current.run.phase)).toBe(true);
+    });
+    expect(result.current.run.items[0]).toMatchObject({
+      outcome: "skipped",
+      skipKind: "footswitches_unreadable",
+      skipReason: "could not read preset 1's footswitch assignments",
+      reampStillOn: true,
     });
   });
 
@@ -77,7 +103,42 @@ describe("leveling failure reasons", () => {
         expect(row).toMatchObject({
           outcome: "skipped",
           skipReason: "device disconnected during setup",
+          // Text that SAYS what happened picks no kind: only a typed rejection does.
+          skipKind: "other",
         });
+      }
+    },
+  );
+
+  it.each(["scene", "footswitch"] as const)(
+    "gives every unresolved %s row the batch's typed kind",
+    async (lane) => {
+      const fail = () =>
+        rejectWith({
+          kind: "connection_lost",
+          message: "the unit went away",
+          reampStillOn: false,
+        });
+      mockCommands(
+        lane === "scene"
+          ? { level_scenes_apply_batched: fail }
+          : { level_footswitches_apply: fail },
+      );
+      const { result } = renderHook(() => useLevelingFlow(deps));
+      act(() => {
+        result.current.onSetupStart(
+          choices([option(lane, 0), option(lane, 1)]),
+        );
+      });
+      await waitFor(() => {
+        expect(isRunOver(result.current.run.phase)).toBe(true);
+      });
+      for (const row of result.current.run.items) {
+        expect(row).toMatchObject({
+          outcome: "skipped",
+          skipKind: "connection_lost",
+        });
+        expect(row.reampStillOn).toBeUndefined();
       }
     },
   );
@@ -90,6 +151,7 @@ describe("leveling failure reasons", () => {
           status: "error",
           result: null,
           message: "scene shares base knobs",
+          skipKind: "scene_write_refused",
         });
         return rejectWith(new Error("batch interrupted"));
       },
@@ -106,6 +168,10 @@ describe("leveling failure reasons", () => {
     expect(result.current.run.items.map((row) => row.skipReason)).toEqual([
       "scene shares base knobs",
       "batch interrupted",
+    ]);
+    expect(result.current.run.items.map((row) => row.skipKind)).toEqual([
+      "scene_write_refused",
+      "other",
     ]);
   });
 
@@ -136,12 +202,16 @@ describe("leveling failure reasons", () => {
     for (const row of result.current.run.items) {
       expect(row.status).toBe("queued");
       expect(row.skipReason).toBeUndefined();
+      expect(row.skipKind).toBeUndefined();
     }
   });
 
-  it.each(["missing scene slot", "no amp candidate"])(
-    "keeps client-side %s skips generic",
-    async (scenario) => {
+  it.each([
+    ["missing scene slot", "other"],
+    ["no amp candidate", "no_active_amp"],
+  ] as const)(
+    "keeps client-side %s skips generic, with their kind",
+    async (scenario, kind) => {
       const selected = option("scene");
       if (scenario === "missing scene slot") selected.sceneSlot = null;
       const { result } = renderHook(() =>
@@ -155,6 +225,7 @@ describe("leveling failure reasons", () => {
       });
       expect(result.current.run.items[0].outcome).toBe("skipped");
       expect(result.current.run.items[0].skipReason).toBeUndefined();
+      expect(result.current.run.items[0].skipKind).toBe(kind);
       expect(fired("level_scenes_apply_batched")).toBe(false);
     },
   );

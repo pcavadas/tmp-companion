@@ -575,6 +575,7 @@ pub(crate) fn level_preset_impl(
             trade: None,
             base_boost,
             reamp_warning: None,
+            reamp_still_on: false,
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
@@ -764,6 +765,7 @@ pub(super) fn apply_base_boost(
             },
         )),
         reamp_warning: None,
+        reamp_still_on: false,
     })
 }
 

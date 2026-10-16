@@ -156,6 +156,10 @@ export interface Commands {
   set_playback_level: { args: { level: PlaybackLevel }; ret: Unit };
   set_playback_channels: { args: { channels: PlaybackChannels }; ret: Unit };
   set_auto_install_updates: { args: { on: boolean }; ret: Unit };
+  set_preset_instrument: {
+    args: { slot: number; profileId: string };
+    ret: Unit;
+  };
   calibrate_profile: {
     args: { profileId: string; secs: number };
     ret: CalibrateResult;

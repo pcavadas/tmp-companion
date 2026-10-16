@@ -85,7 +85,7 @@ fn a_handle_row_a_skip_row_and_an_unmeasured_row_report_no_ceiling() {
     assert_eq!(scene_ceiling_lufs(&handle_row), None);
 
     let mut skip = measured(job(1, -20.0, Vec::new()), -26.0, 2.0);
-    skip.skip = Some("no active amp".into());
+    skip.skip = Some(Refusal::new(SkipKind::NoActiveAmp, "no active amp"));
     assert_eq!(scene_ceiling_lufs(&skip), None);
 
     assert_eq!(

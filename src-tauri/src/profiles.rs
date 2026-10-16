@@ -224,6 +224,33 @@ fn default_true() -> bool {
     true
 }
 
+/// The `profile_by_slot` value for an explicit "None" instrument choice (the frontend's
+/// `NO_INSTRUMENT`): saved like any instrument, and it counts as chosen.
+pub const NO_INSTRUMENT: &str = "none";
+
+impl Store {
+    /// Remember the instrument chosen for the preset at 0-based list index `slot`, in this
+    /// store on this computer (never on the unit): a profile id, or [`NO_INSTRUMENT`] for an
+    /// explicit "None", which is saved and counts as chosen too. A later choice overwrites the
+    /// saved one. An id that names no profile is refused, so the map never points nowhere.
+    pub fn set_preset_instrument(&mut self, slot: u32, profile_id: &str) -> Result<(), String> {
+        if profile_id != NO_INSTRUMENT && !self.profiles.iter().any(|p| p.id == profile_id) {
+            return Err(format!("no instrument with id {profile_id:?}"));
+        }
+        self.profile_by_slot.insert(slot, profile_id.to_string());
+        Ok(())
+    }
+
+    /// Drop every per-preset assignment that points at a profile no longer in the list. An
+    /// explicit "None" ([`NO_INSTRUMENT`]) points at no profile and stays.
+    pub fn drop_stale_assignments(&mut self) {
+        let live: std::collections::HashSet<&str> =
+            self.profiles.iter().map(|p| p.id.as_str()).collect();
+        self.profile_by_slot
+            .retain(|_, id| id == NO_INSTRUMENT || live.contains(id.as_str()));
+    }
+}
+
 // Manual `Default` (not derived) so the missing-file path — `load_from_path` returns
 // `Store::default()` — seeds the three default targets rather than an empty Vec.
 impl Default for Store {
@@ -504,6 +531,53 @@ mod tests {
         let back = load_from_path(&path).unwrap();
         assert_eq!(store, back);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_preset_instrument_is_saved_overwritten_and_none_counts_as_chosen() {
+        let mut store = sample_store();
+        store
+            .set_preset_instrument(3, "p2")
+            .expect("a known profile");
+        assert_eq!(
+            store.profile_by_slot.get(&3).map(String::as_str),
+            Some("p2")
+        );
+        // Changing it later just overwrites the saved value.
+        store.set_preset_instrument(3, "p1").expect("overwrite");
+        assert_eq!(
+            store.profile_by_slot.get(&3).map(String::as_str),
+            Some("p1")
+        );
+        // An explicit "None" is saved too, and counts as chosen.
+        store
+            .set_preset_instrument(4, NO_INSTRUMENT)
+            .expect("None is a choice");
+        assert_eq!(
+            store.profile_by_slot.get(&4).map(String::as_str),
+            Some(NO_INSTRUMENT)
+        );
+        // An unknown id is refused and changes nothing.
+        let before = store.clone();
+        assert!(store.set_preset_instrument(5, "ghost").is_err());
+        assert_eq!(store, before);
+    }
+
+    #[test]
+    fn dropping_stale_assignments_keeps_an_explicit_none() {
+        let mut store = sample_store();
+        store.profile_by_slot.insert(1, NO_INSTRUMENT.to_string());
+        store.profile_by_slot.insert(2, "deleted".to_string());
+        store.drop_stale_assignments();
+        assert_eq!(
+            store.profile_by_slot.get(&1).map(String::as_str),
+            Some(NO_INSTRUMENT)
+        );
+        assert_eq!(store.profile_by_slot.get(&2), None);
+        assert_eq!(
+            store.profile_by_slot.get(&11).map(String::as_str),
+            Some("p1")
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! Footswitch (engaged-state) leveling command + job resolution.
 use super::ProgressStatus;
 use crate::audiograph::node_param_f64;
-use crate::error::LevelError;
+use crate::error::{AppError, LevelError, Refusal, SkipKind};
+use crate::watcher::DetachWatch;
 use crate::{
     commands::level_preset::playback_offset_for,
     commands::level_preset::resolve_stimulus_for_leveling,
@@ -52,6 +53,9 @@ pub(crate) struct FootswitchLevelProgressItem {
     pub(crate) status: ProgressStatus,
     pub(crate) result: Option<leveller::FootswitchLevelResult>,
     pub(crate) message: Option<String>,
+    /// WHY an `error` row was not leveled ([`SkipKind`]) — what the frontend picks the row's
+    /// message by; `message` keeps the text for the log. `None` on every other status.
+    pub(crate) skip_kind: Option<SkipKind>,
 }
 
 static FOOTSWITCH_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
@@ -71,22 +75,36 @@ type FootswitchJobResolution = (f32, leveller::FootswitchWriteSpec);
 /// (`valueB`) and the write spec (edit an existing matching `param` function, else add at
 /// the next free index; enforce the firmware's 5-function cap). The leveler only ever
 /// creates/edits a parameter-change assignment — it does not touch on/off.
+///
+/// Its refusals are typed: a switch the read does not carry is
+/// [`SkipKind::FootswitchesUnreadable`], a knob the preset no longer has
+/// [`SkipKind::KnobMissing`].
 pub(crate) fn resolve_footswitch_job(
     ftsw: &serde_json::Value,
     preset: &serde_json::Value,
     job: &FootswitchLevelJob,
-) -> Result<FootswitchJobResolution, String> {
-    let switches = ftsw.as_array().ok_or("preset has no ftsw")?;
+) -> Result<FootswitchJobResolution, Refusal> {
+    let switches = ftsw
+        .as_array()
+        .ok_or_else(|| Refusal::new(SkipKind::FootswitchesUnreadable, "preset has no ftsw"))?;
     let sw = switches
         .get(job.switch as usize)
         .and_then(|s| s.as_array())
-        .ok_or_else(|| format!("footswitch {} not found", job.switch))?;
+        .ok_or_else(|| {
+            Refusal::new(
+                SkipKind::FootswitchesUnreadable,
+                format!("footswitch {} not found", job.switch),
+            )
+        })?;
 
     let value_b =
         node_param_f64(preset, &job.lev_node_id, &job.lev_parameter_id).ok_or_else(|| {
-            format!(
-                "parameter {} not found on {}",
-                job.lev_parameter_id, job.lev_node_id
+            Refusal::new(
+                SkipKind::KnobMissing,
+                format!(
+                    "parameter {} not found on {}",
+                    job.lev_parameter_id, job.lev_node_id
+                ),
             )
         })? as f32;
 
@@ -142,11 +160,15 @@ pub(crate) fn resolve_footswitch_job(
             //
             // Keep this as a guard, not an `unreachable!()`: it is the last thing standing
             // between a future planner change and a silently gutted preset.
-            return Err(format!(
-                "footswitch {} does not already change {} on {} — leveling never adds a \
-                 function to a footswitch (it would make the row carry two entries, which the \
-                 firmware discards the whole preset over); this row must be baked instead",
-                job.switch, job.lev_parameter_id, job.lev_node_id
+            return Err(Refusal::new(
+                SkipKind::Other,
+                format!(
+                    "footswitch {} does not already change {} on {} — leveling never adds a \
+                     function to a footswitch (it would make the row carry two entries, which \
+                     the firmware discards the whole preset over); this row must be baked \
+                     instead",
+                    job.switch, job.lev_parameter_id, job.lev_node_id
+                ),
             ));
         }
     };
@@ -192,11 +214,14 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
     calibration_lufs: Option<f32>,
     profile_id: Option<String>,
     on_result: tauri::ipc::Channel<FootswitchLevelProgressItem>,
-) -> Result<Vec<leveller::FootswitchLevelResult>, String> {
+) -> Result<Vec<leveller::FootswitchLevelResult>, AppError> {
+    // Taken first, so a detach anywhere in the run re-labels a failure as a lost connection.
+    let watch = DetachWatch::start();
     // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
     // before anything touches the device — see `scene_discard_guard`'s doc
     // (`level_scenes.rs`).
-    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())?;
+    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())
+        .map_err(|e| Refusal::new(SkipKind::SceneChangeDiscards, e))?;
     let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
         &app,
         None,
@@ -224,6 +249,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                 let _ = on_result.send(item);
             },
             &|| FOOTSWITCH_LEVEL_CANCEL.load(SeqCst),
+            watch,
         )
     })
     .await
@@ -234,6 +260,11 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
 /// row's solve, ONE write session + ONE save, and the guaranteed re-amp OFF. `progress`
 /// receives each row's progress item (the command's channel); `cancelled` is the batch's
 /// Stop flag. `offset` is the playback-compensation shift added to every row's target.
+/// `watch` (started at the command's entry) turns a failure after a detach into
+/// [`SkipKind::ConnectionLost`].
+///
+/// A failed save (or a value it did not keep) is reported on the rows it covers
+/// (`persist_mismatch`), never only logged — on a stopped run too.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_footswitch_batch(
     slot: ListIndex,
@@ -243,13 +274,15 @@ pub(crate) fn run_footswitch_batch(
     offset: f64,
     progress: &mut dyn FnMut(FootswitchLevelProgressItem),
     cancelled: &dyn Fn() -> bool,
-) -> Result<Vec<leveller::FootswitchLevelResult>, String> {
+    watch: DetachWatch,
+) -> Result<Vec<leveller::FootswitchLevelResult>, AppError> {
     // THE single field-8 read: it resolves every job AND is the planner's scene-overlay
     // source (per-node bake gate) — never add a second read here. `ftsw` is REQUIRED:
     // a body cut before it plans zero jobs and reports a clean run on a preset whose
     // switches were never touched, so the read either delivers it or the run refuses
-    // (before any device state moves).
-    let (preset, _, _) = read_slot_preset_complete(slot, &["ftsw"])?;
+    // (before any device state moves) — as THIS PRESET'S FOOTSWITCHES could not be read.
+    let (preset, _, _) = read_slot_preset_complete(slot, &["ftsw"])
+        .map_err(|e| watch.error(LevelError::refused(SkipKind::FootswitchesUnreadable, e)))?;
     let ftsw = preset
         .get("ftsw")
         .cloned()
@@ -295,7 +328,8 @@ pub(crate) fn run_footswitch_batch(
     // self-correcting: each job's force list explicitly sets every sibling
     // block's bypass, and swept params live on blocks the next job forces off);
     // the ONE write session's reload discards it all at the end.
-    leveller::load_preset_isolated(slot, leveller::CancelMode::Cleanup)?;
+    leveller::load_preset_isolated(slot, leveller::CancelMode::Cleanup)
+        .map_err(|e| watch.error(e))?;
 
     let mut results: Vec<Option<leveller::FootswitchLevelResult>> = vec![None; jobs.len()];
     // The solved writes pending the batch's single write+save session, each
@@ -317,6 +351,7 @@ pub(crate) fn run_footswitch_batch(
                 status: ProgressStatus::Cancelled,
                 result: None,
                 message: None,
+                skip_kind: None,
             });
             break;
         }
@@ -325,6 +360,7 @@ pub(crate) fn run_footswitch_batch(
             status: ProgressStatus::Active,
             result: None,
             message: None,
+            skip_kind: None,
         });
         // Typed, so a Stop inside the sweep stays a cancel (`is_cancelled` below).
         let outcome = batch.solve_row(idx, ceilings[idx], &results, &mut pending);
@@ -337,6 +373,7 @@ pub(crate) fn run_footswitch_batch(
                     status: ProgressStatus::Cancelled,
                     result: None,
                     message: None,
+                    skip_kind: None,
                 });
                 break;
             }
@@ -349,6 +386,7 @@ pub(crate) fn run_footswitch_batch(
                     status: ProgressStatus::Done,
                     result: Some(r),
                     message: None,
+                    skip_kind: None,
                 }
             }
             Err(e) => FootswitchLevelProgressItem {
@@ -356,6 +394,7 @@ pub(crate) fn run_footswitch_batch(
                 status: ProgressStatus::Error,
                 result: None,
                 message: Some(e.to_string()),
+                skip_kind: Some(watch.refine(e.skip_kind())),
             },
         };
         progress(item);
@@ -366,19 +405,51 @@ pub(crate) fn run_footswitch_batch(
     // REAL measurement at `final_value` (the sweep's best point), not a model
     // prediction — re-measuring it bought nothing but ~10 s per switch. A CHEAP
     // param-level persist verify (one field-8 read, §A4) still runs below.
-    let write_result = if save && !pending.is_empty() {
-        batch.persist(pending, &mut results)
+    if save && !pending.is_empty() {
+        // A failed write session or save is not a failed RUN: every row it covered is
+        // reported as not held (`persist_mismatch`), so the frontend says "the save didn't
+        // hold" on exactly those rows instead of the rows reading as leveled.
+        let written: Vec<usize> = pending.iter().map(|(idx, _)| *idx).collect();
+        if let Err(e) = batch.persist(pending, &mut results) {
+            log::warn!(
+                "level_footswitches slot={slot}: the write session or its save failed ({e}) \
+                 — every written switch is reported as not held"
+            );
+            mark_fs_unsaved(batch.plans, &written, &mut results);
+        }
     } else {
         // Dry run / nothing solved: discard the sweep pollution.
         let _ = Session::connect_lean().map(|mut s| s.load_preset(slot));
-        Ok(())
-    };
+    }
     // Guarantee re-amp OFF on a fresh connection, read back; its verdict rides every
     // returned row (the rows already streamed over the channel).
-    let rows = write_result.map(|()| results.into_iter().flatten().collect::<Vec<_>>());
-    leveller::reamp_off_guaranteed("level_footswitches_apply").stamp(rows, |rows, w| {
-        rows.iter_mut().for_each(|r| r.reamp_warning.clone_from(&w))
-    })
+    let rows: Result<_, LevelError> = Ok(results.into_iter().flatten().collect::<Vec<_>>());
+    leveller::reamp_off_guaranteed("level_footswitches_apply").stamp_leveling(
+        rows,
+        watch,
+        |rows, out| rows.iter_mut().for_each(|r| r.stamp_reamp(out)),
+    )
+}
+
+/// After a failed write session or save: every switch it was writing — and every
+/// `BakeShared` sibling riding a written representative — is marked not held. PURE, so the
+/// policy is unit-gated.
+fn mark_fs_unsaved(
+    plans: &[footswitch::FsLevelPlan],
+    written: &[usize],
+    results: &mut [Option<leveller::FootswitchLevelResult>],
+) {
+    for (idx, r) in results.iter_mut().enumerate() {
+        let shares_a_write = matches!(
+            plans.get(idx),
+            Some(footswitch::FsLevelPlan::BakeShared { rep }) if written.contains(rep)
+        );
+        if written.contains(&idx) || shares_a_write {
+            if let Some(r) = r {
+                r.persist_mismatch = Some(true);
+            }
+        }
+    }
 }
 
 /// What every phase of one [`run_footswitch_batch`] reads: the request, the batch's single
@@ -466,6 +537,7 @@ impl FsBatch<'_> {
             status: ProgressStatus::Active,
             result: None,
             message: Some(leveller::PREPASS_ACTIVE_MSG.to_string()),
+            skip_kind: None,
         });
         let states = footswitch::switch_states(self.ftsw, self.preset, job.switch);
         let probe = leveller::FsCeilingProbe {
@@ -563,7 +635,10 @@ impl FsBatch<'_> {
             // Unreachable by construction (`plans[idx]` is `Some` for every row); an
             // honest per-row error beats a panic inside a device run.
             None => Err("internal: no plan built for this footswitch row".into()),
-            Some(footswitch::FsLevelPlan::Clamp(msg)) => Err(msg.clone().into()),
+            // The planner's one refusal: the chosen block is off in this sound.
+            Some(footswitch::FsLevelPlan::Clamp(msg)) => {
+                Err(LevelError::refused(SkipKind::BlockOff, msg.clone()))
+            }
             // A sibling switch already baked this (node, param, target) — reuse its
             // result. `rep` is a JOB index (translated at alignment), so it indexes
             // `results` directly.
@@ -798,6 +873,55 @@ impl FsBatch<'_> {
 mod tests {
     use super::*;
 
+    fn fs_row(switch: u32) -> leveller::FootswitchLevelResult {
+        leveller::FootswitchLevelResult {
+            switch,
+            measured_lufs: -26.0,
+            final_value: 0.5,
+            target_lufs: -26.0,
+            predicted_lufs: -26.0,
+            clamped: false,
+            unconverged: false,
+            clamp_reason: None,
+            wet_floor: false,
+            clamp_kind: None,
+            saved: false,
+            verify_lufs: Some(-26.0),
+            iterations: 1,
+            dynamic_spread_lu: None,
+            method: "baked".into(),
+            persist_mismatch: None,
+            reamp_warning: None,
+            reamp_still_on: false,
+        }
+    }
+
+    /// OWNER-ANSWERS 4: a footswitch batch whose write session or save failed reports it on
+    /// the rows it covered — each written switch AND a `BakeShared` sibling riding a written
+    /// representative — instead of failing the whole command while the streamed rows already
+    /// read as leveled. A row the batch never wrote (a refused one, or one not solved) keeps
+    /// no verdict.
+    #[test]
+    fn a_failed_footswitch_save_marks_the_written_rows_and_their_shared_siblings() {
+        let plans = vec![
+            footswitch::FsLevelPlan::Assign {
+                engaged: Vec::new(),
+            },
+            footswitch::FsLevelPlan::BakeShared { rep: 0 },
+            footswitch::FsLevelPlan::Assign {
+                engaged: Vec::new(),
+            },
+            footswitch::FsLevelPlan::Clamp("block is bypassed".into()),
+        ];
+        let mut results = vec![Some(fs_row(0)), Some(fs_row(1)), Some(fs_row(2)), None];
+        mark_fs_unsaved(&plans, &[0], &mut results);
+        let verdicts: Vec<Option<bool>> = results
+            .iter()
+            .map(|r| r.as_ref().and_then(|r| r.persist_mismatch))
+            .collect();
+        assert_eq!(verdicts, [Some(true), Some(true), None, None]);
+    }
+
     // BUG→GATE (2026-09-01, HW preset 28 "Friedman HBE"): the scene-context read required
     // only `ftsw`, and `scenes` — the section the ANSWER comes from — was left unnamed. That
     // preset's field-8 read is cut mid-`scenes`, which `ftsw` survives, so the completeness
@@ -935,7 +1059,8 @@ mod tests {
             let err = resolve_footswitch_job(&ftsw, &preset, &job())
                 .expect_err(&format!("{label}: expected a refusal, not an appended fn"));
             assert!(
-                err.contains("does not already change") && err.contains("never adds a"),
+                err.reason.contains("does not already change")
+                    && err.reason.contains("never adds a"),
                 "{label}: error should explain the refusal, got {err:?}"
             );
         }

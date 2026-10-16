@@ -95,7 +95,12 @@ fn scene_jobs_reject_preamp_volume_as_level_control() {
     // The Hiwatt is an active amp but its only candidate is a preamp volume, not
     // outputLevel → the scene is skipped with a reason, not leveled on the wrong knob.
     let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap_err();
-    assert!(err.contains("outputLevel"), "got: {err}");
+    assert!(err.reason.contains("outputLevel"), "got: {err}");
+    assert_eq!(
+        err.kind,
+        SkipKind::NoActiveAmp,
+        "no amp candidate means no amp to drive"
+    );
 }
 
 // Parallel-merged (gtrParallel1): an amp in each split lane (G2 | G3), no post-merge
@@ -189,7 +194,12 @@ fn scene_jobs_skip_when_template_unknown() {
         value: 0.5,
     }];
     let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap_err();
-    assert!(err.contains("routing"), "got: {err}");
+    assert!(err.reason.contains("routing"), "got: {err}");
+    assert_eq!(
+        err.kind,
+        SkipKind::PresetUnreadable,
+        "a missing template is a read that stopped short"
+    );
 }
 
 // Mic-only routing has no guitar amp the instrument re-amp can drive → the scene is
@@ -211,7 +221,10 @@ fn scene_jobs_skip_mic_only_no_guitar_amp() {
     }];
     let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     assert!(
-        jobs[0].skip.as_deref().unwrap_or("").contains("guitar amp"),
+        jobs[0]
+            .skip
+            .as_ref()
+            .is_some_and(|r| r.reason.contains("guitar amp") && r.kind == SkipKind::NoActiveAmp),
         "got: {:?}",
         jobs[0].skip
     );
@@ -435,7 +448,7 @@ fn scene_docs_restore_scene_is_the_guarded_saved_on_load_scene() {
 /// answer. There is no other device seam: no live walk, no read.
 struct PrepassTrace {
     loads: Vec<u32>,
-    result: Result<SceneDocs, String>,
+    result: Result<SceneDocs, crate::error::LevelError>,
 }
 
 fn prepass_trace_for(
@@ -476,6 +489,8 @@ fn overlay_prepass_refuses_a_scene_the_saved_preset_does_not_have_and_sends_noth
     let count = saved["scenes"].as_array().expect("scenes").len() as u32;
     let t = prepass_trace_for(Some(&saved), &[0, count + 2], Ok(()));
     let err = t.result.expect_err("an out-of-range scene must be refused");
+    assert_eq!(err.skip_kind(), SkipKind::PresetUnreadable, "{err}");
+    let err = err.to_string();
     assert!(
         err.contains(&format!("scene {} was requested", count + 3)),
         "{err}"
@@ -491,14 +506,18 @@ fn overlay_prepass_refuses_a_saved_preset_with_no_audio_graph_and_sends_nothing(
     cut.as_object_mut().unwrap().remove("audioGraph");
     let t = prepass_trace(Some(&cut), Ok(()));
     let err = t.result.expect_err("no audioGraph must be refused");
-    assert!(err.contains("audioGraph"), "{err}");
+    assert_eq!(err.skip_kind(), SkipKind::PresetUnreadable, "{err}");
+    assert!(err.to_string().contains("audioGraph"), "{err}");
     assert!(t.loads.is_empty());
 }
 
 #[test]
 fn overlay_prepass_refuses_without_a_saved_document() {
     let t = prepass_trace(None, Ok(()));
-    assert!(t.result.is_err());
+    assert_eq!(
+        t.result.map(|_| ()).map_err(|e| e.skip_kind()),
+        Err(SkipKind::PresetUnreadable)
+    );
     assert!(t.loads.is_empty());
 }
 
@@ -508,7 +527,13 @@ fn overlay_prepass_fails_the_run_when_the_load_fails() {
     // swallow it, and never let a doc set describe a preset that was not made current.
     let saved = saved_preset();
     let t = prepass_trace(Some(&saved), Err("no unit".into()));
-    assert_eq!(t.result.unwrap_err(), "no unit");
+    let err = t.result.unwrap_err();
+    assert_eq!(err.to_string(), "no unit");
+    assert_eq!(
+        err.skip_kind(),
+        SkipKind::Other,
+        "a failed load is not a refusal"
+    );
 }
 
 // ── saved-structure fallback (the oversized-audioGraph class) ───────────────────────────
@@ -568,7 +593,12 @@ fn scene_jobs_saved_fallback_without_template_still_errors() {
     }];
     let err =
         build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, Some(&saved)).unwrap_err();
-    assert!(err.contains("routing"), "got: {err}");
+    assert!(err.reason.contains("routing"), "got: {err}");
+    assert_eq!(
+        err.kind,
+        SkipKind::PresetUnreadable,
+        "a missing template is a read that stopped short"
+    );
 }
 
 // ── raw scene-overlay presence (the SceneEdit-enable + bake gates) ──────────────────────
@@ -1226,7 +1256,8 @@ fn a_doc_cut_between_two_amps_is_refused_by_the_classifier() {
     });
     let structure = session::extract_active_graph(&two_amp_base_saved(), None);
     let err = classify_scene_knobs(&structure, &cut, &two_amp_candidates()).unwrap_err();
-    assert!(err.contains("every amp"), "{err}");
+    assert!(err.reason.contains("every amp"), "{err}");
+    assert_eq!(err.kind, SkipKind::PresetUnreadable, "{err}");
 }
 
 // The HW shape the live walk got wrong (2026-09-01: the swap scene pushed no usable doc and was
@@ -1313,5 +1344,230 @@ fn scene_overlay_keys_duplicate_model_blocks_by_instance() {
             SceneOverlay::Absent
         ),
         "the first instance has no overlay of its own"
+    );
+}
+
+// ─────────────── What a run drives, for Set up (`scene_drives`) ───────────────
+// Set up shows each scene's Block as what the run will REALLY turn: the last active amp of a
+// series chain, both lane amps of a parallel scene ("Both amps"), or nothing with the reason.
+// The exposure goes through the run's own planner, so these also pin that the two agree.
+
+fn drive_amp(node: &str, model: &str, bypass: bool) -> serde_json::Value {
+    serde_json::json!({
+        "nodeId": node, "FenderId": model,
+        "dspUnitParameters": { "bypass": bypass, "outputLevel": 0.5 }
+    })
+}
+
+fn bypass_overlay(group: &str, node: &str, bypass: bool) -> serde_json::Value {
+    serde_json::json!({ group: { node: { "dspUnitParameters": { "bypass": bypass } } } })
+}
+
+/// `gtrParallel1` (G2 | G3 re-merge). Scene 0 keeps both lane amps on, scene 1 turns lane B's
+/// amp off, scene 2 turns both off.
+fn parallel_drive_preset() -> serde_json::Value {
+    let mut both_off = bypass_overlay("G2", "ampA", true);
+    both_off["G3"] = bypass_overlay("G3", "ampB", true)["G3"].clone();
+    serde_json::json!({
+        "audioGraph": { "template": "gtrParallel1", "guitarNodes": {
+            "G1": [],
+            "G2": [ drive_amp("ampA", "ACD_TM59Bassman", false) ],
+            "G3": [ drive_amp("ampB", "ACD_HiwattDR103CanMod", false) ]
+        } },
+        "scenes": [
+            { "guitarNodes": {} },
+            { "guitarNodes": bypass_overlay("G3", "ampB", true) },
+            { "guitarNodes": both_off }
+        ]
+    })
+}
+
+fn candidates_of(preset: &serde_json::Value) -> Vec<LevelBlockArg> {
+    filter_amp_candidates(session::extract_level_blocks(preset))
+}
+
+fn driven_nodes(d: &SceneDrive) -> Vec<&str> {
+    d.amps.iter().map(|a| a.node_id.as_str()).collect()
+}
+
+#[test]
+fn scene_drives_name_both_lane_amps_one_lane_amp_or_none() {
+    let preset = parallel_drive_preset();
+    let drive = scene_drives(&preset, &candidates_of(&preset));
+    assert_eq!(drive.scenes.len(), 3);
+
+    let both = &drive.scenes[0];
+    assert_eq!(
+        driven_nodes(both),
+        ["ampA", "ampB"],
+        "both lane amps, flow order"
+    );
+    assert_eq!(both.routing, ParallelKind::Merged);
+    assert_eq!(both.skip, None);
+    assert_eq!(both.amps[0].fender_id, "ACD_TM59Bassman");
+    assert_eq!(both.amps[1].group_id, "G3");
+
+    let one = &drive.scenes[1];
+    assert_eq!(driven_nodes(one), ["ampA"], "only the lane whose amp is on");
+    assert_eq!(one.routing, ParallelKind::Single);
+
+    let none = &drive.scenes[2];
+    assert!(none.amps.is_empty());
+    assert_eq!(none.skip, Some(SkipKind::NoActiveAmp));
+
+    assert!(
+        drive.rebalanceable,
+        "a scene with two re-merging lane amps can be balanced"
+    );
+}
+
+#[test]
+fn split_output_lanes_are_driven_together_but_never_rebalanceable() {
+    let preset = serde_json::json!({
+        "audioGraph": { "template": "gtrSplit", "guitarNodes": {
+            "G1": [],
+            "G2": [ drive_amp("ampA", "ACD_TM59Bassman", false) ],
+            "G3": [ drive_amp("ampB", "ACD_HiwattDR103CanMod", false) ]
+        } },
+        "scenes": [ { "guitarNodes": {} } ]
+    });
+    let drive = scene_drives(&preset, &candidates_of(&preset));
+    assert_eq!(driven_nodes(&drive.scenes[0]), ["ampA", "ampB"]);
+    assert_eq!(drive.scenes[0].routing, ParallelKind::SplitOutput);
+    assert!(
+        !drive.rebalanceable,
+        "separate outputs have no shared mix to balance"
+    );
+}
+
+#[test]
+fn a_series_scene_that_swaps_amps_drives_the_one_it_turns_on() {
+    let preset = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            drive_amp("amp1", "ACD_BE100", false),
+            drive_amp("amp2", "ACD_TwinReverb65NoFx", true)
+        ] } },
+        "scenes": [
+            { "guitarNodes": {} },
+            { "guitarNodes": { "G1": {
+                "amp1": { "dspUnitParameters": { "bypass": true } },
+                "amp2": { "dspUnitParameters": { "bypass": false } }
+            } } }
+        ]
+    });
+    let drive = scene_drives(&preset, &candidates_of(&preset));
+    assert_eq!(driven_nodes(&drive.scenes[0]), ["amp1"]);
+    assert_eq!(driven_nodes(&drive.scenes[1]), ["amp2"]);
+    assert_eq!(drive.scenes[1].amps[0].fender_id, "ACD_TwinReverb65NoFx");
+    assert!(drive
+        .scenes
+        .iter()
+        .all(|d| d.routing == ParallelKind::Single));
+    assert!(!drive.rebalanceable);
+}
+
+#[test]
+fn a_preset_without_an_amp_or_a_readable_scene_says_why_for_every_scene() {
+    let no_amp = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [] } },
+        "scenes": [ { "guitarNodes": {} }, { "guitarNodes": {} } ]
+    });
+    let drive = scene_drives(&no_amp, &candidates_of(&no_amp));
+    assert!(drive
+        .scenes
+        .iter()
+        .all(|d| d.amps.is_empty() && d.skip == Some(SkipKind::NoActiveAmp)));
+
+    let mut cut = parallel_drive_preset();
+    cut["scenes"][1] = serde_json::json!("truncated");
+    let drive = scene_drives(&cut, &candidates_of(&cut));
+    assert_eq!(drive.scenes.len(), 3);
+    assert!(drive
+        .scenes
+        .iter()
+        .all(|d| d.skip == Some(SkipKind::PresetUnreadable)));
+    assert!(!drive.rebalanceable);
+
+    let scene_less = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [] } }
+    });
+    assert_eq!(scene_drives(&scene_less, &[]), PresetDrive::default());
+}
+
+/// ONE SOURCE OF TRUTH: what Set up shows for each scene is exactly what the run's own job
+/// builder drives — same knobs, same refusal kind, same rebalance gate — when both start from
+/// the saved document the way the batch does (every scene plus base, docs off the overlay).
+#[test]
+fn scene_drives_agree_with_the_jobs_the_run_builds() {
+    for preset in [
+        parallel_drive_preset(),
+        serde_json::json!({
+            "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+                drive_amp("amp1", "ACD_BE100", false),
+                drive_amp("amp2", "ACD_TwinReverb65NoFx", true)
+            ] } },
+            "scenes": [
+                { "guitarNodes": {} },
+                { "guitarNodes": bypass_overlay("G1", "amp1", true) }
+            ]
+        }),
+    ] {
+        let candidates = candidates_of(&preset);
+        let drive = scene_drives(&preset, &candidates);
+        let mut slots: Vec<u32> = (0..drive.scenes.len() as u32).collect();
+        slots.push(session::BASE_SCENE_SLOT);
+        let (docs, _) = scene_docs_from_saved(&preset, &slots).expect("docs");
+        let jobs =
+            build_scene_jobs_with_handles(&slots, &candidates, &docs, -23.0, Some(&preset), &[])
+                .expect("jobs");
+        for d in &drive.scenes {
+            let job = jobs
+                .iter()
+                .find(|j| j.scene_slot == d.scene_slot)
+                .expect("a job per scene");
+            let job_nodes: Vec<&str> = job
+                .knobs
+                .iter()
+                .map(|k| match &k.knob {
+                    leveller::LevelKnob::Block { node_id, .. } => node_id.as_str(),
+                    leveller::LevelKnob::PresetLevel => "presetLevel",
+                })
+                .collect();
+            assert_eq!(job_nodes, driven_nodes(d), "scene {}", d.scene_slot);
+            assert_eq!(
+                job.skip.as_ref().map(|r| r.kind),
+                d.skip,
+                "scene {}",
+                d.scene_slot
+            );
+            assert_eq!(
+                job.rebalanceable,
+                d.routing == ParallelKind::Merged && d.amps.len() >= 2,
+                "scene {}",
+                d.scene_slot
+            );
+        }
+    }
+}
+
+#[test]
+fn a_scene_drive_serializes_camel_case_with_snake_case_tokens() {
+    let preset = parallel_drive_preset();
+    let drive = scene_drives(&preset, &candidates_of(&preset));
+    assert_eq!(
+        serde_json::to_value(&drive.scenes[0]).unwrap(),
+        serde_json::json!({
+            "sceneSlot": 0,
+            "amps": [
+                { "groupId": "G2", "nodeId": "ampA", "fenderId": "ACD_TM59Bassman" },
+                { "groupId": "G3", "nodeId": "ampB", "fenderId": "ACD_HiwattDR103CanMod" }
+            ],
+            "routing": "merged",
+            "skip": null
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&drive.scenes[2]).unwrap()["skip"],
+        serde_json::json!("no_active_amp")
     );
 }

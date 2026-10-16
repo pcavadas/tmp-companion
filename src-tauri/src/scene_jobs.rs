@@ -2,6 +2,7 @@
 //! and the saved-preset scene-overlay reads. Shared by the scene-leveling commands, the
 //! leveller and the probe (it moved out of `probe_api`, which holds probe entry points).
 
+use crate::error::{Refusal, SkipKind};
 use crate::footswitch::{self, max_referenced_scene};
 use crate::leveller;
 use crate::proto;
@@ -156,16 +157,30 @@ fn answers_all_amp_bypasses(amps: &[&session::GraphNode], doc: &serde_json::Valu
 /// re-introduce the parallel mislevel). A known template — series, parallel-merged,
 /// split-output, or dual-input — is classifiable; only an unknown/incomplete one is a
 /// hard error. (Mic-only paths produce no guitar amp candidate and skip per-scene.)
-pub(crate) fn check_levelable_routing(structure: &session::ActiveGraph) -> Result<(), String> {
+///
+/// The kind tells the two refusals apart: no template at all is a read that stopped short
+/// ([`SkipKind::PresetUnreadable`]); a template this build does not know is a routing the
+/// leveler does not drive on its own ([`SkipKind::LevelManually`]).
+pub(crate) fn check_levelable_routing(structure: &session::ActiveGraph) -> Result<(), Refusal> {
     if !session::is_known_routing_template(structure.template.as_deref()) {
-        return Err("routing template unknown or read incomplete — cannot classify".to_string());
+        let kind = if structure.template.is_none() {
+            SkipKind::PresetUnreadable
+        } else {
+            SkipKind::LevelManually
+        };
+        return Err(Refusal::new(
+            kind,
+            "routing template unknown or read incomplete — cannot classify",
+        ));
     }
     Ok(())
 }
 
-/// How a scene's amp knob set relates to the signal sum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ParallelKind {
+/// How a scene's amp knob set relates to the signal sum. Serialized `snake_case` for the Set
+/// up exposure ([`SceneDrive::routing`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParallelKind {
     /// One knob (series master / single amp) — no rebalance concept.
     Single,
     /// Two+ lane amps that RE-MERGE into one path (`gtrParallel*`): their mix is
@@ -194,7 +209,7 @@ pub(crate) fn classify_scene_knobs(
     structure: &session::ActiveGraph,
     scene_doc: &serde_json::Value,
     candidates: &[LevelBlockArg],
-) -> Result<(Vec<AmpKnobSpec>, ParallelKind), String> {
+) -> Result<(Vec<AmpKnobSpec>, ParallelKind), Refusal> {
     use session::Stage;
     // The amp's outputLevel candidate value, if it has one (None = no outputLevel knob).
     let ol = |g: &str, n: &str| {
@@ -233,11 +248,11 @@ pub(crate) fn classify_scene_knobs(
     // answerable" means the doc is unusable, not that the scene is unusual — and this row's own
     // `skip` is the honest outcome (per-scene skip, never a batch abort).
     if !answers_all_amp_bypasses(&amps, scene_doc) {
-        return Err(
+        return Err(Refusal::new(
+            SkipKind::PresetUnreadable,
             "scene doc does not answer every amp's bypass state (absent or truncated before or \
-             between the amp nodes) — refusing to classify against the base graph"
-                .to_string(),
-        );
+             between the amp nodes) — refusing to classify against the base graph",
+        ));
     }
     let active: Vec<&session::GraphNode> = amps
         .into_iter()
@@ -249,7 +264,10 @@ pub(crate) fn classify_scene_knobs(
         })
         .collect();
     if active.is_empty() {
-        return Err("no active guitar amp in scene".to_string());
+        return Err(Refusal::new(
+            SkipKind::NoActiveAmp,
+            "no active guitar amp in scene",
+        ));
     }
 
     // Parallel lanes that sum into / are captured at the USB-Out: every re-merging
@@ -319,11 +337,14 @@ pub(crate) fn classify_scene_knobs(
             .find(|nd| in_groups(gs, &nd.group_id))
     };
 
-    let resolve = |nd: &session::GraphNode| -> Result<(String, String, f32), String> {
+    let resolve = |nd: &session::GraphNode| -> Result<(String, String, f32), Refusal> {
         let v = ol(&nd.group_id, &nd.node_id).ok_or_else(|| {
-            format!(
-                "active amp {} has no outputLevel control — can't scene-level it",
-                nd.node_id
+            Refusal::new(
+                SkipKind::LevelManually,
+                format!(
+                    "active amp {} has no outputLevel control — can't scene-level it",
+                    nd.node_id
+                ),
             )
         })?;
         Ok((
@@ -365,10 +386,16 @@ pub(crate) fn classify_scene_knobs(
         .any(|nd| !in_groups(&split_groups, &nd.group_id) && !in_groups(&post_merge, &nd.group_id));
     if !lane_amps.is_empty() {
         if amp_splits > 1 {
-            return Err("complex multi-split routing — level manually".to_string());
+            return Err(Refusal::new(
+                SkipKind::LevelManually,
+                "complex multi-split routing — level manually",
+            ));
         }
         if trunk_amp {
-            return Err("mixed pre-split + parallel amps — level manually".to_string());
+            return Err(Refusal::new(
+                SkipKind::LevelManually,
+                "mixed pre-split + parallel amps — level manually",
+            ));
         }
         let kind = amp_split_kind.unwrap_or(ParallelKind::Merged);
         let knobs = lane_amps
@@ -419,7 +446,7 @@ pub(crate) fn build_scene_jobs(
     docs: &[(u32, Option<serde_json::Value>)],
     target_lufs: f64,
     saved_fallback: Option<&serde_json::Value>,
-) -> Result<Vec<leveller::SceneJob>, String> {
+) -> Result<Vec<leveller::SceneJob>, Refusal> {
     build_scene_jobs_with_handles(
         scene_slots,
         candidates,
@@ -438,6 +465,119 @@ pub(crate) struct SceneHandleSpec<'a> {
     pub group_id: &'a str,
     pub node_id: &'a str,
     pub parameter_id: &'a str,
+}
+
+/// The AMP-`outputLevel` path's preset-wide prerequisites, resolved ONCE per preset: an amp
+/// `outputLevel` candidate exists, and the routing STRUCTURE (the first doc with a known
+/// template, else the saved fallback) is readable and known. `Err` = no scene can take the
+/// amp path, and its refusal is what every amp-path row reports.
+///
+/// Shared by the run's job builder ([`build_scene_jobs_with_handles`]) and the Set up
+/// exposure ([`scene_drives`]), so the two cannot disagree about which presets have an amp
+/// path at all.
+pub(crate) fn amp_path_structure(
+    candidates: &[LevelBlockArg],
+    docs: &[(u32, Option<serde_json::Value>)],
+    saved_fallback: Option<&serde_json::Value>,
+) -> Result<session::ActiveGraph, Refusal> {
+    if !candidates
+        .iter()
+        .any(|c| is_amp_output_level_param(&c.parameter_id))
+    {
+        return Err(Refusal::new(
+            SkipKind::NoActiveAmp,
+            "per-scene leveling needs an amp outputLevel control",
+        ));
+    }
+    let structure = structure_graph(docs)
+        .or_else(|| {
+            saved_fallback
+                .map(|v| session::extract_active_graph(v, None))
+                .filter(|g| session::is_known_routing_template(g.template.as_deref()))
+        })
+        .ok_or_else(|| {
+            Refusal::new(
+                SkipKind::PresetUnreadable,
+                "no complete routing read (template missing from every scene doc) — \
+                 can't classify scene routing safely",
+            )
+        })?;
+    // Preset-wide un-levelable routing (unknown template / mic / split-output) stops the
+    // amp path for the whole preset. Per-SCENE issues become skip jobs so one bad scene
+    // doesn't abort the batch.
+    check_levelable_routing(&structure)?;
+    Ok(structure)
+}
+
+/// What the amp path drives in ONE scene: the amp `outputLevel` knobs (`(group, node,
+/// current)`, flow order — one for a series chain, one per lane for a parallel or split
+/// scene) and how they relate.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AmpPlan {
+    pub knobs: Vec<AmpKnobSpec>,
+    pub routing: ParallelKind,
+}
+
+impl AmpPlan {
+    /// The rebalance flow's gate: two or more lane amps that RE-MERGE into one summed output.
+    /// A series chain, a single amp and a split-output pair have no shared mix to balance.
+    pub fn rebalanceable(&self) -> bool {
+        self.routing == ParallelKind::Merged && self.knobs.len() >= 2
+    }
+}
+
+/// THE amp-path decision for one scene, shared by the run ([`build_scene_jobs_with_handles`])
+/// and the Set up exposure ([`scene_drives`]): which amp knobs a run turns in `scene`, or the
+/// refusal that scene reports. `structure` is [`amp_path_structure`]'s answer for the preset.
+///
+/// Beyond [`classify_scene_knobs`] it carries the PLAN-TIME twin of `scene_write_verdict`'s
+/// `Unknown => Refuse`: a row whose SAVED overlay can't be classified is one the write path
+/// would refuse anyway — but leaving it in the batch until then is not merely late, it is
+/// SILENT: `plan_trade_for_batch` scores it `benefits: false` (via
+/// `benefits_from_base_raise`), so its deficit never reaches the trade, no headroom is bought
+/// for it, and it clamps with nothing red. Refusing here is what puts the reason on the
+/// user's row — and spares the scene an engage.
+///
+/// Scoped to a saved doc that CLAIMS overlay authority (it carries a `scenes` array) and still
+/// can't answer. A doc with no `scenes` at all is not a failed overlay read — it is the
+/// routing-TEMPLATE fallback the oversized-audioGraph class depends on
+/// (`scene_jobs_saved_fallback_supplies_missing_template`), and `scenes` is the first section
+/// a field-8 cut takes (HW: 22/25 presets read "scenes unknown"), so refusing on its mere
+/// absence would skip almost every row for the probe/bench callers, whose saved doc is never
+/// required to be complete. The batched command path — the only one that runs the trade —
+/// reads complete-or-fail, so there a present-but-unanswerable `scenes` is genuine
+/// malformation, not truncation.
+pub(crate) fn plan_amp_scene(
+    scene: u32,
+    doc: &serde_json::Value,
+    structure: &Result<session::ActiveGraph, Refusal>,
+    candidates: &[LevelBlockArg],
+    saved_fallback: Option<&serde_json::Value>,
+) -> Result<AmpPlan, Refusal> {
+    let structure = structure.as_ref().map_err(Clone::clone)?;
+    let (knobs, routing) = classify_scene_knobs(structure, doc, candidates)?;
+    let scene_idx = (scene < session::BASE_SCENE_SLOT).then_some(scene);
+    if let (Some(scene_idx), Some(saved)) = (scene_idx, saved_fallback) {
+        let claims_authority = saved
+            .get("scenes")
+            .and_then(|s| s.as_array())
+            .is_some_and(|a| !a.is_empty());
+        if let Some((_, node, _)) = knobs
+            .iter()
+            .filter(|_| claims_authority)
+            .find(|(_, n, _)| matches!(scene_overlay(saved, scene_idx, n), SceneOverlay::Unknown))
+        {
+            return Err(Refusal::new(
+                SkipKind::SceneWriteRefused,
+                format!(
+                    "the saved preset can't answer this scene's overlay for {node} (truncated \
+                     or malformed `scenes`) — refusing rather than leveling a row the headroom \
+                     trade cannot model"
+                ),
+            ));
+        }
+    }
+    Ok(AmpPlan { knobs, routing })
 }
 
 /// [`build_scene_jobs`] with the per-row handles threaded in — `handles` is sparse, keyed by
@@ -459,33 +599,8 @@ pub(crate) fn build_scene_jobs_with_handles(
     target_lufs: f64,
     saved_fallback: Option<&serde_json::Value>,
     handles: &[(u32, SceneHandleSpec)],
-) -> Result<Vec<leveller::SceneJob>, String> {
-    // The AMP-`outputLevel` classifier's preset-wide inputs, resolved once. `Err` = no row can
-    // take the amp path (its reason is what those rows report).
-    let amp_prereq: Result<session::ActiveGraph, String> = (|| {
-        if !candidates
-            .iter()
-            .any(|c| is_amp_output_level_param(&c.parameter_id))
-        {
-            return Err("per-scene leveling needs an amp outputLevel control".to_string());
-        }
-        let structure = structure_graph(docs)
-            .or_else(|| {
-                saved_fallback
-                    .map(|v| session::extract_active_graph(v, None))
-                    .filter(|g| session::is_known_routing_template(g.template.as_deref()))
-            })
-            .ok_or_else(|| {
-                "no complete routing read (template missing from every scene doc) — \
-                 can't classify scene routing safely"
-                    .to_string()
-            })?;
-        // Preset-wide un-levelable routing (unknown template / mic / split-output) stops the
-        // amp path for the whole preset. Per-SCENE issues below become skip jobs so one bad
-        // scene doesn't abort the batch.
-        check_levelable_routing(&structure)?;
-        Ok(structure)
-    })();
+) -> Result<Vec<leveller::SceneJob>, Refusal> {
+    let amp_prereq = amp_path_structure(candidates, docs, saved_fallback);
     if handles.is_empty() {
         if let Err(e) = &amp_prereq {
             return Err(e.clone());
@@ -507,13 +622,11 @@ pub(crate) fn build_scene_jobs_with_handles(
             if let Some((_, h)) = handles.iter().find(|(s2, _)| s2 == scene) {
                 return handle_scene_job(*scene, scene_slot, target_lufs, h, doc, saved_fallback);
             }
-            let classified = match &amp_prereq {
-                Ok(structure) => classify_scene_knobs(structure, doc, candidates),
-                Err(reason) => Err(reason.clone()),
-            };
-            match classified {
-                Ok((triples, kind)) => {
-                    let knobs = triples
+            match plan_amp_scene(*scene, doc, &amp_prereq, candidates, saved_fallback) {
+                Ok(plan) => {
+                    let rebalanceable = plan.rebalanceable();
+                    let knobs = plan
+                        .knobs
                         .into_iter()
                         .map(|(group_id, node_id, current)| {
                             let (lo, hi) = knob_bounds(current);
@@ -530,56 +643,6 @@ pub(crate) fn build_scene_jobs_with_handles(
                             }
                         })
                         .collect::<Vec<_>>();
-                    // PLAN-TIME twin of `scene_write_verdict`'s `Unknown => Refuse`. A row whose
-                    // SAVED overlay can't be classified is one the write path would refuse
-                    // anyway — but leaving it in the batch until then is not merely late, it is
-                    // SILENT: `plan_trade_for_batch` scores it `benefits: false` (via
-                    // `benefits_from_base_raise`), so its deficit never reaches the trade, no
-                    // headroom is bought for it, and it clamps with nothing red. Refusing here
-                    // is what puts the reason on the user's row — and spares the scene an engage.
-                    //
-                    // Scoped to a saved doc that CLAIMS overlay authority (it carries a `scenes`
-                    // array) and still can't answer. A doc with no `scenes` at all is not a
-                    // failed overlay read — it is the routing-TEMPLATE fallback the oversized-
-                    // audioGraph class depends on (`scene_jobs_saved_fallback_supplies_missing_
-                    // template`), and `scenes` is the first section a field-8 cut takes (HW:
-                    // 22/25 presets read "scenes unknown"), so refusing on its mere absence
-                    // would skip almost every row for the probe/bench callers, whose saved doc
-                    // is never required to be complete. The batched command path — the only one
-                    // that runs the trade — reads complete-or-fail, so there a present-but-
-                    // unanswerable `scenes` is genuine malformation, not truncation.
-                    if let (Some(scene_idx), Some(saved)) = (scene_slot, saved_fallback) {
-                        let claims_authority = saved
-                            .get("scenes")
-                            .and_then(|s| s.as_array())
-                            .is_some_and(|a| !a.is_empty());
-                        if let Some(node) =
-                            knobs.iter().filter(|_| claims_authority).find_map(|kt| {
-                                match &kt.knob {
-                                    leveller::LevelKnob::Block { node_id, .. }
-                                        if matches!(
-                                            scene_overlay(saved, scene_idx, node_id),
-                                            SceneOverlay::Unknown
-                                        ) =>
-                                    {
-                                        Some(node_id.clone())
-                                    }
-                                    _ => None,
-                                }
-                            })
-                        {
-                            return skip_scene_job(
-                                *scene,
-                                target_lufs,
-                                format!(
-                                    "the saved preset can't answer this scene's overlay for \
-                                     {node} (truncated or malformed `scenes`) — refusing rather \
-                                     than leveling a row the headroom trade cannot model"
-                                ),
-                            );
-                        }
-                    }
-                    let rebalanceable = kind == ParallelKind::Merged && knobs.len() >= 2;
                     leveller::SceneJob {
                         scene_slot: *scene,
                         // Stamped with the batch target; the app command overrides it per
@@ -598,7 +661,7 @@ pub(crate) fn build_scene_jobs_with_handles(
                         force_bypass: Vec::new(),
                     }
                 }
-                Err(reason) => skip_scene_job(*scene, target_lufs, reason),
+                Err(refusal) => skip_scene_job(*scene, target_lufs, refusal),
             }
         })
         .collect();
@@ -606,12 +669,12 @@ pub(crate) fn build_scene_jobs_with_handles(
 }
 
 /// A scene the batch reports as a failed outcome and moves past — never an abort.
-fn skip_scene_job(scene: u32, target_lufs: f64, reason: String) -> leveller::SceneJob {
+fn skip_scene_job(scene: u32, target_lufs: f64, refusal: Refusal) -> leveller::SceneJob {
     leveller::SceneJob {
         scene_slot: scene,
         target_lufs,
         knobs: Vec::new(),
-        skip: Some(reason),
+        skip: Some(refusal),
         rebalanceable: false,
         handle: None,
         // A skip job is never measured, so it never carries a prepass reading.
@@ -642,10 +705,13 @@ fn handle_scene_job(
         return skip_scene_job(
             scene,
             target_lufs,
-            format!(
-                "could not read the saved preset to classify {} on {} — leveling an \
-                 unclassified parameter could change the sound instead of its loudness",
-                h.parameter_id, h.node_id
+            Refusal::new(
+                SkipKind::PresetUnreadable,
+                format!(
+                    "could not read the saved preset to classify {} on {} — leveling an \
+                     unclassified parameter could change the sound instead of its loudness",
+                    h.parameter_id, h.node_id
+                ),
             ),
         );
     };
@@ -655,7 +721,7 @@ fn handle_scene_job(
     let target =
         match leveller::FsParamTarget::classified(preset, h.node_id, h.parameter_id, current) {
             Ok(t) => t,
-            Err(refusal) => return skip_scene_job(scene, target_lufs, refusal.to_string()),
+            Err(refusal) => return skip_scene_job(scene, target_lufs, refusal.refusal()),
         };
     let (lo, hi) = target.bounds();
     leveller::SceneJob {
@@ -679,6 +745,138 @@ fn handle_scene_job(
         handle: Some(target),
         prepass: None,
         force_bypass: Vec::new(),
+    }
+}
+
+// ───────────────────── What a run drives (the Set up exposure) ─────────────────────
+
+/// One amp block a run turns (its `outputLevel`) in a scene.
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DrivenAmp {
+    pub(crate) group_id: String,
+    pub(crate) node_id: String,
+    /// The block's model id (`FenderId`), for the frontend's display name. Empty when the
+    /// routing graph carries no model for the node.
+    pub(crate) fender_id: String,
+}
+
+/// What a leveling run will drive in ONE scene when its row keeps the default control (the
+/// amp's output level, no user-chosen block): the amps it turns, or why it turns none.
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneDrive {
+    /// 0-based `scenes[]` wire index.
+    pub(crate) scene_slot: u32,
+    /// The amp blocks whose `outputLevel` the run turns, in signal-flow order: the last
+    /// active amp of a series chain, or one per lane of a parallel or split scene (driven
+    /// together by one factor). Empty when `skip` is set.
+    pub(crate) amps: Vec<DrivenAmp>,
+    /// How the amps relate: `single` (one knob), `merged` (lanes that sum back into one
+    /// output) or `split_output` (lanes on separate outputs). `single` when `skip` is set.
+    pub(crate) routing: ParallelKind,
+    /// Why the run turns no amp in this scene — the same refusal its row would report.
+    /// `None` when `amps` is non-empty.
+    pub(crate) skip: Option<SkipKind>,
+}
+
+/// A preset's [`SceneDrive`]s plus whether its scenes can be rebalanced — what Set up shows
+/// without a device round trip (`backup_read::BackupPresetRow`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct PresetDrive {
+    pub scenes: Vec<SceneDrive>,
+    /// At least one scene has two or more lane amps that re-merge into one output — the only
+    /// shape the rebalance flow ("Balance its two amps first") acts on.
+    pub rebalanceable: bool,
+}
+
+/// What a leveling run will drive in every scene of `preset` (its SAVED document) with the
+/// preset's own amp candidates — computed through the SAME functions the run's job builder
+/// uses ([`scene_docs_from_saved`], [`amp_path_structure`], [`plan_amp_scene`]), so what Set
+/// up shows and what the run turns cannot disagree. PURE: no device I/O.
+///
+/// The doc set mirrors the run's: every scene plus base (the batch force-appends base), each
+/// scene's doc being its stored overlay applied over base. A saved document that cannot answer
+/// (no `audioGraph`, a cut `scenes` entry) reports every scene as unreadable.
+pub(crate) fn scene_drives(
+    preset: &serde_json::Value,
+    candidates: &[LevelBlockArg],
+) -> PresetDrive {
+    let count = preset
+        .get("scenes")
+        .and_then(|s| s.as_array())
+        .map_or(0, Vec::len) as u32;
+    if count == 0 {
+        return PresetDrive::default();
+    }
+    let mut slots: Vec<u32> = (0..count).collect();
+    slots.push(session::BASE_SCENE_SLOT);
+    let refused = |kind: SkipKind| SceneDrive {
+        scene_slot: 0,
+        amps: Vec::new(),
+        routing: ParallelKind::Single,
+        skip: Some(kind),
+    };
+    let Some((docs, _)) = scene_docs_from_saved(preset, &slots) else {
+        return PresetDrive {
+            scenes: (0..count)
+                .map(|scene_slot| SceneDrive {
+                    scene_slot,
+                    ..refused(SkipKind::PresetUnreadable)
+                })
+                .collect(),
+            rebalanceable: false,
+        };
+    };
+    let structure = amp_path_structure(candidates, &docs, Some(preset));
+    let model_of = |g: &str, n: &str| -> String {
+        structure
+            .as_ref()
+            .ok()
+            .and_then(|st| {
+                st.nodes
+                    .iter()
+                    .find(|nd| nd.group_id == g && nd.node_id == n)
+                    .map(|nd| nd.model.clone())
+            })
+            .unwrap_or_default()
+    };
+    let mut rebalanceable = false;
+    let scenes = (0..count)
+        .map(|scene_slot| {
+            let doc = docs
+                .iter()
+                .find(|(s, _)| *s == scene_slot)
+                .and_then(|(_, d)| d.as_ref())
+                .unwrap_or(&NULL_DOC);
+            match plan_amp_scene(scene_slot, doc, &structure, candidates, Some(preset)) {
+                Ok(plan) => {
+                    rebalanceable |= plan.rebalanceable();
+                    SceneDrive {
+                        scene_slot,
+                        amps: plan
+                            .knobs
+                            .iter()
+                            .map(|(g, n, _)| DrivenAmp {
+                                group_id: g.clone(),
+                                node_id: n.clone(),
+                                fender_id: model_of(g, n),
+                            })
+                            .collect(),
+                        routing: plan.routing,
+                        skip: None,
+                    }
+                }
+                Err(r) => SceneDrive {
+                    scene_slot,
+                    ..refused(r.kind)
+                },
+            }
+        })
+        .collect();
+    PresetDrive {
+        scenes,
+        rebalanceable,
     }
 }
 
@@ -1607,27 +1805,34 @@ pub(crate) fn prepass_scene_docs_via(
     slot: ListIndex,
     scene_slots: &[u32],
     saved: Option<&serde_json::Value>,
-) -> Result<SceneDocs, String> {
+) -> Result<SceneDocs, crate::error::LevelError> {
     prepass_scene_docs_with(slot, scene_slots, saved, crate::leveller::make_current)
 }
 
 /// [`prepass_scene_docs_via`] with its one device seam (the load) injected, so the refusal and
-/// the load are unit-tested without a device.
+/// the load are unit-tested without a device. A saved document that cannot answer is a
+/// [`SkipKind::PresetUnreadable`] refusal; a failed load keeps its own (untyped) failure.
 pub(crate) fn prepass_scene_docs_with(
     slot: ListIndex,
     scene_slots: &[u32],
     saved: Option<&serde_json::Value>,
     load: impl FnOnce(ListIndex) -> Result<(), String>,
-) -> Result<SceneDocs, String> {
+) -> Result<SceneDocs, crate::error::LevelError> {
     let Some(preset) = saved else {
-        return Err(format!(
-            "slot {}: no saved preset to derive the scene documents from — refusing to level \
-             its scenes; nothing was sent to the unit",
-            slot.device_slot()
+        return Err(crate::error::LevelError::refused(
+            SkipKind::PresetUnreadable,
+            format!(
+                "slot {}: no saved preset to derive the scene documents from — refusing to \
+                 level its scenes; nothing was sent to the unit",
+                slot.device_slot()
+            ),
         ));
     };
     let Some(docs) = scene_docs_from_saved(preset, scene_slots) else {
-        return Err(saved_scene_docs_refusal(slot, preset, scene_slots));
+        return Err(crate::error::LevelError::refused(
+            SkipKind::PresetUnreadable,
+            saved_scene_docs_refusal(slot, preset, scene_slots),
+        ));
     };
     load(slot)?;
     Ok(docs)

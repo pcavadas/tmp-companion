@@ -387,6 +387,7 @@ const levelScenesDone: Handler<"level_scenes_apply_batched"> = ({
       status: "done",
       result: results[i],
       message: null,
+      skipKind: null,
     });
   });
   return results;
@@ -478,6 +479,7 @@ function mockLevelingFixture(
           status: "done",
           result: footswitchResultStub(),
           message: null,
+          skipKind: null,
         });
       });
       return jobs.map(() => footswitchResultStub());

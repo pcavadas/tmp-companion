@@ -6,7 +6,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { BackupReadResult, FootswitchInfo } from "../lib/types";
+import type {
+  BackupReadResult,
+  FootswitchInfo,
+  SceneDrive,
+} from "../lib/types";
 import {
   ensureLibraryScan,
   getLibraryScan,
@@ -394,5 +398,49 @@ describe("libraryScan — Doctor scene overrides", () => {
       [override],
       [],
     ]);
+  });
+});
+
+describe("libraryScan — what a run drives per scene (Set up's Block)", () => {
+  beforeEach(() => {
+    resetLibraryScan();
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("keys each preset's scene drives by list index and lists the rebalanceable presets", async () => {
+    const both: SceneDrive = {
+      sceneSlot: 0,
+      amps: [
+        { groupId: "G2", nodeId: "ampA", fenderId: "ACD_TM59Bassman" },
+        { groupId: "G3", nodeId: "ampB", fenderId: "ACD_HiwattDR103CanMod" },
+      ],
+      routing: "merged",
+      skip: null,
+    };
+    const none: SceneDrive = {
+      sceneSlot: 1,
+      amps: [],
+      routing: "single",
+      skip: "no_active_amp",
+    };
+    const backup: BackupReadResult = {
+      ...BACKUP,
+      presets: [
+        {
+          ...row(8, "Plexi Crunch"),
+          scene_drives: [both, none],
+          rebalanceable: true,
+        },
+        row(58, "Stadium Lead"),
+      ],
+    };
+    mockCommands({ read_library_via_backup: () => backup });
+
+    await ensureLibraryScan();
+    const lib = getLibraryScan();
+    expect(lib.sceneDrivesByIndex.get(7)).toEqual([both, none]);
+    // Every scanned preset has an entry: `[]` is an answer, not "no data".
+    expect(lib.sceneDrivesByIndex.get(57)).toEqual([]);
+    expect([...lib.rebalanceableIndices]).toEqual([7]);
   });
 });

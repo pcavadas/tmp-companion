@@ -17,6 +17,7 @@
 
 import type {
   BaseBoostSummary,
+  ClampKind,
   FootswitchInfo,
   FootswitchLevelJobWire,
   LevelJob,
@@ -26,6 +27,7 @@ import type {
   SceneHandlePick,
   SceneInfo,
   SilenceHint,
+  SkipKind,
 } from "../../lib/types";
 import type { PickOption } from "../overlays/Pick";
 import { blockArtTile, shortFallback } from "../../models/blockArt";
@@ -698,10 +700,23 @@ export interface RunItem {
   /** The write landed but its check capture failed, so the row's number is a prediction —
    *  shown as `unconverged` ("run it again") with its own copy. */
   unverified?: boolean;
-  /** WHY a row was skipped — the backend's own per-sound message (the planner's
-   *  "no active amp" / a capture error / a refused scene write), shown verbatim.
-   *  Null when the skip happened client-side with no message. */
+  /** WHY a row was skipped — the backend's own per-sound text (the planner's
+   *  "no active amp" / a capture error / a refused scene write), for the log and the bug
+   *  report. Null when the skip happened client-side with no message. The screen picks
+   *  its words by `skipKind`, never by this text. */
   skipReason?: string | null;
+  /** WHY a row was skipped, typed (`SkipKind`): from the row's `error` progress item, or
+   *  the failed command's own `CommandError.kind`. `"other"` when nothing says more.
+   *  Set exactly when `outcome === "skipped"`. */
+  skipKind?: SkipKind;
+  /** The clamp's CAUSE (`ClampKind`, from the result's `clamp_kind`) — tells "at full
+   *  volume" from the effect's mix floor and the trade's floors without reading text.
+   *  Null on a row that did not clamp. */
+  clampKind?: ClampKind | null;
+  /** `true`: the run's save did not hold this row's leveled value (`persist_mismatch:
+   *  true` — read back after the save, or the save itself failed), on a stopped run's
+   *  save too. `false` or absent: no such report (held, or not checked). */
+  persistMismatch?: boolean;
   /** Measured (predicted) loudness, or null. */
   value?: number | null;
   /** Scene rows only: this row's handle pick, carried from Set up into the dispatch
@@ -729,10 +744,14 @@ export interface RunItem {
    *  row whose base pair never entered the `Boost` regime (the common case) and on every
    *  non-base row. */
   baseBoost?: BaseBoostSummary | null;
-  /** The run-end re-amp warning its command returned (`LevelResult.reamp_warning`): the
-   *  OFF could not be read back, so the unit may still be input-muted. The Summary shows
-   *  one banner when any row carries it. */
+  /** The run-end re-amp warning TEXT its command returned (`LevelResult.reamp_warning`),
+   *  the backend's own words for the log. Whether re-amp may still be on is
+   *  `reampStillOn`, never this text. */
   reampWarning?: string | null;
+  /** Re-amp may still be on after this row's command (`reamp_still_on`, or a failed
+   *  command's `CommandError.reampStillOn`): the unit's guitar input may still be muted
+   *  until it is restarted. */
+  reampStillOn?: boolean;
 }
 
 /** One preset row of the wizard lists: its slot, its name and its nested items. */

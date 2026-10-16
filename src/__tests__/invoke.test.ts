@@ -38,6 +38,7 @@ vi.mock("@tauri-apps/plugin-log", () => ({
 import {
   appInfo,
   setAutoInstallUpdates,
+  setPresetInstrument,
   listLevelBlocks,
   getStore,
   saveProfiles,
@@ -148,6 +149,11 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
   it("set_auto_install_updates uses on", async () => {
     await setAutoInstallUpdates(true);
     expectCall("set_auto_install_updates", { on: true });
+  });
+
+  it("set_preset_instrument uses slot + profileId", async () => {
+    await setPresetInstrument(4, "none");
+    expectCall("set_preset_instrument", { slot: 4, profileId: "none" });
   });
 
   it("save_support_bundle uses firmware/presetJson/presetName", async () => {
@@ -657,6 +663,43 @@ describe("invoke rejections are normalized to CommandError", () => {
       "IOHIDDeviceOpen failed: 0xe00002c5 — close Fender Pro Control",
     );
     expect((err as CommandError).cmd).toBe("connect_device");
+  });
+
+  it("keeps a leveling rejection's skip kind and its typed re-amp flag", async () => {
+    // The three leveling commands reject with `{ kind, message, reampStillOn }`: the kind
+    // is why the run was not leveled (`error::SkipKind`), the flag says the unit's input
+    // may still be muted — both typed, so nothing reads the text.
+    invokeMock.mockRejectedValueOnce({
+      kind: "preset_unreadable",
+      message: "could not read preset 4 — Re-amp may still be on.",
+      reampStillOn: true,
+    });
+    const err: unknown = await levelPreset({
+      slot: 3,
+      target_lufs: -23,
+      save: true,
+      topology_id: null,
+      calibration_lufs: null,
+      profile_id: null,
+      block_group_id: null,
+      block_node_id: null,
+      block_parameter_id: null,
+      block_value: null,
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(CommandError);
+    expect((err as CommandError).kind).toBe("preset_unreadable");
+    expect((err as CommandError).reampStillOn).toBe(true);
+    expect((err as CommandError).cmd).toBe("level_preset");
+    // Any other rejection says nothing about re-amp.
+    invokeMock.mockRejectedValueOnce("no TMP found");
+    const plain: unknown = await connectDevice().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect((plain as CommandError).reampStillOn).toBe(false);
   });
 
   it("reads an unknown kind as other rather than trusting it", async () => {

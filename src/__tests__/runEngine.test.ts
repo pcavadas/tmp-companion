@@ -138,12 +138,14 @@ function fakeDeps(over: Partial<EngineDeps> = {}): EngineDeps {
             status: "active",
             result: null,
             message: "measuring",
+            skipKind: null,
           });
           onResult({
             sceneSlot: job.sceneSlot,
             status: "done",
             result: makeLevelResult({ verify_lufs: job.targetLufs }),
             message: null,
+            skipKind: null,
           });
         }
         return Promise.resolve([]);
@@ -157,6 +159,7 @@ function fakeDeps(over: Partial<EngineDeps> = {}): EngineDeps {
             status: "done",
             result: makeFootswitchLevelResult({ switch: job.switch }),
             message: null,
+            skipKind: null,
           });
         return Promise.resolve([]);
       },
@@ -312,6 +315,7 @@ describe("runEngine", () => {
               status: "done",
               result: makeLevelResult(),
               message: null,
+              skipKind: null,
             });
           const warned: LevelResult = makeLevelResult({
             reamp_warning: "re-amp may still be on",
@@ -324,6 +328,239 @@ describe("runEngine", () => {
     expect(rows.map((r) => r.reampWarning)).toEqual([
       "re-amp may still be on",
       "re-amp may still be on",
+    ]);
+  });
+
+  // OWNER-ANSWERS 8: the screen reads the TYPED flag, never the warning text.
+  it("stamps the typed re-amp flag on every row of a batch, from its rows or its error", async () => {
+    const deps = fakeDeps({
+      levelFootswitchesApply: vi.fn<EngineDeps["levelFootswitchesApply"]>(
+        (args, onResult) => {
+          for (const job of args.jobs)
+            onResult({
+              switch: job.switch,
+              status: "done",
+              result: makeFootswitchLevelResult({ switch: job.switch }),
+              message: null,
+              skipKind: null,
+            });
+          return Promise.resolve([
+            makeFootswitchLevelResult({ switch: 0, reamp_still_on: true }),
+          ]);
+        },
+      ),
+      levelPreset: vi.fn<EngineDeps["levelPreset"]>(() =>
+        Promise.reject(
+          Object.assign(new Error("no signal captured"), {
+            kind: "no_signal",
+            reampStillOn: true,
+          }),
+        ),
+      ),
+    });
+    const { rows } = await drive(
+      [footswitch("f0", 0), footswitch("f1", 1), base("b", { slot: 1 })],
+      deps,
+    );
+    expect(rows.map((r) => r.reampStillOn)).toEqual([true, true, true]);
+    expect(rows[2]).toMatchObject({
+      outcome: "skipped",
+      skipKind: "no_signal",
+    });
+    // The text is never what decided it: no warning text was sent at all.
+    expect(rows.map((r) => r.reampWarning)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("leaves the re-amp flag unset when the run-end OFF read back", async () => {
+    const { rows } = await drive([base("b"), scene("s1", 1)], fakeDeps());
+    expect(rows[0].reampStillOn).toBe(false);
+    expect(rows[1].reampStillOn).toBeUndefined();
+  });
+
+  // OWNER-ANSWERS 4: the save's verdict is only known once the command returns — the
+  // streamed rows predate the save — so it is merged from the RETURNED rows by identity.
+  it("merges the save's verdict from the returned rows onto the rows they name", async () => {
+    const deps = fakeDeps({
+      levelPreset: vi.fn<EngineDeps["levelPreset"]>(() =>
+        Promise.resolve(makeLevelResult({ persist_mismatch: true })),
+      ),
+      levelScenesApplyBatched: vi.fn<EngineDeps["levelScenesApplyBatched"]>(
+        (args, onResult) => {
+          for (const job of args.jobs)
+            onResult({
+              sceneSlot: job.sceneSlot,
+              status: "done",
+              result: makeLevelResult({ scene_slot: job.sceneSlot }),
+              message: null,
+              skipKind: null,
+            });
+          // Returned out of order: identity, never position, picks the row.
+          return Promise.resolve([
+            makeLevelResult({ scene_slot: 2, persist_mismatch: true }),
+            makeLevelResult({ scene_slot: 1, persist_mismatch: false }),
+          ]);
+        },
+      ),
+      levelFootswitchesApply: vi.fn<EngineDeps["levelFootswitchesApply"]>(
+        (args, onResult) => {
+          for (const job of args.jobs)
+            onResult({
+              switch: job.switch,
+              status: "done",
+              result: makeFootswitchLevelResult({ switch: job.switch }),
+              message: null,
+              skipKind: null,
+            });
+          return Promise.resolve([
+            makeFootswitchLevelResult({ switch: 1, persist_mismatch: true }),
+          ]);
+        },
+      ),
+    });
+    const { rows } = await drive(
+      [
+        base("b"),
+        scene("s1", 1),
+        scene("s2", 2),
+        footswitch("f0", 0),
+        footswitch("f1", 1),
+      ],
+      deps,
+    );
+    expect(rows.map((r) => [r.key, r.outcome, r.persistMismatch])).toEqual([
+      ["b", "done", true],
+      ["s1", "done", false],
+      ["s2", "done", true],
+      // f0's save was never verified (no returned verdict): nothing is claimed.
+      ["f0", "done", undefined],
+      ["f1", "done", true],
+    ]);
+  });
+
+  it("reports a stopped batch's save verdict on the rows it leveled", async () => {
+    let cancelled = false;
+    const deps = fakeDeps({
+      isCancelled: () => cancelled,
+      levelScenesApplyBatched: vi.fn<EngineDeps["levelScenesApplyBatched"]>(
+        (_args, onResult) => {
+          onResult({
+            sceneSlot: 1,
+            status: "done",
+            result: makeLevelResult({ scene_slot: 1 }),
+            message: null,
+            skipKind: null,
+          });
+          cancelled = true; // Stop pressed; the batch still saves what it leveled
+          return Promise.resolve([
+            makeLevelResult({ scene_slot: 1, persist_mismatch: true }),
+          ]);
+        },
+      ),
+    });
+    const { rows } = await drive([scene("s1", 1), scene("s2", 2)], deps);
+    expect(rows.map((r) => [r.status, r.persistMismatch])).toEqual([
+      ["result", true],
+      ["queued", undefined],
+    ]);
+  });
+
+  // E2: the screen picks a skipped row's words by kind; the text is for the log only.
+  it("gives every skipped row a typed kind: the streamed one, the error's, or other", async () => {
+    const deps = fakeDeps({
+      levelScenesApplyBatched: vi.fn<EngineDeps["levelScenesApplyBatched"]>(
+        (args, onResult) => {
+          onResult({
+            sceneSlot: args.jobs[0].sceneSlot,
+            status: "error",
+            result: null,
+            message: "no active guitar amp in scene",
+            skipKind: "no_active_amp",
+          });
+          return Promise.reject(
+            Object.assign(new Error("scene 2 could not be read"), {
+              kind: "preset_unreadable",
+            }),
+          );
+        },
+      ),
+      levelPreset: vi.fn<EngineDeps["levelPreset"]>(() =>
+        Promise.reject(new Error("no active amp")),
+      ),
+    });
+    const { rows } = await drive(
+      [base("b", { slot: 1 }), scene("s1", 1), scene("s2", 2)],
+      deps,
+    );
+    expect(rows.map((r) => [r.key, r.outcome, r.skipKind])).toEqual([
+      // Untyped text never picks a kind, whatever it says.
+      ["b", "skipped", "other"],
+      ["s1", "skipped", "no_active_amp"],
+      ["s2", "skipped", "preset_unreadable"],
+    ]);
+    expect(rows[1].skipReason).toBe("no active guitar amp in scene");
+  });
+
+  it("names a client-side skip's kind: no amp to drive, or a preset it couldn't read", async () => {
+    const noAmp = await drive(
+      [scene("s1", 1)],
+      fakeDeps({ ampCandidates: new Map([[0, []]]) }),
+    );
+    expect(noAmp.rows[0]).toMatchObject({
+      outcome: "skipped",
+      skipKind: "no_active_amp",
+    });
+    const unread = await drive(
+      [scene("s1", 1)],
+      fakeDeps({
+        ampCandidates: new Map(),
+        listLevelBlocks: vi.fn<EngineDeps["listLevelBlocks"]>(() =>
+          Promise.reject(new Error("read timed out")),
+        ),
+      }),
+    );
+    expect(unread.rows[0]).toMatchObject({
+      outcome: "skipped",
+      skipKind: "preset_unreadable",
+      skipReason: "read timed out",
+    });
+  });
+
+  it("carries the result's clamp cause onto the row", async () => {
+    const deps = fakeDeps({
+      levelFootswitchesApply: vi.fn<EngineDeps["levelFootswitchesApply"]>(
+        (args, onResult) => {
+          onResult({
+            switch: args.jobs[0].switch,
+            status: "done",
+            result: makeFootswitchLevelResult({
+              clamped: true,
+              wet_floor: true,
+              clamp_kind: "wet_floor",
+            }),
+            message: null,
+            skipKind: null,
+          });
+          return Promise.resolve([]);
+        },
+      ),
+      levelPreset: vi.fn<EngineDeps["levelPreset"]>(() =>
+        Promise.resolve(
+          makeLevelResult({ clamped: true, clamp_kind: "scene_ceiling" }),
+        ),
+      ),
+    });
+    const { rows } = await drive(
+      [base("b", { slot: 1 }), footswitch("f0", 0), scene("s1", 1)],
+      deps,
+    );
+    expect(rows.map((r) => [r.key, r.outcome, r.clampKind])).toEqual([
+      ["b", "clamped", "scene_ceiling"],
+      ["f0", "clamped", "wet_floor"],
+      ["s1", "done", null],
     ]);
   });
 });

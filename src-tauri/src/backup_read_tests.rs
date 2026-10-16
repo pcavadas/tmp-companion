@@ -488,6 +488,42 @@ fn backup_row_carries_scene_and_base_handle_candidates() {
     assert_eq!(cand.scope, "isolated");
 }
 
+/// What a run drives per scene rides the backup row (the run's own planner over the SAME
+/// `presetJson` and `amp_candidates`), so Set up's Block shows it with no device round trip:
+/// a parallel preset's both-lanes scene names both amps and makes the preset rebalanceable.
+#[test]
+fn backup_row_carries_what_each_scene_drives() {
+    let preset_json = r#"{"audioGraph":{"template":"gtrParallel1","guitarNodes":{"G1":[],
+        "G2":[{"nodeId":"ampA","FenderId":"ACD_TM59Bassman",
+               "dspUnitParameters":{"outputLevel":0.5,"bypass":false}}],
+        "G3":[{"nodeId":"ampB","FenderId":"ACD_HiwattDR103CanMod",
+               "dspUnitParameters":{"outputLevel":0.5,"bypass":false}}]}},
+        "scenes":[{"guitarNodes":{}},
+                  {"guitarNodes":{"G3":{"ampB":{"dspUnitParameters":{"bypass":true}}}}}]}"#;
+    let archive = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (7, 'Drive Test', '{}');",
+        preset_json.replace('\'', "''")
+    ));
+    let result = read_backup_archive(&archive).expect("decode archive");
+    let row = result
+        .presets
+        .iter()
+        .find(|p| p.name == "Drive Test")
+        .expect("the row is present");
+    assert_eq!(row.scene_drives.len(), 2, "one entry per scene");
+    let nodes = |i: usize| -> Vec<&str> {
+        row.scene_drives[i]
+            .amps
+            .iter()
+            .map(|a| a.node_id.as_str())
+            .collect()
+    };
+    assert_eq!(nodes(0), ["ampA", "ampB"]);
+    assert_eq!(nodes(1), ["ampA"]);
+    assert!(row.rebalanceable);
+}
+
 /// Every footswitch's scene context rides the backup row, so the Set-up step resolves a
 /// footswitch row's measurement scene from data up front, never from whether its picker was
 /// opened. Two switches: one enabled only by the second scene, one enabled by no scene.

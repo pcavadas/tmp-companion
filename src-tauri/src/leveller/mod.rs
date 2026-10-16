@@ -46,7 +46,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::audio;
-use crate::error::LevelError;
+use crate::error::{AppError, LevelError, Refusal, SkipKind};
 use crate::lufs;
 use crate::scene_jobs::{overlay_param, SceneParamRead};
 use crate::session::Session;
@@ -257,6 +257,18 @@ pub struct LevelResult {
     /// `src/lib/types.ts`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reamp_warning: Option<String>,
+    /// Re-amp may still be on: the run-end OFF never read back OFF — the TYPED twin of
+    /// `reamp_warning`, which the frontend reads instead of the text (the unit's guitar
+    /// input stays muted until it is restarted). Stamped with it, on every row.
+    pub reamp_still_on: bool,
+}
+
+impl LevelResult {
+    /// Record the run-end re-amp verdict on this row: the typed flag and its text.
+    pub(crate) fn stamp_reamp(&mut self, out: ReampOffOutcome) {
+        self.reamp_still_on = out.still_on();
+        self.reamp_warning = out.warning();
+    }
 }
 
 #[derive(Clone, Copy)]

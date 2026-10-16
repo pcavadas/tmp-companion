@@ -77,6 +77,7 @@ describe("useLevelingFlow — at most one active row at a time (BUG 2)", () => {
         status: "active",
         result: null,
         message: null,
+        skipKind: null,
       });
     });
 

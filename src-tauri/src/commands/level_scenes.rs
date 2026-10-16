@@ -1,6 +1,7 @@
 //! Per-scene leveling commands + setlist common-target leveling.
 use super::ProgressStatus;
-use crate::error::LevelError;
+use crate::error::{AppError, LevelError, Refusal, SkipKind};
+use crate::watcher::DetachWatch;
 use crate::{
     audio, audiograph, commands::level_preset::playback_offset_for,
     commands::level_preset::resolve_stimulus_for_leveling, device_gate::with_released_seize,
@@ -37,6 +38,9 @@ pub(crate) struct SceneLevelProgressItem {
     status: ProgressStatus,
     result: Option<leveller::LevelResult>,
     message: Option<String>,
+    /// WHY an `error` row was not leveled ([`SkipKind`]) — what the frontend picks the row's
+    /// message by; `message` keeps the text for the log. `None` on every other status.
+    skip_kind: Option<SkipKind>,
     /// B6 (issue 6b): a batch-wide caption ("Saving preset…" / "Verifying…") for the
     /// deferred-save/persist-verify phases, which have no single scene to report progress
     /// against. Rides on its OWN item — see [`tail_progress_item`] — never alongside a real
@@ -435,13 +439,16 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     // it. `None` = today's behavior verbatim.
     base_anchor: Option<BaseAnchorArg>,
     on_result: tauri::ipc::Channel<SceneLevelProgressItem>,
-) -> Result<Vec<leveller::LevelResult>, String> {
+) -> Result<Vec<leveller::LevelResult>, AppError> {
+    // Taken first, so a detach anywhere in the run re-labels a failure as a lost connection.
+    let watch = DetachWatch::start();
     if jobs.is_empty() {
-        return Err("no scenes selected".to_string());
+        return Err(AppError::Other("no scenes selected".to_string()));
     }
     // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
     // before anything touches the device — see `scene_discard_guard`'s doc.
-    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())?;
+    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())
+        .map_err(|e| Refusal::new(SkipKind::SceneChangeDiscards, e))?;
     // A row that names its own control needs no amp candidate and no routing classification —
     // the user picked the knob. So this pre-device guard fires only for a batch where NOBODY
     // named one (every row is an amp-`outputLevel` joint-k row and the whole run is doomed);
@@ -451,7 +458,11 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             .iter()
             .any(|c| is_amp_output_level_param(&c.parameter_id))
     {
-        return Err("per-scene leveling needs at least one amp outputLevel candidate".to_string());
+        return Err(Refusal::new(
+            SkipKind::NoActiveAmp,
+            "per-scene leveling needs at least one amp outputLevel candidate",
+        )
+        .into());
     }
     SCENE_LEVEL_CANCEL.store(false, SeqCst);
     // Playback compensation is one offset for the whole batch; each job's own target
@@ -482,6 +493,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 offset,
                 base_anchor,
                 stim: &stim,
+                watch,
             },
             &send,
         )
@@ -500,6 +512,9 @@ struct SceneBatchRequest<'a> {
     offset: f64,
     base_anchor: Option<BaseAnchorArg>,
     stim: &'a [f32],
+    /// Started at the command's entry: a failed row or run after a detach reports
+    /// [`SkipKind::ConnectionLost`].
+    watch: DetachWatch,
 }
 
 /// The batch's Stop flag (`cancel_scene_leveling`).
@@ -513,7 +528,7 @@ fn scene_level_cancelled() -> bool {
 fn run_scene_batch(
     req: SceneBatchRequest<'_>,
     send: &dyn Fn(SceneLevelProgressItem),
-) -> Result<Vec<leveller::LevelResult>, String> {
+) -> Result<Vec<leveller::LevelResult>, AppError> {
     let slot = req.slot;
     let mut scene_slots: Vec<u32> = req.jobs.iter().map(|j| j.scene_slot).collect();
     // Force-append base so the prepass always harvests a base doc — one more chance at a
@@ -554,14 +569,20 @@ fn run_scene_batch(
     // `audioGraph` is required too (#176): the scene docs are derived from this read alone
     // (`prepass_scene_docs_via`, no live fallback), so a graph cut off its tail must take the
     // backup re-read or be refused here, never reach the prepass half-read.
-    let saved = Some(if base_in_plan {
-        crate::scene_jobs::read_saved_preset_complete_sections(
-            slot,
-            &["audioGraph", "scenes", "ftsw"],
-        )?
+    //
+    // A failed read is THIS PRESET could not be read ([`SkipKind::PresetUnreadable`]): it
+    // returns before anything engages, so before the run-end backstop.
+    let sections: &[&str] = if base_in_plan {
+        &["audioGraph", "scenes", "ftsw"]
     } else {
-        crate::scene_jobs::read_saved_preset_complete_sections(slot, &["audioGraph", "scenes"])?
-    });
+        &["audioGraph", "scenes"]
+    };
+    let saved = Some(
+        crate::scene_jobs::read_saved_preset_complete_sections(slot, sections).map_err(|e| {
+            req.watch
+                .error(LevelError::refused(SkipKind::PresetUnreadable, e))
+        })?,
+    );
     let batch = SceneBatch {
         req: &req,
         scene_slots: &scene_slots,
@@ -595,6 +616,7 @@ fn run_scene_batch(
                     status: ProgressStatus::Cancelled,
                     result: None,
                     message: Some(LevelError::Cancelled.to_string()),
+                    skip_kind: None,
                     tail: None,
                 });
             }
@@ -612,6 +634,7 @@ fn run_scene_batch(
                 status: ProgressStatus::Cancelled,
                 result: None,
                 message: Some(e.to_string()),
+                skip_kind: None,
                 tail: None,
             });
             Ok(Vec::new())
@@ -619,10 +642,12 @@ fn run_scene_batch(
         Err(e) => Err(e),
     };
     // The rows stream over the channel before this OFF, so its verdict rides the
-    // returned rows (every one: it is a fact about the run).
-    leveller::reamp_off_guaranteed("level_scenes_apply_batched").stamp(result, |rows, w| {
-        rows.iter_mut().for_each(|r| r.reamp_warning.clone_from(&w))
-    })
+    // returned rows (every one: it is a fact about the run), and a failed run's typed error.
+    leveller::reamp_off_guaranteed("level_scenes_apply_batched").stamp_leveling(
+        result,
+        req.watch,
+        |rows, out| rows.iter_mut().for_each(|r| r.stamp_reamp(out)),
+    )
 }
 
 /// A batched scene run's outcomes plus the headroom trade it disclosed.
@@ -693,6 +718,7 @@ impl SceneBatch<'_> {
                 done,
                 None,
                 trade.summary.as_ref(),
+                self.req.watch,
             ));
         };
         // B6: the deferred-save/persist-verify batch-wide captions — see
@@ -896,6 +922,7 @@ impl SceneBatch<'_> {
                 Some(leveller::PREPASS_ACTIVE_MSG),
                 // PHASE 2 has not run yet — no trade to disclose on a prepass tick.
                 None,
+                self.req.watch,
             ));
         };
         // The preset's own SAVED `presetLevel` — NOT the trade's raise, which PHASE 2
@@ -1443,6 +1470,9 @@ fn trade_for_batch(
 /// `trade` parameter for its awaited return — the wizard consumes the CHANNEL's items, not the
 /// awaited return, so leaving this `None` would land a permanent un-revertable `presetLevel`
 /// raise with zero UI disclosure.
+///
+/// An `error` item carries the outcome's typed [`SkipKind`], refined by `watch` so a row that
+/// failed after the unit was unplugged reads as a lost connection.
 fn scene_progress_item(
     slot: ListIndex,
     save: bool,
@@ -1450,6 +1480,7 @@ fn scene_progress_item(
     done: Option<&leveller::BatchedSceneOutcome>,
     active_message: Option<&str>,
     trade: Option<&crate::headroom_trade::TradeSummary>,
+    watch: DetachWatch,
 ) -> SceneLevelProgressItem {
     match done {
         None => SceneLevelProgressItem {
@@ -1457,6 +1488,7 @@ fn scene_progress_item(
             status: ProgressStatus::Active,
             result: None,
             message: active_message.map(str::to_string),
+            skip_kind: None,
             tail: None,
         },
         Some(o) => match &o.failure {
@@ -1465,6 +1497,7 @@ fn scene_progress_item(
                 status: ProgressStatus::Done,
                 result: Some(outcome_to_level_result(slot, save, o, trade)),
                 message: None,
+                skip_kind: None,
                 tail: None,
             },
             Some(e) => SceneLevelProgressItem {
@@ -1472,6 +1505,7 @@ fn scene_progress_item(
                 status: ProgressStatus::Error,
                 result: None,
                 message: Some(e.clone()),
+                skip_kind: Some(watch.refine(o.failure_kind.unwrap_or(SkipKind::Other))),
                 tail: None,
             },
         },
@@ -1498,6 +1532,7 @@ fn tail_progress_item(tail: &str) -> SceneLevelProgressItem {
         status: ProgressStatus::Active,
         result: None,
         message: None,
+        skip_kind: None,
         tail: Some(tail.to_string()),
     }
 }
@@ -1560,6 +1595,7 @@ fn outcome_to_level_result(
         // Only `level_preset`'s base arm plans a boost (`level_preset_impl`'s v1 routing gate).
         base_boost: None,
         reamp_warning: None,
+        reamp_still_on: false,
     }
 }
 
@@ -1964,6 +2000,7 @@ mod scene_handle_tests {
             })
             .collect();
         build_scene_jobs_with_handles(slots, &amp_candidates(), docs, -23.0, saved, &specs)
+            .map_err(String::from)
     }
 
     // A handle points the row at the user's control, and its starting value / wet-floor
@@ -2013,7 +2050,11 @@ mod scene_handle_tests {
             Some(&preset),
         )
         .expect("one bad handle is a row skip, never a batch abort");
-        let reason = jobs[0].skip.as_deref().expect("row 0 refused");
+        let reason = jobs[0]
+            .skip
+            .as_ref()
+            .map(|r| r.reason.as_str())
+            .expect("row 0 refused");
         assert!(
             reason.contains("not a level control"),
             "the shared refusal wording: {reason}"
@@ -2048,7 +2089,10 @@ mod scene_handle_tests {
         )
         .expect("a mixed batch must not abort on the amp classifier");
         assert!(
-            jobs[0].skip.as_deref().unwrap_or("").contains("routing"),
+            jobs[0]
+                .skip
+                .as_ref()
+                .is_some_and(|r| r.reason.contains("routing")),
             "the amp row reports the routing read: {:?}",
             jobs[0].skip
         );

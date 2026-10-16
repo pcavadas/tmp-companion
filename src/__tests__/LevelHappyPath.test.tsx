@@ -93,6 +93,7 @@ function mockHappyPath(baseOver: Partial<LevelResult> = {}) {
           status: "done",
           result: results[i],
           message: null,
+          skipKind: null,
         });
       });
       return results;
