@@ -1,18 +1,18 @@
 // src/ui/BackupAckLabel.tsx — the shared "I've backed up with Pro Control"
-// acknowledgment label (inline checkbox + copy) that gates a destructive
-// write-to-unit action. Used by the Leveling Set-up footer and the Copy save bar so
-// the wording, the title hint, and the gate read identically across the app.
+// acknowledgment (look B): a real Checkbox and its words in one <label>, 13 px, so a
+// click on the box or the words ticks it. It gates a destructive write-to-unit action
+// and sits in the footer just left of the action it gates (Start leveling, Save to your
+// Tone Master Pro), so the wording and the gate read identically across the app.
 
 import type { CSSProperties } from "react";
 
-import { useTheme } from "../theme/ThemeContext";
-import { Button, Checkbox } from "./primitives";
+import { Checkbox } from "./primitives";
 
 export interface BackupAckLabelProps {
   checked: boolean;
-  /** Called with the toggled value (clicking the whole label flips it). */
+  /** Called with the toggled value. */
   onChange: (checked: boolean) => void;
-  /** Extra label styles (e.g. the Set-up footer's userSelect / paddingRight). */
+  /** Extra layout for the label (e.g. a footer's padding). */
   style?: CSSProperties;
 }
 
@@ -21,34 +21,14 @@ export function BackupAckLabel({
   onChange,
   style,
 }: BackupAckLabelProps) {
-  const { t } = useTheme();
   return (
-    <Button
-      variant="bare"
-      role="checkbox"
-      aria-checked={checked}
-      onClick={() => {
-        onChange(!checked);
+    <Checkbox
+      checked={checked}
+      onChange={(next) => {
+        onChange(next);
       }}
-      title="Confirm you have a backup before writing to the unit"
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: t.space4,
-        ...style,
-      }}
-    >
-      <Checkbox checked={checked} />
-      <span
-        style={{
-          fontFamily: t.sans,
-          fontSize: t.fsControl,
-          color: t.ink2,
-          whiteSpace: "nowrap",
-        }}
-      >
-        I&apos;ve backed up with Pro Control
-      </span>
-    </Button>
+      label="I've backed up with Pro Control"
+      style={{ whiteSpace: "nowrap", ...style }}
+    />
   );
 }

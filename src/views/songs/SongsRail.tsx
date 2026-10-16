@@ -82,7 +82,6 @@ export function SongsRail({
         }}
       >
         <SegmentedControl
-          variant="light"
           value={axis}
           ariaLabel="Browse by"
           onChange={onAxis}

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { plainButton } from "../../theme/tokens";
-import { Button, Checkbox, SearchInput } from "../../ui/primitives";
+import { Button, CheckboxMark, SearchInput } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
 import { DASH } from "../../lib/format";
 import type { SongRecord } from "../../lib/types";
@@ -126,7 +126,7 @@ export function AddSongs({
                   if (!on) e.currentTarget.style.background = "transparent";
                 }}
               >
-                <Checkbox checked={on} />
+                <CheckboxMark checked={on} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div
                     style={{

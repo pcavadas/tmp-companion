@@ -28,36 +28,37 @@ export function buildStyles(t: ThemeTokens) {
       return { ...microLabel(t), letterSpacing: t.lsWide, color };
     },
 
-    /** Search / filter input frame (the icon + input live inside). Add
-     *  `flex: 1` at the call site where it should grow. */
+    /** Search / filter field frame (look B): 28 high, `controlBorder` edge, the
+     *  icon + input live inside. Add `flex: 1` at the call site where it should grow. */
     searchBox: {
       display: "flex",
       alignItems: "center",
-      gap: t.space4,
-      border: `0.5px solid ${t.hairlineStrong}`,
-      borderRadius: t.rMd,
-      padding: `${String(t.space3)}px ${String(t.space5)}px`,
-      background: "transparent",
+      gap: t.sp6,
+      height: t.control,
+      boxSizing: "border-box",
+      border: `1px solid ${t.controlBorder}`,
+      borderRadius: t.radiusControl,
+      padding: `0 ${String(t.sp8)}px`,
+      background: t.surface,
     } as CSSProperties,
 
-    /** Floating popover / dropdown card frame. Spread + override `borderRadius`
-     *  (→ `t.rPopover`) or `width` per call site. */
+    /** Floating popover card (look B): white, `radiusPanel`, `shadowMenu` (which
+     *  carries its own 0.5 px ring, so no border). The caller owns the inner layout. */
     popoverCard: {
-      background: t.bg,
-      border: `0.5px solid ${t.hairlineStrong}`,
-      borderRadius: t.rLg,
-      boxShadow: t.shadowModal,
+      background: t.surface,
+      borderRadius: t.radiusPanel,
+      boxShadow: t.shadowMenu,
       overflow: "hidden",
     } as CSSProperties,
 
-    /** Scrollable dropdown-menu card (the leveling wizard's `Pick`). Lighter,
-     *  closer shadow than `popoverCard`; position + `minWidth` per call site. */
+    /** Scrollable dropdown-menu card (look B): the `Menu` and `Select` list. White,
+     *  `radiusPanel`, `shadowMenu`, 4 px inset; position + width per call site. */
     menuCard: {
-      background: t.bg,
-      border: `0.5px solid ${t.hairlineStrong}`,
-      borderRadius: t.rCard,
+      background: t.surface,
+      borderRadius: t.radiusPanel,
       boxShadow: t.shadowMenu,
-      padding: t.space2,
+      padding: t.sp4,
+      boxSizing: "border-box",
       maxHeight: 280,
       overflowY: "auto",
       overflowX: "hidden",

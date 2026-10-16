@@ -49,6 +49,14 @@
       .tmp-toast-in {
         animation: tmp-toast-in 0.24s cubic-bezier(0.2, 0.7, 0.2, 1);
       }
+      /* Look B focus ring (the `focus` token, #bd5632): keyboard focus only. */
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible,
+      [role="slider"]:focus-visible {
+        outline: 2px solid #bd5632;
+        outline-offset: 2px;
+      }
       .tmp-skel {
         background: linear-gradient(
           100deg,

@@ -3,7 +3,8 @@
 // 24×24 viewBox, Lucide-aligned. Implemented ONCE here; import everywhere.
 // Light-only app — no sun/moon (the dark toggle was removed). Adds the prototype
 // page icons: gauge · cable · music · spinner · warn-tri · info · refresh · grip ·
-// trash · lock.
+// trash · lock, and look B's chev-updown (Select) · minus (a mixed Checkbox) · alert
+// (danger Notice and PageState).
 
 import type { IconName } from "./iconNames";
 
@@ -337,6 +338,25 @@ export function Icon({
         <svg {...props}>
           <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
           <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+        </svg>
+      );
+    case "chev-updown":
+      return (
+        <svg {...props}>
+          <path d="M8 9.5l4-4 4 4M8 14.5l4 4 4-4" />
+        </svg>
+      );
+    case "minus":
+      return (
+        <svg {...props}>
+          <path d="M6 12h12" />
+        </svg>
+      );
+    case "alert":
+      return (
+        <svg {...props}>
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 7.5v5.5M12 16.5h.01" />
         </svg>
       );
     default:

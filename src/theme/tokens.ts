@@ -396,7 +396,7 @@ export function plainInput(
     border: "none",
     outline: "none",
     background: "transparent",
-    color: t.ink,
+    color: t.text,
     ...extra,
   };
 }

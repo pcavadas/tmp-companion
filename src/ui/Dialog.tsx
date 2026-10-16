@@ -1,9 +1,12 @@
-// src/ui/Dialog.tsx — the single design-system dialog shell + its chrome slots.
+// src/ui/Dialog.tsx — the single design-system dialog shell + its chrome slots (look B).
 //
-// Every dialog/overlay renders through THIS component (the leveling wizard, the "How
-// leveling works" sheet, the copy SaveOverlay, the destructive-confirm Modal), so the
-// backdrop, card, and section padding live in exactly one place. Rules the old per-dialog
-// copies got wrong, fixed here once:
+// Every dialog/overlay renders through THIS component (the Doctor run, the "How
+// leveling works" sheet, the copy SaveOverlay, the confirm Modal), so the backdrop, card,
+// and section padding live in exactly one place. Look B: a `scrim` backdrop, a white card
+// (`radiusGroup`, `shadowDialog`, no edge), 20 px padding, a 15/600 title, 13 px body and
+// buttons right-aligned. This file stays BUTTON-FREE: any confirm shell that carries
+// buttons (Modal) lives in primitives.tsx, which imports this one — never the reverse.
+// Rules the old per-dialog copies got wrong, fixed here once:
 //   1. The backdrop is `position: fixed` (the viewport), NOT `absolute` (which resolved
 //      against the view container below the tab bar) — so the scrim/blur covers the WHOLE
 //      window including the top tab bar, and the card centers in the viewport.
@@ -28,16 +31,21 @@ import { createPortal } from "react-dom";
 import { useTheme } from "../theme/ThemeContext";
 import { DialogCardCtx } from "./dialogContext";
 
-/** The dialog width scale. sm = confirms / progress, md = the explainer sheet + the Doctor
- *  run, lg = the leveling wizard (its run step is a 5-column table that needs the width).
- *  (Add xl here when a wider dialog needs one.) */
-export type DialogSize = "sm" | "md" | "lg";
+/** The dialog width scale. xs = a confirm (Stop, Delete), sm = forms / progress, md = the
+ *  explainer sheet, lg = the Doctor run (a wide table). (Add xl here when a wider dialog
+ *  needs one.) */
+export type DialogSize = "xs" | "sm" | "md" | "lg";
 
-const DIALOG_WIDTH: Record<DialogSize, number> = { sm: 460, md: 560, lg: 780 };
+const DIALOG_WIDTH: Record<DialogSize, number> = {
+  xs: 380,
+  sm: 460,
+  md: 560,
+  lg: 780,
+};
 
-/** Shared horizontal padding for every dialog section (header/body/footer). The wizard's
- *  own WizardHeader/WizardFooter import this too so nothing drifts. */
-export const DIALOG_PAD_X = 22;
+/** Shared padding for every dialog section (header/body/footer). The Doctor wizard's own
+ *  WizardHeader imports this too so nothing drifts. */
+export const DIALOG_PAD_X = 20;
 
 const VIEWPORT_CAP = "calc(100vh - 32px)";
 /** Width twin of VIEWPORT_CAP. The window's minWidth (640) is narrower than the `lg`
@@ -128,13 +136,7 @@ export function Dialog({
       <div
         data-backdrop=""
         onClick={onClose}
-        style={{
-          position: "absolute",
-          inset: 0,
-          background: t.scrim,
-          backdropFilter: "blur(1.5px)",
-          WebkitBackdropFilter: "blur(1.5px)",
-        }}
+        style={{ position: "absolute", inset: 0, background: t.scrim }}
       />
       <div
         ref={cardRef}
@@ -150,12 +152,13 @@ export function Dialog({
           maxHeight: VIEWPORT_CAP,
           display: "flex",
           flexDirection: "column",
-          background: t.bg,
-          color: t.ink,
-          border: `0.5px solid ${t.hairlineStrong}`,
-          borderRadius: t.rDialog,
-          boxShadow: t.shadowModal,
-          fontFamily: t.sans,
+          background: t.surface,
+          color: t.text,
+          borderRadius: t.radiusGroup,
+          boxShadow: t.shadowDialog,
+          fontFamily: t.fontSans,
+          fontSize: t.fontBody,
+          lineHeight: `${String(t.lineBody)}px`,
           outline: "none",
           overflow: "hidden",
         }}
@@ -170,8 +173,13 @@ export function Dialog({
 }
 
 // ---- chrome slots ----------------------------------------------------------
-// Header (bottom hairline) · Body (scrolls) · Footer (top hairline, window tint).
-// One DIALOG_PAD_X so dialogs never drift to ad-hoc padding again.
+// Header (the title row) · Body (scrolls) · Footer (buttons, right-aligned). No rules or
+// tinted bands: look B separates them with space alone. One DIALOG_PAD_X so dialogs never
+// drift to ad-hoc padding. Spacing: 20 px around the card, 10 px between the title and
+// the body (the header's negative bottom margin eats half the body's top padding), 18 px
+// above the buttons — held by the FOOTER (16 + the body's 2), outside the body's scroll
+// box, so a long body that scrolls still stops clear of the buttons. A dialog ends in a
+// DialogFooter.
 
 export function DialogHeader({ children }: { children: ReactNode }) {
   const { t } = useTheme();
@@ -182,9 +190,9 @@ export function DialogHeader({ children }: { children: ReactNode }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: t.space6,
-        padding: `${String(t.space8)}px ${String(DIALOG_PAD_X)}px`,
-        borderBottom: `0.5px solid ${t.hairline}`,
+        gap: t.sp12,
+        padding: `${String(DIALOG_PAD_X)}px ${String(DIALOG_PAD_X)}px 0`,
+        marginBottom: -t.sp8 - t.sp2,
       }}
     >
       {children}
@@ -193,14 +201,13 @@ export function DialogHeader({ children }: { children: ReactNode }) {
 }
 
 export function DialogBody({ children }: { children: ReactNode }) {
-  const { t } = useTheme();
   return (
     <div
       style={{
         flex: 1,
         minHeight: 0,
         overflowY: "auto",
-        padding: `${String(t.space8)}px ${String(DIALOG_PAD_X)}px`,
+        padding: `${String(DIALOG_PAD_X)}px ${String(DIALOG_PAD_X)}px 2px`,
       }}
     >
       {children}
@@ -223,10 +230,8 @@ export function DialogFooter({ start, children }: DialogFooterProps) {
         display: "flex",
         alignItems: "center",
         justifyContent: "flex-end",
-        gap: t.space4,
-        padding: `${String(t.space6)}px ${String(DIALOG_PAD_X)}px`,
-        borderTop: `0.5px solid ${t.hairline}`,
-        background: t.window,
+        gap: t.sp8,
+        padding: `${String(t.sp16)}px ${String(DIALOG_PAD_X)}px ${String(DIALOG_PAD_X)}px`,
       }}
     >
       {start != null && <div style={{ marginRight: "auto" }}>{start}</div>}

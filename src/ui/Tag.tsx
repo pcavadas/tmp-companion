@@ -1,14 +1,13 @@
-// src/ui/Tag.tsx — the DS chip/tag.
-//
-// One tokenized mono chip replacing the ~14 hand-rolled inline spans (scene
-// badges, FS tags, "by ear" caveats, status pips). Renders as an inline-block
-// span so it flows inside the existing flex rows unchanged. Tone picks the
-// text/border/background triplet from the token set; `fg` is the custom-color
-// escape (a per-site accent) that WINS over tone.
+// src/ui/Tag.tsx — the old chip, now a shim over the look B `Badge` so the screens
+// that still render <Tag> compile and look B. Its old props have no Badge equivalent
+// and map as follows: `warn` → caution, `neutralFill` → neutral, a custom `fg` colour
+// → neutral (B badges carry no per-site colour), and `size` / `uppercase` are ignored
+// (one size; sentence case — the child string is shown as written). Removed in the
+// clean-up step, once every call site renders Badge (or caption text) directly.
 
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 
-import { useTheme } from "../theme/ThemeContext";
+import { Badge, type BadgeTone } from "./Badge";
 
 export type TagTone = "accent" | "good" | "warn" | "neutral" | "neutralFill";
 export type TagSize = "sm" | "md";
@@ -17,70 +16,22 @@ export interface TagProps {
   children: ReactNode;
   /** default "neutral". */
   tone?: TagTone;
-  /** default "sm". */
+  /** Ignored: a Badge has one size. */
   size?: TagSize;
-  /** CSS textTransform only — never edits the child string. */
+  /** Ignored: look B never uppercases. */
   uppercase?: boolean;
-  /** custom-color mode: color=fg, border=`${fg}66`, transparent bg; WINS over tone. */
+  /** A custom colour has no Badge equivalent: the badge renders neutral. */
   fg?: string;
-  /** merged last (rare per-site escape). */
-  style?: CSSProperties;
 }
 
-export function Tag({
-  children,
-  tone = "neutral",
-  size = "sm",
-  uppercase,
-  fg,
-  style,
-}: TagProps) {
-  const { t } = useTheme();
+const TAG_TONE: Record<TagTone, BadgeTone> = {
+  accent: "accent",
+  good: "good",
+  warn: "caution",
+  neutral: "neutral",
+  neutralFill: "neutral",
+};
 
-  const sized: CSSProperties =
-    size === "md"
-      ? {
-          fontSize: t.fsMeta,
-          padding: `${String(t.space1)}px ${String(t.space4)}px`,
-          borderRadius: t.rMenuItem,
-        }
-      : {
-          fontSize: t.fsTag,
-          letterSpacing: t.lsTag,
-          padding: `${String(t.space1)}px ${String(t.space3)}px`,
-          borderRadius: t.rSm,
-        };
-
-  // fg wins over tone; else the per-tone text/border/background triplet.
-  // "warn" keeps a transparent border for layout parity with bordered chips.
-  const tones: Record<TagTone, { c: string; b: string; bg: string }> = {
-    accent: { c: t.accentDeep, b: t.accentBorder, bg: t.accentSoft },
-    good: { c: t.good, b: t.goodBorder, bg: t.goodSoft },
-    warn: { c: t.onInk, b: "transparent", bg: t.sevWarn },
-    neutral: { c: t.mutedInk, b: t.hairlineStrong, bg: "transparent" },
-    neutralFill: { c: t.ink2, b: t.hairline, bg: t.inset },
-  };
-  const p = fg ? { c: fg, b: `${fg}66`, bg: "transparent" } : tones[tone];
-  const paint: CSSProperties = {
-    color: p.c,
-    border: `0.5px solid ${p.b}`,
-    background: p.bg,
-  };
-
-  return (
-    <span
-      style={{
-        fontFamily: t.mono,
-        whiteSpace: "nowrap",
-        flexShrink: 0,
-        display: "inline-block",
-        ...(uppercase ? { textTransform: "uppercase" } : {}),
-        ...sized,
-        ...paint,
-        ...style,
-      }}
-    >
-      {children}
-    </span>
-  );
+export function Tag({ children, tone = "neutral", fg }: TagProps) {
+  return <Badge tone={fg ? "neutral" : TAG_TONE[tone]}>{children}</Badge>;
 }

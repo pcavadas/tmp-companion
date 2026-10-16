@@ -40,7 +40,7 @@ Styling is **inline `style={{}}` objects**, read straight off `t`. This is the d
 
 ### Primitives, Icon, and block art
 
-Primitives live in `ui/primitives.tsx` + a few stand-alone `ui/` files (`Dialog` — the ONE DS dialog shell, `Menu` — the ONE anchored dropdown, `Tag`, `Spinner`, `ActionBar`, …) — reuse before hand-rolling. Icons route through `ui/Icon` — never paste raw emoji/symbol chars. Device block art (amps/cabs/pedals/mics) renders through the procedural SVG engine `ui/BlockArt.tsx` + `ui/blockart/*` — **never render Fender product photos**. Full inventory, the FenderId→art resolution algorithm, and the strip prop-parity rules: `references/ui-components.md`.
+Primitives live in `ui/primitives.tsx` + a few stand-alone `ui/` files (`Dialog` — the ONE DS dialog shell, `Menu` — the ONE anchored popover, `Select` — the ONE dropdown, `List` (`Group`/`Row`/`Caret`), `Badge`, `Footer`, `PageHead`, `Steps`, `PageState`, `SplitView`, `Spinner`, …) — reuse before hand-rolling. Icons route through `ui/Icon` — never paste raw emoji/symbol chars. Device block art (amps/cabs/pedals/mics) renders through the procedural SVG engine `ui/BlockArt.tsx` + `ui/blockart/*` — **never render Fender product photos**. Full inventory, the FenderId→art resolution algorithm, and the strip prop-parity rules: `references/ui-components.md`.
 
 ### No-fabricate rule
 

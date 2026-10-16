@@ -19,7 +19,7 @@ import { useTheme } from "../theme/ThemeContext";
 import { Spinner } from "../ui/Spinner";
 import { Skel, SkelStatus } from "../ui/Skeleton";
 import { ProgressBar } from "../ui/ProgressBar";
-import { Button, Checkbox, SearchInput } from "../ui/primitives";
+import { Button, CheckboxMark, SearchInput } from "../ui/primitives";
 import { PresetRow as PresetRowComponent } from "./level/PresetRow";
 import { childKeys, type PresetRow } from "./level/leveling";
 import { presetCpu } from "../models/cpu";
@@ -344,7 +344,7 @@ export function PresetList(props: PresetListProps) {
             height: "100%",
           }}
         >
-          <Checkbox checked={allSel} indeterminate={!allSel && someSel} />
+          <CheckboxMark checked={allSel} indeterminate={!allSel && someSel} />
         </Button>
         <span />
         <span>slot</span>

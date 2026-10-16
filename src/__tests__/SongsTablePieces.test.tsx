@@ -1,11 +1,11 @@
-// Smoke tests for the extracted Songs-table pieces (ListHeader / SongRow) and the
-// static CPU-meter bar (ui/Meter). Real timers (RTL default).
+// Smoke tests for the extracted Songs-table pieces (ListHeader / SongRow). Real timers
+// (RTL default). The static CPU-meter bar's tests moved to Meter.test.tsx with its look B
+// rewrite (ui/Meter is now the whole CPU meter).
 
 import { describe, it, expect } from "vitest";
 import { screen } from "@testing-library/react";
 import { ListHeader } from "../views/songs/ListHeader";
 import { SongRow } from "../views/songs/SongRow";
-import { Meter } from "../ui/Meter";
 import type { SongRecord } from "../lib/types";
 import { renderWithTheme } from "./testKit";
 
@@ -89,49 +89,3 @@ describe("SongRow — one song row", () => {
     expect(screen.getByTitle("trail-slot")).toBeTruthy();
   });
 });
-
-describe("Meter — static track+fill bar", () => {
-  it("clamps pct to 0–100", () => {
-    const { container: high } = renderWithTheme(
-      <Meter pct={150} width={96} height={6} />,
-    );
-    const { container: low } = renderWithTheme(
-      <Meter pct={-10} width={96} height={6} />,
-    );
-    const { container: mid } = renderWithTheme(
-      <Meter pct={42} width={96} height={6} />,
-    );
-    expect(fill(high).style.width).toBe("100%");
-    expect(fill(low).style.width).toBe("0%");
-    expect(fill(mid).style.width).toBe("42%");
-  });
-
-  it("renders the marker only when given", () => {
-    const { container: none } = renderWithTheme(
-      <Meter pct={50} width={96} height={6} />,
-    );
-    const { container: withM } = renderWithTheme(
-      <Meter pct={50} width={96} height={6} marker={76.5} />,
-    );
-    expect(track(none).childElementCount).toBe(1);
-    expect(track(withM).childElementCount).toBe(2);
-    // Marker sits at its budget position.
-    const marker = track(withM).children[1] as HTMLElement | undefined;
-    expect(marker?.style.left).toBe("76.5%");
-  });
-
-  it("has no transition (paints instantly)", () => {
-    const { container } = renderWithTheme(
-      <Meter pct={50} width={96} height={6} />,
-    );
-    expect(track(container).style.transition).toBe("");
-    expect(fill(container).style.transition).toBe("");
-  });
-});
-
-function track(container: HTMLElement): HTMLElement {
-  return container.firstElementChild as HTMLElement;
-}
-function fill(container: HTMLElement): HTMLElement {
-  return track(container).children[0] as HTMLElement;
-}

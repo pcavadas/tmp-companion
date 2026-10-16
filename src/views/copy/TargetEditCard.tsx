@@ -10,7 +10,7 @@ import { useMemo } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { Tag } from "../../ui/Tag";
 import { slotLabel } from "../../lib/format";
-import { CPU_BUDGET } from "../../models/cpu";
+import { overCpuBudget } from "../../models/cpu";
 import { CopyPath } from "./CopyPath";
 import { BlockEditor } from "./BlockEditor";
 import { CpuMeter } from "./CpuMeter";
@@ -59,7 +59,8 @@ export function TargetEditCard({
   // `BlockEditor` combines this with its own local `mode` (mode-aware grey-out lives
   // there since `mode` is BlockEditor-local state; this card can't see it).
   const counts = useMemo(() => baseCounts(edit.graph), [edit.graph]);
-  const over = cpu > CPU_BUDGET;
+  // The same budget rule as the meter and the save gate (exactly 76.5 is over).
+  const over = overCpuBudget(cpu);
   const openBlock = openUid != null ? findBlock(edit.graph, openUid) : null;
 
   return (

@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useTheme } from "../theme/ThemeContext";
 import type { IconName } from "../ui/Icon";
 import { Icon } from "../ui/Icon";
-import { Button, Checkbox } from "../ui/primitives";
+import { Button, CheckboxMark } from "../ui/primitives";
 
 interface DisclaimerProps {
   onAccept: (permanent: boolean) => void;
@@ -197,7 +197,7 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
               userSelect: "none",
             }}
           >
-            <Checkbox checked={dontShow} />
+            <CheckboxMark checked={dontShow} />
             <span
               style={{ fontFamily: t.sans, fontSize: 12, color: t.mutedInk }}
             >

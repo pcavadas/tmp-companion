@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { plainButton } from "../../theme/tokens";
-import { Button, Checkbox, SearchInput } from "../../ui/primitives";
+import { Button, CheckboxMark, SearchInput } from "../../ui/primitives";
 import { ActionBar } from "../../ui/ActionBar";
 import { ReadingPill } from "../../ui/ReadingPill";
 import { SlotLabel } from "../../ui/SlotLabel";
@@ -360,7 +360,7 @@ export function ChoosePresets({
                         flexShrink: 0,
                       }}
                     >
-                      <Checkbox checked={on} />
+                      <CheckboxMark checked={on} />
                       <SlotLabel index={p.slot} style={slotCell} />
                       <span style={rowName}>{p.name}</span>
                     </button>

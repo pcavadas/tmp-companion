@@ -10,13 +10,13 @@ import { ThemeContext, themeValue } from "./ThemeContext";
 
 /**
  * Wraps the app and exposes the token object via context. Also pins
- * `document.body` background/color to the light surface so the chrome behind
- * React matches.
+ * `document.body` background/color to the window grey and text colour so the
+ * chrome behind React matches (index.html sets the same before React loads).
  */
 export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
-    document.body.style.background = light.bg;
-    document.body.style.color = light.ink;
+    document.body.style.background = light.window;
+    document.body.style.color = light.text;
   }, []);
 
   return (

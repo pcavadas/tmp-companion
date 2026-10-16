@@ -1,38 +1,45 @@
-// src/ui/Rail.tsx — the shared left-rail idiom (the Songs setlist rail + the
-// Settings category rail): a 210px window-grey column behind a 0.5px hairline edge,
-// mono micro-labels, and serif rows with a 2px left-accent bar when active.
-// Rows are real <button>s with a leading icon slot (Settings categories) and/or
-// a trailing mono meta slot (Songs counts). `nav="tab"` rows sit in the caller's
-// role="tablist" (Settings) and carry aria-selected; `nav="current"` rows are a
-// plain navigation list (Songs) and mark the shown item with aria-current.
+// src/ui/Rail.tsx — the shared sidebar pieces (look B): the Songs and Settings rails.
+// `SplitView` lays a sidebar beside the content; these are what goes in it.
+//
+// `Rail` is the column itself (200 px, `window` fill, a 1 px `border` on the right,
+// padding 12/10, items 2 px apart) for the screens that still lay it out by hand.
+// `RailLabel` is a section label (12 px semibold, secondary, sentence case). `RailItem`
+// is a 28-high row: 13 px, `radiusControl`, an optional leading icon, an optional count
+// at the right in secondary text; the current item is `rowSelected` with semibold text
+// (no accent bar). Rows are real <button>s. `nav="tab"` rows sit in the caller's
+// role="tablist" (Settings) and carry aria-selected; `nav="current"` rows are a plain
+// navigation list (Songs) and mark the shown item with aria-current.
 
 import type { CSSProperties, ReactNode } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
+import { sectionLabel } from "../theme/tokens";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 
 interface RailProps {
   children: ReactNode;
-  /** Per-view layout extras (e.g. the Songs rail's `gap: 2`). */
+  /** Per-view layout extras. */
   style?: CSSProperties;
 }
 
-/** The rail column: 210px, window fill, hairline right edge, "12px 10px" pad. */
+/** The sidebar column: 200 px, window fill, a border on the right, 12/10 padding. */
 export function Rail({ children, style }: RailProps) {
   const { t } = useTheme();
   return (
     <div
       style={{
-        width: 210,
+        width: 200,
         boxSizing: "border-box",
         flexShrink: 0,
         minHeight: 0,
-        borderRight: `0.5px solid ${t.hairline}`,
+        borderRight: `1px solid ${t.border}`,
         background: t.window,
         display: "flex",
         flexDirection: "column",
-        padding: `${String(t.space6)}px ${String(t.space5)}px`,
+        gap: t.sp2,
+        padding: `${String(t.sp12)}px ${String(t.sp8 + 2)}px`,
+        fontFamily: t.fontSans,
         ...style,
       }}
     >
@@ -47,18 +54,14 @@ interface RailLabelProps {
   style?: CSSProperties;
 }
 
-/** The rail's mono micro-label ("SETTINGS", "SETLISTS", …) — the faint lsWide
- * variant, deliberately lighter than `s.kicker`. */
+/** A sidebar section label ("Setlists") — sentence case, 12 px semibold, secondary. */
 export function RailLabel({ children, style }: RailLabelProps) {
   const { t } = useTheme();
   return (
     <div
       style={{
-        fontFamily: t.mono,
-        fontSize: t.fsMicro,
-        letterSpacing: t.lsWide,
-        color: t.faint,
-        textTransform: "uppercase",
+        ...sectionLabel(t),
+        padding: `${String(t.sp4)}px ${String(t.sp8)}px`,
         ...style,
       }}
     >
@@ -73,9 +76,9 @@ interface RailItemProps {
   onClick: () => void;
   /** "tab" inside a role="tablist"; "current" in a plain navigation list. */
   nav: "tab" | "current";
-  /** Leading icon (the Settings category rows). */
+  /** Leading icon. */
   icon?: IconName;
-  /** Trailing mono meta — a count or DASH (the Songs setlist rows). */
+  /** Trailing count (or DASH), in secondary text. */
   meta?: ReactNode;
 }
 
@@ -88,8 +91,6 @@ export function RailItem({
   meta,
 }: RailItemProps) {
   const { t } = useTheme();
-  // Hand-rolled reset rather than `plainButton`: the active bar is a varying
-  // `borderLeft`, which must not share the style object with a `border` shorthand.
   return (
     <button
       type="button"
@@ -100,32 +101,32 @@ export function RailItem({
       style={{
         appearance: "none",
         margin: 0,
-        fontFamily: "inherit",
-        fontSize: "inherit",
-        color: "inherit",
-        textAlign: "left",
+        border: "none",
+        flexShrink: 0,
         width: "100%",
+        height: t.control,
         boxSizing: "border-box",
-        borderTop: "none",
-        borderRight: "none",
-        borderBottom: "none",
         display: "flex",
         alignItems: "center",
-        gap: t.space4,
-        padding: `${String(t.space4)}px ${String(t.space5)}px`,
-        borderRadius: t.rMd,
+        gap: t.sp8,
+        padding: `0 ${String(t.sp8)}px`,
+        borderRadius: t.radiusControl,
+        background: active ? t.rowSelected : "transparent",
+        fontFamily: t.fontSans,
+        fontSize: t.fontBody,
+        fontWeight: active ? t.weightSemibold : t.weightRegular,
+        color: t.text,
+        textAlign: "left",
         cursor: "pointer",
         userSelect: "none",
-        background: active ? t.accentSoft : "transparent",
-        borderLeft: active ? `2px solid ${t.accent}` : "2px solid transparent",
       }}
     >
       {icon && (
         <span style={{ flexShrink: 0, display: "flex" }}>
           <Icon
             name={icon}
-            size={15}
-            stroke={active ? t.accentDeep : t.mutedInk}
+            size={14}
+            stroke={active ? t.text : t.textSecondary}
             strokeWidth={1.6}
           />
         </span>
@@ -134,9 +135,6 @@ export function RailItem({
         style={{
           flex: 1,
           minWidth: 0,
-          fontFamily: t.serif,
-          fontSize: t.fsName2,
-          color: active ? t.ink : t.ink2,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -147,9 +145,10 @@ export function RailItem({
       {meta != null && (
         <span
           style={{
-            fontFamily: t.mono,
-            fontSize: t.fsData2,
-            color: t.faint,
+            fontSize: t.fontCaption,
+            fontWeight: t.weightRegular,
+            color: active ? t.text : t.textSecondary,
+            fontVariantNumeric: "tabular-nums",
             flexShrink: 0,
           }}
         >

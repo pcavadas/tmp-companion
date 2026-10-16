@@ -2,7 +2,7 @@
 //
 // Covers the light-only token set, the icon catalogs (Icon + the shared
 // BlockArt illustration engine), and the a11y roles on the interactive
-// primitives (Checkbox / Toggle / MenuItem).
+// primitives (Checkbox / CheckboxMark / Toggle / MenuItem).
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
@@ -14,6 +14,7 @@ import { ICONS } from "../ui/iconNames";
 import { BlockArt } from "../ui/BlockArt";
 import {
   Checkbox,
+  CheckboxMark,
   Toggle,
   MenuItem,
   Toast,
@@ -139,7 +140,10 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).toContain("download"); // Toast update-available status
     expect(ICONS).toContain("info");
     expect(ICONS).toContain("link"); // Doctor chain prescription + shared-block caption
-    expect(ICONS.length).toBe(41);
+    expect(ICONS).toContain("chev-updown"); // look B Select chevron
+    expect(ICONS).toContain("minus"); // look B mixed Checkbox
+    expect(ICONS).toContain("alert"); // look B danger Notice / PageState
+    expect(ICONS.length).toBe(44);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });
@@ -153,10 +157,24 @@ describe("icons — fuller catalogs", () => {
 });
 
 describe("primitives — a11y roles (VoiceOver)", () => {
-  it("Checkbox is the visual box only — its owning button carries the role", () => {
-    const { container } = renderWithTheme(<Checkbox checked />);
+  it("CheckboxMark is the visual box only — its owning button carries the role", () => {
+    const { container } = renderWithTheme(<CheckboxMark checked />);
     expect(screen.queryByRole("checkbox")).toBeNull();
     expect(container.querySelector('[aria-hidden="true"]')).not.toBeNull();
+  });
+
+  it("Checkbox is a real, named <button role=checkbox>", () => {
+    renderWithTheme(
+      <Checkbox
+        checked={false}
+        label="Choose Plexi Crunch"
+        labelHidden
+        onChange={() => undefined}
+      />,
+    );
+    const box = screen.getByRole("checkbox", { name: "Choose Plexi Crunch" });
+    expect(box.tagName).toBe("BUTTON");
+    expect(box.getAttribute("aria-checked")).toBe("false");
   });
 
   it("Toggle is a named <button role=switch> with aria-checked", () => {
@@ -217,36 +235,36 @@ describe("primitives — a11y roles (VoiceOver)", () => {
 });
 
 describe("Toast — update-lifecycle statuses", () => {
-  it("resolves the label per explicit status (available/success/error)", () => {
+  it("has no uppercase status chip: the title says it, the role carries the tone", () => {
     renderWithTheme(<Toast status="available" title="Version 1.4 is ready" />);
-    expect(screen.getByText("UPDATE AVAILABLE")).toBeTruthy();
-
-    renderWithTheme(<Toast status="success" title="Done" />);
-    expect(screen.getByText("READY")).toBeTruthy();
-
-    renderWithTheme(<Toast status="error" title="Failed" />);
-    expect(screen.getByText("FAILED")).toBeTruthy();
-  });
-
-  it("downloading has no label row and shows the live percent", () => {
-    renderWithTheme(
-      <Toast status="downloading" title="Downloading update…" percent={42} />,
-    );
+    expect(screen.getByRole("status").textContent).toBe("Version 1.4 is ready");
     expect(screen.queryByText("UPDATE AVAILABLE")).toBeNull();
-    expect(screen.getByText("42%")).toBeTruthy();
   });
 
-  it("legacy warn maps to an amber NOTICE, not the red FAILED tone", () => {
-    renderWithTheme(
-      <Toast kind="warn" message="Saved, but BPM didn't stick: x" />,
-    );
-    expect(screen.getByText("NOTICE")).toBeTruthy();
+  it("an error toast is an alert; success and available are statuses", () => {
+    renderWithTheme(<Toast status="error" title="Failed" />);
+    expect(screen.getByRole("alert").textContent).toContain("Failed");
     expect(screen.queryByText("FAILED")).toBeNull();
   });
 
-  it("legacy err maps to FAILED, with message falling back into the title slot", () => {
+  it("downloading shows the live percent and a progress bar", () => {
+    renderWithTheme(
+      <Toast status="downloading" title="Downloading update…" percent={42} />,
+    );
+    expect(screen.getByText("42%")).toBeTruthy();
+  });
+
+  it("legacy warn maps to the caution notice, not the danger alert", () => {
+    renderWithTheme(
+      <Toast kind="warn" message="Saved, but BPM didn't stick: x" />,
+    );
+    expect(screen.getByRole("status")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("legacy err maps to an alert, with message falling back into the title slot", () => {
     renderWithTheme(<Toast kind="err" message="rename refused" />);
-    expect(screen.getByText("FAILED")).toBeTruthy();
+    expect(screen.getByRole("alert")).toBeTruthy();
     expect(screen.getByText("rename refused")).toBeTruthy();
   });
 
@@ -278,58 +296,66 @@ describe("Toast — update-lifecycle statuses", () => {
     );
     expect(screen.queryByLabelText("Dismiss")).toBeNull();
   });
+
+  it("sits at the bottom centre, on white with the menu shadow", () => {
+    renderWithTheme(<Toast status="success" title="Saved" />);
+    const card = screen.getByRole("status");
+    const strip = card.parentElement;
+    expect(strip?.style.justifyContent).toBe("center");
+    expect(strip?.style.position).toBe("fixed");
+    expect(card.style.background).toBe(toRgb(light.surface));
+    expect(card.style.boxShadow).toContain("24px");
+  });
 });
 
-describe("Tag — the DS chip", () => {
+describe("Tag — the old chip, a shim over Badge", () => {
   it("renders its children text verbatim", () => {
     renderWithTheme(<Tag>FS1</Tag>);
     expect(screen.getByText("FS1")).toBeTruthy();
   });
 
-  it("tone='accent' paints the accentSoft fill + accentDeep text", () => {
-    renderWithTheme(<Tag tone="accent">Rhythm</Tag>);
-    const el = screen.getByText("Rhythm");
-    // jsdom normalizes the hex token to rgb(); rgba(217,119,87,0.10) → contains 217, 119, 87.
-    expect(el.style.color).toBe(toRgb(light.accentDeep));
-    expect(el.style.background).toContain("217, 119, 87");
+  it("maps its tones onto Badge tones (warn → caution, neutralFill → neutral)", () => {
+    renderWithTheme(
+      <>
+        <Tag tone="accent">a</Tag>
+        <Tag tone="good">g</Tag>
+        <Tag tone="warn">w</Tag>
+        <Tag tone="neutralFill">n</Tag>
+      </>,
+    );
+    expect(screen.getByText("a").style.color).toBe(toRgb(light.link));
+    expect(screen.getByText("g").style.color).toBe(toRgb(light.good));
+    expect(screen.getByText("w").style.color).toBe(toRgb(light.caution));
+    expect(screen.getByText("n").style.color).toBe(toRgb(light.text));
   });
 
-  it("size='md' bumps the fontSize off the sm default", () => {
+  it("size has no Badge equivalent: one size", () => {
     renderWithTheme(
       <>
         <Tag size="sm">a</Tag>
         <Tag size="md">b</Tag>
       </>,
     );
-    expect(screen.getByText("a").style.fontSize).toBe(
-      `${String(light.fsTag)}px`,
-    );
-    expect(screen.getByText("b").style.fontSize).toBe(
-      `${String(light.fsMeta)}px`,
-    );
+    expect(screen.getByText("a").style.fontSize).toBe("12px");
+    expect(screen.getByText("b").style.fontSize).toBe("12px");
   });
 
-  it("uppercase sets textTransform in STYLE while textContent keeps its casing", () => {
+  it("uppercase is ignored — sentence case, and the child string is never edited", () => {
     renderWithTheme(<Tag uppercase>Rhythm</Tag>);
     const el = screen.getByText("Rhythm");
-    expect(el.style.textTransform).toBe("uppercase");
-    // load-bearing: the child string is never edited.
+    expect(el.style.textTransform).toBe("");
     expect(el.textContent).toBe("Rhythm");
   });
 
-  it("fg overrides tone — custom color + matching translucent border", () => {
+  it("a custom fg colour has no Badge equivalent: the badge renders neutral", () => {
     renderWithTheme(
       <Tag tone="accent" fg={light.warn}>
         x
       </Tag>,
     );
     const el = screen.getByText("x");
-    // The fg colour, and the same channels at alpha 0x66 on the border.
-    const rgb = toRgb(light.warn);
-    expect(el.style.color).toBe(rgb);
-    expect(el.style.border).toContain(rgb.slice("rgb(".length, -1));
-    // tone lost: no accentSoft fill.
-    expect(el.style.background).toBe("transparent");
+    expect(el.style.color).toBe(toRgb(light.text));
+    expect(el.style.border).toBe("");
   });
 });
 
@@ -376,16 +402,26 @@ describe("PaneEmpty", () => {
 });
 
 describe("Dot", () => {
-  it("renders a 7px pip by default with the given color", () => {
+  it("renders an 8px aria-hidden pip by default with the given colour", () => {
     const { container } = renderWithTheme(<Dot color={light.good} />);
     const el = container.querySelector("span");
-    expect(el?.style.width).toBe("7px");
-    expect(el?.style.height).toBe("7px");
+    expect(el?.style.width).toBe("8px");
+    expect(el?.style.height).toBe("8px");
     expect(el?.style.background).toBe(toRgb(light.good));
+    expect(el?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("honors a size override", () => {
     const { container } = renderWithTheme(<Dot color={light.ink} size={12} />);
     expect(container.querySelector("span")?.style.width).toBe("12px");
+  });
+
+  it("a tone wins over a colour; hollow draws a ring", () => {
+    const { container } = renderWithTheme(
+      <Dot tone="danger" color={light.good} hollow />,
+    );
+    const el = container.querySelector("span");
+    expect(el?.style.background).toBe("transparent");
+    expect(el?.style.border).toContain(toRgb(light.danger));
   });
 });

@@ -12,7 +12,7 @@
 import type { ReactNode } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
-import { Button, Checkbox } from "./primitives";
+import { Button, CheckboxMark } from "./primitives";
 import { Tag } from "./Tag";
 
 export interface PresetOptionRowProps {
@@ -66,7 +66,7 @@ export function PresetOptionRow({
         title={title}
         style={{ display: "flex", alignItems: "center" }}
       >
-        <Checkbox checked={isPicked} />
+        <CheckboxMark checked={isPicked} />
       </Button>
       <Button
         variant="bare"

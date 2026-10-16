@@ -15,7 +15,7 @@
 import { memo } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Button, Checkbox } from "../../ui/primitives";
+import { Button, CheckboxMark } from "../../ui/primitives";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { Spinner } from "../../ui/Spinner";
@@ -222,7 +222,9 @@ export const PresetRow = memo(function PresetRow({
             height: "100%",
           }}
         >
-          {!empty && <Checkbox checked={allOn} indeterminate={indeterminate} />}
+          {!empty && (
+            <CheckboxMark checked={allOn} indeterminate={indeterminate} />
+          )}
         </Button>
 
         {caret}

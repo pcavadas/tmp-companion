@@ -116,7 +116,6 @@ export function ABAudition({ beforeClip, afterClip, levels }: ABAuditionProps) {
         <div style={{ minWidth: 168 }}>
           <SegmentedControl
             ariaLabel="Compare before or after the fix"
-            variant="light"
             options={[
               { value: "before", label: "Before" },
               { value: "after", label: "After" },

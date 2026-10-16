@@ -135,7 +135,6 @@ export function BlockEditor({
             <strong style={{ color: t.ink2 }}>{fromName}</strong>:
           </span>
           <SegmentedControl
-            variant="filled"
             ariaLabel="Edit mode"
             value={mode}
             onChange={setMode}

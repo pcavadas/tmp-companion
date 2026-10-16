@@ -46,6 +46,9 @@ export const ICONS = [
   "pause",
   "download",
   "link",
+  "chev-updown",
+  "minus",
+  "alert",
 ] as const;
 
 export type IconName = (typeof ICONS)[number];

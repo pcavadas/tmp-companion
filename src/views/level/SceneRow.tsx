@@ -7,7 +7,7 @@
 //   • FS child:   tag FS{n} (terracotta), name = scene name, sub "footswitch scene".
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Button, Checkbox } from "../../ui/primitives";
+import { Button, CheckboxMark } from "../../ui/primitives";
 import { Tag } from "../../ui/Tag";
 
 export interface SceneRowProps {
@@ -63,7 +63,7 @@ export function SceneRow({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", height: "100%" }}>
-        <Checkbox checked={selected} disabled={disabled} />
+        <CheckboxMark checked={selected} disabled={disabled} />
       </div>
       <span
         style={{

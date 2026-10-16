@@ -1,10 +1,10 @@
-// src/ui/PaneEmpty.tsx — the DS medallion empty state for a detail pane.
+// src/ui/PaneEmpty.tsx — the DS empty state (look B; becomes `EmptyState` once the
+// device-state view of that name moves to `PageState`).
 //
-// One tokenized "nothing here yet" panel replacing the two hand-rolled twins
-// (SetlistDetail's "No songs in this setlist yet" + PresetDetail's "No songs
-// use this preset"). Fills its parent (flex:1, minHeight:0) under a hairline,
-// centering an outlined icon medallion over a serif title, a muted body, and an
-// optional caller-composed CTA.
+// Says what's missing and offers the one thing to do about it, centred in its pane: a
+// 24 px outline icon in `textDisabled`, a 13/600 title (h2), an optional one-line body
+// in secondary text, and an optional single action (the caller composes the Button).
+// `size="page"` fills a tab: 32 px icon, 15 px title.
 
 import type { ReactNode } from "react";
 
@@ -15,56 +15,67 @@ import type { IconName } from "./iconNames";
 export interface PaneEmptyProps {
   icon: IconName;
   title: string;
-  body: ReactNode;
-  /** optional CTA rendered under the body (caller composes the Button). */
+  body?: ReactNode;
+  /** optional action rendered under the body (caller composes the Button). */
   cta?: ReactNode;
+  /** "pane" (default) sits in a list; "page" fills a tab. */
+  size?: "pane" | "page";
 }
 
-export function PaneEmpty({ icon, title, body, cta }: PaneEmptyProps) {
+export function PaneEmpty({
+  icon,
+  title,
+  body,
+  cta,
+  size = "pane",
+}: PaneEmptyProps) {
   const { t } = useTheme();
+  const page = size === "page";
   return (
     <div
       style={{
         flex: 1,
         minHeight: 0,
-        borderTop: `0.5px solid ${t.hairline}`,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        gap: t.space6,
-        padding: "0 40px",
+        gap: t.sp8,
+        padding: `${String(t.sp24)}px ${String(t.sp16)}px`,
         textAlign: "center",
+        fontFamily: t.fontSans,
       }}
     >
-      <span
+      <Icon
+        name={icon}
+        size={page ? 32 : 24}
+        stroke={t.textDisabled}
+        strokeWidth={1.5}
+      />
+      <h2
         style={{
-          width: 46,
-          height: 46,
-          borderRadius: 12,
-          border: `0.5px solid ${t.hairlineStrong}`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          margin: 0,
+          fontSize: page ? t.fontLarge : t.fontBody,
+          lineHeight: `${String(page ? t.lineLarge : t.lineBody)}px`,
+          fontWeight: t.weightSemibold,
+          color: t.text,
         }}
       >
-        <Icon name={icon} size={20} stroke={t.faint} />
-      </span>
-      <div style={{ fontFamily: t.serif, fontSize: 18, color: t.ink2 }}>
         {title}
-      </div>
-      <div
-        style={{
-          fontFamily: t.sans,
-          fontSize: t.fsBody,
-          color: t.mutedInk,
-          maxWidth: 320,
-          lineHeight: 1.5,
-        }}
-      >
-        {body}
-      </div>
-      {cta}
+      </h2>
+      {body != null && (
+        <div
+          style={{
+            maxWidth: 360,
+            fontSize: t.fontBody,
+            lineHeight: `${String(t.lineBody)}px`,
+            color: t.textSecondary,
+          }}
+        >
+          {body}
+        </div>
+      )}
+      {cta != null && <div style={{ marginTop: t.sp6 }}>{cta}</div>}
     </div>
   );
 }
