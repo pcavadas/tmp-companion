@@ -11,7 +11,7 @@
 // It now skips that group with the error as the row's reason, and the run ends.
 //
 // Because the flow now outlives the view, a device detach closes it: its rows are keyed by
-// list index, which the next connection can re-map, so a stale Summary's Re-level could
+// list index, which the next connection can re-map, so a stale Summary's Try again could
 // write the wrong preset. A run in flight resets once it has wound down.
 
 import { act, renderHook, waitFor } from "@testing-library/react";

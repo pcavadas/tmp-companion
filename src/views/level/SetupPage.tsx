@@ -10,8 +10,8 @@
 // What to level was chosen on the list, once; this page only says how. Every dropdown is
 // pre-set to the best guess and always shows exactly what the run will use. Every chosen
 // sound shows: no preset collapses. The backup tick is the only safety line (the run
-// saves each sound as soon as it matches). A re-level reopened from the Summary
-// (`isRelevel`) skips the tick until the Summary's Try again replaces it.
+// saves each sound as soon as it matches); the Summary's Try again runs again without
+// coming back here, so it never asks twice.
 //
 // State and derivation: `useSetupRows` (over `setupControls` and `buildSetupChoices`).
 
@@ -22,14 +22,13 @@ import { BackupAckLabel } from "../../ui/BackupAckLabel";
 import { Footer } from "../../ui/Footer";
 import { Icon } from "../../ui/Icon";
 import { Group } from "../../ui/List";
-import { PageHead } from "../../ui/PageHead";
 import { Select } from "../../ui/Select";
 import type { SelectOption } from "../../ui/selectValue";
-import { Steps } from "../../ui/Steps";
 import { Button } from "../../ui/primitives";
+import { FlowPage } from "./FlowPage";
 import { SetupPresetHeader } from "./SetupPresetHeader";
 import { SetupSoundRow } from "./SetupSoundRow";
-import { LEVEL_STEPS, SETUP_COLUMN_GAP, setupColumns } from "./setupLayout";
+import { SETUP_COLUMN_GAP, setupColumns } from "./setupLayout";
 import {
   TARGET_BY_NAME,
   targetForAllValue,
@@ -40,13 +39,8 @@ import type { SetupChoice, SetupOption } from "./leveling";
 
 export type { SetupChoice };
 
-/** The content column's widest (px): wider windows centre it. */
-const MAX_CONTENT_W = 960;
-
 export interface SetupPageProps {
   options: SetupOption[];
-  /** Reopened from the Summary for a re-level: no backup tick (already given). */
-  isRelevel: boolean;
   /** "None" + each instrument (`value` = profile id). */
   instrumentOptions: SelectOption[];
   /** The instruments with a recording; any other choice shows the record link. */
@@ -69,7 +63,6 @@ export interface SetupPageProps {
 
 export function SetupPage({
   options,
-  isRelevel,
   instrumentOptions,
   recordedInstruments,
   targetNames,
@@ -91,7 +84,6 @@ export function SetupPage({
 
   const setup = useSetupRows({
     options,
-    isRelevel,
     instrumentOptions,
     targetNames,
     savedInstruments,
@@ -101,8 +93,7 @@ export function SetupPage({
   const { groups, firstNeed, pending } = setup;
 
   const total = options.length;
-  const ready =
-    total > 0 && (isRelevel || backedUp) && !pending && firstNeed == null;
+  const ready = total > 0 && backedUp && !pending && firstNeed == null;
   const targetOptions: SelectOption[] = targetNames.map((n) => ({
     value: n,
     label: n,
@@ -160,174 +151,148 @@ export function SetupPage({
   const columns = setupColumns(setup.sceneColumn);
 
   return (
-    <div
-      style={{
-        flex: 1,
-        minHeight: 0,
-        display: "flex",
-        flexDirection: "column",
-        background: t.window,
-        fontFamily: t.fontSans,
-        color: t.text,
-      }}
-    >
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-        <div
-          style={{
-            maxWidth: MAX_CONTENT_W,
-            margin: "0 auto",
-            padding: `${String(t.sp16)}px ${String(t.sp24)}px ${String(t.sp16 + t.sp4)}px`,
-            display: "flex",
-            flexDirection: "column",
-            gap: t.sp12 + t.sp2,
-          }}
-        >
-          <PageHead
-            title={`Level ${String(total)} ${total === 1 ? "sound" : "sounds"}`}
-            actions={<Steps steps={LEVEL_STEPS} current={0} />}
-          />
-
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: t.sp24,
-              flexWrap: "wrap",
-            }}
-          >
-            {forAllInstrument && (
-              <span style={labelled}>
-                Instrument for all
-                <Select
-                  width={130}
-                  label="Instrument for all presets"
-                  value={setup.instAll.value}
-                  mixed={setup.instAll.mixed}
-                  options={instrumentOptions}
-                  onChange={setup.setAllInst}
-                  tid="inst-all"
-                />
-                {needsRecording && (
-                  <Button variant="link" onClick={onCalibrate}>
-                    Record yours in Settings
-                  </Button>
-                )}
-              </span>
-            )}
-            <span style={labelled}>
-              Target for all
-              <Select
-                width={130}
-                label="Target for all sounds"
-                value={setup.targetAll.value}
-                mixed={setup.targetAll.mixed}
-                options={targetAllOptions}
-                onChange={setup.setAllTargets}
-                tid="target-all"
-              />
-            </span>
-          </div>
-
-          <div>
-            <div
-              aria-hidden
-              style={{
-                display: "grid",
-                gridTemplateColumns: columns,
-                gap: SETUP_COLUMN_GAP,
-                padding: `0 ${String(t.sp12 + 1)}px ${String(t.sp6)}px`,
-                fontSize: t.fontCaption,
-                fontWeight: t.weightSemibold,
-                color: t.textSecondary,
-              }}
-            >
-              <span>Sound</span>
-              <span>Target</span>
-              <span>Block</span>
-              <span>Knob</span>
-              {setup.sceneColumn && <span>Level it in scene</span>}
-            </div>
-            <Group label="Sounds to level">
-              {groups.map((g) => (
-                <div key={g.slot}>
-                  <SetupPresetHeader
-                    group={g}
-                    instrumentOptions={instrumentOptions}
-                    onInstrument={setup.setInst}
-                    onRecord={
-                      !forAllInstrument &&
-                      onCalibrate != null &&
-                      !recordedInstruments.has(g.inst)
-                        ? onCalibrate
-                        : undefined
-                    }
-                    rebalance={setup.rebalance.has(g.slot)}
-                    onToggleRebalance={setup.toggleRebalance}
-                  />
-                  {g.rows.map((r) => (
-                    <SetupSoundRow
-                      key={r.option.key}
-                      row={r}
-                      targetOptions={targetOptions}
-                      sceneColumn={setup.sceneColumn}
-                      openBlock={requestFor(r.option.key, "block")}
-                      openScene={requestFor(r.option.key, "scene")}
-                      onTarget={setup.setTarget}
-                      onHandle={setup.setHandle}
-                      onSceneContext={setup.setSceneContext}
-                      onOpenControls={onOpenControls}
+    <FlowPage
+      title={`Level ${String(total)} ${total === 1 ? "sound" : "sounds"}`}
+      step={0}
+      footer={
+        <Footer
+          left={
+            <Button variant="secondary" size="lg" onClick={onCancel}>
+              Cancel
+            </Button>
+          }
+          right={
+            <>
+              {pending ? (
+                <span style={caption}>Reading footswitch scenes</span>
+              ) : (
+                firstNeed?.need && (
+                  <Button
+                    variant="link"
+                    onClick={() => {
+                      goToNeed(firstNeed);
+                    }}
+                  >
+                    <Icon
+                      name="warn-tri"
+                      size={13}
+                      stroke={t.caution}
+                      strokeWidth={2}
                     />
-                  ))}
-                </div>
-              ))}
-            </Group>
-          </div>
-        </div>
+                    {firstNeed.need.text}
+                  </Button>
+                )
+              )}
+              <BackupAckLabel checked={backedUp} onChange={setBackedUp} />
+              <Button
+                variant="primary"
+                size="lg"
+                busy={pending}
+                disabled={!ready}
+                onClick={start}
+              >
+                Start leveling
+              </Button>
+            </>
+          }
+        />
+      }
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: t.sp24,
+          flexWrap: "wrap",
+        }}
+      >
+        {forAllInstrument && (
+          <span style={labelled}>
+            Instrument for all
+            <Select
+              width={130}
+              label="Instrument for all presets"
+              value={setup.instAll.value}
+              mixed={setup.instAll.mixed}
+              options={instrumentOptions}
+              onChange={setup.setAllInst}
+              tid="inst-all"
+            />
+            {needsRecording && (
+              <Button variant="link" onClick={onCalibrate}>
+                Record yours in Settings
+              </Button>
+            )}
+          </span>
+        )}
+        <span style={labelled}>
+          Target for all
+          <Select
+            width={130}
+            label="Target for all sounds"
+            value={setup.targetAll.value}
+            mixed={setup.targetAll.mixed}
+            options={targetAllOptions}
+            onChange={setup.setAllTargets}
+            tid="target-all"
+          />
+        </span>
       </div>
 
-      <Footer
-        left={
-          <Button variant="secondary" size="lg" onClick={onCancel}>
-            Cancel
-          </Button>
-        }
-        right={
-          <>
-            {pending ? (
-              <span style={caption}>Reading footswitch scenes</span>
-            ) : (
-              firstNeed?.need && (
-                <Button
-                  variant="link"
-                  onClick={() => {
-                    goToNeed(firstNeed);
-                  }}
-                >
-                  <Icon
-                    name="warn-tri"
-                    size={13}
-                    stroke={t.caution}
-                    strokeWidth={2}
-                  />
-                  {firstNeed.need.text}
-                </Button>
-              )
-            )}
-            {!isRelevel && (
-              <BackupAckLabel checked={backedUp} onChange={setBackedUp} />
-            )}
-            <Button
-              variant="primary"
-              size="lg"
-              busy={pending}
-              disabled={!ready}
-              onClick={start}
-            >
-              Start leveling
-            </Button>
-          </>
-        }
-      />
-    </div>
+      <div>
+        <div
+          aria-hidden
+          style={{
+            display: "grid",
+            gridTemplateColumns: columns,
+            gap: SETUP_COLUMN_GAP,
+            padding: `0 ${String(t.sp12 + 1)}px ${String(t.sp6)}px`,
+            fontSize: t.fontCaption,
+            fontWeight: t.weightSemibold,
+            color: t.textSecondary,
+          }}
+        >
+          <span>Sound</span>
+          <span>Target</span>
+          <span>Block</span>
+          <span>Knob</span>
+          {setup.sceneColumn && <span>Level it in scene</span>}
+        </div>
+        <Group label="Sounds to level">
+          {groups.map((g) => (
+            <div key={g.slot}>
+              <SetupPresetHeader
+                group={g}
+                instrumentOptions={instrumentOptions}
+                onInstrument={setup.setInst}
+                onRecord={
+                  !forAllInstrument &&
+                  onCalibrate != null &&
+                  !recordedInstruments.has(g.inst)
+                    ? onCalibrate
+                    : undefined
+                }
+                rebalance={setup.rebalance.has(g.slot)}
+                onToggleRebalance={setup.toggleRebalance}
+              />
+              {g.rows.map((r) => (
+                <SetupSoundRow
+                  key={r.option.key}
+                  row={r}
+                  targetOptions={targetOptions}
+                  sceneColumn={setup.sceneColumn}
+                  openBlock={requestFor(r.option.key, "block")}
+                  openScene={requestFor(r.option.key, "scene")}
+                  onTarget={setup.setTarget}
+                  onHandle={setup.setHandle}
+                  onSceneContext={setup.setSceneContext}
+                  onOpenControls={onOpenControls}
+                />
+              ))}
+            </div>
+          ))}
+        </Group>
+      </div>
+    </FlowPage>
   );
 }

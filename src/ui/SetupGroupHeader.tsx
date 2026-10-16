@@ -2,7 +2,7 @@
 //
 // Slot number (via the DS SlotLabel — mono/fsData/mutedInk canon) + preset name
 // (serif 15). Used by Doctor's DoctorSetup, which groups its option rows by preset
-// (the Leveling wizard's own per-preset header is `PresetGroupRow`, design 1a).
+// (Level's pages draw theirs as a look B `Row header`).
 
 import { useTheme } from "../theme/ThemeContext";
 import { SlotLabel } from "./SlotLabel";

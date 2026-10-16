@@ -5,9 +5,9 @@
 // the preset list (filter bar + one Group of presets; the whole library's scenes and
 // footswitches arrive via one background backup scan) → the Footer ("How it works" on the
 // left; the caption and the one main action, "Level N sounds", on the right). The leveling
-// flow (setup → run → summary) takes the tab's whole content area while it is open; the
-// list stays mounted underneath, hidden, so its choices, filter and scroll position are
-// all there again on the way back.
+// flow (Set up → run → Summary, each a page) takes the tab's whole content area while it
+// is open; the list stays mounted underneath, hidden, so its choices, filter and scroll
+// position are all there again on the way back.
 //
 // The list is a SCENE TREE: each preset row is a parent of its sounds (the main sound,
 // each scene, each footswitch). The row checkbox chooses the whole preset, the caret opens
@@ -35,7 +35,7 @@ import type { NoUnitState } from "../../lib/connectError";
 import { LevelingWizard } from "../overlays";
 import { HowLevelingSheet } from "./HowLevelingSheet";
 import { SignalPathFit } from "./SignalPathFit";
-import { instrumentOptions, instrumentName, NO_INSTRUMENT } from "./leveling";
+import { instrumentOptions, NO_INSTRUMENT } from "./leveling";
 import type { SelectOption } from "../../ui/selectValue";
 import type { ActiveGraph } from "../../lib/types";
 import { currentGraph, readActivePreset } from "../../lib/invoke";
@@ -254,11 +254,6 @@ export function LevelView({
     [store?.targets],
   );
   const defaultInst = store?.profiles[0]?.id ?? NO_INSTRUMENT;
-  // Resolve an instrument profile id → its display name (the run-row instrument chip).
-  const instName = useCallback(
-    (id: string): string => instrumentName(store?.profiles, id),
-    [store?.profiles],
-  );
 
   const activeHasScenes = activeSlot != null && live.scenes.length > 0;
   const liveSceneName = useMemo(() => {
@@ -316,7 +311,6 @@ export function LevelView({
         flexDirection: "column",
         flex: 1,
         minHeight: 0,
-        position: "relative",
       }}
     >
       {/* The list page: hidden (still mounted) while a flow page shows. */}
@@ -376,27 +370,28 @@ export function LevelView({
         />
       </div>
 
-      {/* ── leveling flow — Set up is a page here; run and Summary still overlay ── */}
+      {/* ── leveling flow: Set up, the run and the Summary are pages here ── */}
       {flow.stage !== "closed" && (
         <LevelingWizard
           stage={flow.stage}
           chosen={flow.chosen}
-          isRelevel={flow.isRelevel}
           instrumentOptions={instOptions}
           recordedInstruments={recordedInstruments}
           targetNames={targetNames}
           savedInstruments={store?.profile_by_slot ?? NO_SAVED_INSTRUMENTS}
           defaultInst={defaultInst}
           onInstrumentChange={rememberInstrument}
-          instrumentName={instName}
           targetLufsByName={targetLufsByName}
           run={flow.run}
+          results={flow.results}
+          summaryScenes={flow.summaryScenes}
           onCancel={flow.onCancel}
           onStart={flow.onSetupStart}
           onRunCancel={flow.onRunCancel}
           onRunComplete={flow.onRunComplete}
-          onAccept={flow.onAccept}
-          onRelevel={flow.onRelevel}
+          onSummaryScene={flow.onSummaryScene}
+          onTryAgain={flow.onTryAgain}
+          onDone={flow.onDone}
           onCalibrate={onCalibrate}
         />
       )}

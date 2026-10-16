@@ -4,7 +4,7 @@
 // Light-only app — no sun/moon (the dark toggle was removed). Adds the prototype
 // page icons: gauge · cable · music · spinner · warn-tri · info · refresh · grip ·
 // trash · lock, and look B's chev-updown (Select) · minus (a mixed Checkbox) · alert
-// (danger Notice and PageState).
+// (danger Notice and PageState) · stop (the leveling run's Stop).
 
 import type { IconName } from "./iconNames";
 
@@ -364,6 +364,12 @@ export function Icon({
         <svg {...props}>
           <path d="M12 3v14M8 7l4-4 4 4M7 13v2l5 3 5-3v-2" />
           <circle cx="12" cy="20" r="1.5" />
+        </svg>
+      );
+    case "stop":
+      return (
+        <svg {...props}>
+          <rect x="7" y="7" width="10" height="10" rx="1.5" />
         </svg>
       );
     default:

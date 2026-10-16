@@ -1,6 +1,5 @@
-// src/views/overlays/WizardPage.tsx — the full-page wizard frame (#314), shared by
-// the Level wizard (`level/LevelPage`, its three stages) and the Doctor's Set up and
-// Results pages.
+// src/views/overlays/WizardPage.tsx — the full-page wizard frame (#314) of the
+// Doctor's Set up and Results pages.
 //
 // An opaque `absolute; inset:0` page that replaces its tab's body (not a dialog — it
 // has no scrim), topped by the ONE step-rail header (`WizardHeader`) with the

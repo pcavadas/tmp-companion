@@ -483,15 +483,12 @@ describe("the scene column", () => {
 describe("a stored knob the preset no longer has", () => {
   it("shows its own name and says so, without blocking Start", async () => {
     await seedScan([{ base_handles: [] }]);
-    const { onStart } = renderSetupPage(
-      [
-        makeSetupOption({
-          presetName: "Plexi",
-          baseHandle: { groupId: "G9", nodeId: "fuzz7", parameterId: "level" },
-        }),
-      ],
-      { isRelevel: true },
-    );
+    const { onStart } = renderSetupPage([
+      makeSetupOption({
+        presetName: "Plexi",
+        baseHandle: { groupId: "G9", nodeId: "fuzz7", parameterId: "level" },
+      }),
+    ]);
     expect(
       await screen.findByText(
         "This knob isn't in the preset any more. Choose another.",
@@ -503,9 +500,7 @@ describe("a stored knob the preset no longer has", () => {
     expect(selectTrigger("block:p0")).toHaveAccessibleName(
       "Block for Plexi, Main sound: fuzz7",
     );
-    await userEvent
-      .setup()
-      .click(screen.getByRole("button", { name: "Start leveling" }));
+    await startLeveling(userEvent.setup());
     expect(onStart).toHaveBeenCalledTimes(1);
   });
 });

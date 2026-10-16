@@ -1,18 +1,19 @@
-// src/views/level/useLevelingFlow.ts — the unified leveling WIZARD's binding for the
-// Level view.
+// src/views/level/useLevelingFlow.ts — the leveling flow's binding for the Level view.
 //
-// The wizard's stage machine (setup → run → summary, all in one persistent frame) and the
+// The flow's stage machine (Set up → run → Summary, each a page in the Level tab) and the
 // run (driven by the pure `runEngine`) live in the module-scoped `levelRunStore`, so a run
 // survives a tab switch: this hook subscribes to that store and adapts the view's data
-// (selection, store, backup maps) into the engine's inputs. The SCENES are chosen in the list (the scene tree); setup
-// only configures them. The backup acknowledgment is an inline checkbox in the Set-up
-// footer (no separate step) that gates the commit. Leveling always WRITES (save:true).
+// (selection, store, backup maps) into the engine's inputs. The sounds are chosen in the
+// list (the scene tree); Set up only configures them. The backup acknowledgment is an
+// inline checkbox in the Set-up footer that gates the commit. Leveling always WRITES
+// (save:true). The Summary's one "Try again" re-runs sounds straight away on the first
+// run's settings (`retryLeveling`), with no second Set up and no second backup tick.
 //
 // No revert of any kind lives in this flow (design 1a, user directive): the backup
 // acknowledgment is the one revert path (restore from a Pro Control backup), so this
 // hook carries no gain-budget redistribution, reachable-common-target, or per-row
-// "Restore original" state — a clamped row is reported and left for the user to
-// re-level at a lower target, nothing more.
+// "Restore original" state — a sound that can't reach its target is reported with what
+// to change, nothing more.
 
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
@@ -22,15 +23,15 @@ import {
   getLevelFlow,
   openSetup,
   requestStop,
+  retryLeveling,
   runLeveling,
+  setSummaryScene,
   showSummary,
   subscribeLevelFlow,
 } from "./levelRunStore";
 import {
   chosenFrom,
   optionToRunItem,
-  runItemToOption,
-  type RunItem,
   type SetupChoice,
   type PresetRow,
 } from "./leveling";
@@ -43,7 +44,7 @@ import type {
   SilenceHint,
 } from "../../lib/types";
 
-export type { RunPhase, RunState } from "./levelRunStore";
+export type { RunPhase, RunState, SummaryScenes } from "./levelRunStore";
 
 export interface UseLevelingFlowDeps {
   rows: PresetRow[];
@@ -64,7 +65,7 @@ export interface UseLevelingFlowDeps {
   silenceHintByIndex: Map<number, SilenceHint>;
   targetLufsByName: (name: string | null) => number;
   /** Drop just the given selection keys (BUG-4: prune the keys a run actually leveled,
-   *  accumulating across re-level rounds, so un-run sounds stay selected). */
+   *  accumulating across Try again rounds, so un-run sounds stay selected). */
   deselectKeys: (keys: string[]) => void;
   refresh: () => Promise<void>;
 }
@@ -97,19 +98,19 @@ export function useLevelingFlow({
     [store],
   );
 
-  // "Level N presets…" — resolve the list's selected scene keys into the setup rows and
-  // open the wizard at the Set-up step. The backup acknowledgment is an inline gate in
-  // the Set-up footer (it no longer has its own step).
+  // "Level N sounds" — resolve the list's selected sound keys into the Set up rows and
+  // open the flow at Set up. The backup acknowledgment is an inline gate in the Set-up
+  // footer (it has no step of its own).
   const openFlow = useCallback(
     (sel: Set<string>) => {
       const options = chosenFrom(sel, rows, sceneInfo, footswitchInfo);
       if (options.length === 0) return;
-      openSetup(options, false);
+      openSetup(options);
     },
     [rows, sceneInfo, footswitchInfo],
   );
 
-  // Close the wizard, deselecting exactly what a run leveled (BUG-4). A close with no run
+  // Close the flow, deselecting exactly what a run leveled (BUG-4). A close with no run
   // preserves the selection.
   const onClose = useCallback(() => {
     const keys = closeFlow();
@@ -145,11 +146,10 @@ export function useLevelingFlow({
     ],
   );
 
-  // Summary "Re-level clamped…" / "Re-run off target…" → re-enter at Set up with just
-  // that subset (re-level mode: the Set-up body hides the backup acknowledgment —
-  // already given). Each row carries the instrument and target it was leveled with.
-  const onRelevel = useCallback((subset: RunItem[]) => {
-    openSetup(subset.map(runItemToOption), true);
+  // Summary "Try again (N)" → run those sounds again at once, on the first run's
+  // settings, and come back to the same Summary.
+  const onTryAgain = useCallback((keys: readonly string[]) => {
+    void retryLeveling(keys);
   }, []);
 
   // One object per store publish (or binding change), so a consumer's memo/callback that
@@ -158,22 +158,23 @@ export function useLevelingFlow({
     () => ({
       stage: flow.stage,
       chosen: flow.chosen,
-      isRelevel: flow.isRelevel,
       run: flow.run,
+      results: flow.results,
+      summaryScenes: flow.summaryScenes,
       openFlow,
       onCancel: onClose,
       onSetupStart,
-      // Run "Stop" → halt the run in place; levels already written stay saved. Do NOT
-      // close the wizard — closing it hid that the in-flight item was still finishing on
-      // the device ("I don't know if it stopped"). The store flips to "Stopping…" at once
-      // and shows "Leveling stopped" + Continue when the in-flight command finishes.
+      // The Stop dialog's "Stop" → halt the run in place; levels already written stay
+      // saved. The flow stays on the run page, which says it is stopping after the sound
+      // in progress, and lands on the Summary once that sound has wound down.
       onRunCancel: requestStop,
-      // Run → Summary (auto on a natural finish, or via Continue after a manual stop).
+      // Run → Summary, a beat after a natural finish.
       onRunComplete: showSummary,
-      onRelevel,
-      // Summary "Accept" / "Done" → close, deselecting just the leveled sounds.
-      onAccept: onClose,
+      onTryAgain,
+      onSummaryScene: setSummaryScene,
+      // Summary "Done" → close, deselecting just the leveled sounds.
+      onDone: onClose,
     }),
-    [flow, openFlow, onClose, onSetupStart, onRelevel],
+    [flow, openFlow, onClose, onSetupStart, onTryAgain],
   );
 }

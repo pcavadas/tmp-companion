@@ -40,7 +40,7 @@ report nothing; an empty result is correct.
 nothing about the NONE and PARTIAL rows, so changes touching them deserve
 disproportionate scrutiny:
 
-- Stop mid-run, then Continue (Vitest-mocked only)
+- Stop mid-run → Summary on hardware (offline e2e and Vitest only)
 - Detach mid-run; relaunch or webview reload mid-operation (no gate)
 - Copy: Back discards staged edits; partial save failure across N targets (no gate)
 - Doctor apply/save → Level sees the post-write graph (no gate)

@@ -15,6 +15,7 @@ import {
   simEvents,
   soundBox,
   startLeveling,
+  summaryDone,
 } from "../fixtures/scenario";
 
 // Level scenarios — run identically offline (fake re-amp) and online (real re-amp).
@@ -23,8 +24,8 @@ import {
 // e2e/fixtures/COVERAGE.md) — SCENARIO[1]/[2] ("E2E Pedalboard"/"E2E Edge") now carry
 // footswitches/scenes of their own, so the first test below selects each preset's Base
 // row EXPLICITLY (never the whole-preset tick) to keep one selected row per preset — a
-// whole-preset tick would sweep those in too and shift the terminal summary's
-// Done-vs-Accept text for reasons unrelated to what this test drives.
+// whole-preset tick would sweep those in too and change the Summary's outcome for
+// reasons unrelated to what this test drives.
 // Loudness accuracy is the device's job; these prove the multi-preset, per-preset-target
 // flow AND the base+scene+footswitch flow end to end through the real backend.
 //
@@ -117,12 +118,10 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     // The bake/assign mechanism is never surfaced.
     await expect(page.getByText(/baked|assigned/i)).toHaveCount(0);
 
-    // Run base + scenes + footswitches → a terminal Summary (Done OR Accept; offline
+    // Run base + scenes + footswitches → a terminal Summary (whatever it says; offline
     // clamps on scenes/footswitches are fine).
     await startLeveling(page).click();
-    await expect(
-      page.getByRole("button", { name: /^(Done|Accept)$/ }),
-    ).toBeVisible({ timeout: 1_200_000 });
+    await expect(summaryDone(page)).toBeVisible({ timeout: 1_200_000 });
 
     await expectReampBalanced(page, reampBase);
   });
@@ -184,7 +183,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   // It also carries the retired "levels two presets' Base to different targets" test: run 1
   // levels two presets' Base rows to DIFFERENT per-preset targets through the wizard
   // (`runBaseLevel` asserts each row's own `target:<rowKey>` pick binds), and must finish
-  // "Done" — every row solved.
+  // with every row solved ("All 2 sounds leveled.").
   test("two presets' Base at different targets, then an identical re-run makes no new Saved write (level_unchanged skip)", async ({
     page,
   }) => {
@@ -200,7 +199,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
 
     // Base-only, not the whole-preset checkbox: 401/402 now carry footswitches of their own
     // (P4-B fixture rebuild — see level-defaults.spec.ts's header), and a whole-preset
-    // tick would sweep those in too and shift the terminal summary's Done-vs-Accept text.
+    // tick would sweep those in too and change the Summary's outcome.
     const run = () =>
       runBaseLevel(page, [
         { preset: SCENARIO[1], label: "Crunch" },
@@ -211,7 +210,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     // prefix.
     await run();
     await expect(
-      page.getByRole("button", { name: "Done", exact: true }),
+      page.getByRole("heading", { name: "All 2 sounds leveled." }),
     ).toBeVisible();
     const afterRun1 = await simEvents(page);
     // Non-vacuous: run 1 must actually solve + write a PresetLevel and Saved this slot,

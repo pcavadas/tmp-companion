@@ -8,7 +8,7 @@ import { StepRail } from "./StepRail";
 import type { RailStep } from "./wizardContext";
 
 // ---- rail header (the window-grey bar that frames the StepRail) -------------
-// Shared by the modal WizardShell and the full-page `WizardPage` (Level + Doctor) so
+// Shared by the modal WizardShell and the full-page `WizardPage` (Doctor) so
 // the header styling lives in ONE place; only the outer container (centered modal
 // vs opaque inset:0 page) differs between the two. `back`, when given, puts a Back
 // link before the rail (the Doctor Set up page).

@@ -8,8 +8,8 @@ import { Icon } from "../../ui/Icon";
 import { WIZ_STEPS, type RailStep } from "./wizardContext";
 
 // ---- step rail (header) ----------------------------------------------------
-// Exported so the full-page Level wizard (`LevelPage`) reuses the identical rail. `steps`
-// defaults to the leveling rail.
+// Exported so the full-page wizard frame (`WizardPage`) reuses the identical rail. `steps`
+// defaults to Set up · Level · Summary.
 export interface StepRailProps {
   current: number;
   steps?: readonly RailStep[];

@@ -8,12 +8,14 @@
 //   • "Select all N shown" chooses only the presets the filter shows (Q7, bug fix).
 //   • The Level button is always there: greyed with its reason when nothing is chosen
 //     or the scan still reads, else "Level N sounds" (it counts sounds).
-//   • "Level N sounds" opens the wizard directly at Set up; the footer's inline backup
-//     acknowledgment gates the commit, then run auto-advances to the summary on a
-//     natural finish.
+//   • "Level N sounds" opens the flow directly at Set up; the footer's inline backup
+//     acknowledgment gates the commit, then the run auto-advances to the Summary on a
+//     natural finish, and to the Summary straight away after a Stop.
+//   • The Summary says each outcome in plain words; a sound that can't reach its target
+//     gets no button, and the way to a quieter target is the list again (the clamp loop).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor, act } from "@testing-library/react";
+import { screen, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -46,6 +48,7 @@ import {
   withoutAmpCandidates,
   type Handler,
 } from "./commandMocks";
+import { choose } from "./setupPageTestUtils";
 import { renderWithTheme } from "./testKit";
 
 // In-app: the live bridges and the library scan subscribe.
@@ -437,6 +440,9 @@ function mockLevelingFixture(
     footswitch?: boolean;
     /** Put an envelope filter in the preset's block roster (the "envelope" cause). */
     envelopeBlock?: boolean;
+    /** The main sound reaches no target louder than this (LUFS): it clamps at full
+     *  volume there, and levels at any quieter one. */
+    ceiling?: number;
   } = {},
 ) {
   mockCommands({
@@ -451,7 +457,15 @@ function mockLevelingFixture(
             calibration_lufs: -22,
           },
         ],
-        targets: [{ name: "Rhythm", lufs: -26 }],
+        // A louder target only for the clamp loop, so the scene named "Lead" keeps
+        // Rhythm (the only target) everywhere else.
+        targets:
+          opts.ceiling != null
+            ? [
+                { name: "Rhythm", lufs: -26 },
+                { name: "Lead", lufs: -19 },
+              ]
+            : [{ name: "Rhythm", lufs: -26 }],
       }),
     read_library_via_backup: () =>
       makeBackupRead({
@@ -485,12 +499,21 @@ function mockLevelingFixture(
       });
       return jobs.map(() => footswitchResultStub());
     },
-    level_preset: () =>
-      levelResultStub({
-        clamped: !!opts.clamped,
+    level_preset: ({ job }) => {
+      const ceiling = opts.ceiling;
+      const clamped =
+        !!opts.clamped || (ceiling != null && job.target_lufs > ceiling);
+      const reached = clamped ? (ceiling ?? -28) : job.target_lufs;
+      return levelResultStub({
+        target_lufs: job.target_lufs,
+        predicted_lufs: reached,
+        verify_lufs: reached,
+        clamped,
+        clamp_kind: clamped ? "scene_ceiling" : null,
         dynamic_spread_lu: opts.spreadLu ?? null,
         verify_by_ear: !!opts.verifyByEar,
-      }),
+      });
+    },
     list_level_blocks: () => [TWEED_OUTPUT],
     level_scenes_apply_batched: levelScenesDone,
     // No candidates in these fixtures — the point is exercising the target-mode
@@ -591,7 +614,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     await user.click(screen.getByRole("button", { name: "Start leveling" }));
     // The run finishes on its own and auto-advances to the summary (no Continue click).
     expect(
-      await screen.findByText("All 1 sound match now.", undefined, {
+      await screen.findByText("1 sound leveled.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
@@ -665,12 +688,12 @@ describe("LevelView — full leveling wizard e2e", () => {
       await screen.findByRole("button", { name: "Start leveling" }),
     );
     expect(
-      await screen.findByText("All 1 sound match now.", undefined, {
+      await screen.findByText("1 sound leveled.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
     expect(fired("level_preset")).toBe(true);
-    await user.click(screen.getByRole("button", { name: /done/i }));
+    await user.click(screen.getByRole("button", { name: "Done" }));
     expect(
       await screen.findByText("Choose presets or sounds to level"),
     ).toBeInTheDocument();
@@ -690,7 +713,7 @@ describe("LevelView — full leveling wizard e2e", () => {
       await screen.findByRole("button", { name: "Start leveling" }),
     );
     expect(
-      await screen.findByText("All 3 sounds match now.", undefined, {
+      await screen.findByText("All 3 sounds leveled.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
@@ -728,11 +751,11 @@ describe("LevelView — full leveling wizard e2e", () => {
       await screen.findByRole("button", { name: "Start leveling" }),
     );
     expect(
-      await screen.findByText("All 3 sounds match now.", undefined, {
+      await screen.findByText("All 3 sounds leveled.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /done/i }));
+    await user.click(screen.getByRole("button", { name: "Done" }));
 
     // Forget the first run's calls; the second run must re-issue them.
     vi.mocked(invoke).mockClear();
@@ -746,7 +769,7 @@ describe("LevelView — full leveling wizard e2e", () => {
       await screen.findByRole("button", { name: "Start leveling" }),
     );
     expect(
-      await screen.findByText("All 3 sounds match now.", undefined, {
+      await screen.findByText("All 3 sounds leveled.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
@@ -755,8 +778,8 @@ describe("LevelView — full leveling wizard e2e", () => {
   });
 
   // BUG→GATE (#241): a wide dynamics spread is not a measurement problem, so it no longer
-  // flags the row "by ear".
-  it("large dynamics spread → no 'by ear' marker in the summary", async () => {
+  // flags the row "Check by ear".
+  it("large dynamics spread → no 'Check by ear' on the Summary", async () => {
     mockLevelingFixture({ spreadLu: 8.2 });
     renderView(true);
     const user = userEvent.setup();
@@ -769,17 +792,16 @@ describe("LevelView — full leveling wizard e2e", () => {
       await screen.findByRole("button", { name: "Start leveling" }),
     );
     expect(
-      await screen.findByText("All 1 sound match now.", undefined, {
+      await screen.findByText("1 sound leveled.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("by ear")).toBeNull();
+    expect(screen.queryByText("Check by ear")).toBeNull();
     expect(screen.queryByText(/loud\/quiet swings/i)).toBeNull();
   });
 
-  it("rebalanced result → summary footnote names the rebalance reason", async () => {
-    // verify_by_ear true → the byEarCause resolves to "rebalance", so the reason-aware
-    // footnote spells out the parallel-amp cause.
+  it("rebalanced result → 'Check by ear' with the two-amp reason", async () => {
+    // verify_by_ear true → the byEarCause resolves to "rebalance".
     mockLevelingFixture({ spreadLu: 1.1, verifyByEar: true });
     renderView(true);
     const user = userEvent.setup();
@@ -792,20 +814,20 @@ describe("LevelView — full leveling wizard e2e", () => {
       await screen.findByRole("button", { name: "Start leveling" }),
     );
     expect(
-      await screen.findByText("All 1 sound match now.", undefined, {
+      await screen.findByText("1 sound leveled.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
+    expect(screen.getByText("Check by ear")).toBeInTheDocument();
     expect(
       screen.getByText(
-        /worth a quick listen — parallel amps balanced by approximate isolation\./i,
+        "Its two amps were balanced roughly. Listen to check it.",
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/loud\/quiet swings/i)).toBeNull();
   });
 
-  it("envelope-filter preset → 'by ear' with the envelope reason", async () => {
-    // An envelope block questions the measurement itself, so the footnote names it.
+  it("envelope-filter preset → 'Check by ear' with the envelope reason", async () => {
+    // An envelope block questions the measurement itself, so the row says so.
     mockLevelingFixture({ spreadLu: 8.2, envelopeBlock: true });
     renderView(true);
     const user = userEvent.setup();
@@ -818,21 +840,24 @@ describe("LevelView — full leveling wizard e2e", () => {
       await screen.findByRole("button", { name: "Start leveling" }),
     );
     expect(
-      await screen.findByText("All 1 sound match now.", undefined, {
+      await screen.findByText("1 sound leveled.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("by ear").length).toBeGreaterThan(0);
+    expect(screen.getByText("Check by ear")).toBeInTheDocument();
     expect(
       screen.getByText(
-        /worth a quick listen — an envelope filter responds to the test signal differently than to real playing\./i,
+        "It has an envelope filter, which reacts to the test tone differently from your playing. Listen to check it.",
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/loud\/quiet swings/i)).toBeNull();
   });
 
-  it("clamped result → 'Re-level clamped…' reopens setup in re-level mode", async () => {
-    mockLevelingFixture({ clamped: true });
+  // BUG→GATE (the 2026-07 "clamp loop unresolvable" report), retargeted to look B: a sound
+  // clamped at full volume says so and what to change, with NO button (Q5) and no Try
+  // again; the way to a quieter target is Done, the list and Set up — and there it
+  // resolves. The old "Re-level clamped…" reopened Set up in a re-level mode that is gone.
+  it("clamped at a loud target: says so with no button, then levels at a quieter one", async () => {
+    mockLevelingFixture({ ceiling: -22 });
     renderView(true);
     const user = userEvent.setup();
     await selectBaseOnly(user);
@@ -840,24 +865,42 @@ describe("LevelView — full leveling wizard e2e", () => {
       await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     await ackBackup(user);
-    await user.click(
-      await screen.findByRole("button", { name: "Start leveling" }),
-    );
-    const relevel = await screen.findByRole(
-      "button",
-      { name: /re-level clamped/i },
-      { timeout: 3000 },
-    );
-    await user.click(relevel);
-    // Re-level mode: Set up again, with no backup tick (already given).
+    await choose(user, "target:p0", "Lead");
+    await user.click(screen.getByRole("button", { name: "Start leveling" }));
     expect(
-      await screen.findByRole("heading", { name: /^Level \d+ sounds?$/ }),
+      await screen.findByText(
+        "Already at full volume, so it can't reach Lead. Choose a quieter target for it.",
+        undefined,
+        { timeout: 3000 },
+      ),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("checkbox", {
-        name: "I've backed up with Pro Control",
+      screen.getByRole("heading", {
+        name: "Nothing was leveled. 1 sound needs you.",
       }),
-    ).toBeNull();
+    ).toBeInTheDocument();
+    for (const old of [/re-level/i, /level lower/i, /try again/i])
+      expect(screen.queryByRole("button", { name: old })).toBeNull();
+
+    // Done → the list (the clamped sound was resolved, so it is unchosen; Plexi is still
+    // open) → choose it again → a quieter target → it levels.
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    await user.click(
+      await screen.findByRole("checkbox", {
+        name: "Choose Main sound in Plexi",
+      }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
+    );
+    await ackBackup(user);
+    await choose(user, "target:p0", "Rhythm");
+    await user.click(screen.getByRole("button", { name: "Start leveling" }));
+    expect(
+      await screen.findByText("1 sound leveled.", undefined, { timeout: 3000 }),
+    ).toBeInTheDocument();
+    const jobs = callsOf("level_preset").map((c) => c.job.target_lufs);
+    expect(jobs).toEqual([-19, -26]);
   });
 
   it("footswitch run dispatches level_footswitches_apply (not level_preset) and summarizes it leveled", async () => {
@@ -884,7 +927,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(screen.getAllByText("Solo").length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "Start leveling" }));
     expect(
-      await screen.findByText("All 1 sound match now.", undefined, {
+      await screen.findByText("1 sound leveled.", undefined, {
         timeout: 3000,
       }),
     ).toBeInTheDocument();
@@ -899,7 +942,8 @@ describe("LevelView — full leveling wizard e2e", () => {
   // ── BUG-3: a Stop pressed during the LAST item must mark the run stopped ──────
   // The last item was already in flight when Stop was pressed, so the top-of-loop
   // cancel check never sees it; the final publish must still read the cancel flag and
-  // report "stopped" (Continue, no auto-advance), not mislabel a finished run.
+  // report "stopped", not mislabel a finished run. Look B: a stopped run lands on the
+  // Summary straight away, and the Summary says it stopped.
   it("Stop during the last (only) item marks the run stopped, not finished (BUG-3)", async () => {
     let resolveLevel!: () => void;
     const gate = new Promise<void>((res) => {
@@ -910,8 +954,12 @@ describe("LevelView — full leveling wizard e2e", () => {
       get_store: () => RHYTHM_STORE,
       read_library_via_backup: () =>
         makeBackupRead({ total_rows: 1, presets: [STUDIO_CLEAN] }),
-      // The only item's leveling stays pending until the test resolves the gate.
-      level_preset: () => gate.then(() => levelResultStub()),
+      // The only item's leveling stays pending until the test resolves the gate, then
+      // answers the way the backend answers a Stop it saw: cancelled.
+      level_preset: () =>
+        gate.then(() =>
+          rejectWith({ kind: "cancelled", message: "cancelled" }),
+        ),
     });
     renderView(true);
     const user = userEvent.setup();
@@ -926,25 +974,34 @@ describe("LevelView — full leveling wizard e2e", () => {
     await user.click(
       await screen.findByRole("button", { name: "Start leveling" }),
     );
-    // The run is active on the only item; level_preset is still pending — press Stop.
-    await user.click(await screen.findByRole("button", { name: /^stop$/i }));
-    await user.click(await screen.findByRole("button", { name: /^stop$/i }));
-    // Now let the in-flight item finish. The loop exits and the final publish must
-    // report STOPPED (Continue), because the cancel flag was set mid-item.
-    resolveLevel();
-    expect(await screen.findByText("Leveling stopped")).toBeInTheDocument();
+    // The run is active on the only item; level_preset is still pending — press Stop
+    // and confirm it in the dialog.
+    await user.click(await screen.findByRole("button", { name: "Stop" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Stop leveling?",
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Stop" }));
     expect(
-      screen.getByRole("button", { name: /continue/i }),
+      await screen.findByText("Stopping after Main sound in Studio Clean"),
     ).toBeInTheDocument();
-    // It did NOT auto-advance to the summary.
-    expect(screen.queryByText(/match now/i)).toBeNull();
+    // Now let the in-flight item finish. The loop exits and the final publish must
+    // report STOPPED, because the cancel flag was set mid-item.
+    resolveLevel();
+    expect(
+      await screen.findByRole("heading", {
+        name: "Stopped. Nothing was leveled, 1 not reached.",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Leveling stopped")).toBeNull();
+    expect(screen.queryByRole("button", { name: /continue/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Try again (1)" })).toBeEnabled();
   });
 
-  // ── BUG-4: closing the wizard after a run deselects the leveled sounds ────────
-  // Re-level → Cancel used to leave the whole selection ticked, so the next Level
-  // re-ran everything. Closing after a run (Done OR Cancel) now prunes exactly the
-  // keys it leveled, accumulating across re-level rounds.
-  it("Re-level → Cancel deselects the already-leveled sounds (BUG-4)", async () => {
+  // ── BUG-4: closing the flow after a run deselects the leveled sounds ──────────
+  // Closing after a run used to leave the whole selection ticked, so the next Level
+  // re-ran everything. Done now prunes exactly the keys the runs leveled, accumulating
+  // across Try again rounds; a sound left over stays chosen.
+  it("Done after a run deselects the already-leveled sounds (BUG-4)", async () => {
     mockLevelingFixture({ clamped: true });
     renderView(true);
     const user = userEvent.setup();
@@ -956,17 +1013,11 @@ describe("LevelView — full leveling wizard e2e", () => {
     await user.click(
       await screen.findByRole("button", { name: "Start leveling" }),
     );
-    // Base clamped → "Re-level clamped…" reopens setup in re-level mode.
-    const relevel = await screen.findByRole(
-      "button",
-      { name: /re-level clamped/i },
-      { timeout: 3000 },
+    await user.click(
+      await screen.findByRole("button", { name: "Done" }, { timeout: 3000 }),
     );
-    await user.click(relevel);
-    await screen.findByRole("heading", { name: /^Level \d+ sounds?$/ });
-    // Cancel out of the re-level setup — the leveled sounds must be deselected, so the
-    // list returns to the empty prompt (NOT still offering "Level 3 sounds").
-    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    // The leveled sounds are deselected, so the list returns to the empty prompt (NOT
+    // still offering "Level 3 sounds").
     expect(
       await screen.findByText("Choose presets or sounds to level"),
     ).toBeInTheDocument();
@@ -999,16 +1050,26 @@ describe("LevelView — full leveling wizard e2e", () => {
     await user.click(
       await screen.findByRole("button", { name: "Start leveling" }),
     );
-    // The run finished (auto-advanced to the summary) despite the Base failure: exactly
-    // the failed row reports skipped, and the two FS scenes still leveled (data-loss
+    // The run finished (auto-advanced to the Summary) despite the Base failure: exactly
+    // the failed row needs you, and the two FS scenes still leveled (data-loss
     // regression guard — a partial failure must not sweep the whole run into "skipped").
-    await waitFor(
-      () => {
-        expect(screen.getAllByText("device dropped the level")).toHaveLength(1);
-      },
-      { timeout: 3000 },
-    );
-    expect(screen.getAllByText("−22.0").length).toBe(2);
+    // The backend's own reason goes to the log, never the screen.
+    expect(
+      await screen.findByRole(
+        "heading",
+        { name: "2 sounds leveled. 1 needs you." },
+        { timeout: 3000 },
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Couldn't level this sound, so its volume wasn't changed.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("On target")).toHaveLength(2);
+    expect(screen.queryByText("device dropped the level")).toBeNull();
+    // The main sound, and the two scenes its new level will move (owner answer 3).
+    expect(screen.getByRole("button", { name: "Try again (3)" })).toBeEnabled();
     expect(fired("level_scenes_apply_batched")).toBe(true);
   });
 });

@@ -2,10 +2,9 @@
 // presentational: levelRunStore (bound through useLevelingFlow) owns the state machine
 // and the device run.
 //
-// Set up is a page in the Level tab's content area (look B: `SetupPage`, under the
-// toolbar, no overlay). The run and the Summary still draw over the Level tab's body on
-// the full-bleed `LevelPage` (`zIndex: 40`, no backdrop at all — so the run can never be
-// dismissed by a stray click mid-device-write) until they become pages too.
+// Every stage is a look B page in the Level tab's content area, under the toolbar
+// (`FlowPage`): Set up (`SetupPage`), the run (`RunPage`, whose Stop asks first in a
+// dialog that a stray click can't dismiss) and the Summary (`SummaryPage`).
 
 import type { Stage } from "./wizardContext";
 import { SetupPage } from "../level/SetupPage";
@@ -13,13 +12,12 @@ import { RunPage } from "../level/RunPage";
 import { SummaryPage } from "../level/SummaryPage";
 import type { SelectOption } from "../../ui/selectValue";
 import type { SetupOption, SetupChoice, RunItem } from "../level/leveling";
-import type { RunState } from "../level/levelRunStore";
+import type { RunState, SummaryScenes } from "../level/levelRunStore";
 
 export interface LevelingWizardProps {
   stage: Exclude<Stage, "closed">;
   // setup inputs
   chosen: SetupOption[];
-  isRelevel: boolean;
   /** "None" + each instrument (`value` = profile id). */
   instrumentOptions: SelectOption[];
   /** The instruments with a recording. */
@@ -29,11 +27,14 @@ export interface LevelingWizardProps {
   /** The instrument saved for each preset (0-based list index → id). */
   savedInstruments: Partial<Record<number, string>>;
   defaultInst: string;
-  instrumentName: (id: string) => string;
-  /** Resolve a target name to its LUFS (the run table's Target column). */
+  /** Resolve a target name to its LUFS (the run's meter, the Summary's clamp side). */
   targetLufsByName: (name: string | null) => number;
-  /** The run's published state (the live meter is RunPage's own store read). */
+  /** The run on screen (the live meter is RunPage's own store read). */
   run: RunState;
+  /** Every sound the flow ran, with its latest result (the Summary's rows). */
+  results: RunItem[];
+  /** Footswitch scenes changed on the Summary. */
+  summaryScenes: SummaryScenes;
   // callbacks
   onCancel: () => void;
   /** Set up's commit: the configured sounds and the presets balanced first. */
@@ -42,8 +43,9 @@ export interface LevelingWizardProps {
   onInstrumentChange?: (slot: number, id: string) => void;
   onRunCancel: () => void;
   onRunComplete: () => void;
-  onAccept: () => void;
-  onRelevel: (subset: RunItem[]) => void;
+  onSummaryScene: (key: string, scene: number | null | undefined) => void;
+  onTryAgain: (keys: readonly string[]) => void;
+  onDone: () => void;
   /** Jump to Settings → Instruments ("Record yours in Settings"). */
   onCalibrate?: () => void;
 }
@@ -51,29 +53,29 @@ export interface LevelingWizardProps {
 export function LevelingWizard({
   stage,
   chosen,
-  isRelevel,
   instrumentOptions,
   recordedInstruments,
   targetNames,
   savedInstruments,
   defaultInst,
-  instrumentName,
   targetLufsByName,
   run,
+  results,
+  summaryScenes,
   onCancel,
   onStart,
   onInstrumentChange,
   onRunCancel,
   onRunComplete,
-  onAccept,
-  onRelevel,
+  onSummaryScene,
+  onTryAgain,
+  onDone,
   onCalibrate,
 }: LevelingWizardProps) {
   if (stage === "setup") {
     return (
       <SetupPage
         options={chosen}
-        isRelevel={isRelevel}
         instrumentOptions={instrumentOptions}
         recordedInstruments={recordedInstruments}
         targetNames={targetNames}
@@ -95,9 +97,8 @@ export function LevelingWizard({
         total={run.total}
         phase={run.phase}
         tailMessage={run.tailMessage}
-        instrumentName={instrumentName}
         targetLufsByName={targetLufsByName}
-        onCancel={onRunCancel}
+        onStop={onRunCancel}
         onComplete={onRunComplete}
       />
     );
@@ -105,10 +106,13 @@ export function LevelingWizard({
 
   return (
     <SummaryPage
-      items={run.items}
+      items={results}
       stopped={run.phase === "stopped"}
-      onAccept={onAccept}
-      onRelevel={onRelevel}
+      targetLufsByName={targetLufsByName}
+      sceneOverrides={summaryScenes}
+      onSceneChange={onSummaryScene}
+      onTryAgain={onTryAgain}
+      onDone={onDone}
     />
   );
 }

@@ -1,12 +1,19 @@
-// src/views/level/levelRunStore.ts — the leveling wizard's MODULE-SCOPED store.
+// src/views/level/levelRunStore.ts — the leveling flow's MODULE-SCOPED store.
 //
 // A leveling run outlives the Level tab: App renders only the active tab, so a tab switch
-// unmounts `LevelView` while the run keeps driving the device. The wizard state (stage,
-// chosen rows, run progress) and the run's own bookkeeping (running, stop
-// requested, the keys it leveled) therefore live HERE, not in component state — the
+// unmounts `LevelView` while the run keeps driving the device. The flow state (stage,
+// chosen rows, run progress, the Summary's rows) and the run's own bookkeeping (running,
+// stop requested, the keys it leveled) therefore live HERE, not in component state — the
 // `libraryScan` / `useLiveDevice` pattern. `useLevelingFlow` binds to this store with
 // `useSyncExternalStore`, so a remounted Level tab shows the live run with a working Stop,
 // and a second run cannot start while one is in flight.
+//
+// One flow can hold several runs: the first (from Set up) and any number of Summary
+// "Try again" runs (`retryLeveling`), each on the first run's own settings (`RunEnv`) and
+// with no Set up or backup tick in between. `run` is the run on screen (a Try again shows
+// only the sounds it tries again); `results` is every sound any run of the flow ran, in
+// run order, with its latest result — what the Summary lists. A run's rows merge back
+// into `results` by key when it ends.
 //
 // The engine itself (`runEngine`) is plain async code: this module feeds it the device
 // commands and applies the immutable patches it emits, so a published `RunState.items`
@@ -26,6 +33,7 @@ import {
   cancelFootswitchLeveling,
 } from "../../lib/invoke";
 import { onLive } from "../../lib/liveEvents";
+import { logError } from "../../lib/log";
 import { sortRunItems, type RunItem, type SetupOption } from "./leveling";
 import { applyPatches, runEngine, type EngineStep } from "./runEngine";
 import { IDLE_METER, pushLiveMeter, setLiveMeter } from "./liveMeterStore";
@@ -48,9 +56,10 @@ export interface RunState {
   phase: RunPhase;
   /** A batch-wide caption ("Saving…" / "Verifying…") from a `SceneLevelProgressItem.tail`
    *  (issue 6b) — the deferred-save/persist-verify phase AFTER every scene in the group
-   *  already resolved, so no row's own status can show it. `RunPage`'s header renders
-   *  this in preference while set. Cleared on the run's completion and whenever a NEW
-   *  row goes active, so it can't outlive the window it describes. */
+   *  already resolved, so no row's own status can show it. While set, `RunPage`'s now
+   *  line says the preset is finishing (the backend's own word is not shown). Cleared on
+   *  the run's completion and whenever a NEW row goes active, so it can't outlive the
+   *  window it describes. */
   tailMessage: string | null;
 }
 
@@ -62,22 +71,33 @@ const EMPTY_RUN: RunState = {
   tailMessage: null,
 };
 
-/** The whole wizard as the Level view renders it. */
+/** A footswitch's scene picked on the Summary for its Try again (0-based `scenes[]`
+ *  slot, or `null` = the main sound), keyed by the row's key. */
+export type SummaryScenes = Partial<Record<string, number | null>>;
+
+/** The whole flow as the Level view renders it. */
 export interface LevelFlowState {
-  /** `"closed"` ⇒ the wizard is not shown. */
+  /** `"closed"` ⇒ the flow is not shown. */
   stage: Stage;
   /** The Set-up rows. */
   chosen: SetupOption[];
-  /** Set up was reopened from the Summary for a re-run (hides the backup checkbox). */
-  isRelevel: boolean;
+  /** The run on screen (the latest one). */
   run: RunState;
+  /** Every sound a run of this flow ran, in run order, with its latest result — the
+   *  Summary's rows. Updated when a run ends. */
+  results: RunItem[];
+  /** Footswitch scenes changed on the Summary, waiting for Try again. */
+  summaryScenes: SummaryScenes;
 }
+
+const NO_SCENES: SummaryScenes = {};
 
 const INITIAL: LevelFlowState = {
   stage: "closed",
   chosen: [],
-  isRelevel: false,
   run: EMPTY_RUN,
+  results: [],
+  summaryScenes: NO_SCENES,
 };
 
 let state: LevelFlowState = INITIAL;
@@ -111,13 +131,15 @@ let cancelRequested = false;
 // Bumped by `resetLevelFlow` so a run still awaiting a command from before the reset can
 // never publish into the fresh state.
 let generation = 0;
-// BUG-4: once a run has leveled at least one sound, closing the wizard (Done OR Cancel)
-// must DESELECT exactly the keys it leveled — and ACCUMULATE them across re-level rounds
-// (each re-level run adds its keys here), so a Re-level→Cancel can't leave the whole
-// selection ticked and silently re-run everything next time. A Cancel BEFORE any run
-// leaves these empty, preserving the selection.
+// BUG-4: once a run has leveled at least one sound, closing the flow (Done) must DESELECT
+// exactly the keys it leveled — and ACCUMULATE them across Try again rounds (each run adds
+// its keys here), so the next Level can't silently re-run everything. A Cancel BEFORE any
+// run leaves these empty, preserving the selection.
 let didRun = false;
 let ranKeys = new Set<string>();
+// The first run's settings (instrument per sound via its rows, targets, candidates, the
+// two-amp choice): every Try again of the flow runs on exactly these.
+let flowEnv: RunEnv | null = null;
 // The mounted view's `refresh`, so a run that ends while the Level tab is remounted
 // refreshes the list the user is looking at, not the one that started the run.
 let boundRefresh: (() => Promise<void>) | null = null;
@@ -127,26 +149,39 @@ export function isLevelRunning(): boolean {
   return running;
 }
 
-/** Open Set up with `options` (`isRelevel`: reopened from the Summary). */
-export function openSetup(options: SetupOption[], isRelevel: boolean): void {
+/** Open Set up with `options`. */
+export function openSetup(options: SetupOption[]): void {
   if (running) return;
-  set({ chosen: options, isRelevel, stage: "setup" });
+  set({ chosen: options, stage: "setup" });
 }
 
-/** Close the wizard. Returns the keys a run leveled since it opened (BUG-4: the caller
+/** Close the flow. Returns the keys a run leveled since it opened (BUG-4: the caller
  *  deselects exactly these), or an empty list when nothing ran. Refused mid-run. */
 export function closeFlow(): string[] {
   if (running) return [];
   const keys = didRun ? [...ranKeys] : [];
   didRun = false;
   ranKeys = new Set();
-  set({ stage: "closed" });
+  flowEnv = null;
+  set({ stage: "closed", results: [], summaryScenes: NO_SCENES });
   return keys;
 }
 
-/** Run → Summary (auto on a natural finish, or via Continue after a manual stop). */
+/** Run → Summary after a natural finish (a Stop lands on the Summary on its own). */
 export function showSummary(): void {
   set({ stage: "summary" });
+}
+
+/** A footswitch's scene picked on its Summary row (`undefined` puts back the one used). */
+export function setSummaryScene(
+  key: string,
+  scene: number | null | undefined,
+): void {
+  const next: SummaryScenes = Object.fromEntries(
+    Object.entries(state.summaryScenes).filter(([k]) => k !== key),
+  );
+  if (scene !== undefined) next[key] = scene;
+  set({ summaryScenes: next });
 }
 
 export function bindRefresh(refresh: (() => Promise<void>) | null): void {
@@ -154,14 +189,14 @@ export function bindRefresh(refresh: (() => Promise<void>) | null): void {
 }
 
 /** Stop the run in place; levels already written stay saved. The in-flight command
- *  finishes, the loop breaks, and the final publish shows "Leveling stopped". */
+ *  finishes, the loop breaks, and the final publish lands on the Summary. */
 export function requestStop(): void {
   if (!running) return;
   cancelRequested = true;
   // Cancel all three lanes — the in-flight item is a base preset, a scene, OR a
   // footswitch, and cancelling the idle lanes is a harmless no-op. The backend bails at
-  // its seams (skipping apply+save); the ~6 s capture still finishes, so "Stopping…"
-  // reflects the current item winding down.
+  // its seams (skipping apply+save); the in-flight capture still winds down, so the run
+  // page says it is stopping after the current sound.
   void cancelPresetLeveling();
   void cancelSceneLeveling();
   void cancelFootswitchLeveling();
@@ -177,6 +212,7 @@ function clearFlow(): void {
   cancelRequested = false;
   didRun = false;
   ranKeys = new Set();
+  flowEnv = null;
   state = INITIAL;
   setLiveMeter(IDLE_METER);
   for (const cb of subs) cb();
@@ -184,7 +220,7 @@ function clearFlow(): void {
 
 /** The device went away. Every row and Summary action is keyed by list index, and the
  *  next connection can map a different preset there (a Pro Control reorder while
- *  unplugged), so a Re-level from the old Summary could write the wrong preset. Close
+ *  unplugged), so a Try again from the old Summary could write the wrong preset. Close
  *  the flow now when idle; a run in flight (or finishing) resets once it has ended. */
 export function onDeviceDetached(): void {
   if (running || finalizing) {
@@ -217,13 +253,95 @@ export interface RunEnv {
   refresh: () => Promise<void>;
 }
 
-/** Drive a run: publish its rows, let `runEngine` level them, then refresh the list and
- *  publish the terminal phase. A call while a run is in flight is ignored. */
+/** The run's rows merged back into the flow's: a row the flow already holds is replaced
+ *  in place (its run-order position kept), a new one is appended. */
+function mergeResults(
+  results: readonly RunItem[],
+  ran: readonly RunItem[],
+): RunItem[] {
+  const byKey = new Map(ran.map((r) => [r.key, r]));
+  const merged = results.map((r) => byKey.get(r.key) ?? r);
+  const known = new Set(results.map((r) => r.key));
+  return [...merged, ...ran.filter((r) => !known.has(r.key))];
+}
+
+/** One line in the app's log for each sound a run could not level and for a run that may
+ *  have left re-amp on, in the backend's own words: the screen says what happened in plain
+ *  words and never shows them, so this is where a bug report finds them. */
+function logRunProblems(items: readonly RunItem[]): void {
+  for (const it of items) {
+    if (it.outcome === "skipped" && it.skipKind !== "cancelled")
+      logError(
+        `Leveling skipped ${it.presetName} · ${it.sceneName} (${it.skipKind ?? "other"}): ${it.skipReason ?? "no reason given"}`,
+      );
+  }
+  const stuck = items.find((it) => it.reampStillOn === true);
+  if (stuck)
+    logError(
+      `Leveling ended with re-amp possibly still on (${stuck.presetName}): ${stuck.reampWarning ?? "no warning text"}`,
+    );
+}
+
+/** Start the flow's first run (Set up's Start): publish its rows, let `runEngine` level
+ *  them, then refresh the list and publish the terminal phase. Its `env` is kept for the
+ *  flow's Try again runs. A call while a run is in flight is ignored. */
 export async function runLeveling(
   items: RunItem[],
   env: RunEnv,
 ): Promise<void> {
   if (running) return;
+  flowEnv = env;
+  set({ results: [], summaryScenes: NO_SCENES });
+  await drive(items, env, []);
+}
+
+/** The Summary's "Try again": run the flow's rows `keys` again straight away, on the first
+ *  run's settings (no Set up, no backup tick — it was given for this flow), each footswitch
+ *  in the scene picked for it on the Summary, then come back to the same Summary with
+ *  their rows updated. Ignored mid-run or with no earlier run. */
+export async function retryLeveling(keys: readonly string[]): Promise<void> {
+  if (running || !flowEnv) return;
+  const want = new Set(keys);
+  const scenes = state.summaryScenes;
+  const items: RunItem[] = state.results
+    .filter((r) => want.has(r.key))
+    .map((r) => {
+      const scene = scenes[r.key];
+      return {
+        key: r.key,
+        slot: r.slot,
+        presetName: r.presetName,
+        isBase: r.isBase,
+        sceneSlot: r.sceneSlot,
+        sceneName: r.sceneName,
+        footswitch:
+          r.footswitch != null && scene !== undefined
+            ? { ...r.footswitch, sceneContext: scene }
+            : (r.footswitch ?? null),
+        instId: r.instId,
+        targetName: r.targetName,
+        status: "queued",
+        handle: r.handle,
+        baseHandle: r.baseHandle,
+        silenceHint: r.silenceHint,
+      };
+    });
+  if (items.length === 0) return;
+  set({ summaryScenes: NO_SCENES });
+  await drive(
+    items,
+    flowEnv,
+    state.results.filter((r) => r.isBase),
+  );
+}
+
+/** Drive one run of the flow. A Stop lands on the Summary as soon as the run has wound
+ *  down; a natural finish leaves the run page to show its last row for a beat first. */
+async function drive(
+  items: RunItem[],
+  env: RunEnv,
+  earlierBaseRows: readonly RunItem[],
+): Promise<void> {
   running = true;
   cancelRequested = false;
   didRun = true;
@@ -235,7 +353,7 @@ export async function runLeveling(
 
   // The live meter follows THIS run only: subscribed here, dropped in the finally.
   const unlistenLufs = onLive("levelingLufs", (e) => {
-    if (live()) pushLiveMeter(e.lufs, e.momentary);
+    if (live()) pushLiveMeter(e.lufs);
   });
 
   // Presets in first-appearance order, each preset's rows in `runRank` dependency
@@ -276,6 +394,7 @@ export async function runLeveling(
       work,
       {
         ...env,
+        earlierBaseRows,
         levelPreset,
         listLevelBlocks,
         levelScenesApplyBatched,
@@ -299,12 +418,15 @@ export async function runLeveling(
       finalizing = true;
       cancelRequested = false;
       setLiveMeter(IDLE_METER);
+      logRunProblems(state.run.items);
       await (boundRefresh ?? env.refresh)(); // non-throwing: runLoad catches into the error phase
       if (live() && resetOnDetach) {
         clearFlow();
       } else if (live()) {
         finalizing = false;
         set({
+          ...(stopped ? { stage: "summary" as const } : {}),
+          results: mergeResults(state.results, state.run.items),
           run: {
             ...state.run,
             currentIndex: total,

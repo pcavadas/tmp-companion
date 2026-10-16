@@ -4,11 +4,9 @@
 // footswitch, the scene it is leveled in; one instrument per PRESET; and the presets whose
 // two amps are balanced first. Everything a row shows is derived from that state plus the
 // data the backup scan already read (candidates, scene drives, footswitch scene
-// suggestions), so every dropdown shows exactly what the run will use.
-//
-// A re-run row (reopened from the Summary) carries the instrument, target and knob it was
-// leveled with, and Set up seeds from them — only values the dropdowns still offer are
-// kept, so a dropdown never shows one thing while the run gets another (danger.md).
+// suggestions), so every dropdown shows exactly what the run will use. A preset's
+// instrument starts from the one saved for it, kept only while the dropdown still offers
+// it, so a dropdown never shows one thing while the run gets another (danger.md).
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
@@ -103,7 +101,6 @@ export const targetForAllValue = (name: string): string => `t:${name}`;
 
 export interface UseSetupRowsArgs {
   options: SetupOption[];
-  isRelevel: boolean;
   /** "None" + each instrument (`value` = profile id). */
   instrumentOptions: readonly SelectOption[];
   /** The configured targets' names, in their order. */
@@ -121,7 +118,6 @@ const footswitchNumber = (o: SetupOption): number =>
 
 export function useSetupRows({
   options,
-  isRelevel,
   instrumentOptions,
   targetNames,
   savedInstruments,
@@ -149,14 +145,12 @@ export function useSetupRows({
 
   const offersInst = (id: string | undefined): id is string =>
     id !== undefined && instrumentOptions.some((o) => o.value === id);
-  const offersTarget = (name: string | undefined): name is string =>
-    name !== undefined && targetNames.includes(name);
 
   const [rows, setRows] = useState<Partial<Record<string, RowState>>>(() => {
     const m: Partial<Record<string, RowState>> = {};
     options.forEach((o) => {
       m[o.key] = {
-        target: offersTarget(o.targetName) ? o.targetName : undefined,
+        target: undefined,
         handle:
           o.footswitch != null
             ? {
@@ -167,12 +161,8 @@ export function useSetupRows({
             : o.isBase
               ? (o.baseHandle ?? null)
               : (o.sceneHandle ?? undefined),
-        // A re-run footswitch keeps the scene it was measured in. A fresh row stays
-        // unset and resolves to the preset's suggested scene.
-        sceneContext:
-          isRelevel && o.footswitch != null
-            ? o.footswitch.sceneContext
-            : undefined,
+        // Unset: a footswitch resolves to the preset's suggested scene.
+        sceneContext: undefined,
       };
     });
     return m;
@@ -184,18 +174,13 @@ export function useSetupRows({
     });
   };
 
-  // One instrument per preset: the one a re-run was leveled with, else the one saved for
-  // the preset, else the default — only an instrument the dropdown still offers.
+  // One instrument per preset: the one saved for the preset, else the default — only an
+  // instrument the dropdown still offers.
   const [insts, setInsts] = useState<Partial<Record<number, string>>>(() => {
     const m: Partial<Record<number, string>> = {};
     presets.forEach((g) => {
-      const carried = g.opts.find((o) => o.instId !== undefined)?.instId;
       const saved = savedInstruments[g.slot];
-      m[g.slot] = offersInst(carried)
-        ? carried
-        : offersInst(saved)
-          ? saved
-          : defaultInst;
+      m[g.slot] = offersInst(saved) ? saved : defaultInst;
     });
     return m;
   });
@@ -216,19 +201,10 @@ export function useSetupRows({
   const { prefetch: fetchFsContextFor, contextFor } =
     useFootswitchSceneContexts();
 
-  // A footswitch's scenes and knobs ride its option; a re-run row lacks them, so they
-  // come from the backup scan instead.
-  const sceneNamesOf = (o: SetupOption): string[] =>
-    o.fsSceneNames ?? (lib.sceneInfo.get(o.slot) ?? []).map((sc) => sc.name);
-  const levelParamsOf = (o: SetupOption): LevelParamCandidate[] => {
-    if (o.levelParams) return o.levelParams;
-    const sw = o.footswitch?.switchIndex;
-    return (
-      (lib.allFootswitchesByIndex.get(o.slot) ?? []).find(
-        (f) => f.switch === sw,
-      )?.level_params ?? []
-    );
-  };
+  // A footswitch's scenes and knobs ride its option (`chosenFrom`).
+  const sceneNamesOf = (o: SetupOption): string[] => o.fsSceneNames ?? [];
+  const levelParamsOf = (o: SetupOption): LevelParamCandidate[] =>
+    o.levelParams ?? [];
 
   // Warm every preset's candidates the backup scan already holds (provably no device
   // read — `hasBackupData`), so the dropdowns open on their lists.
@@ -242,23 +218,18 @@ export function useSetupRows({
   // A footswitch's default scene is the preset's suggested one, so resolve it for every
   // footswitch row of a preset with scenes as Set up opens — never on a dropdown click,
   // or the same selection could level a switch in different scenes. Answered off the
-  // backup scan; a device read only for a preset the scan has no entry for. A re-run row
-  // already carries its scene.
+  // backup scan; a device read only for a preset the scan has no entry for.
   const fsSlots = useMemo(
-    () =>
-      isRelevel
-        ? []
-        : [
-            ...new Set(
-              options
-                .filter(
-                  (o) =>
-                    o.footswitch != null && (o.fsSceneNames ?? []).length > 0,
-                )
-                .map((o) => o.slot),
-            ),
-          ],
-    [options, isRelevel],
+    () => [
+      ...new Set(
+        options
+          .filter(
+            (o) => o.footswitch != null && (o.fsSceneNames ?? []).length > 0,
+          )
+          .map((o) => o.slot),
+      ),
+    ],
+    [options],
   );
   useEffect(() => {
     fsSlots.forEach(fetchFsContextFor);
@@ -398,14 +369,13 @@ export function useSetupRows({
   };
 
   // Rows in run order (`runRank`): a footswitch leveled in a scene runs after the scenes.
-  // Ranked by the switch's DEFAULT scene (the suggestion, or a re-run's own), never by a
-  // later pick, so a row never jumps away under the pointer.
+  // Ranked by the switch's DEFAULT scene (the suggestion), never by a later pick, so a row
+  // never jumps away under the pointer.
   const rankOf = (o: SetupOption): number => {
     const fsw = o.footswitch;
     if (fsw == null) return runRank(o);
-    const sceneContext = isRelevel
-      ? fsw.sceneContext
-      : sceneNamesOf(o).length > 0
+    const sceneContext =
+      sceneNamesOf(o).length > 0
         ? (fsSuggestedFor(o) ?? fsw.sceneContext)
         : null;
     return runRank({ isBase: o.isBase, footswitch: { sceneContext } });
@@ -491,10 +461,7 @@ export function useSetupRows({
   } => {
     const byKey = new Map(options.map((o) => [o.key, o]));
     const choices = buildSetupChoices(
-      // A re-run footswitch's knobs come from the scan, so a knob picked on it is kept.
-      options.map((o) =>
-        o.footswitch != null ? { ...o, levelParams: levelParamsOf(o) } : o,
-      ),
+      options,
       (key) => {
         const o = byKey.get(key);
         if (!o) return undefined;

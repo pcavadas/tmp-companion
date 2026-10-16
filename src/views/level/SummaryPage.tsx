@@ -1,601 +1,147 @@
-// src/views/level/SummaryPage.tsx — the leveling wizard's "Summary" stage (design
-// handoff 1a: full window, one row per preset).
+// src/views/level/SummaryPage.tsx — the leveling Summary, a page under the toolbar (look B).
 //
-// Reports a run's outcome, grouped by PRESET (`PresetGroupRow`) — any preset that came
-// back with a problem opens itself (`useGroupOpen`); the user can override any row on
-// top of that. Sounds land in one of five classes, ordered by the action they need:
-//   • offbranch    — the amp doesn't reach the USB 1/2 capture; only a ROUTING change
-//     on the unit fixes it (a re-level can't).
-//   • clamped      — headroom: already as loud as the preset allows.
-//   • unconverged  — off target with knob room LEFT: the same target re-run improves
-//     it (measurement ran out of tries, not of headroom).
-//   • done         — hit target; may carry a "by ear" caveat.
-//   • skipped      — couldn't be read/leveled.
-// A stopped run can leave items un-leveled (no outcome).
+// Top to bottom: the title says the outcome ("4 sounds leveled. 4 need you.", "All 6
+// sounds leveled." with "Everything is saved on your Tone Master Pro.", "Stopped. …") with
+// the flow's Steps; at most one Notice (re-amp may still be on, or a message two or more
+// sounds share); then the sections "Need you", "Not reached" and "Leveled", each one Group
+// of rows in run order under its label (no label when it is the only section); and the
+// Footer: "Try again (N)" when another run can fix something, then "Done".
 //
-// No revert of any kind lives here (design 1a, user directive): the backup-
-// acknowledgment checkbox in Set up is the one revert path — restore from your Pro
-// Control backup. The gain-budget redistribution / common-target / headroom-trade
-// disclosure features are gone from the wizard entirely; a clamped row's message is
-// always the one generic sentence below, regardless of clamp cause.
-//
-// ONE exception: a base row's `baseBoost` (Phase 2, the plumes/BD2/OCD-class regression
-// fix). Unlike the removed trade disclosure, this reports a PERMANENT change to the saved
-// preset (danger.md: a save cannot be undone from the app) — the amp's own output level,
-// not just presetLevel — so it earns its own sentence regardless of the row's outcome
-// (`applied: true` most often lands on a `done` row, not a clamped one).
+// Everything is already saved, so the main button is always "Done" (it closes the flow and
+// unchooses on the list what the runs resolved). "Try again (N)" runs those sounds again
+// at once with the same settings — no Set up, no backup tick — and comes back to this
+// Summary with their rows updated. A sound that can't reach its target says so and what to
+// change, with no button. What each row says is `summaryModel`'s, from typed fields only.
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 
+import { getLibraryScan, subscribeLibraryScan } from "../../device/libraryScan";
 import { useTheme } from "../../theme/ThemeContext";
-import { Button } from "../../ui/primitives";
-import { Icon } from "../../ui/Icon";
-import { Tag } from "../../ui/Tag";
-import { LevelPage } from "./LevelPage";
-import { PresetGroupList } from "./PresetGroupList";
-import { PresetGroupRow } from "./PresetGroupRow";
-import { useGroupOpen } from "./useGroupOpen";
-import { ByEarChip } from "../overlays/ByEarChip";
-import { fmtLufs } from "../../lib/format";
-import { GuidanceBanner } from "./GuidanceBanner";
-import { SoundRowShell } from "./SoundRowShell";
-import {
-  groupItemsBySlot,
-  offbranchStatus,
-  OUTCOME_TONE,
-  type RunItem,
-} from "./leveling";
-import type { BaseBoostSummary } from "../../lib/types";
-
-const TRUE_PEAK_WARN_DBTP = -1;
-
-const truePeakWarn = (it: RunItem): boolean =>
-  it.isBase &&
-  (it.outcome === "done" || it.outcome === "clamped") &&
-  it.truePeakDbtp != null &&
-  it.truePeakDbtp > TRUE_PEAK_WARN_DBTP;
-
-const byEarOf = (it: RunItem): RunItem["verifyByEar"] =>
-  it.outcome === "done" || it.outcome === "clamped"
-    ? it.verifyByEar
-    : undefined;
-
-type ProblemKey =
-  "clamped" | "unconverged" | "offbranch" | "skipped" | "notrun";
-
-interface Problem {
-  short: string;
-  msg: string;
-  fix?: string;
-}
-
-const PROBLEM: Record<ProblemKey, (it: RunItem) => Problem> = {
-  clamped: () => ({
-    short: "as loud as it goes",
-    msg: "The knob is already all the way up. A quieter target would let this one match.",
-    fix: "Level lower",
-  }),
-  unconverged: (it) =>
-    it.unverified
-      ? {
-          short: "not confirmed",
-          msg: "We set it, but the check measurement failed, so we couldn’t confirm it landed. Running it again usually confirms it.",
-          fix: "Run again",
-        }
-      : {
-          short: "off target",
-          msg: "It had room left but ran out of tries. Running it again usually finishes the job.",
-          fix: "Run again",
-        },
-  offbranch: (it) => {
-    const status = offbranchStatus(it.silenceHint);
-    return {
-      short: "can’t hear it",
-      msg:
-        status === "amp output at zero"
-          ? "The amp’s output level is saved at 0. Raise it on the unit, then re-level."
-          : status === "exp pedal may mute"
-            ? "A pedal controls the amp’s output, with zero at one end. Park it at the other end, then re-level."
-            : "Nothing came through USB 1/2, so we couldn’t hear this one.",
-    };
-  },
-  // The backend's own reason when one came over the progress channel (a scene-write
-  // policy refusal, a per-scene failure) — the generic read-failed copy only when none did.
-  skipped: (it) => ({
-    short: it.skipReason ? "skipped" : "couldn’t read it",
-    msg: it.skipReason ?? "We couldn’t read this one from the unit.",
-    fix: "Retry",
-  }),
-  notrun: () => ({
-    short: "not run",
-    msg: "Stopped before this one was reached.",
-  }),
-};
-
-/** The problem key for a row's outcome, or null when it matched — a single mapping
- *  shared by the row-detail render and the color lookup, so the two can't drift. */
-function problemKeyOf(it: RunItem): ProblemKey | null {
-  if (it.outcome === "clamped") return "clamped";
-  if (it.outcome === "unconverged") return "unconverged";
-  if (it.outcome === "offbranch") return "offbranch";
-  if (it.outcome === "skipped") return "skipped";
-  if (it.outcome == null) return "notrun";
-  return null;
-}
-
-function problemFor(
-  it: RunItem,
-  colorOf: (key: ProblemKey) => string,
-): (Problem & { color: string }) | null {
-  const key = problemKeyOf(it);
-  if (!key) return null;
-  return { ...PROBLEM[key](it), color: colorOf(key) };
-}
-
-/** The one-sentence base-boost disclosure (see the module header's exception note), per the
- *  agreed wording: "Turned this preset up as far as it goes and raised the amp's output from
- *  0.28 to 0.51 to reach the target." (`applied: false` => "would raise…").
- *  Only the SECOND verb flips on `applied: false` —
- *  `presetLevel`'s own raise to its ceiling already ran (and, when `opts.save` is set,
- *  persisted) in both branches; it's only the base amp fader's move that stayed unsolved.
- *  Either way the amplitude comes from `base_amps[0]` to 2 decimals — on `applied: false`
- *  that's the planner's SEED (`LevelPairPlan.fader_target`), not a solved prediction; the agreed
- *  sentence names concrete before/after numbers even in the unapplied case.
- *  `base_amps` is documented as "exactly one element" (`headroom_trade::BaseBoostSummary`'s own
- *  doc) — never observed empty — but an array index is `T | undefined`, so `null` (render
- *  nothing) is the honest answer for a `base_amps` that came back empty rather than assuming
- *  the invariant and indexing into it unchecked. */
-function baseBoostSentence(b: BaseBoostSummary): string | null {
-  const amp = b.base_amps.length > 0 ? b.base_amps[0] : undefined;
-  if (!amp) return null;
-  const from = amp.previous_value.toFixed(2);
-  const to = amp.value != null ? amp.value.toFixed(2) : from;
-  return b.applied
-    ? `Turned this preset up as far as it goes and raised the amp’s output from ${from} to ${to} to reach the target.`
-    : `Turned this preset up as far as it goes and would raise the amp’s output from ${from} to ${to} to reach the target.`;
-}
-
-/** The shared wrapper for a row-level disclosure line under a preset row — the problem
- *  footnote (`q`) and the base-boost sentence both render one of these; only their CHILDREN
- *  (an optional leading icon, the sentence, an optional "fix" link) differ. */
-function DisclosureRow({ children }: { children: ReactNode }) {
-  const { t } = useTheme();
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: t.space6,
-        padding: "0 0 4px 26px",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
+import { sectionLabel } from "../../theme/tokens";
+import { Footer } from "../../ui/Footer";
+import { Group } from "../../ui/List";
+import { Button, Notice } from "../../ui/primitives";
+import { FlowPage } from "./FlowPage";
+import { SummaryRow } from "./SummaryRow";
+import { setupRowHookKey, type RunItem } from "./leveling";
+import { buildSummary } from "./summaryModel";
 
 export interface SummaryPageProps {
+  /** Every sound a run of the flow ran, with its latest result, in run order. */
   items: RunItem[];
+  /** The last run ended by a Stop. */
   stopped: boolean;
-  onAccept: () => void;
-  onRelevel: (subset: RunItem[]) => void;
+  targetLufsByName: (name: string | null) => number;
+  /** Footswitch scenes changed here, waiting for Try again. */
+  sceneOverrides: Partial<Record<string, number | null>>;
+  /** A footswitch's scene picked on its row (`undefined`: back to the one used). */
+  onSceneChange: (key: string, scene: number | null | undefined) => void;
+  onTryAgain: (keys: readonly string[]) => void;
+  onDone: () => void;
 }
 
 export function SummaryPage({
   items,
   stopped,
-  onAccept,
-  onRelevel,
+  targetLufsByName,
+  sceneOverrides,
+  onSceneChange,
+  onTryAgain,
+  onDone,
 }: SummaryPageProps) {
   const { t } = useTheme();
+  const lib = useSyncExternalStore(subscribeLibraryScan, getLibraryScan);
 
-  const colorOf = (key: ProblemKey): string => t[OUTCOME_TONE[key]];
-
-  const offbr = items.filter((it) => it.outcome === "offbranch");
-  const offbrAmpZero = offbr.filter((it) => it.silenceHint === "amp_zero");
-  const offbrExpMute = offbr.filter((it) => it.silenceHint === "exp_mute");
-  const offbrRouting = offbr.filter((it) => it.silenceHint == null);
-  const clamped = items.filter((it) => it.outcome === "clamped");
-  const unconverged = items.filter((it) => it.outcome === "unconverged");
-  const leveled = items.filter((it) => it.outcome === "done");
-  const skipped = items.filter((it) => it.outcome === "skipped");
-  const notrun = items.filter((it) => it.outcome == null);
-  // The run-end re-amp OFF could not be read back: one banner for the whole run, in the
-  // backend's own words (`leveller::REAMP_STILL_ON_WARNING`).
-  const reampWarning =
-    items.find((it) => it.reampWarning)?.reampWarning ?? null;
-  const total = items.length;
-  const allGood =
-    offbr.length === 0 &&
-    clamped.length === 0 &&
-    unconverged.length === 0 &&
-    skipped.length === 0 &&
-    notrun.length === 0 &&
-    !stopped;
-
-  const byEarReasons: string[] = [];
-  if (items.some((it) => byEarOf(it) === "envelope"))
-    byEarReasons.push(
-      "an envelope filter responds to the test signal differently than to real playing",
-    );
-  if (items.some((it) => byEarOf(it) === "wet_floor"))
-    byEarReasons.push("floored at 25% of its designed mix");
-  if (items.some((it) => byEarOf(it) === "rebalance"))
-    byEarReasons.push("parallel amps balanced by approximate isolation");
-
-  const groups = useMemo(() => groupItemsBySlot(items), [items]);
-  const badSlots = useMemo(
-    () => [
-      ...new Set(
-        items.filter((it) => it.outcome !== "done").map((it) => it.slot),
-      ),
-    ],
-    [items],
+  const summary = useMemo(
+    () =>
+      buildSummary(items, {
+        stopped,
+        targetLufsByName,
+        sceneNamesOf: (slot) =>
+          (lib.sceneInfo.get(slot) ?? []).map((sc) => sc.name),
+        enablingScenesOf: (slot, sw) =>
+          lib.fsSceneContextsByIndex.get(slot)?.find((r) => r.switch === sw)
+            ?.enablingScenes ?? null,
+        sceneOverrides,
+        hookKeyOf: setupRowHookKey,
+      }),
+    [items, stopped, targetLufsByName, lib, sceneOverrides],
   );
-  const [isOpen, toggle] = useGroupOpen(badSlots);
+  const n = summary.retryKeys.length;
 
-  const title = stopped
-    ? `Stopped — ${String(leveled.length)} sound${leveled.length === 1 ? "" : "s"} match`
-    : allGood
-      ? `All ${String(total)} sound${total === 1 ? "" : "s"} match now.`
-      : `${String(leveled.length)} sound${leveled.length === 1 ? "" : "s"} match now. ${String(total - leveled.length)} need${total - leveled.length === 1 ? "s" : ""} you.`;
-  const sub = allGood
-    ? "Every sound sits at the same loudness, and each one is saved."
-    : "Each one below says why and what to try.";
+  const onScene = (key: string, value: string) => {
+    const row = summary.sections
+      .flatMap((s) => s.rows)
+      .find((r) => r.scene?.key === key);
+    if (!row?.scene) return;
+    onSceneChange(
+      key,
+      value === row.scene.used
+        ? undefined
+        : value === "base"
+          ? null
+          : Number(value),
+    );
+  };
 
   return (
-    <LevelPage
+    <FlowPage
+      title={summary.title}
+      subtitle={summary.subtitle ?? undefined}
       step={2}
-      title={title}
-      sub={sub}
-      footerLeft={<span />}
-      footerRight={
-        <>
-          {clamped.length > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="refresh"
-              onClick={() => {
-                onRelevel(clamped);
-              }}
-              style={{ height: 32, padding: `0 ${String(t.space7)}px` }}
-            >
-              Re-level clamped…
-            </Button>
-          )}
-          {unconverged.length > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="refresh"
-              onClick={() => {
-                onRelevel(unconverged);
-              }}
-              style={{ height: 32, padding: `0 ${String(t.space7)}px` }}
-            >
-              Re-run off target…
-            </Button>
-          )}
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={onAccept}
-            style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
-          >
-            {allGood ? "Done" : "Accept"}
-          </Button>
-        </>
-      }
-    >
-      {(reampWarning !== null ||
-        offbrAmpZero.length > 0 ||
-        offbrExpMute.length > 0 ||
-        offbrRouting.length > 0 ||
-        clamped.length > 0) && (
-        <div
-          style={{
-            flexShrink: 0,
-            display: "flex",
-            flexDirection: "column",
-            gap: t.space4,
-          }}
-        >
-          {reampWarning !== null && (
-            <GuidanceBanner
-              icon="warn-tri"
-              tone="warn"
-              heading="Re-amp may still be on"
-            >
-              {reampWarning}
-            </GuidanceBanner>
-          )}
-          {offbrAmpZero.length > 0 && (
-            <GuidanceBanner icon="x" tone="warn" heading="Amp output at zero">
-              The amp’s output level is saved at{" "}
-              <strong style={{ color: t.ink }}>0</strong>. Raise it on the unit,
-              then re-level.
-            </GuidanceBanner>
-          )}
-          {offbrExpMute.length > 0 && (
-            <GuidanceBanner
-              icon="x"
-              tone="warn"
-              heading="Expression pedal may be muting"
-            >
-              A pedal controls the amp’s output, with zero at one end. Park it
-              at the <strong style={{ color: t.ink }}>other end</strong>, then
-              re-level.
-            </GuidanceBanner>
-          )}
-          {offbrRouting.length > 0 && (
-            <GuidanceBanner
-              icon="x"
-              tone="warn"
-              heading="Needs routing on the unit"
-            >
-              Route {offbrRouting.length === 1 ? "it" : "them"} to{" "}
-              <strong style={{ color: t.ink }}>USB 1/2</strong> on the unit, or
-              set the level by ear. Re-leveling won’t help.
-            </GuidanceBanner>
-          )}
-          {clamped.length > 0 && (
-            <GuidanceBanner
-              icon="warn-tri"
-              tone="sevWarn"
-              heading="Clamped — already maxed"
-            >
-              The knob is already all the way up. A quieter target would let
-              these match.
-            </GuidanceBanner>
-          )}
-        </div>
-      )}
-
-      <PresetGroupList
-        label={`${String(groups.length)} preset${groups.length === 1 ? "" : "s"} · ${String(total)} sound${total === 1 ? "" : "s"}`}
-      >
-        {groups.map((g) => {
-          const bad = g.items.filter((it) => it.outcome !== "done");
-          const isBad = bad.length > 0;
-          const p = isBad ? problemFor(bad[0], colorOf) : null;
-          return (
-            <PresetGroupRow
-              key={g.slot}
-              slot={g.slot}
-              name={g.name}
-              open={isOpen(g.slot)}
-              onToggle={() => {
-                toggle(g.slot);
-              }}
-              glyph={
-                isBad ? (
-                  <Icon
-                    name="warn-tri"
-                    size={14}
-                    stroke={p?.color ?? t.sevWarn}
-                    strokeWidth={1.7}
-                  />
-                ) : (
-                  <Icon
-                    name="check"
-                    size={14}
-                    stroke={t.good}
-                    strokeWidth={2}
-                  />
-                )
-              }
-              tag={
-                <span
-                  style={{
-                    fontFamily: t.mono,
-                    fontSize: 9.5,
-                    letterSpacing: "0.07em",
-                    color: isBad ? (p?.color ?? t.sevWarn) : t.good,
+      footer={
+        <Footer
+          right={
+            <>
+              {n > 0 && (
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  onClick={() => {
+                    onTryAgain(summary.retryKeys);
                   }}
                 >
-                  {isBad
-                    ? `${String(bad.length)} need${bad.length === 1 ? "s" : ""} you`
-                    : "all matched"}
-                </span>
-              }
-              note=""
-              value={
-                isBad
-                  ? `${String(g.items.length - bad.length)} of ${String(g.items.length)}`
-                  : "matched"
-              }
-              valueColor={isBad ? t.sevWarn : t.good}
-            >
-              {g.items.map((it) => {
-                const q = problemFor(it, colorOf);
-                const boostSentence = it.baseBoost
-                  ? baseBoostSentence(it.baseBoost)
-                  : null;
-                return (
-                  <div
-                    key={it.key}
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: t.space2,
-                      padding: `${String(t.space2)}px 0`,
-                    }}
-                  >
-                    <SoundRowShell
-                      name={it.sceneName}
-                      glyph={
-                        q ? (
-                          <Icon
-                            name="warn-tri"
-                            size={13}
-                            stroke={q.color}
-                            strokeWidth={1.7}
-                          />
-                        ) : (
-                          <Icon
-                            name="check"
-                            size={13}
-                            stroke={t.good}
-                            strokeWidth={2}
-                          />
-                        )
-                      }
-                    >
-                      {byEarOf(it) && <ByEarChip />}
-                      {truePeakWarn(it) && (
-                        <span
-                          title={`predicted ${fmtLufs(it.truePeakDbtp)} dBTP at the leveled setting`}
-                        >
-                          <Tag tone="warn">may clip</Tag>
-                        </span>
-                      )}
-                      <span
-                        style={{
-                          width: 96,
-                          textAlign: "right",
-                          flexShrink: 0,
-                          fontFamily: t.sans,
-                          fontSize: 12,
-                          color: q ? q.color : t.good,
-                          marginLeft: "auto",
-                        }}
-                      >
-                        {q ? q.short : "matched"}
-                      </span>
-                      <span
-                        style={{
-                          width: 56,
-                          textAlign: "right",
-                          flexShrink: 0,
-                          fontFamily: t.mono,
-                          fontSize: 11.5,
-                          fontVariantNumeric: "tabular-nums",
-                          color: q ? t.faint : t.good,
-                        }}
-                      >
-                        {fmtLufs(it.value)}
-                      </span>
-                    </SoundRowShell>
-                    {q && (
-                      <DisclosureRow>
-                        <span
-                          style={{
-                            flex: 1,
-                            minWidth: 0,
-                            fontFamily: t.sans,
-                            fontSize: 12.5,
-                            lineHeight: 1.5,
-                            color: q.color,
-                            textWrap: "pretty",
-                          }}
-                        >
-                          {q.msg}
-                        </span>
-                        {q.fix &&
-                          (it.outcome === "clamped" ||
-                            it.outcome === "unconverged" ||
-                            it.outcome === "skipped") && (
-                            <Button
-                              variant="bare"
-                              onClick={() => {
-                                onRelevel([it]);
-                              }}
-                              style={{
-                                flexShrink: 0,
-                                fontFamily: t.sans,
-                                fontSize: 12.5,
-                                color: t.accentDeep,
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              {q.fix}
-                            </Button>
-                          )}
-                      </DisclosureRow>
-                    )}
-                    {boostSentence && (
-                      <DisclosureRow>
-                        <span style={{ flexShrink: 0, paddingTop: 1 }}>
-                          <Icon
-                            name="info"
-                            size={12}
-                            stroke={t.accentDeep}
-                            strokeWidth={1.7}
-                          />
-                        </span>
-                        <span
-                          style={{
-                            flex: 1,
-                            minWidth: 0,
-                            fontFamily: t.sans,
-                            fontSize: 12.5,
-                            lineHeight: 1.5,
-                            color: t.mutedInk,
-                            textWrap: "pretty",
-                          }}
-                        >
-                          {boostSentence}
-                        </span>
-                      </DisclosureRow>
-                    )}
-                  </div>
-                );
-              })}
-            </PresetGroupRow>
-          );
-        })}
-      </PresetGroupList>
-
-      {byEarReasons.length > 0 && (
-        <div
+                  {`Try again (${String(n)})`}
+                </Button>
+              )}
+              <Button variant="primary" size="lg" onClick={onDone}>
+                Done
+              </Button>
+            </>
+          }
+        />
+      }
+    >
+      {summary.notice && (
+        <Notice
+          tone={summary.notice.tone}
+          title={summary.notice.title ?? undefined}
+        >
+          {summary.notice.text}
+        </Notice>
+      )}
+      {summary.sections.map((s) => (
+        <section
+          key={s.label}
+          aria-label={s.label}
           style={{
-            flexShrink: 0,
             display: "flex",
-            alignItems: "flex-start",
-            gap: t.space4,
+            flexDirection: "column",
+            gap: t.sp6,
+            marginTop: t.sp4,
           }}
         >
-          <span style={{ paddingTop: t.space1 }}>
-            <ByEarChip />
-          </span>
-          <span
-            style={{
-              fontFamily: t.sans,
-              fontSize: 11.5,
-              lineHeight: 1.5,
-              color: t.mutedInk,
-            }}
-          >
-            Worth a quick listen — {byEarReasons.join("; ")}.
-          </span>
-        </div>
-      )}
-      {items.some(truePeakWarn) && (
-        <div
-          style={{
-            flexShrink: 0,
-            display: "flex",
-            alignItems: "flex-start",
-            gap: t.space4,
-          }}
-        >
-          <span style={{ paddingTop: t.space1 }}>
-            <Tag tone="warn">may clip</Tag>
-          </span>
-          <span
-            style={{
-              fontFamily: t.sans,
-              fontSize: 11.5,
-              lineHeight: 1.5,
-              color: t.mutedInk,
-            }}
-          >
-            Flagged rows are estimated to peak above −1 dBTP at the leveled
-            setting. If your interface or FRFR clips, pick a lower target.
-          </span>
-        </div>
-      )}
-    </LevelPage>
+          {/* A lone section needs no label: the title already says it. */}
+          {summary.sections.length > 1 && (
+            <h2 style={{ ...sectionLabel(t), margin: 0 }}>{s.label}</h2>
+          )}
+          <Group>
+            {s.rows.map((r) => (
+              <SummaryRow key={r.key} row={r} onScene={onScene} />
+            ))}
+          </Group>
+        </section>
+      ))}
+    </FlowPage>
   );
 }

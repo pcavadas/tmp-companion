@@ -19,7 +19,6 @@ export const INSTRUMENTS: SelectOption[] = [
 ];
 
 export interface RenderSetupOptions {
-  isRelevel?: boolean;
   instrumentOptions?: SelectOption[];
   recorded?: ReadonlySet<string>;
   targetNames?: string[];
@@ -39,7 +38,6 @@ export function renderSetupPage(
   const view = renderWithTheme(
     <SetupPage
       options={options}
-      isRelevel={over.isRelevel ?? false}
       instrumentOptions={over.instrumentOptions ?? INSTRUMENTS}
       recordedInstruments={over.recorded ?? new Set()}
       targetNames={over.targetNames ?? ["Rhythm", "Lead"]}

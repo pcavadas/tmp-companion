@@ -28,7 +28,6 @@ const row = (key: string, over: Partial<RunItem> = {}): RunItem => ({
   isBase: false,
   sceneSlot: null,
   sceneName: key,
-  tag: null,
   instId: "",
   targetName: "Rhythm",
   status: "queued",
@@ -245,6 +244,32 @@ describe("runEngine", () => {
     expect(idx).toEqual([...idx].sort((a, b) => a - b));
   });
 
+  // Owner answer 3 / the Summary's Try again: a scene tried again without its preset's
+  // main sound still anchors its batch on that main sound, at the main sound's target,
+  // exactly as the first run's batch did; a run's own base row wins over an earlier one.
+  it("anchors a Try again scene batch on the main sound an earlier run carried", async () => {
+    const earlier = base("b", { targetName: "Lead", status: "result" });
+    const deps = fakeDeps({ earlierBaseRows: [earlier] });
+    await drive([scene("s1", 1)], deps);
+    expect(deps.levelPreset).not.toHaveBeenCalled();
+    const [args] = vi.mocked(deps.levelScenesApplyBatched).mock.calls[0];
+    expect(args.baseAnchor).toEqual({ targetLufs: -20 });
+
+    const own = fakeDeps({ earlierBaseRows: [earlier] });
+    await drive([base("b"), scene("s1", 1)], own);
+    expect(
+      vi.mocked(own.levelScenesApplyBatched).mock.calls[0][0].baseAnchor,
+    ).toEqual({ targetLufs: -26 });
+
+    const other = fakeDeps({
+      earlierBaseRows: [base("x", { slot: 5, targetName: "Lead" })],
+    });
+    await drive([scene("s1", 1)], other);
+    expect(
+      vi.mocked(other.levelScenesApplyBatched).mock.calls[0][0],
+    ).not.toHaveProperty("baseAnchor");
+  });
+
   it("keeps at most one row active at every step", async () => {
     const items = [
       scene("s1", 1),
@@ -311,7 +336,6 @@ describe("runEngine", () => {
       deps,
     );
     expect(rows.map((r) => r.status)).toEqual(["queued", "queued"]);
-    expect(rows[0].activeMessage).toBeNull();
     expect(deps.levelPreset).not.toHaveBeenCalled();
   });
 

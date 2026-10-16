@@ -1,3 +1,5 @@
+import type { Page } from "@playwright/test";
+
 import { test, expect } from "../fixtures/test";
 import {
   SCENARIO,
@@ -19,10 +21,12 @@ import {
   soundBox,
   waitForCaptureInFlight,
   startLeveling,
+  summaryDone,
+  tryAgainButton,
 } from "../fixtures/scenario";
 
 // First-session DEFAULTS + the physics-outcome gates (the real user's complaint set), driven
-// through the REAL UI so the SummaryPage banner copy is asserted verbatim. Outcomes come from
+// through the REAL UI so the Summary's words are asserted verbatim. Outcomes come from
 // the offline physics-faithful capture model (sim_device.rs) + e2e/fixtures/scenario-loudness.json
 // (the hand-authored C table), so these are OFFLINE-ONLY: online the real device's ceilings are
 // whatever the seeded presets actually give, not the authored sidecar values. Online still
@@ -33,8 +37,8 @@ import {
 // "plain" Base-only any more — see e2e/fixtures/COVERAGE.md). Base C ceilings: 400 (E2E Rig)
 // -15, 401 (E2E Pedalboard) -20, 402 (E2E Edge) -13, 403 (E2E Parallel) -20. -23/-21 both solve
 // on every preset. The tests below select ONLY the Base row (never the whole preset) for the
-// clamp/boost cases: sweeping in a preset's footswitches too risks shifting the terminal
-// Done-vs-Accept summary text for reasons unrelated to the base outcome under test.
+// clamp/boost cases: sweeping in a preset's footswitches too risks changing the Summary's
+// outcome for reasons unrelated to the base outcome under test.
 //
 // P4 (the Plumes/BD2/OCD leveling-regression fix, `headroom_trade::plan_level_pair`) SPLIT
 // what "the loud shipped default" (Lead, -19) does at a preset's ~-20 ceiling, by whether a
@@ -46,19 +50,18 @@ import {
 // danger.md OPEN distrust)"; a maxed fader would also have zero room even if it were
 // considered) — so 403 still clamps at Lead exactly as before, matching
 // `e2e_server_tests.rs`'s `level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch`
-// ("Base at Lead (-19) on 403 -> CLAMP at its ceiling (-20)"). The retired test (b) (the re-level-clamped
-// loop) ran on 403 for exactly this reason — 401 no longer has a LOUD-enough named
-// target to demonstrate a clamp with.
+// ("Base at Lead (-19) on 403 -> CLAMP at its ceiling (-20)"). Test (b), the clamp loop, runs
+// on 403 for exactly this reason — 401 no longer has a LOUD-enough named target to
+// demonstrate a clamp with.
 //
 // Per-SCENE/per-FOOTSWITCH outcomes are asserted at the command level (e2e_server_tests.rs
 // `level_defaults_403_scenes_solve_and_offbranch` + `..._base_clamps_and_footswitch_is_offbranch`);
 // their streamed rows reach the page through the UI bridge (.claude/rules/e2e.md's "Events
 // and Channels reach the page"), but this file reads none of them. The UI here asserts only
 // the BASE-leveling outcomes (level_preset returns directly, no Channel): the base-boost
-// reaching a loud default (a) and a mid-run off-branch capture fault (c). The old (b), the
-// re-level-clamped loop, is gone: the 403 Lead clamp is pinned at the command layer
-// (`level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch`) and the
-// re-level flow by `LevelView.test.tsx` ("Re-level clamped… reopens setup").
+// reaching a loud default (a), the clamp loop — clamped at Lead, then leveled at Crunch
+// (b) — and a mid-run off-branch capture fault (c). The 403 Lead clamp is also pinned at
+// the command layer (`level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch`).
 //
 // The tests are independent (each starts from the fixture's `/sim/reset`, each worker owns
 // its own e2e_server), so the file runs them in parallel: as one serial file it was the
@@ -66,6 +69,15 @@ import {
 
 // openLevel / selectBaseOnly / pickBaseTarget now live in ../fixtures/scenario.ts (shared
 // with level-setup.spec.ts and level.spec.ts).
+
+/** The run page's Stop, confirmed in its "Stop leveling?" dialog (the page behind the
+ *  dialog is inert while it is open, so the confirm is the dialog's own button). */
+async function stopRun(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Stop leveling?" });
+  await expect(dialog).toContainText("Everything matched so far stays saved.");
+  await dialog.getByRole("button", { name: "Stop", exact: true }).click();
+}
 
 test.describe.configure({ mode: "parallel" });
 
@@ -115,44 +127,83 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await page.getByText(/I.ve backed up with Pro Control/i).click(); // the inline commit gate
     await pickBaseTarget(page, SCENARIO[1].slot, "Lead"); // the loud default — now REACHED via boost
     await startLeveling(page).click();
-    // allGood (SummaryPage.tsx): no clamp/unconverged/offbranch/skip rows this run ⇒ "Done",
-    // not "Accept" — the row solved, it didn't need acknowledgement.
-    // `exact`: the Run page's preset-group header is a button whose name ends in its "done"
-    // tag, and a substring match resolves it a beat BEFORE the auto-advance to Summary —
-    // the group click below then lands on a Run-page row that is about to unmount.
+    await expect(summaryDone(page)).toBeVisible({ timeout: 240_000 });
+    // The row solved: leveled, on target, nothing needs the user.
     await expect(
-      page.getByRole("button", { name: "Done", exact: true }),
-    ).toBeVisible({
-      timeout: 240_000,
-    });
-    // `useGroupOpen`'s `badSlots` auto-open list is built from non-"done" rows only
-    // (SummaryPage.tsx) — an all-good run's preset group starts COLLAPSED, unlike the
-    // off-branch case in test (c) below. Expand it before reading the row detail.
-    await page
-      .locator(`[data-preset-group="${String(SCENARIO[1].slot)}"]`)
-      .click();
-
-    // The base_boost disclosure (SummaryPage.tsx's `baseBoostSentence`). Copied VERBATIM from
-    // that function's template — never re-word it here if the copy changes; update this
-    // string instead.
+      page.getByRole("heading", { name: "1 sound leveled." }),
+    ).toBeVisible();
+    const row = page.locator(
+      `[data-summary-row="p${String(SCENARIO[1].slot)}"]`,
+    );
+    await expect(row.getByText("On target")).toBeVisible();
+    // The base boost, in words only (`summaryModel.ts`'s SUMMARY_TEXT.baseBoost, copied
+    // verbatim — update this string if the copy changes), and APPLIED, not just planned.
     await expect(
-      page.getByText(
-        "Turned this preset up as far as it goes and raised the amp’s output from 0.60 to 0.67 to reach the target.",
+      row.getByText(
+        "Turned the preset up as far as it goes, then raised the amp's output to reach Lead.",
       ),
     ).toBeVisible();
-    // No clamp banner remains — this row is done, not clamped.
-    await expect(page.getByText(/Clamped .* already maxed/)).toHaveCount(0);
-    // The row's own achieved reading, at Lead (-19).
-    await expect(page.getByText(/[−-]19\.\d/)).toBeVisible();
+    await expect(row).toHaveAttribute("data-base-boost", "applied");
+    // No clamp message — this row is done, not clamped.
+    await expect(page.getByText(/Already at full volume/)).toHaveCount(0);
 
     await expectReampBalanced(page, reampBase);
   });
 
-  // (c) Mid-run failure + no-signal banner + the PEDAL-FIASCO gate (the complainant's "items
-  // failing / it changed everything" class; was pedal-fiasco.spec.ts): /sim/fault silences
-  // 402's first capture → 402's Base goes OFF-BRANCH (no signal) with its "needs routing"
-  // remediation banner and writes NOTHING (a silent capture must never be saved over with a
-  // near-zero level), while its sibling 401 still levels and saves. Exactly the three rows the
+  // (b) The clamp loop (BUG→GATE, the 2026-07 "clamp loop unresolvable" report; journey
+  // "clamped at a loud target → resolves at a quieter one"). 403's Base at Lead (-19)
+  // clamps at its -20 ceiling: the Summary says so and what to change, with no button and
+  // no Try again (Q5: running it again can't help). The way to a quieter target is Done,
+  // the list and Set up — and at Crunch (-21) it levels. Look B removed the Summary's
+  // "Re-level clamped…" that used to reopen Set up.
+  test("clamp loop: clamped at Lead says so with no button, then levels at Crunch", async ({
+    page,
+  }) => {
+    test.skip(
+      await isOnline(page),
+      "offline-only: the 403 ceiling is sidecar-authored",
+    );
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+    await openLevel(page);
+    const parallel = SCENARIO[3]; // E2E Parallel, ceiling -20
+    await selectBaseOnly(page, parallel.name);
+    await levelButton(page, 1).click();
+    await page.getByText(/I.ve backed up with Pro Control/i).click();
+    await pickBaseTarget(page, parallel.slot, "Lead");
+    await startLeveling(page).click();
+    await expect(summaryDone(page)).toBeVisible({ timeout: 240_000 });
+    await expect(
+      page.getByText(
+        "Already at full volume, so it can't reach Lead. Choose a quieter target for it.",
+      ),
+    ).toBeVisible();
+    await expect(tryAgainButton(page)).toHaveCount(0);
+
+    // Done → the list (the clamped sound was resolved, so it is unchosen) → choose it
+    // again → Crunch → it levels.
+    await summaryDone(page).click();
+    const filter = page.getByPlaceholder(/Filter by name or slot/i);
+    await filter.fill(parallel.name);
+    await soundBox(page, "Main sound", parallel.name).click();
+    await filter.fill("");
+    await levelButton(page, 1).click();
+    await page.getByText(/I.ve backed up with Pro Control/i).click();
+    await pickBaseTarget(page, parallel.slot, "Crunch");
+    await startLeveling(page).click();
+    await expect(summaryDone(page)).toBeVisible({ timeout: 240_000 });
+    await expect(
+      page.getByRole("heading", { name: "1 sound leveled." }),
+    ).toBeVisible();
+
+    await expectReampBalanced(page, reampBase);
+  });
+
+  // (c) Mid-run failure + no-signal message + the PEDAL-FIASCO gate (the complainant's
+  // "items failing / it changed everything" class; was pedal-fiasco.spec.ts): /sim/fault
+  // silences 402's first capture → 402's Base goes OFF-BRANCH (no signal) with its routing
+  // message and writes NOTHING (a silent capture must never be saved over with a near-zero
+  // level), while its sibling 401 still levels and saves. Exactly the three rows the
   // assertions read are selected — 401 Base, 402 Base and 402's `OUT2` switch, the second
   // "can't hear it" (its block sits on the split's OUT-2 lane, COVERAGE row 21) — rather than
   // both whole presets, whose 8 scenes and other switches only cost captures.
@@ -180,32 +231,28 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await levelButton(page, 3).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
     await startLeveling(page).click(); // defaults; 401 solves, 402 faults
-    await expect(
-      page.getByRole("button", { name: /^(Done|Accept)$/ }),
-    ).toBeVisible({
-      timeout: 240_000,
-    });
+    await expect(summaryDone(page)).toBeVisible({ timeout: 240_000 });
 
-    // 402 off-branch: the row's own status, its specific no-signal diagnosis, and the
-    // routing remediation banner (design 1a dropped the old per-category sub-tally count —
-    // the row status + banner are the evidence now). Two rows can't be heard: the faulted
-    // Base, and switch 2 `OUT2`. The second arrives through the UI bridge.
-    await expect(page.getByText("can’t hear it")).toHaveCount(2);
+    // 402 off-branch: two sounds can't be heard — the faulted Base, and switch 2 `OUT2`
+    // (the second arrives through the UI bridge) — for the same reason, so they share one
+    // row ("All 2 sounds") with the routing message, and Try again can't help them.
     await expect(
-      page.getByText(
-        "Nothing came through USB 1/2, so we couldn’t hear this one.",
+      page.getByRole("heading", { name: "1 sound leveled. 2 need you." }),
+    ).toBeVisible();
+    const needYou = page.getByRole("region", { name: "Need you" });
+    await expect(needYou.getByText("All 2 sounds")).toBeVisible();
+    await expect(
+      needYou.getByText(
+        "This sound doesn't reach USB 1/2 on your Tone Master Pro, so leveling can't hear it. Route it to USB 1/2, or set its volume by ear.",
       ),
-    ).toHaveCount(2);
-    await expect(page.getByText("Needs routing on the unit")).toBeVisible();
-    // 401 still leveled — its displayed final LUFS near the default target (−23). No "LUFS"
-    // suffix on Summary (that's a RunPage-only unit label) — just the bare reading. Its
-    // group is all-good (one Base row, done), and `useGroupOpen` auto-opens only groups with
-    // a non-"done" row, so expand it first, as test (a) does.
-    const sibling = page.locator(
-      `[data-preset-group="${String(SCENARIO[1].slot)}"]`,
-    );
-    await sibling.click();
-    await expect(page.getByText(/[−-]2[234]\.\d/).first()).toBeVisible();
+    ).toHaveCount(1);
+    await expect(tryAgainButton(page)).toHaveCount(0);
+    // 401 still leveled, on target.
+    await expect(
+      page
+        .locator(`[data-summary-row="p${String(SCENARIO[1].slot)}"]`)
+        .getByText("On target"),
+    ).toBeVisible();
 
     // /sim/reset (test fixture) cleared the log at test start, so these are THIS run's writes.
     const saved = (await simEvents(page))
@@ -222,8 +269,9 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expectReampBalanced(page, reampBase);
   });
 
-  // COVERAGE row 46 — a 60 s capture hold makes "Leveling stopped" inside 15 s reachable
-  // only by a cancel served mid-run (`e2e_server.rs` `e2e_is_side_lane`).
+  // COVERAGE row 46 — a 60 s capture hold makes the stopped Summary inside 15 s reachable
+  // only by a cancel served mid-run (`e2e_server.rs` `e2e_is_side_lane`). Look B: Stop
+  // asks first in a dialog, and the Summary shows on its own once the run has wound down.
   test("a mid-run Stop aborts the in-flight item and leaves the rest not run", async ({
     page,
   }) => {
@@ -243,17 +291,72 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await startLeveling(page).click();
     await waitForCaptureInFlight(page, reampBase);
 
-    await page.getByRole("button", { name: "Stop", exact: true }).click();
-    await page.getByRole("button", { name: "Stop", exact: true }).click(); // confirm
-    await expect(page.getByText("Leveling stopped")).toBeVisible({
-      timeout: 15_000,
-    });
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
-
-    await expect(page.getByText("Stopped — 0 sounds match")).toBeVisible();
+    await stopRun(page);
     await expect(
-      page.getByText("Stopped before this one was reached.").first(),
+      page.getByRole("heading", {
+        name: /^Stopped\. Nothing was leveled, \d+ not reached\.$/,
+      }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("region", { name: "Not reached" }),
     ).toBeVisible();
+    await expect(tryAgainButton(page)).toBeVisible();
+
+    await expectReampBalanced(page, reampBase);
+  });
+
+  // Scenario 4 of `B-LevelFlow` ("Re-run what failed or ran out of tries"): after a Stop,
+  // the Summary's one "Try again (N)" runs the sounds the Stop didn't reach straight away
+  // — no Set up, no second backup tick — and the same Summary comes back with them
+  // leveled. Two clicks: Try again · Done.
+  test("scenario 4, Try again after a Stop: Try again (N) · Done = 2, the same Summary updated", async ({
+    page,
+  }) => {
+    test.skip(
+      await isOnline(page),
+      "offline-only: /sim/capture-delay is a SimDevice injection",
+    );
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+    await armCaptureDelay(page, 60_000);
+    await openLevel(page);
+    await selectBaseOnly(page, SCENARIO[1].name);
+    await selectBaseOnly(page, SCENARIO[2].name);
+    await levelButton(page, 2).click();
+    await page.getByText(/I.ve backed up with Pro Control/i).click();
+    await startLeveling(page).click();
+    await waitForCaptureInFlight(page, reampBase);
+    await stopRun(page);
+    await expect(
+      page.getByRole("heading", {
+        name: "Stopped. Nothing was leveled, 2 not reached.",
+      }),
+    ).toBeVisible({ timeout: 15_000 });
+    await armCaptureDelay(page, 0);
+
+    let clicks = 0;
+    await tryAgainButton(page, 2).click(); // 1 Try again (2)
+    clicks++;
+    // Straight to the run of just those sounds: no Set up, no backup tick.
+    await expect(
+      page.getByRole("heading", { name: "Leveling 2 sounds" }),
+    ).toBeVisible();
+    await expect(startLeveling(page)).toHaveCount(0);
+    await expect(summaryDone(page)).toBeVisible({ timeout: 240_000 });
+    // The same Summary, both rows now leveled (a main sound already at its target skips
+    // its save, so the Summary, not the save log, is the evidence).
+    await expect(
+      page.getByRole("heading", { name: "All 2 sounds leveled." }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Leveled" }).getByText("On target"),
+    ).toHaveCount(2);
+    await summaryDone(page).click(); // 2 Done
+    clicks++;
+    await expect(
+      page.getByText("Choose presets or sounds to level"),
+    ).toBeVisible();
+    expect(clicks).toBe(2);
 
     await expectReampBalanced(page, reampBase);
   });
@@ -290,16 +393,13 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await page.getByRole("button", { name: "Level", exact: true }).click();
 
     // Back on Level: the run is still on screen, with a working Stop.
-    await page.getByRole("button", { name: "Stop", exact: true }).click();
-    await page.getByRole("button", { name: "Stop", exact: true }).click(); // confirm
-    await expect(page.getByText("Leveling stopped")).toBeVisible({
-      timeout: 60_000,
-    });
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
-    await expect(page.getByText(/^Stopped — \d+ sounds? match/)).toBeVisible();
+    await stopRun(page);
+    await expect(
+      page.getByRole("heading", { name: /^Stopped\. .* not reached\.$/ }),
+    ).toBeVisible({ timeout: 60_000 });
     // Only the item in flight at the Stop ran; the rest of the run did not.
     await expect(
-      page.getByText("Stopped before this one was reached.").first(),
+      page.getByRole("region", { name: "Not reached" }),
     ).toBeVisible();
 
     await expectReampBalanced(page, reampBase);

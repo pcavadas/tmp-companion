@@ -1,8 +1,8 @@
 // src/lib/useAutoAdvance.ts — the run wizards' "auto-advance to the summary".
 //
 // Both the Doctor and Leveling run bodies jump to their summary step a short beat
-// after the run finishes ON ITS OWN. A manual stop suppresses it (the user gets a
-// Continue button instead). `onAdvance` is read through a ref so a fresh callback
+// after the run finishes ON ITS OWN. A manual stop suppresses it (Doctor shows a
+// Continue button; Level's store lands on its Summary by itself). `onAdvance` is read through a ref so a fresh callback
 // identity from the parent doesn't reset the in-flight timer; the timer is cleared
 // on unmount or when done/stopped change.
 

@@ -236,6 +236,10 @@ export interface EngineDeps {
   /** The presets (0-based list indices) whose path-MERGE scenes get their two
    *  parallel-amp lanes equalized before joint-k (Set up's per-preset opt-in). */
   rebalance: ReadonlySet<number>;
+  /** The main-sound rows an EARLIER run of this flow carried (the Summary's Try again):
+   *  a scene batch whose preset's main sound is not in this run still anchors on it, with
+   *  the same target, exactly as the first run's batch did. Empty on a first run. */
+  earlierBaseRows?: readonly RunItem[];
 }
 
 /** Drive `items` (already in `sortRunItems` order) one batch at a time. Resolves once
@@ -270,9 +274,10 @@ export async function runEngine(
 
   // INVARIANT (BUG 2): at most ONE row is ever "active". Several rows once all rendered
   // "leveling · <the same LUFS>" because nothing cleared a row OUT of "active" when the
-  // channel (or the optimistic group pre-flip) named a NEW one; `RunPage` renders the one
-  // shared live number on every active row. Every activation goes through here, demoting
-  // any OTHER active row back to "queued" (never touching a resolved "result" row).
+  // channel (or the optimistic group pre-flip) named a NEW one; `RunPage` names the active
+  // row in its now line and points the one live meter at its target. Every activation goes
+  // through here, demoting any OTHER active row back to "queued" (never touching a resolved
+  // "result" row).
   const setSoleActive = (target: number) => {
     work.forEach((w, j) => {
       if (j !== target && w.status === "active") patch(j, { status: "queued" });
@@ -297,11 +302,11 @@ export async function runEngine(
     clampKind: r.clamp_kind ?? null,
   });
   // ONE per-row contract for a batched backend call (only the map key differs): an
-  // `active` item → the sole spinner; `done` → its outcome; `error` → skipped, with the
-  // item's typed `skipKind` (its `message` is kept for the log); anything else (e.g. the
-  // backend's cancelled sentinel) is ignored. A `tail` caption rides a batch-wide item
-  // with NO valid row key, so it is handled BEFORE the lookup and re-published at the
-  // CURRENT step.
+  // `active` item → the sole active row (its caption is the backend's, for the prepass,
+  // and the run page shows none); `done` → its outcome; `error` → skipped, with the item's
+  // typed `skipKind` (its `message` is kept for the log); anything else (e.g. the backend's
+  // cancelled sentinel) is ignored. A `tail` caption rides a batch-wide item with NO valid
+  // row key, so it is handled BEFORE the lookup and re-published at the CURRENT step.
   const batchResolve =
     <K>(rows: Map<K, number>, envelope: boolean) =>
     (
@@ -317,15 +322,11 @@ export async function runEngine(
       if (idx == null) return;
       if (status === "active") {
         setSoleActive(idx);
-        // The row's caption: the prepass's "measuring" verb, or a note shown verbatim
-        // when no capture streams (RunPage's rowStatus). Cleared once the row resolves.
-        patch(idx, { activeMessage: message ?? null });
         publish(idx);
       } else if (status === "done" && result) {
-        finish(idx, { activeMessage: null, ...resultPatch(result, envelope) });
+        finish(idx, resultPatch(result, envelope));
       } else if (status === "error") {
         finish(idx, {
-          activeMessage: null,
           outcome: "skipped",
           skipReason: message ?? null,
           skipKind: skipKind ?? "other",
@@ -343,7 +344,7 @@ export async function runEngine(
     publish(start);
   };
   // After the call: a stopped run keeps un-run rows queued (still selected for a
-  // follow-up run) but reverts the optimistic active row and its caption; otherwise every
+  // follow-up run) but reverts the optimistic active row; otherwise every
   // row the channel never resolved is skipped with the call's failure (if any) and its
   // typed kind.
   const sweepUnresolved = <K>(
@@ -353,8 +354,7 @@ export async function runEngine(
     const cancelled = isCancelled();
     for (const idx of rows.values()) {
       if (cancelled) {
-        if (work[idx].status === "active")
-          patch(idx, { status: "queued", activeMessage: null });
+        if (work[idx].status === "active") patch(idx, { status: "queued" });
       } else if (work[idx].status !== "result") {
         finish(idx, {
           skipReason: failure.reason,
@@ -549,9 +549,12 @@ export async function runEngine(
       markGroupActive(byScene, i);
       // Keep this preset's BASE job alive through the batch's prepass + headroom-trade
       // phases (issue 1). The base row ran FIRST (base-first sort), so its target is known —
-      // look it up in `work`, never the group. Omit the key entirely (not `null`) when no
-      // base row is selected: no trade to plan.
-      const baseItem = work.find((w) => w.slot === it.slot && w.isBase);
+      // look it up in `work`, never the group; a Try again without the main sound anchors
+      // on the earlier run's row. Omit the key entirely (not `null`) when no base row was
+      // chosen: no trade to plan.
+      const baseItem =
+        work.find((w) => w.slot === it.slot && w.isBase) ??
+        deps.earlierBaseRows?.find((w) => w.slot === it.slot);
       const baseAnchor = baseItem
         ? { targetLufs: targetOf(baseItem) }
         : undefined;
@@ -611,7 +614,6 @@ export async function runEngine(
           outcome: "skipped",
           skipReason: reason,
           skipKind: kind,
-          activeMessage: null,
         });
     });
   }

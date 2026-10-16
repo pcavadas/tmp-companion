@@ -2,21 +2,18 @@
 // module store.
 //
 // The backend streams a loudness reading ~5 times a second while a capture runs. Only
-// `RunPage` shows it (the header VU + readout and the active row's live number), so it
-// lives apart from `levelRunStore`: a tick re-renders RunPage alone, never LevelView, the
-// preset list or the footer. `levelRunStore` writes it; RunPage reads it with `useLiveMeter`.
+// `RunPage` shows it (its LoudnessMeter, against the active sound's target), so it lives
+// apart from `levelRunStore`: a tick re-renders RunPage alone, never LevelView, the preset
+// list or the footer. `levelRunStore` writes it; RunPage reads it with `useLiveMeter`.
 
 import { useSyncExternalStore } from "react";
 
 export interface LiveMeter {
   /** Advisory live measured loudness, or null when nothing is measuring. */
   lufs: number | null;
-  /** Rolling per-hop momentary levels (dB) for the live VU bars — last 24 hops. */
-  trace: number[];
 }
 
-const TRACE_HOPS = 24;
-export const IDLE_METER: LiveMeter = { lufs: null, trace: [] };
+export const IDLE_METER: LiveMeter = { lufs: null };
 
 let meter: LiveMeter = IDLE_METER;
 const subs = new Set<() => void>();
@@ -28,9 +25,9 @@ export function setLiveMeter(next: LiveMeter): void {
   for (const cb of subs) cb();
 }
 
-/** Append one streamed reading. */
-export function pushLiveMeter(lufs: number, momentary: number): void {
-  setLiveMeter({ lufs, trace: [...meter.trace, momentary].slice(-TRACE_HOPS) });
+/** Show one streamed reading. */
+export function pushLiveMeter(lufs: number): void {
+  setLiveMeter({ lufs });
 }
 
 const subscribe = (cb: () => void) => {

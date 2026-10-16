@@ -208,9 +208,21 @@ export async function pickBaseTarget(
 export const startLeveling = (page: Page) =>
   page.getByRole("button", { name: "Start leveling", exact: true });
 
-/** Drive the Level wizard's Base flow end to end for one or more presets: select each
- *  preset's Base row, submit, pick and confirm each target label, submit, and wait for
- *  Done/Accept. */
+/** The Summary's main action — always "Done", whatever the outcome (everything is
+ *  already saved). Its appearance is how a spec knows the run reached the Summary. */
+export const summaryDone = (page: Page) =>
+  page.getByRole("button", { name: "Done", exact: true });
+
+/** The Summary's "Try again (N)", for any N or exactly `n`. */
+export const tryAgainButton = (page: Page, n: number | "any" = "any") =>
+  page.getByRole("button", {
+    name: n === "any" ? /^Try again \(\d+\)$/ : `Try again (${String(n)})`,
+    exact: true,
+  });
+
+/** Drive the Level flow's main-sound path end to end for one or more presets: select
+ *  each preset's main sound, submit, pick and confirm each target, start, and wait for
+ *  the Summary. */
 export async function runBaseLevel(
   page: Page,
   targets: { preset: Preset; label: string }[],
@@ -232,9 +244,7 @@ export async function runBaseLevel(
     ).toContainText(label);
   }
   await startLeveling(page).click();
-  await expect(
-    page.getByRole("button", { name: /^(Done|Accept)$/ }),
-  ).toBeVisible({
+  await expect(summaryDone(page)).toBeVisible({
     timeout: 240_000,
   });
 }

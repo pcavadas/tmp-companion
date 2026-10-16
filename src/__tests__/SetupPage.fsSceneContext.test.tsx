@@ -1,16 +1,13 @@
-// src/__tests__/SetupPage.rerunAndContext.test.tsx — BUG→GATE for two Set-up defaults.
+// src/__tests__/SetupPage.fsSceneContext.test.tsx — BUG→GATE #286: a footswitch row's
+// measurement scene came from a lazy read fired only when its scene picker was opened, so
+// the same selection measured the switch in base or in its enabling scene depending on a
+// click. The suggested scene now comes from the startup backup scan for every footswitch
+// row up front, and Start waits for it. Look B: the "Level it in scene" dropdown shows it;
+// an unread one stays empty, the row says so, and the footer's link points at it (Q3).
 //
-// #284: "Run again" / "Re-run off target…" reopened Set up with every row reset to the
-// FIRST target and FIRST instrument, so one Start re-leveled a Lead sound at Rhythm. A
-// re-run row now carries the instrument and target it was leveled with, and Set up seeds
-// from them (falling back to the defaults only for an id the pickers no longer offer).
-//
-// #286: a footswitch row's measurement scene came from a lazy read fired only when its
-// scene picker was opened, so the same selection measured the switch in base or in its
-// enabling scene depending on a click. The suggested scene now comes from the startup
-// backup scan for every footswitch row up front, and Start waits for it. Look B: the
-// "Level it in scene" dropdown shows it; an unread one stays empty, the row says so, and
-// the footer's link points at it (Q3).
+// (#284, the re-run that reset every sound to the first target and instrument, lived here
+// too while the Summary reopened Set up; Try again no longer does, so its gate moved to
+// `useLevelingFlow-try-again.test.ts`.)
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
@@ -18,17 +15,12 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
-import {
-  optionToRunItem,
-  runItemToOption,
-  type SetupOption,
-} from "../views/level/leveling";
+import type { SetupOption } from "../views/level/leveling";
 import type { FsSceneContext } from "../lib/types";
 import {
   fired,
   makeBackupPresetRow,
   makeBackupRead,
-  makeSetupOption,
   mockCommands,
   rejectWith,
 } from "./commandMocks";
@@ -38,8 +30,6 @@ import {
   selectTrigger,
   startLeveling,
 } from "./setupPageTestUtils";
-
-const baseOption = (): SetupOption => makeSetupOption({ presetName: "Plexi" });
 
 function fsOption(): SetupOption {
   return {
@@ -72,9 +62,8 @@ function fsOption(): SetupOption {
   };
 }
 
-const renderSetup = (options: SetupOption[], isRelevel: boolean) =>
+const renderSetup = (options: SetupOption[]) =>
   renderSetupPage(options, {
-    isRelevel,
     defaultInst: "strat",
     targetNames: ["Rhythm", "Lead"],
   }).onStart;
@@ -104,78 +93,11 @@ beforeEach(() => {
   mockCommands();
 });
 
-describe("a re-run keeps each sound's instrument and target (#284)", () => {
-  it("carries instId and targetName through runItemToOption", () => {
-    const item = optionToRunItem(baseOption(), "tele", "Lead");
-    expect(runItemToOption(item)).toMatchObject({
-      instId: "tele",
-      targetName: "Lead",
-    });
-  });
-
-  it("seeds the dropdowns from them, so Start submits the original settings", async () => {
-    const rerun = runItemToOption(
-      optionToRunItem(baseOption(), "tele", "Lead"),
-    );
-    const onStart = renderSetup([rerun], true);
-    // The preset's instrument and the row's target show them, not the defaults.
-    expect(selectTrigger("inst:0")).toHaveAccessibleName(
-      "Instrument for Plexi: Tele",
-    );
-    expect(selectTrigger("target:p0")).toHaveAccessibleName(
-      "Target for Plexi, Main sound: Lead",
-    );
-    const user = userEvent.setup();
-    // A re-level asks for no backup tick (already given).
-    await user.click(screen.getByRole("button", { name: "Start leveling" }));
-    expect(onStart.mock.calls[0][0][0]).toMatchObject({
-      instId: "tele",
-      targetName: "Lead",
-    });
-  });
-
-  it("falls back to the defaults for an id the dropdowns no longer offer", async () => {
-    const rerun = runItemToOption(
-      optionToRunItem(baseOption(), "deleted-profile", "Removed target"),
-    );
-    const onStart = renderSetup([rerun], true);
-    // Shown is what is used: the default instrument, the by-name (here the first) target.
-    expect(selectTrigger("inst:0")).toHaveAccessibleName(
-      "Instrument for Plexi: Strat",
-    );
-    expect(selectTrigger("target:p0")).toHaveAccessibleName(
-      "Target for Plexi, Main sound: Rhythm",
-    );
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Start leveling" }));
-    expect(onStart.mock.calls[0][0][0]).toMatchObject({
-      instId: "strat",
-      targetName: "Rhythm",
-    });
-  });
-
-  it("keeps the scene a re-run footswitch was measured in", async () => {
-    await seedScan([{ switch: 2, enablingScenes: [2], suggested: 2 }]);
-    const fs = fsOption();
-    const measuredIn: SetupOption = {
-      ...fs,
-      footswitch: fs.footswitch ? { ...fs.footswitch, sceneContext: 0 } : null,
-    };
-    const rerun = runItemToOption(optionToRunItem(measuredIn, "tele", "Lead"));
-    const onStart = renderSetup([rerun], true);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Start leveling" }));
-    expect(onStart.mock.calls[0][0][0].option.footswitch).toMatchObject({
-      sceneContext: 0,
-    });
-  });
-});
-
 describe("a footswitch row's scene context comes from data (#286)", () => {
   it("shows and submits the suggested scene without the dropdown ever being opened", async () => {
     await seedScan([{ switch: 2, enablingScenes: [1], suggested: 1 }]);
     vi.mocked(invoke).mockClear();
-    const onStart = renderSetup([fsOption()], false);
+    const onStart = renderSetup([fsOption()]);
     await waitFor(() => {
       expect(selectTrigger("scene:f0:sw2")).toHaveAccessibleName(
         "Scene to level footswitch 3 of Plexi in: Crunch",
@@ -200,7 +122,7 @@ describe("a footswitch row's scene context comes from data (#286)", () => {
           answer = res;
         }),
     });
-    const onStart = renderSetup([fsOption()], false);
+    const onStart = renderSetup([fsOption()]);
     const user = userEvent.setup();
     await user.click(
       screen.getByRole("checkbox", { name: "I've backed up with Pro Control" }),
@@ -230,7 +152,7 @@ describe("a footswitch row's scene context comes from data (#286)", () => {
       list_footswitch_scene_contexts: () =>
         rejectWith(new Error("Device not connected")),
     });
-    const onStart = renderSetup([fsOption()], false);
+    const onStart = renderSetup([fsOption()]);
     const user = userEvent.setup();
     await user.click(
       screen.getByRole("checkbox", { name: "I've backed up with Pro Control" }),
@@ -271,7 +193,7 @@ describe("a footswitch row's scene context comes from data (#286)", () => {
 
   it("an explicit Main sound pick submits the base context", async () => {
     await seedScan([{ switch: 2, enablingScenes: [1], suggested: 1 }]);
-    const onStart = renderSetup([fsOption()], false);
+    const onStart = renderSetup([fsOption()]);
     const user = userEvent.setup();
     await choose(user, "scene:f0:sw2", "base");
     await startLeveling(user);

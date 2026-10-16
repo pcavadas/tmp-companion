@@ -1,42 +1,38 @@
-// src/views/level/RunPage.tsx — the leveling wizard's "Level" (run) stage (design
-// handoff 1a: full window, one row per preset).
+// src/views/level/RunPage.tsx — the leveling run, a page under the toolbar (look B).
 //
-// Presentational: `levelRunStore` drives the sequence; the live meter is read from its own
-// store (`useLiveMeter`) right here, so its ~5 Hz ticks re-render this page alone. The list groups by PRESET
-// (`PresetGroupRow`) — the preset currently being worked on opens itself
-// (`useGroupOpen`), following the run; the user can override any row on top of that.
-// The live number renders ONCE, in the header (never in a static preset row) — sound
-// rows show it only while they're the active one, so no row ever changes height or
-// shifts mid-run.
+// Top to bottom: the title ("Leveling 6 sounds" — constant; a Try again counts only the
+// sounds it tries again) with the flow's Steps; the now card: on the left the now line
+// ("Listening to <sound> in <preset>") over the LoudnessMeter (the loudness now against
+// the sound's target, no numbers), on the right the progress bar and "3 of 6 done"; one
+// Group, a header per preset (name and slot) and a row per sound (status mark, name,
+// target, state word); and the Footer with Stop on the left.
+//
+// Presentational: `levelRunStore` drives the run; the live meter is read from its own
+// store (`useLiveMeter`) right here, so its ~5 Hz ticks re-render this page alone. The
+// list scrolls under the now card and keeps the sound in progress in view. Stop asks first
+// in a dialog that only its own buttons close (a stray click must not stop a run, and
+// must not dismiss the question either); the run keeps going while it is open. After a
+// Stop the page says it is stopping after the sound in progress, and the store lands on
+// the Summary once that sound has wound down; a natural finish shows the last row for a
+// beat (`useAutoAdvance`) before the Summary. No saving line here: the backup tick was
+// the one safety line, and the Stop dialog says what stays saved.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Button } from "../../ui/primitives";
-import { ConfirmBar } from "../../ui/ConfirmBar";
-import { RunFooterStatus } from "../../ui/RunFooterStatus";
-import { Icon } from "../../ui/Icon";
-import { Spinner } from "../../ui/Spinner";
-import { Dot } from "../../ui/Dot";
+import { Footer } from "../../ui/Footer";
+import { Group, Row } from "../../ui/List";
+import { LoudnessMeter } from "../../ui/LoudnessMeter";
 import { ProgressBar } from "../../ui/ProgressBar";
-import { LiveVU } from "../../ui/LiveVU";
-import { LiveReadout } from "../../ui/LiveReadout";
-import { LevelPage } from "./LevelPage";
-import { PresetGroupList } from "./PresetGroupList";
-import { PresetGroupRow } from "./PresetGroupRow";
-import { useGroupOpen } from "./useGroupOpen";
-import { fmtLufs } from "../../lib/format";
+import { SlotLabel } from "../../ui/SlotLabel";
+import { Button, Modal } from "../../ui/primitives";
 import { useAutoAdvance } from "../../lib/useAutoAdvance";
+import { FlowPage } from "./FlowPage";
+import { StatusMark } from "./StatusMark";
 import { useLiveMeter } from "./liveMeterStore";
 import { isRunOver, type RunPhase } from "./levelRunStore";
-import { SoundRowShell } from "./SoundRowShell";
-import {
-  groupItemsBySlot,
-  hasInstrument,
-  offbranchStatus,
-  OUTCOME_TONE,
-  type RunItem,
-} from "./leveling";
+import { groupItemsBySlot, setupRowHookKey, type RunItem } from "./leveling";
+import { footswitchNo, nowLine, runRowState } from "./runModel";
 
 export interface RunPageProps {
   items: RunItem[];
@@ -44,9 +40,10 @@ export interface RunPageProps {
   total: number;
   phase: RunPhase;
   tailMessage?: string | null;
-  instrumentName: (id: string) => string;
   targetLufsByName: (name: string | null) => number;
-  onCancel: () => void;
+  /** The Stop dialog's "Stop": stop after the sound in progress. */
+  onStop: () => void;
+  /** After a natural finish: on to the Summary. */
   onComplete: () => void;
 }
 
@@ -56,306 +53,251 @@ export function RunPage({
   total,
   phase,
   tailMessage = null,
-  instrumentName,
   targetLufsByName,
-  onCancel,
+  onStop,
   onComplete,
 }: RunPageProps) {
   const { t } = useTheme();
-  const [confirm, setConfirm] = useState(false);
-  const { lufs: liveLufs, trace: liveTrace } = useLiveMeter();
-  const done = isRunOver(phase);
-  const stopped = phase === "stopped";
+  const [asking, setAsking] = useState(false);
+  const { lufs } = useLiveMeter();
+  const over = isRunOver(phase);
   const stopping = phase === "stopping";
 
-  useAutoAdvance(done, stopped, onComplete);
+  useAutoAdvance(over, phase === "stopped", onComplete);
 
-  const pct = total > 0 ? (currentIndex / total) * 100 : 0;
-  const presetN = new Set(items.map((x) => x.slot)).size;
-  const activeItem = items.find((x) => x.status === "active");
   const groups = useMemo(() => groupItemsBySlot(items), [items]);
-  const [isOpen, toggle] = useGroupOpen(activeItem ? [activeItem.slot] : []);
+  const done = items.filter((x) => x.status === "result").length;
+  const now = nowLine(items, currentIndex, phase, tailMessage);
+  const focus = now.item ?? (items.length > 0 ? items[0] : null);
 
-  const resultText = (it: RunItem): string => {
-    if (it.outcome === "clamped") return `clamped · ${fmtLufs(it.value)}`;
-    if (it.outcome === "unconverged")
-      return it.unverified
-        ? `not confirmed · ${fmtLufs(it.value)}`
-        : `off target · ${fmtLufs(it.value)}`;
-    if (it.outcome === "offbranch") return offbranchStatus(it.silenceHint);
-    if (it.outcome === "skipped")
-      return `skipped · ${it.skipReason ?? "read failed"}`;
-    return `${fmtLufs(it.value)} LUFS`;
-  };
-  const resultColor = (it: RunItem): string =>
-    it.outcome ? t[OUTCOME_TONE[it.outcome]] : t.good;
-  const rowStatus = (it: RunItem): string => {
-    if (it.status === "active")
-      return stopping
-        ? "stopping…"
-        : liveLufs !== null
-          ? `${it.activeMessage ?? "leveling"} · ${fmtLufs(liveLufs)}`
-          : (it.activeMessage ?? "connecting…");
-    if (it.status === "result") return resultText(it);
-    return stopped ? "—" : "waiting";
-  };
-  const targetText = (it: RunItem): string =>
-    `${it.targetName} · ${fmtLufs(targetLufsByName(it.targetName))}`;
-
-  const headerTitle = stopping
-    ? "Stopping…"
-    : stopped
-      ? "Leveling stopped"
-      : done
-        ? "Leveling complete"
-        : activeItem
-          ? `Listening to sound ${String(currentIndex + 1)} of ${String(total)}`
-          : "Saving the last one…";
-  const headerSub = activeItem
-    ? `${activeItem.presetName}, ${activeItem.sceneName}.`
-    : "";
+  // Keep the sound in progress in view as the run moves down the list.
+  const listRef = useRef<HTMLDivElement>(null);
+  const activeKey = items.find((x) => x.status === "active")?.key ?? null;
+  useEffect(() => {
+    if (activeKey == null) return;
+    listRef.current
+      ?.querySelector(`[data-run-row-key="${activeKey}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeKey]);
 
   return (
-    <LevelPage
+    <FlowPage
+      title={`Leveling ${String(total)} ${total === 1 ? "sound" : "sounds"}`}
       step={1}
-      title={headerTitle}
-      sub={headerSub}
-      right={
-        <div style={{ flexShrink: 0, textAlign: "right", minWidth: 132 }}>
-          <div
-            style={{ display: "flex", alignItems: "flex-end", gap: t.space5 }}
-          >
-            <LiveVU values={liveTrace} />
-            <LiveReadout
-              value={liveLufs}
-              format={fmtLufs}
-              unit="LUFS"
-              caption={
-                activeItem
-                  ? `measuring ${activeItem.tag ?? activeItem.sceneName}`
-                  : "measuring…"
-              }
-            />
-          </div>
-        </div>
-      }
-      footerLeft={
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={done}
-          onClick={() => {
-            setConfirm(true);
-          }}
-          style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
-        >
-          Stop
-        </Button>
-      }
-      footerRight={
-        <RunFooterStatus
-          stopped={stopped}
-          done={done}
-          ctaLabel="Continue"
-          onCta={onComplete}
-          running={
-            <span
-              style={{ fontFamily: t.mono, fontSize: 11, color: t.mutedInk }}
+      fill
+      footer={
+        <Footer
+          left={
+            <Button
+              variant="secondary"
+              size="lg"
+              icon="stop"
+              busy={stopping}
+              disabled={over}
+              onClick={() => {
+                setAsking(true);
+              }}
             >
-              Each sound is saved as soon as it matches
-            </span>
+              Stop
+            </Button>
           }
         />
       }
-      footerOverride={
-        confirm ? (
-          <ConfirmBar
-            message="Stop leveling? Everything matched so far stays saved."
-            cancelLabel="Keep going"
-            onCancel={() => {
-              setConfirm(false);
-            }}
-            onConfirm={() => {
-              setConfirm(false);
-              onCancel();
-            }}
-          />
-        ) : undefined
-      }
     >
-      <div style={{ flexShrink: 0 }}>
-        <ProgressBar percent={pct} height={4} />
-        {!done && (
-          <div
+      <div
+        style={{
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: t.sp24,
+          padding: `${String(t.sp12 + t.sp2)}px ${String(t.sp16)}px`,
+          background: t.surface,
+          border: `1px solid ${t.border}`,
+          borderRadius: t.radiusGroup,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: t.sp8 + t.sp2,
+            minWidth: 0,
+            flex: 1,
+          }}
+        >
+          <span
+            aria-live="polite"
             style={{
-              marginTop: t.space3,
-              fontFamily: t.mono,
-              fontSize: 10.5,
-              color: t.faint,
+              fontSize: t.fontLarge,
+              lineHeight: `${String(t.lineLarge)}px`,
+              fontWeight: t.weightSemibold,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
             }}
           >
-            {tailMessage ??
-              `${String(presetN)} preset${presetN === 1 ? "" : "s"} · ${String(total)} sound${total === 1 ? "" : "s"} · saves automatically`}
+            {now.text}
+          </span>
+          {focus && (
+            <LoudnessMeter
+              lufs={now.listening ? lufs : null}
+              target={targetLufsByName(focus.targetName)}
+              targetName={focus.targetName}
+              soundName={focus.sceneName}
+            />
+          )}
+        </div>
+        <div
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-end",
+            gap: t.sp6,
+          }}
+        >
+          <div
+            role="progressbar"
+            aria-label="Sounds done"
+            aria-valuemin={0}
+            aria-valuemax={total}
+            aria-valuenow={done}
+            style={{ width: 140 }}
+          >
+            <ProgressBar percent={total > 0 ? (done / total) * 100 : 0} />
           </div>
-        )}
+          <span
+            style={{
+              fontSize: t.fontCaption,
+              lineHeight: `${String(t.lineCaption)}px`,
+              color: t.textSecondary,
+              whiteSpace: "nowrap",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {`${String(done)} of ${String(total)} done`}
+          </span>
+        </div>
       </div>
 
-      <PresetGroupList
-        label={`${String(groups.length)} preset${groups.length === 1 ? "" : "s"} · ${String(currentIndex)} of ${String(total)} matched`}
+      <div
+        ref={listRef}
+        style={{ flex: "0 1 auto", minHeight: 0, overflowY: "auto" }}
       >
-        {groups.map((g) => {
-          const states = g.items.map((it) => it.status);
-          const allDone = states.every((s) => s === "result");
-          const running = states.some((s) => s === "active");
-          return (
-            <PresetGroupRow
-              key={g.slot}
-              slot={g.slot}
-              name={g.name}
-              open={isOpen(g.slot)}
-              onToggle={() => {
-                toggle(g.slot);
-              }}
-              glyph={
-                allDone ? (
-                  <Icon
-                    name="check"
-                    size={14}
-                    stroke={t.good}
-                    strokeWidth={2}
-                  />
-                ) : running ? (
-                  <Dot color={t.accent} />
-                ) : (
-                  <Dot color={t.faint} hollow />
-                )
-              }
-              tag={
-                <span
-                  style={{
-                    fontFamily: t.mono,
-                    fontSize: 9.5,
-                    letterSpacing: "0.07em",
-                    color: allDone ? t.good : running ? t.accentDeep : t.faint,
-                  }}
-                >
-                  {allDone
-                    ? "done"
-                    : running
-                      ? "listening"
-                      : `${String(g.items.length)} sound${g.items.length === 1 ? "" : "s"}`}
-                </span>
-              }
-              note=""
-              value={
-                allDone
-                  ? `${fmtLufs(targetLufsByName(g.items[0].targetName))} LUFS`
-                  : running
-                    ? ""
-                    : "waiting"
-              }
-              valueColor={allDone ? t.good : t.faint}
-            >
-              {g.items.map((it) => {
-                const active = it.status === "active";
-                const result = it.status === "result";
-                return (
-                  <SoundRowShell
-                    key={it.key}
-                    name={it.sceneName}
-                    nameColor={it.status === "queued" ? t.faint : t.ink2}
-                    glyph={
-                      <>
-                        {active && (
-                          <Spinner
-                            size={14}
-                            stroke={t.sevWarn}
-                            strokeWidth={1.8}
-                          />
-                        )}
-                        {it.status === "queued" && (
-                          <Dot color={t.faint} hollow={stopped} />
-                        )}
-                        {result &&
-                          (it.outcome === "clamped" ? (
-                            <Icon
-                              name="warn-tri"
-                              size={13}
-                              stroke={t.sevWarn}
-                              strokeWidth={1.7}
-                            />
-                          ) : it.outcome === "unconverged" ? (
-                            <Icon
-                              name="refresh"
-                              size={13}
-                              stroke={t.sevWarn}
-                              strokeWidth={1.7}
-                            />
-                          ) : it.outcome === "offbranch" ? (
-                            <Icon
-                              name="x"
-                              size={13}
-                              stroke={t.warn}
-                              strokeWidth={2}
-                            />
-                          ) : it.outcome === "skipped" ? (
-                            <Icon
-                              name="x"
-                              size={12}
-                              stroke={t.mutedInk}
-                              strokeWidth={2}
-                            />
-                          ) : (
-                            <Icon
-                              name="check"
-                              size={13}
-                              stroke={t.good}
-                              strokeWidth={2}
-                            />
-                          ))}
-                      </>
-                    }
-                  >
-                    <span
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        fontFamily: t.mono,
-                        fontSize: 10.5,
-                        color: t.faint,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {hasInstrument(it.instId)
-                        ? `${instrumentName(it.instId)} · `
-                        : ""}
-                      {targetText(it)}
-                    </span>
-                    <span
-                      style={{
-                        width: 120,
-                        textAlign: "right",
-                        flexShrink: 0,
-                        fontFamily: t.sans,
-                        fontSize: 12,
-                        color: active
-                          ? t.sevWarn
-                          : result
-                            ? resultColor(it)
-                            : t.faint,
-                      }}
-                    >
-                      {rowStatus(it)}
-                    </span>
-                  </SoundRowShell>
-                );
-              })}
-            </PresetGroupRow>
-          );
-        })}
-      </PresetGroupList>
-    </LevelPage>
+        <Group label="Sounds being leveled">
+          {groups.map((g) => (
+            <div key={g.slot}>
+              <Row header size="compact">
+                <span style={{ fontWeight: t.weightSemibold }}>{g.name}</span>
+                <SlotLabel index={g.slot} />
+              </Row>
+              {g.items.map((it) => (
+                <RunRow
+                  key={it.key}
+                  item={it}
+                  stopping={stopping}
+                  targetLufs={targetLufsByName(it.targetName)}
+                />
+              ))}
+            </div>
+          ))}
+        </Group>
+      </div>
+
+      <Modal
+        open={asking && !over}
+        label="Stop leveling?"
+        headline="Stop leveling?"
+        body="Everything matched so far stays saved."
+        cancelLabel="Keep leveling"
+        applyLabel="Stop"
+        onCancel={() => {
+          setAsking(false);
+        }}
+        onApply={() => {
+          setAsking(false);
+          onStop();
+        }}
+      />
+    </FlowPage>
+  );
+}
+
+interface RunRowProps {
+  item: RunItem;
+  stopping: boolean;
+  targetLufs: number;
+}
+
+/** One sound of the run: mark, name (a footswitch says which one), target, state word. */
+function RunRow({ item, stopping, targetLufs }: RunRowProps) {
+  const { t } = useTheme();
+  const state = runRowState(item, stopping, targetLufs);
+  const fs = footswitchNo(item);
+  const secondary = {
+    fontSize: t.fontCaption,
+    color: t.textSecondary,
+    whiteSpace: "nowrap",
+  } as const;
+  return (
+    <Row
+      size="compact"
+      data-run-row={setupRowHookKey(item)}
+      data-run-row-key={item.key}
+    >
+      <StatusMark kind={state.mark} />
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          alignItems: "baseline",
+          gap: t.sp8,
+          overflow: "hidden",
+        }}
+      >
+        <span
+          style={{
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {item.sceneName}
+        </span>
+        {fs != null && (
+          <span style={secondary}>{`footswitch ${String(fs)}`}</span>
+        )}
+      </span>
+      <span
+        style={{
+          ...secondary,
+          width: 70,
+          flexShrink: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {item.targetName}
+      </span>
+      <span
+        style={{
+          width: 150,
+          flexShrink: 0,
+          textAlign: "right",
+          fontSize: t.fontCaption,
+          whiteSpace: "nowrap",
+          color:
+            state.tone === "good"
+              ? t.good
+              : state.tone === "text"
+                ? t.text
+                : t.textSecondary,
+        }}
+      >
+        {state.word}
+      </span>
+    </Row>
   );
 }

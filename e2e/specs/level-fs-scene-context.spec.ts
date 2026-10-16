@@ -13,6 +13,7 @@ import {
   simEvents,
   soundBox,
   startLeveling,
+  summaryDone,
 } from "../fixtures/scenario";
 
 // PR #144 NEW COVERAGE — the D3 scene context (Set up's "Level it in scene" dropdown, a
@@ -131,9 +132,7 @@ test.describe("Level Setup — footswitch scene-context override rides the wire 
     await startLeveling(page).click();
     // Per this file's header, the per-row OUTCOME is not observable offline (the Channel
     // seam) — wait for the terminal state without asserting what it says.
-    await expect(
-      page.getByRole("button", { name: /^(Done|Accept)$/ }),
-    ).toBeVisible({ timeout: 240_000 });
+    await expect(summaryDone(page)).toBeVisible({ timeout: 240_000 });
 
     const events = (await simEvents(page)).slice(from);
     const reAmpIdx = events.findIndex(isReAmpOn);

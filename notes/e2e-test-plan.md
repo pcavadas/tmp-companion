@@ -142,35 +142,43 @@ the list stays mounted, hidden, underneath it, so a text query that is not scope
 - **L7 — Setup: for all** — "Target for all" ("By name" / a target / "Mixed") and, with 2+
   presets, "Instrument for all"; one instrument per preset, saved for the preset; per-row Target,
   Block, Knob and "Level it in scene" dropdowns.
-- **L8 — Setup: backup ack gating** — "Level N sounds" disabled until backup checkbox ticked (fresh
-  run only; re-level hides it). Disabled at total=0.
+- **L8 — Setup: backup ack gating** — "Start leveling" disabled until the backup checkbox is
+  ticked. The Summary's "Try again" re-runs without Set up, so it never asks again. Disabled at
+  total=0.
 - **L9 — "Balance its two amps first"** — per preset, shown only where the backend can rebalance;
-  default off; on → ByEarChip + rebalance footnote band.
+  default off; on → a rebalanced sound's Summary row says "Check by ear" with the two-amp reason.
 - **L10 — Run: whole preset** — fires `level_preset` + `level_scenes_apply_batched` +
-  `level_footswitches_apply`; live LUFS strip; auto-advance to Summary 650 ms after natural finish.
+  `level_footswitches_apply`; the now line and the LoudnessMeter (no numbers) follow the sound in
+  progress; auto-advance to Summary 650 ms after natural finish.
 - **L11 — Run: Base-only / scene-only / footswitch-only** — verify only the relevant command(s)
   fire (footswitch-only dispatches `level_footswitches_apply`, not `level_preset`).
-- **L12 — Summary: all-good** — "All N sounds leveled", green, "Done" (clears selection).
-- **L13 — Summary: clamped** — clamped group + amber "lower the target" banner + **Re-level clamped
-  subset** (→ Setup, re-level mode, backup ack hidden). Off-branch → "Needs routing", never offered
-  re-level.
-- **L14 — By-ear footnotes** — dynamic (spread ≥6 LU) and rebalance reasons; one chip per row;
-  closing line spells out only the causes present.
+- **L12 — Summary: all-good** — "All N sounds leveled.", "Everything is saved on your Tone Master
+  Pro.", only "Done" (clears selection).
+- **L13 — Summary: needs you** — a full-volume clamp says "Already at full volume, so it can't reach
+  <target>. Choose a quieter target for it." with no button and outside "Try again (N)"; the way
+  to a quieter target is Done → the list → Set up (the clamp loop, `level-defaults.spec.ts`).
+  Off-target, not confirmed, unread and not-reached sounds, and a save that didn't hold, are in
+  "Try again (N)", which runs them straight away (no Set up, no backup tick) and updates the same
+  Summary. Off-branch → the routing sentence, never tried again.
+- **L14 — Check by ear / Loud peaks** — envelope, wet-floor and rebalance causes; at most one badge
+  per row (Loud peaks wins); a cause or loud peaks shared by two or more sounds becomes one Notice.
 
 ### Monkey/chaos (the high-value gaps — near-zero existing coverage)
 
-- **M-L1 — Stop mid-run, then Continue.** Stop during scene 2 of 3 → all three cancel lanes fire,
-  in-flight ~6 s capture finishes, "Stopping…"→"Leveling stopped", remaining items "Not leveled",
-  **already-written levels stay saved**, Continue → Summary. **Verify the unit is NOT left
-  input-muted** (the reason `clearScenario` calls `e2e_reamp_off`). _No UI test exists for this._
-- **M-L2 — Stop then Re-level the partial.** After a stopped run, re-level the clamped/leftover set.
+- **M-L1 — Stop mid-run → Summary.** Stop (confirmed in "Stop leveling?") during scene 2 of 3 →
+  all three cancel lanes fire, the in-flight capture winds down, "Stopping after <sound> in
+  <preset>" → the Summary on its own, remaining sounds "Not reached", **already-written levels
+  stay saved**. **Verify the unit is NOT left input-muted** (the reason `clearScenario` calls
+  `e2e_reamp_off`). _No hardware UI test exists for this._
+- **M-L2 — Stop, then Try again.** After a stopped run, "Try again (N)" runs the not-reached set
+  straight away and the same Summary comes back updated (offline: `level-defaults.spec.ts`
+  scenario 4).
 - **M-L3 — Cancel → reopen → run again.** Re-issues commands fresh (no stale cross-run cache —
   vitest covers the assertion, but verify live).
-- **M-L4 — Backdrop/Escape probing per stage.** Setup: no backdrop/Escape (full-page) — confirm
-  clicking outside does nothing. Run: backdrop/Escape **blocked**. Summary: backdrop = Cancel
-  (closes, does NOT clear selection — asymmetry vs Done). Verify each.
-- **M-L5 — Double-click the primary.** Double-click "Level N sounds" / "Done" / "Re-level" — must
-  fire once, not start two runs.
+- **M-L4 — Backdrop/Escape probing per stage.** Set up, the run and the Summary are pages (no
+  backdrop); the run's "Stop leveling?" dialog ignores a backdrop click and Escape. Verify each.
+- **M-L5 — Double-click the primary.** Double-click "Level N sounds" / "Start leveling" / "Try
+  again (N)" / "Done" — must fire once, not start two runs.
 - **M-L6 — Tab-switch mid-run / mid-scan.** Switch away during an active run and during the backup
   scan; return. Hero must survive remount (module-scoped store); run state and shared `libraryScan`
   must not corrupt. _Only single remount-with-push is covered._

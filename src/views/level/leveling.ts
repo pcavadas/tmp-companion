@@ -329,8 +329,8 @@ export interface SetupOption {
   sceneSlot: number | null;
   /** Display name: "Main sound" / the scene name / the footswitch's name. */
   sceneName: string;
-  /** Tag chip for the run and Doctor rows: "BASE" | `FS${n}` | null (em-dash for an
-   *  untagged named scene). Set up shows none (a footswitch says "footswitch 3"). */
+  /** Tag chip for the Doctor rows: "BASE" | `FS${n}` | null (em-dash for an untagged
+   *  named scene). Level shows none (a footswitch says "footswitch 3"). */
   tag: string | null;
   /** False ⇒ a preset with no scenes and no footswitches. */
   hasScenes: boolean;
@@ -361,12 +361,6 @@ export interface SetupOption {
    *  the wire `scenes[]` slots — the scene-context picker's label source (D3). Undefined
    *  for Base/scene rows. */
   fsSceneNames?: string[];
-  /** Re-run rows only: the instrument profile id this sound was last leveled with, so
-   *  Set up seeds the row with it instead of the first profile. Undefined for a fresh row. */
-  instId?: string;
-  /** Re-run rows only: the target name this sound was last leveled at, so Set up seeds
-   *  the row with it instead of the first target. Undefined for a fresh row. */
-  targetName?: string;
 }
 
 /** A user-chosen BASE leveling control — the block param `level_preset` should drive
@@ -382,7 +376,8 @@ export interface BaseHandlePick {
   parameterId: string;
 }
 
-/** The e2e-hook identity for a setup row (`SetupPage`'s `data-setup-row`) —
+/** The e2e-hook identity for a setup row (`SetupPage`'s `data-setup-row`, and the
+ *  Summary's `data-summary-row` and footswitch scene dropdown) —
  *  DELIBERATELY DISTINCT from `SetupOption.key` (the SELECTION key: `sel`/`rows` Map
  *  lookups and the React list key, unchanged by this function). A footswitch's `key`
  *  is `fswKey`'s POSITION within the levelable-filtered footswitch list, so a fixture
@@ -396,7 +391,9 @@ export interface BaseHandlePick {
  *  the 0-based wire sceneSlot"), i.e. already an IDENTITY, not a filtered-list
  *  position, so it needs no translation. Base rows keep `p<slot>` (nothing to
  *  disambiguate). */
-export function setupRowHookKey(o: SetupOption): string {
+export function setupRowHookKey(
+  o: Pick<SetupOption, "slot" | "sceneSlot" | "footswitch">,
+): string {
   if (o.footswitch != null) {
     return `f${String(o.slot)}:sw${String(o.footswitch.switchIndex)}`;
   }
@@ -639,21 +636,6 @@ export function chosenFrom(
 export type Outcome =
   "done" | "clamped" | "unconverged" | "offbranch" | "skipped";
 
-/** The theme colour role each outcome renders in — ONE mapping for the Run page's result
- *  text and the Summary's problem rows, so the two pages can't drift. `notrun` is a
- *  sound a stopped run never reached (no outcome). */
-export const OUTCOME_TONE: Record<
-  Outcome | "notrun",
-  "good" | "sevWarn" | "warn" | "mutedInk"
-> = {
-  done: "good",
-  clamped: "sevWarn",
-  unconverged: "sevWarn",
-  offbranch: "warn",
-  skipped: "mutedInk",
-  notrun: "mutedInk",
-};
-
 export interface RunItem {
   key: string;
   /** 0-based list index of the preset. */
@@ -663,7 +645,6 @@ export interface RunItem {
   /** 0-based scenes[] wire slot, or null for the Base/whole-preset step. */
   sceneSlot: number | null;
   sceneName: string;
-  tag: string | null;
   /** Set ⇒ a block-acting FOOTSWITCH step (dispatched to `levelFootswitchesApply`);
    *  null/undefined ⇒ Base (`level_preset`) or FS scene (`level_scenes_apply_batched`). */
   footswitch?: FootswitchTarget | null;
@@ -673,17 +654,6 @@ export interface RunItem {
   targetName: string;
   // live + final:
   status: "queued" | "active" | "result";
-  /** Backend-supplied caption for an active row, rendered two ways by `RunPage`'s
-   *  `rowStatus` depending on whether a capture is streaming:
-   *   - streaming -> it is the VERB before the live number. The ceiling prepass sends
-   *     "measuring", giving `measuring · −18.9`; a message-less solve row reads `leveling · …`.
-   *   - not streaming -> it is a NOTE, shown verbatim; absent one the row reads
-   *     "connecting…".
-   *  A message sent while a capture streams is therefore a verb by construction — that is the
-   *  contract the backend's `leveller::PREPASS_ACTIVE_MSG` documents on its side. Scene/
-   *  footswitch channel items only; cleared when the row resolves or a cancelled sweep
-   *  reverts it, so a later re-run's default is never shadowed by a stale caption. */
-  activeMessage?: string | null;
   outcome?: Outcome;
   /** The write landed but its check capture failed, so the row's number is a prediction —
    *  shown as `unconverged` ("run it again") with its own copy. */
@@ -742,15 +712,15 @@ export interface RunItem {
   reampStillOn?: boolean;
 }
 
-/** One preset row of the wizard lists: its slot, its name and its nested items. */
+/** One preset of the run list: its slot, its name and its sounds. */
 export interface PresetGroup<T> {
   slot: number;
   name: string;
   items: T[];
 }
 
-/** Group run items by preset slot, ascending — the shape both Run and Summary render
- *  (one `PresetGroupRow` per preset, its items nested inside). */
+/** Group run items by preset slot, ascending — the run page's list (a header per preset,
+ *  its sounds under it). */
 export function groupItemsBySlot(items: RunItem[]): PresetGroup<RunItem>[] {
   const by = new Map<number, PresetGroup<RunItem>>();
   items.forEach((it) => {
@@ -764,9 +734,9 @@ export function groupItemsBySlot(items: RunItem[]): PresetGroup<RunItem>[] {
   return [...by.values()].sort((a, b) => a.slot - b.slot);
 }
 
-/** The offbranch ("silent capture") row status, refined by the preset's JSON-visible
- *  cause when the backup scan found one. Rendered verbatim in RunPage; used only to
- *  branch copy in SummaryPage. */
+/** The offbranch ("silent capture") status, refined by the preset's JSON-visible cause
+ *  when the backup scan found one — Doctor's no-signal line. (Level's run and Summary
+ *  word the same causes from `silenceHint` directly.) */
 export function offbranchStatus(hint: SilenceHint | undefined): string {
   if (hint === "amp_zero") return "amp output at zero";
   if (hint === "exp_mute") return "exp pedal may mute";
@@ -786,36 +756,12 @@ export function optionToRunItem(
     isBase: o.isBase,
     sceneSlot: o.sceneSlot,
     sceneName: o.sceneName,
-    tag: o.tag,
     footswitch: o.footswitch ?? null,
     instId,
     targetName,
     status: "queued",
     handle: o.sceneHandle,
     baseHandle: o.baseHandle,
-  };
-}
-
-/** Rebuild a setup row from a (clamped) run item — for "Re-level clamped…", which
- *  reopens setup pre-loaded with just the clamped scenes, all checked, no scan.
- *  ponytail: the RunItem doesn't carry `levelParams`, so a re-leveled footswitch keeps
- *  its already-chosen param but can't be re-picked (the param column renders empty).
- *  Add `levelParams` to RunItem if re-pick-on-relevel is ever wanted. */
-export function runItemToOption(it: RunItem): SetupOption {
-  return {
-    key: it.key,
-    slot: it.slot,
-    presetName: it.presetName,
-    isBase: it.isBase,
-    sceneSlot: it.sceneSlot,
-    sceneName: it.sceneName,
-    tag: it.tag,
-    hasScenes: !it.isBase || it.tag != null,
-    footswitch: it.footswitch ?? null,
-    sceneHandle: it.handle,
-    baseHandle: it.baseHandle,
-    instId: it.instId,
-    targetName: it.targetName,
   };
 }
 

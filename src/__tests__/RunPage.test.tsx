@@ -1,17 +1,16 @@
-// src/__tests__/RunPage.test.tsx — the run step's live-capture contract and its
-// per-preset grouped rows (design handoff 1a). The live readout lives in the step
-// HEADER (once per run, never per row) and shows the LATEST streamed value; a row
-// states its own scene name and target rather than one concatenated label — the
-// preset name and slot now live once on the GROUP header, not repeated per row.
-// Mirrors the advisory semantics — no assertion that the live value ≈ the result
-// value. Replaces `RunBody.test.tsx`.
+// src/__tests__/RunPage.test.tsx — the leveling run page (look B): a constant title, the
+// now line naming the sound in progress, one LoudnessMeter against its target (no
+// numbers anywhere), "N of M done", a header per preset and one row per sound with its
+// mark, target and state word, and Stop behind a "Stop leveling?" dialog that a stray
+// click can't dismiss. Backend captions never reach the screen.
 
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { act, screen } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 
 import { RunPage } from "../views/level/RunPage";
+import type { RunPhase } from "../views/level/levelRunStore";
 import {
   instrumentName,
   NO_INSTRUMENT,
@@ -24,229 +23,298 @@ beforeEach(() => {
   setLiveMeter(IDLE_METER);
 });
 
-const activeItem: RunItem = {
-  key: "k0",
+const sound = (over: Partial<RunItem>): RunItem => ({
+  key: "s27:1",
   slot: 27,
   presetName: "E2E Hiwatt 3S",
   isBase: false,
   sceneSlot: 1,
   sceneName: "Rhythm Crunch",
-  tag: "FS7",
   instId: "",
   targetName: "Stage",
-  status: "active",
-};
+  status: "queued",
+  ...over,
+});
+const active = sound({ status: "active" });
 
 /** The page with the live meter (its own store) reading `liveLufs`. */
 function runPage(
-  liveLufs: number | null,
-  items: RunItem[] = [activeItem],
-  tailMessage: string | null = null,
+  items: RunItem[],
+  over: {
+    liveLufs?: number | null;
+    phase?: RunPhase;
+    tailMessage?: string | null;
+    onStop?: () => void;
+    onComplete?: () => void;
+  } = {},
 ): ReactElement {
   act(() => {
-    setLiveMeter({ lufs: liveLufs, trace: [] });
+    setLiveMeter({ lufs: over.liveLufs ?? null });
   });
   return (
     <RunPage
       items={items}
-      currentIndex={0}
+      currentIndex={items.filter((x) => x.status === "result").length}
       total={items.length}
-      phase="running"
-      tailMessage={tailMessage}
-      instrumentName={() => "Telecaster"}
-      targetLufsByName={() => -26}
-      onCancel={vi.fn()}
-      onComplete={vi.fn()}
+      phase={over.phase ?? "running"}
+      tailMessage={over.tailMessage ?? null}
+      targetLufsByName={(name) => (name === "Lead" ? -19 : -26)}
+      onStop={over.onStop ?? vi.fn()}
+      onComplete={over.onComplete ?? vi.fn()}
     />
   );
 }
 
-describe("RunPage live measuring strip", () => {
-  it("shows the readout (latest value + measuring caption) during an active capture", () => {
-    renderWithTheme(runPage(-23.1));
-    expect(screen.getByText("−23.1")).toBeInTheDocument();
-    expect(screen.getByText("LUFS")).toBeInTheDocument();
-    expect(screen.getByText("measuring FS7")).toBeInTheDocument();
-    // The row's own status cell keeps its own live number; "connecting…" is only
-    // the pre-capture state.
-    expect(screen.getByText("leveling · −23.1")).toBeInTheDocument();
-    expect(screen.queryByText("connecting…")).not.toBeInTheDocument();
-  });
+const rowOf = (key: string) => {
+  const el = document.querySelector(`[data-run-row-key="${key}"]`);
+  if (!(el instanceof HTMLElement)) throw new Error(`no run row ${key}`);
+  return el;
+};
 
-  it("renders the latest value when it updates (no smoothing, just the newest)", () => {
-    const { rerender } = renderWithTheme(runPage(-30.0));
-    expect(screen.getByText("−30.0")).toBeInTheDocument();
-    rerender(runPage(-21.6));
-    expect(screen.getByText("−21.6")).toBeInTheDocument();
-    expect(screen.queryByText("−30.0")).not.toBeInTheDocument();
-  });
-
-  it("shows a dash placeholder (never a fabricated 0.0) and the measuring caption while nothing streams yet, with the row itself connecting", () => {
-    renderWithTheme(runPage(null));
-    expect(screen.getByText("—")).toBeInTheDocument();
-    expect(screen.queryByText("0.0")).not.toBeInTheDocument();
-    expect(screen.getByText("measuring FS7")).toBeInTheDocument();
-    // The header readout has no live value to show yet, but the ROW's own status
-    // cell still states its pre-capture state plainly.
-    expect(screen.getByText("connecting…")).toBeInTheDocument();
-  });
-
-  // GATE (user report, preset 30 "Plumes+BD2+OCD"): the ceiling prepass measures every
-  // footswitch row before anything is solved, ~10 s a row, and used to be invisible — one
-  // row held the highlight for the whole minute while the unit stepped through four, so the
-  // run read as "leveling the wrong footswitch". The backend now captions those rows
-  // (`leveller::PREPASS_ACTIVE_MSG`); the caption must reach the row as its VERB, or the
-  // phase is still indistinguishable from the solve.
-  it("uses the backend caption as the verb while a capture streams", () => {
+describe("RunPage: the sound in progress", () => {
+  it("a constant title, the now line, the meter against the target, and progress", () => {
     renderWithTheme(
-      runPage(-18.9, [{ ...activeItem, activeMessage: "measuring" }]),
+      runPage(
+        [
+          sound({ key: "a", status: "result", outcome: "done", value: -26 }),
+          active,
+          sound({ key: "c" }),
+        ],
+        { liveLufs: -23.1 },
+      ),
     );
-    expect(screen.getByText("measuring · −18.9")).toBeInTheDocument();
-    expect(screen.queryByText("leveling · −18.9")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Leveling 3 sounds" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Level")).toHaveAttribute("aria-current", "step");
+    expect(
+      screen.getByText("Listening to Rhythm Crunch in E2E Hiwatt 3S"),
+    ).toBeInTheDocument();
+    const meter = screen.getByRole("meter", {
+      name: "Loudness of Rhythm Crunch now, against its target",
+    });
+    expect(meter).toHaveAttribute("aria-valuetext", "Louder than Stage");
+    expect(screen.getByText("Quieter")).toBeInTheDocument();
+    expect(screen.getByText("Louder")).toBeInTheDocument();
+    expect(
+      screen.getByRole("progressbar", { name: "Sounds done" }),
+    ).toHaveAttribute("aria-valuenow", "1");
+    expect(screen.getByText("1 of 3 done")).toBeInTheDocument();
+    // No loudness number, no LUFS anywhere on the run.
+    expect(screen.queryByText(/LUFS/)).toBeNull();
+    expect(screen.queryByText(/[−-]\d+\.\d/)).toBeNull();
   });
 
-  it("keeps the default verb for a solve row, which carries no caption", () => {
-    renderWithTheme(runPage(-23.1));
-    expect(screen.getByText("leveling · −23.1")).toBeInTheDocument();
+  // GATE (user report, preset 30 "Plumes+BD2+OCD", registry 2026-08-20): the ceiling
+  // prepass measures every footswitch row before anything is solved, and one row used to
+  // hold the highlight while the unit stepped through four. The highlight now follows the
+  // row the backend announces, and the now line names THAT sound; its caption ("measuring")
+  // is the backend's and never reaches the screen.
+  it("follows the row the backend announces, in the now line and the row", () => {
+    const items = [
+      sound({ key: "f0", sceneName: "Pinions" }),
+      sound({ key: "f1", sceneName: "Sapphire OD", status: "active" }),
+    ];
+    renderWithTheme(runPage(items, { liveLufs: -18.9 }));
+    expect(
+      screen.getByText("Listening to Sapphire OD in E2E Hiwatt 3S"),
+    ).toBeInTheDocument();
+    expect(within(rowOf("f1")).getByText("Listening")).toBeInTheDocument();
+    expect(within(rowOf("f0")).getByText("Waiting")).toBeInTheDocument();
+    expect(screen.getAllByText("Listening")).toHaveLength(1);
+    expect(screen.queryByText(/measuring|leveling/)).toBeNull();
   });
 
-  // The other half of the caption contract: a message sent while NOTHING streams is a note,
-  // not a verb, and must never be composed with a number.
-  it("renders a caption verbatim when nothing is streaming", () => {
-    const note = "saving preset…";
-    renderWithTheme(runPage(null, [{ ...activeItem, activeMessage: note }]));
-    expect(screen.getByText(note)).toBeInTheDocument();
-    expect(screen.queryByText("connecting…")).not.toBeInTheDocument();
-  });
-
-  it("renders the live readout ONCE, in the header — never per row", () => {
-    const second: RunItem = { ...activeItem, key: "k1", status: "queued" };
-    renderWithTheme(runPage(-23.1, [activeItem, second]));
-    expect(screen.getAllByText("LUFS")).toHaveLength(1);
-  });
-
-  it("never shows a live number on a resolved row (the result row is the confirm)", async () => {
-    const resolved: RunItem = {
-      ...activeItem,
-      status: "result",
-      outcome: "done",
-      value: -18.0,
-    };
-    // Even if a late event left liveLufs non-null, a non-active row shows its result.
-    renderWithTheme(runPage(-21.6, [resolved]));
-    // No item is "active", so the group doesn't auto-open — expand it to reach the row.
-    await userEvent.click(screen.getByText("E2E Hiwatt 3S"));
-    expect(screen.queryByText("leveling · −21.6")).not.toBeInTheDocument();
-    // A plain match's checkmark glyph already says "done" — the text is just the
-    // reading (unlike clamped/off-target/skipped, which each carry their own prefix).
-    expect(screen.getByText("−18.0 LUFS")).toBeInTheDocument();
+  // Issue 6b (registry 2026-08-29): a batch's save/verify tail has no row of its own, so the
+  // page must not look idle; it says the preset is finishing, never the backend's word.
+  it("a batch's save tail reads as the preset finishing", () => {
+    renderWithTheme(
+      runPage(
+        [sound({ key: "a", status: "result", outcome: "done", value: -26 })],
+        { tailMessage: "Saving…" },
+      ),
+    );
+    expect(screen.getByText("Finishing E2E Hiwatt 3S")).toBeInTheDocument();
+    expect(screen.queryByText("Saving…")).toBeNull();
   });
 });
 
-describe("RunPage grouped rows", () => {
-  it("states the scene name on its own row, and the preset name + slot once on the group", () => {
-    renderWithTheme(runPage(null));
-    // The sound's own name owns its row.
-    expect(screen.getByText("Rhythm Crunch")).toBeInTheDocument();
-    // The preset name and slot live once on the GROUP header, never repeated as a
-    // per-row concatenated label.
+describe("RunPage: the run list", () => {
+  it("a header per preset (name and slot), the sound's own name and target on its row", () => {
+    renderWithTheme(
+      runPage([
+        active,
+        sound({
+          key: "f27:0",
+          sceneName: "Boost",
+          sceneSlot: null,
+          footswitch: {
+            switchIndex: 2,
+            levGroupId: "G1",
+            levNodeId: "boost",
+            levParameterId: "level",
+            sceneContext: null,
+          },
+        }),
+      ]),
+    );
     expect(screen.getByText("E2E Hiwatt 3S")).toBeInTheDocument();
     expect(screen.getByText("028")).toBeInTheDocument();
     expect(
-      screen.queryByText("E2E Hiwatt 3S · Rhythm Crunch"),
-    ).not.toBeInTheDocument();
-    // Every row states what it is aiming at.
-    expect(screen.getByText("Stage · −26.0")).toBeInTheDocument();
+      within(rowOf("s27:1")).getByText("Rhythm Crunch"),
+    ).toBeInTheDocument();
+    expect(within(rowOf("s27:1")).getByText("Stage")).toBeInTheDocument();
+    expect(
+      within(rowOf("f27:0")).getByText("footswitch 3"),
+    ).toBeInTheDocument();
   });
 
-  // The Result cell is an if-chain whose fallthrough is "done", so a miss state with no
-  // branch of its own reports as LEVELED — the reason unconverged needs one here too.
-  it("states an unconverged row as off target, not done and not clamped", async () => {
-    const missed: RunItem = {
-      ...activeItem,
-      status: "result",
-      outcome: "unconverged",
-      value: -24.3,
-    };
-    renderWithTheme(runPage(null, [missed]));
-    // No item is "active", so the group doesn't auto-open — expand it to reach the row.
-    await userEvent.click(screen.getByText("E2E Hiwatt 3S"));
-    expect(screen.getByText("off target · −24.3")).toBeInTheDocument();
-    expect(screen.queryByText("done · −24.3")).not.toBeInTheDocument();
-    expect(screen.queryByText(/clamped/)).not.toBeInTheDocument();
-  });
-
-  // A skipped row carries the backend's own reason when one came over the progress
-  // channel (a scene-write policy refusal, a per-scene failure) — the generic
-  // "read failed" is only the fallback for a skip with no message.
-  it("states a skipped row's backend reason verbatim", async () => {
-    const reason = "shares the base preset’s knobs — level Base instead";
-    const skipped: RunItem = {
-      ...activeItem,
-      status: "result",
-      outcome: "skipped",
-      skipReason: reason,
-    };
-    renderWithTheme(runPage(null, [skipped]));
-    await userEvent.click(screen.getByText("E2E Hiwatt 3S"));
-    expect(screen.getByText(`skipped · ${reason}`)).toBeInTheDocument();
-    expect(screen.queryByText(/read failed/)).not.toBeInTheDocument();
-  });
-
-  it("falls back to read failed for a skip with no reason", async () => {
-    const skipped: RunItem = {
-      ...activeItem,
-      status: "result",
-      outcome: "skipped",
-    };
-    renderWithTheme(runPage(null, [skipped]));
-    await userEvent.click(screen.getByText("E2E Hiwatt 3S"));
-    expect(screen.getByText("skipped · read failed")).toBeInTheDocument();
-  });
-});
-
-// Issue 6b: the batch-wide tail caption ("Saving…" / "Verifying…") has no row of its
-// own — it surfaces once, under the progress bar.
-describe("RunPage tail caption (issue 6b)", () => {
-  const defaultCaption = /preset.*sound.*saves automatically/;
-
-  it("renders tailMessage in place of the default caption while set", () => {
-    renderWithTheme(runPage(null, [activeItem], "Saving…"));
-    expect(screen.getByText("Saving…")).toBeInTheDocument();
-    expect(screen.queryByText(defaultCaption)).not.toBeInTheDocument();
-  });
-
-  it("falls back to the default caption when no tail is set", () => {
-    renderWithTheme(runPage(null, [activeItem], null));
-    expect(screen.getByText(defaultCaption)).toBeInTheDocument();
+  // Every outcome's word comes from typed fields; the fallthrough must never read "On
+  // target" for a miss (an unconverged row once reported as leveled).
+  it.each<[string, Partial<RunItem>, string]>([
+    ["done", { outcome: "done", value: -26 }, "On target"],
+    [
+      "full volume",
+      { outcome: "clamped", value: -28, clampKind: "scene_ceiling" },
+      "At full volume",
+    ],
+    [
+      "mix floor",
+      { outcome: "clamped", value: -20, clampKind: "wet_floor" },
+      "Can't go quieter",
+    ],
+    [
+      "knob bottom",
+      { outcome: "clamped", value: -20, clampKind: "scene_ceiling" },
+      "Can't go quieter",
+    ],
+    [
+      "trade backed out",
+      { outcome: "clamped", value: -28, clampKind: "partial_trade" },
+      "Couldn't level it",
+    ],
+    [
+      "off target",
+      { outcome: "unconverged", value: -24 },
+      "Didn't reach its target",
+    ],
+    [
+      "not confirmed",
+      { outcome: "unconverged", unverified: true },
+      "Not confirmed",
+    ],
+    ["can't hear it", { outcome: "offbranch" }, "Can't hear it"],
+    [
+      "skipped",
+      { outcome: "skipped", skipKind: "other", skipReason: "capture failed" },
+      "Couldn't level it",
+    ],
+    [
+      "stopped in flight",
+      { outcome: "skipped", skipKind: "cancelled" },
+      "Not reached",
+    ],
+    [
+      "save didn't hold",
+      { outcome: "done", value: -26, persistMismatch: true },
+      "Save didn't hold",
+    ],
+  ])("%s → its word", (_, over, word) => {
+    renderWithTheme(runPage([sound({ status: "result", ...over })]));
+    expect(within(rowOf("s27:1")).getByText(word)).toBeInTheDocument();
+    // The backend's reason goes to the log, never the row.
+    expect(screen.queryByText(/capture failed/)).toBeNull();
   });
 });
 
-// BUG→GATE #287: picking instrument "None" stored the `"none"` sentinel, and the row label
-// fell back to the raw id ("none · Rhythm · −27.0"). The no-instrument choice now drops the
-// instrument segment, and `instrumentName` names it instead of echoing the id.
+// BUG→GATE #287: picking instrument "None" stored the `"none"` sentinel, and a run row
+// showed it raw. Look B shows no instrument on the run at all; the sentinel is named
+// where an instrument is shown (Doctor).
 describe("RunPage row label for the no-instrument choice (#287)", () => {
   it("shows no raw id for a sound leveled with instrument None", () => {
-    renderWithTheme(
-      <RunPage
-        items={[{ ...activeItem, instId: NO_INSTRUMENT, status: "queued" }]}
-        currentIndex={0}
-        total={1}
-        phase="running"
-        tailMessage={null}
-        instrumentName={(id) => instrumentName([], id)}
-        targetLufsByName={() => -26}
-        onCancel={vi.fn()}
-        onComplete={vi.fn()}
-      />,
-    );
+    renderWithTheme(runPage([sound({ instId: NO_INSTRUMENT })]));
     expect(screen.queryByText(/\bnone\b/)).toBeNull();
-    expect(screen.queryByText(/No instrument/)).toBeNull();
   });
 
   it("names the no-instrument choice instead of echoing its id", () => {
     expect(instrumentName([], NO_INSTRUMENT)).toBe("No instrument");
     expect(instrumentName([], "")).toBe("No instrument");
     expect(instrumentName([], "gone")).toBe("gone");
+  });
+});
+
+describe("RunPage: Stop", () => {
+  it("asks first; a click outside does nothing; Keep leveling carries on", async () => {
+    const onStop = vi.fn();
+    renderWithTheme(runPage([active], { onStop }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    const dialog = screen.getByRole("dialog", { name: "Stop leveling?" });
+    expect(dialog).toHaveTextContent("Everything matched so far stays saved.");
+    // The scrim is inert: only the dialog's own buttons close it.
+    const scrim = document.querySelector("[data-backdrop]");
+    if (!(scrim instanceof HTMLElement)) throw new Error("no scrim");
+    await user.click(scrim);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Keep leveling" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("Stop in the dialog stops the run", async () => {
+    const onStop = vi.fn();
+    renderWithTheme(runPage([active], { onStop }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Stop" }),
+    );
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("while stopping: the now line says after which sound, and Stop is busy", () => {
+    renderWithTheme(runPage([active], { phase: "stopping" }));
+    expect(
+      screen.getByText("Stopping after Rhythm Crunch in E2E Hiwatt 3S"),
+    ).toBeInTheDocument();
+    expect(within(rowOf("s27:1")).getByText("Stopping")).toBeInTheDocument();
+    const stop = screen.getByRole("button", { name: "Stop" });
+    expect(stop).toBeDisabled();
+    expect(stop).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("the dialog closes when the run ends while it is open", async () => {
+    const view = renderWithTheme(runPage([active]));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    view.rerender(
+      runPage([sound({ status: "result", outcome: "done", value: -26 })], {
+        phase: "done",
+      }),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+  });
+
+  it("a natural finish goes on to the Summary after a beat", () => {
+    vi.useFakeTimers();
+    try {
+      const onComplete = vi.fn();
+      renderWithTheme(
+        runPage([sound({ status: "result", outcome: "done", value: -26 })], {
+          phase: "done",
+          onComplete,
+        }),
+      );
+      expect(onComplete).not.toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(700);
+      });
+      expect(onComplete).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

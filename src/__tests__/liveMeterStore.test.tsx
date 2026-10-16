@@ -47,22 +47,20 @@ describe("live meter store", () => {
     const meterBefore = meterRenders;
 
     act(() => {
-      pushLiveMeter(-23.1, -22);
-      pushLiveMeter(-22.8, -21);
+      pushLiveMeter(-23.1);
+      pushLiveMeter(-22.8);
     });
 
     expect(meterRenders).toBeGreaterThan(meterBefore);
     expect(flowRenders).toBe(flowBefore);
   });
 
-  it("keeps the last 24 momentary hops and clears to idle", () => {
+  it("shows the latest reading and clears to idle", () => {
     const { result } = renderHook(() => useLiveMeter());
     act(() => {
-      for (let i = 0; i < 30; i++) pushLiveMeter(-20, i);
+      for (let i = 0; i < 30; i++) pushLiveMeter(-30 + i / 10);
     });
-    expect(result.current.lufs).toBe(-20);
-    expect(result.current.trace).toHaveLength(24);
-    expect(result.current.trace[0]).toBe(6);
+    expect(result.current.lufs).toBeCloseTo(-27.1);
     act(() => {
       setLiveMeter(IDLE_METER);
     });
