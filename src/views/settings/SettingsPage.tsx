@@ -1,6 +1,6 @@
 // src/views/settings/SettingsPage.tsx — one Settings page's content column (look B): the
 // shared `PageColumn` (title row over a scrolling body), 640 px at most and
-// left-aligned, beside the sidebar.
+// centred beside the sidebar.
 
 import type { ReactNode } from "react";
 

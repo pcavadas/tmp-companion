@@ -8,6 +8,7 @@ import { screen } from "@testing-library/react";
 import { PageState } from "../ui/PageState";
 import { Steps } from "../ui/Steps";
 import { PageHead } from "../ui/PageHead";
+import { PageColumn } from "../ui/PageColumn";
 import { SplitView } from "../ui/SplitView";
 import { RailItem } from "../ui/Rail";
 import { Footer } from "../ui/Footer";
@@ -306,5 +307,25 @@ describe("Dialog — the look B card", () => {
     expect(card.style.background).toBe(toRgb(light.surface));
     expect(card.style.borderRadius).toBe("10px");
     expect(card.style.border).toBe("");
+  });
+});
+
+describe("PageColumn", () => {
+  // Songs and Settings: the title row and the body share one width-capped column,
+  // centred beside the sidebar rather than hugging it.
+  it("centres the title row and the body in the same capped column", () => {
+    renderWithTheme(
+      <PageColumn title="Loudness targets" maxWidth={640}>
+        <p>Rows</p>
+      </PageColumn>,
+    );
+    const head = screen
+      .getByRole("heading", { name: "Loudness targets" })
+      .closest<HTMLElement>('[style*="max-width"]');
+    const body = screen.getByText("Rows").parentElement;
+    for (const col of [head, body]) {
+      expect(col?.style.maxWidth).toBe("640px");
+      expect(col?.style.margin).toBe("0px auto");
+    }
   });
 });

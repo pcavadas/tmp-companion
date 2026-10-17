@@ -1,8 +1,8 @@
 // src/ui/PageColumn.tsx — a SplitView page's content column (look B; Songs and Settings):
 // the page title row (padding 16/24/12) over a body that scrolls on its own (padding
-// 0/24/20, items 12 apart). One column, `maxWidth` at most and left-aligned, so a wide
-// window keeps the rows a readable length instead of stretching them across the screen
-// (Songs 720, Settings 640).
+// 0/24/20, items 12 apart). One column, `maxWidth` at most and centred in the space beside
+// the sidebar, so a wide window keeps the rows a readable length instead of stretching
+// them across the screen, and the page doesn't hug the sidebar (Songs 720, Settings 640).
 
 import type { ReactNode } from "react";
 
@@ -40,7 +40,7 @@ export function PageColumn({
           padding: `${String(t.sp16)}px ${String(t.sp24)}px ${String(t.sp12)}px`,
         }}
       >
-        <div style={{ maxWidth }}>
+        <div style={{ maxWidth, margin: "0 auto" }}>
           <PageHead title={title} subtitle={subtitle} actions={actions} />
         </div>
       </div>
@@ -55,6 +55,7 @@ export function PageColumn({
         <div
           style={{
             maxWidth,
+            margin: "0 auto",
             display: "flex",
             flexDirection: "column",
             gap: t.sp12,
