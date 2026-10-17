@@ -35,8 +35,8 @@ export function useTheme(): ThemeContextValue {
 }
 
 /**
- * Returns the composed-style registry (search-box / popover / measure-pill /
- * icon-button styles). Pairs with `useTheme()`:
+ * Returns the composed-style registry (search box, popover card, menu card).
+ * Pairs with `useTheme()`:
  *   `const { t } = useTheme(); const s = useStyles();`
  * It's a stable module-level constant (the theme is static), so it never causes
  * a re-render and is safe to read outside a provider too.

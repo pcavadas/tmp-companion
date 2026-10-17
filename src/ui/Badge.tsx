@@ -2,8 +2,8 @@
 //
 // 18 high, `radiusSmall`, 12 px/500, sentence case, no border. Five tones: `neutral`
 // (`segmentTrack` fill, `text`), `good`, `caution`, `danger` (their `*Fill` and text
-// colour) and `accent` ("Changed" in Copy only). Optional 11 px leading icon. At most one
-// badge per row. Replaces Tag (kept as a mapping shim in ./Tag) and the mono chips.
+// colour) and `accent` ("Changed" in Copy only; `accentFill` and `link`). Optional 11 px
+// leading icon. At most one badge per row. It replaced the old Tag and the mono chips.
 
 import type { ReactNode } from "react";
 
@@ -35,8 +35,7 @@ function badgePaint(
     case "danger":
       return { bg: t.dangerFill, fg: t.danger };
     case "accent":
-      // No B token names this fill yet; it is the frames' terracotta tint.
-      return { bg: t.accentBadgeSoft, fg: t.link };
+      return { bg: t.accentFill, fg: t.link };
   }
 }
 

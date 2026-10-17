@@ -3,7 +3,7 @@
 // 56 high, `window` fill, a 1 px `border` rule on top, padding 0 16 px. Left: the
 // secondary, back or cancel actions. Right: a caption or the reason a main action is
 // greyed, then the main action, always visible (pushed right even when the left is
-// empty). Replaces ActionBar (kept as a re-export) and the wizard's own footer.
+// empty). It replaced the old ActionBar and the wizard's own footer.
 
 import type { ReactNode } from "react";
 

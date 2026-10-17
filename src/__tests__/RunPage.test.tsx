@@ -12,7 +12,7 @@ import type { ReactElement } from "react";
 import { RunPage } from "../views/level/RunPage";
 import type { RunPhase } from "../views/level/levelRunStore";
 import {
-  instrumentName,
+  instrumentOptions,
   NO_INSTRUMENT,
   type RunItem,
 } from "../views/level/leveling";
@@ -228,8 +228,9 @@ describe("RunPage: the run list", () => {
 });
 
 // BUG→GATE #287: picking instrument "None" stored the `"none"` sentinel, and a run row
-// showed it raw. Look B shows no instrument on the run at all; the sentinel is named
-// where an instrument is shown (Doctor).
+// showed it raw. Look B shows no instrument on the run at all; the only place an
+// instrument is shown is its Select (Level's Set up, Doctor's Instrument page), whose
+// options come from `instrumentOptions`, which names the sentinel "None".
 describe("RunPage row label for the no-instrument choice (#287)", () => {
   it("shows no raw id for a sound leveled with instrument None", () => {
     renderWithTheme(runPage([sound({ instId: NO_INSTRUMENT })]));
@@ -237,9 +238,18 @@ describe("RunPage row label for the no-instrument choice (#287)", () => {
   });
 
   it("names the no-instrument choice instead of echoing its id", () => {
-    expect(instrumentName([], NO_INSTRUMENT)).toBe("No instrument");
-    expect(instrumentName([], "")).toBe("No instrument");
-    expect(instrumentName([], "gone")).toBe("gone");
+    const none = instrumentOptions([]).find((o) => o.value === NO_INSTRUMENT);
+    expect(none?.label).toBe("None");
+    expect(
+      instrumentOptions([
+        {
+          id: "p1",
+          name: "Strat",
+          topology_id: "guitar-single",
+          calibration_lufs: null,
+        },
+      ]).map((o) => o.label),
+    ).toEqual(["None", "Strat"]);
   });
 });
 

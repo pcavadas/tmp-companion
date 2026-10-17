@@ -11,7 +11,7 @@ TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~90 `invoke` com
 
 ## Layout at a glance
 
-`src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (five feature folders — `level`, `doctor`, `copy`, `songs`, `settings` — plus a flat `CatalogView` and `views/overlays/` for the leveling wizard), and `App.tsx` (shell routing). Full file tree: `references/ui-components.md`.
+`src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (five feature folders — `level`, `doctor`, `copy`, `songs`, `settings` — plus a flat `CatalogView` and `views/overlays/`, which now holds only the Level flow's stage switch), and `App.tsx` (shell routing). Full file tree: `references/ui-components.md`.
 
 The app is **click-only by design** — no keyboard shortcuts, no command palette (the ⌘K palette was deleted on purpose). Enter/Escape inside a focused text input, committing or cancelling that field's own edit, is exempt — see the carve-out in `CLAUDE.md`.
 
@@ -21,7 +21,7 @@ A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prot
 
 1. **Read the whole handoff first**, and enumerate every deliverable it lists.
 2. **Reconcile the design against the codebase before coding.** A handoff may **refine an already-shipped feature**, not add a new one.
-3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/`okSoft`/green means GREEN — map it to `good`/`goodSoft`/`goodBorder`, amber→`sevWarn`, error→`warn` (see Theme tokens below). There is no `t.ok`/`t.err`/`t.info` (the old terracotta/grey severity aliases were deleted as unused); never reintroduce an `ok` alias, which read terracotta where green was intended.
+3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/green means GREEN — map it to `good`/`goodFill`, amber→`caution`/`cautionFill` (+ `cautionLine` for an edge), error→`danger`/`dangerFill` (the full table is in `references/theme-tokens.md`). There is no `t.ok`/`t.err`/`t.info` alias; never reintroduce one (an old `ok` alias read terracotta where green was intended).
 4. **One component per file.** Split a multi-component prototype into focused files under the right feature folder, each re-exported from the folder's `index.ts`.
 5. **A Catalog-tab handoff that changes catalog DATA must keep the test oracles in sync.**
 
@@ -31,10 +31,10 @@ A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prot
 
 Two hooks, both from `theme/ThemeContext`:
 
-- `const { t } = useTheme();` — `t` is the token object (colors, fonts, sizes, radii, letter-spacing). LIGHT-ONLY; there is no dark mode.
-- `const s = useStyles();` — `s` is the composed-style registry; entries like `s.kicker(color)` are factories returning a `CSSProperties` object.
+- `const { t } = useTheme();` — `t` is the token object: the look B groups (`color`, `type`, `space`, `radius`, `size`, `elevation` — e.g. `t.window`, `t.surface`, `t.text`, `t.action`, `t.fontBody`, `t.sp12`, `t.radiusControl`, `t.row`) plus the frozen signal-path tokens. LIGHT-ONLY; there is no dark mode.
+- `const s = useStyles();` — `s` is the composed-style registry (`s.searchBox`, `s.popoverCard`, `s.menuCard`).
 
-`src/theme/tokens.ts` is the source of truth for token names — **read it** rather than trusting a summary here.
+`src/theme/tokens.ts` is the source of truth for token names — **read it** rather than trusting a summary here. Three rules the tests enforce (`DSPrimitives.test.tsx` source scans): the signal-path tokens (`bgAlt`, `ink`, `mono`, `space5`, …) are read ONLY by the frozen diagram files (`ui/BlockArt.tsx`, `ui/blockart/`, `models/blockArt.ts`, `views/SignalChainView.tsx`, `views/ActiveSignalChainView.tsx`, `views/signalChain/`), which you never edit; the type is Inter only in four sizes (12/13/15/20) — no serif, mono or uppercase; and the one letter-spacing is `trackingTitle` on PageHead's title. Section labels are `sectionLabel(t)` (sentence case); selection is grey (`rowSelected`), never terracotta.
 
 Styling is **inline `style={{}}` objects**, read straight off `t`. This is the deliberate house style — do not reach for CSS modules, styled-components, Tailwind, or a className system. The full token table + the composed-style list live in `references/theme-tokens.md`.
 

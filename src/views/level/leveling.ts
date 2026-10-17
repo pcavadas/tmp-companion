@@ -217,23 +217,6 @@ export function instrumentOptions(
   ];
 }
 
-/** True when `id` names an instrument profile rather than the no-instrument choice. An
- *  empty id counts as no instrument too. */
-export function hasInstrument(id: string): boolean {
-  return id !== "" && id !== NO_INSTRUMENT;
-}
-
-/** Resolve an instrument profile id → its display name (the run-row chip): "No
- *  instrument" for the no-instrument choice, else the profile's name, falling back to the
- *  raw id for an unknown/removed profile. */
-export function instrumentName(
-  profiles: Profile[] | undefined,
-  id: string,
-): string {
-  if (!hasInstrument(id)) return "No instrument";
-  return (profiles ?? []).find((p) => p.id === id)?.name ?? id;
-}
-
 /** The row name for a footswitch: the player's own `customLabel` when set, else the
  *  toggled block's friendly name (many presets leave the label blank — a nameless row
  *  is useless, so fall back to e.g. "Tube Screamer" from the leveled block's id).

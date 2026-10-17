@@ -1,6 +1,5 @@
 // src/ui/EmptyState.tsx — the DS empty state (look B). Device and app states are a
-// `PageState`; this is the in-pane "nothing here" message (`PaneEmpty` is its old name,
-// re-exported from ./PaneEmpty until the clean-up step).
+// `PageState`; this is the in-pane "nothing here" message (it was `PaneEmpty`).
 //
 // Says what's missing and offers the one thing to do about it, centred in its pane: a
 // 24 px outline icon in `textDisabled`, a 13/600 title (h2), an optional one-line body

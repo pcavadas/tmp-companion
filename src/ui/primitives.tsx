@@ -22,12 +22,7 @@ import { Icon, type IconName } from "./Icon";
 import { Spinner } from "./Spinner";
 import { ProgressBar } from "./ProgressBar";
 import { useTheme, useStyles } from "../theme/ThemeContext";
-import {
-  plainButton,
-  plainInput,
-  sectionLabel,
-  type ThemeTokens,
-} from "../theme/tokens";
+import { plainButton, plainInput, type ThemeTokens } from "../theme/tokens";
 
 // ===========================================================================
 // Button — look B kinds: `primary` (action fill, 600), `secondary` (white with a
@@ -36,10 +31,10 @@ import {
 // `lg` 32 high. `busy` keeps the words and adds a 12 px spinner before them (a busy
 // button is disabled). Disabled filled buttons turn `track` with `textDisabled` text.
 //
-// Kept names: `ghost` is a permanent alias of `secondary` (the frozen
-// ActiveSignalChainView renders it), `warn` an alias of `danger` until the clean-up
-// step, and `bare` is NOT a look B kind but the native-button reset (no padding, no
-// type scale) behind the clickable rows, cells, chips and glyphs.
+// Two more names: `ghost` is a permanent alias of `secondary` (the frozen
+// ActiveSignalChainView renders it), and `bare` is NOT a look B kind but the
+// native-button reset (no padding, no type scale) behind the clickable rows, cells,
+// chips and glyphs.
 //
 // EVERY clickable control is a real <button>, so it is reachable by Tab and VoiceOver
 // and activates on Space/Enter natively — the app adds no key handlers of its own
@@ -49,14 +44,7 @@ import {
 // ===========================================================================
 
 export type ButtonVariant =
-  | "primary"
-  | "secondary"
-  | "plain"
-  | "link"
-  | "danger"
-  | "ghost"
-  | "warn"
-  | "bare";
+  "primary" | "secondary" | "plain" | "link" | "danger" | "ghost" | "bare";
 export type ButtonSize = "sm" | "md" | "lg";
 
 type ButtonKind = "primary" | "secondary" | "plain" | "link" | "danger";
@@ -68,7 +56,6 @@ const BUTTON_KIND: Record<Exclude<ButtonVariant, "bare">, ButtonKind> = {
   plain: "plain",
   link: "link",
   danger: "danger",
-  warn: "danger",
 };
 
 export interface ButtonProps extends ComponentPropsWithRef<"button"> {
@@ -249,14 +236,10 @@ export interface ModalProps {
   open: boolean;
   /** Accessible name for the dialog — plain text, since `headline` may be markup. */
   label: string;
-  /** Optional short caption above the title (12 px semibold, danger colour). */
-  kicker?: string;
   /** The title: says what happens. */
   headline: ReactNode;
   /** Optional body: what's safe, what can't be undone. */
   body?: ReactNode;
-  /** Optional detail block on the window grey (ids, scope). */
-  code?: ReactNode;
   /** Apply / confirm label (default "Apply"). */
   applyLabel?: ReactNode;
   /** Cancel label (default "Cancel"). */
@@ -270,10 +253,8 @@ export interface ModalProps {
 export function Modal({
   open,
   label,
-  kicker,
   headline,
   body,
-  code,
   applyLabel = "Apply",
   cancelLabel = "Cancel",
   onApply,
@@ -286,24 +267,17 @@ export function Modal({
     // No onClose: the backdrop is inert, so a stray click can't cancel a confirm.
     <Dialog size="xs" label={label}>
       <DialogHeader>
-        <div style={{ display: "flex", flexDirection: "column", gap: t.sp4 }}>
-          {kicker && (
-            <span style={{ ...sectionLabel(t), color: t.danger }}>
-              {kicker}
-            </span>
-          )}
-          <h2
-            style={{
-              margin: 0,
-              fontSize: t.fontLarge,
-              lineHeight: `${String(t.lineLarge)}px`,
-              fontWeight: t.weightSemibold,
-              color: t.text,
-            }}
-          >
-            {headline}
-          </h2>
-        </div>
+        <h2
+          style={{
+            margin: 0,
+            fontSize: t.fontLarge,
+            lineHeight: `${String(t.lineLarge)}px`,
+            fontWeight: t.weightSemibold,
+            color: t.text,
+          }}
+        >
+          {headline}
+        </h2>
       </DialogHeader>
       <DialogBody>
         {body && (
@@ -315,22 +289,6 @@ export function Modal({
             }}
           >
             {body}
-          </div>
-        )}
-        {code != null && (
-          <div
-            style={{
-              marginTop: t.sp12,
-              padding: t.sp12,
-              background: t.window,
-              borderRadius: t.radiusSmall,
-              fontSize: t.fontCaption,
-              lineHeight: `${String(t.lineCaption)}px`,
-              color: t.textSecondary,
-              fontVariantNumeric: "tabular-nums",
-            }}
-          >
-            {code}
           </div>
         )}
       </DialogBody>
@@ -1086,39 +1044,6 @@ export function TextArea({
         }}
       />
     </label>
-  );
-}
-
-// ===========================================================================
-// AlertBanner — the inline `role="alert"` danger banner, in the look B danger
-// Notice's colours (`dangerFill`, no edge, `radiusPanel`, 13 px `text`). Kept for
-// its callers' free-form children until each moves to `Notice`; pass `style` for the
-// per-surface deltas (margin / padding).
-// ===========================================================================
-
-export interface AlertBannerProps {
-  children: ReactNode;
-  style?: CSSProperties;
-}
-
-export function AlertBanner({ children, style }: AlertBannerProps) {
-  const { t } = useTheme();
-  return (
-    <div
-      role="alert"
-      style={{
-        borderRadius: t.radiusPanel,
-        background: t.dangerFill,
-        color: t.text,
-        fontFamily: t.fontSans,
-        fontSize: t.fontBody,
-        lineHeight: `${String(t.lineBody)}px`,
-        padding: `${String(t.sp8)}px ${String(t.sp12)}px`,
-        ...style,
-      }}
-    >
-      {children}
-    </div>
   );
 }
 

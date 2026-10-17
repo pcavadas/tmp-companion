@@ -1,5 +1,5 @@
 // src/__tests__/LookBLayout.test.tsx — the look B page pieces: PageState, Steps,
-// PageHead, SplitView (and its RailItems), Footer (and its ActionBar re-export), Badge,
+// PageHead, SplitView (and its RailItems), Footer, Badge,
 // the restyled EmptyState, and the Dialog card + its `xs` confirm width.
 
 import { describe, it, expect } from "vitest";
@@ -11,7 +11,6 @@ import { PageHead } from "../ui/PageHead";
 import { SplitView } from "../ui/SplitView";
 import { RailItem } from "../ui/Rail";
 import { Footer } from "../ui/Footer";
-import { ActionBar } from "../ui/ActionBar";
 import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
 import { Dialog, DialogBody } from "../ui/Dialog";
@@ -188,7 +187,7 @@ describe("SplitView", () => {
   });
 });
 
-describe("Footer (and its ActionBar re-export)", () => {
+describe("Footer", () => {
   it("is 56 high on the window grey with a border on top; the main action sits right", () => {
     const { container } = renderWithTheme(
       <Footer
@@ -204,10 +203,6 @@ describe("Footer (and its ActionBar re-export)", () => {
       name: "Start leveling",
     }).parentElement;
     expect(right?.style.marginLeft).toBe("auto");
-  });
-
-  it("ActionBar is the same component under its old name", () => {
-    expect(ActionBar).toBe(Footer);
   });
 });
 
@@ -228,7 +223,6 @@ describe("Badge", () => {
     expect(loaded.style.fontSize).toBe("12px");
     expect(loaded.style.fontWeight).toBe("500");
     expect(loaded.style.border).toBe("");
-    expect(loaded.style.textTransform).toBe("");
     expect(loaded.style.color).toBe(toRgb(light.text));
     expect(screen.getByText("Loud peaks").style.color).toBe(
       toRgb(light.caution),
@@ -239,6 +233,13 @@ describe("Badge", () => {
     const rec = screen.getByText("Recorded");
     expect(rec.style.color).toBe(toRgb(light.good));
     expect(rec.querySelector("svg")?.getAttribute("width")).toBe("11");
+  });
+
+  it('accent (Copy\'s "Changed"): the terracotta tint with link-coloured words', () => {
+    renderWithTheme(<Badge tone="accent">Changed</Badge>);
+    const el = screen.getByText("Changed");
+    expect(el.style.background).toBe(light.accentFill.replace(/,/g, ", "));
+    expect(el.style.color).toBe(toRgb(light.link));
   });
 });
 

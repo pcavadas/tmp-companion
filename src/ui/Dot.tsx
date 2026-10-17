@@ -2,8 +2,7 @@
 // words that say the same thing, so the dot itself is `aria-hidden`.
 //
 // Tones: `good`, `caution` (`cautionLine`), `danger`, `neutral` (`meter`), and
-// `working` (`accent` with a soft halo). Hollow = waiting (a 1.5 px ring). `color` is
-// the legacy per-site colour for callers not yet on a tone; `tone` wins over it.
+// `working` (`accent` with a soft `accentFill` halo). Hollow = waiting (a 1.5 px ring).
 
 import { useTheme } from "../theme/ThemeContext";
 import type { ThemeTokens } from "../theme/tokens";
@@ -13,9 +12,7 @@ export type DotTone = "good" | "caution" | "danger" | "neutral" | "working";
 export interface DotProps {
   /** default 8. */
   size?: number;
-  tone?: DotTone;
-  /** Legacy custom colour; ignored when `tone` is given. */
-  color?: string;
+  tone: DotTone;
   /** Outline-only — waiting (a stopped run's tail, a queued row). */
   hollow?: boolean;
 }
@@ -35,9 +32,9 @@ function toneColor(t: ThemeTokens, tone: DotTone): string {
   }
 }
 
-export function Dot({ size = 8, tone, color, hollow }: DotProps) {
+export function Dot({ size = 8, tone, hollow }: DotProps) {
   const { t } = useTheme();
-  const c = tone ? toneColor(t, tone) : (color ?? t.meter);
+  const c = toneColor(t, tone);
   return (
     <span
       aria-hidden
@@ -47,10 +44,9 @@ export function Dot({ size = 8, tone, color, hollow }: DotProps) {
         borderRadius: t.radiusPill,
         background: hollow ? "transparent" : c,
         border: hollow ? `1.5px solid ${c}` : undefined,
-        // The halo is the frames' terracotta tint; no B token names it yet.
         boxShadow:
           tone === "working" && !hollow
-            ? `0 0 0 3px ${t.accentBadgeSoft}`
+            ? `0 0 0 3px ${t.accentFill}`
             : undefined,
         boxSizing: "border-box",
         flexShrink: 0,

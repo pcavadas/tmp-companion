@@ -239,10 +239,10 @@ export function SetlistDetail({
         border: `1px solid ${t.controlBorder}`,
         borderRadius: t.radiusControl,
         background: t.surface,
-        fontFamily: t.fontSans,
-        fontSize: t.fontTitle,
-        fontWeight: t.weightSemibold,
-        letterSpacing: t.trackingTitle,
+        // The field sits in PageHead's title: it takes the title's own type and
+        // tracking, so the name doesn't move when the rename opens.
+        font: "inherit",
+        letterSpacing: "inherit",
       }}
     />
   ) : (

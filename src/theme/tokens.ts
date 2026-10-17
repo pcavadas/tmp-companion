@@ -1,20 +1,14 @@
 // src/theme/tokens.ts — design tokens, look B ("Mac utility"). LIGHT-ONLY.
 //
-// Replaces the previous token set. Three parts, one object:
+// Two parts, one object:
 //
 //   1. The B tokens. Everything outside the signal-path diagram uses these.
-//   2. SIGNAL-PATH TOKENS. Read by the keep-as-is files (src/ui/BlockArt.tsx,
-//      src/ui/blockart/, src/models/blockArt.ts, src/views/SignalChainView.tsx,
-//      src/views/ActiveSignalChainView.tsx, src/views/signalChain/). Names and
-//      values are frozen, except `bgAlt`, which is now white so the diagram sits
-//      on white in look B. Do not use these in new code.
-//   3. DEPRECATED aliases. The rest of the old token names, with their OLD
-//      values, so the app compiles and looks unchanged until each screen moves to
-//      the B tokens. Each one names its replacement. Delete a line once nothing
-//      reads it; delete the block when it is empty.
-//
-// Same name, new value: `track`, `good`, `scrim` and `shadowMenu` keep their
-// names and take the B value straight away.
+//   2. SIGNAL-PATH TOKENS. Read ONLY by the keep-as-is diagram files
+//      (src/ui/BlockArt.tsx, src/ui/blockart/, src/models/blockArt.ts,
+//      src/views/SignalChainView.tsx, src/views/ActiveSignalChainView.tsx,
+//      src/views/signalChain/). Names and values are frozen, except `bgAlt`, which
+//      is white so the diagram sits on white. Nothing else reads them: a Vitest
+//      source scan (DSPrimitives.test.tsx) fails the build if another file does.
 //
 // `bgAlt` is the diagram's own background, nothing else's. Outside the diagram a
 // grey fill reads `window` (window, toolbar, footer, sidebars) or `groupHeader`
@@ -61,6 +55,9 @@ export const color = {
   /** Brand terracotta for marks that aren't controls: progress fill, live meter,
    *  the target tick, the app icon. */
   accent: "#d97757",
+  /** Terracotta tint behind an accent Badge ("Changed") and the halo around a
+   *  working Dot. The frames use it; it isn't a selection colour. */
+  accentFill: "rgba(217,119,87,0.14)",
   /** Fill of everything you click that's "on": primary button, ticked checkbox,
    *  switch on, focus ring (white on it is 4.6:1). */
   action: "#bd5632",
@@ -228,72 +225,9 @@ const signalPath = {
 };
 
 // ---------------------------------------------------------------------------
-// 3. DEPRECATED aliases (old values; each names its B replacement)
-// ---------------------------------------------------------------------------
-const deprecated = {
-  inset: "#eef0f3", // use `window`
-  titlebar: "#ffffff", // use `window`
-  onInk: "#ffffff", // use `onAction`
-  bgFrost: "rgba(255,255,255,0.92)", // use `surface` (drop the frosted header)
-  rowSel: "rgba(15,17,21,0.035)", // use `rowSelected`
-  hover: "rgba(15,17,21,0.05)", // use `rowHover`
-  knob: "#ffffff", // use `surface`
-  knobRing: "rgba(15,17,21,0.25)", // use `controlBorder`
-  toggleTrack: "rgba(15,17,21,0.14)", // use `switchOff`
-  accentBadgeSoft: "rgba(217,119,87,0.14)", // use `rowSelected` (selection is grey in B)
-  accentBorderSoft: "rgba(217,119,87,0.3)", // use `rowSelected`
-  warnSoft: "rgba(167,70,31,0.08)", // use `dangerFill`
-  warnBorder: "rgba(167,70,31,0.45)", // use `danger`
-  warnBorderSoft: "rgba(167,70,31,0.4)", // use `danger`
-  goodSoft: "rgba(63,125,78,0.10)", // use `goodFill`
-  goodBorder: "rgba(63,125,78,0.4)", // use `goodFill` (no bordered badges)
-  sevWarnSoft: "rgba(176,125,28,0.08)", // use `cautionFill`
-  sevWarnChipBorder: "rgba(176,125,28,0.4)", // use `cautionLine`
-  sevWarnChipSoft: "rgba(176,125,28,0.10)", // use `cautionFill`
-  record: "#c0392b", // use `danger`
-  recordSoft: "rgba(192,57,43,0.16)", // use `dangerFill`
-  badgeStereo: "#2f6c98", // use `textSecondary` (model badges become plain Badges)
-  badgeConv: "#6a4ba0", // use `textSecondary`
-  shadowModal: "0 40px 80px -16px rgba(15,17,21,0.28)", // use `shadowDialog`
-  shadowKnob: "0 1px 3px rgba(0,0,0,0.25)", // use `shadowSegment`
-  shadowAccentEdge: "0 1px 0 rgba(217,119,87,0.08)", // remove (SongForm edge)
-
-  fsTitle: 24, // use `fontTitle`
-  fsSheet: 21, // use `fontLarge`
-  fsCard: 16, // use `fontLarge`
-  fsName: 14.5, // use `fontBody` + `weightMedium`
-  fsBody2: 13.5, // use `fontBody`
-  fsBody: 13, // use `fontBody`
-  fsControl: 12.5, // use `fontBody`
-  fsMeta: 10.5, // use `fontCaption`
-  fsMicro: 9.5, // use `fontCaption` (no kickers)
-  fsMicro2: 9, // use `fontCaption` (no kickers)
-
-  space9: 20, // use `sp24`
-  space10: 24, // use `sp24`
-  space11: 28, // use `sp24` or `sp32`
-  space12: 32, // use `sp32`
-  space13: 48, // use `sp32`
-
-  rSm: 3, // use `radiusSmall`
-  rMenuItem: 5, // use `radiusSmall`
-  rMd: 7, // use `radiusControl`
-  rPopover: 12, // use `radiusPanel`
-  rDialog: 14, // use `radiusGroup`
-  rPill: 999, // use `radiusPill`
-
-  lsTight: "-0.01em", // use `trackingTitle`
-  lsMeta: "0.02em", // remove (no tracked labels)
-  lsLabel: "0.1em", // remove (no uppercase labels)
-  lsWide: "0.12em", // remove (no uppercase labels)
-  lsKicker: "0.14em", // remove (no uppercase labels)
-};
-
-// ---------------------------------------------------------------------------
 // The single token object. `useTheme()` returns it as `t`.
 // ---------------------------------------------------------------------------
 export const light = {
-  ...deprecated,
   ...signalPath,
   ...color,
   ...type,
@@ -305,66 +239,7 @@ export const light = {
 
 export type ThemeTokens = typeof light;
 
-// Old exports kept so imports still resolve while screens move over.
-/** @deprecated use `space` */
-export const spacing = {
-  space1: 2,
-  space2: 4,
-  space3: 6,
-  space4: 8,
-  space5: 10,
-  space6: 12,
-  space7: 14,
-  space8: 16,
-  space9: 20,
-  space10: 24,
-  space11: 28,
-  space12: 32,
-  space13: 48,
-};
-/** @deprecated use `type` */
-export const typeScale = {
-  fsTitle: 24,
-  fsSheet: 21,
-  fsSubhead: 19,
-  fsCard: 16,
-  fsName: 14.5,
-  fsName2: 14,
-  fsBody2: 13.5,
-  fsBody: 13,
-  fsUi: 12,
-  fsControl: 12.5,
-  fsLabel: 11.5,
-  fsData: 11,
-  fsMeta: 10.5,
-  fsData2: 10,
-  fsMicro: 9.5,
-  fsMicro2: 9,
-  fsTag: 8.5,
-};
-/** @deprecated use `radius` */
-export const radii = {
-  rSm: 3,
-  rMenuItem: 5,
-  rBtn: 6,
-  rMd: 7,
-  rCard: 8,
-  rLg: 9,
-  rPopover: 12,
-  rDialog: 14,
-  rPill: 999,
-};
-/** @deprecated remove with the uppercase labels */
-export const letterSpacing = {
-  lsTight: "-0.01em",
-  lsMeta: "0.02em",
-  lsTag: "0.08em",
-  lsLabel: "0.1em",
-  lsWide: "0.12em",
-  lsKicker: "0.14em",
-};
-
-/** Section label: sentence case, 12 px semibold, secondary. Replaces `microLabel`. */
+/** Section label: sentence case, 12 px semibold, secondary. */
 export function sectionLabel(t: ThemeTokens): CSSProperties {
   return {
     fontFamily: t.fontSans,
@@ -372,18 +247,6 @@ export function sectionLabel(t: ThemeTokens): CSSProperties {
     lineHeight: `${String(t.lineCaption)}px`,
     fontWeight: t.weightSemibold,
     color: t.textSecondary,
-  };
-}
-
-/** Superseded by `sectionLabel`: uppercase mono kickers are gone in B. Kept
- *  until its last reader moves. */
-export function microLabel(t: ThemeTokens): CSSProperties {
-  return {
-    fontFamily: t.mono,
-    fontSize: t.fsMicro,
-    letterSpacing: t.lsKicker,
-    textTransform: "uppercase",
-    color: t.mutedInk,
   };
 }
 

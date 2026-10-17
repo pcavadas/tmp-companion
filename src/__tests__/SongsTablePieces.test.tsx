@@ -33,8 +33,8 @@ describe("All songs header row — the list's column labels", () => {
     expect(within(list).getByText("№")).toBeTruthy();
     expect(within(list).getByText("Song")).toBeTruthy();
     expect(within(list).queryByText(/^bpm$/i)).toBeNull();
-    // No uppercase column labels in look B.
-    expect(within(list).getByText("Song").style.textTransform).toBe("");
+    // No uppercase column labels in look B: DSPrimitives' source scan forbids
+    // uppercase outside the diagram.
   });
 });
 

@@ -48,18 +48,11 @@ describe("Button — look B kinds and sizes", () => {
     }
   });
 
-  it("danger (and warn, its alias until clean-up): danger fill, white text", () => {
-    renderWithTheme(
-      <>
-        <Button variant="danger">Delete setlist</Button>
-        <Button variant="warn">Stop</Button>
-      </>,
-    );
-    for (const name of ["Delete setlist", "Stop"]) {
-      const b = screen.getByRole("button", { name });
-      expect(b.style.background).toBe(toRgb(light.danger));
-      expect(b.style.color).toBe(toRgb(light.onAction));
-    }
+  it("danger: danger fill, white text", () => {
+    renderWithTheme(<Button variant="danger">Delete setlist</Button>);
+    const b = screen.getByRole("button", { name: "Delete setlist" });
+    expect(b.style.background).toBe(toRgb(light.danger));
+    expect(b.style.color).toBe(toRgb(light.onAction));
   });
 
   it("plain has no edge; link is link-coloured with no side padding", () => {
@@ -476,7 +469,6 @@ describe("SegmentedControl — look B", () => {
     const on = screen.getByRole("radio", { name: "Setlists" });
     expect(on.getAttribute("aria-checked")).toBe("true");
     expect(on.style.backgroundColor).toBe(toRgb(light.surface));
-    expect(on.style.textTransform).toBe("");
     fireEvent.click(screen.getByRole("radio", { name: "Presets" }));
     expect(onChange).toHaveBeenCalledWith("presets");
   });

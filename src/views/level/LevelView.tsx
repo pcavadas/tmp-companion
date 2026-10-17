@@ -265,10 +265,12 @@ export function LevelView({
 
   const sceneTag = useMemo<SceneTag | null>(() => {
     if (!activeHasScenes) return null;
-    if (live.syncing) return { text: "—", tone: t.faint, neutral: true };
+    // The tag is the diagram's own label (its words and case are unchanged); only
+    // its colours come from here, as B tokens.
+    if (live.syncing) return { text: "—", tone: t.textDisabled, neutral: true };
     return {
       text: onBase ? "BASE" : (liveSceneName ?? "").toUpperCase(),
-      tone: t.accentDeep,
+      tone: t.link,
     };
   }, [activeHasScenes, live.syncing, onBase, liveSceneName, t]);
 

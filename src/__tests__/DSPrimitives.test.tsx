@@ -8,7 +8,16 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { light, microLabel, sectionLabel } from "../theme/tokens";
+import {
+  color,
+  elevation,
+  light,
+  radius,
+  sectionLabel,
+  size,
+  space,
+  type as typeScale,
+} from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { ICONS } from "../ui/iconNames";
 import { BlockArt } from "../ui/BlockArt";
@@ -21,10 +30,9 @@ import {
   Button,
   SearchInput,
 } from "../ui/primitives";
-import { Tag } from "../ui/Tag";
 import { EmptyState } from "../ui/EmptyState";
-import { PaneEmpty } from "../ui/PaneEmpty";
 import { Spinner } from "../ui/Spinner";
+import { SkelStatus } from "../ui/Skeleton";
 import { Dot } from "../ui/Dot";
 import { renderWithTheme, toRgb } from "./testKit";
 
@@ -45,7 +53,8 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-/** The signal-path diagram's files: the only readers `bgAlt` may have. */
+/** The signal-path diagram's files (frozen): the only readers the signal-path tokens,
+ *  serif, mono, uppercase and letter-spacing may have. */
 const DIAGRAM_FILES = [
   /^ui\/BlockArt\.tsx$/,
   /^ui\/blockart\//,
@@ -54,6 +63,24 @@ const DIAGRAM_FILES = [
   /^views\/ActiveSignalChainView\.tsx$/,
   /^views\/signalChain\//,
 ];
+
+/** Every non-diagram source file under src/, as [path relative to src, text]. */
+function nonDiagramSources(): [string, string][] {
+  const src = join(process.cwd(), "src");
+  return sourceFiles(src)
+    .map((f) => relative(src, f).split("\\").join("/"))
+    .filter((rel) => !DIAGRAM_FILES.some((re) => re.test(rel)))
+    .map((rel) => [rel, readFileSync(join(src, rel), "utf8")]);
+}
+
+/** The B token names. */
+const B_KEYS = new Set<string>(
+  [color, typeScale, space, radius, size, elevation].flatMap((g) =>
+    Object.keys(g),
+  ),
+);
+/** The frozen signal-path tokens: every name on the token object that isn't B's. */
+const SIGNAL_PATH_KEYS = Object.keys(light).filter((k) => !B_KEYS.has(k));
 
 describe("tokens — light-only set, look B", () => {
   it("carries the B values on the single token object", () => {
@@ -90,37 +117,61 @@ describe("tokens — light-only set, look B", () => {
     expect(light.sevWarn).toBe("#b07d1c");
   });
 
-  it("keeps the old aliases at their old values until their readers move", () => {
-    expect(light.onInk).toBe("#ffffff");
-    expect(light.goodSoft).toBe("rgba(63,125,78,0.10)");
-    expect(light.fsTitle).toBe(24);
-    expect(light.rMd).toBe(7);
-    expect(light.rPill).toBe(999);
-    expect(light.shadowModal).toBe("0 40px 80px -16px rgba(15,17,21,0.28)");
+  it("the old aliases are gone: the token object is B plus the frozen signal path", () => {
+    for (const old of [
+      "onInk",
+      "goodSoft",
+      "fsTitle",
+      "rMd",
+      "rPill",
+      "lsKicker",
+    ]) {
+      expect(old in light).toBe(false);
+    }
+    expect(SIGNAL_PATH_KEYS).toEqual(
+      expect.arrayContaining([
+        "bgAlt",
+        "ink",
+        "mono",
+        "serif",
+        "space5",
+        "lsTag",
+      ]),
+    );
+    expect(SIGNAL_PATH_KEYS).not.toContain("accent"); // a B token too
+    expect(light.accentFill).toBe("rgba(217,119,87,0.14)");
   });
 
-  it("nothing outside the signal-path diagram reads bgAlt (it is white now)", () => {
-    const src = join(process.cwd(), "src");
-    const readers = sourceFiles(src)
-      .map((f) => relative(src, f).split("\\").join("/"))
-      .filter((rel) => !DIAGRAM_FILES.some((re) => re.test(rel)))
-      .filter((rel) => /\.bgAlt\b/.test(readFileSync(join(src, rel), "utf8")));
+  it("nothing outside the signal-path diagram reads a signal-path token", () => {
+    const names = SIGNAL_PATH_KEYS.join("|");
+    const read = new RegExp(`\\b(?:t|light)\\.(?:${names})\\b`);
+    const readers = nonDiagramSources()
+      .filter(([, text]) => read.test(text))
+      .map(([rel]) => rel);
     expect(readers).toEqual([]);
   });
 
-  it("sectionLabel is sentence-case 12 px semibold secondary text", () => {
+  it("no uppercase or letter-spacing outside the diagram; only PageHead tracks its title", () => {
+    const offenders = nonDiagramSources().flatMap(([rel, text]) => {
+      const hits: string[] = [];
+      if (text.includes("textTransform")) hits.push(`${rel}: textTransform`);
+      for (const m of text.matchAll(/letterSpacing:\s*([^,}\n]+)/g)) {
+        const value = m[1].trim();
+        // "inherit" is a reset (the native-button reset; a field inside the title).
+        if (value === '"inherit"') continue;
+        if (rel === "ui/PageHead.tsx" && value === "t.trackingTitle") continue;
+        hits.push(`${rel}: letterSpacing ${value}`);
+      }
+      return hits;
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it("sectionLabel is 12 px semibold secondary text (sentence case: the scan above)", () => {
     const sl = sectionLabel(light);
-    expect(sl.textTransform).toBeUndefined();
     expect(sl.fontSize).toBe(12);
     expect(sl.fontWeight).toBe(600);
     expect(sl.color).toBe(light.textSecondary);
-  });
-
-  it("microLabel is an uppercase mono style with the 0.14em kicker tracking", () => {
-    const ml = microLabel(light);
-    expect(ml.textTransform).toBe("uppercase");
-    expect(ml.fontSize).toBe(light.fsMicro);
-    expect(ml.letterSpacing).toBe("0.14em");
   });
 });
 
@@ -316,57 +367,6 @@ describe("Toast — update-lifecycle statuses", () => {
   });
 });
 
-describe("Tag — the old chip, a shim over Badge", () => {
-  it("renders its children text verbatim", () => {
-    renderWithTheme(<Tag>FS1</Tag>);
-    expect(screen.getByText("FS1")).toBeTruthy();
-  });
-
-  it("maps its tones onto Badge tones (warn → caution, neutralFill → neutral)", () => {
-    renderWithTheme(
-      <>
-        <Tag tone="accent">a</Tag>
-        <Tag tone="good">g</Tag>
-        <Tag tone="warn">w</Tag>
-        <Tag tone="neutralFill">n</Tag>
-      </>,
-    );
-    expect(screen.getByText("a").style.color).toBe(toRgb(light.link));
-    expect(screen.getByText("g").style.color).toBe(toRgb(light.good));
-    expect(screen.getByText("w").style.color).toBe(toRgb(light.caution));
-    expect(screen.getByText("n").style.color).toBe(toRgb(light.text));
-  });
-
-  it("size has no Badge equivalent: one size", () => {
-    renderWithTheme(
-      <>
-        <Tag size="sm">a</Tag>
-        <Tag size="md">b</Tag>
-      </>,
-    );
-    expect(screen.getByText("a").style.fontSize).toBe("12px");
-    expect(screen.getByText("b").style.fontSize).toBe("12px");
-  });
-
-  it("uppercase is ignored — sentence case, and the child string is never edited", () => {
-    renderWithTheme(<Tag uppercase>Rhythm</Tag>);
-    const el = screen.getByText("Rhythm");
-    expect(el.style.textTransform).toBe("");
-    expect(el.textContent).toBe("Rhythm");
-  });
-
-  it("a custom fg colour has no Badge equivalent: the badge renders neutral", () => {
-    renderWithTheme(
-      <Tag tone="accent" fg={light.warn}>
-        x
-      </Tag>,
-    );
-    const el = screen.getByText("x");
-    expect(el.style.color).toBe(toRgb(light.text));
-    expect(el.style.border).toBe("");
-  });
-});
-
 describe("Spinner", () => {
   it("wraps a spinner Icon in the .tmp-spin sweep", () => {
     const { container } = renderWithTheme(<Spinner />);
@@ -381,7 +381,20 @@ describe("Spinner", () => {
   });
 });
 
-describe("EmptyState (was PaneEmpty)", () => {
+describe("SkelStatus — the signal path's loading caption", () => {
+  it("is a look B caption: Inter 12 in secondary text beside a spinner", () => {
+    const { container } = renderWithTheme(
+      <SkelStatus label="Reading active preset…" />,
+    );
+    const el = screen.getByText("Reading active preset…");
+    expect(el.style.fontFamily).toContain("Inter");
+    expect(el.style.fontSize).toBe("12px");
+    expect(el.style.color).toBe(toRgb(light.textSecondary));
+    expect(container.querySelector("span.tmp-spin")).not.toBeNull();
+  });
+});
+
+describe("EmptyState", () => {
   it("renders the icon medallion, title, and body", () => {
     const { container } = renderWithTheme(
       <EmptyState icon="music" title="Nothing here" body="Add some things." />,
@@ -407,15 +420,11 @@ describe("EmptyState (was PaneEmpty)", () => {
     );
     expect(container.querySelector("button")).toBeNull();
   });
-
-  it("PaneEmpty stays the same component until the clean-up step", () => {
-    expect(PaneEmpty).toBe(EmptyState);
-  });
 });
 
 describe("Dot", () => {
-  it("renders an 8px aria-hidden pip by default with the given colour", () => {
-    const { container } = renderWithTheme(<Dot color={light.good} />);
+  it("renders an 8px aria-hidden pip by default in its tone's colour", () => {
+    const { container } = renderWithTheme(<Dot tone="good" />);
     const el = container.querySelector("span");
     expect(el?.style.width).toBe("8px");
     expect(el?.style.height).toBe("8px");
@@ -424,16 +433,21 @@ describe("Dot", () => {
   });
 
   it("honors a size override", () => {
-    const { container } = renderWithTheme(<Dot color={light.ink} size={12} />);
+    const { container } = renderWithTheme(<Dot tone="neutral" size={12} />);
     expect(container.querySelector("span")?.style.width).toBe("12px");
   });
 
-  it("a tone wins over a colour; hollow draws a ring", () => {
-    const { container } = renderWithTheme(
-      <Dot tone="danger" color={light.good} hollow />,
-    );
+  it("hollow draws a ring in the tone's colour", () => {
+    const { container } = renderWithTheme(<Dot tone="danger" hollow />);
     const el = container.querySelector("span");
     expect(el?.style.background).toBe("transparent");
     expect(el?.style.border).toContain(toRgb(light.danger));
+  });
+
+  it("working is the accent with an accentFill halo", () => {
+    const { container } = renderWithTheme(<Dot tone="working" />);
+    const el = container.querySelector("span");
+    expect(el?.style.background).toBe(toRgb(light.accent));
+    expect(el?.style.boxShadow.replace(/\s/g, "")).toContain(light.accentFill);
   });
 });
