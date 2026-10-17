@@ -34,6 +34,13 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 
+# Dev and test builds: light optimisation. The SimDevice-driven tests (`e2e_server_tests.rs`,
+# serialized on one lock) spend their time in the capture/LUFS DSP, which unoptimised code runs
+# ~25x slower: `cargo test --lib --features e2e` took 442 s at opt-level 0 and 23 s at 1, warm
+# rebuilds unchanged (~7 s). Debug assertions and overflow checks stay on.
+[profile.dev]
+opt-level = 1
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
