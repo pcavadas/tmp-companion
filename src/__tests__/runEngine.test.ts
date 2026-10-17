@@ -293,6 +293,21 @@ describe("runEngine", () => {
       spreadLu: 1.1,
     });
 
+    // A block-knob base row's final_level is the knob, so it lends no reading.
+    const knob = fakeDeps();
+    await drive(
+      [
+        base("b", {
+          baseHandle: { groupId: "g", nodeId: "amp", parameterId: "vol" },
+        }),
+        scene("s1", 1),
+      ],
+      knob,
+    );
+    expect(
+      vi.mocked(knob.levelScenesApplyBatched).mock.calls[0][0].baseAnchor,
+    ).toEqual({ targetLufs: -26 });
+
     const other = fakeDeps({
       earlierBaseRows: [base("x", { slot: 5, targetName: "Lead" })],
     });
