@@ -382,10 +382,15 @@ pub fn replace_node(
 /// exchange (fw 1.8.45): the device sends `insertNode` **BARE** — NO `nodeJsonRequest`(119) edit-context preamble
 /// (unlike [`replace_node`]; mirroring replace's preamble made the device REJECT the
 /// insert) and NO `batchStatus`. Field 2 is OPTIONAL: omit to **APPEND** at the end of
-/// the group, or set it to the **FenderId to insert BEFORE** (HW-verified fw 1.8.45: the
-/// new block lands AHEAD of the field-2 node — the "insert after" label from the capture
-/// was a misread). `group_id` is the group KEY ("G1".."G7" / "M1".."M4"), the same
-/// convention as [`replace_node`]. The device confirms with `nodeInserted` (field 33).
+/// the group, or set it to the **LIVE node id**, in the same group, to insert BEFORE
+/// (HW-verified fw 1.8.45: the new block lands AHEAD of the field-2 node — the "insert
+/// after" label from the capture was a misread). The anchor is matched against the group's
+/// current node ids, and a replace or insert mints a new one (the model's default id, then
+/// `_1`, `_2`…), so it is never a FenderId and never a pre-edit id; `copy_apply` resolves it
+/// through its `DeviceIds`. On fw 1.8.58 an anchor that names no node in the group aborts the
+/// device server (`danger.md`). `group_id` is the group KEY ("G1".."G7" / "M1".."M4"), the
+/// same convention as [`replace_node`]. The device confirms with `nodeInserted` (field 33).
+/// `insert_before_fender_id` is that node id; the parameter keeps its historical name.
 pub fn insert_node(
     group_id: &str,
     insert_before_fender_id: Option<&str>,
@@ -1720,8 +1725,9 @@ mod tests {
     fn insert_node_matches_pc_capture_insert_before() {
         // Pro Control capture #324: insertNode{ groupId="G1",
         // nodeIdInsertLocation="ACD_TM59BassmanCabIR", fenderId="ACD_TCIntegratedPre" }.
-        // field-2 = the FenderId to insert BEFORE (HW-verified fw 1.8.45) — the bytes are
-        // the capture's verbatim; only the placement interpretation was corrected.
+        // field-2 = the live node id to insert BEFORE (HW-verified fw 1.8.45); in this capture
+        // that node's id equals its model's FenderId. The bytes are the capture's verbatim;
+        // only the placement interpretation was corrected.
         let pkt = make_envelope(&insert_node(
             "G1",
             Some("ACD_TM59BassmanCabIR"),
