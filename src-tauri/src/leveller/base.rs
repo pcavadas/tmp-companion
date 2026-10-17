@@ -165,7 +165,9 @@ pub fn apply_levels(
             recall_reassert_save(&mut s2, slot, opts.restore_scene, &reasserts)?;
         } else {
             recall_reassert_save(&mut s, slot, opts.restore_scene, &reasserts)?;
+            drop(s);
         }
+        reload_after_level_save(slot, opts.restore_scene, &reasserts);
     } else if opts.defer {
         // Deferred mode: leave the write UNSAVED in the working copy — the scene
         // runner persists every accumulated overlay with ONE save at batch end

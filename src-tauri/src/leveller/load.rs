@@ -30,6 +30,42 @@ pub(crate) fn restore_saved_preset(slot: ListIndex) -> Result<(), String> {
     Ok(())
 }
 
+/// Reload the stored row after a save that persisted a NEW `presetLevel` while base is the
+/// active scene, so a later base recall plays the saved level instead of an old one.
+///
+/// fw 1.8.58 (static RE, `tmp-audit` COMPANION_QUESTIONS Q41; HW 2026-10-17, slot 401):
+/// the unit keeps a base snapshot whose `presetLevel` changes only on a real load, a scene
+/// recall or a base structural edit. `setPresetLevel` and a save leave it alone, and a
+/// `loadScene(8)` while base is current (Scene Change Behavior "MAINTAIN CHANGES") re-applies
+/// it. So right after a level + save on base, tapping the base scene plays the level of the
+/// preset's last real load until something reloads it, and a save from that state would
+/// store the old level again. Slot 401, levelled to −20 and saved, played −27.5 (its old
+/// 0.32) on that recall and −19.8 after a real reload.
+///
+/// A save that stamped a non-base scene needs nothing: its pre-save recall left base, and a
+/// recall from a scene refreshes the snapshot with the live level. The save has already
+/// landed, so a failed reload only warns. Costs one neighbour-then-target reload
+/// ([`restore_saved_preset`], ~1.7 s on HW).
+pub(super) fn reload_after_level_save(
+    slot: ListIndex,
+    restore_scene: Option<u32>,
+    reasserts: &[Reassert],
+) {
+    let wrote_level = reasserts
+        .iter()
+        .any(|r| matches!(r, Reassert::PresetLevel(_)));
+    let on_base = restore_scene.is_none_or(|sc| sc == crate::session::BASE_SCENE_SLOT);
+    if !(wrote_level && on_base) {
+        return;
+    }
+    if let Err(e) = restore_saved_preset(slot) {
+        log::warn!(
+            "reload after the presetLevel save failed (slot {slot}): {e}; a base recall may \
+             play the old level until the preset is reloaded"
+        );
+    }
+}
+
 /// [`restore_saved_preset`]'s loads on `s`: a neighbour slot, then the target. Returns the
 /// neighbour, which stays inside the e2e scratch zone when the target is in it.
 pub(super) fn reload_stored_on(s: &mut Session, slot: ListIndex) -> Result<ListIndex, String> {

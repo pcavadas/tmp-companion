@@ -33,6 +33,14 @@
 //! [`SimState::dirty`], which makes that load a real reload; a real load and a save clear it.
 //! See `same_slot_load_tests`.
 //!
+//! **Base snapshot level (fw 1.8.58 static RE, HW 2026-10-17 slot 401):** the unit keeps a
+//! base snapshot whose `presetLevel` is set by a real load and by every scene recall, and
+//! NOT by `setPresetLevel` or a save. A `loadScene(8)` while base is already current
+//! re-applies that snapshot's level (Scene Change Behavior "MAINTAIN CHANGES", the only
+//! mode modelled); every other recall keeps the live level. So after a level + save, a
+//! base → base recall plays the level of the preset's last real load until the next real
+//! load ([`SimState::base_snapshot_level`]; `base_snapshot_tests`).
+//!
 //! **Saved doc (e2e only):** a save is tracked per slot ([`SimState::saved_levels`]) and a
 //! later REAL load of that slot materializes it, as the real device does on fw 1.8.58 (a
 //! save is durable when its handler returns). The doc is `presetLevel` PLUS a
@@ -675,6 +683,10 @@ struct SimState {
     /// per-slot saved store instead (module header), so a load DOES restore the right
     /// slot's value.
     preset_level: f32,
+    /// The device's base-snapshot `presetLevel` (module header): set by a real load and by
+    /// every scene recall, left alone by `setPresetLevel` and by a save. A `loadScene(8)`
+    /// while base is current restores `preset_level` from it.
+    base_snapshot_level: f32,
     /// Scene-scoped knob writes: `(scene, group, node, param) → value`. The model reads
     /// the `outputLevel` entry for the scene under measurement (see [`SCENE_BASE`]).
     /// Cleared on `loadPreset` (a fresh load discards the edit buffer).
@@ -843,6 +855,7 @@ impl Default for SimState {
             #[cfg(feature = "e2e")]
             truncated_scene_push: None,
             preset_level: 1.0,
+            base_snapshot_level: 1.0,
             param_writes: HashMap::new(),
             bypass_writes: HashMap::new(),
             scene_edit_enabled: std::collections::HashSet::new(),
@@ -1538,7 +1551,7 @@ impl SimDevice {
 
     /// The CURRENT `preset_level` — test-only introspection for the saved-doc specs
     /// (mirrors [`SimDevice::bypass_write`] / [`SimDevice::param_write`]).
-    #[cfg(all(test, feature = "e2e"))]
+    #[cfg(test)]
     pub fn preset_level(&self) -> f32 {
         self.state.lock().expect("sim lock").preset_level
     }
@@ -1903,6 +1916,9 @@ impl SimDevice {
                         .insert((i64::from(scene), group, node, param), v);
                 }
             }
+            // A real load re-instantiates base from the stored row: its snapshot carries the
+            // level the load applies.
+            st.base_snapshot_level = st.preset_level;
             // Echo `currentPresetDataChanged`(3) right after the load — the real device's
             // post-load push the `blockcaps` guard reads as the pre-edit roster
             // (`Session::current_preset_value`). May exceed one HID frame, so chunk it.
@@ -2115,6 +2131,16 @@ impl SimDevice {
                     return Vec::new();
                 }
             }
+            // Base snapshot (module header): a base → base recall re-applies the snapshot's
+            // level, discarding an unsaved `setPresetLevel` and ignoring a save since the last
+            // real load (HW 2026-10-17, slot 401: levelled to −20 and saved, the recall played
+            // the old 0.32 level). Every other recall keeps the live level and refreshes the
+            // snapshot with it.
+            if wire_slot == crate::session::BASE_SCENE_SLOT && st.current_scene.is_none() {
+                st.preset_level = st.base_snapshot_level;
+            } else {
+                st.base_snapshot_level = st.preset_level;
+            }
             st.current_scene = if wire_slot == crate::session::BASE_SCENE_SLOT {
                 None
             } else {
@@ -2124,18 +2150,7 @@ impl SimDevice {
             // The loadScene handler sets the dirty flag unconditionally (fw 1.8.58 static RE,
             // static RE of the load-scene handler), so the next same-slot load is real.
             st.dirty = true;
-            // A recall runs the device's own level-apply — base included — silently
-            // reverting an unsaved working-copy `presetLevel` to the currently-SAVED
-            // value (HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved
-            // doc still read the prior 0.32; `leveller::recall_reassert_save`'s doc has
-            // the full evidence). Mirrors `load_preset`'s own saved-level restore
-            // exactly — same e2e-only gate, same `ever_saved` condition — rather than
-            // inventing a parallel rule.
             let current_slot = st.current_slot;
-            #[cfg(feature = "e2e")]
-            if st.ever_saved.contains(&current_slot) {
-                st.preset_level = st.saved_doc(current_slot).preset_level;
-            }
             // Push `currentPresetDataChanged`(3) so the un-engaged scene-leveling PRE-PASS can
             // classify each scene's routing (the real device pushes the scene graph on a scene
             // CHANGE) — RENDERED for the recalled scene: its stored overlay applied over base
@@ -4801,40 +4816,36 @@ mod physics_tests {
         );
     }
 
-    /// A `loadScene` recall — base sentinel included — runs the device's own
-    /// level-apply exactly like `load_preset` does, silently reverting an unsaved
-    /// working-copy `presetLevel` to the currently-SAVED value (danger.md's
-    /// `loadScene` recall entry; HW: `probe --levelpreset 400 -24 save` solved 0.3096
-    /// and the saved doc still read the prior 0.32; `leveller::recall_reassert_save`'s
-    /// doc comment has the full evidence). FAILS before the fix: the old `F_LOAD_SCENE`
-    /// handler never touched `preset_level` at all, so a live-set value would have
-    /// survived the recall unperturbed.
+    /// fw 1.8.58 recall shape (static RE, `tmp-audit` COMPANION_QUESTIONS Q41; HW 2026-10-17,
+    /// slot 401): a recall from a scene keeps an unsaved `presetLevel`, and a base → base
+    /// recall re-applies the base snapshot's level, which a save does not refresh. The old
+    /// model (every recall reverts to the SAVED level) was the 1.8.45 reading and is the
+    /// wrong shape on 1.8.58.
     #[test]
-    fn scene_recall_reverts_an_unsaved_preset_level_to_the_saved_value() {
+    fn scene_recalls_follow_the_base_snapshot_not_the_saved_value() {
         let sim = SimDevice::new();
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
         // 402 has 8 scenes: a real-scene recall on a scene-less preset swaps in the template.
         s.load_preset(ListIndex(402)).unwrap();
+        s.load_scene(crate::session::BASE_SCENE_SLOT).unwrap();
+        let loaded = sim.preset_level();
         s.set_preset_level(0.81).unwrap();
-        s.save_current_preset(ListIndex(402)).unwrap(); // saves 0.81, marks 401 `ever_saved`
+        s.save_current_preset(ListIndex(402)).unwrap();
 
-        // A real scene recall.
-        s.set_preset_level(0.55).unwrap(); // unsaved working-copy write, e.g. a solved level
-        s.load_scene(0).unwrap();
+        s.set_preset_level(0.55).unwrap(); // unsaved, e.g. a solved level
+        s.load_scene(crate::session::BASE_SCENE_SLOT).unwrap();
         assert!(
-            (sim.preset_level() - 0.81).abs() < 1e-3,
-            "a scene recall must revert an unsaved presetLevel to the saved value, got {}",
+            (sim.preset_level() - loaded).abs() < 1e-3,
+            "base → base must re-apply the last real load's level {loaded}, not the saved \
+             0.81 or the unsaved 0.55; got {}",
             sim.preset_level()
         );
 
-        // The base sentinel recall (`BASE_SCENE_SLOT`) is the SAME mechanism, not a
-        // special case — danger.md is explicit that base is included.
-        s.set_preset_level(0.42).unwrap(); // another unsaved working-copy write
-        s.load_scene(crate::session::BASE_SCENE_SLOT).unwrap();
+        s.set_preset_level(0.55).unwrap();
+        s.load_scene(0).unwrap();
         assert!(
-            (sim.preset_level() - 0.81).abs() < 1e-3,
-            "the base recall must revert an unsaved presetLevel exactly like a real \
-             scene recall, got {}",
+            (sim.preset_level() - 0.55).abs() < 1e-3,
+            "base → scene keeps the unsaved level, got {}",
             sim.preset_level()
         );
     }
@@ -5997,6 +6008,60 @@ mod oracle_and_census_tests {
                 "unverified",
                 "reachable"
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod base_snapshot_tests {
+    use super::*;
+    use crate::session::{Session, BASE_SCENE_SLOT};
+
+    fn loaded(sim: &SimDevice, level: f32) -> Session {
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.set_preset_level(level).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s
+    }
+
+    // HW 2026-10-17, slot 401: levelled and saved, then a base recall played the level of
+    // the last real load.
+    #[test]
+    fn a_base_recall_on_base_plays_the_last_real_loads_level_even_after_a_save() {
+        let sim = SimDevice::new();
+        let mut s = loaded(&sim, 0.32);
+        s.set_preset_level(0.55).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
+        s.load_scene(BASE_SCENE_SLOT).unwrap();
+        assert_eq!(sim.preset_level(), 0.32);
+    }
+
+    #[test]
+    fn a_real_reload_after_the_save_makes_the_base_recall_keep_the_new_level() {
+        let sim = SimDevice::new();
+        let mut s = loaded(&sim, 0.32);
+        s.set_preset_level(0.55).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
+        s.load_preset(ListIndex(2)).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
+        s.load_scene(BASE_SCENE_SLOT).unwrap();
+        assert_eq!(sim.preset_level(), 0.55);
+    }
+
+    #[test]
+    fn a_recall_from_a_scene_keeps_the_live_level_and_refreshes_the_snapshot() {
+        let sim = SimDevice::new()
+            .with_preset_json(SCENED_PRESET_JSON)
+            .with_saved_scene(3, Some(0));
+        let mut s = loaded(&sim, 0.32);
+        s.set_preset_level(0.55).unwrap();
+        s.load_scene(BASE_SCENE_SLOT).unwrap();
+        assert_eq!(sim.preset_level(), 0.55, "scene → base keeps the level");
+        s.load_scene(BASE_SCENE_SLOT).unwrap();
+        assert_eq!(
+            sim.preset_level(),
+            0.55,
+            "that recall refreshed the snapshot"
         );
     }
 }

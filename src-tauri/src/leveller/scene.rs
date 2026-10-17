@@ -740,7 +740,9 @@ pub(super) fn save_deferred_scene_writes(
     attempt().or_else(|e| {
         log::warn!("deferred scene save failed ({e}); retrying on a fresh connection");
         attempt()
-    })
+    })?;
+    reload_after_level_save(slot, restore_scene, reasserts);
+    Ok(())
 }
 
 /// Result of the joint-k solve for a scene's amp-knob set.
