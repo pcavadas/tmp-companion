@@ -412,6 +412,44 @@ fn offline_level_preset_runs_against_the_fake_audio() {
     );
 }
 
+/// Bug class: a base recall right after a level + save plays the OLD level (HW 2026-10-17,
+/// slot 401 levelled to −20 played −27.5 on `loadScene(8)` until a real reload). fw 1.8.58
+/// re-applies its base snapshot on a base → base recall, and only a real load refreshes that
+/// snapshot's `presetLevel` (`leveller::reload_after_level_save`). The run must leave the
+/// device so the recall the user (or the post-run re-measure) sends plays the saved level.
+#[test]
+fn a_base_recall_after_a_level_save_plays_the_saved_level() {
+    let _serial = serial();
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sim_for_factory = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim_for_factory.clone())));
+
+    let opts = crate::leveller::LevelOptions {
+        save: true,
+        verify: true,
+        restore_scene: Some(crate::session::BASE_SCENE_SLOT),
+        ..Default::default()
+    };
+    let r =
+        crate::leveller::level_preset(ListIndex(0), &test_stim(), -30.0, opts, &[], None, || false)
+            .expect("level_preset");
+    assert!(r.saved, "the run saved: {r:?}");
+    // The sim's default C is −15, so −30 solves far below the 1.0 the preset loaded with:
+    // a stale recall would be unmistakable.
+    assert!(r.final_level < 0.5, "solved a distinct level: {r:?}");
+
+    let mut s = crate::session::Session::connect().expect("connect");
+    s.load_scene(crate::session::BASE_SCENE_SLOT)
+        .expect("base recall");
+    assert!(
+        (sim.preset_level() - r.final_level).abs() < 1e-4,
+        "the base recall played {} instead of the saved {}",
+        sim.preset_level(),
+        r.final_level
+    );
+}
+
 /// `note_structural_save` flips `SCENARIO_VERIFIED` false for a `STRUCTURAL_SAVE_CMDS`
 /// member and leaves it untouched for anything else — pins the set's intent in BOTH
 /// directions. Root cause (2026-08-01, `notes/user-journeys.md` bug→gate registry):
@@ -3690,8 +3728,9 @@ fn hiwatt_footswitch_plan_bakes_and_mirrors_only_the_scenes_restating_base() {
 /// (`leveller::recall_reassert_save`'s doc has the HW evidence) — so a capture re-asserts the
 /// run's own level itself rather than trusting what the recall left in place. (History: on fw
 /// 1.8.45 the recall served a pre-save level for 45-100 s after a save, and a whole batch
-/// measured 5.53 dB quiet — HW 2026-08-19, "Plumes+BD2+OCD".) The sim models the revert: a
-/// recall restores the slot's saved `presetLevel` once the slot has been saved this run.
+/// measured 5.53 dB quiet — HW 2026-08-19, "Plumes+BD2+OCD".) The sim models the fw 1.8.58
+/// shape: a base → base recall restores the base snapshot's level, set by the last real load
+/// (here the reload of the saved 0.51).
 #[test]
 fn a_capture_renders_at_the_run_level_not_the_recall_reverted_one() {
     let _serial = serial();
@@ -3731,6 +3770,9 @@ fn a_capture_renders_at_the_run_level_not_the_recall_reverted_one() {
         s.load_preset(ListIndex(400)).expect("load 400");
         s.set_preset_level(SAVED_PL).expect("set");
         s.save_current_preset(ListIndex(400)).expect("save");
+        // A real reload, so the base snapshot carries the saved level.
+        s.load_preset(ListIndex(401)).expect("load a neighbour");
+        s.load_preset(ListIndex(400)).expect("reload 400");
         s.set_preset_level(RUN_PL)
             .expect("set the unsaved run level");
     }
