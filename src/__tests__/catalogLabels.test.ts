@@ -1,7 +1,8 @@
 // The Catalog's words for catalog data (views/catalog/catalogLabels): sentence-case
 // labels that keep acronyms, the "All …" effect-type choice, the singular Type fact, the
-// real-unit line without em dashes, and the detail's "Models the …" line — with the
-// Fender-original and utility wording.
+// real-unit line without em dashes, semicolons, id notes or capitals for stress, and the
+// detail's "Models the …" line — with the Fender-original and utility wording, a small
+// letter for the two lines that start with a plain word, and every brand's capital kept.
 
 import { describe, it, expect } from "vitest";
 
@@ -61,5 +62,106 @@ describe("catalog labels", () => {
     const loop = row((r) => r.cat === "FX Loops");
     expect(modelsLine(loop)).toBe(realLine(loop));
     expect(modelsLine(loop)).not.toMatch(/^Models/);
+  });
+
+  it("gives the two generic preamps a small letter mid-sentence, and the tile its capital", () => {
+    const studio = row((r) => r.name === "STUDIO PREAMP");
+    expect(modelsLine(studio)).toBe(
+      "Models the clean studio mixing-desk preamp (uncolored)",
+    );
+    expect(realLine(studio)).toBe(
+      "Clean studio mixing-desk preamp (uncolored)",
+    );
+    const tube = row((r) => r.name === "TUBE PREAMP");
+    expect(modelsLine(tube)).toBe(
+      "Models the tube console-style studio preamp",
+    );
+    expect(realLine(tube)).toBe("Tube console-style studio preamp");
+  });
+
+  it("never lowercases a brand after Models the", () => {
+    // Rows whose second word is in lowercase too, so a rule keyed on that would hit them.
+    for (const brand of [
+      "Marshall closed-back",
+      "Soldano slant",
+      "Fender brownface",
+    ]) {
+      const r = row((m) => m.real.startsWith(brand));
+      expect(modelsLine(r)).toBe(`Models the ${realLine(r)}`);
+      expect(modelsLine(r).startsWith(`Models the ${brand}`)).toBe(true);
+    }
+    // Across the catalog, only the two generic preamps start with a small letter.
+    const small = MODELS.filter((r) => /^Models the [a-z]/.test(modelsLine(r)));
+    expect(small.map((r) => r.name).sort()).toEqual([
+      "STUDIO PREAMP",
+      "TUBE PREAMP",
+    ]);
+  });
+
+  it("words the four catalog lines that carry notes, semicolons or shouted words", () => {
+    const byCid = (cid: string) => row((r) => r.cid === cid);
+    expect(realLine(byCid("ACD_Bogner_412STU_Celestion_G12H__product"))).toBe(
+      "Bogner Uberkab 4x12 (Celestion G12T-75)",
+    );
+    expect(realLine(byCid("ACD_Rockman__product"))).toBe(
+      "Scholz Rockman X100 (1982 original, not the MXR reissue)",
+    );
+    expect(realLine(byCid("ACD_TMSpring63Conv__product"))).toBe(
+      "Fender '63 spring reverb (convolution, Fender original)",
+    );
+    const spring65 = byCid("ACD_TMSpring65Conv__product");
+    expect(realLine(spring65)).toBe(
+      "Fender blackface spring reverb (convolution, Fender original)",
+    );
+    expect(modelsLine(spring65)).toBe(
+      "Models the Fender blackface spring reverb (convolution, Fender original)",
+    );
+  });
+
+  it("shows no semicolon and no word in capitals that isn't a brand or part name", () => {
+    // Every all-caps word the catalog's lines use as a name. A new brand or part name
+    // goes here; a common word in capitals ("NOT") or an id note ("ID") does not.
+    const NAMES = new Set([
+      "AKG",
+      "B.K.",
+      "CTS",
+      "EMT",
+      "EP",
+      "EQ",
+      "EVH",
+      "GK",
+      "II",
+      "IIC",
+      "IR",
+      "ISP",
+      "IV",
+      "JBL",
+      "LTD",
+      "MD",
+      "MXR",
+      "NYC",
+      "OCD",
+      "POG",
+      "RAT",
+      "SVT",
+      "SWR",
+      "TC",
+      "TV",
+      "UREI",
+      "WGS",
+    ]);
+    for (const r of MODELS) {
+      for (const line of [realLine(r), modelsLine(r)]) {
+        expect(line, r.cid).not.toContain(";");
+        // Letters (and the periods of initials) only: a word with a digit is a
+        // model number ("JCM800", "BD-2").
+        const caps = line
+          .split(/[\s,()/'+]+/)
+          .filter(
+            (w) => /^[A-Z.]{2,}$/.test(w) && /[A-Z]{2}|[A-Z]\.[A-Z]/.test(w),
+          );
+        for (const w of caps) expect(NAMES, `${r.cid}: ${w}`).toContain(w);
+      }
+    }
   });
 });
