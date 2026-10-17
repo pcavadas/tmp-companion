@@ -15,6 +15,7 @@
 import type {
   BaseBoostSummary,
   ClampKind,
+  BaseReading,
   FootswitchInfo,
   FootswitchLevelJobWire,
   LevelJob,
@@ -688,6 +689,9 @@ export interface RunItem {
    *  row whose base pair never entered the `Boost` regime (the common case) and on every
    *  non-base row. */
   baseBoost?: BaseBoostSummary | null;
+  /** Base rows only: the base sound's own reading at its leveled `presetLevel`, handed to
+   *  the same preset's scene batch so it does not capture base again (`BaseAnchor`). */
+  baseReading?: BaseReading | null;
   /** The run-end re-amp warning TEXT its command returned (`LevelResult.reamp_warning`),
    *  the backend's own words for the log. Whether re-amp may still be on is
    *  `reampStillOn`, never this text. */

@@ -372,7 +372,7 @@ pub(super) fn capture_full_at_params(
     // level write, not follow it.
     if let Some(scene) = recall {
         s.load_scene(scene)?;
-        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+        settle_or_cancel(recall_settle_ms())?;
     }
     for (g, n, p, v) in fs_params {
         s.change_parameter(g, n, p, *v)?;
@@ -414,8 +414,9 @@ pub(crate) fn capture_on_session(
     // seam has sent nothing itself before the engage, which would otherwise land on a
     // ~600 ms idle gap after the caller's `load_scene` recall and read the device's
     // stationary output floor instead of the stimulus. `Session::heartbeat` is the
-    // designed keep-alive and writes nothing: recall → 300 → hb → 300 → hb → 300 →
-    // engage keeps every idle gap ≤300 ms and lands the engage ~900 ms post-recall.
+    // designed keep-alive and writes nothing: with the default settles, recall → 150 → hb →
+    // 100 → engage keeps every idle gap ≤300 ms (the old cadence was recall → 300 → hb →
+    // 300 → hb → 300 → engage; see `notes/perf.md`).
     // HW evidence, the two candidate mechanisms, and why the timing is two-sided:
     // gotchas.md "An engage after a naked scene recall latches silence".
     //
@@ -432,20 +433,18 @@ pub(crate) fn capture_on_session(
     // engage ≥~850 ms post-recall — HW-validated green, do not perturb.
     //
     if force_bypass.is_empty() && ref_level.is_none() {
-        s.heartbeat()?;
-        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
-        s.heartbeat()?;
+        breaker(s)?;
     }
     // Settle UNCONDITIONALLY before the engage: the caller (or the loop above) may
     // have just issued bypass/param writes even when `ref_level` is `None` — and
     // `measure_fs_state` always settles after its
     // writes for the same reason (the engage latches whatever the DSP holds).
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(pre_engage_settle_ms())?;
     let _ = s.set_reamp_mode(true)?;
     // Past the engage there is NO early return: re-amp is on, and leaving it on strands the
     // unit input-muted. So this settle only wakes early — `reamp_capture` then bails on its
     // own up-front abort check, and the OFF below still goes out on this open session.
-    let _ = settle_abortable(SETTLE_AFTER_REAMP_MS);
+    let _ = settle_abortable(settle_after_reamp_ms());
     let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
     let _ = s.set_reamp_mode(false);
     cap
@@ -845,23 +844,93 @@ pub(crate) fn engage_measure_disengage(
     s: &mut Session,
     stimulus: &[f32],
 ) -> Result<lufs::Loudness, LevelError> {
-    processed_loudness(engage_capture_disengage(s, stimulus))
+    engage_measure_disengage_in(s, stimulus, CaptureWindow::Full)
 }
+
+/// [`engage_measure_disengage`] in a chosen [`CaptureWindow`].
+pub(crate) fn engage_measure_disengage_in(
+    s: &mut Session,
+    stimulus: &[f32],
+    window: CaptureWindow,
+) -> Result<lufs::Loudness, LevelError> {
+    processed_loudness(engage_capture_disengage_in(s, stimulus, window))
+}
+
+/// How much of the stimulus one capture plays and measures. `Full` is the validated
+/// leveling metric (the whole stimulus plus the decay tail). `Short` plays only the first
+/// [`SHORT_SKIP_MS`] + [`SHORT_MEASURE_MS`] of the stimulus and measures the
+/// [`SHORT_MEASURE_MS`] after the skip: it reads up to ~0.5 LU off the full metric (offline
+/// replay of 155 HW footswitch captures, fw 1.8.58, 2026-10-17), so only the footswitch
+/// solve's FAR steps use it, and no short reading is ever accepted (`footswitch::CoarseFs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureWindow {
+    Full,
+    Short,
+}
+
+/// A short capture's skipped head: the re-amp routing settle and the stimulus attack.
+pub(crate) const SHORT_SKIP_MS: u64 = 500;
+/// A short capture's measured span, after [`SHORT_SKIP_MS`].
+pub(crate) const SHORT_MEASURE_MS: u64 = 2500;
+/// A short capture's tail past the played stimulus: margin only, its samples are trimmed.
+const SHORT_TAIL_MS: u64 = 100;
 
 /// [`engage_measure_disengage`] stopping one step short — returns the raw capture
 /// instead of its loudness, for the caller that must also write the PCM to disk
 /// (`measure_sound_asis_strict`'s external-validation dump). The engage/settle/capture/
 /// disengage sequence is IDENTICAL: this is an extraction, not a second choreography.
-pub(crate) fn engage_capture_disengage(
+/// `window` picks how much of the stimulus plays and is measured ([`CaptureWindow`]).
+pub(crate) fn engage_capture_disengage_in(
     s: &mut Session,
     stimulus: &[f32],
+    window: CaptureWindow,
 ) -> Result<audio::Capture, LevelError> {
+    let (stimulus, tail_ms) = match window {
+        CaptureWindow::Full => (stimulus, CAPTURE_TAIL_MS),
+        CaptureWindow::Short => {
+            let play = ms_to_samples(SHORT_SKIP_MS + SHORT_MEASURE_MS, RATE);
+            (&stimulus[..play.min(stimulus.len())], SHORT_TAIL_MS)
+        }
+    };
     let _ = s.set_reamp_mode(true)?;
     // Same no-early-return rule as `capture_full_at`: re-amp is engaged, the OFF must fire.
-    let _ = settle_abortable(SETTLE_AFTER_REAMP_MS);
-    let cap = audio::reamp_capture(stimulus, RATE, CAPTURE_TAIL_MS);
+    let _ = settle_abortable(settle_after_reamp_ms());
+    let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
     let _ = s.set_reamp_mode(false);
+    match window {
+        CaptureWindow::Full => cap,
+        CaptureWindow::Short => cap.map(short_span),
+    }
+}
+
+fn ms_to_samples(ms: u64, rate: u32) -> usize {
+    (ms * u64::from(rate) / 1000) as usize
+}
+
+/// A short capture's measured span: [`SHORT_MEASURE_MS`] after the first [`SHORT_SKIP_MS`].
+/// A capture shorter than the skip is kept whole (its reading is then the honest one).
+fn short_span(mut cap: audio::Capture) -> audio::Capture {
+    let ch = cap.channels.max(1);
+    let skip = ms_to_samples(SHORT_SKIP_MS, cap.sample_rate) * ch;
+    let len = ms_to_samples(SHORT_MEASURE_MS, cap.sample_rate) * ch;
+    if cap.interleaved.len() > skip {
+        let end = (skip + len).min(cap.interleaved.len());
+        cap.interleaved = cap.interleaved[skip..end].to_vec();
+    }
     cap
+}
+
+/// The naked-shape idle breaker: [`breaker_beats`] heartbeats, a settle between each, every
+/// idle gap ≤300 ms. The default (1) sends one heartbeat between the caller's recall settle
+/// ([`recall_settle_ms`], 150 ms) and its pre-engage settle ([`pre_engage_settle_ms`], 100 ms).
+fn breaker(s: &mut Session) -> Result<(), LevelError> {
+    for i in 0..breaker_beats() {
+        if i > 0 {
+            settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+        }
+        s.heartbeat()?;
+    }
+    Ok(())
 }
 
 /// One as-is scene reading: fresh connection, recall, engage, measure, disengage —
@@ -870,8 +939,8 @@ pub(crate) fn engage_capture_disengage(
 ///
 /// The recall→engage sequence is shaped like the NAKED shape `capture_on_session` breaks
 /// with heartbeats, and this seam does NOT route through that function — so it carries its
-/// own copy of the breaker: recall → 300 → hb → 300 → hb → 300 → engage, every idle gap
-/// ≤300 ms and the engage ~900 ms post-recall.
+/// own copy of the breaker: with the default settles, recall → 150 → hb → 100 → engage,
+/// every idle gap ≤300 ms.
 ///
 /// HARDENING, NOT A FIX FOR AN OBSERVED FAILURE — be precise about this, because the
 /// evidence cuts the other way. gotchas.md "An engage after a naked scene recall latches
@@ -892,9 +961,9 @@ pub(crate) fn engage_capture_disengage(
 /// whole raise while a headroom trade holds an unsaved `presetLevel`. `None` = assert nothing (capture at the preset's own
 /// stored level) — the reading every caller that has no run-owned value still wants.
 ///
-/// The assert is INSERTED into the breaker, never spliced over it: recall → 300 → set → 300 →
-/// hb → 300 → hb → 300 → engage. Every idle gap stays ≤300 ms and the cadence above survives
-/// intact; the engage simply lands ~1200 ms post-recall instead of ~900 ms.
+/// The assert is INSERTED into the breaker, never spliced over it: recall → 150 → set → 300 →
+/// hb → 100 → engage. Every idle gap stays ≤300 ms and the cadence above survives intact; the
+/// engage simply lands 300 ms later.
 // A4/F11: this seam does NOT route through `arm_measurement` — it recalls a SCENE, not a
 // single `LevelKnob`, so there is no knob to hand that seam's `LevelKnob`-shaped API. The same
 // ordering rule applies by hand instead: SCENE CONTEXT FIRST (the `load_scene` recall), THE
@@ -910,7 +979,7 @@ pub(super) fn measure_scene_asis(
 ) -> Result<lufs::Loudness, LevelError> {
     let mut s = Session::connect_lean()?;
     s.load_scene(scene_slot)?;
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(recall_settle_ms())?;
     if let Some(pl) = intended_preset_level {
         set_knob(&mut s, &LevelKnob::PresetLevel, pl, None)?;
         settle_or_cancel(SETTLE_AFTER_SET_MS)?;
@@ -918,10 +987,8 @@ pub(super) fn measure_scene_asis(
     for (g, n, byp) in force_bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
-    s.heartbeat()?;
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
-    s.heartbeat()?;
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    breaker(&mut s)?;
+    settle_or_cancel(pre_engage_settle_ms())?;
     engage_measure_disengage(&mut s, stimulus)
 }
 
@@ -971,7 +1038,7 @@ pub(super) fn arm_measurement(
     }
     // Cancellable: nothing is engaged yet and the connection is throwaway, so a Stop
     // here bails cleanly (the same settle #128 made interruptible pre-refactor).
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(pre_engage_settle_ms())?;
     Ok(())
 }
 
@@ -1002,11 +1069,9 @@ pub(super) fn arm_pair_measurement(
     // that pins the shape and why it must not spread to the scene arm or a write-bearing
     // base run.
     if scene.is_none() && writes.is_empty() {
-        s.heartbeat()?;
-        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
-        s.heartbeat()?;
+        breaker(s)?;
     }
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(pre_engage_settle_ms())?;
     Ok(())
 }
 
@@ -1170,6 +1235,28 @@ mod floor_guard_tests {
                 "{name}: a saturated live capture reads engaged"
             );
         }
+    }
+
+    /// A short capture measures the span after the skip, per channel frame, and a capture
+    /// too short to skip is kept whole.
+    #[test]
+    fn short_span_keeps_the_measured_span_after_the_skip() {
+        let rate = 1000;
+        let frames = (SHORT_SKIP_MS + SHORT_MEASURE_MS + 100) as usize;
+        let cap = audio::Capture {
+            interleaved: (0..frames * 2).map(|i| (i / 2) as f32).collect(),
+            channels: 2,
+            sample_rate: rate,
+        };
+        let span = short_span(cap);
+        assert_eq!(span.interleaved.len(), SHORT_MEASURE_MS as usize * 2);
+        assert_eq!(span.interleaved[0], SHORT_SKIP_MS as f32);
+        let tiny = audio::Capture {
+            interleaved: vec![1.0; 10],
+            channels: 2,
+            sample_rate: rate,
+        };
+        assert_eq!(short_span(tiny).interleaved.len(), 10);
     }
 
     #[test]

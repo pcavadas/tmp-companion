@@ -91,9 +91,10 @@ pub use trade::*;
 // Post-load DSP settle before a capture. Was a conservative 1200; HW-bisected to 400
 // on fw 1.8.45 (dry slot 11 + wet delay slot 5): measured C, presetLevel, and verify
 // error are byte-identical to 1200, and the verify captures confirm writes also land
-// at 400 (`notes/perf.md`). TMP_SETTLE_AFTER_LOAD_MS is the diagnostic env override
-// for future bisects.
-const SETTLE_AFTER_LOAD_MS: u64 = 400;
+// at 400 (`notes/perf.md`). 200 on fw 1.8.58 with the rest of the leveling-speed wait
+// set below (HW 2026-10-17: every capture of the 405/410 bench within 0.01 LU of the
+// 400 run). TMP_SETTLE_AFTER_LOAD_MS is the diagnostic env override for future bisects.
+const SETTLE_AFTER_LOAD_MS: u64 = 200;
 pub(crate) fn settle_after_load_ms() -> u64 {
     std::env::var("TMP_SETTLE_AFTER_LOAD_MS")
         .ok()
@@ -108,6 +109,75 @@ pub(crate) fn settle_after_load_ms() -> u64 {
 const SETTLE_BEFORE_WRITE_MS: u64 = 600;
 pub(crate) const SETTLE_AFTER_SET_MS: u64 = 300;
 pub(crate) const SETTLE_AFTER_REAMP_MS: u64 = 500;
+
+// ── Leveling-speed bisect knobs ──────────────────────────────────────────────────────
+// Diagnostic env overrides for the waits around a capture, read per use like
+// `TMP_SETTLE_AFTER_LOAD_MS`. They exist to HW-bisect each wait against the full-capture
+// oracle (`notes/perf.md`'s re-validation oracles); a shortened default lands only with
+// that evidence. The defaults are the leveling-speed wait set (HW 2026-10-17, fw 1.8.58,
+// bench presets 405 + 410, all at once): every capture within 0.01 LU of the old waits,
+// identical iteration counts, every ffmpeg-judge row passing, no floor reads; −37 s on
+// 405 and 410 each. The old values are in each knob's doc.
+
+/// [`settle_after_reamp_ms`]'s default (was [`SETTLE_AFTER_REAMP_MS`], 500).
+const CAPTURE_SETTLE_AFTER_REAMP_MS: u64 = 100;
+/// [`pre_engage_settle_ms`]'s default (was [`SETTLE_AFTER_SET_MS`], 300).
+const PRE_ENGAGE_SETTLE_MS: u64 = 100;
+/// [`recall_settle_ms`]'s default (was [`SETTLE_AFTER_SET_MS`], 300).
+const RECALL_SETTLE_MS: u64 = 150;
+
+/// `var` parsed as milliseconds, else `default`.
+pub(crate) fn env_ms(var: &str, default: u64) -> u64 {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// The settle between the re-amp engage and the capture (`TMP_SETTLE_AFTER_REAMP_MS`).
+pub(crate) fn settle_after_reamp_ms() -> u64 {
+    env_ms("TMP_SETTLE_AFTER_REAMP_MS", CAPTURE_SETTLE_AFTER_REAMP_MS)
+}
+
+/// The last settle before a capture's engage (`TMP_PRE_ENGAGE_SETTLE_MS`).
+pub(crate) fn pre_engage_settle_ms() -> u64 {
+    env_ms("TMP_PRE_ENGAGE_SETTLE_MS", PRE_ENGAGE_SETTLE_MS)
+}
+
+/// The settle after a capture connection's scene recall (`TMP_RECALL_SETTLE_MS`).
+pub(crate) fn recall_settle_ms() -> u64 {
+    env_ms("TMP_RECALL_SETTLE_MS", RECALL_SETTLE_MS)
+}
+
+/// How many heartbeat → settle steps the naked-shape breaker sends before an engage
+/// (`TMP_BREAKER_BEATS`, default 1, was 2; see `capture_on_session`). One beat sends a
+/// single heartbeat and no settle: with the recall and pre-engage settles above, every
+/// idle gap stays well inside the ≤300 ms rule, and a heartbeat still lands between the
+/// last write and the engage. The bench ran 0 beats with no floor read.
+pub(crate) fn breaker_beats() -> u64 {
+    env_ms("TMP_BREAKER_BEATS", 1)
+}
+
+/// Whether [`load_preset_isolated`] lapses its session (`TMP_LOAD_LAPSE=0` skips it).
+pub(crate) fn load_lapse() -> bool {
+    env_ms("TMP_LOAD_LAPSE", 1) != 0
+}
+
+/// Whether the footswitch prepass measures each row at its stored value before its ceiling
+/// (`TMP_FS_PROBE_FIRST`, on by default; `0` restores the ceiling-first prepass for A/B).
+pub(crate) fn fs_probe_first() -> bool {
+    env_ms("TMP_FS_PROBE_FIRST", 1) != 0
+}
+
+/// The param solve's acceptance band (`TMP_SOLVE_ACCEPT_TOL_LU`, default [`ACCEPT_TOL_LU`]):
+/// the footswitch and scene-handle secant stop, the footswitch at-target skip and its
+/// outcome verdict. A bench knob for the speed/accuracy trade; the shipped band is unchanged.
+pub(crate) fn solve_accept_tol() -> f64 {
+    std::env::var("TMP_SOLVE_ACCEPT_TOL_LU")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(ACCEPT_TOL_LU)
+}
 const CAPTURE_TAIL_MS: u64 = 800;
 
 // The device silently DROPS a scene-context write when the session sat IDLE too long

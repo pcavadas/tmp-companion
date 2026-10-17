@@ -56,6 +56,19 @@ Measured effect (items 1–4; item 5 reverted): preset 26.7 → 24.2 s, Doctor s
 seconds more per item (skip-reload / cache). The FS-job figure (30.1 → 25.8 s) included
 item 5 and no longer holds.
 
+## Adopted (the 2026-10-17 leveling-speed set — HW-benched on presets 405 and 410, fw 1.8.58)
+
+Against main f27a277 (405: 370.4 s, 410: 241.0 s), the set below levels 405 in 209.4 s (−43%) and
+410 in 184.8 s (−23%), every ffmpeg-judge row passing (worst 0.05 LU), no floor reads.
+
+- **The scene batch reuses the Base row's own reading** as its base anchor instead of capturing base again.
+- **Shorter waits around each capture**: engage settle 100 ms, pre-engage 100 ms, recall 150 ms, post-load 200 ms, re-amp echo 100 ms, one breaker heartbeat (env knobs `TMP_SETTLE_AFTER_REAMP_MS` and friends for A/B).
+- **Probe-first footswitch prepass**: each row is measured at its stored value first; a reachable target skips the ceiling capture and the solve reuses the reading (`TMP_FS_PROBE_FIRST`).
+- **Short windows for far footswitch steps** (`CoarseFs`): a capture whose previous reading missed by more than 1 LU plays 3 s and measures 2.5 s after a 0.5 s skip. No short reading is ever accepted, skipped on or reported: one in the band (or within 1 LU on the row's first reading) or one that hears silence is re-measured full. 405's footswitch lane 208 → 149 s with the same iteration counts; the accepted readings landed closer than before (0.01–0.06 LU). `TMP_FS_COARSE=0` turns it off.
+- **50 ms `changeParameter` / `setPresetLevel` windows** (was 250): 405's footswitch lane 149 → 127 s.
+
+Not adopted: a wider footswitch acceptance band (0.6 LU: −15% for a 0.50 LU worst miss, Pedro: not worth it) and a smarter secant (offline replay: −13% alone, nothing once stacked with the short windows).
+
 ## Working-copy persistence (the fact behind 3–5)
 
 Working-copy edits survive HID disconnect/reconnect: after a session forced

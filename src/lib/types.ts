@@ -113,6 +113,18 @@ export interface LevelJob {
  * this preset — there is nothing to anchor. */
 export interface BaseAnchor {
   targetLufs: number;
+  /** The base row's reading (`BaseReading`), spread in; omitted when it has none. */
+  measuredLufs?: number;
+  spreadLu?: number;
+  presetLevel?: number;
+}
+
+/** A Base row's loudness at its leveled `presetLevel`: the verify reading, else the
+ *  prediction from the measured `C`. The backend reuses it only at that exact level. */
+export interface BaseReading {
+  measuredLufs: number;
+  spreadLu: number;
+  presetLevel: number;
 }
 
 /** A candidate leveling knob for `level_scenes_apply_batched` — pass EVERY amp-level

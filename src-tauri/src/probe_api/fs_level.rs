@@ -318,7 +318,15 @@ pub fn probe_fs_sweep(
         // A silent point is DATA here (the knob's bottom end), not a failure — record it
         // and keep sweeping instead of aborting the whole curve like the solver does.
         // Probe sweep of a saved preset: no run-owned `presetLevel` to assert.
-        match leveller::measure_fs_at(None, (group, node, param), &engaged, &stim, *v, None) {
+        match leveller::measure_fs_at(
+            None,
+            (group, node, param),
+            &engaged,
+            &stim,
+            *v,
+            None,
+            leveller::CaptureWindow::Full,
+        ) {
             Ok(l) => {
                 out += &format!(
                     "  {param}={v:.3} → integrated {:.3} LUFS  short-term-max {:.3}  spread {:.2} LU\n",
@@ -598,7 +606,7 @@ pub fn probe_measure_footswitch(
         leveller::measure_sound_asis_strict(slot, None, &force, fs_value, &stim, row.as_ref());
     // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the device DROPS
     // an in-session OFF sent on a session that has idled >~1 s, and this lane's capture
-    // idles ~7 s — so `engage_capture_disengage`'s in-session disengage cannot be trusted
+    // idles ~7 s — so `engage_capture_disengage_in`'s in-session disengage cannot be trusted
     // as the last word). A standalone `probe --measure-footswitch` would otherwise be able
     // to leave the unit input-muted. Bound BEFORE the `?` for exactly that reason: an Err
     // path is the one that most needs the OFF. Same shape as `probe --levelpreset`

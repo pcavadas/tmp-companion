@@ -113,7 +113,12 @@ pub fn apply_levels(
     for (g, n, byp) in force_bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
-    crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    let settle = if opts.verify {
+        pre_engage_settle_ms()
+    } else {
+        SETTLE_AFTER_SET_MS
+    };
+    crate::device_gate::settle(Duration::from_millis(settle));
 
     if opts.verify {
         // A failed verify is `None` (callers read it as `Verification::VerifyFailed`), never

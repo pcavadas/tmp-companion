@@ -255,6 +255,16 @@ impl FsParamTarget {
         })
     }
 
+    /// Does loudness rise with this param across its whole range? True for the level
+    /// classes, whose law is monotone; a wet/mix blend can peak mid-range. A reading at any
+    /// value of a monotone param is then a floor under its ceiling.
+    pub fn is_monotone_level(&self) -> bool {
+        matches!(
+            self.info.class,
+            crate::param_class::ParamClass::LevelLinear | crate::param_class::ParamClass::LevelDb
+        )
+    }
+
     /// The param's usable `(lo, hi)`. For a wet/mix param the LOW bound IS the wet floor
     /// (`max(range lo, `[`WET_FLOOR_FRACTION`]` × authored)`), so the whole solve — seeds,
     /// bracket extremes, secant clamp, the pinned-at-a-bound verdict — can never even PROBE
@@ -498,14 +508,16 @@ pub(crate) fn measure_fs_at(
     stimulus: &[f32],
     v: f32,
     intended_preset_level: Option<f32>,
+    window: CaptureWindow,
 ) -> Result<lufs::Loudness, LevelError> {
     match scene {
-        None => processed_loudness(capture_fs_at(
+        None => processed_loudness(capture_fs_at_in(
             lev,
             engaged_bypass,
             stimulus,
             v,
             intended_preset_level,
+            window,
         )),
         Some(_) => measure_fs_state(
             scene,
@@ -513,6 +525,7 @@ pub(crate) fn measure_fs_at(
             &[(lev.0.to_string(), lev.1.to_string(), lev.2.to_string(), v)],
             stimulus,
             intended_preset_level,
+            window,
         ),
     }
 }
@@ -525,6 +538,24 @@ pub(crate) fn capture_fs_at(
     stimulus: &[f32],
     v: f32,
     intended_preset_level: Option<f32>,
+) -> Result<audio::Capture, LevelError> {
+    capture_fs_at_in(
+        lev,
+        engaged_bypass,
+        stimulus,
+        v,
+        intended_preset_level,
+        CaptureWindow::Full,
+    )
+}
+
+fn capture_fs_at_in(
+    lev: (&str, &str, &str),
+    engaged_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    v: f32,
+    intended_preset_level: Option<f32>,
+    window: CaptureWindow,
 ) -> Result<audio::Capture, LevelError> {
     let mut s = Session::connect_lean()?;
     let knob = LevelKnob::Block {
@@ -541,7 +572,7 @@ pub(crate) fn capture_fs_at(
         None,
         intended_preset_level,
     )?;
-    engage_capture_disengage(&mut s, stimulus)
+    engage_capture_disengage_in(&mut s, stimulus, window)
 }
 
 /// ONE fresh-connection, WRITE-NOTHING-PERMANENT capture of ONE footswitch STATE — the
@@ -576,6 +607,7 @@ pub(super) fn measure_fs_state(
     params: &[(String, String, String, f32)],
     stimulus: &[f32],
     intended_preset_level: Option<f32>,
+    window: CaptureWindow,
 ) -> Result<lufs::Loudness, LevelError> {
     let mut s = Session::connect_lean()?;
     match scene {
@@ -594,8 +626,8 @@ pub(super) fn measure_fs_state(
     for (g, n, byp) in bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
-    engage_measure_disengage(&mut s, stimulus)
+    settle_or_cancel(pre_engage_settle_ms())?;
+    engage_measure_disengage_in(&mut s, stimulus, window)
 }
 
 /// The measurement inputs for ONE footswitch sound's PREPASS CEILING read. Built by the
@@ -667,6 +699,7 @@ pub fn measure_fs_ceiling(
                 &params,
                 stimulus,
                 intended_preset_level,
+                CaptureWindow::Full,
             )
         },
         stimulus,
@@ -758,7 +791,7 @@ pub(super) fn classify_fs_outcome(
     target_lufs: f64,
     (lo, hi): (f32, f32),
 ) -> (bool, bool) {
-    if (best_lufs - target_lufs).abs() <= ACCEPT_TOL_LU {
+    if (best_lufs - target_lufs).abs() <= solve_accept_tol() {
         return (false, false);
     }
     // Unreachable only when the knob is pinned at the bound that blocks the direction target
@@ -782,7 +815,7 @@ pub(super) fn classify_fs_outcome(
 /// its skip is provably disjoint from a boost (see its doc); this one has no pair planner
 /// behind it, so dropping the flag would silently suppress an honest FS clamp.
 pub(super) fn switch_at_target(measured: f64, target: f64, clamped: bool) -> bool {
-    !clamped && (measured - target).abs() <= ACCEPT_TOL_LU
+    !clamped && (measured - target).abs() <= solve_accept_tol()
 }
 
 /// Measurement/solve phase of ONE footswitch job — no write, no save, no reload.
@@ -821,20 +854,142 @@ pub fn measure_footswitch(
     current_value: Option<f32>,
     param: &FsParamTarget,
     intended_preset_level: Option<f32>,
+    probe: Option<SeedPoint>,
 ) -> Result<FootswitchLevelResult, LevelError> {
-    solve_footswitch_with(
+    solve_footswitch_seeded(
         switch,
         engaged_bypass,
         stimulus,
         target_lufs,
         method,
         current_value,
+        probe,
         param,
         || reamp_off_fresh("measure_footswitch"),
         // EVERY capture of this row recalls `scene` before engaging — the isolation list and
         // the intended `presetLevel` are both re-sent per capture for the same reason (a
-        // recall re-asserts its own bypass state AND runs the device's level-apply).
-        |bypass, v| measure_fs_at(scene, lev, bypass, stimulus, v, intended_preset_level),
+        // recall re-asserts its own bypass state AND runs the device's level-apply). Far
+        // steps take a short window ([`CoarseFs`]), picking up from the prepass probe's miss.
+        {
+            let mut coarse = CoarseFs::new(target_lufs, probe.map(|p| p.lufs));
+            move |bypass, v| {
+                coarse.measure(|w| {
+                    measure_fs_at(scene, lev, bypass, stimulus, v, intended_preset_level, w)
+                })
+            }
+        },
+    )
+}
+
+/// How far (LU) a footswitch reading may miss its target before the NEXT capture of that row
+/// takes the short window: far steps only aim the secant, so their exact level never decides
+/// the outcome (`TMP_FS_COARSE_FAR_LU`, a bench knob).
+fn coarse_far_lu() -> f64 {
+    std::env::var("TMP_FS_COARSE_FAR_LU")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0)
+}
+
+/// Coarse-to-fine capture windows for ONE footswitch row's captures: a capture whose previous
+/// reading missed the target by more than [`coarse_far_lu`] (or that has no previous reading)
+/// takes the [`CaptureWindow::Short`] window, every other capture the full one. A short
+/// reading that lands inside the acceptance band (within [`coarse_far_lu`] for the row's first
+/// reading, which also decides the at-target skip), or that hears no signal, is re-measured
+/// full at the same value before anyone sees it, so the solve never accepts, skips or
+/// verdicts on a short reading. Offline
+/// replay of the 2026-10-17 HW bench (155 captures, 405 + 410): about −30% of the footswitch
+/// step, every accepted reading full. Off with `TMP_FS_COARSE=0` (bench A/B).
+pub(crate) struct CoarseFs {
+    target: f64,
+    last_lufs: Option<f64>,
+    on: bool,
+}
+
+impl CoarseFs {
+    /// `last_lufs` = the row's previous reading, if one was already taken (the prepass probe).
+    pub(crate) fn new(target: f64, last_lufs: Option<f64>) -> Self {
+        CoarseFs {
+            target,
+            last_lufs,
+            on: super::env_ms("TMP_FS_COARSE", 1) != 0,
+        }
+    }
+
+    /// The window the next capture takes.
+    fn window(&self) -> CaptureWindow {
+        let far = self
+            .last_lufs
+            .is_none_or(|l| (l - self.target).abs() > coarse_far_lu());
+        if self.on && far {
+            CaptureWindow::Short
+        } else {
+            CaptureWindow::Full
+        }
+    }
+
+    /// Take the next capture of this row through `at`, in the window [`Self::window`] picks.
+    pub(crate) fn measure(
+        &mut self,
+        mut at: impl FnMut(CaptureWindow) -> Result<lufs::Loudness, LevelError>,
+    ) -> Result<lufs::Loudness, LevelError> {
+        let window = self.window();
+        if window == CaptureWindow::Full {
+            return self.record(at(CaptureWindow::Full));
+        }
+        // A row's FIRST reading also decides the at-target skip, so a short one near the band
+        // is re-measured too: its window bias (up to ~0.5 LU) must not turn an in-band sound
+        // into a fresh solve and a rewrite on a re-run. Later short readings only need the band.
+        let confirm_within = if self.last_lufs.is_none() {
+            coarse_far_lu()
+        } else {
+            solve_accept_tol()
+        };
+        match at(CaptureWindow::Short) {
+            Ok(l) if (l.integrated_lufs - self.target).abs() > confirm_within => self.record(Ok(l)),
+            Ok(_) => self.record(at(CaptureWindow::Full)),
+            // Silence in a short window is not evidence: a wet-only or slow-building sound can
+            // stay below the gate for 3 s. Only the full window may report it.
+            Err(e) if e.is_no_signal() => self.record(at(CaptureWindow::Full)),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn record(
+        &mut self,
+        l: Result<lufs::Loudness, LevelError>,
+    ) -> Result<lufs::Loudness, LevelError> {
+        let l = l?;
+        self.last_lufs = Some(l.integrated_lufs);
+        Ok(l)
+    }
+}
+
+/// [`solve_footswitch_seeded`] with no prepaid probe — the solve suites' seam.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn solve_footswitch_with(
+    switch: u32,
+    engaged_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    target_lufs: f64,
+    method: &str,
+    current_value: Option<f32>,
+    param: &FsParamTarget,
+    reamp_off: impl FnMut(),
+    measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, LevelError>,
+) -> Result<FootswitchLevelResult, LevelError> {
+    solve_footswitch_seeded(
+        switch,
+        engaged_bypass,
+        stimulus,
+        target_lufs,
+        method,
+        current_value,
+        None,
+        param,
+        reamp_off,
+        measure,
     )
 }
 
@@ -848,14 +1003,19 @@ pub fn measure_footswitch(
 /// do, but the recall undoes them.) Injectable — `reamp_off` too (see
 /// [`solve_param_secant`]) — so the loop + its outcome verdict are unit tested without a
 /// device.
+///
+/// `probe` is the idempotency probe's reading when the caller already took it (the batch
+/// prepass's capture at `current_value`, see `solve_param_secant`'s `known_seed`), so the
+/// solve does not buy that capture a second time.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn solve_footswitch_with(
+pub(super) fn solve_footswitch_seeded(
     switch: u32,
     engaged_bypass: &[(String, String, bool)],
     stimulus: &[f32],
     target_lufs: f64,
     method: &str,
     current_value: Option<f32>,
+    probe: Option<SeedPoint>,
     param: &FsParamTarget,
     reamp_off: impl FnMut(),
     mut measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, LevelError>,
@@ -864,7 +1024,7 @@ pub(super) fn solve_footswitch_with(
         stimulus,
         target_lufs,
         current_value,
-        None,
+        probe,
         param,
         FS_CORRECT_MAX,
         reamp_off,
@@ -979,10 +1139,10 @@ impl ParamSolve {
 /// One already-captured solve point: the knob `value`, its integrated loudness and the
 /// dynamics spread of that capture — all the secant reads off a seed.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct SeedPoint {
-    pub(super) value: f32,
-    pub(super) lufs: f64,
-    pub(super) spread: f64,
+pub struct SeedPoint {
+    pub value: f32,
+    pub lufs: f64,
+    pub spread: f64,
 }
 
 /// [`solve_footswitch`]'s loop with the CAPTURE BUDGET as an argument — the seam the scene
@@ -1006,8 +1166,10 @@ pub(super) struct SeedPoint {
 /// `known_seed` is a point the CALLER already captured ([`SeedPoint`]), taken in exactly
 /// the measurement context `measure_at(value)` would produce (same knob value, stimulus,
 /// `presetLevel`, scene and isolation) on its own fresh engage. When `Some` it is seed 1 —
-/// no capture is bought for it, exactly like a successful idempotency probe below — and it
-/// is ignored when `current_value` is `Some` (the probe then owns seed 1). It does NOT
+/// no capture is bought for it, exactly like a successful idempotency probe below. When
+/// `current_value` is `Some`, a seed AT that value is the probe's own reading, taken by the
+/// caller (the footswitch batch's prepass): the probe uses it instead of capturing, and any
+/// other seed is ignored (the probe then owns seed 1). It does NOT
 /// anchor the wet floor (that stays `current_value`'s job) and it is never the routing probe:
 /// the caller's capture already proved signal. The scene HANDLE lane passes its as-is
 /// reading here when [`asis_seed_context_matches`] proves the contexts identical; `None`
@@ -1043,11 +1205,25 @@ pub(super) fn solve_param_secant(
     // A successful-but-off-target probe is a PAID capture: it is kept as `probe_seed` and
     // reused as the solve's seed 1 below instead of being discarded and re-bought at a fresh
     // `at_fraction(0.25)`.
-    let mut probe_seed: Option<(f32, lufs::Loudness)> = None;
+    let mut probe_seed: Option<SeedPoint> = None;
     if let Some(cur) = current_value {
-        match require_live(|| measure_at(cur), stimulus) {
-            Ok(l) if switch_at_target(l.integrated_lufs, target_lufs, false) => {
-                reamp_off();
+        // The caller's reading at `cur` stands in for the capture (see `known_seed`'s doc).
+        // Its capture already disengaged and the caller ran the OFF ladder after it, so a
+        // prepaid skip sends no OFF of its own.
+        let prepaid = known_seed.filter(|k| k.value == cur);
+        let reading = match prepaid {
+            Some(k) => Ok(k),
+            None => require_live(|| measure_at(cur), stimulus).map(|l| SeedPoint {
+                value: cur,
+                lufs: l.integrated_lufs,
+                spread: l.spread_lu(),
+            }),
+        };
+        match reading {
+            Ok(l) if switch_at_target(l.lufs, target_lufs, false) => {
+                if prepaid.is_none() {
+                    reamp_off();
+                }
                 // Skip signal: `final_value` == the caller's current value verbatim, so the
                 // caller detects the no-op by `final_value == current` and writes nothing
                 // (the footswitch mirror of the scene lane's off-wire `writes: 0`). See
@@ -1055,20 +1231,20 @@ pub(super) fn solve_param_secant(
                 // returned value below the wet floor, safely, because it is never written.
                 return Ok(ParamSolve {
                     final_value: cur,
-                    measured_lufs: l.integrated_lufs,
-                    predicted_lufs: l.integrated_lufs,
+                    measured_lufs: l.lufs,
+                    predicted_lufs: l.lufs,
                     clamped: false,
                     unconverged: false,
                     clamp_reason: None,
                     wet_floor: false,
-                    spread_lu: Some(l.spread_lu()),
+                    spread_lu: Some(l.spread),
                     iterations: 1,
                 });
             }
             // In-tolerance-but-not-a-skip carries into the seed pass as seed 1; a probe
             // error must disengage re-amp first (the seed pass re-engages on a fresh
             // connection) and falls through to the fixed-seed path below.
-            Ok(l) => probe_seed = Some((cur, l)),
+            Ok(l) => probe_seed = Some(l),
             Err(_) => reamp_off(),
         }
     }
@@ -1079,11 +1255,6 @@ pub(super) fn solve_param_secant(
     // this solve); else the fixed `at_fraction(0.25)` position exactly as before.
     let known_seed = known_seed.filter(|_| current_value.is_none());
     let seed1_paid_here = known_seed.is_none();
-    let probe_seed = probe_seed.map(|(cur, l)| SeedPoint {
-        value: cur,
-        lufs: l.integrated_lufs,
-        spread: l.spread_lu(),
-    });
     let (v_a, l_a_lufs, l_a_spread) = if let Some(p) = probe_seed.or(known_seed) {
         (p.value, p.lufs, p.spread)
     } else {
@@ -1172,6 +1343,7 @@ pub(super) fn solve_param_secant(
     // this solve, so only seed 2 counts on that path.
     let mut iterations = if seed1_paid_here { 2u32 } else { 1u32 };
     let err = |l: f64| (l - target_lufs).abs();
+    let tol = solve_accept_tol();
     let (mut best_v, mut best_lufs, mut best_spread) =
         if seed2_synthetic || err(l_a_lufs) <= err(l_b_lufs) {
             (v_a, l_a_lufs, l_a_spread)
@@ -1182,7 +1354,7 @@ pub(super) fn solve_param_secant(
     // search — it must never advertise a re-run. Set ONLY where no-authority is proven
     // (the seed/expansion pair below); a mid-loop stall keeps `unconverged`.
     let mut flat_response = false;
-    if err(best_lufs) > ACCEPT_TOL_LU {
+    if err(best_lufs) > tol {
         // The correction loop below interpolates in solve-COORD space
         // (`param.to_coord`), not raw parameter value — see `to_coord`'s doc for why
         // that makes the secant exact for a `LevelLinear`/`LevelDb` param.
@@ -1245,7 +1417,7 @@ pub(super) fn solve_param_secant(
         //   * pair does NOT straddle → the plain slide (drop the older point), unchanged
         //     from the validated behavior; the first crossing iterate forms a straddling
         //     consecutive pair, which flips the loop into bracket mode by itself.
-        if err(best_lufs) > ACCEPT_TOL_LU {
+        if err(best_lufs) > tol {
             if (p1.1 - p0.1).abs() < KNOB_TOL_LU {
                 // The seed pair itself is flat (and the expansion probe didn't land
                 // it): the knob demonstrably can't move loudness, the correction loop
@@ -1319,7 +1491,7 @@ pub(super) fn solve_param_secant(
                         }
                         Err(e) => return Err(e),
                     };
-                    if l2_real && err(l2_lufs) <= ACCEPT_TOL_LU {
+                    if l2_real && err(l2_lufs) <= tol {
                         break;
                     }
                     let p2 = (param.to_coord(v2 as f64), l2_lufs);

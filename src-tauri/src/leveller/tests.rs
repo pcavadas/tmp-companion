@@ -2966,3 +2966,57 @@ fn set_knob_value_only_routes_bypass_through_the_bool_wire_call() {
         "a bypass knob value must land as a BOOL write, not a float dspUnitParameters one"
     );
 }
+
+/// Coarse-to-fine: a row's first capture and every capture after a far miss take the short
+/// window, a capture after a near miss the full one, and a short reading that lands in band is
+/// re-measured full, so the solve only ever sees full readings inside the band.
+#[test]
+fn coarse_fs_shortens_only_far_steps_and_confirms_a_short_hit_in_full() {
+    let mut coarse = CoarseFs::new(-20.0, None);
+    let mut windows = Vec::new();
+    let mut take = |coarse: &mut CoarseFs, short: f64, full: f64| {
+        coarse
+            .measure(|w| {
+                windows.push(w);
+                Ok(fs_loud(if w == CaptureWindow::Short {
+                    short
+                } else {
+                    full
+                }))
+            })
+            .unwrap()
+            .integrated_lufs
+    };
+    // No previous reading: short. 4 LU off: the next is short too.
+    assert_eq!(take(&mut coarse, -24.0, -24.2), -24.0);
+    // 0.6 LU off: the next is full.
+    assert_eq!(take(&mut coarse, -20.6, -20.7), -20.6);
+    assert_eq!(take(&mut coarse, -19.0, -20.1), -20.1);
+    // A row picking up from a far probe: short, lands in band, re-measured full.
+    let mut picked_up = CoarseFs::new(-20.0, Some(-23.0));
+    assert_eq!(take(&mut picked_up, -20.1, -20.3), -20.3);
+    // A row's first reading near the band is re-measured full: it decides the at-target skip.
+    let mut first = CoarseFs::new(-20.0, None);
+    assert_eq!(take(&mut first, -20.8, -20.2), -20.2);
+    use CaptureWindow::{Full, Short};
+    assert_eq!(windows, vec![Short, Short, Full, Short, Full, Short, Full]);
+}
+
+/// A short window that hears no signal is re-measured full: only the full window may report
+/// silence (a wet-only or slow-building sound).
+#[test]
+fn coarse_fs_never_reports_silence_from_a_short_window() {
+    let mut coarse = CoarseFs::new(-20.0, None);
+    let mut windows = Vec::new();
+    let l = coarse
+        .measure(|w| {
+            windows.push(w);
+            match w {
+                CaptureWindow::Short => Err(LevelError::NoSignal),
+                CaptureWindow::Full => Ok(fs_loud(-30.0)),
+            }
+        })
+        .unwrap();
+    assert_eq!(l.integrated_lufs, -30.0);
+    assert_eq!(windows, vec![CaptureWindow::Short, CaptureWindow::Full]);
+}
