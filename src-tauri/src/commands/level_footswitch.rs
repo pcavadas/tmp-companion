@@ -572,7 +572,7 @@ impl FsBatch<'_> {
             job.lev_parameter_id.as_str(),
         );
         // The row's first capture: short unless it lands in band ([`leveller::CoarseFs`]).
-        let mut coarse = leveller::CoarseFs::new(job.target_lufs, None);
+        let mut coarse = leveller::CoarseFs::new(job.target_lufs + self.offset, None);
         match leveller::require_live(
             || {
                 coarse.measure(|w| {

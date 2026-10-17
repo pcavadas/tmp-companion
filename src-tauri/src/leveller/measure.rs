@@ -414,8 +414,9 @@ pub(crate) fn capture_on_session(
     // seam has sent nothing itself before the engage, which would otherwise land on a
     // ~600 ms idle gap after the caller's `load_scene` recall and read the device's
     // stationary output floor instead of the stimulus. `Session::heartbeat` is the
-    // designed keep-alive and writes nothing: recall → 300 → hb → 300 → hb → 300 →
-    // engage keeps every idle gap ≤300 ms and lands the engage ~900 ms post-recall.
+    // designed keep-alive and writes nothing: with the default settles, recall → 150 → hb →
+    // 100 → engage keeps every idle gap ≤300 ms (the old cadence was recall → 300 → hb →
+    // 300 → hb → 300 → engage; see `notes/perf.md`).
     // HW evidence, the two candidate mechanisms, and why the timing is two-sided:
     // gotchas.md "An engage after a naked scene recall latches silence".
     //
@@ -920,8 +921,8 @@ fn short_span(mut cap: audio::Capture) -> audio::Capture {
 }
 
 /// The naked-shape idle breaker: [`breaker_beats`] heartbeats, a settle between each, every
-/// idle gap ≤300 ms. The default (2) is the HW-green recall → 300 → hb → 300 → hb cadence
-/// the callers document; the trailing settle before the engage is the caller's.
+/// idle gap ≤300 ms. The default (1) sends one heartbeat between the caller's recall settle
+/// ([`recall_settle_ms`], 150 ms) and its pre-engage settle ([`pre_engage_settle_ms`], 100 ms).
 fn breaker(s: &mut Session) -> Result<(), LevelError> {
     for i in 0..breaker_beats() {
         if i > 0 {
@@ -938,8 +939,8 @@ fn breaker(s: &mut Session) -> Result<(), LevelError> {
 ///
 /// The recall→engage sequence is shaped like the NAKED shape `capture_on_session` breaks
 /// with heartbeats, and this seam does NOT route through that function — so it carries its
-/// own copy of the breaker: recall → 300 → hb → 300 → hb → 300 → engage, every idle gap
-/// ≤300 ms and the engage ~900 ms post-recall.
+/// own copy of the breaker: with the default settles, recall → 150 → hb → 100 → engage,
+/// every idle gap ≤300 ms.
 ///
 /// HARDENING, NOT A FIX FOR AN OBSERVED FAILURE — be precise about this, because the
 /// evidence cuts the other way. gotchas.md "An engage after a naked scene recall latches
@@ -960,9 +961,9 @@ fn breaker(s: &mut Session) -> Result<(), LevelError> {
 /// whole raise while a headroom trade holds an unsaved `presetLevel`. `None` = assert nothing (capture at the preset's own
 /// stored level) — the reading every caller that has no run-owned value still wants.
 ///
-/// The assert is INSERTED into the breaker, never spliced over it: recall → 300 → set → 300 →
-/// hb → 300 → hb → 300 → engage. Every idle gap stays ≤300 ms and the cadence above survives
-/// intact; the engage simply lands ~1200 ms post-recall instead of ~900 ms.
+/// The assert is INSERTED into the breaker, never spliced over it: recall → 150 → set → 300 →
+/// hb → 100 → engage. Every idle gap stays ≤300 ms and the cadence above survives intact; the
+/// engage simply lands 300 ms later.
 // A4/F11: this seam does NOT route through `arm_measurement` — it recalls a SCENE, not a
 // single `LevelKnob`, so there is no knob to hand that seam's `LevelKnob`-shaped API. The same
 // ordering rule applies by hand instead: SCENE CONTEXT FIRST (the `load_scene` recall), THE
