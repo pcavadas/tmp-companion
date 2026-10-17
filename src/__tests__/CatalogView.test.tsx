@@ -59,6 +59,23 @@ const tile = (r: ModelRecord) => {
   if (!el) throw new Error(`no tile for ${r.cid}`);
   return el;
 };
+// The wall holds every model, so a page-wide role query walks thousands of nodes and
+// can take seconds under a loaded test run: scope queries to the small controls, and
+// read the section heads straight from their <h2>s.
+const sortBy = () => {
+  const el = document.querySelector<HTMLElement>(
+    '[role="radiogroup"][aria-label="Sort by"]',
+  );
+  if (!el) throw new Error("no Sort by control");
+  return el;
+};
+const dirButton = (label: string) => {
+  const el = screen.getByText(label).closest("button");
+  if (!el) throw new Error(`no ${label} button`);
+  return el;
+};
+const sectionHeads = () =>
+  [...document.querySelectorAll("h2")].map((h) => h.textContent);
 /** The tiles carrying a "Stereo" badge (the Sound segment says "Stereo" too). */
 const stereoBadges = () =>
   screen
@@ -206,32 +223,26 @@ describe("CatalogView — Sort by CPU", () => {
     const cpuLine = `${cpuStr(costed.cpu)} CPU`;
     // Sorted by type: no CPU on the tiles, no direction button.
     expect(within(tile(costed)).queryByText(cpuLine)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Highest first" })).toBeNull();
+    expect(screen.queryByText("Highest first")).toBeNull();
 
-    await user.click(screen.getByRole("radio", { name: "CPU" }));
+    await user.click(within(sortBy()).getByRole("radio", { name: "CPU" }));
     expect(within(tile(costed)).getByText(cpuLine)).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Highest CPU first" }),
-    ).toBeInTheDocument();
+    expect(sectionHeads()).toEqual(["Highest CPU first"]);
     // The highest-cost model comes first.
     const top = Math.max(...MODELS.map((r) => r.cpu ?? -1));
     expect(tiles()[0].textContent).toContain(`${cpuStr(top)} CPU`);
 
     // The direction button flips the order.
-    await user.click(screen.getByRole("button", { name: "Highest first" }));
-    expect(
-      screen.getByRole("button", { name: "Lowest first" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Lowest CPU first" }),
-    ).toBeInTheDocument();
+    await user.click(dirButton("Highest first"));
+    expect(dirButton("Lowest first")).toBeInTheDocument();
+    expect(sectionHeads()).toEqual(["Lowest CPU first"]);
     const low = Math.min(
       ...MODELS.filter((r) => r.cpu != null).map((r) => r.cpu ?? 0),
     );
     expect(tiles()[0].textContent).toContain(`${cpuStr(low)} CPU`);
 
     // Back to Type: CPU leaves the tiles again.
-    await user.click(screen.getByRole("radio", { name: "Type" }));
+    await user.click(within(sortBy()).getByRole("radio", { name: "Type" }));
     expect(within(tile(costed)).queryByText(cpuLine)).toBeNull();
   });
 });
