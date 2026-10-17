@@ -57,8 +57,10 @@ export function AddSongs({
       return n;
     });
   };
+  // What Add writes, and so what its label counts: the ticked songs still not in the
+  // setlist (a tick on a song that has since joined it adds nothing).
+  const picked = (available ?? []).filter((s) => sel.has(s.slot));
   const add = () => {
-    const picked = (available ?? []).filter((s) => sel.has(s.slot));
     if (picked.length) onAdd(picked);
     onClose();
   };
@@ -256,8 +258,12 @@ export function AddSongs({
             <Button variant="secondary" onClick={onClose}>
               Cancel
             </Button>
-            <Button variant="primary" disabled={sel.size === 0} onClick={add}>
-              {sel.size > 0 ? `Add ${String(sel.size)}` : "Add"}
+            <Button
+              variant="primary"
+              disabled={picked.length === 0}
+              onClick={add}
+            >
+              {picked.length > 0 ? `Add ${String(picked.length)}` : "Add"}
             </Button>
           </div>
         )}

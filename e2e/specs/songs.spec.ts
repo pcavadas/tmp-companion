@@ -18,7 +18,10 @@ const SETLIST_NEW = `E2E Set ${RUN} R2`;
 const BPM = "97";
 const BPM2 = "132";
 // The toast a save shows when its tempo didn't land. Matched EXACTLY: a pattern for
-// wording the app no longer uses would pass `toHaveCount(0)` without testing anything.
+// wording the app no longer uses would match nothing and pass without testing anything.
+// It is counted ONCE, with no retry, right after the song's BPM row shows: the toast and
+// the row render together, and the toast hides itself after about 4 s, so a retrying
+// `toHaveCount(0)` would wait it out and pass even when it showed.
 const TEMPO_TOAST = "Song saved, but its tempo didn't. Set it again.";
 
 // This run's setlists — swept in afterEach, so a failed assertion can't strand one on
@@ -84,7 +87,7 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     await expect(
       songRow(page, SONG).getByText(`${BPM} BPM`, { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText(TEMPO_TOAST, { exact: true })).toHaveCount(0);
+    expect(await page.getByText(TEMPO_TOAST, { exact: true }).count()).toBe(0);
 
     // UPDATE (rename + BPM) → read-back shows the new name and BPM, old name gone.
     await moreFor(page, SONG).click();
@@ -98,7 +101,7 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     await expect(
       songRow(page, SONG2).getByText(`${BPM2} BPM`, { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText(TEMPO_TOAST, { exact: true })).toHaveCount(0);
+    expect(await page.getByText(TEMPO_TOAST, { exact: true }).count()).toBe(0);
     // …and the old name is GONE — a rename that appended instead of replacing would leave
     // both visible (and break net-zero), yet pass a new-name-visible check alone.
     await expect(page.getByText(SONG, { exact: true })).toHaveCount(0, {

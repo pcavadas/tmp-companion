@@ -65,7 +65,7 @@ export const WRITE_FAILED =
   "Couldn't save that change to your Tone Master Pro.";
 /** A setlist's songs couldn't be read (the one read that runs on the op queue). */
 export const READ_FAILED =
-  "Couldn't read this setlist from your Tone Master Pro. Open it again to try again.";
+  "Couldn't read this setlist from your Tone Master Pro.";
 /** The song saved but its tempo didn't land (the warning's text goes to the log). */
 export const TEMPO_FAILED = "Song saved, but its tempo didn't. Set it again.";
 /** A create whose name another song already had (the unit keeps both). */

@@ -168,12 +168,19 @@ export function SetlistDetail({
 
   // Close the rename editor when a different setlist (or a renamed one) is shown —
   // via React's "adjust state during render when a prop changes" pattern. The
-  // editor owns its draft, so the next rename starts from the new name.
+  // editor owns its draft, so the next rename starts from the new name. A different
+  // setlist also closes the Add songs picker (a click outside it leaves it open, so a
+  // click on another setlist would otherwise carry its ticks over) and the ⋯ menu; a
+  // rename of this one leaves the picker as it is.
   const [prevId, setPrevId] = useState({
     slot: setlist.slot,
     name: setlist.name,
   });
   if (prevId.slot !== setlist.slot || prevId.name !== setlist.name) {
+    if (prevId.slot !== setlist.slot) {
+      setPicker(false);
+      setMenu(false);
+    }
     setPrevId({ slot: setlist.slot, name: setlist.name });
     setRenaming(false);
   }

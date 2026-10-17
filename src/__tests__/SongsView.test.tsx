@@ -314,7 +314,11 @@ describe("SongsView (device-backed)", () => {
         "Song saved, but its tempo didn't. Set it again.",
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByText(new RegExp(warning))).not.toBeInTheDocument();
+    // A literal substring match: the warning's parentheses would make a RegExp built
+    // from it a group that never matches the text itself.
+    expect(
+      screen.queryByText(warning, { exact: false }),
+    ).not.toBeInTheDocument();
     expect(logged).toHaveBeenCalledWith(expect.stringContaining(warning));
     logged.mockRestore();
   });
@@ -623,6 +627,149 @@ describe("SongsView (device-backed)", () => {
     expect(
       screen.queryByRole("dialog", { name: "Add songs to Set A" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("the Add songs picker closes when another setlist is shown, so its ticks never carry over", async () => {
+    baseMock({
+      songs: [song(3, "Song C"), song(5, "Song E"), song(7, "Song G")],
+      setlists: [
+        { slot: 1, name: "Set A" },
+        { slot: 2, name: "Set B" },
+      ],
+      members: { 1: [3], 2: [5] },
+    });
+    renderMgr(true);
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: /new song/i });
+    await user.click(screen.getByText("Set A"));
+    await screen.findByText("Song C");
+
+    await user.click(screen.getByRole("button", { name: "Add songs" }));
+    const picker = await screen.findByRole("dialog", {
+      name: "Add songs to Set A",
+    });
+    await user.click(
+      within(picker).getByRole("checkbox", { name: "Add Song E" }),
+    );
+    await user.click(
+      within(picker).getByRole("checkbox", { name: "Add Song G" }),
+    );
+    expect(within(picker).getByRole("button", { name: "Add 2" })).toBeEnabled();
+
+    // A rename of this setlist keeps the picker open, with its ticks.
+    baseMock(
+      {
+        songs: [song(3, "Song C"), song(5, "Song E"), song(7, "Song G")],
+        setlists: [
+          { slot: 1, name: "Openers" },
+          { slot: 2, name: "Set B" },
+        ],
+        members: { 1: [3], 2: [5] },
+      },
+      {
+        rename_setlist: () => [
+          { slot: 1, name: "Openers" },
+          { slot: 2, name: "Set B" },
+        ],
+      },
+    );
+    await startRename(user, "Set A");
+    const input = screen.getByDisplayValue("Set A");
+    await user.clear(input);
+    await user.type(input, "Openers{Enter}");
+    const renamed = await screen.findByRole("dialog", {
+      name: "Add songs to Openers",
+    });
+    expect(
+      within(renamed).getByRole("button", { name: "Add 2" }),
+    ).toBeEnabled();
+
+    // Another setlist in the sidebar: the picker closes, with nothing written.
+    await user.click(screen.getByText("Set B"));
+    await screen.findByRole("heading", { name: "Set B" });
+    await screen.findByText("Song E");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // Opened again on Set B, it starts with nothing ticked.
+    await user.click(screen.getByRole("button", { name: "Add songs" }));
+    const pickerB = await screen.findByRole("dialog", {
+      name: "Add songs to Set B",
+    });
+    expect(within(pickerB).getByRole("button", { name: "Add" })).toBeDisabled();
+    for (const box of within(pickerB).getAllByRole("checkbox"))
+      expect(box).not.toBeChecked();
+    expect(callsTo("add_setlist_songs")).toBe(0);
+  });
+
+  it("Add {n} counts the ticks the picker shows, which are the songs Add writes", async () => {
+    baseMock({
+      songs: [song(3, "Song C"), song(5, "Song E"), song(7, "Song G")],
+      setlists: [{ slot: 1, name: "Set A" }],
+      members: { 1: [3] },
+    });
+    renderMgr(true);
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: /new song/i });
+    await user.click(screen.getByText("Set A"));
+    await screen.findByText("Song C");
+
+    await user.click(screen.getByRole("button", { name: "Add songs" }));
+    const picker = await screen.findByRole("dialog", {
+      name: "Add songs to Set A",
+    });
+    /** The label Add must carry for the ticks on screen. */
+    const addLabelForTicks = () => {
+      const n = within(picker)
+        .queryAllByRole("checkbox")
+        .filter((c) => c.getAttribute("aria-checked") === "true").length;
+      return n > 0 ? `Add ${String(n)}` : "Add";
+    };
+    await user.click(
+      within(picker).getByRole("checkbox", { name: "Add Song E" }),
+    );
+    await user.click(
+      within(picker).getByRole("checkbox", { name: "Add Song G" }),
+    );
+    expect(addLabelForTicks()).toBe("Add 2");
+    expect(within(picker).getByRole("button", { name: "Add 2" })).toBeEnabled();
+
+    // A song made from the picker's "New song" goes in at slot 1 and moves every
+    // other song up one slot, so no song is still under the slots that were ticked.
+    await user.click(within(picker).getByRole("button", { name: /new song/i }));
+    await user.type(screen.getByLabelText("Song name"), "Fresh");
+    baseMock(
+      {
+        songs: [
+          song(1, "Fresh"),
+          song(4, "Song C"),
+          song(6, "Song E"),
+          song(8, "Song G"),
+        ],
+        setlists: [{ slot: 1, name: "Set A" }],
+        members: { 1: [4, 1] },
+      },
+      {
+        create_song_full: () =>
+          saved(
+            [
+              song(1, "Fresh"),
+              song(4, "Song C"),
+              song(6, "Song E"),
+              song(8, "Song G"),
+            ],
+            [4, 1],
+          ),
+      },
+    );
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(callsTo("create_song_full")).toBe(1);
+    });
+    await within(picker).findByRole("checkbox", { name: "Add Song E" });
+    const label = addLabelForTicks();
+    const add = within(picker).getByRole("button", { name: label });
+    if (label === "Add") expect(add).toBeDisabled();
+    else expect(add).toBeEnabled();
   });
 
   it("a failed write surfaces a Toast and does NOT mutate the list (no optimistic drift)", async () => {
