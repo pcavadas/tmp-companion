@@ -1,9 +1,8 @@
 // Shared Copy-journey test fixtures: the 3-block series preset + its backup row, used by
 // every test that drives the real Copy flow through a mocked invoke bridge (the full happy
 // path in CopyHappyPath.test.tsx and the BUG-2 hero-patch lock in CopyView.test.tsx).
-// The captions ("DYNCMP"/"65TWN"/"SM-HALL") and origin chip names ("DYNAMIC COMPRESSOR" /
-// "FENDER '65 TWIN REVERB" / "SMALL HALL REVERB") come from the real blockArt catalog, so
-// the UI resolves them faithfully.
+// The fixture's models resolve through the real blockArt catalog, so the UI names them
+// as it does on the unit ("Dynamic Comp", "'65 Twin", "Small Hall").
 
 import type { ActiveGraph, BackupPresetRow, GraphNode } from "../lib/types";
 import { makeBackupPresetRow } from "./commandMocks";

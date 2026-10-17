@@ -10,9 +10,12 @@
 // `gaps` (a target strip while a source block is chosen) puts a "+" (`GapPlus`) in every
 // gap between blocks and at each end of a row: the engine calls `gap.render` with the
 // uids either side, and a gap places the block before the block to its right, or after
-// the last block of its row. A dual cab is one block here: with gaps on, the strip draws
-// it as its one cab tile instead of the two parallel cab tiles `expandDualCab` makes
-// for display, so its "+" sits before and after it and never inside those two lanes.
+// the last block of its row. With gaps on, the strip is drawn exactly as without them,
+// so a dual cab keeps the two parallel cab tiles `expandDualCab` draws for it. The upper
+// cab tile carries the cab's `uid`, so its "+" before and after place the block before
+// or after the whole cab ("at the end" after a trailing one); the lower tile has no
+// `uid`, so its lane draws no "+". The upper lane's "+" repeat the series "+" either
+// side of the cab, which place the block at the same spot.
 
 import { useMemo } from "react";
 
@@ -23,7 +26,6 @@ import {
   SignalChainView,
   type StripBlock,
   type StripGraph,
-  type StripStage,
 } from "../SignalChainView";
 import { toStripRoute } from "../stripExpand";
 import { GapPlus } from "./GapPlus";
@@ -104,15 +106,6 @@ export function CopyPath({ graph, onTap, selectedUid, gaps }: CopyPathProps) {
       inputType: graph.inputType ?? undefined,
       outputType: graph.outputType ?? undefined,
       ...route,
-      // The edit graph's own stages, a dual cab left as one tile (see the header). An
-      // emptied series run is left out, as the display expansion leaves it out.
-      stages: graph.stages
-        .filter((st) => st.kind === "split" || st.blocks.length > 0)
-        .map((st): StripStage =>
-          st.kind === "split"
-            ? { kind: "split", a: st.a.map(mkTile), b: st.b.map(mkTile) }
-            : { kind: "series", blocks: st.blocks.map(mkTile) },
-        ),
       gap: {
         render: ({ beforeUid, afterUid }) => {
           const uid = beforeUid ?? afterUid;

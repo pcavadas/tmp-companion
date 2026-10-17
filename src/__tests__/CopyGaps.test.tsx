@@ -3,8 +3,9 @@
 //   - SignalChainView draws `graph.gap` in place of every wire between two tiles of a row
 //     or series stage, plus one at each end, and draws exactly the old wires without it;
 //   - CopyPath names each gap by where it places the block, puts gaps only on a target
-//     strip with a chosen block, and treats a dual cab as ONE block (never a gap inside
-//     the two cab lanes the display draws for it).
+//     strip with a chosen block, and keeps a dual cab drawn as its two cab tiles while
+//     placing: the upper tile's gaps place the block before or after the whole cab,
+//     and the lower tile draws none.
 
 import { describe, expect, it } from "vitest";
 import { screen, within } from "@testing-library/react";
@@ -213,38 +214,80 @@ describe("CopyPath — the + gaps", () => {
     for (const b of gapButtons()) expect(b).toBeDisabled();
   });
 
-  describe("a dual cab is one block", () => {
-    const DUAL = series([
-      node("n1", "ACD_DynaComp"),
-      node("n2", "ACD_CabSimTMS", {
+  describe("a dual cab is one block, drawn as its two cab tiles", () => {
+    const cabNode = (id: string) =>
+      node(id, "ACD_CabSimTMS", {
         cab_sim_id: "Cab412BritGB",
         cab_sim_id2: "Cab112DlxC12K",
         cab_sim2_enabled: true,
-      }),
-    ]);
+      });
+    const uidsOf = (g: EditGraph): string[] => {
+      const st = g.stages[0];
+      if (st.kind !== "series") throw new Error("series expected");
+      return st.blocks.map((b) => b.uid);
+    };
     const cabTiles = () =>
       document.querySelectorAll('[data-block-tile="ACD_CabSimTMS"]');
+    const TRAILING = series([node("n1", "ACD_DynaComp"), cabNode("n2")]);
 
     it("draws as two parallel cab tiles while no block is chosen", () => {
-      renderWithTheme(<CopyPath graph={DUAL} onTap={() => undefined} />);
+      renderWithTheme(<CopyPath graph={TRAILING} onTap={() => undefined} />);
       expect(cabTiles()).toHaveLength(2);
     });
 
-    it("with gaps, is one tile with a gap before and after it, none inside", () => {
+    it("keeps both cab tiles with gaps, a + only around the upper one", async () => {
       const placed: [string, string][] = [];
+      const user = userEvent.setup();
       renderWithTheme(
         <CopyPath
-          graph={DUAL}
+          graph={TRAILING}
           onTap={() => undefined}
           gaps={gapsFor(placed)}
         />,
       );
-      expect(cabTiles()).toHaveLength(1);
+      expect(cabTiles()).toHaveLength(2);
       const labels = gapButtons().map((b) => b.getAttribute("aria-label"));
-      expect(labels).toHaveLength(3);
+      expect(labels).toHaveLength(4);
       expect(labels[0]).toBe("Add here in Clean Verse, before Dynamic Comp");
-      expect(labels[1]).toMatch(/^Add here in Clean Verse, before /);
-      expect(labels[2]).toBe("Add here in Clean Verse, at the end");
+      expect(labels[1]).toBe("Add here in Clean Verse, after Dynamic Comp");
+      expect(labels[2]).toMatch(/^Add here in Clean Verse, before /);
+      expect(labels[3]).toBe("Add here in Clean Verse, at the end");
+      for (const b of gapButtons()) await user.click(b);
+      const [uDyna, uCab] = uidsOf(TRAILING);
+      expect(placed).toEqual([
+        [uDyna, "before"],
+        [uDyna, "after"],
+        [uCab, "before"],
+        [uCab, "after"],
+      ]);
+    });
+
+    it("places a block before a leading cab and between it and the next block", async () => {
+      const placed: [string, string][] = [];
+      const user = userEvent.setup();
+      const LEADING = series([cabNode("n1"), node("n2", "ACD_TMSmallHall")]);
+      renderWithTheme(
+        <CopyPath
+          graph={LEADING}
+          onTap={() => undefined}
+          gaps={gapsFor(placed)}
+        />,
+      );
+      expect(cabTiles()).toHaveLength(2);
+      const labels = gapButtons().map((b) => b.getAttribute("aria-label"));
+      expect(labels).toHaveLength(4);
+      expect(labels[0]).toMatch(/^Add here in Clean Verse, before /);
+      expect(labels[1]).toMatch(/^Add here in Clean Verse, after /);
+      expect(labels[2]).toBe("Add here in Clean Verse, before Small Hall");
+      expect(labels[3]).toBe("Add here in Clean Verse, at the end");
+      for (const b of gapButtons()) await user.click(b);
+      const [uCab, uHall] = uidsOf(LEADING);
+      expect(placed).toEqual([
+        [uCab, "before"],
+        [uCab, "after"],
+        [uHall, "before"],
+        [uHall, "after"],
+      ]);
     });
   });
 
