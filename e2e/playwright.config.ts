@@ -1,4 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +28,30 @@ const VITE = process.env.TMP_E2E_VITE_PORT ?? "1421";
 // shared state is one server's `SimDevice`, and the remaining work is CPU-bound, so extra
 // processes convert directly into wall-clock.
 const WORKERS = Number(process.env.TMP_E2E_WORKERS ?? "3");
+
+// Each e2e_server keeps its store (`profiles.json`: targets, instruments, the instrument
+// chosen for each preset) in its OWN config dir, fresh for every run. The server builds on
+// Tauri's mock context, whose empty identifier puts that store straight in the user's
+// config dir, so without this all N servers shared one `profiles.json` with each other
+// and with every earlier run: the "None" Doctor saved for the scenario presets in one run
+// made every later run skip Doctor's Instrument page, and a choice one worker saved could
+// change what another worker's spec saw. `scripts/e2e.sh` exports a fresh root for each
+// run and removes it afterwards; a bare `bunx playwright test` makes its own here, in the
+// system temp dir. Writing it back to `process.env` hands the same root to the loader and
+// worker processes, which load this config again. HOME moves the macOS config dir
+// (`~/Library/Application Support`) and XDG_CONFIG_HOME the Linux one (even over an
+// ambient XDG_CONFIG_HOME). Windows finds that dir through a system call that no
+// environment variable moves, so a Windows run still shares one store, and from its
+// second run on doctor.spec.ts's Instrument-page check fails there rather than skip.
+// Only an absolute root is taken: a relative one would land the stores in the worktree.
+const ambientRoot = process.env.TMP_E2E_CONFIG_ROOT;
+const CONFIG_ROOT =
+  ambientRoot !== undefined && path.isAbsolute(ambientRoot)
+    ? ambientRoot
+    : fs.mkdtempSync(path.join(os.tmpdir(), "tmp-companion-e2e-config-"));
+process.env.TMP_E2E_CONFIG_ROOT = CONFIG_ROOT;
+const serverHome = (i: number): string =>
+  path.join(CONFIG_ROOT, `server-${String(i)}`);
 
 // Per-test timings (Playwright's JSON report). `scripts/e2e.sh` exports the path; a bare
 // `bunx playwright test` writes the same default.
@@ -107,12 +133,15 @@ export default defineConfig({
     ...Array.from({ length: WORKERS }, (_, i) => ({
       command: `"${E2E_SERVER}"`,
       // "0" beats any ambient TMP_E2E_ONLINE=1 (the server parses `=1` strictly), and a
-      // blank TMP_E2E_REMOTE(_AUDIO) any ambient remote address (blank is none).
+      // blank TMP_E2E_REMOTE(_AUDIO) any ambient remote address (blank is none). HOME and
+      // XDG_CONFIG_HOME give the server its own fresh store (CONFIG_ROOT, above).
       env: {
         TMP_E2E_PORT: String(PORT + i),
         TMP_E2E_ONLINE: "0",
         TMP_E2E_REMOTE: "",
         TMP_E2E_REMOTE_AUDIO: "",
+        HOME: serverHome(i),
+        XDG_CONFIG_HOME: path.join(serverHome(i), ".config"),
       },
       url: `http://127.0.0.1:${String(PORT + i)}/health`,
       reuseExistingServer: !process.env.CI,

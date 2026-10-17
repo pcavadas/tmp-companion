@@ -293,13 +293,41 @@ check "online release never took the device lock" no "$([ -e "$work/lock" ] && e
 fb="$work/fakebuild"
 mkdir -p "$fb"
 printf '#!/bin/sh\nprintf "cargo %%s\\n" "$*" >> "%s/calls"\n' "$fb" > "$fb/cargo"
-printf '#!/bin/sh\nprintf "bun %%s\\n" "$*" >> "%s/calls"\n' "$fb" > "$fb/bun"
+# The fake bun also notes the config root each Playwright run was handed, and whether it
+# existed then (the servers' stores live under it).
+cat > "$fb/bun" <<EOF
+#!/bin/sh
+printf 'bun %s\n' "\$*" >> "$fb/calls"
+case "\$*" in
+  "x playwright test"*)
+    if [ -d "\${TMP_E2E_CONFIG_ROOT:-}" ]; then s=dir; else s=missing; fi
+    printf '%s %s\n' "\$s" "\${TMP_E2E_CONFIG_ROOT:-}" >> "$fb/roots" ;;
+esac
+EOF
 chmod +x "$fb/cargo" "$fb/bun"
+mkdir -p "$work/stale-config"
 off_rc=0
-# A port band nothing else uses: the runner sweeps stale e2e_servers there first.
+# A port band nothing else uses: the runner sweeps stale e2e_servers there first. Two runs,
+# the first under an ambient root a run must never reuse.
+(cd "$a" && PATH="$fb:$PATH" TMPDIR="$work/tmpdir" TMP_E2E_PORT=65520 TMP_E2E_VITE_PORT=65530 \
+  TMP_E2E_CONFIG_ROOT="$work/stale-config" /bin/bash scripts/e2e.sh >/dev/null 2>&1) || off_rc=$?
+check "offline run → exit 0" 0 "$off_rc"
 (cd "$a" && PATH="$fb:$PATH" TMPDIR="$work/tmpdir" TMP_E2E_PORT=65520 TMP_E2E_VITE_PORT=65530 \
   /bin/bash scripts/e2e.sh >/dev/null 2>&1) || off_rc=$?
-check "offline run → exit 0" 0 "$off_rc"
+check "second offline run → exit 0" 0 "$off_rc"
+root1="$(sed -n '1s/^[a-z]* //p' "$fb/roots")"
+root2="$(sed -n '2s/^[a-z]* //p' "$fb/roots")"
+check "each offline run hands Playwright an existing config root" "dir|dir" \
+  "$(cut -d' ' -f1 "$fb/roots" | tr '\n' '|' | sed 's/|$//')"
+check "the config root is a new one under TMPDIR, never the ambient one" yes \
+  "$(case "$root1" in "$work/tmpdir/"*) echo yes ;; *) echo "no ($root1)" ;; esac)"
+check "two offline runs get two different config roots" yes \
+  "$([ -n "$root2" ] && [ "$root1" != "$root2" ] && echo yes || echo no)"
+check "the config roots are gone once the runs end" "gone|gone" \
+  "$([ -e "$root1" ] && echo kept || echo gone)|$([ -e "$root2" ] && echo kept || echo gone)"
+# The first run's calls only, so the checks below read one run.
+sed -n '1,/e2e-budgets.mjs/p' "$fb/calls" > "$fb/calls.first"
+mv "$fb/calls.first" "$fb/calls"
 check "offline prebuild builds the e2e_server" 1 "$(grep -c '^cargo build .*--bin e2e_server' "$fb/calls")"
 check "offline prebuild never builds probe" 0 "$(grep -c -e '--bin probe' "$fb/calls")"
 check "offline runs Playwright, then the budget check" \

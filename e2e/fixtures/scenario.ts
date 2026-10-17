@@ -283,8 +283,17 @@ export async function selectPresetsForCheck(
  *  asks which instrument plays the chosen presets (one has none saved yet), choose None
  *  for all of them (the instrument a check uses when none is chosen — the same stimulus
  *  as before Doctor asked) and click "Check N sounds" again. Doctor remembers the choice
- *  for each preset, so a later check of the same presets skips the question. */
-export async function runDoctorCheck(page: Page): Promise<void> {
+ *  for each preset, so a later check of the same presets on the same server skips the
+ *  question.
+ *
+ *  `expectInstrumentPage` makes the question required: use it for a check of presets
+ *  this server has never been asked about. Every e2e_server starts each run from its own
+ *  empty store (`e2e/playwright.config.ts`), so the page must show, and a store left over
+ *  from an earlier run fails here instead of quietly skipping the page. */
+export async function runDoctorCheck(
+  page: Page,
+  { expectInstrumentPage = false }: { expectInstrumentPage?: boolean } = {},
+): Promise<void> {
   const check = page.getByRole("button", { name: /^Check \d+ sounds?$/ });
   await check.click();
   // Every page after the list carries Doctor's Steps; the Instrument page is the one
@@ -292,8 +301,17 @@ export async function runDoctorCheck(page: Page): Promise<void> {
   const ask = page.getByRole("heading", {
     name: "Which instrument plays these?",
   });
-  await expect(ask.or(page.getByRole("list", { name: "Steps" }))).toBeVisible();
-  if (!(await ask.isVisible())) return;
+  if (expectInstrumentPage) {
+    await expect(
+      ask,
+      "Doctor skipped its Instrument page: this server's store already holds an instrument for these presets",
+    ).toBeVisible();
+  } else {
+    await expect(
+      ask.or(page.getByRole("list", { name: "Steps" })),
+    ).toBeVisible();
+    if (!(await ask.isVisible())) return;
+  }
   const forAll = page.locator('[data-select="inst-all"]');
   if (await forAll.isVisible()) {
     await forAll.click();

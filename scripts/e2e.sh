@@ -477,6 +477,14 @@ if [ "$MODE" = offline ]; then
   # — wall times swing 2-4x between machines, so a hard gate here would be a flaky one.
   export TMP_E2E_TIMINGS_JSON="${TMP_E2E_TIMINGS_JSON:-$REPO/e2e/test-results/e2e-timings.json}"
   rm -f "$TMP_E2E_TIMINGS_JSON"
+  # A fresh root for this run's server stores: the offline config gives each e2e_server
+  # its own HOME / XDG_CONFIG_HOME under it, so no server shares `profiles.json` with
+  # another worker or sees a choice an earlier run saved. Always a new one, even over an
+  # ambient TMP_E2E_CONFIG_ROOT, and removed when the run ends (the offline lane has no
+  # other EXIT trap).
+  TMP_E2E_CONFIG_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/tmp-companion-e2e-config.XXXXXX")"
+  export TMP_E2E_CONFIG_ROOT
+  trap 'rm -rf "$TMP_E2E_CONFIG_ROOT"' EXIT
   rc=0
   run_start=$(date +%s)
   bun x playwright test --config "$OFFLINE_CFG" "$@" || rc=$?

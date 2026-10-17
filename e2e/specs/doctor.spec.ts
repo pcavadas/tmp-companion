@@ -92,7 +92,9 @@ test.describe("Doctor — select, check, results", () => {
     // /\d+ sounds/.
     const picked = [SCENARIO[0], SCENARIO[1], SCENARIO[2]];
     await selectPresetsForCheck(page, picked);
-    await runDoctorCheck(page);
+    // This server's store starts empty every run, so Doctor must ask which instrument
+    // plays these three presets, and the spec drives the page's "Instrument for all".
+    await runDoctorCheck(page, { expectInstrumentPage: true });
 
     // The check moves on to Results by itself on a natural finish. Progress events don't
     // stream over the bridge, so the only signal is the Results page — but a rejected run
