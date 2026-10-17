@@ -2179,6 +2179,47 @@ mod scene_handle_asis_seed_tests {
         assert_eq!(run(None), run(Some(decoy)));
     }
 
+    /// A seed AT `current_value` is the footswitch prepass's own probe reading: the solve
+    /// takes it in place of the probe capture and otherwise runs exactly as if it had
+    /// captured it, including the at-target skip, which then sends no OFF of its own.
+    #[test]
+    fn a_prepaid_probe_is_never_captured_again() {
+        let param = FsParamTarget::new("ACD_SomeBlock", "level", 0.6);
+        let run = |target: f64, prepaid: bool| {
+            let (mut seen, mut offs) = (Vec::new(), 0);
+            let seed = prepaid.then_some(SeedPoint {
+                value: 0.6,
+                lufs: law(0.6),
+                spread: 0.3,
+            });
+            let s = solve_param_secant(
+                &[],
+                target,
+                Some(0.6),
+                seed,
+                &param,
+                SCENE_HANDLE_CORRECT_MAX,
+                || offs += 1,
+                |v| {
+                    seen.push(v);
+                    Ok(reading(law(v)))
+                },
+            )
+            .expect("solve");
+            (seen, s.final_value, offs)
+        };
+        // Off target: the paid run captures the probe first, the prepaid run skips it.
+        let (paid, v_paid, _) = run(-26.0, false);
+        let (prepaid, v_prepaid, _) = run(-26.0, true);
+        assert_eq!(paid[0], 0.6);
+        assert_eq!(&paid[1..], prepaid.as_slice());
+        assert_eq!(v_paid, v_prepaid);
+        // On target: no capture and no OFF at all.
+        let on = law(0.6);
+        assert_eq!(run(on, true), (Vec::new(), 0.6, 0));
+        assert_eq!(run(on, false), (vec![0.6], 0.6, 1));
+    }
+
     /// A knob with NO authority (a flat response) must still land on a point the solve
     /// captured itself, never on the unchanged as-is value the caller handed in — that
     /// would make the run a silent no-op (the 402 Solo shared-base gate needs the write

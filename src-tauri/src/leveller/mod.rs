@@ -149,6 +149,22 @@ pub(crate) fn breaker_beats() -> u64 {
 pub(crate) fn load_lapse() -> bool {
     env_ms("TMP_LOAD_LAPSE", 1) != 0
 }
+
+/// Whether the footswitch prepass measures each row at its stored value before its ceiling
+/// (`TMP_FS_PROBE_FIRST`, on by default; `0` restores the ceiling-first prepass for A/B).
+pub(crate) fn fs_probe_first() -> bool {
+    env_ms("TMP_FS_PROBE_FIRST", 1) != 0
+}
+
+/// The param solve's acceptance band (`TMP_SOLVE_ACCEPT_TOL_LU`, default [`ACCEPT_TOL_LU`]):
+/// the footswitch and scene-handle secant stop, the footswitch at-target skip and its
+/// outcome verdict. A bench knob for the speed/accuracy trade; the shipped band is unchanged.
+pub(crate) fn solve_accept_tol() -> f64 {
+    std::env::var("TMP_SOLVE_ACCEPT_TOL_LU")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(ACCEPT_TOL_LU)
+}
 const CAPTURE_TAIL_MS: u64 = 800;
 
 // The device silently DROPS a scene-context write when the session sat IDLE too long

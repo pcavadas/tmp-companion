@@ -340,8 +340,9 @@ pub(crate) fn run_footswitch_batch(
     // carrying its job index (one vec — no hand-aligned parallel arrays).
     let mut pending: Vec<(usize, leveller::FsPendingWrite)> = Vec::new();
     // ── THE REORDERED RUN, FS HALF ────────────────────────────────────────────────
-    // PHASE 1: every row's ceiling, before any solve (see `fs_prepass_ceilings`).
-    let ceilings = batch.prepass_ceilings(progress, cancelled);
+    // PHASE 1: every row's ceiling, before any solve (see `fs_prepass_ceilings`), and the
+    // stored-value readings that stood in for one.
+    let (ceilings, probes) = batch.prepass_ceilings(progress, cancelled);
     // Guaranteed fresh re-amp OFF after the measurement phase — each capture disengages
     // itself, but an interrupted one can strand the unit input-muted (`danger.md`).
     leveller::reamp_off_guaranteed("fs_prepass_ceilings");
@@ -367,7 +368,7 @@ pub(crate) fn run_footswitch_batch(
             skip_kind: None,
         });
         // Typed, so a Stop inside the sweep stays a cancel (`is_cancelled` below).
-        let outcome = batch.solve_row(idx, ceilings[idx], &results, &mut pending);
+        let outcome = batch.solve_row(idx, ceilings[idx], probes[idx], &results, &mut pending);
         // A Stop mid-sweep surfaces as a cancel, not a failure — report it like the
         // top-of-loop check would rather than as an errored switch.
         if let Err(e) = &outcome {
@@ -457,6 +458,9 @@ fn mark_fs_unsaved(
     }
 }
 
+/// A row's engaged-bypass isolation list, `(group, node, bypass)`.
+type Isolation<'a> = &'a [(String, String, bool)];
+
 /// What every phase of one [`run_footswitch_batch`] reads: the request, the batch's single
 /// field-8 read (`preset`, `ftsw`), the bake-vs-assign plan per job, and the stored
 /// `presetLevel` each capture re-asserts.
@@ -486,29 +490,191 @@ impl FsBatch<'_> {
     /// ceiling is `rep`'s ceiling, and `rep` is always a LOWER index (the planner picks the
     /// first row of the group as the representative), so the entry is already in hand.
     /// Saves one engage+capture per sibling, on a device where that is ~10 s.
+    ///
+    /// PROBE FIRST: a row with a stored engaged value and a monotone level handle is first
+    /// measured AT that value, which is the capture its solve opens with anyway (the
+    /// idempotency probe). A reading within [`leveller::FS_CEILING_SKIP_MARGIN_LU`] of the
+    /// target already proves the row reachable, since the ceiling can only be louder, so the
+    /// ceiling capture is skipped. Either way the reading rides into the solve as its probe
+    /// (the second vec), so moving the probe here never adds a capture.
     fn prepass_ceilings(
         &self,
         progress: &mut dyn FnMut(FootswitchLevelProgressItem),
         cancelled: &dyn Fn() -> bool,
-    ) -> Vec<Option<leveller::FsCeiling>> {
+    ) -> (
+        Vec<Option<leveller::FsCeiling>>,
+        Vec<Option<leveller::SeedPoint>>,
+    ) {
         let mut ceilings: Vec<Option<leveller::FsCeiling>> = Vec::with_capacity(self.jobs.len());
-        for (idx, job) in self.jobs.iter().enumerate() {
-            let ceiling = match self.plans.get(idx) {
+        let mut probes: Vec<Option<leveller::SeedPoint>> = Vec::with_capacity(self.jobs.len());
+        for idx in 0..self.jobs.len() {
+            let (ceiling, probe) = match self.plans.get(idx) {
                 Some(footswitch::FsLevelPlan::BakeShared { rep }) => {
-                    ceilings.get(*rep).copied().flatten()
+                    (ceilings.get(*rep).copied().flatten(), None)
                 }
-                _ => self.prepass_ceiling_row(job, progress, cancelled),
+                _ => self.prepass_row(idx, progress, cancelled),
             };
             ceilings.push(ceiling);
+            probes.push(probe);
         }
-        ceilings
+        (ceilings, probes)
+    }
+
+    /// One non-shared row's PHASE 1: the probe-first reading (see [`Self::prepass_ceilings`])
+    /// and, unless it proved the row reachable, the ceiling read.
+    fn prepass_row(
+        &self,
+        idx: usize,
+        progress: &mut dyn FnMut(FootswitchLevelProgressItem),
+        cancelled: &dyn Fn() -> bool,
+    ) -> (Option<leveller::FsCeiling>, Option<leveller::SeedPoint>) {
+        let job = &self.jobs[idx];
+        let announced = self.probe_anchor(idx, cancelled).is_some();
+        let probe = self.prepass_probe(idx, progress, cancelled);
+        let target = job.target_lufs + self.offset;
+        if probe.is_some_and(|p| !leveller::fs_target_beyond_ceiling(p.lufs, target)) {
+            log::info!(
+                "fs prepass switch={} probe={:.2} LUFS target={target:.2}: reachable, no \
+                 ceiling read",
+                job.switch,
+                probe.map_or(f64::NAN, |p| p.lufs)
+            );
+            return (None, probe);
+        }
+        (
+            self.prepass_ceiling_row(job, !announced, progress, cancelled),
+            probe,
+        )
+    }
+
+    /// The row's capture at its stored engaged value, taken exactly as its solve's
+    /// idempotency probe would take it (same `measure_fs_at`, isolation list and
+    /// `presetLevel`). `None` when the row has no stored value, its handle is not a monotone
+    /// level control, the knob is off, or the capture failed (the solve then probes itself).
+    fn prepass_probe(
+        &self,
+        idx: usize,
+        progress: &mut dyn FnMut(FootswitchLevelProgressItem),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<leveller::SeedPoint> {
+        let job = &self.jobs[idx];
+        let (engaged, current) = self.probe_anchor(idx, cancelled)?;
+        progress(FootswitchLevelProgressItem {
+            switch: job.switch,
+            status: ProgressStatus::Active,
+            result: None,
+            message: Some(leveller::PREPASS_ACTIVE_MSG.to_string()),
+            skip_kind: None,
+        });
+        let lev = (
+            job.lev_group_id.as_str(),
+            job.lev_node_id.as_str(),
+            job.lev_parameter_id.as_str(),
+        );
+        match leveller::require_live(
+            || {
+                leveller::measure_fs_at(
+                    job.scene_context,
+                    lev,
+                    engaged,
+                    self.stim,
+                    current,
+                    self.intended_pl,
+                )
+            },
+            self.stim,
+        ) {
+            Ok(l) => Some(leveller::SeedPoint {
+                value: current,
+                lufs: l.integrated_lufs,
+                spread: l.spread_lu(),
+            }),
+            Err(e) => {
+                log::warn!(
+                    "fs prepass probe for switch {} failed ({e}); its solve will probe",
+                    job.switch
+                );
+                None
+            }
+        }
+    }
+
+    /// What [`Self::prepass_probe`] measures with: the row's isolation list and stored
+    /// engaged value. `None` when it takes no probe (see its doc).
+    fn probe_anchor(
+        &self,
+        idx: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<(Isolation<'_>, f32)> {
+        let job = &self.jobs[idx];
+        if !leveller::fs_probe_first() || cancelled() || job.lev_node_id.is_empty() {
+            return None;
+        }
+        let handle = leveller::FsParamTarget::from_preset(
+            self.preset,
+            &job.lev_node_id,
+            &job.lev_parameter_id,
+        );
+        if !handle.is_monotone_level() || handle.refuse_if_not_a_level_control().is_some() {
+            return None;
+        }
+        let (engaged, current) = self.solve_anchor(idx)?;
+        Some((engaged, current?))
+    }
+
+    /// The isolation list a `Bake`/`Assign` row's solve measures with, and the stored
+    /// engaged value its idempotency probe measures at (`None` = no anchor). `None` for
+    /// every other plan. The one derivation [`Self::solve_bake`], [`Self::solve_assign`] and
+    /// the prepass probe share, so the prepass reading is the solve's own probe.
+    fn solve_anchor(&self, idx: usize) -> Option<(Isolation<'_>, Option<f32>)> {
+        let job = &self.jobs[idx];
+        match self.plans.get(idx)? {
+            footswitch::FsLevelPlan::Bake {
+                engaged,
+                mirror_scenes,
+                ..
+            } => {
+                // Base-space/scene-space mismatch guard: the anchor reads the block's BASE
+                // value, but the probe measures under `job.scene_context`. A context scene
+                // whose Full overlay authors its own value for the leveled param is
+                // deliberately EXCLUDED from `mirror_scenes` (`scenes_restating_base`) — in
+                // that shape the base anchor doesn't describe the measured (scene-authored)
+                // sound, so comparing against it could report a bogus in-tolerance skip.
+                // Mirror scenes restate base, so the anchor holds there; treat any other
+                // context scene as "no anchor" instead.
+                let anchor_valid = job
+                    .scene_context
+                    .is_none_or(|sc| mirror_scenes.contains(&sc));
+                let current = anchor_valid
+                    .then(|| node_param_f64(self.preset, &job.lev_node_id, &job.lev_parameter_id))
+                    .flatten()
+                    .map(|v| v as f32);
+                Some((engaged.as_slice(), current))
+            }
+            // Re-run anchor: a prior assign's stored valueA (None = fresh). Also the
+            // wet-floor anchor — the solve raises `lev_param`'s anchor to this ENGAGED
+            // value itself (`FsParamTarget::anchored`).
+            footswitch::FsLevelPlan::Assign { engaged } => Some((
+                engaged.as_slice(),
+                footswitch::existing_param_fn_value_a(
+                    self.ftsw,
+                    job.switch,
+                    &job.lev_node_id,
+                    &job.lev_parameter_id,
+                )
+                .map(|v| v as f32),
+            )),
+            _ => None,
+        }
     }
 
     /// One non-shared row's PHASE 1 ceiling read (`None` = skipped or failed; the solve
-    /// then decides).
+    /// then decides). `announce` is false when the row's prepass probe already sent its
+    /// active item.
     fn prepass_ceiling_row(
         &self,
         job: &FootswitchLevelJob,
+        announce: bool,
         progress: &mut dyn FnMut(FootswitchLevelProgressItem),
         cancelled: &dyn Fn() -> bool,
     ) -> Option<leveller::FsCeiling> {
@@ -537,13 +703,15 @@ impl FsBatch<'_> {
         // `message` is the row's caption: a capture streams here, so the wizard
         // renders it as the VERB before the live number (`leveller::PREPASS_ACTIVE_MSG`).
         // PHASE 2's own `active` carries no message, which flips the verb back.
-        progress(FootswitchLevelProgressItem {
-            switch: job.switch,
-            status: ProgressStatus::Active,
-            result: None,
-            message: Some(leveller::PREPASS_ACTIVE_MSG.to_string()),
-            skip_kind: None,
-        });
+        if announce {
+            progress(FootswitchLevelProgressItem {
+                switch: job.switch,
+                status: ProgressStatus::Active,
+                result: None,
+                message: Some(leveller::PREPASS_ACTIVE_MSG.to_string()),
+                skip_kind: None,
+            });
+        }
         let states = footswitch::switch_states(self.ftsw, self.preset, job.switch);
         let probe = leveller::FsCeilingProbe {
             // THE ROW'S SCENE CONTEXT (D3). `None` = base — the historical default,
@@ -594,6 +762,7 @@ impl FsBatch<'_> {
         &self,
         idx: usize,
         ceiling: Option<leveller::FsCeiling>,
+        probe: Option<leveller::SeedPoint>,
         results: &[Option<leveller::FootswitchLevelResult>],
         pending: &mut Vec<(usize, leveller::FsPendingWrite)>,
     ) -> Result<leveller::FootswitchLevelResult, LevelError> {
@@ -655,19 +824,12 @@ impl FsBatch<'_> {
                 })
                 .ok_or_else(|| LevelError::from("shared bake produced no result")),
             Some(footswitch::FsLevelPlan::Bake {
-                engaged,
                 clear_stale,
                 mirror_scenes,
-            }) => self.solve_bake(
-                idx,
-                &lev_param,
-                engaged,
-                *clear_stale,
-                mirror_scenes,
-                pending,
-            ),
-            Some(footswitch::FsLevelPlan::Assign { engaged }) => {
-                self.solve_assign(idx, &lev_param, engaged, pending)
+                ..
+            }) => self.solve_bake(idx, &lev_param, *clear_stale, mirror_scenes, probe, pending),
+            Some(footswitch::FsLevelPlan::Assign { .. }) => {
+                self.solve_assign(idx, &lev_param, probe, pending)
             }
         }
     }
@@ -694,28 +856,13 @@ impl FsBatch<'_> {
         &self,
         idx: usize,
         lev_param: &leveller::FsParamTarget,
-        engaged: &[(String, String, bool)],
         clear_stale: Option<u32>,
         mirror_scenes: &[u32],
+        probe: Option<leveller::SeedPoint>,
         pending: &mut Vec<(usize, leveller::FsPendingWrite)>,
     ) -> Result<leveller::FootswitchLevelResult, LevelError> {
         let job = &self.jobs[idx];
-        // Base-space/scene-space mismatch guard: the anchor reads the block's BASE
-        // value, but the probe measures under `job.scene_context`. A context scene
-        // whose Full overlay authors its own value for the leveled param is
-        // deliberately EXCLUDED from `mirror_scenes` (`scenes_restating_base`) — in
-        // that shape the base anchor doesn't describe the measured (scene-authored)
-        // sound, so comparing against it could report a bogus in-tolerance skip.
-        // Mirror scenes restate base, so the anchor holds there; treat any other
-        // context scene as "no anchor" instead.
-        let anchor_valid = job
-            .scene_context
-            .is_none_or(|sc| mirror_scenes.contains(&sc));
-        let current = if anchor_valid {
-            node_param_f64(self.preset, &job.lev_node_id, &job.lev_parameter_id).map(|v| v as f32)
-        } else {
-            None
-        };
+        let (engaged, current) = self.solve_anchor(idx).expect("a Bake plan has an anchor");
         leveller::measure_footswitch(
             job.switch,
             job.scene_context,
@@ -728,6 +875,7 @@ impl FsBatch<'_> {
             lev_param,
             // See `intended_pl`: the saved level, re-asserted per capture.
             self.intended_pl,
+            probe,
         )
         // Skip the write when the leveler left the value unchanged, mirroring the
         // Assign arm below — with one extra disjunct as fail-safe defence for a
@@ -764,21 +912,14 @@ impl FsBatch<'_> {
         &self,
         idx: usize,
         lev_param: &leveller::FsParamTarget,
-        engaged: &[(String, String, bool)],
+        probe: Option<leveller::SeedPoint>,
         pending: &mut Vec<(usize, leveller::FsPendingWrite)>,
     ) -> Result<leveller::FootswitchLevelResult, LevelError> {
         let job = &self.jobs[idx];
         let (value_b, spec) = resolve_footswitch_job(self.ftsw, self.preset, job)?;
-        // Re-run anchor: a prior assign's stored valueA (None = fresh).
-        // Also the wet-floor anchor — the solve raises `lev_param`'s
-        // anchor to this ENGAGED value itself (`FsParamTarget::anchored`).
-        let current = footswitch::existing_param_fn_value_a(
-            self.ftsw,
-            job.switch,
-            &job.lev_node_id,
-            &job.lev_parameter_id,
-        )
-        .map(|v| v as f32);
+        let (engaged, current) = self
+            .solve_anchor(idx)
+            .expect("an Assign plan has an anchor");
         leveller::measure_footswitch(
             job.switch,
             job.scene_context,
@@ -791,6 +932,7 @@ impl FsBatch<'_> {
             lev_param,
             // See `intended_pl`: the saved level, per capture.
             self.intended_pl,
+            probe,
         )
         // Skip the write when the leveler left the value unchanged — its
         // `final_value == current` is the idempotency signal (no wire field).

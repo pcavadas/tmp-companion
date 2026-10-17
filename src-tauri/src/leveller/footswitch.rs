@@ -255,6 +255,16 @@ impl FsParamTarget {
         })
     }
 
+    /// Does loudness rise with this param across its whole range? True for the level
+    /// classes, whose law is monotone; a wet/mix blend can peak mid-range. A reading at any
+    /// value of a monotone param is then a floor under its ceiling.
+    pub fn is_monotone_level(&self) -> bool {
+        matches!(
+            self.info.class,
+            crate::param_class::ParamClass::LevelLinear | crate::param_class::ParamClass::LevelDb
+        )
+    }
+
     /// The param's usable `(lo, hi)`. For a wet/mix param the LOW bound IS the wet floor
     /// (`max(range lo, `[`WET_FLOOR_FRACTION`]` × authored)`), so the whole solve — seeds,
     /// bracket extremes, secant clamp, the pinned-at-a-bound verdict — can never even PROBE
@@ -758,7 +768,7 @@ pub(super) fn classify_fs_outcome(
     target_lufs: f64,
     (lo, hi): (f32, f32),
 ) -> (bool, bool) {
-    if (best_lufs - target_lufs).abs() <= ACCEPT_TOL_LU {
+    if (best_lufs - target_lufs).abs() <= solve_accept_tol() {
         return (false, false);
     }
     // Unreachable only when the knob is pinned at the bound that blocks the direction target
@@ -782,7 +792,7 @@ pub(super) fn classify_fs_outcome(
 /// its skip is provably disjoint from a boost (see its doc); this one has no pair planner
 /// behind it, so dropping the flag would silently suppress an honest FS clamp.
 pub(super) fn switch_at_target(measured: f64, target: f64, clamped: bool) -> bool {
-    !clamped && (measured - target).abs() <= ACCEPT_TOL_LU
+    !clamped && (measured - target).abs() <= solve_accept_tol()
 }
 
 /// Measurement/solve phase of ONE footswitch job — no write, no save, no reload.
@@ -821,20 +831,50 @@ pub fn measure_footswitch(
     current_value: Option<f32>,
     param: &FsParamTarget,
     intended_preset_level: Option<f32>,
+    probe: Option<SeedPoint>,
 ) -> Result<FootswitchLevelResult, LevelError> {
-    solve_footswitch_with(
+    solve_footswitch_seeded(
         switch,
         engaged_bypass,
         stimulus,
         target_lufs,
         method,
         current_value,
+        probe,
         param,
         || reamp_off_fresh("measure_footswitch"),
         // EVERY capture of this row recalls `scene` before engaging — the isolation list and
         // the intended `presetLevel` are both re-sent per capture for the same reason (a
         // recall re-asserts its own bypass state AND runs the device's level-apply).
         |bypass, v| measure_fs_at(scene, lev, bypass, stimulus, v, intended_preset_level),
+    )
+}
+
+/// [`solve_footswitch_seeded`] with no prepaid probe — the solve suites' seam.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn solve_footswitch_with(
+    switch: u32,
+    engaged_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    target_lufs: f64,
+    method: &str,
+    current_value: Option<f32>,
+    param: &FsParamTarget,
+    reamp_off: impl FnMut(),
+    measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, LevelError>,
+) -> Result<FootswitchLevelResult, LevelError> {
+    solve_footswitch_seeded(
+        switch,
+        engaged_bypass,
+        stimulus,
+        target_lufs,
+        method,
+        current_value,
+        None,
+        param,
+        reamp_off,
+        measure,
     )
 }
 
@@ -848,14 +888,19 @@ pub fn measure_footswitch(
 /// do, but the recall undoes them.) Injectable — `reamp_off` too (see
 /// [`solve_param_secant`]) — so the loop + its outcome verdict are unit tested without a
 /// device.
+///
+/// `probe` is the idempotency probe's reading when the caller already took it (the batch
+/// prepass's capture at `current_value`, see `solve_param_secant`'s `known_seed`), so the
+/// solve does not buy that capture a second time.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn solve_footswitch_with(
+pub(super) fn solve_footswitch_seeded(
     switch: u32,
     engaged_bypass: &[(String, String, bool)],
     stimulus: &[f32],
     target_lufs: f64,
     method: &str,
     current_value: Option<f32>,
+    probe: Option<SeedPoint>,
     param: &FsParamTarget,
     reamp_off: impl FnMut(),
     mut measure: impl FnMut(&[(String, String, bool)], f32) -> Result<lufs::Loudness, LevelError>,
@@ -864,7 +909,7 @@ pub(super) fn solve_footswitch_with(
         stimulus,
         target_lufs,
         current_value,
-        None,
+        probe,
         param,
         FS_CORRECT_MAX,
         reamp_off,
@@ -979,10 +1024,10 @@ impl ParamSolve {
 /// One already-captured solve point: the knob `value`, its integrated loudness and the
 /// dynamics spread of that capture — all the secant reads off a seed.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct SeedPoint {
-    pub(super) value: f32,
-    pub(super) lufs: f64,
-    pub(super) spread: f64,
+pub struct SeedPoint {
+    pub value: f32,
+    pub lufs: f64,
+    pub spread: f64,
 }
 
 /// [`solve_footswitch`]'s loop with the CAPTURE BUDGET as an argument — the seam the scene
@@ -1006,8 +1051,10 @@ pub(super) struct SeedPoint {
 /// `known_seed` is a point the CALLER already captured ([`SeedPoint`]), taken in exactly
 /// the measurement context `measure_at(value)` would produce (same knob value, stimulus,
 /// `presetLevel`, scene and isolation) on its own fresh engage. When `Some` it is seed 1 —
-/// no capture is bought for it, exactly like a successful idempotency probe below — and it
-/// is ignored when `current_value` is `Some` (the probe then owns seed 1). It does NOT
+/// no capture is bought for it, exactly like a successful idempotency probe below. When
+/// `current_value` is `Some`, a seed AT that value is the probe's own reading, taken by the
+/// caller (the footswitch batch's prepass): the probe uses it instead of capturing, and any
+/// other seed is ignored (the probe then owns seed 1). It does NOT
 /// anchor the wet floor (that stays `current_value`'s job) and it is never the routing probe:
 /// the caller's capture already proved signal. The scene HANDLE lane passes its as-is
 /// reading here when [`asis_seed_context_matches`] proves the contexts identical; `None`
@@ -1043,11 +1090,25 @@ pub(super) fn solve_param_secant(
     // A successful-but-off-target probe is a PAID capture: it is kept as `probe_seed` and
     // reused as the solve's seed 1 below instead of being discarded and re-bought at a fresh
     // `at_fraction(0.25)`.
-    let mut probe_seed: Option<(f32, lufs::Loudness)> = None;
+    let mut probe_seed: Option<SeedPoint> = None;
     if let Some(cur) = current_value {
-        match require_live(|| measure_at(cur), stimulus) {
-            Ok(l) if switch_at_target(l.integrated_lufs, target_lufs, false) => {
-                reamp_off();
+        // The caller's reading at `cur` stands in for the capture (see `known_seed`'s doc).
+        // Its capture already disengaged and the caller ran the OFF ladder after it, so a
+        // prepaid skip sends no OFF of its own.
+        let prepaid = known_seed.filter(|k| k.value == cur);
+        let reading = match prepaid {
+            Some(k) => Ok(k),
+            None => require_live(|| measure_at(cur), stimulus).map(|l| SeedPoint {
+                value: cur,
+                lufs: l.integrated_lufs,
+                spread: l.spread_lu(),
+            }),
+        };
+        match reading {
+            Ok(l) if switch_at_target(l.lufs, target_lufs, false) => {
+                if prepaid.is_none() {
+                    reamp_off();
+                }
                 // Skip signal: `final_value` == the caller's current value verbatim, so the
                 // caller detects the no-op by `final_value == current` and writes nothing
                 // (the footswitch mirror of the scene lane's off-wire `writes: 0`). See
@@ -1055,20 +1116,20 @@ pub(super) fn solve_param_secant(
                 // returned value below the wet floor, safely, because it is never written.
                 return Ok(ParamSolve {
                     final_value: cur,
-                    measured_lufs: l.integrated_lufs,
-                    predicted_lufs: l.integrated_lufs,
+                    measured_lufs: l.lufs,
+                    predicted_lufs: l.lufs,
                     clamped: false,
                     unconverged: false,
                     clamp_reason: None,
                     wet_floor: false,
-                    spread_lu: Some(l.spread_lu()),
+                    spread_lu: Some(l.spread),
                     iterations: 1,
                 });
             }
             // In-tolerance-but-not-a-skip carries into the seed pass as seed 1; a probe
             // error must disengage re-amp first (the seed pass re-engages on a fresh
             // connection) and falls through to the fixed-seed path below.
-            Ok(l) => probe_seed = Some((cur, l)),
+            Ok(l) => probe_seed = Some(l),
             Err(_) => reamp_off(),
         }
     }
@@ -1079,11 +1140,6 @@ pub(super) fn solve_param_secant(
     // this solve); else the fixed `at_fraction(0.25)` position exactly as before.
     let known_seed = known_seed.filter(|_| current_value.is_none());
     let seed1_paid_here = known_seed.is_none();
-    let probe_seed = probe_seed.map(|(cur, l)| SeedPoint {
-        value: cur,
-        lufs: l.integrated_lufs,
-        spread: l.spread_lu(),
-    });
     let (v_a, l_a_lufs, l_a_spread) = if let Some(p) = probe_seed.or(known_seed) {
         (p.value, p.lufs, p.spread)
     } else {
@@ -1172,6 +1228,7 @@ pub(super) fn solve_param_secant(
     // this solve, so only seed 2 counts on that path.
     let mut iterations = if seed1_paid_here { 2u32 } else { 1u32 };
     let err = |l: f64| (l - target_lufs).abs();
+    let tol = solve_accept_tol();
     let (mut best_v, mut best_lufs, mut best_spread) =
         if seed2_synthetic || err(l_a_lufs) <= err(l_b_lufs) {
             (v_a, l_a_lufs, l_a_spread)
@@ -1182,7 +1239,7 @@ pub(super) fn solve_param_secant(
     // search — it must never advertise a re-run. Set ONLY where no-authority is proven
     // (the seed/expansion pair below); a mid-loop stall keeps `unconverged`.
     let mut flat_response = false;
-    if err(best_lufs) > ACCEPT_TOL_LU {
+    if err(best_lufs) > tol {
         // The correction loop below interpolates in solve-COORD space
         // (`param.to_coord`), not raw parameter value — see `to_coord`'s doc for why
         // that makes the secant exact for a `LevelLinear`/`LevelDb` param.
@@ -1245,7 +1302,7 @@ pub(super) fn solve_param_secant(
         //   * pair does NOT straddle → the plain slide (drop the older point), unchanged
         //     from the validated behavior; the first crossing iterate forms a straddling
         //     consecutive pair, which flips the loop into bracket mode by itself.
-        if err(best_lufs) > ACCEPT_TOL_LU {
+        if err(best_lufs) > tol {
             if (p1.1 - p0.1).abs() < KNOB_TOL_LU {
                 // The seed pair itself is flat (and the expansion probe didn't land
                 // it): the knob demonstrably can't move loudness, the correction loop
@@ -1319,7 +1376,7 @@ pub(super) fn solve_param_secant(
                         }
                         Err(e) => return Err(e),
                     };
-                    if l2_real && err(l2_lufs) <= ACCEPT_TOL_LU {
+                    if l2_real && err(l2_lufs) <= tol {
                         break;
                     }
                     let p2 = (param.to_coord(v2 as f64), l2_lufs);

@@ -480,6 +480,61 @@ fn the_footswitch_batch_solves_its_row_on_a_private_rig() {
     assert_run_ended_clean(&dev);
 }
 
+/// The footswitch prepass measures a row at its stored value first: a reading that already
+/// proves the target reachable replaces the ceiling capture, and the solve reuses it as its
+/// probe, so the row pays one capture less and still solves to the same value.
+#[test]
+fn a_reachable_footswitch_row_skips_its_ceiling_capture() {
+    let (dev, rig) = rig();
+    // 2 LU under the switch's stored sound: reachable, so no ceiling read.
+    let base = AMP_C + 20.0 * FIXTURE_PL.log10() + 20.0 * 0.35f64.log10();
+    let target = base - 2.0;
+    let jobs = [FootswitchLevelJob {
+        switch: 2,
+        lev_group_id: "G1".into(),
+        lev_node_id: "ACD_Boost".into(),
+        lev_parameter_id: "gain".into(),
+        target_lufs: target,
+        scene_context: None,
+    }];
+    let stim = stim();
+    let mut progress = Vec::new();
+    let rows = rig::scoped(rig.clone(), || {
+        run_footswitch_batch(
+            SLOT,
+            &jobs,
+            false,
+            &stim,
+            0.0,
+            &mut |item| progress.push(item),
+            &|| false,
+            crate::watcher::DetachWatch::start(),
+        )
+    })
+    .expect("footswitch batch")
+    .rows;
+    let r = &rows[0];
+    assert!((r.predicted_lufs - target).abs() < 0.3, "{r:?}");
+    assert!(
+        (f64::from(r.final_value) - (BOOST_AUTHORED - 2.0)).abs() < 0.3,
+        "{r:?}"
+    );
+    // Every capture is one the solve counts (its probe came from the prepass): no ceiling
+    // read and no second probe.
+    assert_eq!(rig.captures(), r.iterations, "{r:?}");
+    let statuses: Vec<ProgressStatus> = progress.iter().map(|p| p.status).collect();
+    assert_eq!(
+        statuses,
+        vec![
+            ProgressStatus::Active,
+            ProgressStatus::Active,
+            ProgressStatus::Done
+        ],
+        "prepass, solve, result"
+    );
+    assert_run_ended_clean(&dev);
+}
+
 /// The working copy's chain as `group/node/model`, read the way the UI's "now playing" strip
 /// and the Doctor's live-node check read it.
 fn live_chain() -> Vec<String> {
