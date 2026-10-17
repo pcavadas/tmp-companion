@@ -30,7 +30,7 @@ Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styl
 | `actionPressed` | `#a7461f`               | Primary button pressed                                                                          |
 | `onAction`      | `#ffffff`               | Text and glyphs on `action` and `danger` fills                                                  |
 | `link`          | `#a7461f`               | Text links ("Record yours in Settings")                                                         |
-| `focus`         | `#bd5632`               | Focus ring                                                                                      |
+| `focus`         | `#bd5632`               | Focus ring (index.html: `:focus-visible`; `SearchInput` rings its frame via `.tmp-search`)      |
 | `rowSelected`   | `rgba(0,0,0,0.04)`      | Selected row, open preset, active sidebar item — **grey, never terracotta**                     |
 | `rowHover`      | `rgba(0,0,0,0.03)`      | Row and menu-item hover                                                                         |
 | `good`          | `#246b3a`               | Connected, at target, saved                                                                     |
@@ -73,7 +73,7 @@ Weights `weightRegular` 400 · `weightMedium` 500 · `weightSemibold` 600. `trac
 
 ## Spacing (`space`)
 
-Named by pixels: `sp2` · `sp4` · `sp6` · `sp8` · `sp12` · `sp16` · `sp24` · `sp32`. No odd or off-scale values; snap to the nearest step. A value that must AGREE across surfaces gets a role-named const beside its component (e.g. `DIALOG_PAD_X` in `ui/Dialog.tsx`), not a new token.
+Named by pixels: `sp2` · `sp4` · `sp6` · `sp8` · `sp12` · `sp16` · `sp24` · `sp32`. A composite built from those tokens is allowed where a frame calls for it: the Row's 10 px gap (`t.sp8 + 2`), the 20 px Dialog padding, the 52–64 px sub-row indents, the 1–2 px optical nudges. Keep those as drawn rather than snapping them to a step. Never add a new spacing token: a value that must AGREE across surfaces gets a role-named const beside its component (e.g. `DIALOG_PAD_X` = 20 in `ui/Dialog.tsx`).
 
 ## Radii (`radius`)
 

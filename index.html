@@ -57,6 +57,12 @@
         outline: 2px solid #bd5632;
         outline-offset: 2px;
       }
+      /* The search box rings its frame, not its bare inner field (that field keeps
+         plainInput's outline reset, so the ring wraps the box's own border). */
+      .tmp-search:focus-within {
+        outline: 2px solid #bd5632;
+        outline-offset: 2px;
+      }
       /* Skeleton bars sit on the look B `track` grey (#e8e8ed), with a lighter sweep. */
       .tmp-skel {
         background: linear-gradient(

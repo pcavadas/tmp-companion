@@ -291,6 +291,26 @@ describe("primitives — a11y roles (VoiceOver)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
     expect(changes).toEqual([""]);
   });
+
+  it("SearchInput rings its frame in the focus colour while the field has focus", () => {
+    renderWithTheme(
+      <SearchInput
+        value=""
+        placeholder="Filter songs"
+        onChange={() => undefined}
+      />,
+    );
+    const field = screen.getByRole("textbox", { name: "Filter songs" });
+    // The bare field keeps its outline reset; the frame around it carries the ring.
+    expect(field.style.outline).toBe("none");
+    const frame = field.parentElement;
+    expect(frame?.classList.contains("tmp-search")).toBe(true);
+    const html = readFileSync(join(process.cwd(), "index.html"), "utf8");
+    const rule = /\.tmp-search:focus-within\s*\{([^}]*)\}/.exec(html);
+    expect(rule?.[1]).toMatch(
+      new RegExp(`outline:\\s*2px solid ${light.focus}`, "i"),
+    );
+  });
 });
 
 describe("Toast — update-lifecycle statuses", () => {

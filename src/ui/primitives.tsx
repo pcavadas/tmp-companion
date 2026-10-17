@@ -342,9 +342,10 @@ export interface ToastProps {
 }
 
 /** Legacy `kind` isn't just a `status` alias: `warn` gets its own caution "notice"
- *  tone rather than the shared danger `error` tone, since the app's one live `warn`
- *  caller (SongsView's BPM-didn't-stick message) is a partial SUCCESS, not a
- *  failure. `info`/`ok` map straight onto `available`/`success`. */
+ *  tone rather than the shared danger `error` tone, since its callers, Songs'
+ *  partial-success toasts in useSongsDevice.ts (a song name already taken, a tempo
+ *  that didn't stick), report a save that landed, not a failure. `info`/`ok` map
+ *  straight onto `available`/`success`. */
 type ResolvedStatus = ToastStatus | "notice";
 
 function resolveStatus(
@@ -521,8 +522,8 @@ export function Toast({
 // `Checkbox` is a real control (<button role="checkbox"> with an accessible name);
 // with a visible label, the box and the words sit in one <label>, so a click on the
 // words ticks it too. `CheckboxMark` is the same box as a display-only, aria-hidden
-// mark for the rows whose own row <button role="checkbox"> is the control (no control
-// may nest inside another); those rows move to `Checkbox` as their screens move to B.
+// mark for a row whose whole surface is the <button role="checkbox"> control (the
+// Level list's SceneRow), since no control may nest inside another.
 // ===========================================================================
 
 function checkboxPaint(
@@ -864,7 +865,9 @@ export interface SearchInputProps {
 }
 
 /** Icon + transparent input (+ optional clear) in the shared `searchBox` frame (28 high,
- *  `controlBorder` edge) — the one filter/search field used across the app. */
+ *  `controlBorder` edge) — the one filter/search field used across the app. The frame's
+ *  `tmp-search` class (index.html) rings it with the `focus` colour while the field has
+ *  focus; the field itself keeps plainInput's outline reset. */
 export function SearchInput({
   value,
   onChange,
@@ -878,7 +881,7 @@ export function SearchInput({
   const { t } = useTheme();
   const s = useStyles();
   return (
-    <div style={{ ...s.searchBox, ...style }}>
+    <div className="tmp-search" style={{ ...s.searchBox, ...style }}>
       <Icon name="search" size={13} stroke={t.textSecondary} strokeWidth={2} />
       <input
         type="text"
