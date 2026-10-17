@@ -82,6 +82,31 @@ pub(crate) struct SceneHandleArg {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BaseAnchorArg {
     target_lufs: f32,
+    /// The base reading the wizard's `level_preset` lane already took, so PHASE 1 need not
+    /// capture base again (see [`anchor_reading`]). All three or none.
+    #[serde(default)]
+    measured_lufs: Option<f64>,
+    #[serde(default)]
+    spread_lu: Option<f64>,
+    /// The `presetLevel` that reading describes (the base row's final level).
+    #[serde(default)]
+    preset_level: Option<f32>,
+}
+
+/// Base's PHASE 1 reading, reused from the `level_preset` lane that ran just before this
+/// batch: the same isolated base sound at the same `presetLevel` the prepass would render
+/// at. Reused only when the reading's `presetLevel` IS the level this batch reads as saved
+/// (`saved_pl`), so a base row that did not persist its level (a failure, a no-signal clamp)
+/// falls back to the capture. Saves one whole engage and the isolation reload behind it.
+fn anchor_reading(
+    anchor: Option<BaseAnchorArg>,
+    saved_pl: Option<f32>,
+) -> Option<leveller::ScenePrepass> {
+    let a = anchor?;
+    let (asis, spread, pl) = (a.measured_lufs?, a.spread_lu?, a.preset_level?);
+    let saved_pl = saved_pl?;
+    (asis.is_finite() && spread.is_finite() && (pl - saved_pl).abs() <= 1e-4)
+        .then_some(leveller::ScenePrepass { asis, spread })
 }
 
 /// A1, PURE: derive `(anchor_only_base, base_in_plan)` from the wire inputs — the whole anchor
@@ -112,7 +137,36 @@ mod base_anchor_plan_tests {
     fn anchor(target: f32) -> BaseAnchorArg {
         BaseAnchorArg {
             target_lufs: target,
+            measured_lufs: None,
+            spread_lu: None,
+            preset_level: None,
         }
+    }
+
+    fn measured(pl: f32) -> BaseAnchorArg {
+        BaseAnchorArg {
+            measured_lufs: Some(-20.0),
+            spread_lu: Some(6.0),
+            preset_level: Some(pl),
+            ..anchor(-20.0)
+        }
+    }
+
+    // #3 (leveling speed): base's PHASE 1 reading comes from the base row only when that
+    // reading was taken at the level this batch reads as saved.
+    #[test]
+    fn a_base_reading_is_reused_only_at_the_saved_level() {
+        let r = anchor_reading(Some(measured(0.42)), Some(0.42)).expect("reused");
+        assert_eq!((r.asis, r.spread), (-20.0, 6.0));
+        assert!(anchor_reading(Some(measured(0.42)), Some(0.5)).is_none());
+        assert!(anchor_reading(Some(measured(0.42)), None).is_none());
+        assert!(anchor_reading(Some(anchor(-20.0)), Some(0.42)).is_none());
+        assert!(anchor_reading(None, Some(0.42)).is_none());
+        let nan = BaseAnchorArg {
+            measured_lufs: Some(f64::NAN),
+            ..measured(0.42)
+        };
+        assert!(anchor_reading(Some(nan), Some(0.42)).is_none());
     }
 
     // The wizard-shaped run: base arrives ONLY via the anchor. It must survive into PHASE 1/2
@@ -937,6 +991,25 @@ impl SceneBatch<'_> {
         // captures use, with no trade yet (`None`), so the two renderings cannot drift
         // apart by editing one side.
         let saved_pl = leveller::scene_capture_level(None, self.saved);
+        // An anchor-only base already measured by the `level_preset` lane is not captured
+        // again (`prepass_scene_ceilings` skips a job that carries its reading).
+        let mut base_reused = false;
+        if self.anchor_only_base {
+            if let (Some(reading), Some(base)) = (
+                anchor_reading(self.req.base_anchor, saved_pl),
+                scene_jobs
+                    .iter_mut()
+                    .find(|sj| sj.scene_slot == session::BASE_SCENE_SLOT),
+            ) {
+                log::info!(
+                    "slot {slot}: base anchor reuses the base row's reading ({:.2} LUFS) — \
+                     no base prepass capture",
+                    reading.asis
+                );
+                base.prepass = Some(reading);
+                base_reused = true;
+            }
+        }
         let prepass_result = leveller::prepass_scene_ceilings(
             scene_jobs,
             self.req.stim,
@@ -964,7 +1037,9 @@ impl SceneBatch<'_> {
         // the run's three abort points to fail at (mirrors `apply_headroom_trade`'s own
         // back-out and `run_scene_jobs`' pre-save guard — same failure policy, applied at
         // the point where it is still free).
+        // A reused base reading wrote no isolation, so there is nothing to clear.
         let base_isolated = self.base_in_plan
+            && !base_reused
             && scene_jobs
                 .iter()
                 .find(|sj| sj.scene_slot == session::BASE_SCENE_SLOT)

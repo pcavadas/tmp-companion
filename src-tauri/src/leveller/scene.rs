@@ -189,7 +189,8 @@ pub fn prepass_scene_ceilings(
             stopped = true;
             break;
         }
-        if job.skip.is_some() {
+        // A job that already carries its reading (a reused base anchor) costs no capture.
+        if job.skip.is_some() || job.prepass.is_some() {
             continue;
         }
         on_scene(job.scene_slot);

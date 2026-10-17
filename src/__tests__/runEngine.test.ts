@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RunItem } from "../views/level/leveling";
 import {
   applyPatches,
+  baseReadingOf,
   byEarCause,
   outcomeOf,
   planBatches,
@@ -244,7 +245,13 @@ describe("runEngine", () => {
       ],
       save: true,
       rebalance: false,
-      baseAnchor: { targetLufs: -26 },
+      // The base row's own reading rides the anchor, so the batch skips re-capturing base.
+      baseAnchor: {
+        targetLufs: -26,
+        measuredLufs: -26,
+        spreadLu: 1.1,
+        presetLevel: 0.18,
+      },
     });
     expect(deps.listLevelBlocks).not.toHaveBeenCalled();
 
@@ -266,6 +273,7 @@ describe("runEngine", () => {
   // The Summary's Try again: a scene tried again without its preset's
   // main sound still anchors its batch on that main sound, at the main sound's target,
   // exactly as the first run's batch did; a run's own base row wins over an earlier one.
+  // Only the run's own base row lends its reading: an earlier run's may be stale.
   it("anchors a Try again scene batch on the main sound an earlier run carried", async () => {
     const earlier = base("b", { targetName: "Lead", status: "result" });
     const deps = fakeDeps({ earlierBaseRows: [earlier] });
@@ -278,7 +286,12 @@ describe("runEngine", () => {
     await drive([base("b"), scene("s1", 1)], own);
     expect(
       vi.mocked(own.levelScenesApplyBatched).mock.calls[0][0].baseAnchor,
-    ).toEqual({ targetLufs: -26 });
+    ).toEqual({
+      targetLufs: -26,
+      measuredLufs: -26,
+      presetLevel: 0.18,
+      spreadLu: 1.1,
+    });
 
     const other = fakeDeps({
       earlierBaseRows: [base("x", { slot: 5, targetName: "Lead" })],
@@ -779,5 +792,29 @@ describe("runEngine", () => {
       ["f0", "clamped", "wet_floor"],
       ["s1", "done", null],
     ]);
+  });
+});
+
+describe("baseReadingOf", () => {
+  it("prefers the verify reading, else the prediction", () => {
+    expect(baseReadingOf(makeLevelResult({ verify_lufs: -25.9 }))).toEqual({
+      measuredLufs: -25.9,
+      spreadLu: 1.1,
+      presetLevel: 0.18,
+    });
+    expect(
+      baseReadingOf(
+        makeLevelResult({ verify_lufs: null, verification: "predicted" }),
+      ),
+    ).toMatchObject({ measuredLufs: -26 });
+  });
+
+  it("has none for a no-signal clamp or a result with no spread", () => {
+    expect(
+      baseReadingOf(makeLevelResult({ clamp_reason: "no signal" })),
+    ).toBeNull();
+    expect(
+      baseReadingOf(makeLevelResult({ dynamic_spread_lu: null })),
+    ).toBeNull();
   });
 });

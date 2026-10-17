@@ -41,6 +41,8 @@ import type {
   AmpCandidate,
   BatchLevelRun,
   ClampKind,
+  BaseReading,
+  LevelResult,
   LevelBlock,
   Profile,
   SkipKind,
@@ -164,6 +166,22 @@ export interface Batch {
   lane: "preset" | "footswitch" | "scene";
   start: number;
   end: number;
+}
+
+/** The Base row's reading a scene batch can reuse instead of capturing base again:
+ *  null for a no-signal clamp, or when the result carries no spread to pass on. */
+export function baseReadingOf(res: LevelResult): BaseReading | null {
+  const measuredLufs =
+    res.verification === "verified" && res.verify_lufs != null
+      ? res.verify_lufs
+      : res.predicted_lufs;
+  if (res.clamp_reason != null || res.dynamic_spread_lu == null) return null;
+  if (!Number.isFinite(measuredLufs)) return null;
+  return {
+    measuredLufs,
+    spreadLu: res.dynamic_spread_lu,
+    presetLevel: res.final_level,
+  };
 }
 
 /** Split sorted run rows into the backend calls that level them. */
@@ -497,6 +515,7 @@ export async function runEngine(
               truePeakDbtp: res.true_peak_dbtp,
               baseBoost: res.base_boost,
               persistMismatch: res.persist_mismatch === true,
+              baseReading: baseReadingOf(res),
               reampWarning: res.reamp_warning ?? null,
               reampStillOn: res.reamp_still_on,
             };
@@ -606,12 +625,16 @@ export async function runEngine(
       // on the earlier run's row. Omit the key entirely (not `null`) when no base row was
       // chosen, or its target is no longer configured (the run refused it): no trade to
       // plan.
+      // Only this run's own base row lends its reading (`BaseAnchor`): an earlier run's
+      // reading may predate a change on the device, so the batch captures base again.
+      const ownBase = work.find((w) => w.slot === it.slot && w.isBase);
       const baseItem =
-        work.find((w) => w.slot === it.slot && w.isBase) ??
-        deps.earlierBaseRows?.find((w) => w.slot === it.slot);
+        ownBase ?? deps.earlierBaseRows?.find((w) => w.slot === it.slot);
       const baseLufs = baseItem ? targetLufsByName(baseItem.targetName) : null;
       const baseAnchor =
-        baseLufs != null ? { targetLufs: baseLufs } : undefined;
+        baseLufs != null
+          ? { targetLufs: baseLufs, ...ownBase?.baseReading }
+          : undefined;
       // Per-scene outcomes arrive via the Channel, NOT the returned value — read only for
       // the run-end facts (the save's verdict and the re-amp warning). The offline e2e HTTP
       // bridge no-ops the Channel, so scene rows there resolve to "skipped" (see
