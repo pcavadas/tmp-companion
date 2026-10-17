@@ -5,9 +5,12 @@
 // re-renders from the returned authoritative list (read-back-after-write). These
 // tests assert: connection gating, the load-state-machine (loading→ready, error→
 // retry without a hook-order crash), that writes call the right command and apply
-// the read-back, that destructive deletes go through a confirm Modal, that setlist
-// membership is read on select and addressed BY POSITION (1-based) for remove/
-// reorder, and that a failed write surfaces a Toast WITHOUT mutating state.
+// the read-back, that destructive deletes go through a confirm Modal whose backdrop
+// does nothing, that setlist membership is read on select and addressed BY POSITION
+// (1-based) for remove/reorder from each row's ⋯ menu, and that a failed write
+// surfaces a plain-words Toast WITHOUT mutating state (the backend text stays in the
+// log). Save outcomes are chosen by kind: a taken name and a tempo that didn't land
+// each get their own message.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, waitFor, fireEvent, within } from "@testing-library/react";
@@ -15,6 +18,12 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { SongsView } from "../views/songs";
+import {
+  READ_FAILED,
+  TEMPO_FAILED,
+  WRITE_FAILED,
+  nameTaken,
+} from "../views/songs/useSongsDevice";
 import { DASH } from "../lib/format";
 import type { CommandName } from "../lib/commands";
 import type { BackupReadResult, SetlistRecord, SongRecord } from "../lib/types";
@@ -86,6 +95,44 @@ function draggableRow(songName: string): Element {
   return row;
 }
 
+/** A save outcome with nothing to report. */
+const saved = (songs: SongRecord[], members: number[] | null = null) => ({
+  songs,
+  members,
+  duplicate_name: false,
+  bpm_warning: null,
+});
+
+/** Open a song row's ⋯ menu and pick one of its items. */
+async function rowMenu(
+  user: ReturnType<typeof userEvent.setup>,
+  songName: string,
+  item: string,
+): Promise<void> {
+  await user.click(
+    screen.getByRole("button", { name: `More for ${songName}` }),
+  );
+  await user.click(screen.getByRole("menuitem", { name: item }));
+}
+
+/** Open the shown setlist's ⋯ (beside its title) and pick one of its items. */
+async function setlistMenu(
+  user: ReturnType<typeof userEvent.setup>,
+  item: string,
+): Promise<void> {
+  await user.click(screen.getByRole("button", { name: "Setlist options" }));
+  await user.click(screen.getByRole("menuitem", { name: item }));
+}
+
+/** Start renaming the shown setlist: its title is the rename button. */
+async function startRename(
+  user: ReturnType<typeof userEvent.setup>,
+  name: string,
+): Promise<void> {
+  const title = await screen.findByRole("heading", { name });
+  await user.click(within(title).getByRole("button"));
+}
+
 describe("SongsView (device-backed)", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
@@ -114,8 +161,47 @@ describe("SongsView (device-backed)", () => {
     expect(
       await screen.findByRole("button", { name: /new song/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/1 song on the unit/)).toBeInTheDocument();
+    expect(
+      screen.getByText("1 song on your Tone Master Pro"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Song 1")).toBeInTheDocument();
+    // The list's header row names its columns in sentence case.
+    const list = screen.getByRole("group", { name: "Songs" });
+    expect(within(list).getByText("№")).toBeInTheDocument();
+    expect(within(list).getByText("Song")).toBeInTheDocument();
+  });
+
+  it("a song's tempo shows as '{bpm} BPM', and nothing when it has none", async () => {
+    baseMock({
+      songs: [
+        song(1, "Fast", { bpm: 142, bpm_active: true, notes: "capo 2" }),
+        song(2, "Free", { bpm: 99, bpm_active: false }),
+      ],
+    });
+    renderMgr(true);
+    expect(await screen.findByText("142 BPM")).toBeInTheDocument();
+    expect(screen.getByText("capo 2")).toBeInTheDocument();
+    expect(screen.queryByText(/99/)).not.toBeInTheDocument();
+    expect(screen.queryByText(DASH)).not.toBeInTheDocument();
+  });
+
+  it("New song opens the form above the list and stays in place, disabled; Save song waits for a name", async () => {
+    baseMock({ songs: [song(1, "Song 1")] });
+    renderMgr(true);
+    const user = userEvent.setup();
+    const newSong = await screen.findByRole("button", { name: "New song" });
+
+    await user.click(newSong);
+    expect(screen.getByRole("button", { name: "New song" })).toBeDisabled();
+    const save = screen.getByRole("button", { name: "Save song" });
+    expect(save).toBeDisabled();
+    await user.type(screen.getByLabelText("Song name"), "Toto");
+    expect(save).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText("Song name")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New song" })).toBeEnabled();
+    expect(callsTo("create_song_full")).toBe(0);
   });
 
   it("survives the error→ready transition via Try again (guards the hook-order rule)", async () => {
@@ -153,18 +239,12 @@ describe("SongsView (device-backed)", () => {
     await screen.findByRole("button", { name: /new song/i });
 
     await user.click(screen.getByRole("button", { name: /new song/i }));
-    await user.type(screen.getByPlaceholderText("Song name"), "Toto");
+    await user.type(screen.getByLabelText("Song name"), "Toto");
 
     // The create_song_full read-back returns the new song at protocol slot 1.
     baseMock(
       { songs: [] },
-      {
-        create_song_full: () => ({
-          songs: [song(1, "Toto")],
-          members: null,
-          bpm_warning: null,
-        }),
-      },
+      { create_song_full: () => saved([song(1, "Toto")]) },
     );
     await user.keyboard("{Enter}");
 
@@ -181,27 +261,83 @@ describe("SongsView (device-backed)", () => {
     expect(await screen.findByText("Toto")).toBeInTheDocument();
   });
 
+  it("a create on a name already taken says so by kind, not the tempo message", async () => {
+    baseMock(
+      { songs: [song(1, "Toto")] },
+      {
+        create_song_full: () => ({
+          songs: [song(1, "Toto"), song(2, "Toto")],
+          members: null,
+          duplicate_name: true,
+          bpm_warning: null,
+        }),
+      },
+    );
+    renderMgr(true);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "New song" }));
+    await user.type(screen.getByLabelText("Song name"), "Toto");
+    await user.type(screen.getByLabelText("Tempo"), "120");
+    await user.click(screen.getByRole("button", { name: "Save song" }));
+
+    expect(await screen.findByText(nameTaken("Toto"))).toBeInTheDocument();
+    expect(
+      screen.getByText("You already have a song called Toto."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(TEMPO_FAILED)).not.toBeInTheDocument();
+  });
+
+  it("a tempo that didn't land gets its own message; the backend text stays off screen", async () => {
+    const warning = "BPM didn't land at 97 (read-back=0)";
+    baseMock(
+      { songs: [] },
+      {
+        create_song_full: () => ({
+          songs: [song(1, "Toto")],
+          members: null,
+          duplicate_name: false,
+          bpm_warning: warning,
+        }),
+      },
+    );
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {
+      /* the log sink's console half */
+    });
+    renderMgr(true);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "New song" }));
+    await user.type(screen.getByLabelText("Song name"), "Toto");
+    await user.type(screen.getByLabelText("Tempo"), "97{Enter}");
+
+    expect(
+      await screen.findByText(
+        "Song saved, but its tempo didn't. Set it again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(warning))).not.toBeInTheDocument();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining(warning));
+    logged.mockRestore();
+  });
+
   it("edit song sends ONE update_song_full carrying only the changed fields", async () => {
     baseMock({ songs: [song(2, "Toto")] });
     renderMgr(true);
     const user = userEvent.setup();
     await screen.findByText("Toto");
 
-    await user.click(screen.getByTitle("More"));
-    await user.click(screen.getByText("Edit song…"));
-    const nameInput = screen.getByPlaceholderText("Song name");
+    await rowMenu(user, "Toto", "Edit song");
+    // The form takes the row's place, filled in.
+    const nameInput = screen.getByLabelText("Song name");
+    expect(nameInput).toHaveValue("Toto");
     await user.clear(nameInput);
     await user.type(nameInput, "Toto Toto");
-    await user.type(screen.getByPlaceholderText("—"), "102");
+    await user.type(screen.getByLabelText("Tempo"), "102");
 
     baseMock(
       { songs: [song(2, "Toto")] },
       {
-        update_song_full: () => ({
-          songs: [song(2, "Toto Toto", { bpm: 102, bpm_active: true })],
-          members: null,
-          bpm_warning: null,
-        }),
+        update_song_full: () =>
+          saved([song(2, "Toto Toto", { bpm: 102, bpm_active: true })]),
       },
     );
     await user.keyboard("{Enter}");
@@ -221,28 +357,38 @@ describe("SongsView (device-backed)", () => {
     });
   });
 
-  it("delete song requires the confirm Modal (Cancel does not write, Delete does)", async () => {
+  it("delete song requires the confirm Modal (backdrop and Cancel do not write, Delete song does)", async () => {
     baseMock({ songs: [song(5, "Doomed")] });
     renderMgr(true);
     const user = userEvent.setup();
     await screen.findByText("Doomed");
 
-    await user.click(screen.getByTitle("More"));
-    await user.click(screen.getByText("Delete song"));
+    await rowMenu(user, "Doomed", "Delete song");
     // Modal up, nothing written yet.
+    const dialog = screen.getByRole("dialog", { name: "Delete Doomed?" });
     expect(
-      screen.getByText(/WRITES TO THE TONE MASTER PRO/),
+      within(dialog).getByText(
+        "It's removed from your Tone Master Pro and from every setlist that has it. This can't be undone here.",
+      ),
     ).toBeInTheDocument();
     expect(callsTo("remove_song")).toBe(0);
 
+    // A click on the backdrop does nothing: only the dialog's own buttons close it.
+    const backdrop = document.querySelector("[data-backdrop]");
+    if (!(backdrop instanceof HTMLElement)) throw new Error("no backdrop");
+    await user.click(backdrop);
+    expect(
+      screen.getByRole("dialog", { name: "Delete Doomed?" }),
+    ).toBeVisible();
+
     // Cancel → still no write.
-    await user.click(screen.getByRole("button", { name: /cancel/i }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(callsTo("remove_song")).toBe(0);
 
     // Re-open and confirm Delete → guarded remove with slot + expectName.
-    await user.click(screen.getByTitle("More"));
-    await user.click(screen.getByText("Delete song"));
-    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await rowMenu(user, "Doomed", "Delete song");
+    await user.click(screen.getByRole("button", { name: "Delete song" }));
     await waitFor(() => {
       expect(lastArgsTo("remove_song")).toEqual({
         slot: 5,
@@ -261,14 +407,19 @@ describe("SongsView (device-backed)", () => {
     await user.click(screen.getByText("Set A"));
     await screen.findByText(/No songs in this setlist yet/);
 
-    await user.click(screen.getByTitle("Setlist options"));
-    await user.click(screen.getByText("Delete setlist"));
+    await setlistMenu(user, "Delete setlist");
+    const dialog = screen.getByRole("dialog", { name: "Delete Set A?" });
+    expect(
+      within(dialog).getByText(
+        "It's removed from your Tone Master Pro. Its songs stay in All songs.",
+      ),
+    ).toBeInTheDocument();
     // remove_setlist returns the fresh (now empty) list; view falls back.
     baseMock(
       { setlists: [{ slot: 1, name: "Set A" }], members: { 1: [] } },
       { remove_setlist: () => [] },
     );
-    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await user.click(screen.getByRole("button", { name: "Delete setlist" }));
 
     await waitFor(() => {
       expect(lastArgsTo("remove_setlist")).toEqual({
@@ -300,9 +451,37 @@ describe("SongsView (device-backed)", () => {
     await waitFor(() => {
       expect(lastArgsTo("list_setlist_songs")).toEqual({ setlistSlot: 1 });
     });
-    // Member songs render in device order.
+    // Member songs render in device order, under the setlist's title and count.
     expect(await screen.findByText("Song C")).toBeInTheDocument();
     expect(screen.getByText("Song E")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Set A" })).toBeInTheDocument();
+    expect(screen.getByText("2 songs")).toBeInTheDocument();
+  });
+
+  it("a failed setlist read says so in plain words, and opening it again reads it again", async () => {
+    let fail = true;
+    baseMock(
+      {
+        songs: [song(3, "Song C")],
+        setlists: [{ slot: 1, name: "Set A" }],
+      },
+      {
+        list_setlist_songs: () => {
+          if (!fail) return [3];
+          fail = false;
+          throw new Error("membership read timed out");
+        },
+      },
+    );
+    renderMgr(true);
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: /new song/i });
+
+    await user.click(screen.getByText("Set A"));
+    expect(await screen.findByText(READ_FAILED)).toBeInTheDocument();
+    expect(screen.queryByText(/timed out/)).not.toBeInTheDocument();
+    await user.click(railRow("Set A"));
+    expect(await screen.findByText("Song C")).toBeInTheDocument();
   });
 
   it("removing a setlist song addresses it by 1-based POSITION", async () => {
@@ -317,7 +496,11 @@ describe("SongsView (device-backed)", () => {
     await user.click(screen.getByText("Set A"));
     await screen.findByText("Song C");
 
-    await user.click(screen.getAllByTitle("Remove from setlist")[0]);
+    // Remove sits in the row's ⋯, not on a one-click button.
+    expect(
+      screen.queryByRole("button", { name: "Remove from setlist" }),
+    ).not.toBeInTheDocument();
+    await rowMenu(user, "Song C", "Remove from setlist");
     await waitFor(() => {
       expect(lastArgsTo("remove_setlist_song")).toEqual({
         setlistSlot: 1,
@@ -365,23 +548,17 @@ describe("SongsView (device-backed)", () => {
     await user.click(screen.getByText("Set A"));
     await screen.findByText(/No songs in this setlist yet/);
 
-    // Open the picker, then its "New song" (the library isn't rendered in setlist
-    // view, so this "New song" is unambiguously the picker's).
-    await user.click(screen.getAllByRole("button", { name: /add songs/i })[0]);
-    await screen.findByText("Add songs from library");
+    // Open the picker (the empty page's own "Add songs"), then its "New song" (the
+    // library isn't rendered in setlist view, so this "New song" is the picker's).
+    await user.click(screen.getByRole("button", { name: "Add songs" }));
+    await screen.findByRole("dialog", { name: "Add songs to Set A" });
     await user.click(screen.getByRole("button", { name: /new song/i }));
 
-    await user.type(screen.getByPlaceholderText("Song name"), "Fresh");
+    await user.type(screen.getByLabelText("Song name"), "Fresh");
     // The batched transaction returns the fresh songs AND the fresh membership.
     baseMock(
       { setlists: [{ slot: 1, name: "Set A" }], members: { 1: [] } },
-      {
-        create_song_full: () => ({
-          songs: [song(1, "Fresh")],
-          members: [1],
-          bpm_warning: null,
-        }),
-      },
+      { create_song_full: () => saved([song(1, "Fresh")], [1]) },
     );
     await user.keyboard("{Enter}");
 
@@ -399,15 +576,63 @@ describe("SongsView (device-backed)", () => {
     expect(await screen.findByText("Fresh")).toBeInTheDocument();
   });
 
+  it("the Add songs picker stays open on an outside click; Cancel closes it without adding", async () => {
+    baseMock({
+      songs: [song(3, "Song C"), song(5, "Song E"), song(7, "Song G")],
+      setlists: [{ slot: 1, name: "Set A" }],
+      members: { 1: [3] },
+    });
+    renderMgr(true);
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: /new song/i });
+    await user.click(screen.getByText("Set A"));
+    await screen.findByText("Song C");
+
+    await user.click(screen.getByRole("button", { name: "Add songs" }));
+    const picker = await screen.findByRole("dialog", {
+      name: "Add songs to Set A",
+    });
+    // Only the songs not yet in the setlist; nothing ticked → a disabled "Add".
+    expect(within(picker).queryByText("Song C")).not.toBeInTheDocument();
+    expect(within(picker).getByRole("button", { name: "Add" })).toBeDisabled();
+    // A click on the name ticks the box too; ticked rows count into "Add {n}".
+    await user.click(within(picker).getByText("Song E"));
+    await user.click(
+      within(picker).getByRole("checkbox", { name: "Add Song G" }),
+    );
+    expect(within(picker).getByRole("button", { name: "Add 2" })).toBeEnabled();
+
+    // An outside click leaves it open, with the choice kept.
+    await user.click(screen.getByRole("heading", { name: "Set A" }));
+    expect(
+      screen.getByRole("dialog", { name: "Add songs to Set A" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.queryByRole("dialog", { name: "Add songs to Set A" }),
+    ).not.toBeInTheDocument();
+    expect(callsTo("add_setlist_songs")).toBe(0);
+
+    // Add {n} adds the ticked songs in one op and closes.
+    await user.click(screen.getByRole("button", { name: "Add songs" }));
+    await user.click(screen.getByRole("checkbox", { name: "Add Song E" }));
+    await user.click(screen.getByRole("button", { name: "Add 1" }));
+    await waitFor(() => {
+      expect(callsTo("add_setlist_songs")).toBe(1);
+    });
+    expect(
+      screen.queryByRole("dialog", { name: "Add songs to Set A" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("a failed write surfaces a Toast and does NOT mutate the list (no optimistic drift)", async () => {
     baseMock({ songs: [song(2, "Keeper")] });
     renderMgr(true);
     const user = userEvent.setup();
     await screen.findByText("Keeper");
 
-    await user.click(screen.getByTitle("More"));
-    await user.click(screen.getByText("Edit song…"));
-    const nameInput = screen.getByPlaceholderText("Song name");
+    await rowMenu(user, "Keeper", "Edit song");
+    const nameInput = screen.getByLabelText("Song name");
     await user.clear(nameInput);
     await user.type(nameInput, "Renamed");
 
@@ -417,7 +642,9 @@ describe("SongsView (device-backed)", () => {
     );
     await user.keyboard("{Enter}");
 
-    expect(await screen.findByText("rename refused")).toBeInTheDocument();
+    // Plain words on screen; the backend's text goes to the log, not the toast.
+    expect(await screen.findByText(WRITE_FAILED)).toBeInTheDocument();
+    expect(screen.queryByText("rename refused")).not.toBeInTheDocument();
     // State unchanged: the original name still shows, the failed rename did not apply.
     expect(screen.getByText("Keeper")).toBeInTheDocument();
     expect(screen.queryByText("Renamed")).not.toBeInTheDocument();
@@ -485,14 +712,21 @@ describe("SongsView — Presets axis", () => {
 
     await user.click(await screen.findByText("Stadium Lead"));
     // Two songs use slot 58.
+    expect(await screen.findByText("Used by 2 songs")).toBeInTheDocument();
     expect(
-      await screen.findByText(/2 songs use this preset/i),
+      screen.getByRole("heading", { name: "Stadium Lead" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Song A")).toBeInTheDocument();
     expect(screen.getByText("Song B")).toBeInTheDocument();
-    expect(screen.getByText(/managed on the unit/i)).toBeInTheDocument();
-    // Read-only: no remove/edit affordance on the song rows.
-    expect(screen.queryByTitle("Remove from setlist")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Which songs use a preset is set on your Tone Master Pro.",
+      ),
+    ).toBeInTheDocument();
+    // Read-only: no ⋯ on the song rows.
+    expect(
+      screen.queryByRole("button", { name: /^More for/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("a preset used by no song shows the empty state", async () => {
@@ -505,6 +739,14 @@ describe("SongsView — Presets axis", () => {
     expect(
       await screen.findByText(/no songs use this preset/i),
     ).toBeInTheDocument();
+    // The empty state says it once: no "Used by 0 songs" subtitle, and the caption
+    // under a list is not drawn.
+    expect(screen.queryByText(/^Used by/)).not.toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        "Which songs use a preset is set on your Tone Master Pro.",
+      ),
+    ).toHaveLength(1);
   });
 });
 
@@ -600,7 +842,7 @@ function fakeUnit(
           song(1, name),
           ...unit.songs.map((x) => ({ ...x, slot: x.slot + 1 })),
         ];
-        return { songs: unit.songs, members: null, bpm_warning: null };
+        return saved(unit.songs);
       }),
   });
 }
@@ -658,16 +900,15 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     // Delete B.
     await user.click(screen.getByText("Set B"));
     await screen.findByText(/No songs in this setlist yet/);
-    await user.click(screen.getByTitle("Setlist options"));
-    await user.click(screen.getByText("Delete setlist"));
-    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await setlistMenu(user, "Delete setlist");
+    await user.click(screen.getByRole("button", { name: "Delete setlist" }));
     await waitFor(() => {
       expect(screen.queryByText("Set B")).not.toBeInTheDocument();
     });
 
     // Rename A.
     await user.click(screen.getByText("Set A"));
-    await user.click(await screen.findByTitle("Rename"));
+    await startRename(user, "Set A");
     const input = screen.getByDisplayValue("Set A");
     await user.clear(input);
     await user.type(input, "Openers{Enter}");
@@ -733,7 +974,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
 
     // Selecting re-reads the membership — that read is held, so the view is busy.
     await user.click(await screen.findByText("Set A"));
-    await user.click(await screen.findByTitle("Rename"));
+    await startRename(user, "Set A");
     const input = screen.getByDisplayValue("Set A");
     await user.clear(input);
     await user.type(input, "Set Z{Enter}");
@@ -781,9 +1022,8 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     const view = renderMgr(true);
     const user = userEvent.setup();
     await screen.findByText("Alpha");
-    await user.click(screen.getAllByTitle("More")[0]);
-    await user.click(screen.getByText("Delete song"));
-    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await rowMenu(user, "Alpha", "Delete song");
+    await user.click(screen.getByRole("button", { name: "Delete song" }));
     await waitFor(() => {
       expect(callsTo("remove_song")).toBe(1);
     });
@@ -821,9 +1061,8 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
 
     // Open B's options from its detail and delete it.
     await user.click(screen.getByText("Set B"));
-    await user.click(screen.getByTitle("Setlist options"));
-    await user.click(screen.getByText("Delete setlist"));
-    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await setlistMenu(user, "Delete setlist");
+    await user.click(screen.getByRole("button", { name: "Delete setlist" }));
     await waitFor(() => {
       expect(screen.queryByText("Set B")).not.toBeInTheDocument();
     });
@@ -850,9 +1089,8 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     renderMgr(true);
     const user = userEvent.setup();
     await user.click(await screen.findByText("Set A"));
-    await user.click(screen.getByTitle("Setlist options"));
-    await user.click(screen.getByText("Delete setlist"));
-    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await setlistMenu(user, "Delete setlist");
+    await user.click(screen.getByRole("button", { name: "Delete setlist" }));
     await waitFor(() => {
       expect(screen.queryByText("Set A")).not.toBeInTheDocument();
     });
@@ -882,9 +1120,8 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     renderMgr(true);
     const user = userEvent.setup();
     await user.click(await screen.findByText("Set A"));
-    await user.click(screen.getByTitle("Setlist options"));
-    await user.click(screen.getByText("Delete setlist"));
-    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await setlistMenu(user, "Delete setlist");
+    await user.click(screen.getByRole("button", { name: "Delete setlist" }));
     await waitFor(() => {
       expect(callsTo("remove_setlist")).toBe(1);
     });
@@ -914,9 +1151,14 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     await user.click(await screen.findByText("Set A"));
     await screen.findByText("Song E");
     expect(screen.getByText("Unknown song")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Not found on your Tone Master Pro. Reconnect it, or remove this song.",
+      ),
+    ).toBeInTheDocument();
 
     // Song E is row 3, so its device position is 3 — not 2, as filtering would make it.
-    await user.click(screen.getAllByTitle("Remove from setlist")[2]);
+    await rowMenu(user, "Song E", "Remove from setlist");
     await waitFor(() => {
       expect(lastArgsTo("remove_setlist_song")).toEqual({
         setlistSlot: 1,
@@ -940,15 +1182,15 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     const user = userEvent.setup();
 
     await user.click(await screen.findByRole("button", { name: /new song/i }));
-    await user.type(screen.getByPlaceholderText("Song name"), "Fresh{Enter}");
+    await user.type(screen.getByLabelText("Song name"), "Fresh{Enter}");
     await screen.findByText("Fresh");
 
     await user.click(screen.getByRole("radio", { name: /presets/i }));
     expect(within(railRow("Stadium Lead")).getByText(DASH)).toBeInTheDocument();
     await user.click(screen.getByText("Stadium Lead"));
-    expect(
-      await screen.findByText(/songs using this preset: unknown/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Not known right now")).toBeInTheDocument();
+    // The count is unknown, so the subtitle isn't drawn at all.
+    expect(screen.queryByText(/^Used by/)).not.toBeInTheDocument();
     expect(
       screen.queryByText(/no songs use this preset/i),
     ).not.toBeInTheDocument();

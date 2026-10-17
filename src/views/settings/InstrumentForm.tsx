@@ -1,40 +1,46 @@
-// src/views/settings/InstrumentForm.tsx — inline add/edit card: border-only serif
-// name input + Type chips + Pickup chips + Cancel/Save. Builds a topology_id from
-// the picked chips. Split out of SettingsView.tsx (mechanical extraction).
+// src/views/settings/InstrumentForm.tsx — the add / edit instrument form (look B): a
+// "Name" TextField, then "Type" (Guitar / Bass / Bass VI, from the backend's pickup
+// topologies) and "Pickup" (a Select of that type's pickups) side by side, then
+// right-aligned "Cancel" and "Add instrument" / "Save instrument". Save waits for a name
+// and a pickup. Enter in the name saves and Escape cancels: the text-field carve-out,
+// acting only on this form's own edit while its field has focus.
+//
+// The Pickup dropdown always shows the pickup that will be saved (decisions.md; the
+// danger.md Pick trap). A new instrument starts on its type's first pickup, and a type
+// change moves to the new type's first pickup — both shown as chosen. A saved pickup
+// the backend no longer offers is NOT replaced by another one behind the user's back:
+// the dropdown is empty in the attention look, a note says why, and Save waits for a
+// choice.
+//
+// `card` draws it as a white card with a control edge (a new instrument, under the
+// list); without it, it is just the fields, for an edit in place of the row inside the
+// Group.
 
 import { useState } from "react";
+import type { KeyboardEvent } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { plainButton, plainInput, type ThemeTokens } from "../../theme/tokens";
-import { Button } from "../../ui/primitives";
+import { sectionLabel } from "../../theme/tokens";
+import { Icon } from "../../ui/Icon";
+import { Select } from "../../ui/Select";
+import { Button, SegmentedControl, TextField } from "../../ui/primitives";
+import { instrumentTypeLabel } from "../../lib/instrumentTypes";
 import type { Profile, TopologyInfo } from "../../lib/types";
+import type { ProfileDraft } from "./useProfiles";
 
-// ===========================================================================
-// InstrumentForm
-// ===========================================================================
-
-function chipStyle(t: ThemeTokens, on: boolean) {
-  return plainButton({
-    fontFamily: t.mono,
-    fontSize: t.fsData2,
-    letterSpacing: t.lsMeta,
-    color: on ? t.onInk : t.ink2,
-    background: on ? t.accent : "transparent",
-    border: `0.5px solid ${on ? t.accent : t.hairlineStrong}`,
-    borderRadius: t.rPill,
-    padding: `${String(t.space2)}px ${String(t.space5)}px`,
-    cursor: "pointer",
-    userSelect: "none" as const,
-    whiteSpace: "nowrap" as const,
-  });
-}
-
-interface InstrumentFormProps {
+export interface InstrumentFormProps {
   initial?: Profile;
+  /** The instrument types, in the order the backend lists them. */
   types: string[];
   topologies: TopologyInfo[];
-  onSave: (data: { name: string; topology_id: string }) => void;
+  onSave: (data: ProfileDraft) => void;
   onCancel: () => void;
+  card?: boolean;
+}
+
+/** The first pickup of `type`, or "" when it has none. */
+function firstPickup(topologies: TopologyInfo[], type: string): string {
+  return topologies.find((tp) => tp.instrument === type)?.id ?? "";
 }
 
 export function InstrumentForm({
@@ -43,151 +49,143 @@ export function InstrumentForm({
   topologies,
   onSave,
   onCancel,
+  card = false,
 }: InstrumentFormProps) {
   const { t } = useTheme();
 
   const initialTopo = initial
     ? (topologies.find((tp) => tp.id === initial.topology_id) ?? null)
     : null;
+  // An edit whose saved pickup the backend no longer offers.
+  const savedGone = initial != null && initialTopo == null;
+  const startType =
+    initialTopo?.instrument ?? (types.length > 0 ? types[0] : "");
+
   const [name, setName] = useState(initial ? initial.name : "");
-  const firstType: string | undefined = types.length > 0 ? types[0] : undefined;
-  const [type, setType] = useState<string>(
-    initialTopo?.instrument ?? firstType ?? "",
-  );
+  const [type, setType] = useState(startType);
   const [topologyId, setTopologyId] = useState<string>(
-    initial?.topology_id ?? "",
+    initialTopo?.id ?? (savedGone ? "" : firstPickup(topologies, startType)),
   );
 
-  // Pickups available for the selected type (chip label = topology.label).
   const pickups = topologies.filter((tp) => tp.instrument === type);
+  const canSave = name.trim() !== "" && topologyId !== "";
 
-  // Pick a sensible default pickup when none is chosen / the type changes.
   function pickType(next: string) {
     setType(next);
-    const stillValid = topologies.some(
-      (tp) => tp.id === topologyId && tp.instrument === next,
-    );
-    if (!stillValid) {
-      const first = topologies.find((tp) => tp.instrument === next);
-      setTopologyId(first ? first.id : "");
-    }
+    if (
+      !topologies.some((tp) => tp.id === topologyId && tp.instrument === next)
+    )
+      setTopologyId(firstPickup(topologies, next));
   }
-
-  // Ensure topologyId is set for a fresh add once topologies/type resolve.
-  const effectiveTopologyId = topologyId || pickups[0]?.id || "";
-  const canSave = name.trim() !== "" && effectiveTopologyId !== "";
 
   function save() {
     const n = name.trim();
-    if (!n || !effectiveTopologyId) return;
-    onSave({ name: n, topology_id: effectiveTopologyId });
+    if (!n || !topologyId) return;
+    onSave({ name: n, topology_id: topologyId });
   }
 
-  const fieldLab = (label: string) => (
-    <div
-      style={{
-        fontFamily: t.mono,
-        fontSize: t.fsMicro2,
-        letterSpacing: t.lsWide,
-        color: t.faint,
-        textTransform: "uppercase",
-      }}
-    >
-      {label}
-    </div>
-  );
+  const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    // An IME's Enter confirms a candidate, not the form.
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      save();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+    }
+  };
+
+  const field = {
+    display: "flex",
+    flexDirection: "column",
+    gap: t.sp4,
+  } as const;
 
   return (
     <div
       style={{
-        border: `0.5px solid ${t.accent}`,
-        borderRadius: t.rLg,
-        padding: `${String(t.space6)}px ${String(t.space6)}px`,
-        marginBottom: t.space4,
-        background: t.bg,
         display: "flex",
         flexDirection: "column",
-        gap: t.space5,
+        gap: t.sp8 + 2,
+        padding: t.sp12 + 2,
+        ...(card
+          ? {
+              background: t.surface,
+              border: `1px solid ${t.controlBorder}`,
+              borderRadius: t.radiusGroup,
+            }
+          : { borderTop: `1px solid ${t.separator}` }),
       }}
     >
-      <input
+      <TextField
+        label="Name"
+        placeholder="For example, Telecaster"
         autoFocus
         value={name}
-        onChange={(e) => {
-          setName(e.target.value);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") save();
-          if (e.key === "Escape") onCancel();
-        }}
-        onFocus={(e) => (e.currentTarget.style.borderColor = t.accent)}
-        onBlur={(e) => (e.currentTarget.style.borderColor = t.hairlineStrong)}
-        placeholder="Instrument name (for example, Telecaster)"
-        style={plainInput(t, {
-          border: `0.5px solid ${t.hairlineStrong}`,
-          borderRadius: t.rMd,
-          padding: `${String(t.space4)}px ${String(t.space4)}px`,
-          fontFamily: t.serif,
-          fontSize: t.fsName,
-        })}
+        onChange={setName}
+        onKeyDown={onKey}
       />
-
-      <div style={{ display: "flex", flexDirection: "column", gap: t.space3 }}>
-        {fieldLab("Type")}
-        <div
-          role="radiogroup"
-          aria-label="Type"
-          style={{ display: "flex", gap: t.space3, flexWrap: "wrap" }}
-        >
-          {types.map((ty) => (
-            <button
-              type="button"
-              role="radio"
-              aria-checked={type === ty}
-              key={ty}
-              onClick={() => {
-                pickType(ty);
-              }}
-              style={chipStyle(t, type === ty)}
-            >
-              {ty}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: t.space3 }}>
-        {fieldLab("Pickup")}
-        <div
-          role="radiogroup"
-          aria-label="Pickup"
-          style={{ display: "flex", gap: t.space3, flexWrap: "wrap" }}
-        >
-          {pickups.map((tp) => (
-            <button
-              type="button"
-              role="radio"
-              aria-checked={effectiveTopologyId === tp.id}
-              key={tp.id}
-              onClick={() => {
-                setTopologyId(tp.id);
-              }}
-              style={chipStyle(t, effectiveTopologyId === tp.id)}
-            >
-              {tp.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
       <div
-        style={{ display: "flex", justifyContent: "flex-end", gap: t.space4 }}
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "flex-start",
+          gap: t.sp12,
+        }}
       >
-        <Button variant="ghost" size="sm" onClick={onCancel}>
+        <div style={field}>
+          <span style={sectionLabel(t)}>Type</span>
+          <SegmentedControl
+            ariaLabel="Type"
+            value={type}
+            onChange={pickType}
+            options={types.map((ty) => ({
+              value: ty,
+              label: instrumentTypeLabel(ty),
+            }))}
+          />
+        </div>
+        <div style={{ ...field, minWidth: 0 }}>
+          <span style={sectionLabel(t)}>Pickup</span>
+          <Select
+            label="Pickup"
+            value={topologyId}
+            onChange={setTopologyId}
+            options={pickups.map((tp) => ({ value: tp.id, label: tp.label }))}
+            width={200}
+            tid="pickup"
+          />
+          {savedGone && topologyId === "" && (
+            <span
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: t.sp6,
+                fontSize: t.fontCaption,
+                lineHeight: `${String(t.lineCaption)}px`,
+                color: t.text,
+              }}
+            >
+              <span style={{ display: "flex", paddingTop: 1.5, flexShrink: 0 }}>
+                <Icon
+                  name="warn-tri"
+                  size={13}
+                  stroke={t.caution}
+                  strokeWidth={2}
+                />
+              </span>
+              The saved pickup isn&rsquo;t offered any more. Choose one.
+            </span>
+          )}
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: t.sp8 }}>
+        <Button variant="secondary" onClick={onCancel}>
           Cancel
         </Button>
-        <Button variant="primary" size="sm" onClick={save} disabled={!canSave}>
-          {initial ? "Save" : "Add instrument"}
+        <Button variant="primary" disabled={!canSave} onClick={save}>
+          {initial ? "Save instrument" : "Add instrument"}
         </Button>
       </div>
     </div>

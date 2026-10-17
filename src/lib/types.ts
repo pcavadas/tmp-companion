@@ -586,12 +586,17 @@ export interface SetlistRecord {
 
 /** Result of a batched song transaction (create_song_full / update_song_full):
  * the fresh authoritative song list, the fresh membership of the requested
- * setlist (create with add-to-setlist only), and the best-effort BPM warning
- * (BPM is the unit's active-song tap tempo and can fail to settle — the song
- * itself is kept). */
+ * setlist (create with add-to-setlist only), whether a create landed on a name
+ * another song already had, and the best-effort BPM warning (BPM is the unit's
+ * active-song tap tempo and can fail to settle — the song itself is kept). The UI
+ * picks its message from these fields, never from the warning's text. */
 export interface SongSaveOutcome {
   songs: SongRecord[];
   members: number[] | null;
+  /** A create whose name was already taken: the unit keeps both songs, and the new
+   *  one's notes, tempo and setlist were skipped. */
+  duplicate_name: boolean;
+  /** Free text for the log only (the tempo didn't land). */
   bpm_warning: string | null;
 }
 

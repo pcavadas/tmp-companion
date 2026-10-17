@@ -150,7 +150,8 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).toEqual(
       expect.arrayContaining(["headphones", "speaker", "pulse"]),
     );
-    expect(ICONS.length).toBe(49);
+    expect(ICONS).toContain("arrow-up"); // look B Catalog "Lowest first"
+    expect(ICONS.length).toBe(50);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });

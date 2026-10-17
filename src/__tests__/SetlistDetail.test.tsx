@@ -42,7 +42,13 @@ describe("regression: BUG-5 a setlist row's reorder + remove are gated while a d
         "draggable",
       ),
     ).toBe("false");
-    await user.click(screen.getByTitle("Remove from setlist"));
+    // Remove lives in the row's ⋯, which is disabled (its menu stays shut).
+    const more = screen.getByRole("button", { name: "More for Song A" });
+    expect(more).toBeDisabled();
+    await user.click(more);
+    expect(
+      screen.queryByRole("menuitem", { name: "Remove from setlist" }),
+    ).toBeNull();
     expect(onRemoveSong).not.toHaveBeenCalled();
 
     rerender(<SetlistDetail {...props} busy={false} />);
@@ -51,11 +57,22 @@ describe("regression: BUG-5 a setlist row's reorder + remove are gated while a d
         "draggable",
       ),
     ).toBe("true");
-    await user.click(screen.getByTitle("Remove from setlist"));
+    await user.click(screen.getByRole("button", { name: "More for Song A" }));
+    await user.click(
+      screen.getByRole("menuitem", { name: "Remove from setlist" }),
+    );
     expect(onRemoveSong).toHaveBeenCalledWith({
       position: 1, // 1-based device position
       songSlot: 1,
       song,
     });
+  });
+
+  it("the grip names the move and isn't a button (dragging is its one use)", () => {
+    renderWithTheme(
+      <SetlistDetail {...baseProps} onRemoveSong={vi.fn()} busy={false} />,
+    );
+    expect(screen.getByRole("img", { name: "Move Song A" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Move Song A" })).toBeNull();
   });
 });

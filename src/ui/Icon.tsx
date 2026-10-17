@@ -144,6 +144,12 @@ export function Icon({
           <path d="M12 5v14M5 13l7 7 7-7" />
         </svg>
       );
+    case "arrow-up":
+      return (
+        <svg {...props}>
+          <path d="M12 19V5M5 11l7-7 7 7" />
+        </svg>
+      );
     case "check":
       return (
         <svg {...props}>

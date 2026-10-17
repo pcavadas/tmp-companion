@@ -1,9 +1,10 @@
 // src/lib/platform.ts — which OS this build runs on, as the backend reports it
 // (`app_info().os`, the compile-time target), never sniffed from the user agent.
 //
-// The one thing that needs it today is the "unit busy" page's wording: Fender ships Pro
-// Control for macOS and Windows only, so on Linux the only other app that can hold the
-// unit is a second TMP Companion window. Module-scoped, like the library scan: App loads
+// It words two things: the "unit busy" page (Fender ships Pro Control for macOS and
+// Windows only, so on Linux the only other app that can hold the unit is a second TMP
+// Companion window), and Settings › About's note on where the user's data is kept ("this
+// Mac" or "this computer"). Module-scoped, like the library scan: App loads
 // it once at startup (`loadPlatform`) and any view reads it (`usePlatform`) without its
 // own device-independent round trip. `null` until the read lands (or if it fails).
 

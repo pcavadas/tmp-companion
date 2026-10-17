@@ -1,36 +1,47 @@
-// src/views/songs/SetlistDetail.tsx — SETLIST DETAIL: membership is read from the
-// device (global song slots by position), with SetlistRow co-located (its only parent
-// is SetlistDetail). Each row carries its DEVICE position; an entry whose song slot
-// resolves to no song is shown as an unknown row rather than dropped, so every row
-// keeps the position the device holds it at. Reorder works by drag OR by the
-// row's ⋯ Move up / Move down (the click-only path the UX north-star asks for).
+// src/views/songs/SetlistDetail.tsx — one setlist (look B). The title is the setlist's
+// name (a click renames it in place), the subtitle its song count; at the right, "Add
+// songs" (the picker) and the setlist's ⋯ (Rename setlist, Delete setlist). Below, one
+// Group with no header row: one row per entry, each with a grip (drag to reorder) and
+// a ⋯ holding Move up / Move down and Remove from setlist — the click path for every
+// change, so nothing on a row removes a song in one stray click.
+//
+// Membership is read from the device (global song slots by position), with SetlistRow
+// co-located (its only parent is SetlistDetail). Each row carries its DEVICE position;
+// an entry whose song slot resolves to no song is shown as an unknown row rather than
+// dropped, so every row keeps the position the device holds it at.
+
 import { useRef, useState } from "react";
-import { useTheme, useStyles } from "../../theme/ThemeContext";
-import { Icon } from "../../ui/Icon";
-import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
-import { Menu } from "../../ui/Menu";
+
+import { useTheme } from "../../theme/ThemeContext";
+import { plainButton } from "../../theme/tokens";
+import { Button, MenuDivider, MenuItem } from "../../ui/primitives";
+import { Group } from "../../ui/List";
 import { EmptyState } from "../../ui/EmptyState";
-import type { SetlistRecord, SongRecord } from "../../lib/types";
-import { LIST_COLS, IconBtn } from "./shared";
+import { Icon } from "../../ui/Icon";
 import { InlineEdit } from "../../ui/InlineEdit";
-import type { SongDraft } from "./shared";
-import type { SetlistEntry } from "./songUtil";
+import { MoreMenu } from "../../ui/MoreMenu";
+import { Spinner } from "../../ui/Spinner";
+import type { SetlistRecord, SongRecord } from "../../lib/types";
+import { songCount } from "./songUtil";
+import type { SetlistEntry, SongDraft } from "./songUtil";
 import { AddSongs } from "./AddSongs";
 import { SongRow } from "./SongRow";
-import { ListHeader } from "./ListHeader";
+import { SongsPage } from "./SongsPage";
 
 /** What an unresolved entry renders as: it is on the unit's setlist, but its song
  *  slot names no song in the list the app holds. Says so, rather than guessing. */
 const unknownSong = (songSlot: number): SongRecord => ({
   slot: songSlot,
   name: "Unknown song",
-  notes: "Not in the unit's song list. Reconnect to refresh, or remove it.",
+  notes:
+    "Not found on your Tone Master Pro. Reconnect it, or remove this song.",
   bpm: 0,
   bpm_active: false,
 });
 
 interface SetlistRowProps {
   song: SongRecord;
+  unknown: boolean;
   idx: number;
   /** A device write is in flight — disable reorder + remove so a second mutation can't
    *  race the first (the backend serializes anyway, but the UI shouldn't invite it). */
@@ -47,6 +58,7 @@ interface SetlistRowProps {
 
 function SetlistRow({
   song,
+  unknown,
   idx,
   busy,
   onRemove,
@@ -57,18 +69,18 @@ function SetlistRow({
   onDragEnd,
 }: SetlistRowProps) {
   const { t } = useTheme();
-  const [menu, setMenu] = useState(false);
-  const closeMenuThen = (fn: () => void) => () => {
-    setMenu(false);
+  const [open, setOpen] = useState(false);
+  const pick = (fn: () => void) => () => {
+    setOpen(false);
     fn();
   };
+  const moves = onMoveUp != null || onMoveDown != null;
   return (
     <SongRow
       song={song}
+      unknown={unknown}
       idx={idx}
-      gridCols={LIST_COLS}
-      bpmAlign="right"
-      bpmSuffix
+      selected={open && !busy}
       rootProps={{
         draggable: !busy,
         onDragStart: busy ? undefined : onGrab,
@@ -79,85 +91,48 @@ function SetlistRow({
         onDragEnd,
       }}
       leading={
+        // The drag handle. Not a button: dragging is its only use, and the ⋯ menu
+        // is the click path for the same moves.
         <span
-          title="Drag to reorder"
-          style={{ cursor: busy ? "default" : "grab", display: "flex" }}
+          role="img"
+          aria-label={`Move ${song.name}`}
+          style={{
+            width: 22,
+            height: 22,
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: busy ? "default" : "grab",
+          }}
         >
-          <Icon name="grip" size={14} stroke={t.faint} />
+          <Icon
+            name="grip"
+            size={12}
+            stroke={busy ? t.textDisabled : t.textSecondary}
+          />
         </span>
       }
       trailing={
-        <span
-          style={{
-            display: "flex",
-            justifyContent: "flex-end",
-            alignItems: "center",
-          }}
+        <MoreMenu
+          label={`More for ${song.name}`}
+          open={open}
+          onOpenChange={setOpen}
+          disabled={busy}
         >
-          {(onMoveUp ?? onMoveDown) && (
-            <span style={{ position: "relative", display: "flex" }}>
-              <Button
-                variant="bare"
-                aria-label="Move"
-                aria-haspopup="menu"
-                aria-expanded={menu && !busy}
-                disabled={busy}
-                onClick={() => {
-                  setMenu((o) => !o);
-                }}
-                title="Move"
-                style={{
-                  display: "flex",
-                  padding: t.space2,
-                  borderRadius: t.rSm,
-                }}
-              >
-                <Icon name="more" size={14} stroke={t.faint} />
-              </Button>
-              {menu && !busy && (
-                <Menu
-                  onClose={() => {
-                    setMenu(false);
-                  }}
-                  minWidth={130}
-                >
-                  {onMoveUp && (
-                    <MenuItem
-                      label="Move up"
-                      onClick={closeMenuThen(onMoveUp)}
-                    />
-                  )}
-                  {onMoveDown && (
-                    <MenuItem
-                      label="Move down"
-                      onClick={closeMenuThen(onMoveDown)}
-                    />
-                  )}
-                </Menu>
-              )}
-            </span>
+          {onMoveUp && <MenuItem label="Move up" onClick={pick(onMoveUp)} />}
+          {onMoveDown && (
+            <MenuItem label="Move down" onClick={pick(onMoveDown)} />
           )}
-          <Button
-            variant="bare"
-            aria-label="Remove from setlist"
-            disabled={busy}
-            onClick={onRemove}
-            title="Remove from setlist"
-            style={{
-              display: "flex",
-              padding: t.space2,
-              borderRadius: t.rSm,
-            }}
-          >
-            <Icon name="x" size={14} stroke={t.faint} />
-          </Button>
-        </span>
+          {moves && <MenuDivider />}
+          <MenuItem label="Remove from setlist" onClick={pick(onRemove)} />
+        </MoreMenu>
       }
     />
   );
 }
 
-interface SetlistDetailProps {
+export interface SetlistDetailProps {
   setlist: SetlistRecord;
   /** The setlist's entries in device order, or null while not yet read. */
   entries: SetlistEntry[] | null;
@@ -186,7 +161,6 @@ export function SetlistDetail({
   onCreateAndAdd,
 }: SetlistDetailProps) {
   const { t } = useTheme();
-  const s = useStyles();
   const [picker, setPicker] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -205,250 +179,198 @@ export function SetlistDetail({
   }
 
   const rows = entries ?? [];
-  const count = entries?.length ?? 0;
+  const empty = entries != null && rows.length === 0;
 
-  const picker_el = (
-    <AddSongs
-      available={available}
-      onAdd={onAdd}
-      onCreateAndAdd={onCreateAndAdd}
-      onClose={() => {
-        setPicker(false);
+  /** "Add songs" and the picker it opens, in one anchor box (the picker lines up
+   *  under the button, right edges flush). The empty page carries its own. */
+  const addSongs = (variant: "primary" | "secondary") => (
+    <span style={{ position: "relative", display: "flex" }}>
+      <Button
+        variant={variant}
+        icon="plus"
+        disabled={busy}
+        onClick={() => {
+          setPicker((o) => !o);
+        }}
+      >
+        Add songs
+      </Button>
+      {picker && (
+        <AddSongs
+          setlistName={setlist.name}
+          available={available}
+          onAdd={onAdd}
+          onCreateAndAdd={onCreateAndAdd}
+          onClose={() => {
+            setPicker(false);
+          }}
+        />
+      )}
+    </span>
+  );
+
+  const title = renaming ? (
+    <InlineEdit
+      initial={setlist.name}
+      ariaLabel="Setlist name"
+      // The ✓ / ✕ beside the field are its click path, so a blur (onto ✕) must not
+      // save.
+      commitOnBlur={false}
+      commitLabel="Save name"
+      onCommit={(n) => {
+        if (n && n !== setlist.name) onRename(n);
+        setRenaming(false);
+      }}
+      onCancel={() => {
+        setRenaming(false);
+      }}
+      wrapStyle={{
+        display: "flex",
+        alignItems: "center",
+        gap: t.sp8,
+        maxWidth: 420,
+      }}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        height: t.lineTitle + 2,
+        boxSizing: "border-box",
+        padding: `0 ${String(t.sp6)}px`,
+        border: `1px solid ${t.controlBorder}`,
+        borderRadius: t.radiusControl,
+        background: t.surface,
+        fontFamily: t.fontSans,
+        fontSize: t.fontTitle,
+        fontWeight: t.weightSemibold,
+        letterSpacing: t.trackingTitle,
       }}
     />
+  ) : (
+    <button
+      type="button"
+      onClick={() => {
+        setRenaming(true);
+      }}
+      style={plainButton({
+        display: "block",
+        maxWidth: "100%",
+        textAlign: "left",
+        cursor: "text",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      })}
+    >
+      {setlist.name}
+    </button>
   );
 
   return (
-    <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <div
-        style={{
-          padding: `${String(t.space8)}px ${String(t.space8)}px ${String(t.space6)}px`,
-          display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          gap: t.space6,
-        }}
-      >
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={s.kicker(t.accentDeep)}>
-            Setlist
-            {entries != null
-              ? ` · ${String(count)} song${count === 1 ? "" : "s"}`
-              : ""}
-          </div>
-          {renaming ? (
-            <InlineEdit
-              initial={setlist.name}
-              ariaLabel="Setlist name"
-              onCommit={(n) => {
-                if (n && n !== setlist.name) onRename(n);
-                setRenaming(false);
-              }}
-              onCancel={() => {
-                setRenaming(false);
-              }}
-              style={{
-                marginTop: t.space2,
-                width: "100%",
-                maxWidth: 360,
-                borderBottom: `1.5px solid ${t.accent}`,
-                fontFamily: t.serif,
-                fontSize: t.fsTitle,
-                padding: `0 0 ${String(t.space1)}px`,
-              }}
-            />
-          ) : (
-            <Button
-              variant="bare"
+    <SongsPage
+      title={title}
+      // Hidden while the setlist is read, and on an empty one (its page says it).
+      subtitle={entries != null && !empty ? songCount(rows.length) : undefined}
+      actions={
+        <>
+          {!empty && addSongs("secondary")}
+          <MoreMenu
+            label="Setlist options"
+            size="page"
+            open={menu}
+            onOpenChange={setMenu}
+            disabled={busy}
+          >
+            <MenuItem
+              label="Rename setlist"
               onClick={() => {
+                setMenu(false);
                 setRenaming(true);
               }}
-              title="Rename"
-              style={{
-                display: "block",
-                width: "100%",
-                textAlign: "left",
-                marginTop: t.space2,
-                cursor: "text",
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: t.serif,
-                  fontSize: t.fsTitle,
-                  color: t.ink,
-                  display: "block",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {setlist.name}
-              </span>
-            </Button>
-          )}
-        </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: t.space4,
-            flexShrink: 0,
-            position: "relative",
-          }}
-        >
-          {/* The picker's anchor box: the trigger + popover only, so a press on the
-              neighbouring options button counts as OUTSIDE and dismisses it. */}
-          <span style={{ position: "relative", display: "flex" }}>
-            <Button
-              variant="primary"
-              icon="plus"
-              size="sm"
-              disabled={busy}
+            />
+            <MenuDivider />
+            <MenuItem
+              label="Delete setlist"
+              danger
               onClick={() => {
-                setPicker((o) => !o);
-              }}
-            >
-              Add songs
-            </Button>
-            {picker && picker_el}
-          </span>
-          <div style={{ position: "relative", display: "flex" }}>
-            <IconBtn
-              icon="more"
-              title="Setlist options"
-              disabled={busy}
-              onClick={() => {
-                setMenu((o) => !o);
+                setMenu(false);
+                onDelete();
               }}
             />
-            {menu && (
-              <Menu
-                onClose={() => {
-                  setMenu(false);
-                }}
-                minWidth={150}
-              >
-                <MenuItem
-                  label="Rename setlist…"
-                  onClick={() => {
-                    setMenu(false);
-                    setRenaming(true);
-                  }}
-                />
-                <MenuDivider />
-                <MenuItem
-                  label="Delete setlist"
-                  danger
-                  onClick={() => {
-                    setMenu(false);
-                    onDelete();
-                  }}
-                />
-              </Menu>
-            )}
-          </div>
-        </div>
-      </div>
-
+          </MoreMenu>
+        </>
+      }
+    >
       {entries == null ? (
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            borderTop: `0.5px solid ${t.hairline}`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontFamily: t.mono,
-            fontSize: t.fsUi,
-            color: t.mutedInk,
-          }}
-        >
-          Reading this setlist…
-        </div>
-      ) : rows.length === 0 ? (
-        <EmptyState
-          icon="music"
-          title="No songs in this setlist yet"
-          body="Add songs from your library — a song can sit in this setlist and others at the same time."
-          cta={
-            <Button
-              variant="primary"
-              icon="plus"
-              size="sm"
-              disabled={busy}
-              onClick={() => {
-                setPicker(true);
-              }}
-            >
-              Add songs
-            </Button>
-          }
-        />
-      ) : (
-        <>
-          <ListHeader
-            cols={LIST_COLS}
-            cells={[
-              { label: "" },
-              { label: "№" },
-              { label: "song" },
-              { label: "bpm", align: "right" },
-              { label: "" },
-            ]}
-          />
+        <Group>
           <div
+            role="status"
             style={{
-              flex: 1,
-              minHeight: 0,
-              overflow: "hidden",
-              overflowY: "auto",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: t.sp8,
+              padding: `${String(t.sp24)}px ${String(t.sp16)}px`,
+              fontSize: t.fontBody,
+              color: t.textSecondary,
             }}
           >
-            {rows.map((entry, i) => {
-              const above = i > 0 ? rows[i - 1] : undefined;
-              const below = i + 1 < rows.length ? rows[i + 1] : undefined;
-              return (
-                <SetlistRow
-                  key={entry.position}
-                  song={entry.song ?? unknownSong(entry.songSlot)}
-                  idx={i}
-                  busy={busy}
-                  onRemove={() => {
-                    onRemoveSong(entry);
-                  }}
-                  onMoveUp={
-                    above
-                      ? () => {
-                          onReorder(entry, above);
-                        }
-                      : undefined
-                  }
-                  onMoveDown={
-                    below
-                      ? () => {
-                          onReorder(entry, below);
-                        }
-                      : undefined
-                  }
-                  onDragEnd={() => {
-                    dragFrom.current = null;
-                  }}
-                  onGrab={() => {
-                    dragFrom.current = entry;
-                  }}
-                  onDropOn={() => {
-                    if (dragFrom.current != null)
-                      onReorder(dragFrom.current, entry);
-                    dragFrom.current = null;
-                  }}
-                />
-              );
-            })}
+            <Spinner size={12} strokeWidth={2.2} />
+            Reading this setlist…
           </div>
-        </>
+        </Group>
+      ) : empty ? (
+        <Group>
+          <EmptyState
+            icon="music"
+            title="No songs in this setlist yet"
+            cta={addSongs("primary")}
+          />
+        </Group>
+      ) : (
+        <Group label={setlist.name}>
+          {rows.map((entry, i) => {
+            const above = i > 0 ? rows[i - 1] : undefined;
+            const below = i + 1 < rows.length ? rows[i + 1] : undefined;
+            return (
+              <SetlistRow
+                key={entry.position}
+                song={entry.song ?? unknownSong(entry.songSlot)}
+                unknown={entry.song == null}
+                idx={i}
+                busy={busy}
+                onRemove={() => {
+                  onRemoveSong(entry);
+                }}
+                onMoveUp={
+                  above
+                    ? () => {
+                        onReorder(entry, above);
+                      }
+                    : undefined
+                }
+                onMoveDown={
+                  below
+                    ? () => {
+                        onReorder(entry, below);
+                      }
+                    : undefined
+                }
+                onDragEnd={() => {
+                  dragFrom.current = null;
+                }}
+                onGrab={() => {
+                  dragFrom.current = entry;
+                }}
+                onDropOn={() => {
+                  if (dragFrom.current != null)
+                    onReorder(dragFrom.current, entry);
+                  dragFrom.current = null;
+                }}
+              />
+            );
+          })}
+        </Group>
       )}
-    </div>
+    </SongsPage>
   );
 }

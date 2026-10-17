@@ -1,46 +1,54 @@
-// src/views/settings/InstrumentsPane.tsx — the "Instruments" pane: the
-// connect-to-calibrate note, one InstrumentRow per profile (or its edit form), and the
-// "Add instrument" form. The caller keeps it MOUNTED and toggles `visible`, so a rail
-// switch mid-calibration doesn't unmount an InstrumentRow and discard an in-flight
-// ~8 s device capture.
+// src/views/settings/InstrumentsPane.tsx — the "Instruments" page (look B): "Add
+// instrument" in the page head, one helper line, a Notice while the unit is away
+// (recording listens through its input), then one Group with an InstrumentRow per
+// profile — or its edit form in place — and the add form as a card under the list. The
+// caller keeps it MOUNTED and toggles `visible`, so a page switch mid-recording doesn't
+// unmount an InstrumentRow and drop an in-flight ~8 s device capture.
 
 import { useMemo } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Icon } from "../../ui/Icon";
-import { Button } from "../../ui/primitives";
+import { EmptyState } from "../../ui/EmptyState";
+import { Group } from "../../ui/List";
+import { Button, Notice } from "../../ui/primitives";
 import type { TopologyInfo } from "../../lib/types";
-import { EmptyHint } from "./EmptyHint";
 import { InstrumentForm } from "./InstrumentForm";
 import { InstrumentRow } from "./InstrumentRow";
+import { SettingsPage } from "./SettingsPage";
+import { StoreNotices } from "./StoreNotices";
 import { useProfiles } from "./useProfiles";
 import type { SettingsStore } from "./useSettingsStore";
 
 export interface InstrumentsPaneProps {
-  /** Shown only on the Instruments category once the store is ready. */
+  /** Shown only while Instruments is the chosen page. */
   visible: boolean;
-  ready: boolean;
   connected: boolean;
-  profiles: SettingsStore["profiles"];
-  topologies: TopologyInfo[];
-  persistProfiles: SettingsStore["persistProfiles"];
-  /** Re-read the store after a calibration resolves. */
-  onRefresh: SettingsStore["refreshFromStore"];
+  store: Pick<
+    SettingsStore,
+    | "load"
+    | "ready"
+    | "saveError"
+    | "retryLoad"
+    | "profiles"
+    | "topologies"
+    | "persistProfiles"
+    | "refreshFromStore"
+  >;
 }
 
 export function InstrumentsPane({
   visible,
-  ready,
   connected,
-  profiles,
-  topologies,
-  persistProfiles,
-  onRefresh,
+  store,
 }: InstrumentsPaneProps) {
   const { t } = useTheme();
-  const ops = useProfiles({ profiles, persistProfiles });
+  const { ready, profiles, topologies } = store;
+  const ops = useProfiles({
+    profiles,
+    persistProfiles: store.persistProfiles,
+  });
 
-  // Distinct instrument types (e.g. Guitar / Bass / Acoustic), in first-seen order.
+  // The instrument types (guitar / bass / bass-vi), in the order the backend lists them.
   const types = useMemo(() => {
     const seen: string[] = [];
     for (const tp of topologies)
@@ -48,7 +56,7 @@ export function InstrumentsPane({
     return seen;
   }, [topologies]);
 
-  // topology_id → its TopologyInfo, for the per-row "Type · Pickup" caption.
+  // topology_id → its TopologyInfo, for each row's "{type} · {pickup}" caption.
   const topoById = useMemo(() => {
     const m = new Map<string, TopologyInfo>();
     for (const tp of topologies) m.set(tp.id, tp);
@@ -58,117 +66,119 @@ export function InstrumentsPane({
   return (
     <div
       style={{
-        maxWidth: 620,
-        display: visible ? "block" : "none",
+        flex: 1,
+        minHeight: 0,
+        display: visible ? "flex" : "none",
+        flexDirection: "column",
       }}
     >
-      {!connected && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: t.space4,
-            padding: `${String(t.space4)}px ${String(t.space5)}px`,
-            marginBottom: t.space6,
-            borderRadius: t.rCard,
-            border: `0.5px solid ${t.hairlineStrong}`,
-            background: t.window,
-          }}
-        >
-          <Icon name="cable" size={15} stroke={t.sevWarn} strokeWidth={1.5} />
-          <span
-            style={{
-              fontFamily: t.sans,
-              fontSize: t.fsUi,
-              color: t.ink2,
-              lineHeight: 1.45,
+      <SettingsPage
+        title="Instruments"
+        actions={
+          <Button
+            variant="secondary"
+            icon="plus"
+            disabled={!ready || topologies.length === 0 || ops.adding}
+            onClick={() => {
+              ops.setEditingId(null);
+              ops.setAdding(true);
             }}
           >
-            Your instruments and offsets are saved on this Mac.{" "}
-            <strong style={{ color: t.ink }}>
-              Calibrating needs the unit connected
-            </strong>
-            , because it listens through the device input.
-          </span>
-        </div>
-      )}
-
-      <div
-        style={{
-          fontFamily: t.sans,
-          fontSize: t.fsMeta,
-          color: t.mutedInk,
-          lineHeight: 1.45,
-          marginBottom: t.space6,
-        }}
+            Add instrument
+          </Button>
+        }
       >
-        Play the way you gig: mix chords and lead, pick and fingers. Include
-        EBow if you use one. Record it all in one take.
-      </div>
-
-      {profiles.map((p) =>
-        ops.editingId === p.id ? (
-          <InstrumentForm
-            key={p.id}
-            initial={p}
-            types={types}
-            topologies={topologies}
-            onSave={(d) => {
-              ops.saveEdit(p.id, d);
-            }}
-            onCancel={() => {
-              ops.setEditingId(null);
-            }}
-          />
-        ) : (
-          <InstrumentRow
-            key={p.id}
-            profile={p}
-            topology={topoById.get(p.topology_id) ?? null}
-            connected={connected}
-            onCalibrated={() => {
-              void onRefresh();
-            }}
-            onEdit={() => {
-              ops.setEditingId(p.id);
-            }}
-            onDelete={() => {
-              ops.deleteProfile(p.id);
-            }}
-            onMove={(dir) => {
-              ops.moveProfile(p.id, dir);
-            }}
-          />
-        ),
-      )}
-
-      {profiles.length === 0 && (
-        <EmptyHint>No instruments yet — add one to calibrate.</EmptyHint>
-      )}
-
-      {ops.adding ? (
-        <InstrumentForm
-          types={types}
-          topologies={topologies}
-          onSave={ops.addInstrument}
-          onCancel={() => {
-            ops.setAdding(false);
-          }}
-        />
-      ) : (
-        <Button
-          variant="ghost"
-          size="sm"
-          icon="plus"
-          onClick={() => {
-            ops.setAdding(true);
-          }}
-          disabled={!ready || topologies.length === 0}
-          style={{ marginTop: t.space1 }}
-        >
-          Add instrument
-        </Button>
-      )}
+        <StoreNotices store={store} />
+        {ready && (
+          <>
+            <span
+              style={{
+                fontSize: t.fontBody,
+                lineHeight: `${String(t.lineBody)}px`,
+                color: t.textSecondary,
+              }}
+            >
+              Record each instrument once, about 8 seconds. Play the way you
+              gig: chords and lead, pick and fingers.
+            </span>
+            {!connected && (
+              <Notice>Recording needs your Tone Master Pro connected.</Notice>
+            )}
+            {profiles.length === 0 ? (
+              !ops.adding && (
+                <Group>
+                  <EmptyState
+                    icon="cable"
+                    title="No instruments yet"
+                    body="Add one, then record it."
+                  />
+                </Group>
+              )
+            ) : (
+              <Group label="Instruments">
+                {profiles.map((p, i) =>
+                  ops.editingId === p.id ? (
+                    <InstrumentForm
+                      key={p.id}
+                      initial={p}
+                      types={types}
+                      topologies={topologies}
+                      onSave={(d) => {
+                        ops.saveEdit(p.id, d);
+                      }}
+                      onCancel={() => {
+                        ops.setEditingId(null);
+                      }}
+                    />
+                  ) : (
+                    <InstrumentRow
+                      key={p.id}
+                      profile={p}
+                      topology={topoById.get(p.topology_id) ?? null}
+                      connected={connected}
+                      onCalibrated={() => {
+                        void store.refreshFromStore();
+                      }}
+                      onEdit={() => {
+                        ops.setAdding(false);
+                        ops.setEditingId(p.id);
+                      }}
+                      onDelete={() => {
+                        ops.deleteProfile(p.id);
+                      }}
+                      onMoveUp={
+                        i > 0
+                          ? () => {
+                              ops.moveProfile(p.id, -1);
+                            }
+                          : undefined
+                      }
+                      onMoveDown={
+                        i + 1 < profiles.length
+                          ? () => {
+                              ops.moveProfile(p.id, 1);
+                            }
+                          : undefined
+                      }
+                    />
+                  ),
+                )}
+              </Group>
+            )}
+            {ops.adding && (
+              <InstrumentForm
+                card
+                types={types}
+                topologies={topologies}
+                onSave={ops.addInstrument}
+                onCancel={() => {
+                  ops.setAdding(false);
+                }}
+              />
+            )}
+          </>
+        )}
+      </SettingsPage>
     </div>
   );
 }

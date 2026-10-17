@@ -1,11 +1,11 @@
-// Smoke tests for the extracted Songs-table pieces (ListHeader / SongRow). Real timers
-// (RTL default). The static CPU-meter bar's tests moved to Meter.test.tsx with its look B
-// rewrite (ui/Meter is now the whole CPU meter).
+// Smoke tests for the Songs list pieces (look B): the All songs header row and the
+// shared SongRow. Real timers (RTL default). The static CPU-meter bar's tests moved to
+// Meter.test.tsx with its look B rewrite (ui/Meter is now the whole CPU meter).
 
-import { describe, it, expect } from "vitest";
-import { screen } from "@testing-library/react";
-import { ListHeader } from "../views/songs/ListHeader";
+import { describe, it, expect, vi } from "vitest";
+import { screen, within } from "@testing-library/react";
 import { SongRow } from "../views/songs/SongRow";
+import { SongList } from "../views/songs/SongList";
 import type { SongRecord } from "../lib/types";
 import { renderWithTheme } from "./testKit";
 
@@ -18,46 +18,45 @@ const song = (over: Partial<SongRecord> = {}): SongRecord => ({
   ...over,
 });
 
-describe("ListHeader — the shared uppercase column-header row", () => {
-  it("renders each cell label and right-aligns the flagged one", () => {
+describe("All songs header row — the list's column labels", () => {
+  it("names the columns '№' and 'Song' in sentence case, with no tempo column", () => {
     renderWithTheme(
-      <ListHeader
-        cols="34px 1fr 78px"
-        cells={[
-          { label: "№" },
-          { label: "song" },
-          { label: "bpm", align: "right" },
-        ]}
+      <SongList
+        songs={[song()]}
+        busy={false}
+        onAddSong={vi.fn()}
+        onEditSong={vi.fn()}
+        onDeleteSong={vi.fn()}
       />,
     );
-    expect(screen.getByText("№")).toBeTruthy();
-    expect(screen.getByText("song")).toBeTruthy();
-    const bpm = screen.getByText("bpm");
-    expect(bpm.style.textAlign).toBe("right");
-    // A non-flagged cell carries no explicit alignment.
-    expect(screen.getByText("song").style.textAlign).toBe("");
+    const list = screen.getByRole("group", { name: "Songs" });
+    expect(within(list).getByText("№")).toBeTruthy();
+    expect(within(list).getByText("Song")).toBeTruthy();
+    expect(within(list).queryByText(/^bpm$/i)).toBeNull();
+    // No uppercase column labels in look B.
+    expect(within(list).getByText("Song").style.textTransform).toBe("");
   });
 });
 
 describe("SongRow — one song row", () => {
-  it("renders the name and bpm (bare number by default)", () => {
-    renderWithTheme(<SongRow song={song()} idx={0} gridCols="34px 1fr 78px" />);
+  it("renders the position, the name and '<n> BPM'", () => {
+    renderWithTheme(<SongRow song={song()} idx={0} />);
+    expect(screen.getByText("01")).toBeTruthy();
     expect(screen.getByText("Song A")).toBeTruthy();
-    expect(screen.getByText("120")).toBeTruthy();
+    expect(screen.getByText("120 BPM")).toBeTruthy();
   });
 
-  it("renders '<n> bpm' + right-aligns when bpmAlign + bpmSuffix are set", () => {
-    renderWithTheme(
-      <SongRow
-        song={song()}
-        idx={0}
-        gridCols="34px 1fr 78px"
-        bpmAlign="right"
-        bpmSuffix
-      />,
-    );
-    const bpm = screen.getByText("120 bpm");
-    expect(bpm.style.textAlign).toBe("right");
+  it("shows no tempo at all when the song has none", () => {
+    renderWithTheme(<SongRow song={song({ bpm_active: false })} idx={4} />);
+    expect(screen.getByText("05")).toBeTruthy();
+    expect(screen.queryByText(/BPM/)).toBeNull();
+    expect(screen.queryByText("120")).toBeNull();
+  });
+
+  it("shows the notes on the same line as the name", () => {
+    renderWithTheme(<SongRow song={song({ notes: "capo 2" })} idx={0} />);
+    const notes = screen.getByText("capo 2");
+    expect(notes.parentElement).toBe(screen.getByText("Song A").parentElement);
   });
 
   it("spreads rootProps onto the row root", () => {
@@ -65,7 +64,6 @@ describe("SongRow — one song row", () => {
       <SongRow
         song={song()}
         idx={0}
-        gridCols="34px 1fr 78px"
         rootProps={{ title: "songroot", draggable: true }}
       />,
     );
@@ -80,7 +78,6 @@ describe("SongRow — one song row", () => {
       <SongRow
         song={song()}
         idx={0}
-        gridCols="26px 34px 1fr 70px 30px"
         leading={<span title="lead-slot">grip</span>}
         trailing={<span title="trail-slot">x</span>}
       />,

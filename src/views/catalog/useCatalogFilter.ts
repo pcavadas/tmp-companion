@@ -1,8 +1,8 @@
-// src/views/catalog/useCatalogFilter.ts — the Models tab's filter state and the wall it
-// derives: the search (deferred, so each keystroke paints the input first), the rail
-// scope (category / Effects subcategory), the effect-type chip, the Mono/Stereo and
-// Convolution facets, the Type/CPU sort, and the picked model. Filters compose: e.g.
-// Effects → Stompboxes → Fuzz, or Effects + Stereo.
+// src/views/catalog/useCatalogFilter.ts — the Catalog's filter state and the wall it
+// derives: the search (deferred, so each keystroke paints the input first), the sidebar
+// scope (category / Effects subcategory), the effect type, the Sound (All / Mono /
+// Stereo) and Convolution filters, the Type/CPU sort and its direction, and the chosen
+// model. Filters compose: e.g. Effects → Stompboxes → Fuzz, or Effects + Stereo.
 
 import { useDeferredValue, useMemo, useState } from "react";
 
@@ -14,8 +14,10 @@ import {
   cabSize,
   etSort,
   etypesFor,
+  displayName,
   type ModelRecord,
 } from "../../models/catalog";
+import { sentenceCase } from "./catalogLabels";
 
 export type Routing = "all" | "mono" | "stereo";
 export type Sort = "type" | "cpu";
@@ -25,12 +27,16 @@ export interface Sel {
   sub: string | null;
 }
 
-/** One sticky section of the wall. */
+/** One section of the wall, under its label. */
 export interface Group {
   key: string;
   label: string;
   blocks: ModelRecord[];
 }
+
+/** A to Z by the name the tile shows. */
+const byName = (a: ModelRecord, b: ModelRecord) =>
+  displayName(a).localeCompare(displayName(b));
 
 export function useCatalogFilter() {
   const [q, setQ] = useState("");
@@ -45,8 +51,8 @@ export function useCatalogFilter() {
   const [cpuDir, setCpuDir] = useState<CpuDir>("desc");
   const [pick, setPick] = useState<ModelRecord | null>(null);
 
-  // Selecting a rail category resets the chip, clears the pick, and drops the
-  // convolution facet unless still in a convolution-relevant scope.
+  // Choosing a sidebar scope resets the effect type, clears the chosen model, and drops
+  // the Convolution filter unless still in a convolution-relevant scope.
   function choose(cat: string, sub?: string | null) {
     setSel({ cat, sub: sub ?? null });
     setEt(null);
@@ -55,8 +61,8 @@ export function useCatalogFilter() {
   }
 
   // One pass over the category/subcategory scope, yielding both the scoped list
-  // and whether it contains any stereo model (drives the Stereo facet's enabled
-  // state). Both only change when `sel` changes — search/facets don't touch them.
+  // and whether it contains any stereo model (drives the Stereo segment's enabled
+  // state). Both only change when `sel` changes — search/filters don't touch them.
   const { inScope, hasStereo } = useMemo(() => {
     const scope = MODELS.filter((r) => {
       if (sel.cat !== "all" && r.cat !== sel.cat) return false;
@@ -79,17 +85,19 @@ export function useCatalogFilter() {
   }, [inScope, et, routing, convOnly, deferredQ]);
 
   const groups: Group[] = useMemo(() => {
-    // CPU sort overrides grouping — one flat, ranked "By CPU usage" wall.
+    // CPU sort overrides grouping — one flat, ranked section ("Highest CPU first").
     // Uncosted models (mics / FX-loop markers, cpu null) sort to the bottom
     // regardless of direction, alphabetical among themselves.
     if (sort === "cpu") {
       const sorted = [...shown].sort((a, b) => {
-        if (a.cpu == null && b.cpu == null) return a.name.localeCompare(b.name);
+        if (a.cpu == null && b.cpu == null) return byName(a, b);
         if (a.cpu == null) return 1;
         if (b.cpu == null) return -1;
         return cpuDir === "desc" ? b.cpu - a.cpu : a.cpu - b.cpu;
       });
-      return [{ key: "_cpu", label: "By CPU usage", blocks: sorted }];
+      const label =
+        cpuDir === "desc" ? "Highest CPU first" : "Lowest CPU first";
+      return [{ key: "_cpu", label, blocks: sorted }];
     }
     if (sel.cat === "Effects" && sel.sub) {
       const types = [
@@ -97,7 +105,7 @@ export function useCatalogFilter() {
       ].sort(etSort);
       const g: Group[] = types.map((ty) => ({
         key: ty,
-        label: ty,
+        label: sentenceCase(ty),
         blocks: shown.filter((r) => r.et === ty),
       }));
       const none = shown.filter((r) => !r.et);
@@ -138,21 +146,27 @@ export function useCatalogFilter() {
     if (sel.cat === "all") {
       return CAT_ORDER.map((c) => ({
         key: c,
-        label: c,
+        label: sentenceCase(c),
         blocks: shown.filter((r) => r.cat === c),
       })).filter((x) => x.blocks.length);
     }
     return [
       {
         key: sel.cat,
-        label: sel.cat,
-        blocks: [...shown].sort((a, b) => a.name.localeCompare(b.name)),
+        label: sentenceCase(sel.cat),
+        blocks: [...shown].sort(byName),
       },
     ];
   }, [shown, sel, sort, cpuDir]);
 
-  const etChips = sel.cat === "Effects" && sel.sub ? etypesFor(sel.sub) : null;
+  // The Effect type dropdown, inside an Effects subcategory with more than one type.
+  const etypes = sel.cat === "Effects" && sel.sub ? etypesFor(sel.sub) : [];
+  const showEt = etypes.length > 1;
   const showConv = sel.cat === "Effects" && (sel.sub === "Reverb" || !sel.sub);
+  // Any filter narrowing the chosen scope: the count then reads "{n} of {scope}".
+  const filtered =
+    deferredQ.trim() !== "" || routing !== "all" || convOnly || et !== null;
+  const scopeTotal = inScope.length;
 
   return {
     q,
@@ -175,7 +189,10 @@ export function useCatalogFilter() {
     hasStereo,
     shown,
     groups,
-    etChips,
+    etypes,
+    showEt,
     showConv,
+    filtered,
+    scopeTotal,
   };
 }

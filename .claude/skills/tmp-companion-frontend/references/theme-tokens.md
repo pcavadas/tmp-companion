@@ -79,7 +79,7 @@ Three rules that follow from it:
 - **The `spaceN = 2N` mnemonic holds only through `space8`.** Do not guess past there — `space10` is 24, not 20.
 - **A value that must AGREE across surfaces gets a role-named const, not a primitive** — e.g. `DIALOG_PAD_X` (`src/ui/Dialog.tsx`). Role-named constants live beside their component, not in a central density map.
 
-There is no `density` token group. (`Density` in `src/views/CatalogView.tsx` is an unrelated component-local display-mode prop.)
+There is no `density` token group.
 
 ## Letter-spacing
 
@@ -97,7 +97,7 @@ There is no `density` token group. (`Density` in `src/views/CatalogView.tsx` is 
 | -------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `s.kicker(color)`                      | factory | uppercase mono section micro-label in a per-section accent (`accentDeep` / `faint` / `warn` / `good`). Built on `microLabel(t)`. |
 | `s.searchBox`                          | object  | look B search/filter field frame (28 high, `controlBorder` edge, icon + input inside); add `flex: 1` per call site               |
-| `s.popoverCard`                        | object  | look B floating popover card (white, `radiusPanel`, `shadowMenu`, no border)                                                     |
+| `s.popoverCard`                        | object  | look B floating popover card (white, `radiusGroup`, `shadowMenu`, no border)                                                     |
 | `s.menuCard`                           | object  | look B scrollable menu card (white, `radiusPanel`, `shadowMenu`, 4 px inset) — the `Menu` and `Select` list                      |
 | `s.iconBtnBox({box, radius, danger?})` | factory | square hairline icon button; `danger` flips to the terracotta error border + color                                               |
 | `s.kickerWide(color)`                  | factory | `kicker` variant with the tighter `lsWide` (0.12em) tracking — rail/setup section labels. Built on `microLabel(t)`.              |

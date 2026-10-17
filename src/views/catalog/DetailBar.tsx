@@ -1,206 +1,159 @@
-// src/views/catalog/DetailBar.tsx — the Models tab's 96px bottom ribbon: the picked
-// model's tinted swatch, its type path, name, modeled unit and meta cells (type, CPU,
-// routing, engine, since) — or the "Select a model" prompt.
+// src/views/catalog/DetailBar.tsx — the chosen model's details (look B), shown only
+// while a model is chosen: its art (72 × 72), name, what it models, a row of facts
+// (Type, CPU, Sound, Engine for reverbs, Since) and a close button that clears the
+// choice. `bar` pins it under the wall (a white band with a rule on top); `column`
+// stands it beside the wall in a wide window (300 px, a rule on the left, stacked).
 
 import type { ReactNode } from "react";
 
-import type { ThemeTokens } from "../../theme/tokens";
-import { toneBodyHex } from "../../ui/blockart/shared";
+import { useTheme } from "../../theme/ThemeContext";
+import { sectionLabel } from "../../theme/tokens";
+import { Button } from "../../ui/primitives";
 import { CPU_BUDGET, cpuStr } from "../../models/cpu";
 import { displayName, type ModelRecord } from "../../models/catalog";
-import { artFor, hexLum } from "./catalogArt";
-import { ModelTags } from "./ModelTags";
+import { modelsLine, typeFact } from "./catalogLabels";
 import { ModelTile } from "./ModelTile";
 
-interface MetaCellProps {
-  t: ThemeTokens;
-  k: string;
-  v: ReactNode;
+/** The detail's art box. */
+const DETAIL_ART = 72;
+/** The side column's width in a wide window. */
+export const DETAIL_COLUMN_W = 300;
+
+interface FactProps {
+  label: string;
+  children: ReactNode;
 }
 
-function MetaCell({ t, k, v }: MetaCellProps) {
+function Fact({ label, children }: FactProps) {
+  const { t } = useTheme();
   return (
-    <div style={{ textAlign: "right" }}>
-      <div
+    <span style={{ display: "flex", flexDirection: "column", gap: t.sp2 }}>
+      <span style={sectionLabel(t)}>{label}</span>
+      <span
         style={{
-          fontFamily: t.mono,
-          fontSize: t.fsTag,
-          letterSpacing: t.lsTag,
-          color: t.faint,
-          textTransform: "uppercase",
-        }}
-      >
-        {k}
-      </div>
-      <div
-        style={{
-          fontFamily: t.mono,
-          fontSize: t.fsData,
-          color: t.ink,
-          marginTop: t.space2,
+          fontSize: t.fontBody,
+          lineHeight: `${String(t.lineBody)}px`,
+          fontVariantNumeric: "tabular-nums",
           whiteSpace: "nowrap",
         }}
       >
-        {v}
-      </div>
-    </div>
+        {children}
+      </span>
+    </span>
   );
 }
 
 export interface DetailBarProps {
-  r: ModelRecord | null;
-  t: ThemeTokens;
+  r: ModelRecord;
+  onClose: () => void;
+  /** `bar` under the wall (default), `column` beside it. */
+  layout?: "bar" | "column";
 }
 
-export function DetailBar({ r, t }: DetailBarProps) {
-  if (!r) {
-    return (
-      <div
-        style={{
-          height: 96,
-          flexShrink: 0,
-          borderTop: `0.5px solid ${t.hairline}`,
-          background: t.window,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <span
-          style={{
-            fontFamily: t.sans,
-            fontSize: t.fsControl,
-            color: t.mutedInk,
-          }}
-        >
-          Select a model for more information.
-        </span>
-      </div>
-    );
-  }
-  const typePath =
-    r.cat === "Effects" ? `${r.sub ?? ""}${r.et ? ` · ${r.et}` : ""}` : r.cat;
-  const cells: [string, ReactNode][] = [
-    ["type", typePath],
-    [
-      "cpu",
-      <span key="cpu">
-        {cpuStr(r.cpu)}
-        {r.cpu != null && <span style={{ color: t.accentDeep }}>*</span>}
-      </span>,
-    ],
-    ["routing", r.ch === "stereo" ? "Stereo" : "Mono"],
-  ];
+export function DetailBar({ r, onClose, layout = "bar" }: DetailBarProps) {
+  const { t } = useTheme();
+  const column = layout === "column";
+  const facts: [string, string][] = [["Type", typeFact(r)]];
+  if (r.cpu != null)
+    facts.push(["CPU", `${cpuStr(r.cpu)} of ${String(CPU_BUDGET)}%`]);
+  facts.push(["Sound", r.ch === "stereo" ? "Stereo" : "Mono"]);
   if (r.cat === "Effects" && r.sub === "Reverb")
-    cells.push(["engine", r.conv ? "Convolution" : "Algorithmic"]);
-  cells.push(["since", "v" + r.since]);
-  // Half-stacks are taller than wide, so cap the DRIVING dimension on height:
-  // 46 renders a half-stack ≈ 54×64 px (fits the 74 box), square forms at 54.
-  const swatch = r.form === "half_stack" ? 46 : 54;
-  // The bottom-ribbon icon box is filled with the selected model's chassis color,
-  // softened by a luminance-scaled white wash so dark amps don't read as a black
-  // void and the icon stays legible (item 8). Half-stacks tint to the HEAD's
-  // chassis tone (the same art ModelTile renders, via the shared artFor).
-  const detailArt = artFor(r);
-  const chassis = toneBodyHex(detailArt?.tone);
-  const wash = Math.max(0, Math.min(0.55, 0.6 - hexLum(chassis) * 1.05));
+    facts.push(["Engine", r.conv ? "Convolution" : "Algorithmic"]);
+  facts.push(["Since", `Firmware ${r.since}`]);
+
+  const close = (
+    <Button
+      variant="plain"
+      size="sm"
+      icon="x"
+      aria-label="Close details"
+      onClick={onClose}
+    />
+  );
+
   return (
-    <div
+    <section
+      aria-label={`Details: ${displayName(r)}`}
       style={{
-        height: 96,
         flexShrink: 0,
-        borderTop: `0.5px solid ${t.hairlineStrong}`,
-        background: t.window,
+        boxSizing: "border-box",
         display: "flex",
-        alignItems: "center",
-        gap: t.space8,
-        padding: `0 ${String(t.space8)}px`,
+        flexDirection: column ? "column" : "row",
+        alignItems: "flex-start",
+        gap: t.sp16,
+        width: column ? DETAIL_COLUMN_W : undefined,
+        padding: column
+          ? `${String(t.sp16)}px ${String(t.sp24)}px`
+          : `${String(t.sp12 + 2)}px ${String(t.sp24)}px`,
+        background: t.surface,
+        borderTop: column ? undefined : `1px solid ${t.border}`,
+        borderLeft: column ? `1px solid ${t.border}` : undefined,
+        overflowY: column ? "auto" : undefined,
+        fontFamily: t.fontSans,
+        color: t.text,
       }}
     >
-      <div
-        style={{
-          width: 74,
-          height: 74,
-          borderRadius: t.rCard,
-          // amp chassis color, softened by a luminance-scaled white wash:
-          background: `linear-gradient(rgba(255,255,255,${String(wash)}), rgba(255,255,255,${String(wash)})), ${chassis}`,
-          border: `0.5px solid ${t.hairline}`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-          filter: "drop-shadow(0 2px 4px rgba(15,17,21,0.22))",
-        }}
-      >
-        <ModelTile r={r} size={swatch} />
-      </div>
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: t.fsMicro,
-              color: t.accentDeep,
-              letterSpacing: "0.07em",
-              textTransform: "uppercase",
-            }}
-          >
-            {typePath}
-          </span>
-          <ModelTags r={r} t={t} />
-        </div>
+      {column ? (
         <div
           style={{
-            fontFamily: t.serif,
-            fontSize: 18,
-            color: t.ink,
-            marginTop: t.space1,
-            lineHeight: 1.15,
+            alignSelf: "stretch",
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+          }}
+        >
+          <ModelTile r={r} size={DETAIL_ART} />
+          {close}
+        </div>
+      ) : (
+        <ModelTile r={r} size={DETAIL_ART} />
+      )}
+      <div
+        style={{
+          flex: column ? undefined : 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: t.sp4,
+        }}
+      >
+        <h2
+          style={{
+            margin: 0,
+            fontSize: t.fontLarge,
+            lineHeight: `${String(t.lineLarge)}px`,
+            fontWeight: t.weightSemibold,
           }}
         >
           {displayName(r)}
-        </div>
-        <div
+        </h2>
+        <span
           style={{
-            fontFamily: t.sans,
-            fontSize: t.fsUi,
-            color: t.mutedInk,
-            marginTop: t.space1,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            fontSize: t.fontBody,
+            lineHeight: `${String(t.lineBody)}px`,
+            color: t.textSecondary,
           }}
         >
-          Models <strong style={{ color: t.ink2 }}>{r.real}</strong>
-        </div>
-      </div>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "flex-end",
-          gap: t.space4,
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ display: "flex", gap: t.space10 }}>
-          {cells.map(([k, v]) => (
-            <MetaCell key={k} t={t} k={k} v={v} />
+          {modelsLine(r)}
+        </span>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: column ? "column" : "row",
+            flexWrap: "wrap",
+            columnGap: t.sp24,
+            rowGap: column ? t.sp12 : t.sp8,
+            marginTop: t.sp6,
+          }}
+        >
+          {facts.map(([k, v]) => (
+            <Fact key={k} label={k}>
+              {v}
+            </Fact>
           ))}
         </div>
-        <div
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsTag,
-            color: t.faint,
-            letterSpacing: "0.02em",
-            whiteSpace: "nowrap",
-          }}
-        >
-          <span style={{ color: t.accentDeep }}>*</span> CPU capped at{" "}
-          {CPU_BUDGET}% per preset
-        </div>
       </div>
-    </div>
+      {!column && close}
+    </section>
   );
 }

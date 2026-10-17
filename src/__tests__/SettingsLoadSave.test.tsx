@@ -1,12 +1,12 @@
 // Settings — the never-silent load/save (#300) and click-only reorder + slider
-// cancel (#302).
+// cancel (#302), on the look B pages.
 //
-//   • #300: a failed get_store shows an error with Retry and offers no Add (an add
-//     against the initial empty arrays would overwrite the whole stored list); a
-//     failed save_targets is reported and the list re-reads to what is stored.
+//   • #300: a failed get_store shows a danger Notice with "Try again" and offers no Add
+//     (an add against the initial empty arrays would overwrite the whole stored list);
+//     a failed save_targets is reported and the list re-reads to what is stored. The
+//     page names what failed, never the backend's text (that goes to the log).
 //   • #302: targets reorder by ⋯ Move up / Move down; the slider's pointercancel
-//     ends the drag without committing and restores the starting value; the
-//     instrument row carries no fake drag grip.
+//     ends the drag without committing and restores the starting value.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, screen, within } from "@testing-library/react";
@@ -62,14 +62,17 @@ describe("SettingsView — load and save are never silent (#300)", () => {
     renderView();
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/store unreadable/);
-    expect(screen.queryByText("Add target")).toBeNull();
+    expect(alert).toHaveTextContent("Couldn’t read your settings.");
+    expect(alert).not.toHaveTextContent(/store unreadable/);
+    expect(screen.getByRole("button", { name: "Add target" })).toBeDisabled();
     expect(screen.queryByText(/No targets yet/)).toBeNull();
 
     fail = false;
-    await userEvent.click(within(alert).getByText("Retry"));
+    await userEvent.click(
+      within(alert).getByRole("button", { name: "Try again" }),
+    );
     expect(await screen.findByText("Rhythm")).toBeInTheDocument();
-    expect(screen.getByText("Add target")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add target" })).toBeEnabled();
     expect(screen.queryByRole("alert")).toBeNull();
     // Nothing was ever saved over the unread list.
     expect(savedTargets()).toHaveLength(0);
@@ -85,11 +88,13 @@ describe("SettingsView — load and save are never silent (#300)", () => {
     renderView();
     await screen.findByText("Rhythm");
 
-    await userEvent.click(screen.getByText("Add target"));
+    await userEvent.click(screen.getByRole("button", { name: "Add target" }));
     // The optimistic row appears, the save fails, the alert says so…
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /Couldn.t save your loudness targets: disk full/,
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Couldn’t save your loudness targets. Showing what’s saved.",
     );
+    expect(alert).not.toHaveTextContent(/disk full/);
     // …and the re-read drops the row that never landed.
     await vi.waitFor(() => {
       expect(screen.queryByDisplayValue("New target")).toBeNull();
@@ -128,13 +133,13 @@ describe("SettingsView — load and save are never silent (#300)", () => {
     await screen.findByText("Rhythm");
 
     // Save 1 fails → a recovery read starts and stays pending.
-    await userEvent.click(screen.getByText("Add target"));
+    await userEvent.click(screen.getByRole("button", { name: "Add target" }));
     await screen.findByRole("alert");
     await vi.waitFor(() => {
       expect(reads).toBe(2);
     });
     // Save 2 starts while that read is pending (Rhythm + 2 new rows).
-    await userEvent.click(screen.getByText("Add target"));
+    await userEvent.click(screen.getByRole("button", { name: "Add target" }));
     const all = savedTargets();
     expect(all[all.length - 1]).toHaveLength(3);
 
@@ -170,18 +175,18 @@ describe("Settings — click-only reorder and slider cancel (#302)", () => {
     const user = userEvent.setup();
 
     // First row: Move down offered, Move up not (it's the top).
-    await user.click(screen.getAllByTitle("More")[0]);
-    expect(screen.queryByText("Move up")).toBeNull();
-    await user.click(screen.getByText("Move down"));
+    await user.click(screen.getByRole("button", { name: "More for Rhythm" }));
+    expect(screen.queryByRole("menuitem", { name: "Move up" })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Move down" }));
     expect(savedTargets().pop()).toEqual([
       { name: "Lead", lufs: -22 },
       { name: "Rhythm", lufs: -26 },
     ]);
 
     // Rhythm is now second: Move up puts it back.
-    await user.click(screen.getAllByTitle("More")[1]);
-    expect(screen.queryByText("Move down")).toBeNull();
-    await user.click(screen.getByText("Move up"));
+    await user.click(screen.getByRole("button", { name: "More for Rhythm" }));
+    expect(screen.queryByRole("menuitem", { name: "Move down" })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Move up" }));
     expect(savedTargets().pop()).toEqual([
       { name: "Rhythm", lufs: -26 },
       { name: "Lead", lufs: -22 },
@@ -204,7 +209,7 @@ describe("Settings — click-only reorder and slider cancel (#302)", () => {
         onDragEnd={vi.fn()}
       />,
     );
-    const track = screen.getByTitle("Drag to set level");
+    const track = screen.getByRole("slider", { name: "Rhythm target" });
     // A 160 px track: 10 px per LU over the −29…−13 domain.
     track.getBoundingClientRect = () =>
       ({ left: 0, width: 160, top: 0, height: 5 }) as DOMRect;

@@ -1,24 +1,27 @@
-// Settings view — the user-owned loudness targets (handoff design_handoff_
-// settings_targets) + the Playback level segmented control + the App updates
-// section.
+// Settings view (look B) — a SplitView of four pages: Loudness targets, Instruments,
+// Playback, and About and updates.
 //
-//   • Targets render from the store; "Add target" appends a row in rename mode
-//     and persists via save_targets (no ceiling clamp — value seeds at −19.0,
-//     PR2 re-baseline: +3 from the mono-era −22.0).
-//   • Deleting the last target shows the empty-state line.
-//   • The Playback level control persists the picked level via set_playback_level.
-//   • App updates: version readout, manual check → "up to date", auto-install
-//     toggle — driven entirely off the injected `updater` prop (no invoke calls).
+//   • Targets render from the store as rows with a slider and a "−26.0 dB" value; "Add
+//     target" (in the page head) appends a row in rename mode and persists via
+//     save_targets (no ceiling clamp — the value seeds at −19.0, PR2 re-baseline: +3
+//     from the mono-era −22.0). Deleting the last target shows the empty state.
+//   • Playback: "How loud you play" persists via set_playback_level, "How your speakers
+//     are connected" via set_playback_channels; one body line under each.
+//   • About and updates: "TMP Companion {version}", a manual check (busy, then "Up to
+//     date"), the auto-install switch, "Report a bug", and the note on where the data
+//     is kept (worded for the platform) — driven off the injected `updater` prop.
+//   • The sidebar is a nav of four items; no page has a footer.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { SettingsView } from "../views/settings";
+import { loadPlatform } from "../lib/platform";
 import type { UpdaterApi } from "../lib/useUpdater";
 import type { CommandName } from "../lib/commands";
-import type { PlaybackLevel } from "../lib/types";
+import type { PlaybackChannels, PlaybackLevel, Target } from "../lib/types";
 import { callsOf, makeStore, mockCommands } from "./commandMocks";
 import { renderWithTheme } from "./testKit";
 
@@ -28,10 +31,24 @@ const SEED_TARGETS = [
   { name: "Lead", lufs: -22.0 },
 ];
 
-// get_store returns the seed targets; everything else keeps the setup.ts empties.
-function mockStore(targets = SEED_TARGETS, playback: PlaybackLevel = "stage") {
+const LEVEL_BODY =
+  "The louder you play, the bigger bass sounds. So when you level with a bass, sounds are set 1 dB lower at Rehearsal and 1.5 dB lower at Stage than at Quiet. Guitars don't change.";
+
+// get_store returns the seed targets; everything else keeps the setup.ts defaults.
+function mockStore(
+  targets: Target[] = SEED_TARGETS,
+  playback: PlaybackLevel = "stage",
+  channels: PlaybackChannels = "stereo",
+  os = "macos",
+) {
   mockCommands({
-    get_store: () => makeStore({ targets, playback_level: playback }),
+    get_store: () =>
+      makeStore({
+        targets,
+        playback_level: playback,
+        playback_channels: channels,
+      }),
+    app_info: () => ({ name: "TMP Companion", version: "1.0.0", os }),
   });
 }
 
@@ -63,23 +80,26 @@ function makeStubUpdater(): UpdaterApi {
   };
 }
 
-function renderView(updaterOverrides: Partial<UpdaterApi> = {}) {
+function renderView(
+  updaterOverrides: Partial<UpdaterApi> = {},
+  onReportBug?: () => void,
+) {
   renderWithTheme(
     <SettingsView
       connected={false}
       updater={{ ...makeStubUpdater(), ...updaterOverrides }}
+      onReportBug={onReportBug}
     />,
   );
 }
 
-// The rail shows one category pane at a time (default "targets"). Click a rail
-// tab to swap panes — role-based, so the pane header's duplicate of the active
-// label can never make the query ambiguous.
-async function openCategory(
+// The sidebar shows one page at a time (default "Loudness targets").
+async function openPage(
   user: ReturnType<typeof userEvent.setup>,
   label: string,
 ) {
-  await user.click(screen.getByRole("tab", { name: label }));
+  const nav = screen.getByRole("navigation", { name: "Settings categories" });
+  await user.click(within(nav).getByRole("button", { name: label }));
 }
 
 const lastArgs = <K extends CommandName>(command: K) => {
@@ -93,13 +113,30 @@ describe("SettingsView — loudness targets", () => {
     mockStore();
   });
 
-  it("renders the seed targets and their values", async () => {
+  it("renders the seed targets with their sliders and values in dB", async () => {
     renderView();
+    expect(
+      await screen.findByRole("heading", { name: "Loudness targets" }),
+    ).toBeInTheDocument();
     expect(await screen.findByText("Rhythm")).toBeInTheDocument();
     expect(screen.getByText("Crunch")).toBeInTheDocument();
     expect(screen.getByText("Lead")).toBeInTheDocument();
-    expect(screen.getByText("-26.0")).toBeInTheDocument();
-    expect(screen.getByText("-22.0")).toBeInTheDocument();
+    expect(screen.getByText("−26.0 dB")).toBeInTheDocument();
+    expect(screen.getByText("−22.0 dB")).toBeInTheDocument();
+    const slider = screen.getByRole("slider", { name: "Rhythm target" });
+    expect(slider).toHaveAttribute("aria-valuetext", "−26.0 dB");
+    expect(screen.getAllByText("Quieter")).toHaveLength(3);
+    expect(screen.getAllByText("Louder")).toHaveLength(3);
+    // The grip is named for what dragging it does; the ⋯ for its row.
+    expect(screen.getByRole("img", { name: "Move Rhythm" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "More for Rhythm" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Sounds named like a target get it on Set up."),
+    ).toBeInTheDocument();
+    // No LUFS on screen.
+    expect(screen.queryByText(/LUFS/)).toBeNull();
   });
 
   it("adds a target (rename mode + persists via save_targets)", async () => {
@@ -107,16 +144,33 @@ describe("SettingsView — loudness targets", () => {
     renderView();
     await screen.findByText("Rhythm");
 
-    await user.click(screen.getByRole("button", { name: /add target/i }));
+    await user.click(screen.getByRole("button", { name: "Add target" }));
 
     // The new row opens in rename mode: an input pre-filled with "New target".
     const input = await screen.findByDisplayValue("New target");
-    expect(input).toBeInTheDocument();
+    expect(input).toHaveAccessibleName("Target name");
 
     // Persisted: a 4th target seeded at −19.0 (PR2 re-baseline), no clamp.
     const saved = lastArgs("save_targets");
     expect(saved?.targets).toHaveLength(4);
     expect(saved?.targets[3]).toEqual({ name: "New target", lufs: -19.0 });
+  });
+
+  it("renames from the row's ⋯", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Rhythm");
+
+    await user.click(screen.getByRole("button", { name: "More for Rhythm" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Target name" });
+    await user.clear(input);
+    await user.type(input, "Clean{Enter}");
+
+    expect(lastArgs("save_targets")?.targets[0]).toEqual({
+      name: "Clean",
+      lufs: -26,
+    });
   });
 
   it("shows the empty state once every target is deleted", async () => {
@@ -125,170 +179,227 @@ describe("SettingsView — loudness targets", () => {
     renderView();
     await screen.findByText("Only");
 
-    await user.click(screen.getByTitle("More"));
-    await user.click(screen.getByText("Delete"));
+    await user.click(screen.getByRole("button", { name: "More for Only" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete target" }));
 
-    expect(await screen.findByText(/no targets yet/i)).toBeInTheDocument();
+    expect(await screen.findByText("No targets yet")).toBeInTheDocument();
+    expect(
+      screen.getByText("Leveling needs at least one target."),
+    ).toBeInTheDocument();
     expect(lastArgs("save_targets")?.targets).toHaveLength(0);
   });
 });
 
-describe("SettingsView — playback level", () => {
+describe("SettingsView — playback", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
-    mockStore();
   });
 
-  it("persists the picked level via set_playback_level", async () => {
+  it("persists how loud you play via set_playback_level, under one fixed body line", async () => {
     const user = userEvent.setup();
+    mockStore();
     renderView();
     await screen.findByText("Rhythm");
-    await openCategory(user, "Playback");
+    await openPage(user, "Playback");
 
-    const group = screen.getByRole("radiogroup", { name: /playback level/i });
+    expect(screen.getByRole("heading", { name: "Playback" })).toBeVisible();
+    const group = screen.getByRole("radiogroup", { name: "How loud you play" });
+    expect(within(group).getByRole("radio", { name: "Stage" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByText(LEVEL_BODY)).toBeInTheDocument();
+
     await user.click(within(group).getByRole("radio", { name: "Rehearsal" }));
-
     await waitFor(() => {
       expect(lastArgs("set_playback_level")).toEqual({ level: "rehearsal" });
     });
+    // The body doesn't change with the choice, and no LU figure is shown.
+    expect(screen.getByText(LEVEL_BODY)).toBeInTheDocument();
+    expect(screen.queryByText(/LU\b/)).toBeNull();
   });
 
-  it("reflects the stored level + its compensation caption", async () => {
+  it("reflects the stored level", async () => {
     const user = userEvent.setup();
     mockStore(SEED_TARGETS, "rehearsal");
     renderView();
     await screen.findByText("Rhythm");
-    await openCategory(user, "Playback");
+    await openPage(user, "Playback");
 
     const group = await screen.findByRole("radiogroup", {
-      name: /playback level/i,
+      name: "How loud you play",
     });
     expect(
       within(group).getByRole("radio", { name: "Rehearsal" }),
     ).toHaveAttribute("aria-checked", "true");
-    // Rehearsal → the bass −1.0 LU chip (mirrors profiles::playback_offset_lu).
-    expect(screen.getByText("bass −1.0 LU")).toBeInTheDocument();
-  });
-});
-
-describe("SettingsView — playback outputs", () => {
-  beforeEach(() => {
-    vi.mocked(invoke).mockReset();
   });
 
-  it("defaults to Stereo and persists the picked outputs via set_playback_channels", async () => {
+  it("defaults to Stereo and persists the speaker choice via set_playback_channels", async () => {
     const user = userEvent.setup();
     mockStore();
     renderView();
     await screen.findByText("Rhythm");
-    await openCategory(user, "Playback");
+    await openPage(user, "Playback");
 
-    const group = screen.getByRole("radiogroup", { name: "Outputs" });
+    const group = screen.getByRole("radiogroup", {
+      name: "How your speakers are connected",
+    });
     expect(
       within(group).getByRole("radio", { name: "Stereo" }),
     ).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText("both outputs")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Both outputs count: two speakers or stereo headphones.",
+      ),
+    ).toBeInTheDocument();
 
     await user.click(
-      within(group).getByRole("radio", { name: "Mono (summed)" }),
+      within(group).getByRole("radio", { name: "Mono (both outputs)" }),
     );
     await waitFor(() => {
       expect(lastArgs("set_playback_channels")).toEqual({
         channels: "mono_sum",
       });
     });
-    expect(screen.getByText("L + R summed")).toBeInTheDocument();
-    // The playback LEVEL is a separate setting: picking outputs never writes it.
+    expect(
+      screen.getByText(
+        "Both outputs are mixed into one: one speaker, or a mono PA fed by both outputs.",
+      ),
+    ).toBeInTheDocument();
+    // The playback LEVEL is a separate setting: picking speakers never writes it.
     expect(callsOf("set_playback_level")).toHaveLength(0);
   });
 
-  it("reflects the stored outputs choice", async () => {
+  it("reflects the stored speaker choice", async () => {
     const user = userEvent.setup();
-    mockCommands({
-      get_store: () =>
-        makeStore({ targets: SEED_TARGETS, playback_channels: "left_only" }),
-    });
+    mockStore(SEED_TARGETS, "stage", "left_only");
     renderView();
     await screen.findByText("Rhythm");
-    await openCategory(user, "Playback");
+    await openPage(user, "Playback");
 
-    const group = await screen.findByRole("radiogroup", { name: "Outputs" });
+    const group = await screen.findByRole("radiogroup", {
+      name: "How your speakers are connected",
+    });
     expect(
       within(group).getByRole("radio", { name: "Left output only" }),
     ).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText("output 1 only")).toBeInTheDocument();
+    expect(
+      screen.getByText("Only the left output (1) is plugged in."),
+    ).toBeInTheDocument();
   });
 });
 
-describe("SettingsView — app updates", () => {
-  beforeEach(() => {
+describe("SettingsView — about and updates", () => {
+  beforeEach(async () => {
     vi.mocked(invoke).mockReset();
     mockStore();
+    await act(async () => {
+      await loadPlatform();
+    });
   });
 
-  it("renders the version readout, check button, and auto-install label", async () => {
+  it("renders the version, the check, the auto-install switch and Report a bug", async () => {
     const user = userEvent.setup();
-    renderView();
+    renderView({}, vi.fn());
     await screen.findByText("Rhythm");
-    await openCategory(user, "About & updates");
+    await openPage(user, "About and updates");
 
-    expect(await screen.findByText("Version 1.2.3")).toBeInTheDocument();
+    expect(screen.getByText("TMP Companion 1.2.3")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /check for updates/i }),
+      screen.getByRole("button", { name: "Check for updates" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Install updates automatically"),
+      screen.getByRole("switch", { name: "Install updates by themselves" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("Something not working?")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your instruments and loudness targets are kept on this Mac. Presets, scenes and songs live on your Tone Master Pro.",
+      ),
     ).toBeInTheDocument();
   });
 
-  it("checks for updates and shows up to date", async () => {
+  it("names no version it doesn't know", async () => {
     const user = userEvent.setup();
-    renderView();
+    renderView({ currentVersion: null });
     await screen.findByText("Rhythm");
-    await openCategory(user, "About & updates");
-    await screen.findByText("Version 1.2.3");
+    await openPage(user, "About and updates");
+    expect(screen.getByText("TMP Companion")).toBeInTheDocument();
+  });
 
-    await user.click(
-      screen.getByRole("button", { name: /check for updates/i }),
-    );
+  it("checks for updates: busy while checking, then Up to date", async () => {
+    const user = userEvent.setup();
+    let finish: (r: "none") => void = () => undefined;
+    renderView({
+      check: () =>
+        new Promise((res) => {
+          finish = res;
+        }),
+    });
+    await screen.findByText("Rhythm");
+    await openPage(user, "About and updates");
 
-    expect(checkFn).toHaveBeenCalled();
-    expect(await screen.findByText("up to date")).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: /Check for updates/ });
+    await user.click(button);
+    // The same button, busy: it keeps its words and can't be clicked again.
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("Check for updates");
+
+    await act(async () => {
+      finish("none");
+      await Promise.resolve();
+    });
+    expect(await screen.findByText("Up to date")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Check for updates/ }),
+    ).toBeNull();
   });
 
   // Linux ships .deb/.rpm and latest.json carries only darwin-* keys, so a check
   // there can only ever come back empty. Reporting that as "up to date" told
   // Linux users they were current forever.
-  it("with no update channel, offers no check and no auto-install toggle", async () => {
+  it("with no update channel, offers no check and no auto-install switch", async () => {
     const user = userEvent.setup();
     renderView({ hasUpdateChannel: false });
     await screen.findByText("Rhythm");
-    await openCategory(user, "About & updates");
-    await screen.findByText("Version 1.2.3");
+    await openPage(user, "About and updates");
+    await screen.findByText("TMP Companion 1.2.3");
 
     expect(
       screen.queryByRole("button", { name: /check for updates/i }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByText("Up to date")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("Install updates automatically"),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText("up to date")).not.toBeInTheDocument();
+      screen.getByText(
+        "Linux packages update by hand. Download the latest .deb or .rpm from the releases page:",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText(/releases\/latest$/)).toBeInTheDocument();
+  });
+
+  it("says 'this computer' where the data is kept off a Mac", async () => {
+    const user = userEvent.setup();
+    mockStore(SEED_TARGETS, "stage", "stereo", "linux");
+    await act(async () => {
+      await loadPlatform();
+    });
+    renderView({ hasUpdateChannel: false });
+    await screen.findByText("Rhythm");
+    await openPage(user, "About and updates");
+    expect(
+      screen.getByText(
+        "Your instruments and loudness targets are kept on this computer. Presets, scenes and songs live on your Tone Master Pro.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("'Report a bug' (Something not working?) calls onReportBug", async () => {
     const user = userEvent.setup();
     const onReportBug = vi.fn();
-    renderWithTheme(
-      <SettingsView
-        connected={false}
-        updater={makeStubUpdater()}
-        onReportBug={onReportBug}
-      />,
-    );
+    renderView({}, onReportBug);
     await screen.findByText("Rhythm");
-    await openCategory(user, "About & updates");
-    expect(screen.getByText("Something not working?")).toBeInTheDocument();
+    await openPage(user, "About and updates");
     await user.click(screen.getByRole("button", { name: "Report a bug" }));
     expect(onReportBug).toHaveBeenCalledTimes(1);
   });
@@ -297,53 +408,55 @@ describe("SettingsView — app updates", () => {
     const user = userEvent.setup();
     renderView();
     await screen.findByText("Rhythm");
-    await openCategory(user, "About & updates");
-    await screen.findByText("Version 1.2.3");
+    await openPage(user, "About and updates");
 
-    await user.click(screen.getByRole("switch"));
+    await user.click(
+      screen.getByRole("switch", { name: "Install updates by themselves" }),
+    );
 
     expect(setAutoInstallFn).toHaveBeenCalledWith(false);
   });
 });
 
-describe("SettingsView — category rail", () => {
+describe("SettingsView — sidebar", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     mockStore();
   });
 
-  it("renders all four category tabs after load", async () => {
+  it("lists the four pages and marks the shown one", async () => {
     renderView();
     await screen.findByText("Rhythm");
-    const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((el) => el.textContent)).toEqual([
+    const nav = screen.getByRole("navigation", { name: "Settings categories" });
+    const items = within(nav).getAllByRole("button");
+    expect(items.map((el) => el.textContent)).toEqual([
       "Loudness targets",
       "Instruments",
       "Playback",
-      "About & updates",
+      "About and updates",
     ]);
     expect(
-      screen.getByRole("tab", { name: "Loudness targets" }),
-    ).toHaveAttribute("aria-selected", "true");
+      within(nav).getByRole("button", { name: "Loudness targets" }),
+    ).toHaveAttribute("aria-current", "true");
   });
 
-  it("swaps the pane when a category is clicked", async () => {
+  it("swaps the page when one is clicked; the data note lives on About only", async () => {
     const user = userEvent.setup();
     renderView();
     await screen.findByText("Rhythm");
-    expect(
-      screen.getByRole("button", { name: /add target/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add target" })).toBeVisible();
+    expect(screen.queryByText(/kept on this/)).toBeNull();
 
-    await openCategory(user, "Instruments");
+    await openPage(user, "Instruments");
 
-    expect(screen.queryByRole("button", { name: /add target/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add target" })).toBeNull();
     expect(
-      screen.getByRole("button", { name: /add instrument/i }),
-    ).toBeInTheDocument();
-    // connected={false} → the disconnected calibration note shows.
+      screen.getByRole("button", { name: "Add instrument" }),
+    ).toBeVisible();
+    // connected={false} → one page Notice says why recording is off.
     expect(
-      screen.getByText(/calibrating needs the unit connected/i),
+      screen.getByText("Recording needs your Tone Master Pro connected."),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/kept on this/)).toBeNull();
   });
 });

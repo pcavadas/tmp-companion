@@ -1240,9 +1240,10 @@ export function Notice({
 // SegmentedControl — one choice among two to six, all visible: a `segmentTrack`
 // track with 2 px padding (`radiusPanel`); the selected segment is white with
 // `shadowSegment` and semibold text. `sm` is the compact 12 px form (a sort control).
-// A connected single-choice radio group. The fill is set via the backgroundColor
-// LONGHAND with NO transition: the `background` shorthand + transition combo was
-// observed to leave the computed fill stuck on the previously selected segment.
+// A segment can be disabled (greyed, not clickable). A connected single-choice radio
+// group. The fill is set via the backgroundColor LONGHAND with NO transition: the
+// `background` shorthand + transition combo was observed to leave the computed fill
+// stuck on the previously selected segment.
 // ===========================================================================
 
 export interface SegmentedOption<T extends string> {
@@ -1250,6 +1251,10 @@ export interface SegmentedOption<T extends string> {
   label: string;
   /** Optional leading icon. */
   icon?: IconName;
+  /** Can't be chosen right now (Catalog's "Stereo" in a scope with no stereo model):
+   *  greyed text, and a click does nothing. A selected segment is never disabled by
+   *  its caller, so a chosen filter can always be changed back. */
+  disabled?: boolean;
 }
 
 export interface SegmentedControlProps<T extends string> {
@@ -1288,12 +1293,14 @@ export function SegmentedControl<T extends string>({
     >
       {options.map((o) => {
         const on = o.value === value;
+        const off = o.disabled === true;
         return (
           <button
             key={o.value}
             type="button"
             role="radio"
             aria-checked={on}
+            disabled={off}
             onClick={() => {
               onChange(o.value);
             }}
@@ -1301,7 +1308,7 @@ export function SegmentedControl<T extends string>({
               appearance: "none",
               border: "none",
               margin: 0,
-              cursor: "pointer",
+              cursor: off ? "default" : "pointer",
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
@@ -1315,7 +1322,7 @@ export function SegmentedControl<T extends string>({
               padding: sm
                 ? `${String(t.sp2 + 1)}px ${String(t.sp8 + 2)}px`
                 : `${String(t.sp4)}px ${String(t.sp12)}px`,
-              color: t.text,
+              color: off ? t.textDisabled : t.text,
               backgroundColor: on ? t.surface : "transparent",
               boxShadow: on ? t.shadowSegment : "none",
             }}
@@ -1324,7 +1331,7 @@ export function SegmentedControl<T extends string>({
               <Icon
                 name={o.icon}
                 size={12}
-                stroke={on ? t.text : t.textSecondary}
+                stroke={off ? t.textDisabled : on ? t.text : t.textSecondary}
               />
             ) : null}
             {o.label}

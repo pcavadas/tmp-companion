@@ -1,6 +1,6 @@
 // src/__tests__/LookBLayout.test.tsx — the look B page pieces: PageState, Steps,
-// PageHead, SplitView, Footer (and its ActionBar re-export), Badge, the restyled
-// EmptyState, and the Dialog card + its `xs` confirm width.
+// PageHead, SplitView (and its RailItems), Footer (and its ActionBar re-export), Badge,
+// the restyled EmptyState, and the Dialog card + its `xs` confirm width.
 
 import { describe, it, expect } from "vitest";
 import { screen } from "@testing-library/react";
@@ -9,6 +9,7 @@ import { PageState } from "../ui/PageState";
 import { Steps } from "../ui/Steps";
 import { PageHead } from "../ui/PageHead";
 import { SplitView } from "../ui/SplitView";
+import { RailItem } from "../ui/Rail";
 import { Footer } from "../ui/Footer";
 import { ActionBar } from "../ui/ActionBar";
 import { Badge } from "../ui/Badge";
@@ -163,6 +164,27 @@ describe("SplitView", () => {
       </SplitView>,
     );
     expect(screen.getByRole("navigation").style.width).toBe("190px");
+  });
+
+  it("indents a child RailItem 22 px and marks the current one", () => {
+    renderWithTheme(
+      <>
+        <RailItem label="Effects" active={false} onClick={() => undefined} />
+        <RailItem
+          indent
+          label="Reverb"
+          meta={28}
+          active
+          onClick={() => undefined}
+        />
+      </>,
+    );
+    const parent = screen.getByRole("button", { name: "Effects" });
+    const child = screen.getByRole("button", { name: /^Reverb/ });
+    expect(parent.style.padding).toBe("0px 8px");
+    expect(child.style.padding).toBe("0px 8px 0px 22px");
+    expect(child).toHaveAttribute("aria-current", "true");
+    expect(child.style.background).toBe(light.rowSelected.replace(/,/g, ", "));
   });
 });
 

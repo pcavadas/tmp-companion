@@ -1,41 +1,17 @@
-// src/views/settings/settingsCategories.ts — the Settings category rail: macOS System
-// Settings-style, one category in the detail pane at a time. The rail selection is
-// local UI state in SettingsView (not persisted, defaults to "targets").
-
-import type { IconName } from "../../ui/Icon";
+// src/views/settings/settingsCategories.ts — the Settings sidebar's four pages, one shown
+// at a time. The choice is local UI state in SettingsView (not saved; defaults to
+// "targets").
 
 export type CategoryId = "targets" | "instruments" | "playback" | "about";
 
 export interface Category {
   id: CategoryId;
   label: string;
-  icon: IconName;
-  desc: string;
 }
 
 export const CATEGORIES: Category[] = [
-  {
-    id: "targets",
-    label: "Loudness targets",
-    icon: "sliders",
-    desc: "Your loudness targets. Set each level, rename it, and reorder it from its ⋯ menu.",
-  },
-  {
-    id: "instruments",
-    label: "Instruments",
-    icon: "cable",
-    desc: "Calibrate each instrument once. Then pick it for any preset when you level.",
-  },
-  {
-    id: "playback",
-    label: "Playback",
-    icon: "wave",
-    desc: "The volume you play at, and how your speakers are connected.",
-  },
-  {
-    id: "about",
-    label: "About & updates",
-    icon: "info",
-    desc: "App version, updates, and where your data is kept.",
-  },
+  { id: "targets", label: "Loudness targets" },
+  { id: "instruments", label: "Instruments" },
+  { id: "playback", label: "Playback" },
+  { id: "about", label: "About and updates" },
 ];

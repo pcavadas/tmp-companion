@@ -364,8 +364,18 @@ export const DEFAULT_HANDLERS: Handlers = {
   remove_setlist: () => [],
   remove_setlist_song: () => [],
   move_setlist_song: () => [],
-  create_song_full: () => ({ songs: [], members: null, bpm_warning: null }),
-  update_song_full: () => ({ songs: [], members: null, bpm_warning: null }),
+  create_song_full: () => ({
+    songs: [],
+    members: null,
+    duplicate_name: false,
+    bpm_warning: null,
+  }),
+  update_song_full: () => ({
+    songs: [],
+    members: null,
+    duplicate_name: false,
+    bpm_warning: null,
+  }),
   add_setlist_songs: () => [],
 };
 

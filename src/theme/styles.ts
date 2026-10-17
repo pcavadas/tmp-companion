@@ -42,11 +42,11 @@ export function buildStyles(t: ThemeTokens) {
       background: t.surface,
     } as CSSProperties,
 
-    /** Floating popover card (look B): white, `radiusPanel`, `shadowMenu` (which
+    /** Floating popover card (look B): white, `radiusGroup`, `shadowMenu` (which
      *  carries its own 0.5 px ring, so no border). The caller owns the inner layout. */
     popoverCard: {
       background: t.surface,
-      borderRadius: t.radiusPanel,
+      borderRadius: t.radiusGroup,
       boxShadow: t.shadowMenu,
       overflow: "hidden",
     } as CSSProperties,

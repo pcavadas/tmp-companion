@@ -22,17 +22,21 @@
 //
 // Operations are SERIALIZED (single USB connection) via `runDeviceOp` — a FIFO queue,
 // one op on the wire at a time; an action taken while another op runs waits its turn
-// instead of being dropped. Failures surface as a Toast (never swallowed: the device
-// is truth, so the UI must not show an un-persisted edit). Only mounted when
-// connected (App gates the disconnected branch).
+// instead of being dropped. Failures surface as a Toast in plain words (never
+// swallowed: the device is truth, so the UI must not show an un-persisted edit; the
+// backend's text goes to the log). While no unit is connected it shows the shared
+// device page instead.
 //
-// Split: the device state, op queue and CRUD callbacks live in ./useSongsDevice; the
-// left rail in ./SongsRail.
+// Layout (look B): a SplitView — the sidebar (./SongsRail) beside one content column
+// (./SongsPage, 720 px at most). Deletes are confirmed in a Modal whose backdrop does
+// nothing, so only its own buttons close it.
+//
+// Split: the device state, op queue and CRUD callbacks live in ./useSongsDevice.
 
 import { useState } from "react";
-import { useTheme } from "../../theme/ThemeContext";
 import { LoadErrorPane } from "../LoadErrorPane";
 import { Modal, Toast } from "../../ui/primitives";
+import { SplitView } from "../../ui/SplitView";
 import { DeviceState } from "../DeviceState";
 import type { NoUnitState } from "../../lib/connectError";
 import type { SongRecord } from "../../lib/types";
@@ -60,7 +64,6 @@ export interface SongsViewProps {
 }
 
 export function SongsView({ connected, deviceState = "off" }: SongsViewProps) {
-  const { t } = useTheme();
   const {
     phase,
     refresh,
@@ -140,38 +143,33 @@ export function SongsView({ connected, deviceState = "off" }: SongsViewProps) {
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        background: t.bg,
         position: "relative",
       }}
     >
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          display: "grid",
-          gridTemplateColumns: "210px 1fr",
-        }}
+      <SplitView
+        sidebarLabel="Sections"
+        sidebar={
+          <SongsRail
+            axis={railAxis}
+            onAxis={(v) => {
+              setRailAxis(v);
+              setView({ mode: "all" });
+            }}
+            view={view}
+            onView={setView}
+            songCount={songs.length}
+            setlists={setlists}
+            membership={membership}
+            onSelectSetlist={selectSetlist}
+            lib={lib}
+            presetMembers={presetMembers}
+            busy={busy}
+            creatingList={creatingList}
+            onCreatingList={setCreatingList}
+            onCommitList={commitList}
+          />
+        }
       >
-        <SongsRail
-          axis={railAxis}
-          onAxis={(v) => {
-            setRailAxis(v);
-            setView({ mode: "all" });
-          }}
-          view={view}
-          onView={setView}
-          songCount={songs.length}
-          setlists={setlists}
-          membership={membership}
-          onSelectSetlist={selectSetlist}
-          lib={lib}
-          presetMembers={presetMembers}
-          busy={busy}
-          creatingList={creatingList}
-          onCreatingList={setCreatingList}
-          onCommitList={commitList}
-        />
-
         {/* detail */}
         {view.mode === "preset" && currentPreset ? (
           <PresetDetail
@@ -222,34 +220,19 @@ export function SongsView({ connected, deviceState = "off" }: SongsViewProps) {
             }}
           />
         )}
-      </div>
+      </SplitView>
 
       <Modal
         open={confirm != null}
-        label={
-          confirm?.kind === "song"
-            ? `Delete song ${confirm.name}?`
-            : `Delete setlist ${confirm?.name ?? ""}?`
-        }
-        kicker="DESTRUCTIVE · WRITES TO THE TONE MASTER PRO"
-        headline={
-          confirm?.kind === "song" ? (
-            <>
-              Delete song <em>{confirm.name}</em>?
-            </>
-          ) : (
-            <>
-              Delete setlist <em>{confirm?.name}</em>?
-            </>
-          )
-        }
+        label={`Delete ${confirm?.name ?? ""}?`}
+        headline={`Delete ${confirm?.name ?? ""}?`}
         body={
           confirm?.kind === "song"
-            ? "This removes the song from the unit and from every setlist that contains it. This can't be undone."
-            : "This removes the setlist from the unit. The songs themselves are kept. This can't be undone."
+            ? "It's removed from your Tone Master Pro and from every setlist that has it. This can't be undone here."
+            : "It's removed from your Tone Master Pro. Its songs stay in All songs."
         }
-        applyLabel="Delete"
-        applyVariant="warn"
+        applyLabel={confirm?.kind === "song" ? "Delete song" : "Delete setlist"}
+        applyVariant="danger"
         onCancel={() => {
           setConfirm(null);
         }}

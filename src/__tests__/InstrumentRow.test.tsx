@@ -1,20 +1,26 @@
-// src/__tests__/InstrumentRow.test.tsx — a Settings instrument row's calibration flow.
-// REAL timers throughout: the countdown is 3 × 850 ms.
+// src/__tests__/InstrumentRow.test.tsx — a Settings instrument row (look B) and its
+// recording (Tier-2 calibration) flow. REAL timers throughout: the countdown is
+// 3 × 850 ms.
 //
-// - #301: every calibration attempt has its own token. Cancel while recording, start
+// - #301: every recording attempt has its own token. Cancel while recording, start
 //   again, THEN let the cancelled capture resolve: the new countdown must keep running
 //   into its own recording, and the stale result must not apply (no second
-//   onCalibrated, no "calibrated" line, no idle flip).
+//   onCalibrated, no idle flip).
 // - BUG-6: unmounting mid-recording can't setState / fire onCalibrated after unmount.
+// - #361: a refused take's caveats, in words (no LU figure), and the row always says
+//   what leveling uses.
+// - Look B: the status Badge, the caption ("Bass VI", never "Bass VI · Bass VI"),
+//   Record disabled while the unit is away, a failed take worded without backend text,
+//   and the ⋯ menu.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, screen } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { InstrumentRow } from "../views/settings/InstrumentRow";
 import { stimulusSource, warningsOf } from "../views/settings/useCalibration";
-import type { CalibrateResult, Profile } from "../lib/types";
+import type { CalibrateResult, Profile, TopologyInfo } from "../lib/types";
 import { fired, makeCalibrateResult, mockCommands } from "./commandMocks";
 import { renderWithTheme } from "./testKit";
 
@@ -25,19 +31,28 @@ const profile: Profile = {
   calibration_lufs: null,
 };
 
-function renderRow(p: Profile, onCalibrated: () => void) {
+function renderRow(
+  p: Profile,
+  onCalibrated: () => void,
+  {
+    connected = true,
+    topology = null,
+  }: { connected?: boolean; topology?: TopologyInfo | null } = {},
+) {
   return renderWithTheme(
     <InstrumentRow
       profile={p}
-      topology={null}
-      connected={true}
+      topology={topology}
+      connected={connected}
       onCalibrated={onCalibrated}
       onEdit={vi.fn()}
       onDelete={vi.fn()}
-      onMove={vi.fn()}
+      onMoveDown={vi.fn()}
     />,
   );
 }
+
+const RECORDING = /^Recording \d+\.\d of 8 s$/;
 
 const RESULT: CalibrateResult = {
   lufs: -20,
@@ -71,8 +86,8 @@ describe("InstrumentRow — a cancelled capture can't hijack the next attempt (#
       const user = userEvent.setup();
 
       // Attempt 1 → recording (its capture is in flight).
-      await user.click(screen.getByRole("button", { name: /calibrate/i }));
-      await screen.findByText(/play steadily/i, undefined, { timeout: 6000 });
+      await user.click(screen.getByRole("button", { name: "Record" }));
+      await screen.findByText(RECORDING, undefined, { timeout: 6000 });
       expect(resolvers).toHaveLength(1);
 
       // Cancel: idle again; the cancel itself re-reads the store once.
@@ -80,20 +95,21 @@ describe("InstrumentRow — a cancelled capture can't hijack the next attempt (#
       expect(onCalibrated).toHaveBeenCalledTimes(1);
 
       // Attempt 2 starts its countdown; now the CANCELLED capture resolves.
-      await user.click(screen.getByRole("button", { name: /calibrate/i }));
-      expect(screen.getByText(/get ready to play/i)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Record" }));
+      expect(screen.getByText(/^Start playing in/)).toBeInTheDocument();
       await act(async () => {
         resolvers[0](RESULT);
         await Promise.resolve();
       });
 
-      // The stale result didn't apply: still counting down, no second callback…
-      expect(screen.getByText(/get ready to play/i)).toBeInTheDocument();
-      expect(screen.queryByText(/spread/i)).toBeNull();
+      // The stale result didn't apply: still counting down (no idle Record button),
+      // no second callback…
+      expect(screen.getByText(/^Start playing in/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Record" })).toBeNull();
       expect(onCalibrated).toHaveBeenCalledTimes(1);
 
       // …and the countdown wasn't killed: attempt 2 reaches its own recording.
-      await screen.findByText(/play steadily/i, undefined, { timeout: 6000 });
+      await screen.findByText(RECORDING, undefined, { timeout: 6000 });
       expect(resolvers).toHaveLength(2);
 
       // Attempt 2's own result DOES apply.
@@ -134,10 +150,9 @@ describe("regression: BUG-6 calibration abort on unmount", () => {
       const onCalibrated = vi.fn();
       const { unmount } = renderRow(profile, onCalibrated);
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: /calibrate/i }));
+      await user.click(screen.getByRole("button", { name: "Record" }));
       // Wait out the 3×850ms countdown into the recording phase (calibrate_profile in flight).
-      // "play steadily" is unique to the recording sub-line (vs. two "Recording" strings).
-      await screen.findByText(/play steadily/i, undefined, { timeout: 6000 });
+      await screen.findByText(RECORDING, undefined, { timeout: 6000 });
       expect(fired("calibrate_profile")).toBe(true);
       // Unmount mid-recording, THEN let the backend resolve — the abort gate must hold.
       unmount();
@@ -150,7 +165,7 @@ describe("regression: BUG-6 calibration abort on unmount", () => {
   );
 
   it(
-    "a severe clip + stimulus-ceiling caveats surface as a non-fatal warning (#361)",
+    "a severe clip + stimulus-ceiling caveats surface as two note lines, no LU (#361)",
     { timeout: 10000 },
     async () => {
       mockCommands({
@@ -166,17 +181,21 @@ describe("regression: BUG-6 calibration abort on unmount", () => {
       const onCalibrated = vi.fn();
       renderRow({ ...profile, calibration_lufs: -12.4 }, onCalibrated);
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: /re-calibrate/i }));
-      // Both caveats land on the idle sub-line, joined "; " — success still fires.
-      const line = await screen.findByText(
-        /clipped the unit's USB 3 send/i,
-        undefined,
-        {
-          timeout: 8000,
-        },
-      );
-      expect(line.textContent).toMatch(/leveling uses the test signal/i);
-      expect(line.textContent).toMatch(/leveling drives ~2\.3 LU softer/i);
+      await user.click(screen.getByRole("button", { name: "Record again" }));
+      // Each caveat is its own line — success still fires.
+      expect(
+        await screen.findByText(
+          "Hard picks were too loud for the Tone Master Pro's USB recording, so this take wasn't kept. Leveling uses the test tone at your loudness.",
+          undefined,
+          { timeout: 8000 },
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "You play louder than the test tone can go, so your sounds are tested quieter than you play.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/\bLU\b|2\.3/)).toBeNull();
       expect(onCalibrated).toHaveBeenCalled();
     },
   );
@@ -190,14 +209,13 @@ describe("InstrumentRow — clipped calibration takes (#361)", () => {
   it("never says play softer and never points at the mixer meter", () => {
     for (const clip of ["clean", "mild", "severe"] as const)
       for (const kept of [false, true]) {
-        const warn =
-          warningsOf(
-            makeCalibrateResult({
-              clip,
-              capture_stored: clip !== "severe",
-              kept_previous_capture: clip === "severe" && kept,
-            }),
-          ) ?? "";
+        const warn = warningsOf(
+          makeCalibrateResult({
+            clip,
+            capture_stored: clip !== "severe",
+            kept_previous_capture: clip === "severe" && kept,
+          }),
+        ).join(" ");
         expect(warn).not.toMatch(/softer|volume down|meter/i);
       }
   });
@@ -205,7 +223,7 @@ describe("InstrumentRow — clipped calibration takes (#361)", () => {
   it("a mild clip is stored without comment", () => {
     expect(
       warningsOf(makeCalibrateResult({ clip: "mild", capture_stored: true })),
-    ).toBeNull();
+    ).toEqual([]);
   });
 
   it("a refused take over an earlier recording says the recording was kept", () => {
@@ -217,7 +235,9 @@ describe("InstrumentRow — clipped calibration takes (#361)", () => {
           kept_previous_capture: true,
         }),
       ),
-    ).toMatch(/keeps your earlier recording/i);
+    ).toEqual([
+      "Hard picks were too loud for the Tone Master Pro's USB recording, so this take wasn't kept. Leveling still uses your earlier recording.",
+    ]);
   });
 
   it("the row always shows what leveling re-amps", () => {
@@ -225,13 +245,101 @@ describe("InstrumentRow — clipped calibration takes (#361)", () => {
       { ...profile, calibration_lufs: -14, has_capture: true },
       vi.fn(),
     );
-    expect(screen.getByText(/levels with your recording/i)).toBeInTheDocument();
+    expect(
+      screen.getByText("Leveling uses your recording."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Recorded")).toBeInTheDocument();
     unmount();
     renderRow(profile, vi.fn());
-    expect(screen.getByText("not calibrated")).toBeInTheDocument();
-    expect(screen.getByText("levels with the test signal")).toBeInTheDocument();
+    expect(screen.getByText("Not recorded")).toBeInTheDocument();
+    expect(
+      screen.getByText("Leveling uses the test tone."),
+    ).toBeInTheDocument();
     expect(stimulusSource({ ...profile, calibration_lufs: -14 })).toBe(
-      "levels with the test signal",
+      "Leveling uses the test tone.",
     );
+  });
+});
+
+describe("InstrumentRow — look B", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("captions the type and pickup, and a Bass VI once", () => {
+    const { unmount } = renderRow(profile, vi.fn(), {
+      topology: {
+        id: "guitar-humbucker",
+        label: "Humbucker",
+        instrument: "guitar",
+      },
+    });
+    expect(screen.getByText("Guitar · Humbucker")).toBeInTheDocument();
+    unmount();
+    renderRow(profile, vi.fn(), {
+      topology: { id: "bass-vi", label: "Bass VI", instrument: "bass-vi" },
+    });
+    expect(screen.getByText("Bass VI")).toBeInTheDocument();
+    expect(screen.queryByText(/Bass VI · Bass VI/)).toBeNull();
+  });
+
+  it("shows Record disabled while the unit is away", () => {
+    renderRow(profile, vi.fn(), { connected: false });
+    expect(screen.getByRole("button", { name: "Record" })).toBeDisabled();
+  });
+
+  it(
+    "counts down in words, then a failed take says what to check — never the backend's text",
+    { timeout: 10000 },
+    async () => {
+      mockCommands({
+        calibrate_profile: () => {
+          throw new Error("capture stream died: -50");
+        },
+      });
+      renderRow(profile, vi.fn());
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Record" }));
+      expect(screen.getByText("Start playing in 3")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible();
+
+      expect(
+        await screen.findByText(
+          "Couldn’t record it. Check that your instrument is plugged into the Tone Master Pro, then try again.",
+          undefined,
+          { timeout: 6000 },
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/-50|stream died/)).toBeNull();
+      // The badge is as it was before the attempt; "Try again" starts over.
+      expect(screen.getByText("Not recorded")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+    },
+  );
+
+  it("hides the ⋯ while recording and offers Edit, the moves it can make, and Delete", async () => {
+    mockCommands({
+      calibrate_profile: () => new Promise<CalibrateResult>(() => undefined),
+    });
+    renderRow(profile, vi.fn());
+    const user = userEvent.setup();
+
+    await user.click(
+      screen.getByRole("button", { name: "More for Telecaster" }),
+    );
+    const menu = screen.getByRole("menu");
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((el) => el.textContent),
+    ).toEqual(["Edit instrument", "Move down", "Delete instrument"]);
+    await user.click(
+      screen.getByRole("button", { name: "More for Telecaster" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Record" }));
+    expect(
+      screen.queryByRole("button", { name: "More for Telecaster" }),
+    ).toBeNull();
   });
 });

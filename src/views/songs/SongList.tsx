@@ -1,18 +1,24 @@
-// src/views/songs/SongList.tsx — LIBRARY view: all songs (create / edit / delete),
-// with LibraryRow co-located (its only parent is SongList). Setlist membership lives
-// in the setlist detail (it needs per-setlist device reads), so it is NOT shown here.
+// src/views/songs/SongList.tsx — All songs (look B): the page title with the song count
+// and "New song", then one Group — a "№ / Song" header row and one row per song, each
+// with a ⋯ menu (Edit song, Delete song). "New song" opens the form as a card above
+// the Group and stays in place, disabled, while it is open; "Edit song" puts the same
+// form in place of that song's row. Setlist membership lives in the setlist page (it
+// needs a device read per setlist), so it is not shown here.
+
 import { useState } from "react";
-import { useTheme, useStyles } from "../../theme/ThemeContext";
-import { Icon } from "../../ui/Icon";
-import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
-import { Menu } from "../../ui/Menu";
+
+import { useTheme } from "../../theme/ThemeContext";
+import { sectionLabel } from "../../theme/tokens";
+import { Button, MenuDivider, MenuItem } from "../../ui/primitives";
+import { Group, Row } from "../../ui/List";
+import { EmptyState } from "../../ui/EmptyState";
+import { MoreMenu } from "../../ui/MoreMenu";
 import type { SongRecord } from "../../lib/types";
-import { SONG_COLS } from "./shared";
-import { songBpm } from "./songUtil";
-import type { SongDraft } from "./shared";
+import { songBpm, songCount } from "./songUtil";
+import type { SongDraft } from "./songUtil";
 import { SongForm } from "./SongForm";
 import { SongRow } from "./SongRow";
-import { ListHeader } from "./ListHeader";
+import { SongsPage } from "./SongsPage";
 
 interface LibraryRowProps {
   song: SongRecord;
@@ -23,76 +29,33 @@ interface LibraryRowProps {
 }
 
 function LibraryRow({ song, idx, busy, onEdit, onDelete }: LibraryRowProps) {
-  const { t } = useTheme();
   const [open, setOpen] = useState(false);
-
+  const pick = (fn: () => void) => () => {
+    setOpen(false);
+    fn();
+  };
   return (
     <SongRow
       song={song}
       idx={idx}
-      gridCols={SONG_COLS}
+      selected={open && !busy}
       trailing={
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "flex-end",
-            alignItems: "center",
-            gap: t.space4,
-          }}
+        <MoreMenu
+          label={`More for ${song.name}`}
+          open={open}
+          onOpenChange={setOpen}
+          disabled={busy}
         >
-          <div style={{ position: "relative", display: "flex" }}>
-            <Button
-              variant="bare"
-              aria-label={`More actions for ${song.name}`}
-              aria-haspopup="menu"
-              aria-expanded={open}
-              disabled={busy}
-              onClick={() => {
-                setOpen((o) => !o);
-              }}
-              title="More"
-              style={{
-                display: "flex",
-                padding: t.space1,
-                borderRadius: t.rSm,
-                opacity: busy ? 0.4 : 1,
-              }}
-            >
-              <Icon name="more" size={16} stroke={t.faint} />
-            </Button>
-            {open && (
-              <Menu
-                onClose={() => {
-                  setOpen(false);
-                }}
-                minWidth={138}
-              >
-                <MenuItem
-                  label="Edit song…"
-                  onClick={() => {
-                    setOpen(false);
-                    onEdit();
-                  }}
-                />
-                <MenuDivider />
-                <MenuItem
-                  label="Delete song"
-                  danger
-                  onClick={() => {
-                    setOpen(false);
-                    onDelete();
-                  }}
-                />
-              </Menu>
-            )}
-          </div>
-        </div>
+          <MenuItem label="Edit song" onClick={pick(onEdit)} />
+          <MenuDivider />
+          <MenuItem label="Delete song" danger onClick={pick(onDelete)} />
+        </MoreMenu>
       }
     />
   );
 }
 
-interface SongListProps {
+export interface SongListProps {
   songs: SongRecord[];
   busy: boolean;
   onAddSong: (d: SongDraft) => void;
@@ -108,145 +71,95 @@ export function SongList({
   onDeleteSong,
 }: SongListProps) {
   const { t } = useTheme();
-  const s = useStyles();
   const [creating, setCreating] = useState(false);
   const [editingSlot, setEditingSlot] = useState<number | null>(null);
 
   return (
-    <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <div
-        style={{
-          padding: `${String(t.space8)}px ${String(t.space8)}px ${String(t.space6)}px`,
-          display: "flex",
-          alignItems: "flex-end",
-          justifyContent: "space-between",
-          gap: t.space6,
-        }}
-      >
-        <div>
-          <div style={s.kicker(t.accentDeep)}>Library</div>
-          <div
-            style={{
-              fontFamily: t.serif,
-              fontSize: t.fsTitle,
-              color: t.ink,
-              marginTop: t.space2,
-            }}
-          >
-            All songs
-          </div>
-          <div
-            style={{
-              fontFamily: t.mono,
-              fontSize: t.fsMeta,
-              color: t.mutedInk,
-              marginTop: t.space3,
-            }}
-          >
-            {songs.length} song{songs.length === 1 ? "" : "s"} on the unit
-          </div>
-        </div>
-        {!creating && (
-          <Button
-            variant="primary"
-            icon="plus"
-            size="sm"
-            disabled={busy}
-            onClick={() => {
-              setEditingSlot(null);
-              setCreating(true);
-            }}
-          >
-            New song
-          </Button>
-        )}
-      </div>
-      <ListHeader
-        cols={SONG_COLS}
-        cells={[
-          { label: "№" },
-          { label: "song" },
-          { label: "bpm" },
-          { label: "" },
-        ]}
-      />
-      <div
-        style={{ flex: 1, minHeight: 0, overflow: "hidden", overflowY: "auto" }}
-      >
-        {creating && (
-          <div
-            style={{
-              padding: `${String(t.space5)}px ${String(t.space8)}px ${String(t.space5)}px ${String(t.space8)}px`,
-              borderBottom: `0.5px solid ${t.hairline}`,
-              background: t.window,
-            }}
-          >
-            <SongForm
-              onSave={(d) => {
-                onAddSong(d);
-                setCreating(false);
-              }}
-              onCancel={() => {
-                setCreating(false);
-              }}
+    <SongsPage
+      title="All songs"
+      subtitle={`${songCount(songs.length)} on your Tone Master Pro`}
+      actions={
+        <Button
+          variant="primary"
+          icon="plus"
+          disabled={busy || creating}
+          onClick={() => {
+            setEditingSlot(null);
+            setCreating(true);
+          }}
+        >
+          New song
+        </Button>
+      }
+    >
+      {creating && (
+        <SongForm
+          card
+          onSave={(d) => {
+            onAddSong(d);
+            setCreating(false);
+          }}
+          onCancel={() => {
+            setCreating(false);
+          }}
+        />
+      )}
+      {songs.length === 0 ? (
+        !creating && (
+          <Group>
+            <EmptyState
+              icon="music"
+              title="No songs on your Tone Master Pro yet"
             />
-          </div>
-        )}
-        {songs.map((rec, i) =>
-          editingSlot === rec.slot ? (
-            <div
-              key={rec.slot}
-              style={{
-                padding: `${String(t.space5)}px ${String(t.space8)}px ${String(t.space5)}px ${String(t.space8)}px`,
-                borderBottom: `0.5px solid ${t.hairline}`,
-                background: t.window,
-              }}
-            >
-              <SongForm
-                initial={{
-                  name: rec.name,
-                  notes: rec.notes,
-                  bpm: songBpm(rec),
+          </Group>
+        )
+      ) : (
+        <Group label="Songs">
+          <Row header style={{ height: t.control - 1 }}>
+            <span style={{ ...sectionLabel(t), width: 30, flexShrink: 0 }}>
+              №
+            </span>
+            <span style={sectionLabel(t)}>Song</span>
+          </Row>
+          {songs.map((rec, i) =>
+            editingSlot === rec.slot ? (
+              <div
+                key={rec.slot}
+                style={{ borderTop: `1px solid ${t.separator}` }}
+              >
+                <SongForm
+                  initial={{
+                    name: rec.name,
+                    notes: rec.notes,
+                    bpm: songBpm(rec),
+                  }}
+                  onSave={(d) => {
+                    onEditSong(rec, d);
+                    setEditingSlot(null);
+                  }}
+                  onCancel={() => {
+                    setEditingSlot(null);
+                  }}
+                />
+              </div>
+            ) : (
+              <LibraryRow
+                key={rec.slot}
+                song={rec}
+                idx={i}
+                busy={busy}
+                onEdit={() => {
+                  setCreating(false);
+                  setEditingSlot(rec.slot);
                 }}
-                onSave={(d) => {
-                  onEditSong(rec, d);
-                  setEditingSlot(null);
-                }}
-                onCancel={() => {
-                  setEditingSlot(null);
+                onDelete={() => {
+                  onDeleteSong(rec);
                 }}
               />
-            </div>
-          ) : (
-            <LibraryRow
-              key={rec.slot}
-              song={rec}
-              idx={i}
-              busy={busy}
-              onEdit={() => {
-                setCreating(false);
-                setEditingSlot(rec.slot);
-              }}
-              onDelete={() => {
-                onDeleteSong(rec);
-              }}
-            />
-          ),
-        )}
-        {songs.length === 0 && !creating && (
-          <div
-            style={{
-              padding: `${String(t.space13)}px 0`,
-              textAlign: "center",
-              color: t.faint,
-              fontFamily: t.sans,
-              fontSize: t.fsBody,
-            }}
-          >
-            No songs on the unit. Create your first song.
-          </div>
-        )}
-      </div>
-    </div>
+            ),
+          )}
+        </Group>
+      )}
+    </SongsPage>
   );
 }

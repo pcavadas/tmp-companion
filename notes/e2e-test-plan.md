@@ -60,14 +60,14 @@ single rollback at the end.
 
 ## 1. Test matrix at a glance
 
-| Area                 | Functional scenarios | Monkey/chaos scenarios | Existing auto-coverage                            | Biggest gap                                                         |
-| -------------------- | -------------------- | ---------------------- | ------------------------------------------------- | ------------------------------------------------------------------- |
-| Connection lifecycle | C1–C7                | M-C1–M-C3              | unit (`connectError`, `DeviceStatus`, `firmware`) | mid-op disconnect; Pro-Control-grab busy page live                  |
-| Level + wizard       | L1–L14               | M-L1–M-L8              | e2e happy paths + many vitest                     | **cancel mid-run**, partial failure, clamp/offbranch live           |
-| Copy                 | P1–P10               | M-P1–M-P5              | e2e + vitest happy paths                          | physical unplug mid-save (partial failure + Back gated in Vitest)   |
-| Songs                | S1–S13               | M-S1–M-S4              | e2e CRUD + vitest                                 | **add-to-setlist + reorder e2e**, BPM-didn't-stick warn             |
-| Catalog              | T1–T7                | M-T1–M-T2              | model-wall + `CatalogView` interaction unit tests | scroll/DnD only (filters/sort/facets now in `CatalogView.test.tsx`) |
-| Settings             | E1–E10               | M-E1–M-E3              | vitest only                                       | **calibration flow live**, slider/drag, no e2e at all               |
+| Area                 | Functional scenarios | Monkey/chaos scenarios | Existing auto-coverage                            | Biggest gap                                                       |
+| -------------------- | -------------------- | ---------------------- | ------------------------------------------------- | ----------------------------------------------------------------- |
+| Connection lifecycle | C1–C7                | M-C1–M-C3              | unit (`connectError`, `DeviceStatus`, `firmware`) | mid-op disconnect; Pro-Control-grab busy page live                |
+| Level + wizard       | L1–L14               | M-L1–M-L8              | e2e happy paths + many vitest                     | **cancel mid-run**, partial failure, clamp/offbranch live         |
+| Copy                 | P1–P10               | M-P1–M-P5              | e2e + vitest happy paths                          | physical unplug mid-save (partial failure + Back gated in Vitest) |
+| Songs                | S1–S13               | M-S1–M-S4              | e2e CRUD + vitest                                 | **add-to-setlist + reorder e2e**, BPM-didn't-stick warn           |
+| Catalog              | T1–T7                | M-T1–M-T2              | model-wall + `CatalogView` interaction unit tests | scroll only (filters/sort/details now in `CatalogView.test.tsx`)  |
+| Settings             | E1–E10               | M-E1–M-E3              | vitest only                                       | **calibration flow live**, slider/drag, no e2e at all             |
 
 ---
 
@@ -256,23 +256,27 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 - **S2 — Rail pivot** — Seg "Setlists ⇄ Presets" toggles `railAxis` and resets view to "all".
 - **S3 — Create song** ⌨️ — New song → SongForm (name/BPM/notes); read-back returns fresh list.
 - **S4 — Edit song** ⌨️ — diffs changed fields only; **no-change edit issues no device op**.
-- **S5 — Delete song** — confirm Modal ("DESTRUCTIVE · WRITES TO THE TONE MASTER PRO"); Cancel vs
-  Delete; removes from unit + every setlist.
+- **S5 — Delete song** — row ⋯ → Delete song → confirm Modal ("Delete {name}?", backdrop inert);
+  Cancel vs "Delete song"; removes from unit + every setlist.
 - **S6 — BPM validation** ⌨️ — strips non-digits, clamps 20–400; blank → null.
 - **S7 — Create setlist** ⌨️ — inline name input (Enter commit / Esc / check / ×); empty name no-ops.
-- **S8 — Rename setlist** ⌨️ — click title → inline input; commits on blur AND Enter; empty/unchanged
-  → no op.
-- **S9 — Delete setlist** — ⋯ menu or detail; confirm Modal; keeps songs, drops the membership entry.
-- **S10 — Add songs to setlist** — AddSongs popover ⌨️(filter); multi-select; "Add {n}" (disabled at
-  0); batched multi-add; read-back members. _(e2e currently only creates/deletes an EMPTY setlist —
+- **S8 — Rename setlist** ⌨️ — click title (or ⋯ → Rename setlist) → inline input with ✓ / ✕;
+  commits on Enter or ✓ (not on blur); empty/unchanged → no op.
+- **S9 — Delete setlist** — setlist ⋯ → Delete setlist; confirm Modal (backdrop inert); keeps songs,
+  drops the membership entry.
+- **S10 — Add songs to setlist** — AddSongs popover ⌨️(filter); multi-select; "Add {n}" ("Add",
+  disabled, at 0); stays open on an outside click, closes on Add or Cancel; batched multi-add;
+  read-back members. _(e2e currently only creates/deletes an EMPTY setlist —
   add-to-setlist is uncovered.)_
 - **S11 — Create-and-add** ⌨️ — from AddSongs footer; create + add in one batched txn; duplicate-name
-  edge returns `members=null` → cache cleared, re-read on next select.
+  edge returns `duplicate_name: true` and `members=null` → "You already have a song called {name}.",
+  cache cleared, re-read on next select.
 - **S12 — Reorder setlist songs** 🖱️drag — grip drag-reorder (1-based positions); no-op on same pos.
   _Needs DnD events (not plain clicks); e2e-uncovered._
-- **S13 — Remove from setlist** — × on member row; 1-based position.
-- **S14 — Presets axis (read-only)** — songs-per-preset counts; PresetDetail non-interactive;
-  "managed on the unit in Pro Control" note. Counts show `—` until first read.
+- **S13 — Remove from setlist** — the member row's ⋯ (with Move up / Move down); 1-based position.
+- **S14 — Presets axis (read-only)** — songs-per-preset counts; PresetDetail non-interactive (no ⋯);
+  "Which songs use a preset is set on your Tone Master Pro." caption. Counts show `—` until first
+  read.
 
 ### Monkey/chaos
 
@@ -281,9 +285,9 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 - **M-S2 — Write-failure Toast** — induce a failed write (e.g. disconnect mid-op) → err Toast,
   **state NOT mutated** (read-back failed, UI keeps prior authoritative list). _vitest covers the
   mock; verify live._
-- **M-S3 — BPM "didn't stick" warn** — the non-fatal warn Toast path ("Saved, but BPM didn't
-  stick"); `bpm_warning` is always null in tests → entirely unexercised. Try a BPM the firmware
-  rejects.
+- **M-S3 — Tempo didn't save warn** — the non-fatal warn Toast path ("Song saved, but its tempo
+  didn't. Set it again."; the warning text goes to the log); Vitest covers it with a mocked
+  `bpm_warning`, the e2e never triggers it. Try a BPM the firmware rejects.
 - **M-S4 — Delete the currently-viewed setlist** — view drops to "all" cleanly; no dangling
   membership read.
 
@@ -293,24 +297,27 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 
 ### Functional
 
-- **T1 — Search** ⌨️ — matches model / real-unit / brand; clear X; count readout updates; empty
-  "No models match" / "…these filters".
-- **T2 — Category rail** — All models + per-category + Effects disclosure (caret opens subcategories;
-  note: no collapse path once opened — see §8); counts per row; scroll the rail.
-- **T3 — Effect-type chips** — appear inside an Effects subcategory with >1 type; "All {sub}" +
-  per-type toggle.
-- **T4 — Facets** — Mono / Stereo (disabled when no stereo in scope — can disable mid-session as
-  scope changes) / Convolution (only in Reverb/Effects scope).
-- **T5 — Sort** — Type / CPU (label cycles CPU → CPU ↓ → CPU ↑; grouping changes to ranked wall).
-- **T6 — Model card select** — click → detail bar populates (type path, real unit, cpu\*, routing,
-  since); hover styling; sticky group headers; scroll the wall.
+- **T1 — Search** ⌨️ — matches model / real-unit / brand; clear X; the count reads "{n} models",
+  or "{n} of {models in the chosen category}" once a filter is on; no match shows
+  `No models match "{query}"` with "Clear search", or "No models match these filters".
+- **T2 — Category sidebar** — All models + per-category (sentence case) + the nine Effects
+  subcategories, always listed and indented; counts per row; scroll the sidebar.
+- **T3 — Effect type** — a dropdown inside an Effects subcategory with >1 type: "All {sub}" first,
+  then each type.
+- **T4 — Sound and Convolution** — All / Mono / Stereo (Stereo greyed when no stereo in scope, but
+  never while it is on) / "Convolution only" checkbox (only in Reverb/Effects scope).
+- **T5 — Sort** — Type / CPU; under CPU a "Highest first" / "Lowest first" button flips the order,
+  the wall is one ranked section and tiles show their CPU cost (only then).
+- **T6 — Model tile select** — click → the details open under the wall (beside it from 1280 wide):
+  type, "Models the …", CPU of budget, sound, engine (reverbs), since; the × closes them; scroll the
+  wall.
 - **T7 — Block art correctness** — combo vs head vs half-stack tiles; null-bid mics resolve by name
   (regression-prone — `models-catalog.test.tsx` is the guard).
 
 ### Monkey/chaos
 
-- **M-T1 — Rapid facet toggling while Stereo self-disables** — toggle routing=stereo then narrow
-  scope so `hasStereo` flips; button greys mid-interaction; list still filters correctly.
+- **M-T1 — Rapid Sound toggling while Stereo self-disables** — choose Stereo then narrow scope so
+  `hasStereo` flips; the segment greys only once it is off; list still filters correctly.
 - **M-T2 — Search + filter + sort combinations** — search while CPU-sorted; clear into a filtered
   category; scope changes drop `convOnly`/`et` appropriately.
 
@@ -320,28 +327,36 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 
 ### Functional
 
-- **E1 — Loudness targets render** from store; empty "No targets yet".
-- **E2 — Add target** — appends "New target" @ −22, opens in rename mode ⌨️.
-- **E3 — Rename target** ⌨️ — double-click name → input; Enter/blur commit, Esc cancel;
-  empty/whitespace reverts to old.
-- **E4 — Target slider** 🖱️drag — pointer drag, bounds TMIN −32 / TMAX −16, 0.1 steps, commits once
-  on pointerup; no upper ceiling beyond track domain. _Needs pointer events._
-- **E5 — Reorder targets** 🖱️drag — HTML5 DnD grip; disabled while name-editing; no-op on self.
-- **E6 — Target ⋯ menu** — Rename / Delete; delete-last → empty state.
-- **E7 — Playback level** — SegmentedControl Quiet/Rehearsal/Stage; persists; comp caption (bass
-  +1.5 / +0.5 / no-comp).
-- **E8 — Add instrument** ⌨️ — disabled if topologies empty; InstrumentForm (name ⌨️ + type chips +
-  pickup chips); Save disabled until name+topology valid; type change re-defaults pickup.
-- **E9 — Edit / move / delete instrument** — ⋯ menu Edit / Move up / Move down (no-op at bounds) /
-  Delete.
-- **E10 — Tier-2 calibration** (device) — Calibrate → countdown 3→2→1 (~850 ms) → recording
-  "{rec}/8s" + determinate bar; backend result wins the phase; re-reads `calibration_lufs`. Disconnected
-  → "Needs device" pill. _No UI flow test anywhere._
+- **E1 — Loudness targets render** from store as Group rows (grip · name · "Quieter" slider
+  "Louder" · "−23.0 dB" · ⋯); empty → "No targets yet" / "Leveling needs at least one target.".
+- **E2 — Add target** (page head) — appends "New target" @ −19, opens in rename mode ⌨️.
+- **E3 — Rename target** ⌨️ — ⋯ Rename or double-click the name → input; Enter/blur commit, Esc
+  cancel; empty/whitespace reverts to old.
+- **E4 — Target slider** 🖱️drag — pointer drag, bounds TMIN −29 / TMAX −13, 0.1 steps, commits once
+  on pointerup; a pointercancel restores the start value; no upper ceiling beyond the track domain.
+  _Needs pointer events._
+- **E5 — Reorder targets** 🖱️drag — HTML5 DnD grip (role img, "Move {name}"); disabled while
+  name-editing; no-op on self. The click path is E6.
+- **E6 — Target ⋯ menu** ("More for {name}") — Rename / Move up / Move down (hidden at the ends) /
+  Delete target; delete-last → empty state.
+- **E7 — Playback** — two Groups: "How loud you play" (Quiet/Rehearsal/Stage, one fixed body line
+  naming the bass offsets) and "How your speakers are connected" (Stereo/Mono (both outputs)/Left
+  output only, a body line per choice); each persists on click.
+- **E8 — Add instrument** ⌨️ — disabled if topologies are empty; InstrumentForm (Name ⌨️ + Type
+  segmented Guitar/Bass/Bass VI + Pickup Select); Save disabled until name + pickup; a type change
+  moves to that type's first pickup; a saved pickup no longer offered shows the empty attention
+  Select and a note, never `options[0]`.
+- **E9 — Edit / move / delete instrument** — ⋯ menu Edit instrument / Move up / Move down (hidden
+  at the ends) / Delete instrument.
+- **E10 — Tier-2 calibration ("Record")** (device) — Record → "Start playing in 3…1" (~850 ms) →
+  "Recording {secs} of 8 s" + determinate bar; backend result wins the phase; re-reads
+  `calibration_lufs` (Badge "Recorded"). Disconnected → Record disabled + one page Notice. A failed
+  take → "Couldn't record it…" + Try again (no backend text). _No UI flow test anywhere._
 
 ### Monkey/chaos
 
-- **M-E1 — Cancel calibration** at countdown vs recording (✕) — `abortedRef` ignores a late backend
-  result; timers cleared.
+- **M-E1 — Cancel recording** at countdown vs recording (Cancel) — the per-attempt token ignores a
+  late backend result; timers cleared.
 - **M-E2 — Tab-switch away mid-recording** — mounted guard + clearTimers on unmount; no late setState.
 - **M-E3 — Drag a target onto itself / delete a target mid-rename / rename to whitespace** — all
   no-op safely.
@@ -356,10 +371,9 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 2. ✅ resolved (2026-07-05): **Row click does not recall the preset.** `LevelView.tsx` and
    `PresetRow.tsx` comments now agree with the code (click only selects; recall is owned by
    Pro Control / the footswitches).
-3. ⚠️ still open (2026-07-05): **Catalog Effects disclosure has no collapse path** — `fxOpen` is
-   only ever set `true`; once opened, the subcategory rows can't be hidden again. Minor, but a real
-   one-way toggle. Confirmed via grep (`src/views/CatalogView.tsx`): `setFxOpen` is called exactly
-   once, with `true` — the behavior described is unchanged.
+3. ✅ resolved (2026-10-16, look B): **Catalog Effects disclosure had no collapse path** — the
+   disclosure is gone: the Effects subcategories are always listed in the sidebar, so there is
+   nothing to collapse.
 4. ✅ resolved (2026-10-12, #292): **Copy "Back" no longer discards staged edits.** Re-entering
    Step 2 re-targets the history (`retargetHistory` in `copyModel.ts`): targets still selected keep
    their edits and undo steps, and only new targets start from their library graph.
