@@ -1,5 +1,4 @@
-// src/views/copy/TargetEditCard.tsx — one target preset in Place blocks (look B, frame
-// BC-Place).
+// src/views/copy/TargetEditCard.tsx — one target preset in Place blocks (look B).
 //
 // A white panel: the name, its slot, "Changed" (accent) once it differs from what is on
 // your Tone Master Pro, and the CPU readout at the right ("Over" past the budget). Under it

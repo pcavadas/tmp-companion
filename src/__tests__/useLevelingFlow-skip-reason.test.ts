@@ -1,6 +1,6 @@
 // src/__tests__/useLevelingFlow-skip-reason.test.ts — a failed command's own reason
-// reaches the rows it skipped, on all three lanes, with its TYPED kind (`skipKind`, E2:
-// the screen picks its words by kind, never by the text); a cancel or a client-side skip
+// reaches the rows it skipped, on all three lanes, with its TYPED kind (`skipKind`: the
+// screen picks its words by kind, never by the text); a cancel or a client-side skip
 // invents no reason.
 
 import { act, renderHook, waitFor } from "@testing-library/react";

@@ -20,7 +20,7 @@ import {
 import { Button } from "../../ui/primitives";
 
 const TITLE = "How leveling works";
-/** Vertical padding of each "Which knob it turns" row (the frame's 7 px). */
+/** Vertical padding of each "Which knob it turns" row (7 px, between the 6 and 8 steps). */
 const KNOB_ROW_PAD_Y = 7;
 
 // The three steps every run takes.

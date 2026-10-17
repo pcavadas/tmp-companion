@@ -405,10 +405,10 @@ mod reamp_off_ladder_tests {
         assert!(out.still_on(), "the typed signal the frontend reads");
     }
 
-    /// The typed half of the run-end verdict (OWNER-ANSWERS 8): every returned row records
-    /// `reamp_still_on`, and a failed leveling command's typed error carries it beside its
-    /// skip kind — the kind of the failure itself, decided before the warning text is
-    /// appended, so the frontend never reads the text for either.
+    /// The typed half of the run-end verdict (the screen reads the flag, never the warning
+    /// text): every returned row records `reamp_still_on`, and a failed leveling command's
+    /// typed error carries it beside its skip kind — the kind of the failure itself, decided
+    /// before the warning text is appended, so the frontend never reads the text for either.
     #[test]
     fn a_leveling_command_carries_the_reamp_verdict_typed_on_rows_and_errors() {
         let stuck = ReampOffOutcome { verified: false };

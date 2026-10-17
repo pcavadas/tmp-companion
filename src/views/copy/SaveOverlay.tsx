@@ -1,5 +1,4 @@
-// src/views/copy/SaveOverlay.tsx — saving to your Tone Master Pro (look B, frame
-// BC-Saving).
+// src/views/copy/SaveOverlay.tsx — saving to your Tone Master Pro (look B).
 //
 // Driven by the REAL `copy_apply` run (the channel streams one result per preset), NOT a
 // synthetic timer: `results` fills as each preset commits, `activeSlot` is the one being

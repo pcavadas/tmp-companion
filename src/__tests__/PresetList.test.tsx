@@ -3,8 +3,8 @@
 // Locks: the loading skeleton; the filter bar's caption (count, "N of M shown", reading
 // progress); the parent-row meta (Reading… / "2 scenes, 1 footswitch" / "1 of 4 chosen"
 // / nothing); the Checkbox choosing a whole preset; the NAME opening a preset with scenes
-// and choosing any other (Q6); "Select all N shown" acting on the presets the filter shows
-// only (Q7); the no-match state; empty slots; Caret → main sound + scene + footswitch
+// and choosing any other; "Select all N shown" acting on the presets the filter shows
+// only; the no-match state; empty slots; Caret → main sound + scene + footswitch
 // sub-rows → per-sound toggle; no carets until `ready`; the "Loaded" badge; CPU on preset
 // rows only; and BUG 1 (a footswitch with no volume knob is shown, disabled, reasoned).
 
@@ -183,7 +183,7 @@ describe("PresetList (look B scene tree)", () => {
     expect(onTogglePreset).toHaveBeenCalledWith(0);
   });
 
-  describe("the preset's name (Q6)", () => {
+  describe("the preset's name", () => {
     it("opens a preset that has scenes", async () => {
       const onToggleExpand = vi.fn();
       const onTogglePreset = vi.fn();
@@ -221,7 +221,7 @@ describe("PresetList (look B scene tree)", () => {
     });
   });
 
-  describe("Select all N shown (Q7)", () => {
+  describe("Select all N shown", () => {
     it("is named for the presets shown and hands their slots to the toggle", async () => {
       const onToggleAll = vi.fn();
       const { rerender } = renderList({ onToggleAll });

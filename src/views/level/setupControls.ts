@@ -1,15 +1,15 @@
 // src/views/level/setupControls.ts — what a Set up row's Block and Knob dropdowns show,
 // and what picking in them does. Pure: no React, so every case is unit-testable.
 //
-// Both dropdowns always show the control the run will turn (decisions.md: "a dropdown
-// never shows a value other than the one that will be used"):
+// Both dropdowns always show the control the run will turn (danger.md: a dropdown must
+// display the value that will be used):
 //   - a main sound's default is the preset's own level: Block "Preset", Knob "Level"
 //     (handle `null`, `presetLevel`);
 //   - a scene's default is its amp's output level (handle `null`): Block names the amp
 //     the run drives (`SceneDrive` from the backup scan, the run's own planner), "Both
 //     amps" where two lanes are driven together; Knob "Output level";
 //   - a footswitch has no default — its row always carries a real knob;
-//   - a scene the run can't drive by default (no active amp, O1) shows an EMPTY Block in
+//   - a scene the run can't drive by default (no active amp) shows an EMPTY Block in
 //     the attention look and waits for a choice.
 // Picking a block lands on its best usable knob (`bestEnabled`). A chosen knob the list
 // no longer offers shows its stored name and the row says so (`stale`).
@@ -90,7 +90,7 @@ export interface ControlModel {
   knob: SelectModel;
   /** A chosen knob the (read) list no longer offers. */
   stale: boolean;
-  /** No default and nothing chosen: a block must be chosen before Start (O1). */
+  /** No default and nothing chosen: a block must be chosen before Start. */
   needsBlock: boolean;
   /** `needsBlock`, but the scene has no usable knob at all, so there is nothing to
    *  choose: the run will report it, and Start doesn't wait for it. */
@@ -287,7 +287,7 @@ export function controlModel(
   };
 }
 
-/** The target a sound gets "by name" (O3): the target whose name the sound's name starts
+/** The target a sound gets "by name": the target whose name the sound's name starts
  *  with, ignoring case — the longest such name when several do ("Lead Boost 2" gets
  *  "Lead Boost" over "Lead") — else the first target. `""` when there are no targets. */
 export function targetByName(

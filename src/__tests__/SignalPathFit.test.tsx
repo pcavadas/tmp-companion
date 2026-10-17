@@ -1,4 +1,4 @@
-// SignalPathFit — the Level list's signal path always shows whole (Q16): a chain wider
+// SignalPathFit — the Level list's signal path always shows whole: a chain wider
 // than the window scales DOWN to fit, a short one keeps its natural size, and the box
 // below never jumps (the wrapper takes the scaled height). jsdom has no layout, so the
 // widths are stubbed on the prototype and a fake ResizeObserver replays a resize.
@@ -61,7 +61,7 @@ function renderFit() {
   return { figure, inner };
 }
 
-describe("SignalPathFit (Q16)", () => {
+describe("SignalPathFit", () => {
   it("scales a chain wider than the window down to fit, and takes the scaled height", () => {
     size.available = 800;
     size.natural = 1000;

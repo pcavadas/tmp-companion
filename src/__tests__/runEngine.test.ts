@@ -263,7 +263,7 @@ describe("runEngine", () => {
     expect(idx).toEqual([...idx].sort((a, b) => a - b));
   });
 
-  // Owner answer 3 / the Summary's Try again: a scene tried again without its preset's
+  // The Summary's Try again: a scene tried again without its preset's
   // main sound still anchors its batch on that main sound, at the main sound's target,
   // exactly as the first run's batch did; a run's own base row wins over an earlier one.
   it("anchors a Try again scene batch on the main sound an earlier run carried", async () => {
@@ -385,7 +385,7 @@ describe("runEngine", () => {
     ]);
   });
 
-  // OWNER-ANSWERS 8: the screen reads the TYPED flag, never the warning text.
+  // The screen reads the TYPED re-amp flag, never the warning text.
   it("stamps the typed re-amp flag on every row of a batch, from its return or its error", async () => {
     const deps = fakeDeps({
       levelFootswitchesApply: vi.fn<EngineDeps["levelFootswitchesApply"]>(
@@ -591,8 +591,9 @@ describe("runEngine", () => {
     ).toBe(SUMMARY_TEXT.reampStillOn);
   });
 
-  // OWNER-ANSWERS 4: the save's verdict is only known once the command returns — the
-  // streamed rows predate the save — so it is merged from the RETURNED rows by identity.
+  // The Summary must hear when a save didn't hold. The save's verdict is only known once
+  // the command returns — the streamed rows predate the save — so it is merged from the
+  // RETURNED rows by identity.
   it("merges the save's verdict from the returned rows onto the rows they name", async () => {
     const deps = fakeDeps({
       levelPreset: vi.fn<EngineDeps["levelPreset"]>(() =>
@@ -684,7 +685,7 @@ describe("runEngine", () => {
     ]);
   });
 
-  // E2: the screen picks a skipped row's words by kind; the text is for the log only.
+  // The screen picks a skipped row's words by kind; the text is for the log only.
   it("gives every skipped row a typed kind: the streamed one, the error's, or other", async () => {
     const deps = fakeDeps({
       levelScenesApplyBatched: vi.fn<EngineDeps["levelScenesApplyBatched"]>(

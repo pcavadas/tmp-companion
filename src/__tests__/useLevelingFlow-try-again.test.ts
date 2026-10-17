@@ -1,5 +1,5 @@
 // src/__tests__/useLevelingFlow-try-again.test.ts — the Summary's one "Try again (N)"
-// (look B, Q4): it goes straight to the run with the same settings — no Set up, no backup
+// (look B): it goes straight to the run with the same settings — no Set up, no backup
 // tick — and comes back to the same Summary with those sounds' rows updated.
 //
 // BUG→GATE #284, retargeted: "Run again" / "Re-run off target…" reopened Set up with every
@@ -138,7 +138,7 @@ async function settle(result: { current: ReturnType<typeof useLevelingFlow> }) {
   });
 }
 
-describe("Try again (Q4, #284)", () => {
+describe("Try again (#284)", () => {
   it("runs the sounds again straight away with the first run's settings, and updates the same Summary", async () => {
     // First run: the main sound fails, the scene and the footswitch level.
     mockCommands({
@@ -166,7 +166,7 @@ describe("Try again (Q4, #284)", () => {
       fs: callsOf("level_footswitches_apply")[0],
     };
 
-    // Try again: the main sound and (owner answer 3) its preset's leveled sounds.
+    // Try again: the main sound and its preset's leveled sounds.
     const done: LevelResult = makeLevelResult({
       target_lufs: -19,
       predicted_lufs: -19,

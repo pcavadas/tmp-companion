@@ -1,7 +1,7 @@
-// src/__tests__/CopyPlace.test.tsx — Place blocks' cards (look B, frame BC-Place): the
-// source card's line and CPU cost (O12), a target card's "Changed" badge, its greyed gaps
-// and their reason when the chosen block can't fit, its danger edge when the edit breaks
-// a limit, and the block menu (O8: Replace with the chosen block, Remove).
+// src/__tests__/CopyPlace.test.tsx — Place blocks' cards (look B): the source card's line
+// and CPU cost, a target card's "Changed" badge, its greyed gaps and their reason when the
+// chosen block can't fit, its danger edge when the edit breaks a limit, and the block
+// menu (Replace with the chosen block, Remove).
 
 import { describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
@@ -88,7 +88,7 @@ describe("SourceCard", () => {
     expect(screen.queryByText(/CPU/)).toBeNull();
   });
 
-  it("names the chosen block and what it costs (O12)", () => {
+  it("names the chosen block and what it costs", () => {
     renderWithTheme(
       <SourceCard
         from={from}
@@ -171,7 +171,7 @@ describe("TargetEditCard", () => {
     expect(card?.style.border).toContain(toRgb(light.danger));
   });
 
-  it("opens a menu with Replace (the chosen block) and Remove (O8)", async () => {
+  it("opens a menu with Replace (the chosen block) and Remove", async () => {
     const e = editOf(["ACD_DynaComp", "ACD_TMSmallHall"]);
     const user = userEvent.setup();
     const props = renderCard(e, {

@@ -4,8 +4,8 @@
 //   • The view must not load until `connected`, and must load on the rising edge.
 //   • The error→ready transition (Try again) must not crash (hook-count regression).
 //   • The checkbox chooses a preset; its name opens a preset with scenes and chooses any
-//     other (Q6); choosing never recalls a preset on the unit.
-//   • "Select all N shown" chooses only the presets the filter shows (Q7, bug fix).
+//     other; choosing never recalls a preset on the unit.
+//   • "Select all N shown" chooses only the presets the filter shows (a bug fix).
 //   • The Level button is always there: greyed with its reason when nothing is chosen
 //     or the scan still reads, else "Level N sounds" (it counts sounds).
 //   • "Level N sounds" opens the flow directly at Set up; the footer's inline backup
@@ -221,9 +221,9 @@ describe("LevelView — choosing on the list", () => {
     resetLiveDevice();
   });
 
-  // BUG→GATE (owner Q7, 2026-10-16): Select all ignored the filter and chose the whole
+  // BUG→GATE (owner review, 2026-10-16): Select all ignored the filter and chose the whole
   // library, so leveling a bank meant ticking each preset by hand.
-  it("Select all chooses only the presets the filter shows (Q7)", async () => {
+  it("Select all chooses only the presets the filter shows", async () => {
     mockThreePresets();
     renderView(true);
     const user = userEvent.setup();
@@ -923,9 +923,9 @@ describe("LevelView — full leveling wizard e2e", () => {
   });
 
   // BUG→GATE (the 2026-07 "clamp loop unresolvable" report), retargeted to look B: a sound
-  // clamped at full volume says so and what to change, with NO button (Q5) and no Try
-  // again; the way to a quieter target is Done, the list and Set up — and there it
-  // resolves. The old "Re-level clamped…" reopened Set up in a re-level mode that is gone.
+  // clamped at full volume says so and what to change, with NO button (running it again
+  // can't help) and no Try again; the way to a quieter target is Done, the list and Set
+  // up — and there it resolves. The old "Re-level clamped…" reopened Set up in a re-level mode that is gone.
   it("clamped at a loud target: says so with no button, then levels at a quieter one", async () => {
     mockLevelingFixture({ ceiling: -22 });
     renderView(true);
@@ -1138,7 +1138,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     ).toBeInTheDocument();
     expect(screen.getAllByText("On target")).toHaveLength(2);
     expect(screen.queryByText("device dropped the level")).toBeNull();
-    // The main sound, and the two scenes its new level will move (owner answer 3).
+    // The main sound, and the two scenes its new level will move.
     expect(screen.getByRole("button", { name: "Try again (3)" })).toBeEnabled();
     expect(fired("level_scenes_apply_batched")).toBe(true);
   });

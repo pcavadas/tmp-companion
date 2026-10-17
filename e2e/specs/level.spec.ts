@@ -250,12 +250,12 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   });
 });
 
-// Choosing what to level, look B: the first three of `B-LevelFlow`'s four scenarios, walked
+// Choosing what to level, look B: the first three of the four leveling scenarios, walked
 // up to an enabled "Start leveling" with every click counted (Start and Done are the last
 // two). What to level is chosen once, on the list: the checkbox ticks a whole preset, the
-// NAME of a preset with scenes opens it (Q6), and "Select all N shown" acts only on what the
-// filter shows (Q7 — a bug fix: it used to choose the whole library). Set up then needs only
-// the backup tick: scenes named like a target already have it (Q2). List-and-Set-up only, so
+// NAME of a preset with scenes opens it, and "Select all N shown" acts only on what the
+// filter shows (a bug fix: it used to choose the whole library). Set up then needs only
+// the backup tick: scenes named like a target already have it. List-and-Set-up only, so
 // it costs seconds; OFFLINE ONLY like the list-rendering test above (nothing is started).
 test.describe("Level list — choosing, scenario by scenario", () => {
   const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S: scenes Rhythm / Lead / Base Scene
@@ -330,7 +330,7 @@ test.describe("Level list — choosing, scenario by scenario", () => {
     page,
   }) => {
     let clicks = 0;
-    // 1 The name of a preset with scenes OPENS it (Q6); it chooses nothing by itself.
+    // 1 The name of a preset with scenes OPENS it; it chooses nothing by itself.
     await page
       .getByRole("button", { name: FRIEDMAN.name, exact: true })
       .click();

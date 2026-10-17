@@ -34,7 +34,7 @@ describe("Summary page", () => {
     expect(screen.getByText("Summary")).toHaveAttribute("aria-current", "step");
     const leveled = screen.getByRole("region", { name: "Leveled" });
     expect(within(leveled).getAllByText("On target")).toHaveLength(3);
-    // A lone section shows no label: the title says it (BU-AllGood).
+    // A lone section shows no label: the title says it.
     expect(screen.queryByRole("heading", { name: "Leveled" })).toBeNull();
     expect(
       within(leveled).getByText("Boost, footswitch 1"),
@@ -48,7 +48,7 @@ describe("Summary page", () => {
 
   // The two miss states differ in the next action (was SummaryUnconverged.test.tsx): an
   // off-target sound still had knob room, so Try again covers it; a sound already at full
-  // volume says what to change and gets no button (Q5).
+  // volume says what to change and gets no button (running it again can't help).
   it("off target is tried again; full volume says what to change, with no button", async () => {
     const { onTryAgain } = renderSummary([
       fsRow({ outcome: "unconverged" }),
@@ -98,7 +98,7 @@ describe("Summary page", () => {
         name: "Stopped. 1 sound leveled, 2 not reached.",
       }),
     ).toBeInTheDocument();
-    // Two sections: each under its label (BU-Stopped).
+    // Two sections (a stopped run): each under its label.
     expect(
       screen.getByRole("heading", { name: "Not reached" }),
     ).toBeInTheDocument();
@@ -112,7 +112,7 @@ describe("Summary page", () => {
     expect(screen.getByRole("button", { name: "Try again (2)" })).toBeEnabled();
   });
 
-  // Owner answer 4.
+  // The save after a run is checked: a sound whose save didn't hold needs you.
   it("a save that didn't hold needs you, and is tried again", () => {
     renderSummary([base({ persistMismatch: true })]);
     expect(

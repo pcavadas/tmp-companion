@@ -3,7 +3,7 @@
 Feature-level doc; thresholds + calibration evidence live in
 `notes/doctor-calibration.md`. The Doctor diagnoses selected sounds' tonal
 problems from re-amp captures and describes each fix as a step the player makes
-on the unit. It never writes to the unit (the owner's decision, Q10/Q11): no
+on the unit. It never writes to the unit (the owner's decision): no
 apply, no save, no before/after.
 
 ## Flow
@@ -296,8 +296,8 @@ the WRONG way is dropped, and a blind write on an UNKNOWN value says so in its
 `Rx::detail`. The app shows each fix's `Rx::title` only, as a bullet under "What
 to change", in the backend's order; the `ops` stay on the wire (the shared-block
 line reads which blocks they touch) but the app never applies them — the apply,
-save, discard and A/B before/after paths were removed with the owner's decision
-(Q10/Q11). The muddy and harsh EQ cuts grow with the finding's margin past its
+save, discard and A/B before/after paths were removed with the owner's decision.
+The muddy and harsh EQ cuts grow with the finding's margin past its
 gate (`sized_cut_db`: the shipped 3 dB / 2 dB plus the margin, capped at 6 dB),
 never below the shipped size. `severity.ts` gives each finding the tone it shows
 and the one worst-first order (`findingTone`, `sortedDiags`).

@@ -268,7 +268,7 @@ fn the_scene_batch_levels_each_scene_and_saves_once_on_a_private_rig() {
 /// player left it, not the probe.
 ///
 /// A stopped run that saved returns the scenes it leveled, with the save's verdict on them
-/// (OWNER-ANSWERS 4: the Summary must hear when the save after a Stop did not hold) — never a
+/// (the Summary must hear when the save after a Stop did not hold) — never a
 /// bare cancel, whose outcomes the command used to drop.
 #[test]
 fn a_stopped_scene_is_rolled_back_before_the_batch_save() {

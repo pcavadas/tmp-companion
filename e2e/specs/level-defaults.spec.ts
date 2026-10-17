@@ -150,10 +150,11 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expectReampBalanced(page, reampBase);
   });
 
+  // COVERAGE row 2 — the base solve that still CLAMPS (403 at Lead).
   // (b) The clamp loop (BUG→GATE, the 2026-07 "clamp loop unresolvable" report; journey
   // "clamped at a loud target → resolves at a quieter one"). 403's Base at Lead (-19)
   // clamps at its -20 ceiling: the Summary says so and what to change, with no button and
-  // no Try again (Q5: running it again can't help). The way to a quieter target is Done,
+  // no Try again (running it again can't help). The way to a quieter target is Done,
   // the list and Set up — and at Crunch (-21) it levels. Look B removed the Summary's
   // "Re-level clamped…" that used to reopen Set up.
   test("clamp loop: clamped at Lead says so with no button, then levels at Crunch", async ({
@@ -305,7 +306,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expectReampBalanced(page, reampBase);
   });
 
-  // Scenario 4 of `B-LevelFlow` ("Re-run what failed or ran out of tries"): after a Stop,
+  // The fourth leveling scenario (re-run what failed or ran out of tries): after a Stop,
   // the Summary's one "Try again (N)" runs the sounds the Stop didn't reach straight away
   // — no Set up, no second backup tick — and the same Summary comes back with them
   // leveled. Two clicks: Try again · Done.

@@ -5,10 +5,10 @@
 // The DANGER rule this guards (danger.md's Pick trap): a dropdown NEVER shows a value
 // other than the one the run will use. So the default shows what it drives (Block
 // "Preset" / Knob "Level" for a main sound; the amp a scene drives, "Both amps" where two
-// lanes are driven together), a scene the run can't drive by default shows an EMPTY Block
-// (O1), and a stored knob the read list no longer offers shows its OWN name — never the
-// first option — with `stale` set so the row can say so. "Not read yet" is not "gone"
-// (item 8a): an unread list never flags a stored knob stale.
+// lanes are driven together), a scene the run can't drive by default shows an EMPTY Block,
+// and a stored knob the read list no longer offers shows its OWN name — never the
+// first option — with `stale` set so the row can say so. "Not read yet" is not "gone":
+// an unread list never flags a stored knob stale.
 
 import { describe, expect, it } from "vitest";
 
@@ -206,7 +206,7 @@ describe("knob notes", () => {
   });
 });
 
-describe("scene: the amp the run drives is the default (E3/E4)", () => {
+describe("scene: the amp the run drives is the default", () => {
   it('one amp: Block names it, Knob "Output level"; its other knobs sit under it', () => {
     const def = sceneDefault(drive({ amps: [twinAmp] }));
     expect(def).toEqual({
@@ -281,7 +281,7 @@ describe("scene: the amp the run drives is the default (E3/E4)", () => {
     });
   });
 
-  it("O1: a scene with no amp shows an empty Block and waits for a choice", () => {
+  it("a scene with no amp shows an empty Block and waits for a choice", () => {
     const def = sceneDefault(drive({ skip: "no_active_amp" }));
     expect(def).toEqual({ kind: "none", reason: "no_active_amp" });
     const m = controlModel(read(boostGain), null, def);
@@ -296,7 +296,7 @@ describe("scene: the amp the run drives is the default (E3/E4)", () => {
     expect(m.pickBlock("G1:boost1")).toMatchObject({ parameterId: "gain" });
   });
 
-  it("O1 with nothing usable at all: nothing to choose, so nothing to wait for", () => {
+  it("a scene with no amp and nothing usable at all: nothing to choose, so nothing to wait for", () => {
     const m = controlModel(
       read(sharedBoost),
       null,
@@ -321,7 +321,7 @@ describe("footswitch: no default, always a real knob", () => {
   });
 });
 
-describe("targetByName (O3)", () => {
+describe("targetByName", () => {
   const names = ["Rhythm", "Crunch", "Lead", "Lead Boost"];
 
   it("gives a sound the target its name starts with, ignoring case", () => {

@@ -1910,7 +1910,7 @@ fn every_online_spec_is_in_the_default_online_set() {
     // with…" note) and in its own spec file's header. Adding an entry here is how a
     // future spec opts OUT of the default online sweep — do so deliberately. Empty:
     // `doctor-apply.online` once rejoined the default set, then left the suite for good
-    // with the Doctor write path (Doctor never writes, owner decision Q10/Q11).
+    // with the Doctor write path (Doctor never writes to the unit, the owner's decision).
     const ON_DEMAND_ONLINE_SPECS: &[&str] = &[];
 
     let sh = std::fs::read_to_string("../scripts/e2e.sh").expect("read scripts/e2e.sh");

@@ -56,7 +56,7 @@ export const color = {
    *  the target tick, the app icon. */
   accent: "#d97757",
   /** Terracotta tint behind an accent Badge ("Changed") and the halo around a
-   *  working Dot. The frames use it; it isn't a selection colour. */
+   *  working Dot, and nothing else; it isn't a selection colour. */
   accentFill: "rgba(217,119,87,0.14)",
   /** Fill of everything you click that's "on": primary button, ticked checkbox,
    *  switch on, focus ring (white on it is 4.6:1). */

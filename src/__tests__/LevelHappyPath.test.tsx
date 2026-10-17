@@ -183,7 +183,7 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
   // #187: the store maps the backend's `verify_failed` to a "not confirmed" row. A Base
   // whose check capture failed carries only a prediction, so it must not count as leveled:
   // it needs you, and Try again confirms it (with its preset's leveled scenes, which a
-  // main sound's new level moves — owner answer 3).
+  // main sound's new level moves).
   it("a Base whose verify failed is reported not confirmed, never matched", async () => {
     mockHappyPath({ verification: "verify_failed", verify_lufs: null });
     const user = userEvent.setup();

@@ -266,7 +266,7 @@ describe("DoctorView — select → instrument → check → results", () => {
     expect(fired("copy_apply")).toBe(false);
   });
 
-  it("remembers the chosen instrument for the preset in the app's own store (owner answer 6)", async () => {
+  it("remembers the chosen instrument for the preset in the app's own store", async () => {
     renderView(true);
     const user = userEvent.setup();
     await chooseAndCheck(user, 1);

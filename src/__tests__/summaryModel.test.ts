@@ -5,9 +5,9 @@
 // by TYPED fields (outcome, clampKind, skipKind, persistMismatch, silenceHint,
 // verifyByEar), never by the backend's text. "Try again (N)" counts the sounds another run
 // can fix: a sound that fails the same way every time (a full-volume or effect-floor clamp,
-// a routing problem, a skip kind that says so) gets its message and stays out (Q5, E2).
-// Owner answer 3: a main sound tried again takes its preset's leveled sounds with it.
-// Owner answer 4: a sound whose save didn't hold needs you and is tried again.
+// a routing problem, a skip kind that says so) gets its message and stays out.
+// A main sound tried again takes its preset's leveled sounds with it.
+// A sound whose save didn't hold needs you and is tried again.
 
 import { describe, expect, it } from "vitest";
 
@@ -273,7 +273,7 @@ describe("one sentence per outcome, by typed fields", () => {
   });
 });
 
-// Owner answer 4: the save after a run (a Stop's too) is checked; a sound whose save didn't
+// The save after a run (a Stop's too) is checked; a sound whose save didn't
 // hold needs you, whatever it measured, and Try again covers it.
 describe("a save that didn't hold", () => {
   it("needs you and is tried again", () => {
@@ -356,7 +356,7 @@ describe("badges and shared messages", () => {
     });
   });
 
-  it("loud peaks wins the one badge; both sentences stay (O4)", () => {
+  it("loud peaks wins the one badge; both sentences stay", () => {
     const r = only(
       buildSummary(
         [base({ truePeakDbtp: -0.4, verifyByEar: "rebalance" })],
@@ -370,7 +370,7 @@ describe("badges and shared messages", () => {
     ]);
   });
 
-  // Owner answer 8: the typed flag, never the text, and it wins the one Notice.
+  // The typed re-amp flag, never the text, and it wins the one Notice.
   it("re-amp may still be on: one caution Notice telling them to restart the unit", () => {
     const m = buildSummary(
       [
@@ -473,7 +473,7 @@ describe("one row for a preset whose sounds all need you for one reason", () => 
   });
 });
 
-describe("Try again (owner answer 3)", () => {
+describe("Try again takes a main sound's leveled sounds with it", () => {
   it("a main sound tried again takes its preset's leveled sounds, counted in N, in run order", () => {
     const m = buildSummary(
       [

@@ -129,11 +129,11 @@ the list stays mounted, hidden, underneath it, so a text query that is not scope
   reading finishes").
 - **L3 — Selection model.** Whole-preset checkbox ("Choose <name>") selects ALL children (main
   sound + scenes + footswitches); mixed when 0<sel<total ("2 of 6 chosen"). "Select all N shown"
-  acts on the presets the filter shows only, and its mixed state is computed over them (Q7).
+  acts on the presets the filter shows only, and its mixed state is computed over them.
   The footer's Level button is always there: greyed with its reason, else "Level N sounds".
 - **L4 — Scene tree.** The caret ("Open <name>") and the NAME of a preset with scenes open its
   sub-rows (main sound / scenes / footswitches, each "Choose <sound> in <preset>"); the name of a
-  preset without scenes chooses it (Q6). Collapsed caption "3 scenes, 1 footswitch"; toggle
+  preset without scenes chooses it. Collapsed caption "3 scenes, 1 footswitch"; toggle
   individual sounds; empty slot = inert "Empty".
 - **L5 — Filter** ⌨️ — type a name; selection persists across filter changes; input disabled while
   loading; "X of N shown"; matching nothing shows `No presets match "…"` with Clear filter.

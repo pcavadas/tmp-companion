@@ -6,7 +6,8 @@
 // edges flush, flipped above near the window bottom, re-placed when its content lands
 // late). Sizes `sm` 22 (inside rows) and `md` 28 (page level); edge `controlBorder`.
 //
-// It ALWAYS shows the value that will be used (decisions.md; danger.md's Pick trap):
+// It ALWAYS shows the value that will be used (danger.md: a dropdown must display the
+// value that will be used):
 //   - an offered value shows its option's label;
 //   - a value the options no longer contain shows the stored value itself
 //     (`staleLabel`, else the raw value) — NEVER `options[0]`; the caller's row note says

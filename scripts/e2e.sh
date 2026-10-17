@@ -556,7 +556,7 @@ fi
 # level-rerun.spec.ts's online half (retired; level-rerun.spec.ts is now DELETED entirely
 # — its offline half merged into level.spec.ts, offline suite consolidation).
 # doctor-apply.online left this set for good with the Doctor write path itself: Doctor
-# never writes to the unit (owner decision Q10/Q11), so there is no save or discard to read
+# never writes to the unit (the owner's decision), so there is no save or discard to read
 # back.
 #
 # ORDER: doctor.online BEFORE level.online (the ordering guard below still enforces this

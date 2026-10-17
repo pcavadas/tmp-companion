@@ -3,7 +3,7 @@
 // the same selection measured the switch in base or in its enabling scene depending on a
 // click. The suggested scene now comes from the startup backup scan for every footswitch
 // row up front, and Start waits for it. Look B: the "Level it in scene" dropdown shows it;
-// an unread one stays empty, the row says so, and the footer's link points at it (Q3).
+// an unread one stays empty, the row says so, and the footer's link points at it.
 //
 // (#284, the re-run that reset every sound to the first target and instrument, lived here
 // too while the Summary reopened Set up; Try again no longer does, so its gate moved to

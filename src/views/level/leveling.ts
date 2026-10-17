@@ -202,12 +202,12 @@ const fsTagOf = (switchIndex: number): string => `FS${String(switchIndex + 1)}`;
 export const NO_INSTRUMENT = "none";
 
 /** The one name of a preset's main sound (its base, `presetLevel`), with or without
- *  scenes — the voice guide's word, on the list, Set up, the run and Doctor alike. */
+ *  scenes — the one word for it on the list, Set up, the run and Doctor alike. */
 export const MAIN_SOUND = "Main sound";
 
 /** The instrument choices shared by Level's Set up and Doctor's Instrument page: "None"
  *  (the no-instrument path — level or diagnose against the default reference) followed by
- *  each saved instrument. No loudness figures: the Voice guide keeps them in Settings. */
+ *  each saved instrument. No loudness figures: those stay in Settings. */
 export function instrumentOptions(
   profiles: Profile[] | undefined,
 ): SelectOption[] {
@@ -537,7 +537,7 @@ export function chosenFrom(
       const footswitches = footswitchInfo.get(r.slot) ?? [];
       // A footswitch row reads like a scene (the user picks "a sound"), so a preset with
       // ONLY footswitches has children too. The main sound has ONE name everywhere,
-      // whether or not the preset has scenes (the voice guide's "main sound").
+      // whether or not the preset has scenes ("Main sound").
       const hasChildren = scenes.length > 0 || footswitches.length > 0;
       if (sel.has(baseKey(r.slot))) {
         items.push({

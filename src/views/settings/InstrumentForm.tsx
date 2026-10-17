@@ -5,8 +5,8 @@
 // and a pickup. Enter in the name saves and Escape cancels: the text-field carve-out,
 // acting only on this form's own edit while its field has focus.
 //
-// The Pickup dropdown always shows the pickup that will be saved (decisions.md; the
-// danger.md Pick trap). A new instrument starts on its type's first pickup, and a type
+// The Pickup dropdown always shows the pickup that will be saved (danger.md: a dropdown
+// must display the value that will be used). A new instrument starts on its type's first pickup, and a type
 // change moves to the new type's first pickup — both shown as chosen. A saved pickup
 // the backend no longer offers is NOT replaced by another one behind the user's back:
 // the dropdown is empty in the attention look, a note says why, and Save waits for a

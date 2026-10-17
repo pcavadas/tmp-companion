@@ -1,5 +1,5 @@
-// src/views/copy/PlaceBlocks.tsx — Step 2: place blocks into each target, then save (look
-// B, frame BC-Place).
+// src/views/copy/PlaceBlocks.tsx — Step 2 (look B): place blocks into each target, then
+// save.
 //
 // One scrolling main area: the "Copy from" card (choose the block to copy on its strip),
 // the section label "Copy into N presets" (with "N can't be saved yet" and a "Show only

@@ -1,6 +1,6 @@
 // src/__tests__/CopyChoose.test.tsx — Copy's Choose page and the Place page's save gate
-// (look B, frames BC-Choose / BC-Place):
-//   - "Select all N shown" acts on the rows the search shows (O9, like Level's Q7), and
+// (look B):
+//   - "Select all N shown" acts on the rows the search shows (as on Level's list), and
 //     clears them when all are ticked;
 //   - the search's no-match state and its "Clear search", "No other presets to copy into";
 //   - the footer says what will happen or why "Choose blocks" waits;
@@ -92,7 +92,7 @@ describe("Choose presets", () => {
     expect(props.setTo).toHaveBeenCalledWith(new Set([1]));
   });
 
-  it("Select all N shown ticks only the rows the search shows (O9)", async () => {
+  it("Select all N shown ticks only the rows the search shows", async () => {
     const user = userEvent.setup();
     const props = renderChoose({ toSet: new Set([0]) });
     await user.type(

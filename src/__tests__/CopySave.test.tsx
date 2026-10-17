@@ -1,6 +1,6 @@
-// src/__tests__/CopySave.test.tsx — saving to your Tone Master Pro (look B, frame
-// BC-Saving): the rows' words while it saves, the line naming the unchanged presets, no
-// button and no way out until it settles, and the three outcomes' words.
+// src/__tests__/CopySave.test.tsx — saving to your Tone Master Pro (look B): the rows'
+// words while it saves, the line naming the unchanged presets, no button and no way out
+// until it settles, and the three outcomes' words.
 
 import { describe, expect, it, vi } from "vitest";
 import { screen, within } from "@testing-library/react";

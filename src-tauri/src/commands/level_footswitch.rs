@@ -901,10 +901,10 @@ mod tests {
         }
     }
 
-    /// OWNER-ANSWERS 4: a footswitch batch whose write session or save failed reports it on
-    /// the rows it covered — each written switch AND a `BakeShared` sibling riding a written
-    /// representative — instead of failing the whole command while the streamed rows already
-    /// read as leveled. A row the batch never wrote (a refused one, or one not solved) keeps
+    /// The Summary must hear when a save didn't hold: a footswitch batch whose write session
+    /// or save failed reports it on the rows it covered — each written switch AND a
+    /// `BakeShared` sibling riding a written representative — instead of failing the whole
+    /// command while the streamed rows already read as leveled. A row the batch never wrote (a refused one, or one not solved) keeps
     /// no verdict.
     #[test]
     fn a_failed_footswitch_save_marks_the_written_rows_and_their_shared_siblings() {

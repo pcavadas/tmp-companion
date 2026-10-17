@@ -3,7 +3,7 @@
 // name", a target or "Mixed"; one instrument per preset (saved for the preset), with
 // "Instrument for all" only for 2+ presets and the "Record yours in Settings" link
 // (which replaced the calibration banner and the instrument nudge); "Balance its two amps
-// first" only where the backend can balance; a scene with no amp waits for a block (O1);
+// first" only where the backend can balance; a scene with no amp waits for a block;
 // the backup tick is the only gate before "Start leveling".
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -172,7 +172,7 @@ describe("Block and Knob show what the run will use", () => {
   });
 });
 
-describe("Target goes by name (Q2, O3)", () => {
+describe("Target goes by name", () => {
   it("gives a sound named like a target that target, others the first target", () => {
     renderSetupPage([main(0, "Plexi"), scene(0, 0, "Plexi", "lead 2")], {
       targetNames: ["Rhythm", "Crunch", "Lead"],
@@ -471,7 +471,7 @@ describe('"Record yours in Settings"', () => {
   });
 });
 
-describe('"Balance its two amps first" (Q8)', () => {
+describe('"Balance its two amps first"', () => {
   it("shows only for a preset the backend can balance, and goes to the run per preset", async () => {
     await seedScan([{ rebalanceable: true }, { rebalanceable: false }]);
     const { onStart } = renderSetupPage([
@@ -505,7 +505,7 @@ describe('"Balance its two amps first" (Q8)', () => {
   });
 });
 
-describe("a scene with no amp waits for a block (O1)", () => {
+describe("a scene with no amp waits for a block", () => {
   async function seedNoAmp() {
     await seedScan([
       {

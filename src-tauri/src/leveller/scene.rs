@@ -2241,7 +2241,7 @@ mod batch_save_report_tests {
         }
     }
 
-    /// OWNER-ANSWERS 4 — "the save didn't hold" must reach the Summary on EVERY save,
+    /// "The save didn't hold" must reach the Summary on EVERY save,
     /// the one after a Stop included. A batch save that failed (its retry too) marks every
     /// scene the batch wrote as not held; a scene that wrote nothing keeps no verdict, and
     /// nothing is verified against a save that never landed. Before, the stopped path only

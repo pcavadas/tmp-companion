@@ -3,8 +3,8 @@
 // that `chosenFrom` had named differently. The fix: `chosenFrom` is the one place that
 // names a row, and Set up renders `o.sceneName` verbatim, never re-deriving it.
 //
-// Look B gives the main sound ONE name everywhere, "Main sound" (the voice guide: never
-// "Base Preset" or "Whole preset"), with or without scenes — so the gate now pins that
+// Look B gives the main sound ONE name everywhere, "Main sound" (never "Base Preset" or
+// "Whole preset"), with or without scenes — so the gate now pins that
 // one name at its source and the verbatim render.
 
 import { describe, it, expect } from "vitest";

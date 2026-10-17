@@ -1,5 +1,5 @@
-// src/views/copy/SourceCard.tsx — the "Copy from" card at the top of Place blocks (look B,
-// frame BC-Place).
+// src/views/copy/SourceCard.tsx — the "Copy from" card at the top of Place blocks
+// (look B).
 //
 // A white panel: "Copy from <name>" with its slot (and "Loaded" when it is the preset on
 // your Tone Master Pro), the source strip, then one line. A click on a tile chooses that

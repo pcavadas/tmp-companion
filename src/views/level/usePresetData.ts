@@ -141,7 +141,7 @@ export function usePresetData(
     [store],
   );
 
-  // Remember the instrument chosen for a preset (owner answer 6): saved in the app's own
+  // Remember the instrument chosen for a preset: saved in the app's own
   // store on this computer, never on the unit, and mirrored into this view's copy of the
   // store so the next Set up starts from it. A failed save keeps the old copy (the command
   // logs it); the choice still applies to this run.

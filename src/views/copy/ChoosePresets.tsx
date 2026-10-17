@@ -1,5 +1,5 @@
 // src/views/copy/ChoosePresets.tsx — Step 1: pick the preset to copy from and the presets
-// to copy into (look B, frame BC-Choose).
+// to copy into (look B).
 //
 // The title, then two equal columns that each scroll on their own: "Copy from" (one
 // choice, a Radio per row) and "Copy into" (a Checkbox per row; the source preset is not

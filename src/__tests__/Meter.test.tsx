@@ -3,7 +3,7 @@
 //
 // Two guarantees beyond the look:
 //   1. The bar is BUDGET-relative: fill = value / CPU_BUDGET (a preset at 29.0% of the
-//      audio core draws at 38%, as the frames draw it), clamped to the bar.
+//      audio core draws at 38%), clamped to the bar.
 //   2. "Over" uses the SAME rule as Copy's validation and the device (`overCpuBudget`:
 //      the total rounded half away from zero must not exceed the budget). A bare
 //      `value > 76.5` would call exactly 76.5 fine while the save gate refuses it.

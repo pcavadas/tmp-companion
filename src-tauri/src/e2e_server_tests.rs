@@ -4813,7 +4813,7 @@ fn parallel_403_candidates() -> serde_json::Value {
     ])
 }
 
-/// BUG→GATE (OWNER-ANSWERS 4, 2026-10-16): a STOP WITHOUT A TRADE RETURNS WHAT IT LEVELED,
+/// BUG→GATE (2026-10-16): a STOP WITHOUT A TRADE RETURNS WHAT IT LEVELED,
 /// WITH THE SAVE'S VERDICT. The stopped path has always fired the batch's one save, but it
 /// came back as a bare cancel (an empty vec) and only LOGGED a failed save, so "the save
 /// didn't hold" could never reach the Summary after a Stop. Now the save is re-read on that
@@ -4882,7 +4882,7 @@ fn a_stop_without_a_trade_returns_the_saved_scenes_with_the_saves_verdict() {
     );
 }
 
-/// E2: a failed row streams its typed `skipKind` beside the free-text `message`, so the
+/// A failed row streams its typed `skipKind` beside the free-text `message`, so the
 /// Summary picks its words by kind. 403's scene 1 names a knob the classifier refuses (an
 /// amp's drive), which is `unsupported_knob`; the leveled rows carry no kind.
 #[test]
@@ -4929,7 +4929,7 @@ fn a_refused_scene_row_streams_its_skip_kind() {
     assert!(done["skipKind"].is_null(), "{done}");
 }
 
-/// E2: a leveling command that fails as a whole rejects with the typed
+/// A leveling command that fails as a whole rejects with the typed
 /// `{ kind, message, reampStillOn }` — the kind a refusal was raised with, never one picked
 /// from its text. A batch where no row names a knob and the preset offers no amp output
 /// level refuses before the unit is touched.
