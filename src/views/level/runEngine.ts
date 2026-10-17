@@ -515,7 +515,8 @@ export async function runEngine(
               truePeakDbtp: res.true_peak_dbtp,
               baseBoost: res.base_boost,
               persistMismatch: res.persist_mismatch === true,
-              baseReading: baseReadingOf(res),
+              // A block-knob base run's `final_level` is the knob, not `presetLevel`.
+              baseReading: it.baseHandle ? null : baseReadingOf(res),
               reampWarning: res.reamp_warning ?? null,
               reampStillOn: res.reamp_still_on,
             };
