@@ -93,8 +93,11 @@ pub(super) const SET_LEVEL_ECHO_MS: u64 = 250;
 pub(super) const CHANGE_PARAMETER_MS: u64 = 250;
 /// Save, clear, rename and move of a user preset.
 pub(super) const PRESET_WRITE_ECHO_MS: u64 = 300;
-/// Re-amp setter echo window.
-pub(super) const REAMP_ECHO_MS: u64 = 400;
+/// Re-amp setter echo window. 100 (was 400): nothing waits on the echo, and the
+/// leveling bench lost no engage and no OFF at 100 (HW 2026-10-17, fw 1.8.58: −8.2 s on
+/// preset 410, every capture unchanged; the OFF is still read back by
+/// `reamp_off_guaranteed`).
+pub(super) const REAMP_ECHO_MS: u64 = 100;
 /// The held-edit re-arm: its `connectionRequest`, then its `currentPresetInfoRequest`.
 pub(super) const REARM_CONNECT_MS: u64 = 80;
 pub(super) const REARM_INFO_REQUEST_MS: u64 = 120;

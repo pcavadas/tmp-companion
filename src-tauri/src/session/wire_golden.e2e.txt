@@ -206,12 +206,12 @@ pump 200
 send 0 220422020801
 pump 200 
 # begin_live_edit -> ok
-transact 400 1a05f201020801
+transact 100 1a05f201020801
 # set_reamp_mode on -> ok
 transact 350 2a0422020801
 transact 350 1a05ba03020801
 # read_reamp_state -> ok
-transact 400 1a03f20100
+transact 100 1a03f20100
 # set_reamp_mode off -> ok
 transact 250 1208e204050d0000003f
 # set_preset_level -> ok
