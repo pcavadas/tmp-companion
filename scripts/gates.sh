@@ -544,12 +544,28 @@ fi
 # EXIT/INT/TERM shape `scripts/e2e.sh` uses).
 fe_pid=""
 fe_log=""
+# <pid> — every descendant of pid, parents before children. bun runs eslint, tsc and vitest as
+# grandchildren of the subshell, so `pkill -P` alone would leave them running.
+# shellcheck disable=SC2329,SC2317  # invoked from the traps, not statically traced
+descendants() {
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do
+    printf '%s\n' "$c"
+    descendants "$c"
+  done
+}
+# The tree is listed BEFORE anything is signalled: a killed parent's children are reparented
+# away from it, where a later `pgrep -P` can no longer find them. A terminal Ctrl-C needs
+# none of this: it already reaches every process in the foreground group, the frontend
+# tree included; the walk is for an early Rust failure and a TERM sent to this script alone.
 # shellcheck disable=SC2329,SC2317  # invoked from the traps, not statically traced
 stop_frontend() {
   trap - EXIT INT TERM
+  local p tree
   if [ -n "$fe_pid" ]; then
-    pkill -P "$fe_pid" 2>/dev/null || true
+    tree="$(descendants "$fe_pid")"
     kill "$fe_pid" 2>/dev/null || true
+    for p in $tree; do kill "$p" 2>/dev/null || true; done
   fi
   if [ -n "$fe_log" ]; then rm -f "$fe_log"; fi
   if [ -n "${1:-}" ]; then exit "$1"; fi
