@@ -75,7 +75,7 @@ Then follow the build steps above. **Order matters** — `bun run build` must pr
 
 ### Developing on Windows
 
-Windows is a supported _development_ platform on the same terms as Linux: the crate builds and passes every gate, talks to a real Tone Master Pro over the Win32 HID stack, and re-amps over WASAPI. It does not ship (no signed installer, no updater feed) — `release.yml` builds no Windows bundle.
+Windows is a supported _development_ platform on the same terms as Linux: the crate builds and passes every gate, talks to a real Tone Master Pro over the Win32 HID stack, and re-amps over WASAPI. It ships the same way the Linux alpha does: `release.yml`'s `build-nsis` job builds an **unsigned** `setup.exe` in the same release run, and `publish-windows` uploads it after the signed macOS release lands — the release never waits on the Windows build. There is no code-signing certificate — SmartScreen warns on first launch — and no updater feed.
 
 Prerequisites, all via `winget`:
 

@@ -230,6 +230,86 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Alpha Windows artifact, built in the same run as the macOS release but never
+  # blocking it (continue-on-error) — the same contract as build-deb/build-rpm.
+  # The setup.exe is UNSIGNED (no Windows code-signing certificate — SmartScreen
+  # warns on first launch) and has no updater feed (tauri.windows.conf.json turns
+  # updater artifacts off), so it publishes as a plain release asset only.
+  build-nsis:
+    needs: resolve-version
+    if: needs.resolve-version.outputs.version != ''
+    continue-on-error: true
+    runs-on: windows-latest
+    # Fresh-cache MSVC builds of the full tauri tree run 15-25 min on the hosted
+    # runner; rust-cache (key: windows-nsis) brings repeats down to a few. 40 min
+    # leaves headroom over the Linux jobs' 30 without inheriting the 360-min default.
+    timeout-minutes: 40
+    env:
+      # Routed through env rather than inline `${{ }}` in run: — same rationale
+      # as build-deb (the value is already regex-constrained by resolve-version's
+      # own extraction; a plain env var beats interpolating a workflow expression
+      # into a shell command).
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          key: windows-nsis
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # shell: bash on every step that expands $VERSION or globs paths: the
+      # windows-latest default shell is pwsh, where "$VERSION" is NOT the env var.
+      # Git Bash ships with the runner image — same fail-fast choice ci.yml makes
+      # for its Windows cargo steps.
+      - name: Bump version
+        shell: bash
+        run: node scripts/bump-version.mjs "$VERSION"
+
+      - name: Build frontend (also produces dist/ for tauri-build)
+        run: bun run build
+
+      - name: Build the NSIS installer
+        # tauri.windows.conf.json auto-merges on a Windows host (Tauri picks it up
+        # by platform): it selects the NSIS bundler and disables updater artifacts,
+        # so no TAURI_SIGNING_PRIVATE_KEY is needed here. The --bundles flag is
+        # explicit for parity with the deb/rpm legs. bash because package.json's
+        # `tauri` script wraps a bash script.
+        shell: bash
+        run: bun run tauri build --bundles nsis
+
+      - name: Stage the bundle for the publish job
+        # Exactly-one guard: a second, stale setup.exe in the bundle dir (restored
+        # target cache, reused runner) would make a bare-glob cp copy two files
+        # onto one FILE target and fail — hidden by continue-on-error. Fixed
+        # target name so the publish job's asset name never depends on the
+        # version string embedded in the NSIS output filename.
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          exes=(src-tauri/target/release/bundle/nsis/*-setup.exe)
+          [ "${#exes[@]}" -eq 1 ] || { echo "expected 1 setup.exe, found ${#exes[@]}" >&2; exit 1; }
+          mkdir -p release-windows
+          cp "${exes[0]}" release-windows/TMP-Companion-windows-alpha-x64-setup.exe
+          printf '%s' "$VERSION" > release-windows/version.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-nsis
+          path: release-windows
+          retention-days: 1
+          if-no-files-found: error
+
   release:
     needs: [resolve-version, build-deb, build-rpm]
     # Runs whether the Linux jobs succeeded, failed (continue-on-error), or were
@@ -292,6 +372,7 @@ jobs:
           path: release-linux
           merge-multiple: true
 
+
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -309,6 +390,52 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bunx semantic-release
+
+  # Publish the Windows .exe AFTER the release lands, publish-linux-repos-style:
+  # build-nsis is continue-on-error and slow (cold-cache MSVC 15-25 min, a hang
+  # runs to its 40-min timeout), so keeping it out of the release job's needs
+  # means the signed macOS release never waits on it. The upload spends only the
+  # workflow's own GITHUB_TOKEN — no environment gate needed.
+  publish-windows:
+    needs: [resolve-version, build-nsis, release]
+    # Artifact presence, not build-nsis's continue-on-error result, determines
+    # publication — same shape as publish-linux-repos.
+    if: ${{ !cancelled() && needs.release.result == 'success' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - name: Download the Windows build artifact
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-nsis
+          path: release-windows
+
+      # release-build.sh's Linux version guard, Windows edition: resolve-version's
+      # dry run SHOULD agree with the real semantic-release run (same commits, same
+      # SHA), but if it doesn't, a mismatched .exe would be labelled with the wrong
+      # version — worse than publishing none. Drop, don't fail: the release is
+      # already out, and this is exactly the "Windows never blocks macOS" case.
+      - name: Publish the .exe (version-guarded)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          EXE=release-windows/TMP-Companion-windows-alpha-x64-setup.exe
+          if [ ! -f "$EXE" ]; then
+            echo "publish-windows: no Windows artifact (build-nsis failed or was skipped) — nothing to publish"
+            exit 0
+          fi
+          ARTIFACT_VERSION="$(cat release-windows/version.txt)"
+          if [ "$ARTIFACT_VERSION" != "$VERSION" ]; then
+            echo "publish-windows: WARNING artifact version ($ARTIFACT_VERSION) disagrees with this release ($VERSION) — dropping the .exe" >&2
+            exit 0
+          fi
+          gh release upload "v$VERSION" "$EXE"
 
   publish-linux-repos:
     needs: [resolve-version, build-deb, build-rpm, release]
