@@ -219,3 +219,38 @@ describe("DoctorRun — stop and finish", () => {
     );
   });
 });
+
+describe("DoctorRun — wide window", () => {
+  const original = window.innerWidth;
+  afterEach(() => {
+    act(() => {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: original,
+      });
+      window.dispatchEvent(new Event("resize"));
+    });
+  });
+
+  // The narrow column holds the title and steps as well as the list, so the whole
+  // page stays centred together. Narrowing only the list left it hugging the
+  // title's left edge on a wide window.
+  it("narrows the whole centred column, not the list alone", () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1440,
+    });
+    renderWithTheme(doctorRun());
+    const heading = screen.getByRole("heading", { name: /Checking 2 sounds/ });
+    const column = heading.closest<HTMLElement>('[style*="margin: 0px auto"]');
+    expect(column?.style.maxWidth).toBe("768px");
+    const row = document.querySelector<HTMLElement>('[data-check-row="k0"]');
+    expect(row && column?.contains(row)).toBe(true);
+    // Nothing between the list and that column narrows the list on its own.
+    let el = row?.parentElement ?? null;
+    while (el && el !== column) {
+      expect(el.style.maxWidth).toBe("");
+      el = el.parentElement;
+    }
+  });
+});

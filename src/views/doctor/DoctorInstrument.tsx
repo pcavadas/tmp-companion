@@ -111,9 +111,8 @@ export function DoctorInstrument({
       display: "flex",
       flexDirection: "column" as const,
       gap: t.sp12 + t.sp2,
-      maxWidth: wide ? 640 : undefined,
     }),
-    [t, wide],
+    [t],
   );
 
   return (
@@ -121,6 +120,7 @@ export function DoctorInstrument({
       title="Which instrument plays these?"
       step={0}
       steps={DOCTOR_STEPS}
+      maxWidth={wide ? 640 : undefined}
       footer={
         <Footer
           left={

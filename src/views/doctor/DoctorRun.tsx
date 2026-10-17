@@ -135,6 +135,7 @@ export function DoctorRun({
       step={steps.length - 2}
       steps={steps}
       label="Checking sounds"
+      maxWidth={wide ? 720 : undefined}
       fill
       footer={
         <Footer
@@ -175,7 +176,6 @@ export function DoctorRun({
           display: "flex",
           flexDirection: "column",
           gap: t.sp12 + t.sp2,
-          maxWidth: wide ? 720 : undefined,
         }}
       >
         <div
