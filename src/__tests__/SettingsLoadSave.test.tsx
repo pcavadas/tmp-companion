@@ -4,7 +4,9 @@
 //   • #300: a failed get_store shows a danger Notice with "Try again" and offers no Add
 //     (an add against the initial empty arrays would overwrite the whole stored list);
 //     a failed save_targets is reported and the list re-reads to what is stored. The
-//     page names what failed, never the backend's text (that goes to the log).
+//     page names what failed, never the backend's text (that goes to the log). On
+//     Instruments with the unit away, the failed-save Notice also says why Record is
+//     off, so the page shows one Notice, not two.
 //   • #302: targets reorder by ⋯ Move up / Move down; the slider's pointercancel
 //     ends the drag without committing and restores the starting value.
 
@@ -100,6 +102,47 @@ describe("SettingsView — load and save are never silent (#300)", () => {
       expect(screen.queryByDisplayValue("New target")).toBeNull();
     });
     expect(screen.getByText("Rhythm")).toBeInTheDocument();
+  });
+
+  it("a failed instrument save while the unit is away shows one Notice saying both", async () => {
+    const profile = (id: string, name: string) => ({
+      id,
+      name,
+      topology_id: "guitar-singlecoil",
+      calibration_lufs: null,
+    });
+    mockCommands({
+      get_store: () =>
+        makeStore({ profiles: [profile("a", "Strat"), profile("b", "Tele")] }),
+      save_profiles: () => {
+        throw new Error("disk full");
+      },
+    });
+    renderView();
+    const user = userEvent.setup();
+    const nav = await screen.findByRole("navigation", {
+      name: "Settings categories",
+    });
+    await user.click(within(nav).getByRole("button", { name: "Instruments" }));
+    await screen.findByText("Strat");
+    // Unit away, nothing failed yet: the page's own Notice says why Record is off.
+    expect(
+      screen.getByText("Recording needs your Tone Master Pro connected."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "More for Strat" }));
+    await user.click(screen.getByRole("menuitem", { name: "Move down" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Couldn’t save your instruments. Showing what’s saved. Recording needs your Tone Master Pro connected.",
+    );
+    expect(alert).not.toHaveTextContent(/disk full/);
+    // One Notice on the page: the danger one, saying both.
+    expect(screen.queryAllByRole("alert")).toHaveLength(1);
+    expect(
+      screen.queryByText("Recording needs your Tone Master Pro connected."),
+    ).toBeNull();
+    expect(screen.queryAllByRole("status")).toHaveLength(0);
   });
 
   it("a recovery read overtaken by a newer save keeps that save's list", async () => {

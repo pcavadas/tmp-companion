@@ -1,9 +1,11 @@
 // src/views/settings/InstrumentsPane.tsx — the "Instruments" page (look B): "Add
 // instrument" in the page head, one helper line, a Notice while the unit is away
-// (recording listens through its input), then one Group with an InstrumentRow per
-// profile — or its edit form in place — and the add form as a card under the list. The
-// caller keeps it MOUNTED and toggles `visible`, so a page switch mid-recording doesn't
-// unmount an InstrumentRow and drop an in-flight ~8 s device capture.
+// (recording listens through its input; while a save has failed, its sentence joins
+// the failed-save Notice instead, so the page shows one Notice), then one Group with an
+// InstrumentRow per profile — or its edit form in place — and the add form as a card
+// under the list. The caller keeps it MOUNTED and toggles `visible`, so a page switch
+// mid-recording doesn't unmount an InstrumentRow and drop an in-flight ~8 s device
+// capture.
 
 import { useMemo } from "react";
 
@@ -35,6 +37,9 @@ export interface InstrumentsPaneProps {
     | "refreshFromStore"
   >;
 }
+
+/** Why every Record button is off while the unit is away. */
+const RECORDING_NEEDS_UNIT = "Recording needs your Tone Master Pro connected.";
 
 export function InstrumentsPane({
   visible,
@@ -88,7 +93,12 @@ export function InstrumentsPane({
           </Button>
         }
       >
-        <StoreNotices store={store} />
+        <StoreNotices
+          store={store}
+          alsoOnSaveError={
+            ready && !connected ? RECORDING_NEEDS_UNIT : undefined
+          }
+        />
         {ready && (
           <>
             <span
@@ -101,8 +111,8 @@ export function InstrumentsPane({
               Record each instrument once, about 8 seconds. Play the way you
               gig: chords and lead, pick and fingers.
             </span>
-            {!connected && (
-              <Notice>Recording needs your Tone Master Pro connected.</Notice>
+            {!connected && store.saveError == null && (
+              <Notice>{RECORDING_NEEDS_UNIT}</Notice>
             )}
             {profiles.length === 0 ? (
               !ops.adding && (
