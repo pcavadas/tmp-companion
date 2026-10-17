@@ -46,53 +46,6 @@ interface BatchLevelRun<R> {
   reampStillOn: boolean;
 }
 
-interface FootswitchLevelResult {
-  switch: number;
-  clamped: boolean;
-  unconverged: boolean;
-  clamp_reason: string | null;
-  wet_floor: boolean;
-  /** The clamp's cause from the shared taxonomy (mirrors `headroom_trade::ClampKind`) —
-   *  see `src/lib/types.ts`'s `ClampKind`. Wire-only; the UI no longer surfaces it (design
-   *  1a shows one generic clamp message regardless of cause). Null when not clamped. */
-  clamp_kind: string | null;
-  saved: boolean;
-  final_value: number;
-  predicted_lufs: number;
-  method: string; // "baked" | "assigned"
-}
-
-interface SetFootswitchAssignmentEvent {
-  SetFootswitchAssignment: {
-    addr: number;
-    index: number;
-    function_json: string;
-    swap: boolean;
-  };
-}
-function isSetFootswitchAssignment(
-  e: unknown,
-): e is SetFootswitchAssignmentEvent {
-  return typeof e === "object" && e !== null && "SetFootswitchAssignment" in e;
-}
-
-/** `changeParameter`(12) — a Bake's own wire shape (`sim_device::SimEvent::ChangeParameter`,
- *  no `rename_all` on the enum, so the JSON keys are the Rust field names verbatim). This is
- *  where a Bake's write lands: straight on the block, never through `ftsw` — the twin of
- *  `SetFootswitchAssignmentEvent` above for the OTHER plan branch. */
-interface ChangeParameterEvent {
-  ChangeParameter: {
-    scene: number;
-    group: string;
-    node: string;
-    param: string;
-    value: number;
-  };
-}
-function isChangeParameter(e: unknown): e is ChangeParameterEvent {
-  return typeof e === "object" && e !== null && "ChangeParameter" in e;
-}
-
 // openLevel now lives in ../fixtures/scenario.ts (shared with level-defaults.spec.ts).
 
 /** A Set up row's dropdown: `kind` is "target" | "block" | "knob" | "scene", `key` the
@@ -275,18 +228,26 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     await closeList(page);
   });
 
-  // BUG→GATE (user-reported "Friedman HBE" preset 28, 2026-08-22): the picker used to
-  // disable a bypass-only handle UNCONDITIONALLY as "shared with the base preset", even
-  // when the leak-to-base write is provably audible in exactly ONE scene. 402 "E2E Edge"
-  // carries that exact anatomy (P4-C): `ACD_Boost` is bypassed in BASE, un-bypassed ONLY
-  // by scene 3 "Solo"'s bypass-only overlay, targeted by no footswitch or EXP assign, and
-  // bypassed (or overlay-absent, inheriting base) in every OTHER scene — see
+  // Two BUG→GATEs on one row, 402 "E2E Edge" scene 3 "Solo" (P4-C): `ACD_Boost` is bypassed
+  // in BASE, un-bypassed ONLY by Solo's bypass-only overlay, targeted by no footswitch or
+  // EXP assign, and bypassed (or overlay-absent, inheriting base) in every OTHER scene — see
   // `scene_jobs::shared_write_is_scene_local` and `fixture_gates.rs`'s
-  // `fx_edge_keeps_the_eq_ring_and_eight_scenes`. The fix
-  // (`scene_write_verdict_for_param`'s `WriteDirect{lands_on_base:true}` arm) must offer
-  // the handle ENABLED here, not disabled — the write-lands-on-base + run-completes half
-  // of this gate is the raw-invoke test below ("402 Solo: leveling Boost's gain...").
-  test("402 Solo: the Boost handle is offered ENABLED (isolated), not shared_with_base", async ({
+  // `fx_edge_keeps_the_eq_ring_and_eight_scenes`.
+  //  * PRESELECT (issue 5, "Boost preselect", 2026-08-29): every scene row used to default
+  //    its handle to the amp's output level even when the scene's whole reason to exist is
+  //    turning ON a base-bypassed block, so leveling the amp barely moved the sound Solo
+  //    adds. `scene_handle_rows_scanned` now stamps `enables_block: true` on Boost's
+  //    candidate for Solo (wire `enablesBlock`) and Set up's preselect (`useSetupRows`)
+  //    seeds THAT handle — never overriding a user's own choice.
+  //  * OFFER (user-reported "Friedman HBE" preset 28, 2026-08-22): the picker used to
+  //    disable a bypass-only handle UNCONDITIONALLY as "shared with the base preset", even
+  //    when the leak-to-base write is provably audible in exactly ONE scene. The fix
+  //    (`scene_write_verdict_for_param`'s `WriteDirect{lands_on_base:true}` arm) must offer
+  //    the handle ENABLED here — the write-lands-on-base + run-completes half of this gate
+  //    is the raw-invoke test below ("402 Solo: leveling Boost's gain...").
+  // The preselect is read FIRST, before either dropdown is opened, so the row shows exactly
+  // what the preselect seeded and not a value this test picked.
+  test("402 Solo: the scene row preselects the Boost handle, and offers it ENABLED (isolated), not shared_with_base", async ({
     page,
   }) => {
     test.skip(
@@ -306,6 +267,12 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
     // s402:3 = Solo (0-based scenes[] index == wire sceneSlot, same identity as 400's rows).
+    // PRESELECT, untouched: the Boost's block, named as the unit names it, and its best
+    // knob, `gain` ("Gain") — not the amp's Output level.
+    await expect(trigger(page, "block", "s402:3")).toHaveText("Boost");
+    await expect(trigger(page, "knob", "s402:3")).toHaveText("Gain");
+
+    // OFFER.
     await trigger(page, "block", "s402:3").click();
     const boostOption = option(page, "block:s402:3", "G1:ACD_Boost");
     // EXISTENCE FIRST — see the Rhythm/Shared test above for why.
@@ -320,41 +287,6 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     // ENABLED, not just unwarned: clicking it must actually pick it (never blocked — the
     // DANGER-rule Pick trap forbids a click that silently no-ops on a disabled option).
     await boostOption.click();
-    await expect(trigger(page, "block", "s402:3")).toHaveText("Boost");
-    await expect(trigger(page, "knob", "s402:3")).toHaveText("Gain");
-  });
-
-  // BUG→GATE (issue 5, "Boost preselect", 2026-08-29): every scene row used to default its
-  // handle to the amp's output level even when the scene's whole reason to
-  // exist is turning ON a base-bypassed block — Solo un-bypasses 402's `ACD_Boost` (bypassed
-  // in base) via a bypass-only overlay, so leveling the amp barely moves the sound Solo
-  // actually adds. `scene_handle_rows_scanned` now stamps `enables_block: true` on Boost's
-  // candidate for Solo (wire `enablesBlock`) and Set up's preselect (`useSetupRows`) seeds
-  // THAT handle instead — never overriding a user's own choice (untouched here: the row's
-  // dropdowns are asserted without opening them first).
-  test("402 Solo: the scene row preselects the Boost handle instead of the amp's output level", async ({
-    page,
-  }) => {
-    test.skip(
-      await isOnline(page),
-      "offline: the scene overlays are fixture-authored",
-    );
-    await ensureScenario(page);
-    await openLevel(page);
-
-    const filter = page.getByPlaceholder(/Filter by name or slot/i);
-    await filter.fill(SCENARIO[2].name); // E2E Edge
-    await openPreset(page, SCENARIO[2].name);
-    await page.getByText("Solo", { exact: true }).click();
-    await filter.fill("");
-
-    await levelButton(page, 1).click();
-    await page.getByText(/I.ve backed up with Pro Control/i).click();
-
-    // s402:3 = Solo (same row identity as the offer test above). UNTOUCHED — never opened
-    // its own dropdowns — so they show exactly what the preselect seeded, not a value this
-    // test picked: the Boost's block, named as the unit names it, and its best knob,
-    // `gain` ("Gain") — not the amp's Output level.
     await expect(trigger(page, "block", "s402:3")).toHaveText("Boost");
     await expect(trigger(page, "knob", "s402:3")).toHaveText("Gain");
   });
@@ -507,302 +439,6 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
   });
 });
 
-test.describe("Level — footswitch opted-in write path (raw invoke, command-level)", () => {
-  test.afterEach(async ({ page }) => {
-    await reampOff(page);
-  });
-  test.afterAll(async ({ browser }) => {
-    const page = await browser.newPage();
-    await clearScenario(page);
-    await page.close();
-  });
-
-  // COVERAGE rows 3, 17, 20's SKIP half — the WRITE-PATH half this test used to prove no
-  // longer lives here. `cb7cb60` gave the footswitch Bake lane the same re-run idempotency
-  // skip the Assign lane already had: before solving, it probes the block's OWN stored
-  // param value (the bake anchor — for a Bake that IS the engaged value), and when that
-  // already renders the target within `ACCEPT_TOL_LU` it writes and saves NOTHING (`saved:
-  // false`, `final_value` = the stored value verbatim). 400's `scenario-loudness.json`
-  // entry declares `leveledParams` for `ACD_TMSpring63.mix` and NOTHING ELSE, so the
-  // offline model is FLAT in `ACD_Boost.gain` — `model_lufs` returns the same C regardless
-  // of what the gain knob is set to. On a flat model NO target can force a genuine write
-  // (any off-C target just clamps/unconverges against that same constant, never converging
-  // TOWARD it), so a save run at the dry run's own learned target now correctly finds the
-  // stored gain already in tolerance and skips — this row can no longer prove the write
-  // half at all. What it proves instead: the bridge plumbing (a clean dry run, a save at
-  // its own learned target resolving through the Bake path), the SKIP itself (no persist,
-  // the stored value reported back verbatim), and the never-touch-ftsw danger-rule
-  // invariant.
-  //
-  // Where the two halves the old write-path version of this test used to prove now live:
-  //  * Bake WRITE + persist: `e2e_server_tests.rs::the_footswitch_rows_still_converge_after_a_base_boost`
-  //    (base + 4 pedals solve, save and re-measure at target from the saved state) — 405's
-  //    curve-backed pedals give the model real authority over the leveled param, so a
-  //    genuine off-anchor solve+persist is provable there.
-  //  * Bake WRITE + save + RE-RUN SKIP (command layer, Saved-event discriminator):
-  //    `e2e_server_tests.rs::bake_path_footswitch_rerun_skips_the_persist_when_already_at_target`.
-  //
-  // 400/switch 2 (Boost) routes through `FsLevelPlan::Bake` (`footswitch.rs`): the assign
-  // gate (user directive, 2026-08-19) plans `Assign` ONLY when the switch already carries a
-  // `param` fn on the user-selected control, and Boost's switch is a bare on-off — so
-  // leveling `ACD_Boost.gain` writes the block directly rather than adding a function to the
-  // switch (a two-entry row is HW-proven to make the firmware silently discard the whole
-  // imported preset, `danger.md`).
-  test("Boost's in-tolerance gain skips the bake write and never touches ftsw", async ({
-    page,
-  }) => {
-    test.skip(
-      await isOnline(page),
-      "offline: pins the sim's Bake re-run skip on a flat model",
-    );
-    await ensureScenario(page);
-    const reampBase = await reampCounters(page);
-
-    const apply = (targetLufs: number, save: boolean) =>
-      invoke(
-        page,
-        "level_footswitches_apply",
-        {
-          slot: SCENARIO[0].slot,
-          jobs: [
-            {
-              switch: 2,
-              levGroupId: "G1",
-              levNodeId: "ACD_Boost",
-              levParameterId: "gain",
-              targetLufs,
-            },
-          ],
-          save,
-          topologyId: "guitar-humbucker",
-          calibrationLufs: null,
-          profileId: null,
-          onResult: "__CHANNEL__:1",
-        },
-        LEVEL_T,
-      ).then((r) => (r as BatchLevelRun<FootswitchLevelResult>).rows);
-
-    // -20 is picked only because it sits far from the flat model's constant C
-    // (base scene: -15 + 20*log10(presetLevel 0.32) ~= -24.9, `scenario-loudness.json` +
-    // 400's authored presetLevel) — i.e. far enough that the idempotency probe's own
-    // measurement at the CURRENT stored gain does NOT read in-tolerance, so this dry run
-    // provably does NOT itself take the skip path (its own `final_value` lands on the
-    // flat-response seed point, not the stored gain — see the comment below).
-    const dry = await apply(-20, false);
-    expect(dry[0].clamp_reason, "Boost's engaged capture has signal").toBe(
-      null,
-    );
-    expect(Number.isFinite(dry[0].predicted_lufs)).toBe(true);
-    expect(dry[0].saved, "a dry run must write nothing").toBe(false);
-
-    // Snapshot the sim's event log length BEFORE the save:true apply — the honest
-    // no-persist proof this test needs is a DELTA (no NEW `Saved` event), mirroring
-    // `level.spec.ts`'s "run 2 makes no new Saved write" idiom (merged from the
-    // now-deleted level-rerun.spec.ts — offline suite consolidation).
-    const beforeCount = (await simEvents(page)).length;
-
-    const r = (await apply(dry[0].predicted_lufs, true))[0];
-    expect(r.method).toBe("baked");
-    expect(r.clamp_reason, "ACD_Boost is on the trunk — no routing clamp").toBe(
-      null,
-    );
-    expect(
-      r.clamped,
-      "an in-tolerance skip is a clean hit, never a clamp verdict",
-    ).toBe(false);
-    // The fix under test (cb7cb60): the Bake lane's re-run idempotency probe reads the
-    // block's OWN stored gain as its anchor. Feeding the save run the target the dry run
-    // itself just measured makes that anchor trivially in-tolerance on this flat model
-    // (every probe reads the same constant C regardless of gain) — the skip must fire, so
-    // no solve, no write, no save.
-    expect(
-      r.saved,
-      "the stored gain already renders the dry run's own target on this flat model, so cb7cb60's Bake re-run skip must hold (no persist)",
-    ).toBe(false);
-    // On the skip path `final_value` is the stored gain reported back VERBATIM
-    // (`solve_param_secant`'s idempotency arm) — NOT `dry[0].final_value`: the dry run's own
-    // -20 target isn't in tolerance of the flat C, so IT fell through to the flat-response
-    // no-authority seed pass and reports the seed's 0.25-fraction point instead (a
-    // different number, by construction, on `[0,12]`). 400's authored `ACD_Boost.gain` is
-    // 2.5 (`scenario-presets.json`'s `dspUnitParameters`, COVERAGE.md row 20's raw-dB
-    // `[0,12]` range) — assert the skip reports THAT stored value, not the dry run's seed.
-    expect(
-      r.final_value,
-      `a skip must report the stored gain verbatim: ${JSON.stringify({ dry: dry[0], r })}`,
-    ).toBeCloseTo(2.5, 3);
-
-    // A Bake — write or skip alike — must never touch the switch's own `ftsw` row: that
-    // shape (a second entry on a row that already has an on-off) is the exact one
-    // `danger.md` forbids. Kept VERBATIM from the write-path version of this test.
-    const events = await simEvents(page);
-    const assigns = events
-      .filter(isSetFootswitchAssignment)
-      .map((e) => e.SetFootswitchAssignment);
-    expect(
-      assigns.some((a) => a.addr === 2),
-      `a Bake must never write ftsw: ${JSON.stringify(assigns)}`,
-    ).toBe(false);
-
-    // The honest no-persist proof: no NEW `Saved` event arrived across the save:true apply.
-    // Deliberately NOT asserting on `ChangeParameter` presence/absence — the idempotency
-    // probe's OWN measurement still fires a `changeParameter` to set up its capture even
-    // though nothing lands in `pending`, so a `ChangeParameter`'s mere presence proves
-    // nothing about whether the skip held.
-    //
-    // NON-VACUITY, honestly: this delta check alone can't prove a save:true run on this
-    // slot COULD emit `Saved` at all (a crash before the write phase would look identical
-    // to a clean skip). That discrimination — run 1 writes and saves, run 2 skips and
-    // doesn't — is deliberately NOT re-proven here; it lives at the command layer
-    // (`e2e_server_tests.rs::bake_path_footswitch_rerun_skips_the_persist_when_already_at_target`),
-    // which drives the same command twice on a Bake-planning switch and asserts the FIRST
-    // run's `Saved` count so the skip's absence is a discriminating proof, not a vacuous
-    // one. `r.method === "baked"` above still guards that this row reached the right plan
-    // arm, and a thrown/rejected `apply()` (a crash before the write phase) would fail this
-    // test outright rather than reach this assertion.
-    const delta = events.slice(beforeCount);
-    expect(
-      delta.some((e) => typeof e === "object" && e !== null && "Saved" in e),
-      `a skip must persist nothing — no new Saved event: ${JSON.stringify(delta)}`,
-    ).toBe(false);
-
-    await expectReampBalanced(page, reampBase);
-  });
-});
-
-test.describe("Level — wet-mix footswitch outcome (SPRING, raw invoke)", () => {
-  test.afterEach(async ({ page }) => {
-    await reampOff(page);
-  });
-  test.afterAll(async ({ browser }) => {
-    const page = await browser.newPage();
-    await clearScenario(page);
-    await page.close();
-  });
-
-  // COVERAGE row 18 — the wet-floor outcome, now offline-provable. It needed two things
-  // landed together: `scenario-loudness.json`'s `leveledParams` entry for
-  // `400/G1/ACD_TMSpring63/mix` on the `wetMix` curve (so the sim's capture model gives the
-  // param real authority instead of reading flat), and `model_lufs`'s widened activation
-  // predicate (a Bake's isolation leaves the LEVELED block's own bypass untouched, so the
-  // old `bypass_writes[node] == Some(false)` predicate never fired for it). 400's SPRING
-  // switch (3) is a bare on-off with no `param` fn of its own, so under the assign gate
-  // (user directive, 2026-08-19) it plans `Bake`, not `Assign` — `method` below reads
-  // "baked". Mirrors
-  // `e2e_server_tests.rs::wet_mix_footswitch_bakes_and_pins_at_the_wet_floor_on_an_unreachable_target`
-  // + `..._bakes_and_converges_and_stays_off_the_floor_on_a_reachable_target` at the
-  // Playwright layer.
-  test("an unreachable target bakes and pins at the wet floor honestly; a reachable one (learned, not hard-coded) bakes, converges, and saves", async ({
-    page,
-  }) => {
-    test.skip(await isOnline(page), "offline: pins the sim's wetMix curve");
-    await ensureScenario(page);
-    const reampBase = await reampCounters(page);
-
-    const apply = (targetLufs: number, save: boolean) =>
-      invoke(
-        page,
-        "level_footswitches_apply",
-        {
-          slot: SCENARIO[0].slot,
-          jobs: [
-            {
-              switch: 3,
-              levGroupId: "G1",
-              levNodeId: "ACD_TMSpring63",
-              levParameterId: "mix",
-              targetLufs,
-            },
-          ],
-          save,
-          topologyId: "guitar-humbucker",
-          calibrationLufs: null,
-          profileId: null,
-          onResult: "__CHANNEL__:1",
-        },
-        LEVEL_T,
-      ).then((r) => (r as BatchLevelRun<FootswitchLevelResult>).rows);
-
-    // Unreachable (-70, far below the curve's -12.02..-17.18 span): the solve pins at
-    // WET_FLOOR_FRACTION x the authored mix (0.25 x 0.42 = 0.105) and reports the honest
-    // "quieter ON than OFF, verify by ear" outcome — never a routing clamp (`clamp_reason`
-    // stays null; that field's contract is "no signal on USB 1/2", which this capture has).
-    // save:false — nothing worth persisting at a floor the target itself never asked for.
-    const unreachable = (await apply(-70, false))[0];
-    expect(unreachable.method).toBe("baked");
-    expect(unreachable.clamped, "an unreachable target must clamp").toBe(true);
-    expect(
-      unreachable.wet_floor,
-      `the clamp's cause must be the wet floor: ${JSON.stringify(unreachable)}`,
-    ).toBe(true);
-    expect(unreachable.clamp_reason).toBe(null);
-    // The shared ClampKind taxonomy (src/lib/types.ts) names the SAME cause on the wire,
-    // even though design 1a's UI no longer surfaces it (one generic clamp message for
-    // every cause) — this wire-level check is the twin the Channel seam allows offline;
-    // see this file's header.
-    expect(
-      unreachable.clamp_kind,
-      `clamp_kind must name the wet floor too: ${JSON.stringify(unreachable)}`,
-    ).toBe("wet_floor");
-    expect(
-      Math.abs(unreachable.final_value - 0.105),
-      `the written value must BE the floor: ${JSON.stringify(unreachable)}`,
-    ).toBeLessThan(1e-3);
-
-    // Reachable target: LEARNED from a dry run, never hard-coded. `presetLevel` shifts
-    // SPRING's whole curve across a run (scenario-loudness.json's own note on the wet-mix
-    // row), so a fixed LUFS picked in advance could clamp for reasons unrelated to what
-    // this half proves. -16 is only the SEED for the secant search: what actually gets
-    // applied is that seed's own converged/clamped `predicted_lufs`, so this asks "does
-    // converging off the floor work", not "does -16 happen to still be reachable this run".
-    const probe = (await apply(-16, false))[0];
-    const target = probe.clamped ? probe.predicted_lufs : -16;
-    const reachable = (await apply(target, true))[0];
-    expect(reachable.method).toBe("baked");
-    expect(
-      reachable.clamped,
-      `must actually solve, not clamp: ${JSON.stringify(reachable)}`,
-    ).toBe(false);
-    expect(reachable.unconverged).toBe(false);
-    expect(
-      reachable.wet_floor,
-      "wet_floor tracks the OUTCOME, not the param's class",
-    ).toBe(false);
-    expect(
-      reachable.clamp_kind,
-      "an unclamped row carries no clamp cause",
-    ).toBe(null);
-    expect(reachable.saved, "an in-range target must persist").toBe(true);
-
-    const events = await simEvents(page);
-    // A Bake must never touch the switch's own `ftsw` row — the shape `danger.md` forbids.
-    const assigns = events
-      .filter(isSetFootswitchAssignment)
-      .map((e) => e.SetFootswitchAssignment);
-    expect(
-      assigns.some((a) => a.addr === 3),
-      `a Bake must never write ftsw: ${JSON.stringify(assigns)}`,
-    ).toBe(false);
-
-    const bakes = events
-      .filter(isChangeParameter)
-      .map((e) => e.ChangeParameter);
-    const spring = bakes.find(
-      (b) =>
-        b.node === "ACD_TMSpring63" &&
-        b.param === "mix" &&
-        Math.abs(b.value - reachable.final_value) < 1e-3,
-    );
-    if (!spring) {
-      throw new Error(
-        `SPRING's opted-in mix write must reach the fake: ${JSON.stringify(bakes)}`,
-      );
-    }
-    expect(spring.group).toBe("G1");
-
-    await expectReampBalanced(page, reampBase);
-  });
-});
-
 test.describe("Level — shared_write_is_scene_local (Boost/Solo, raw invoke, BUG→GATE)", () => {
   test.afterEach(async ({ page }) => {
     await reampOff(page);
@@ -838,8 +474,8 @@ test.describe("Level — shared_write_is_scene_local (Boost/Solo, raw invoke, BU
     allCandidates: SceneHandleCandidate[];
   }
 
-  // The Setup-time picker half (`level-setup.spec.ts`'s "402 Solo: the Boost handle is
-  // offered ENABLED...") proves the OFFER; this half proves the RUN: a leveling run over
+  // The Setup-time picker half (`level-setup.spec.ts`'s "402 Solo: the scene row
+  // preselects the Boost handle, and offers it ENABLED...") proves the OFFER; this half proves the RUN: a leveling run over
   // Solo completes (never errors, never silently skips), and the write lands on the
   // SHARED BASE value — never in an overlay — matching `scene_write_verdict_for_param`'s
   // `WriteDirect{lands_on_base:true}` contract. 402 declares no `scenario-loudness.json`

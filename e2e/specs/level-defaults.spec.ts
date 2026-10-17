@@ -270,43 +270,11 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expectReampBalanced(page, reampBase);
   });
 
-  // COVERAGE row 46 — a 60 s capture hold makes the stopped Summary inside 15 s reachable
-  // only by a cancel served mid-run (`e2e_server.rs` `e2e_is_side_lane`). Look B: Stop
-  // asks first in a dialog, and the Summary shows on its own once the run has wound down.
-  test("a mid-run Stop aborts the in-flight item and leaves the rest not run", async ({
-    page,
-  }) => {
-    test.skip(
-      await isOnline(page),
-      "offline-only: /sim/capture-delay is a SimDevice injection",
-    );
-    await ensureScenario(page);
-    const reampBase = await reampCounters(page);
-    await armCaptureDelay(page, 60_000);
-    await openLevel(page);
-
-    await selectPresetsForLevel(page, [SCENARIO[1], SCENARIO[2]]);
-
-    await levelButton(page, "any").click();
-    await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await startLeveling(page).click();
-    await waitForCaptureInFlight(page, reampBase);
-
-    await stopRun(page);
-    await expect(
-      page.getByRole("heading", {
-        name: /^Stopped\. Nothing was leveled, \d+ not reached\.$/,
-      }),
-    ).toBeVisible({ timeout: 15_000 });
-    await expect(
-      page.getByRole("region", { name: "Not reached" }),
-    ).toBeVisible();
-    await expect(tryAgainButton(page)).toBeVisible();
-
-    await expectReampBalanced(page, reampBase);
-  });
-
-  // The fourth leveling scenario (re-run what failed or ran out of tries): after a Stop,
+  // COVERAGE row 46 — the Stop half: a 60 s capture hold makes the stopped Summary inside
+  // 15 s reachable only by a cancel served mid-run (`e2e_server.rs` `e2e_is_side_lane`).
+  // Look B: Stop asks first in a dialog, and the Summary shows on its own once the run has
+  // wound down, with the in-flight item aborted and the rest not run.
+  // The fourth leveling scenario (re-run what failed or ran out of tries): after that Stop,
   // the Summary's one "Try again (N)" runs the sounds the Stop didn't reach straight away
   // — no Set up, no second backup tick — and the same Summary comes back with them
   // leveled. Two clicks: Try again · Done.
@@ -333,6 +301,9 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
         name: "Stopped. Nothing was leveled, 2 not reached.",
       }),
     ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("region", { name: "Not reached" }),
+    ).toBeVisible();
     await armCaptureDelay(page, 0);
 
     let clicks = 0;
