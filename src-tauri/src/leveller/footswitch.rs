@@ -508,14 +508,16 @@ pub(crate) fn measure_fs_at(
     stimulus: &[f32],
     v: f32,
     intended_preset_level: Option<f32>,
+    window: CaptureWindow,
 ) -> Result<lufs::Loudness, LevelError> {
     match scene {
-        None => processed_loudness(capture_fs_at(
+        None => processed_loudness(capture_fs_at_in(
             lev,
             engaged_bypass,
             stimulus,
             v,
             intended_preset_level,
+            window,
         )),
         Some(_) => measure_fs_state(
             scene,
@@ -523,6 +525,7 @@ pub(crate) fn measure_fs_at(
             &[(lev.0.to_string(), lev.1.to_string(), lev.2.to_string(), v)],
             stimulus,
             intended_preset_level,
+            window,
         ),
     }
 }
@@ -535,6 +538,24 @@ pub(crate) fn capture_fs_at(
     stimulus: &[f32],
     v: f32,
     intended_preset_level: Option<f32>,
+) -> Result<audio::Capture, LevelError> {
+    capture_fs_at_in(
+        lev,
+        engaged_bypass,
+        stimulus,
+        v,
+        intended_preset_level,
+        CaptureWindow::Full,
+    )
+}
+
+fn capture_fs_at_in(
+    lev: (&str, &str, &str),
+    engaged_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    v: f32,
+    intended_preset_level: Option<f32>,
+    window: CaptureWindow,
 ) -> Result<audio::Capture, LevelError> {
     let mut s = Session::connect_lean()?;
     let knob = LevelKnob::Block {
@@ -551,7 +572,7 @@ pub(crate) fn capture_fs_at(
         None,
         intended_preset_level,
     )?;
-    engage_capture_disengage(&mut s, stimulus)
+    engage_capture_disengage_in(&mut s, stimulus, window)
 }
 
 /// ONE fresh-connection, WRITE-NOTHING-PERMANENT capture of ONE footswitch STATE — the
@@ -586,6 +607,7 @@ pub(super) fn measure_fs_state(
     params: &[(String, String, String, f32)],
     stimulus: &[f32],
     intended_preset_level: Option<f32>,
+    window: CaptureWindow,
 ) -> Result<lufs::Loudness, LevelError> {
     let mut s = Session::connect_lean()?;
     match scene {
@@ -605,7 +627,7 @@ pub(super) fn measure_fs_state(
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
     settle_or_cancel(pre_engage_settle_ms())?;
-    engage_measure_disengage(&mut s, stimulus)
+    engage_measure_disengage_in(&mut s, stimulus, window)
 }
 
 /// The measurement inputs for ONE footswitch sound's PREPASS CEILING read. Built by the
@@ -677,6 +699,7 @@ pub fn measure_fs_ceiling(
                 &params,
                 stimulus,
                 intended_preset_level,
+                CaptureWindow::Full,
             )
         },
         stimulus,
@@ -845,9 +868,101 @@ pub fn measure_footswitch(
         || reamp_off_fresh("measure_footswitch"),
         // EVERY capture of this row recalls `scene` before engaging — the isolation list and
         // the intended `presetLevel` are both re-sent per capture for the same reason (a
-        // recall re-asserts its own bypass state AND runs the device's level-apply).
-        |bypass, v| measure_fs_at(scene, lev, bypass, stimulus, v, intended_preset_level),
+        // recall re-asserts its own bypass state AND runs the device's level-apply). Far
+        // steps take a short window ([`CoarseFs`]), picking up from the prepass probe's miss.
+        {
+            let mut coarse = CoarseFs::new(target_lufs, probe.map(|p| p.lufs));
+            move |bypass, v| {
+                coarse.measure(|w| {
+                    measure_fs_at(scene, lev, bypass, stimulus, v, intended_preset_level, w)
+                })
+            }
+        },
     )
+}
+
+/// How far (LU) a footswitch reading may miss its target before the NEXT capture of that row
+/// takes the short window: far steps only aim the secant, so their exact level never decides
+/// the outcome (`TMP_FS_COARSE_FAR_LU`, a bench knob).
+fn coarse_far_lu() -> f64 {
+    std::env::var("TMP_FS_COARSE_FAR_LU")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0)
+}
+
+/// Coarse-to-fine capture windows for ONE footswitch row's captures: a capture whose previous
+/// reading missed the target by more than [`coarse_far_lu`] (or that has no previous reading)
+/// takes the [`CaptureWindow::Short`] window, every other capture the full one. A short
+/// reading that lands inside the acceptance band (within [`coarse_far_lu`] for the row's first
+/// reading, which also decides the at-target skip), or that hears no signal, is re-measured
+/// full at the same value before anyone sees it, so the solve never accepts, skips or
+/// verdicts on a short reading. Offline
+/// replay of the 2026-10-17 HW bench (155 captures, 405 + 410): about −30% of the footswitch
+/// step, every accepted reading full. Off with `TMP_FS_COARSE=0` (bench A/B).
+pub(crate) struct CoarseFs {
+    target: f64,
+    last_lufs: Option<f64>,
+    on: bool,
+}
+
+impl CoarseFs {
+    /// `last_lufs` = the row's previous reading, if one was already taken (the prepass probe).
+    pub(crate) fn new(target: f64, last_lufs: Option<f64>) -> Self {
+        CoarseFs {
+            target,
+            last_lufs,
+            on: super::env_ms("TMP_FS_COARSE", 1) != 0,
+        }
+    }
+
+    /// The window the next capture takes.
+    fn window(&self) -> CaptureWindow {
+        let far = self
+            .last_lufs
+            .is_none_or(|l| (l - self.target).abs() > coarse_far_lu());
+        if self.on && far {
+            CaptureWindow::Short
+        } else {
+            CaptureWindow::Full
+        }
+    }
+
+    /// Take the next capture of this row through `at`, in the window [`Self::window`] picks.
+    pub(crate) fn measure(
+        &mut self,
+        mut at: impl FnMut(CaptureWindow) -> Result<lufs::Loudness, LevelError>,
+    ) -> Result<lufs::Loudness, LevelError> {
+        let window = self.window();
+        if window == CaptureWindow::Full {
+            return self.record(at(CaptureWindow::Full));
+        }
+        // A row's FIRST reading also decides the at-target skip, so a short one near the band
+        // is re-measured too: its window bias (up to ~0.5 LU) must not turn an in-band sound
+        // into a fresh solve and a rewrite on a re-run. Later short readings only need the band.
+        let confirm_within = if self.last_lufs.is_none() {
+            coarse_far_lu()
+        } else {
+            solve_accept_tol()
+        };
+        match at(CaptureWindow::Short) {
+            Ok(l) if (l.integrated_lufs - self.target).abs() > confirm_within => self.record(Ok(l)),
+            Ok(_) => self.record(at(CaptureWindow::Full)),
+            // Silence in a short window is not evidence: a wet-only or slow-building sound can
+            // stay below the gate for 3 s. Only the full window may report it.
+            Err(e) if e.is_no_signal() => self.record(at(CaptureWindow::Full)),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn record(
+        &mut self,
+        l: Result<lufs::Loudness, LevelError>,
+    ) -> Result<lufs::Loudness, LevelError> {
+        let l = l?;
+        self.last_lufs = Some(l.integrated_lufs);
+        Ok(l)
+    }
 }
 
 /// [`solve_footswitch_seeded`] with no prepaid probe — the solve suites' seam.

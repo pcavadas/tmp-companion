@@ -520,8 +520,10 @@ fn a_reachable_footswitch_row_skips_its_ceiling_capture() {
         "{r:?}"
     );
     // Every capture is one the solve counts (its probe came from the prepass): no ceiling
-    // read and no second probe.
-    assert_eq!(rig.captures(), r.iterations, "{r:?}");
+    // read and no second probe. The one extra is coarse-to-fine's confirm: the probe missed
+    // by 2 LU, so seed 2 took the short window, landed in band on this exact-law rig, and was
+    // re-measured full before the solve accepted it.
+    assert_eq!(rig.captures(), r.iterations + 1, "{r:?}");
     let statuses: Vec<ProgressStatus> = progress.iter().map(|p| p.status).collect();
     assert_eq!(
         statuses,

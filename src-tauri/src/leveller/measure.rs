@@ -843,22 +843,79 @@ pub(crate) fn engage_measure_disengage(
     s: &mut Session,
     stimulus: &[f32],
 ) -> Result<lufs::Loudness, LevelError> {
-    processed_loudness(engage_capture_disengage(s, stimulus))
+    engage_measure_disengage_in(s, stimulus, CaptureWindow::Full)
 }
+
+/// [`engage_measure_disengage`] in a chosen [`CaptureWindow`].
+pub(crate) fn engage_measure_disengage_in(
+    s: &mut Session,
+    stimulus: &[f32],
+    window: CaptureWindow,
+) -> Result<lufs::Loudness, LevelError> {
+    processed_loudness(engage_capture_disengage_in(s, stimulus, window))
+}
+
+/// How much of the stimulus one capture plays and measures. `Full` is the validated
+/// leveling metric (the whole stimulus plus the decay tail). `Short` plays only the first
+/// [`SHORT_SKIP_MS`] + [`SHORT_MEASURE_MS`] of the stimulus and measures the
+/// [`SHORT_MEASURE_MS`] after the skip: it reads up to ~0.5 LU off the full metric (offline
+/// replay of 155 HW footswitch captures, fw 1.8.58, 2026-10-17), so only the footswitch
+/// solve's FAR steps use it, and no short reading is ever accepted (`footswitch::CoarseFs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureWindow {
+    Full,
+    Short,
+}
+
+/// A short capture's skipped head: the re-amp routing settle and the stimulus attack.
+pub(crate) const SHORT_SKIP_MS: u64 = 500;
+/// A short capture's measured span, after [`SHORT_SKIP_MS`].
+pub(crate) const SHORT_MEASURE_MS: u64 = 2500;
+/// A short capture's tail past the played stimulus: margin only, its samples are trimmed.
+const SHORT_TAIL_MS: u64 = 100;
 
 /// [`engage_measure_disengage`] stopping one step short — returns the raw capture
 /// instead of its loudness, for the caller that must also write the PCM to disk
 /// (`measure_sound_asis_strict`'s external-validation dump). The engage/settle/capture/
 /// disengage sequence is IDENTICAL: this is an extraction, not a second choreography.
-pub(crate) fn engage_capture_disengage(
+/// `window` picks how much of the stimulus plays and is measured ([`CaptureWindow`]).
+pub(crate) fn engage_capture_disengage_in(
     s: &mut Session,
     stimulus: &[f32],
+    window: CaptureWindow,
 ) -> Result<audio::Capture, LevelError> {
+    let (stimulus, tail_ms) = match window {
+        CaptureWindow::Full => (stimulus, CAPTURE_TAIL_MS),
+        CaptureWindow::Short => {
+            let play = ms_to_samples(SHORT_SKIP_MS + SHORT_MEASURE_MS, RATE);
+            (&stimulus[..play.min(stimulus.len())], SHORT_TAIL_MS)
+        }
+    };
     let _ = s.set_reamp_mode(true)?;
     // Same no-early-return rule as `capture_full_at`: re-amp is engaged, the OFF must fire.
     let _ = settle_abortable(settle_after_reamp_ms());
-    let cap = audio::reamp_capture(stimulus, RATE, CAPTURE_TAIL_MS);
+    let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
     let _ = s.set_reamp_mode(false);
+    match window {
+        CaptureWindow::Full => cap,
+        CaptureWindow::Short => cap.map(short_span),
+    }
+}
+
+fn ms_to_samples(ms: u64, rate: u32) -> usize {
+    (ms * u64::from(rate) / 1000) as usize
+}
+
+/// A short capture's measured span: [`SHORT_MEASURE_MS`] after the first [`SHORT_SKIP_MS`].
+/// A capture shorter than the skip is kept whole (its reading is then the honest one).
+fn short_span(mut cap: audio::Capture) -> audio::Capture {
+    let ch = cap.channels.max(1);
+    let skip = ms_to_samples(SHORT_SKIP_MS, cap.sample_rate) * ch;
+    let len = ms_to_samples(SHORT_MEASURE_MS, cap.sample_rate) * ch;
+    if cap.interleaved.len() > skip {
+        let end = (skip + len).min(cap.interleaved.len());
+        cap.interleaved = cap.interleaved[skip..end].to_vec();
+    }
     cap
 }
 
@@ -1177,6 +1234,28 @@ mod floor_guard_tests {
                 "{name}: a saturated live capture reads engaged"
             );
         }
+    }
+
+    /// A short capture measures the span after the skip, per channel frame, and a capture
+    /// too short to skip is kept whole.
+    #[test]
+    fn short_span_keeps_the_measured_span_after_the_skip() {
+        let rate = 1000;
+        let frames = (SHORT_SKIP_MS + SHORT_MEASURE_MS + 100) as usize;
+        let cap = audio::Capture {
+            interleaved: (0..frames * 2).map(|i| (i / 2) as f32).collect(),
+            channels: 2,
+            sample_rate: rate,
+        };
+        let span = short_span(cap);
+        assert_eq!(span.interleaved.len(), SHORT_MEASURE_MS as usize * 2);
+        assert_eq!(span.interleaved[0], SHORT_SKIP_MS as f32);
+        let tiny = audio::Capture {
+            interleaved: vec![1.0; 10],
+            channels: 2,
+            sample_rate: rate,
+        };
+        assert_eq!(short_span(tiny).interleaved.len(), 10);
     }
 
     #[test]
