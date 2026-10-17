@@ -99,6 +99,24 @@ describe("Row", () => {
     expect(note.parentElement?.querySelector("svg")).not.toBeNull();
   });
 
+  it("padX widens both sides of the line and its note; an indent still wins on the left", () => {
+    renderWithTheme(
+      <>
+        <Row padX={14} note="Choose a block for it.">
+          Rhythm
+        </Row>
+        <Row padX={14} indent={64}>
+          Lead
+        </Row>
+      </>,
+    );
+    expect(rowOf("Rhythm").line.style.padding).toBe("0px 14px");
+    expect(
+      screen.getByText("Choose a block for it.").parentElement?.style.padding,
+    ).toBe("0px 14px 10px");
+    expect(rowOf("Lead").line.style.padding).toBe("0px 14px 0px 64px");
+  });
+
   it("passes data and aria attributes through", () => {
     renderWithTheme(
       <Row data-row="p1" aria-label="Plexi Crunch">

@@ -2,7 +2,7 @@
 // `window` grey with a `border` rule below, padding 0 16. A three-column grid: the left
 // column stays empty, the tabs sit centred, and the status (the device readout) sits at
 // the right. The tabs are a segmented-style bar — a `segmentTrack` track with 2 px padding
-// (`radiusPanel`); the current tab is white with `shadowSegment` and semibold — but each
+// (`radiusPanel`), each tab 24 high (13 px text on a 16 px line); the current tab is white with `shadowSegment` and semibold — but each
 // tab is a plain button with `aria-current="page"`, not a radio: it navigates. The tabs
 // never stretch, whatever the window width. Click-only: no keyboard shortcuts.
 
@@ -75,7 +75,7 @@ export function Toolbar<T extends string>({
                 cursor: "pointer",
                 fontFamily: t.fontSans,
                 fontSize: t.fontBody,
-                lineHeight: `${String(t.lineBody)}px`,
+                lineHeight: `${String(t.lineCaption)}px`,
                 fontWeight: on ? t.weightSemibold : t.weightMedium,
                 color: t.text,
                 padding: `${String(t.sp4)}px ${String(t.sp12)}px`,
@@ -89,7 +89,9 @@ export function Toolbar<T extends string>({
           );
         })}
       </nav>
-      <div style={{ justifySelf: "end", minWidth: 0 }}>{status}</div>
+      <div style={{ justifySelf: "end", minWidth: 0, display: "flex" }}>
+        {status}
+      </div>
     </header>
   );
 }

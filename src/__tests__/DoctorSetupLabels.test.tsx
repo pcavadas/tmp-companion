@@ -125,4 +125,25 @@ describe("Doctor — the Instrument page is per preset", () => {
       screen.getByRole("button", { name: "Check 3 sounds" }),
     ).toBeDisabled();
   });
+
+  it("points at the missing instrument with a link whose 14 px icon takes the link colour", () => {
+    renderWithTheme(
+      <DoctorInstrument
+        presets={presetsOf([base()])}
+        soundCount={1}
+        instrumentOptions={[{ value: "none", label: "None" }]}
+        recordedInstruments={new Set()}
+        initial={new Map([[0, ""]])}
+        onInstrumentChange={vi.fn()}
+        onBack={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+    const link = screen.getByRole("button", {
+      name: "Choose an instrument for Friedman HBE",
+    });
+    const icon = link.querySelector("svg");
+    expect(icon?.getAttribute("width")).toBe("14");
+    expect(icon?.getAttribute("stroke")).toBe("currentColor");
+  });
 });

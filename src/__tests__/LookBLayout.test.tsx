@@ -15,6 +15,7 @@ import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
 import { Dialog, DialogBody } from "../ui/Dialog";
 import { Button } from "../ui/primitives";
+import { Toolbar } from "../ui/Toolbar";
 import { light } from "../theme/tokens";
 import { renderWithTheme, toRgb } from "./testKit";
 
@@ -86,6 +87,28 @@ describe("PageState", () => {
     expect(screen.getByText("Some features may not work.").style.fontSize).toBe(
       "12px",
     );
+  });
+});
+
+describe("Toolbar", () => {
+  it("tabs are 24 high (13 px on a 16 px line) and the status cell centres its readout", () => {
+    renderWithTheme(
+      <Toolbar
+        tabs={[
+          { id: "level", label: "Level" },
+          { id: "doctor", label: "Doctor" },
+        ]}
+        current="level"
+        onSelect={() => undefined}
+        status={<span>Not connected</span>}
+      />,
+    );
+    const tab = screen.getByRole("button", { name: "Level" });
+    expect(tab.style.lineHeight).toBe("16px");
+    expect(tab.style.padding).toBe("4px 12px");
+    // A block wrapper would sit an inline readout on its text baseline, low in the bar.
+    const cell = screen.getByText("Not connected").parentElement;
+    expect(cell?.style.display).toBe("flex");
   });
 });
 

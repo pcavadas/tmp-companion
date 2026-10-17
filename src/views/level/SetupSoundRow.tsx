@@ -11,7 +11,7 @@ import { Row } from "../../ui/List";
 import { Select } from "../../ui/Select";
 import type { SelectOption } from "../../ui/selectValue";
 import type { BlockLevelHandle } from "./blockLevelGroups";
-import { SETUP_COLUMN_GAP, setupColumns } from "./setupLayout";
+import { SETUP_COLUMN_GAP, SETUP_ROW_PAD_X, setupColumns } from "./setupLayout";
 import type { SetupRowModel } from "./useSetupRows";
 
 export interface SetupSoundRowProps {
@@ -52,6 +52,7 @@ export function SetupSoundRow({
   return (
     <Row
       size="controls"
+      padX={SETUP_ROW_PAD_X}
       data-setup-row={row.hookKey}
       note={
         row.notes.length > 0 ? (

@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 import {
   Button,
   Checkbox,
+  MenuItem,
   Modal,
   Notice,
   Radio,
@@ -232,7 +233,7 @@ describe("Checkbox — a real control with an accessible name", () => {
 });
 
 describe("Radio", () => {
-  it("is a named <button role=radio>; on draws the action dot", async () => {
+  it("is a named <button role=radio>; on fills the circle in action around a white dot", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     const { rerender } = renderWithTheme(
@@ -245,8 +246,25 @@ describe("Radio", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
     rerender(<Radio checked label="Plexi Crunch" onSelect={onSelect} />);
     expect(r.getAttribute("aria-checked")).toBe("true");
+    expect(r.style.background).toBe(toRgb(light.action));
     const dot = r.firstElementChild as HTMLElement | null;
-    expect(dot?.style.background).toBe(toRgb(light.action));
+    expect(dot?.style.background).toBe(toRgb(light.onAction));
+  });
+});
+
+describe("MenuItem", () => {
+  it("keeps the 12 px check column before its label, as a Select's list does", () => {
+    renderWithTheme(
+      <div role="menu">
+        <MenuItem label="Edit song" onClick={vi.fn()} />
+      </div>,
+    );
+    const item = screen.getByRole("menuitem", { name: "Edit song" });
+    const gutter = item.firstElementChild as HTMLElement | null;
+    expect(gutter?.getAttribute("aria-hidden")).toBe("true");
+    expect(gutter?.style.width).toBe("12px");
+    expect(item.style.gap).toBe("6px");
+    expect(item.style.padding).toBe("0px 8px");
   });
 });
 
@@ -360,6 +378,8 @@ describe("TextField / TextArea", () => {
     const area = screen.getByRole("textbox", { name: "What happened?" });
     expect(area.tagName).toBe("TEXTAREA");
     expect(area.style.height).toBe("96px");
+    // A fixed-height field in a fixed dialog: no resize grip to drag the layout out.
+    expect(area.style.resize).toBe("none");
     await user.type(area, "x");
     expect(onChange).toHaveBeenCalledWith("x");
   });

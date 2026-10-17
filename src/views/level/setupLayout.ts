@@ -12,5 +12,9 @@ export function setupColumns(sceneColumn: boolean): string {
 /** The gap between the columns (px). */
 export const SETUP_COLUMN_GAP = 10;
 
+/** Side padding of every Set up row and preset header (px). The column heads sit one
+ *  px further in, past the list's 1 px border, so each head lines up with its column. */
+export const SETUP_ROW_PAD_X = 14;
+
 /** The flow's steps, shown at the right of each Level flow page's title. */
 export const LEVEL_STEPS = ["Set up", "Level", "Summary"] as const;

@@ -21,7 +21,6 @@ import { useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
 import { Footer } from "../../ui/Footer";
-import { Icon } from "../../ui/Icon";
 import { Group } from "../../ui/List";
 import { Select } from "../../ui/Select";
 import type { SelectOption } from "../../ui/selectValue";
@@ -29,7 +28,7 @@ import { Button } from "../../ui/primitives";
 import { FlowPage } from "./FlowPage";
 import { SetupPresetHeader } from "./SetupPresetHeader";
 import { SetupSoundRow } from "./SetupSoundRow";
-import { SETUP_COLUMN_GAP, setupColumns } from "./setupLayout";
+import { SETUP_COLUMN_GAP, SETUP_ROW_PAD_X, setupColumns } from "./setupLayout";
 import {
   TARGET_BY_NAME,
   targetForAllValue,
@@ -157,9 +156,6 @@ export function SetupPage({
     color: t.textSecondary,
     whiteSpace: "nowrap",
   } as const;
-  const needIcon = (
-    <Icon name="warn-tri" size={13} stroke={t.caution} strokeWidth={2} />
-  );
   const labelled = {
     display: "flex",
     alignItems: "center",
@@ -184,8 +180,7 @@ export function SetupPage({
             <>
               {noTargets ? (
                 onAddTarget ? (
-                  <Button variant="link" onClick={onAddTarget}>
-                    {needIcon}
+                  <Button variant="link" icon="warn-tri" onClick={onAddTarget}>
                     Add a target in Settings
                   </Button>
                 ) : (
@@ -197,11 +192,11 @@ export function SetupPage({
                 firstNeed?.need && (
                   <Button
                     variant="link"
+                    icon="warn-tri"
                     onClick={() => {
                       goToNeed(firstNeed);
                     }}
                   >
-                    {needIcon}
                     {firstNeed.need.text}
                   </Button>
                 )
@@ -269,7 +264,7 @@ export function SetupPage({
             display: "grid",
             gridTemplateColumns: columns,
             gap: SETUP_COLUMN_GAP,
-            padding: `0 ${String(t.sp12 + 1)}px ${String(t.sp6)}px`,
+            padding: `0 ${String(SETUP_ROW_PAD_X + 1)}px ${String(t.sp6)}px`,
             fontSize: t.fontCaption,
             fontWeight: t.weightSemibold,
             color: t.textSecondary,

@@ -7,7 +7,7 @@
 // up inside the clipped card), so any mix of rows — mapped, nested in fragments, or a
 // header followed by its sub-rows — gets a line between every pair and none at the top.
 //
-// Row: one line of cells, left to right, 10 px apart, padding 0 12 px. Heights from the
+// Row: one line of cells, left to right, 10 px apart, padding 0 12 px (`padX` widens it). Heights from the
 // tokens: `regular` 36 (lists), `controls` 34 (rows holding dropdowns), `compact` 30
 // (sub-rows, the run list). `header` is a preset's group header (`groupHeader` fill,
 // 34 high). `selected` (chosen or open) is the grey `rowSelected`, never terracotta.
@@ -77,8 +77,10 @@ export interface RowProps extends Omit<
   header?: boolean;
   /** Chosen or open: the grey `rowSelected` fill. */
   selected?: boolean;
-  /** Left padding for a sub-row (52–64 px). Default 12. */
+  /** Left padding for a sub-row (52–64 px). Default `padX`. */
   indent?: number;
+  /** Side padding of the line and its note (Set up's rows use 14). Default 12. */
+  padX?: number;
   /** A note under the row (one line or two, 12/16 px, with an icon). */
   note?: ReactNode;
   /** The note's icon colour. Default "caution". */
@@ -93,6 +95,7 @@ export function Row({
   header = false,
   selected = false,
   indent,
+  padX,
   note,
   noteTone = "caution",
   style,
@@ -104,7 +107,8 @@ export function Row({
     controls: t.rowControls,
     compact: t.rowCompact,
   }[size ?? (header ? "controls" : "regular")];
-  const padLeft = indent ?? t.sp12;
+  const padRight = padX ?? t.sp12;
+  const padLeft = indent ?? padRight;
   return (
     <div
       {...rest}
@@ -127,7 +131,7 @@ export function Row({
           display: "flex",
           alignItems: "center",
           gap: t.sp8 + 2,
-          padding: `0 ${String(t.sp12)}px 0 ${String(padLeft)}px`,
+          padding: `0 ${String(padRight)}px 0 ${String(padLeft)}px`,
           minWidth: 0,
           ...style,
         }}
@@ -140,7 +144,7 @@ export function Row({
             display: "flex",
             alignItems: "flex-start",
             gap: t.sp6,
-            padding: `0 ${String(t.sp12)}px ${String(t.sp8 + 2)}px ${String(padLeft)}px`,
+            padding: `0 ${String(padRight)}px ${String(t.sp8 + 2)}px ${String(padLeft)}px`,
             fontSize: t.fontCaption,
             lineHeight: `${String(t.lineCaption)}px`,
             color: t.text,

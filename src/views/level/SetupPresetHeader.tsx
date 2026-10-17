@@ -11,6 +11,7 @@ import type { SelectOption } from "../../ui/selectValue";
 import { SlotLabel } from "../../ui/SlotLabel";
 import { Button, Checkbox } from "../../ui/primitives";
 import type { SetupGroupModel } from "./useSetupRows";
+import { SETUP_ROW_PAD_X } from "./setupLayout";
 
 export interface SetupPresetHeaderProps {
   group: SetupGroupModel;
@@ -32,7 +33,7 @@ export function SetupPresetHeader({
 }: SetupPresetHeaderProps) {
   const { t } = useTheme();
   return (
-    <Row header data-setup-preset={group.slot}>
+    <Row header padX={SETUP_ROW_PAD_X} data-setup-preset={group.slot}>
       <span
         style={{
           display: "flex",

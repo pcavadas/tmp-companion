@@ -16,7 +16,6 @@ import { useMemo, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Footer } from "../../ui/Footer";
-import { Icon } from "../../ui/Icon";
 import { Group, Row } from "../../ui/List";
 import { Select } from "../../ui/Select";
 import type { SelectOption } from "../../ui/selectValue";
@@ -132,13 +131,7 @@ export function DoctorInstrument({
           right={
             <>
               {firstMissing && (
-                <Button variant="link" onClick={goToMissing}>
-                  <Icon
-                    name="warn-tri"
-                    size={13}
-                    stroke={t.caution}
-                    strokeWidth={2}
-                  />
+                <Button variant="link" icon="warn-tri" onClick={goToMissing}>
                   {missingLink(missingNames)}
                 </Button>
               )}

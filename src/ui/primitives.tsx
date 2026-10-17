@@ -650,8 +650,9 @@ export function CheckboxMark({
   );
 }
 
-// ---- Radio (single choice) — 14 px circle, an `action` dot when on. A real
-//      <button role="radio">; with a visible label, wrapped in one <label>. ------
+// ---- Radio (single choice) — 14 px circle, filled `action` with a white dot when
+//      on. A real <button role="radio">; with a visible label, wrapped in one
+//      <label>. ------
 export interface RadioProps {
   checked: boolean;
   /** Receives the click event, so a control inside a clickable surface can
@@ -695,7 +696,8 @@ export function Radio({
         margin: 0,
         borderRadius: t.radiusPill,
         border: `1px solid ${edge}`,
-        background: t.surface,
+        // On: `action` fill around a white dot, like a ticked Checkbox.
+        background: checked && !disabled ? t.action : t.surface,
         cursor: disabled ? "default" : "pointer",
       }}
     >
@@ -705,7 +707,7 @@ export function Radio({
             width: 6,
             height: 6,
             borderRadius: t.radiusPill,
-            background: disabled ? t.textDisabled : t.action,
+            background: disabled ? t.textDisabled : t.onAction,
           }}
         />
       )}
@@ -797,8 +799,9 @@ export function Toggle({ on, onClick, label }: ToggleProps) {
   );
 }
 
-// ---- MenuItem — a 28-high popover row: 13 px, `radiusSmall`, `rowHover` on hover,
-//      `danger` items in the danger colour. A full-width real <button>. -----------
+// ---- MenuItem — a 28-high popover row: 13 px after a 12 px check column,
+//      `radiusSmall`, `rowHover` on hover, `danger` items in the danger colour. A
+//      full-width real <button>. -----------
 export interface MenuItemProps {
   label: string;
   onClick: () => void;
@@ -821,6 +824,7 @@ export function MenuItem({ label, onClick, danger }: MenuItemProps) {
         fontFamily: t.fontSans,
         fontSize: t.fontBody,
         color: danger ? t.danger : t.text,
+        gap: t.sp6,
         padding: `0 ${String(t.sp8)}px`,
         borderRadius: t.radiusSmall,
         whiteSpace: "nowrap",
@@ -828,6 +832,12 @@ export function MenuItem({ label, onClick, danger }: MenuItemProps) {
       onMouseEnter={(e) => (e.currentTarget.style.background = t.rowHover)}
       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
     >
+      {/* The 12 px check column every menu keeps, as a Select's list does. */}
+      <span
+        aria-hidden
+        data-menu-gutter=""
+        style={{ width: 12, flexShrink: 0 }}
+      />
       {label}
     </button>
   );
@@ -1043,7 +1053,7 @@ export function TextArea({
           height,
           padding: `${String(t.sp6)}px ${String(t.sp8)}px`,
           lineHeight: `${String(t.lineBody)}px`,
-          resize: "vertical",
+          resize: "none",
         }}
       />
     </label>
