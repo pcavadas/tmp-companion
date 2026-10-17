@@ -2,7 +2,7 @@
 //! name-guarded device-backup transport when a caller's REQUIRED tail sections are cut off
 //! the field-8 read. Shared by the footswitch/scene leveling commands and ~20 `probe_api`
 //! call sites.
-use crate::{backup_read, session, ListIndex, Session};
+use crate::{backup_read, error::SkipKind, session, ListIndex, Session};
 
 /// Read a slot's field-8 preset JSON on a fresh quiet session and return the parsed preset, a
 /// DIAGNOSTIC "has FS scenes" flag (`Some(empty)` = definitely no FS scenes; truncated/unknown or
@@ -104,8 +104,56 @@ pub(crate) struct TailRead {
     pub(crate) name: String,
 }
 
+/// Why [`read_slot_preset_complete`] returned no document, typed by its CAUSE so a leveling
+/// caller picks the failure's [`SkipKind`] from it ([`Self::skip_kind`]), never from the text.
+/// `Display` is the text, for the log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SlotReadError {
+    /// The preset itself could not be read: no connection, no preset data for the slot, a
+    /// body that did not parse, or the "Empty" template where a preset was expected.
+    Unreadable(String),
+    /// The body was read, but its required `sections` came back cut off or missing, and the
+    /// complete re-read that would make them whole could not be addressed or failed.
+    SectionsCut {
+        sections: Vec<String>,
+        message: String,
+    },
+}
+
+impl SlotReadError {
+    /// The leveling kind of this failure: a read that lost ONLY the `ftsw` section is this
+    /// preset's footswitches not being read ([`SkipKind::FootswitchesUnreadable`]); every
+    /// other failure, a cut that took more than `ftsw` included, is the preset not being read
+    /// ([`SkipKind::PresetUnreadable`]).
+    pub(crate) fn skip_kind(&self) -> SkipKind {
+        match self {
+            Self::SectionsCut { sections, .. }
+                if !sections.is_empty() && sections.iter().all(|s| s == "ftsw") =>
+            {
+                SkipKind::FootswitchesUnreadable
+            }
+            Self::Unreadable(_) | Self::SectionsCut { .. } => SkipKind::PresetUnreadable,
+        }
+    }
+}
+
+impl std::fmt::Display for SlotReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreadable(m) | Self::SectionsCut { message: m, .. } => f.write_str(m),
+        }
+    }
+}
+
+impl From<SlotReadError> for String {
+    fn from(e: SlotReadError) -> Self {
+        e.to_string()
+    }
+}
+
 /// The field-8 read for a caller whose ANSWER DEPENDS on a tail section: it either
-/// returns a document that carries every `required` section whole, or it fails.
+/// returns a document that carries every `required` section whole, or it fails, typed by
+/// cause ([`SlotReadError`]).
 ///
 /// On a truncated tail it re-reads the preset off a DEVICE BACKUP — the only transport
 /// that carries the complete document (`backup_read::preset_json_from_backup`,
@@ -119,22 +167,29 @@ pub(crate) struct TailRead {
 pub(crate) fn read_slot_preset_complete(
     slot: ListIndex,
     required: &[&str],
-) -> Result<(serde_json::Value, bool, usize), String> {
-    let (preset, has_fs_scenes, len, tail) = read_slot_preset_sections(slot, required)?;
+) -> Result<(serde_json::Value, bool, usize), SlotReadError> {
+    let (preset, has_fs_scenes, len, tail) =
+        read_slot_preset_sections(slot, required).map_err(SlotReadError::Unreadable)?;
     if tail.truncated.is_empty() {
         return Ok((preset, has_fs_scenes, len));
     }
-    // Before the multi-second backup transfer.
-    let expect_id = backup_expect_id(&preset, slot)?;
+    // Before the multi-second backup transfer. The "Empty" template where a preset was
+    // expected is the preset not being read, whatever its tail.
+    let expect_id = backup_expect_id(&preset, slot).map_err(SlotReadError::Unreadable)?;
+    // From here on the body is in hand and only its cut sections are missing.
+    let cut = |message: String| SlotReadError::SectionsCut {
+        sections: tail.truncated.clone(),
+        message,
+    };
     if tail.name.is_empty() {
-        return Err(format!(
+        return Err(cut(format!(
             "slot {}: the preset is too large to read over USB — its {} section(s) were cut \
              off the field-8 read, and the preset list did not answer with the slot's name, \
              so a backup re-read cannot be addressed safely. Refusing rather than acting on \
              a partial preset",
             slot.device_slot(),
             tail.truncated.join(", ")
-        ));
+        )));
     }
     log::warn!(
         "slot {} ({:?}): field-8 read truncated before its {} section(s) ({len} B) — \
@@ -145,21 +200,22 @@ pub(crate) fn read_slot_preset_complete(
     );
     // Its own fresh connection: the backup is a multi-second whole-library transfer and
     // the re-amp rules keep it off any held session.
-    let blob = {
-        let mut s = Session::connect()?;
-        s.device_backup(60, |_| {})?.0
+    let backup_failed = |e: String| {
+        cut(format!(
+            "slot {}: the preset is too large to read over USB — its {} section(s) were cut \
+             off the field-8 read, and the complete backup re-read failed ({e}). Refusing \
+             rather than acting on a partial preset",
+            slot.device_slot(),
+            tail.truncated.join(", ")
+        ))
     };
+    let blob = Session::connect()
+        .and_then(|mut s| s.device_backup(60, |_| {}))
+        .map_err(backup_failed)?
+        .0;
     let doc =
         backup_read::preset_json_from_backup(&blob, slot.device_slot(), &tail.name, expect_id)
-            .map_err(|e| {
-                format!(
-                "slot {}: the preset is too large to read over USB — its {} section(s) were cut \
-                 off the field-8 read, and the complete backup re-read failed ({e}). Refusing \
-                 rather than acting on a partial preset",
-                slot.device_slot(),
-                tail.truncated.join(", ")
-            )
-            })?;
+            .map_err(backup_failed)?;
     let len = doc.to_string().len();
     // Same rule as `scene_names_from_slot_json` (which maps `scenes[].sceneName`, so its
     // emptiness IS the array's) — but read off a COMPLETE document, so an absent `scenes`
@@ -184,6 +240,29 @@ fn backup_expect_id(preset: &serde_json::Value, slot: ListIndex) -> Result<Optio
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The kind a failed read reports is its cause: only a read that lost the `ftsw` section
+    /// alone is the footswitches; a failed, empty or unparsed read, or a cut that took more,
+    /// is the preset.
+    #[test]
+    fn a_read_failure_is_typed_by_its_cause() {
+        let cut = |sections: &[&str]| SlotReadError::SectionsCut {
+            sections: sections.iter().map(|s| (*s).to_string()).collect(),
+            message: "cut".into(),
+        };
+        assert_eq!(cut(&["ftsw"]).skip_kind(), SkipKind::FootswitchesUnreadable);
+        for unread in [
+            SlotReadError::Unreadable("no preset data for slot 27".into()),
+            SlotReadError::Unreadable("preset JSON did not parse".into()),
+            cut(&["scenes"]),
+            cut(&["audioGraph", "ftsw"]),
+            cut(&[]),
+        ] {
+            assert_eq!(unread.skip_kind(), SkipKind::PresetUnreadable, "{unread:?}");
+        }
+        // The text stays for the log, and the old `String` callers still get it.
+        assert_eq!(String::from(cut(&["ftsw"])), "cut");
+    }
 
     #[test]
     fn backup_expect_id_refuses_a_template_partial() {

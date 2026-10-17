@@ -361,6 +361,59 @@ fn a_stopped_scene_is_rolled_back_before_the_batch_save() {
     assert_run_ended_clean(&dev);
 }
 
+/// A preset the unit gives no saved document for is THE PRESET not being read, on both lanes
+/// that read it for its footswitches: the footswitch batch's first read and the main sound's
+/// isolation read. Only a cut or missing `ftsw` section is the footswitches.
+#[test]
+fn a_preset_read_that_fails_is_the_preset_not_its_footswitches() {
+    // No saved body: the field-8 read answers nothing ("no preset data for slot").
+    let dev = SimDevice::new();
+    let rig = Rc::new(SimRig::new(dev.clone(), model));
+    let jobs = [FootswitchLevelJob {
+        switch: 2,
+        lev_group_id: "G1".into(),
+        lev_node_id: "ACD_Boost".into(),
+        lev_parameter_id: "gain".into(),
+        target_lufs: -25.0,
+        scene_context: None,
+    }];
+    let stim = stim();
+    let (fs, base) = rig::scoped(rig, || {
+        let fs = run_footswitch_batch(
+            SLOT,
+            &jobs,
+            false,
+            &stim,
+            0.0,
+            &mut |_| {},
+            &|| false,
+            crate::watcher::DetachWatch::start(),
+        );
+        (fs, crate::commands::doctor::read_base_isolation(SLOT))
+    });
+    match fs.expect_err("an unread preset refuses the batch") {
+        crate::error::AppError::Leveling {
+            kind,
+            reamp_still_on,
+            ..
+        } => {
+            assert_eq!(kind, crate::error::SkipKind::PresetUnreadable);
+            assert!(!reamp_still_on, "nothing engaged before the read");
+        }
+        other => panic!("a typed leveling error: {other:?}"),
+    }
+    let base = base.expect_err("an unread preset refuses the main sound");
+    assert_eq!(
+        base.kind,
+        crate::error::SkipKind::PresetUnreadable,
+        "{base}"
+    );
+    assert!(
+        !dev.events().contains(&SimEvent::ReAmp(true)),
+        "a refused read engages nothing"
+    );
+}
+
 /// The footswitch batch reads the saved document, reads the row's ceiling, solves the Boost's
 /// gain onto the target, and — on a dry run — writes nothing and reloads.
 #[test]

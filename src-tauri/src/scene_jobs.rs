@@ -923,7 +923,9 @@ pub(crate) fn read_saved_preset_complete_sections(
     list_index: ListIndex,
     sections: &[&str],
 ) -> Result<serde_json::Value, String> {
-    crate::slot_read::read_slot_preset_complete(list_index, sections).map(|(p, _, _)| p)
+    crate::slot_read::read_slot_preset_complete(list_index, sections)
+        .map(|(p, _, _)| p)
+        .map_err(String::from)
 }
 
 /// Un-engaged pre-pass for the app's batched scene leveling: ONE rich session

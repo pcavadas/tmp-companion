@@ -2,12 +2,15 @@
 //! unit: each fix is a step the player makes by hand (the owner's decision), so there is
 //! no apply, save or discard command.
 use super::ProgressStatus;
-use crate::error::LevelError;
+use crate::error::{LevelError, Refusal};
 use crate::{
-    blockcaps, commands::level_preset::resolve_stimulus_with_capture,
-    device_gate::with_released_seize, doctor, footswitch, leveller, session,
-    slot_read::read_slot_preset_complete, stimulus::read_stimulus_calibrated, topologies, AppState,
-    AtomicBool, ListIndex, SeqCst, Serialize, Session, State,
+    blockcaps,
+    commands::level_preset::resolve_stimulus_with_capture,
+    device_gate::with_released_seize,
+    doctor, footswitch, leveller, session,
+    slot_read::{read_slot_preset_complete, SlotReadError},
+    stimulus::read_stimulus_calibrated,
+    topologies, AppState, AtomicBool, ListIndex, SeqCst, Serialize, Session, State,
 };
 
 // ───────────────────────── Doctor (tone diagnosis) ─────────────────────────
@@ -86,26 +89,34 @@ pub(crate) fn doctor_force_bypass(
 
 /// The shared "read → refuse-or-force" step for a BASE leveling run's isolation: given the
 /// OUTCOME of a `read_slot_preset_complete(slot, &["ftsw"])`-shaped read (`Ok(preset)` or the
-/// read's own `Err`), either derive the base force-bypass list (`doctor_force_bypass`'s
-/// `None` arm) plus the preset's `restore_scene`, or propagate the SAME refusal message
-/// production's base arm has always shown. ONE definition of "base isolation" for every arm
+/// read's own typed `Err`), either derive the base force-bypass list (`doctor_force_bypass`'s
+/// `None` arm) plus the preset's `restore_scene`, or refuse with the SAME text production's
+/// base arm has always shown. ONE definition of "base isolation" for every arm
 /// that levels base — the paths disagreeing about what "base" means cost a ~16 LU divergence
 /// (2026-08-31 bisect: an empty `&[]` force list solved C=-11.95 where production's isolated
 /// base measured C≈-28.2).
+///
+/// The refusal's kind is the read's CAUSE ([`SlotReadError::skip_kind`]): a cut or missing
+/// `ftsw` is [`crate::error::SkipKind::FootswitchesUnreadable`], and a read that failed, came
+/// back empty or did not parse is [`crate::error::SkipKind::PresetUnreadable`], as the scene
+/// lane reports the same read.
 ///
 /// Pure over the read's `Result` rather than doing the read itself, so the refusal is
 /// testable at all: `SimDevice` always serves whole bodies, so a truncated field-8 read can
 /// never be driven from an offline fixture — a test hands this fn a synthetic `Err` instead.
 pub(crate) fn base_isolation_or_refuse(
-    read: Result<serde_json::Value, String>,
+    read: Result<serde_json::Value, SlotReadError>,
     slot: ListIndex,
-) -> Result<(serde_json::Value, ForceBypass, Option<u32>), String> {
+) -> Result<(serde_json::Value, ForceBypass, Option<u32>), Refusal> {
     let preset = read.map_err(|e| {
-        format!(
-            "could not read preset {}'s footswitch assignments ({e}) — they define which \
-             blocks are switched off for the Base measurement, and leveling without them \
-             would save a level solved for the wrong sound",
-            slot.device_slot()
+        Refusal::new(
+            e.skip_kind(),
+            format!(
+                "could not read preset {}'s footswitch assignments ({e}) — they define which \
+                 blocks are switched off for the Base measurement, and leveling without them \
+                 would save a level solved for the wrong sound",
+                slot.device_slot()
+            ),
         )
     })?;
     let force = doctor_force_bypass(&preset["ftsw"], &preset, None);
@@ -119,7 +130,7 @@ pub(crate) fn base_isolation_or_refuse(
 /// (`read_slot_preset_sections`' doc), the force-bypass list and `restore_scene`.
 pub(crate) fn read_base_isolation(
     slot: ListIndex,
-) -> Result<(serde_json::Value, bool, ForceBypass, Option<u32>), String> {
+) -> Result<(serde_json::Value, bool, ForceBypass, Option<u32>), Refusal> {
     let read = crate::slot_read::read_slot_preset_complete(slot, &["ftsw"]);
     let has_fs_scenes = read
         .as_ref()

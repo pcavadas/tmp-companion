@@ -280,9 +280,13 @@ pub(crate) fn run_footswitch_batch(
     // source (per-node bake gate) — never add a second read here. `ftsw` is REQUIRED:
     // a body cut before it plans zero jobs and reports a clean run on a preset whose
     // switches were never touched, so the read either delivers it or the run refuses
-    // (before any device state moves) — as THIS PRESET'S FOOTSWITCHES could not be read.
-    let (preset, _, _) = read_slot_preset_complete(slot, &["ftsw"])
-        .map_err(|e| watch.error(LevelError::refused(SkipKind::FootswitchesUnreadable, e)))?;
+    // (before any device state moves), typed by the read's cause: a cut or missing `ftsw` is
+    // THIS PRESET'S FOOTSWITCHES could not be read, any other failed read is THIS PRESET
+    // could not be read (`SlotReadError::skip_kind`).
+    let (preset, _, _) = read_slot_preset_complete(slot, &["ftsw"]).map_err(|e| {
+        let kind = e.skip_kind();
+        watch.error(LevelError::refused(kind, e))
+    })?;
     let ftsw = preset
         .get("ftsw")
         .cloned()

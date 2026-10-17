@@ -1,6 +1,7 @@
 //! Unit tests for the Doctor command layer (moved from lib.rs `audition_tests`).
 use super::*;
 use crate::doctor;
+use crate::error::SkipKind;
 
 /// BUG→GATE (the silent-wrong-diagnosis class): a large preset's field-8 read is cut
 /// before its `ftsw` section, so the isolation fallback has no footswitch assignments.
@@ -255,25 +256,61 @@ fn base_isolation_or_refuse_refuses_on_a_truncated_ftsw_read_exactly_like_produc
     // way `an_unreadable_ftsw_skips_a_footswitch_sound_but_not_a_base_sound` stands in a
     // synthetic cache entry for an unreadable body.
     let err = base_isolation_or_refuse(
-        Err(
-            "slot 27: the preset is too large to read over USB — its ftsw section(s) were \
-             cut off the field-8 read, and the preset list did not answer with the slot's \
-             name, so a backup re-read cannot be addressed safely. Refusing rather than \
-             acting on a partial preset"
+        Err(SlotReadError::SectionsCut {
+            sections: vec!["ftsw".into()],
+            message: "slot 27: the preset is too large to read over USB — its ftsw section(s) \
+                      were cut off the field-8 read, and the preset list did not answer with \
+                      the slot's name, so a backup re-read cannot be addressed safely. \
+                      Refusing rather than acting on a partial preset"
                 .to_string(),
-        ),
+        }),
         ListIndex(26),
     )
     .expect_err("an unreadable ftsw must refuse, never guess a force list");
     assert!(
-        err.contains("could not read preset 27's footswitch assignments"),
+        err.reason
+            .contains("could not read preset 27's footswitch assignments"),
         "the wrapped refusal must name the 1-based slot and the footswitch read: {err}"
     );
     assert!(
-        err.contains("leveling without them would save a level solved for the wrong sound"),
+        err.reason
+            .contains("leveling without them would save a level solved for the wrong sound"),
         "the refusal must explain WHY, matching production's long-standing base-arm message: \
          {err}"
     );
+    assert_eq!(
+        err.kind,
+        SkipKind::FootswitchesUnreadable,
+        "a cut `ftsw` is the preset's footswitches not being read"
+    );
+}
+
+/// A base read that failed outright — no preset data, a body that did not parse — is the
+/// PRESET not being read, the kind the scene lane gives the same read, never its footswitches.
+#[test]
+fn base_isolation_or_refuse_names_a_failed_read_as_the_preset_not_its_footswitches() {
+    for message in ["no preset data for slot 27", "preset JSON did not parse"] {
+        let err = base_isolation_or_refuse(
+            Err(SlotReadError::Unreadable(message.to_string())),
+            ListIndex(26),
+        )
+        .expect_err("a failed read must refuse");
+        assert_eq!(err.kind, SkipKind::PresetUnreadable, "{message}: {err}");
+        assert!(
+            err.reason.contains(message),
+            "the cause stays in the text: {err}"
+        );
+    }
+    // A cut that took more than `ftsw` is more than the footswitches.
+    let err = base_isolation_or_refuse(
+        Err(SlotReadError::SectionsCut {
+            sections: vec!["audioGraph".into(), "ftsw".into()],
+            message: "cut".into(),
+        }),
+        ListIndex(26),
+    )
+    .expect_err("a cut read must refuse");
+    assert_eq!(err.kind, SkipKind::PresetUnreadable, "{err}");
 }
 
 // ── derived_force_bypass: OFFLINE isolation, oracle-equivalent to doctor_force_bypass ──

@@ -56,7 +56,10 @@ pub enum SkipKind {
     /// The preset itself could not be read from the unit (a failed or cut field-8 read, a
     /// signal chain the read could not answer for), so nothing was written.
     PresetUnreadable,
-    /// The preset's footswitch assignments could not be read, so nothing was written.
+    /// The preset's footswitch assignments could not be read — its `ftsw` section came back
+    /// cut or missing, or does not carry the switch asked for — so nothing was written. A
+    /// read that failed outright is [`Self::PresetUnreadable`]
+    /// (`slot_read::SlotReadError::skip_kind`).
     FootswitchesUnreadable,
     /// No guitar amp is on in this scene (or the preset has none), so the default control —
     /// the amp's output level — does not exist here.

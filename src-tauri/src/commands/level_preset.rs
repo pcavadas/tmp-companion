@@ -510,11 +510,11 @@ fn level_base_arm(
     // here returns BEFORE the run-end `reamp_off_guaranteed` backstop, safe only
     // because every step above is a pure read: nothing has engaged re-amp yet.
     //
-    // The read requires `ftsw` and its refusal names the footswitch assignments, so a failure
-    // here is THIS PRESET'S FOOTSWITCHES could not be read.
+    // The refusal's kind is the read's cause: a cut or missing `ftsw` is THIS PRESET'S
+    // FOOTSWITCHES could not be read, any other failed read is THIS PRESET could not be read
+    // (`SlotReadError::skip_kind`), as the scene lane reports the same read.
     let (preset, has_fs_scenes, force, restore_scene) =
-        crate::commands::doctor::read_base_isolation(slot)
-            .map_err(|e| LevelError::refused(SkipKind::FootswitchesUnreadable, e))?;
+        crate::commands::doctor::read_base_isolation(slot).map_err(LevelError::Refused)?;
     // The original `lastLoadedScene` must be re-stamped by the save: the
     // base-context measurement leaves base active, and saving there would
     // rewrite the preset's on-load scene to base (HW, Hiwatt slot 31).
