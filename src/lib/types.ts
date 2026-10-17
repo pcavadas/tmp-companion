@@ -1083,7 +1083,12 @@ export interface DoctorInputArg {
   /** 0-based `ftsw` array index for a block-acting footswitch sound; null for
    *  Base/scene sounds. */
   footswitch: number | null;
+  /** The wire label ("Tweed Warm · Lead"): the results carry it back, and each sound is
+   *  found by it. It also names the preset, so no sentence on screen uses it. */
   label: string;
+  /** The sound's name inside a sentence ("Lead", "footswitch 3", "Main sound"), which the
+   *  backend writes into the steps for a volume jump between scenes. */
+  soundName: string;
   tag: string | null;
   topologyId: string | null;
   calibrationLufs: number | null;

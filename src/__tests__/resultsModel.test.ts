@@ -13,6 +13,7 @@ import {
   heardAt,
   matchAdvice,
   moreGoodLabel,
+  ownNodeIdsFor,
   sceneLoudness,
   soundLabel,
   soundNameOf,
@@ -25,6 +26,7 @@ import type {
   DoctorDiag,
   DoctorPresetResult,
   DoctorSoundResult,
+  FootswitchInfo,
   GraphNode,
   SilenceHint,
 } from "../lib/types";
@@ -403,14 +405,23 @@ describe("captions and names", () => {
 describe("the Scenes and Footswitches rows", () => {
   const p = preset(2, [
     sound("p2", 2, { label: "Plexi Crunch · Base" }),
+    sound("s2:0", 2, { scene: 0, label: "Plexi Crunch · Intro" }),
     sound("s2:1", 2, { scene: 1, label: "Plexi Crunch · Chorus" }),
     sound("f2:0", 2, { footswitch: 4, label: "Plexi Crunch · Boost" }),
   ]);
   const names: Record<string, SoundName> = {
     p2: { preset: "Plexi Crunch", name: "Main sound", footswitch: null },
+    "s2:0": { preset: "Plexi Crunch", name: "Intro", footswitch: null },
     "s2:1": { preset: "Plexi Crunch", name: "Chorus", footswitch: null },
     "f2:0": { preset: "Plexi Crunch", name: "Boost", footswitch: 5 },
   };
+  const step = (title: string) => ({
+    kind: "advisory" as const,
+    title,
+    detail: "",
+    cpuNote: "",
+    ops: [],
+  });
 
   it("says how far the loudest scene sits from the main sound, naming each bar", () => {
     const out = sceneLoudness(ctx(names), p, {
@@ -425,12 +436,71 @@ describe("the Scenes and Footswitches rows", () => {
       ],
       worstName: "Plexi Crunch · Chorus",
       worstDeltaDb: 6.2,
-      rx: [],
+      rx: [
+        step(
+          "Turn down the amp's Level in Chorus until the jump is 3 dB or less.",
+        ),
+      ],
     });
     expect(out.sentence).toBe(
       "Your Chorus scene is 6.2 dB louder than the main sound. That's a big jump when you switch.",
     );
     expect(out.bars.map((b) => b.label)).toEqual(["Main sound", "Chorus"]);
+    expect(out.steps).toEqual([
+      "Turn down the amp's Level in Chorus until the jump is 3 dB or less.",
+      "Level this preset's scenes on the Level tab.",
+    ]);
+  });
+
+  it("calls a louder first scene a reading that isn't certain, and adds no leveling step", () => {
+    const sc = {
+      rows: [
+        { name: "Plexi Crunch · Base", tag: "BASE", deltaDb: 0, isRef: true },
+        {
+          name: "Plexi Crunch · Intro",
+          tag: "FS1",
+          deltaDb: 6.2,
+          isRef: false,
+        },
+      ],
+      worstName: "Plexi Crunch · Intro",
+      worstDeltaDb: 6.2,
+      rx: [
+        step(
+          "Couldn't confirm the reading for Intro. Check it by ear before you change it.",
+        ),
+      ],
+    };
+    const out = sceneLoudness(ctx(names), p, sc);
+    expect(out.sentence).toBe(
+      "Your Intro scene read 6.2 dB louder than the main sound, but that reading isn't certain.",
+    );
+    expect(out.steps).toEqual([
+      "Couldn't confirm the reading for Intro. Check it by ear before you change it.",
+    ]);
+    // The dot and the bars keep the tones of the jump they show.
+    expect(out.bars.map((b) => b.label)).toEqual(["Main sound", "Intro"]);
+    const row = buildResults(
+      result([preset(2, p.sounds, { sceneConsistency: sc })]),
+      ctx(names),
+    ).findings.find((r) => r.kind === "scenes");
+    expect(row?.tone).toBe("danger");
+    // A quieter first scene gets the backend's plain advice, so it reads as usual.
+    const quieter = sceneLoudness(ctx(names), p, {
+      ...sc,
+      worstDeltaDb: -6.2,
+      rx: [
+        step(
+          "If you didn't set it up that way, turn up the amp's Level in Intro.",
+        ),
+      ],
+    });
+    expect(quieter.sentence).toBe(
+      "Your Intro scene is 6.2 dB quieter than the main sound. That's a big jump when you switch.",
+    );
+    expect(quieter.steps).toContain(
+      "Level this preset's scenes on the Level tab.",
+    );
   });
 
   it("says quieter for a negative jump, and names a footswitch by its number", () => {
@@ -583,5 +653,47 @@ describe("touchesSharedBlock", () => {
     expect(touchesSharedBlock(withFix("amp"), ["drive"])).toBe(true);
     expect(touchesSharedBlock(withFix("drive"), ["drive"])).toBe(false);
     expect(touchesSharedBlock(withFix("amp"), undefined)).toBe(false);
+  });
+});
+
+describe("ownNodeIdsFor", () => {
+  const sw = (n: number, ...nodeIds: string[]): FootswitchInfo => ({
+    switch: n,
+    label: "",
+    link_group: null,
+    functions: nodeIds.map((id) => ({
+      func: "on-off",
+      group_id: "G1",
+      node_id: id,
+      fender_id: "ACD_Boost",
+      parameter_id: null,
+      value_a: null,
+      value_b: null,
+      is_active: false,
+    })),
+    level_params: [],
+  });
+  // The full roster: a switch with nothing to level comes first, so the sound's switch
+  // number and its position in the levelable list point at different switches.
+  const roster = [sw(0, "PHS1"), sw(2, "drive1", "delay1")];
+
+  it("finds a footswitch sound's blocks by its switch number", () => {
+    expect(ownNodeIdsFor(sound("f:0", 0, { footswitch: 2 }), roster)).toEqual([
+      "drive1",
+      "delay1",
+    ]);
+  });
+
+  it("owns nothing for a main or scene sound, or a switch the roster lacks", () => {
+    expect(ownNodeIdsFor(sound("p", 0), roster)).toBeUndefined();
+    expect(
+      ownNodeIdsFor(sound("s:0", 0, { scene: 0 }), roster),
+    ).toBeUndefined();
+    expect(
+      ownNodeIdsFor(sound("f:1", 0, { footswitch: 5 }), roster),
+    ).toBeUndefined();
+    expect(
+      ownNodeIdsFor(sound("f:0", 0, { footswitch: 2 }), undefined),
+    ).toBeUndefined();
   });
 });

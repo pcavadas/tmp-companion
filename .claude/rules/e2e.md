@@ -17,7 +17,7 @@ Tauri's `tauri-driver`/WebdriverIO cannot drive this app — macOS WKWebView has
 
 ## UI copy is e2e-load-bearing
 
-The specs **regex-match user-facing strings** (`doctor.spec.ts` matches `/presets? need a look|All clear/`). Before rewording any view label or heading — especially on a design handoff — **grep `e2e/specs/` for the old phrase first**.
+The specs **regex-match user-facing strings** (`doctor.spec.ts` matches `/sounds? needs? a look|^Nothing to change in|check couldn.t finish/`). Before rewording any view label or heading — especially on a design handoff — **grep `e2e/specs/` for the old phrase first**.
 
 ## Events and Channels reach the page (the UI bridge)
 

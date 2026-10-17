@@ -22,6 +22,7 @@ const item = (key: string): DoctorInputArg => ({
   scene: null,
   footswitch: null,
   label: key,
+  soundName: key,
   tag: null,
   topologyId: null,
   calibrationLufs: null,

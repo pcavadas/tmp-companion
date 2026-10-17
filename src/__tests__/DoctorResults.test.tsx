@@ -126,6 +126,7 @@ const NAMES: Record<string, SoundName> = {
   p0: { preset: "Clean DI", name: "Main sound", footswitch: null },
   p1: { preset: "Tweed Warm", name: "Main sound", footswitch: null },
   "s1:0": { preset: "Tweed Warm", name: "Lead", footswitch: null },
+  "s1:1": { preset: "Tweed Warm", name: "Lead", footswitch: null },
   p2: { preset: "Broken Lead", name: "Main sound", footswitch: null },
 };
 
@@ -232,6 +233,46 @@ describe("DoctorResults — the list", () => {
     expect(row("1|p1").getByText("Muddy, Dark")).toBeInTheDocument();
     expect(row("1|s1:0").getByText("Lead")).toBeInTheDocument();
     expect(row("1|s1:0").getByText("Dark")).toBeInTheDocument();
+  });
+
+  // The scoping half of doctor.online.spec.ts's Edge EQ-ring run, which no device
+  // behaviour can change: a ring diagnosed on every sound of one preset shows on each of
+  // that preset's rows, and never on another preset's row, clean or not.
+  it("keeps a ringing finding on its own preset's rows", async () => {
+    const ring: DoctorDiag = {
+      key: "resonant",
+      label: "Ringing",
+      sev: "med",
+      severity: 3,
+      z: 8,
+      bands: [3],
+      direction: "strong",
+      detail: "2.6 kHz, 17.0 dB above its neighbours",
+      fromLevel: "quiet",
+      explain: "A narrow peak rings over every note.",
+      rx: [],
+    };
+    const result = fixture();
+    const flagged = result.presets[1];
+    // Every sound of the middle preset rings, as Edge's base-graph EQ ring does.
+    flagged.sounds = flagged.sounds.map((s) => ({
+      ...s,
+      diags: [...s.diags, ring],
+    }));
+    renderResults(result);
+    const rows = [
+      ...document.querySelectorAll<HTMLElement>('[data-result-row^="1|"]'),
+    ];
+    expect(rows).toHaveLength(flagged.sounds.length);
+    for (const el of rows) {
+      expect(within(el).getByText(/Ringing/)).toBeInTheDocument();
+    }
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "1 more sounds good" }));
+    for (const id of ["0|p0", "2|p2"]) {
+      expect(rowEl(id)).not.toHaveTextContent("Ringing");
+    }
   });
 
   it("puts no loudness, band picture or venue icons on a row", () => {
@@ -446,48 +487,60 @@ describe("DoctorResults — all clear and stopped checks (#190)", () => {
 });
 
 describe("DoctorResults — preset-level rows", () => {
-  it("shows a volume jump between scenes as its own row, opened to the steps", () => {
-    renderResults({
-      presets: [
-        preset(
-          1,
-          [
-            sound("p1", 1, { label: "Tweed Warm · Base" }),
-            sound("s1:0", 1, { scene: 0, label: "Tweed Warm · Lead" }),
-          ],
-          {
-            sceneConsistency: {
-              rows: [
-                {
-                  name: "Tweed Warm · Base",
-                  tag: "BASE",
-                  deltaDb: 0,
-                  isRef: true,
-                },
-                {
-                  name: "Tweed Warm · Lead",
-                  tag: "FS1",
-                  deltaDb: 6,
-                  isRef: false,
-                },
-              ],
-              worstName: "Tweed Warm · Lead",
-              worstDeltaDb: 6,
-              rx: [
-                {
-                  kind: "advisory",
-                  title: "Turn Lead's amp Output down until it's within 3 dB.",
-                  detail: "",
-                  cpuNote: "",
-                  ops: [],
-                },
-              ],
-            },
+  const advice = (title: string) => ({
+    kind: "advisory" as const,
+    title,
+    detail: "",
+    cpuNote: "",
+    ops: [],
+  });
+  // A preset whose `scene` sound jumps 6 dB over its main sound, with the steps the
+  // backend writes for that jump.
+  const jump = (
+    scene: number,
+    key: string,
+    titles: string[],
+  ): DoctorCheckResult => ({
+    presets: [
+      preset(
+        1,
+        [
+          sound("p1", 1, { label: "Tweed Warm · Base" }),
+          sound(key, 1, { scene, label: "Tweed Warm · Lead" }),
+        ],
+        {
+          sceneConsistency: {
+            rows: [
+              {
+                name: "Tweed Warm · Base",
+                tag: "BASE",
+                deltaDb: 0,
+                isRef: true,
+              },
+              {
+                name: "Tweed Warm · Lead",
+                tag: "FS1",
+                deltaDb: 6,
+                isRef: false,
+              },
+            ],
+            worstName: "Tweed Warm · Lead",
+            worstDeltaDb: 6,
+            rx: titles.map(advice),
           },
-        ),
-      ],
-      stopped: false,
-    });
+        },
+      ),
+    ],
+    stopped: false,
+  });
+
+  it("shows a volume jump between scenes as its own row, opened to the steps", () => {
+    renderResults(
+      jump(1, "s1:1", [
+        "Turn down the amp's Level in Lead until the jump is 3 dB or less.",
+        "Or, to stand out in Lead, raise the amp's Middle instead of its volume.",
+      ]),
+    );
     expect(row("1|consistency").getByText("Scenes")).toBeInTheDocument();
     expect(
       row("1|consistency").getByText("Volume jumps between scenes"),
@@ -501,8 +554,28 @@ describe("DoctorResults — preset-level rows", () => {
     ).toBeInTheDocument();
     expect(open.getByText("Main sound")).toBeInTheDocument();
     expect(open.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-      "Turn Lead's amp Output down until it's within 3 dB.",
+      "Turn down the amp's Level in Lead until the jump is 3 dB or less.",
+      "Or, to stand out in Lead, raise the amp's Middle instead of its volume.",
       "Level this preset's scenes on the Level tab.",
+    ]);
+    expect(open.queryByText(/Tweed Warm/)).toBeNull();
+  });
+
+  it("calls a louder first scene a reading that isn't certain, with no leveling step", () => {
+    renderResults(
+      jump(0, "s1:0", [
+        "Couldn't confirm the reading for Lead. Check it by ear before you change it.",
+      ]),
+    );
+    const open = within(detail("1|consistency") ?? document.body);
+    expect(
+      open.getByText(
+        "Your Lead scene read 6.0 dB louder than the main sound, but that reading isn't certain.",
+      ),
+    ).toBeInTheDocument();
+    expect(open.queryByText(/That's a big jump/)).toBeNull();
+    expect(open.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Couldn't confirm the reading for Lead. Check it by ear before you change it.",
     ]);
   });
 
@@ -559,80 +632,110 @@ describe("DoctorResults — shared-block line", () => {
     bypassed: false,
     params: {},
   };
+  const onOff = (nodeId: string, fenderId: string) => ({
+    func: "on-off" as const,
+    group_id: "G1",
+    node_id: nodeId,
+    fender_id: fenderId,
+    parameter_id: null,
+    value_a: null,
+    value_b: null,
+    is_active: false,
+  });
+  // A switch with nothing to level sits first in the preset's full roster, so the
+  // footswitch sound's own switch (2) is not the first entry: a lookup by the sound's
+  // position in the levelable list would find the Phaser's block instead of the Boost's.
+  const PHASER: FootswitchInfo = {
+    switch: 0,
+    label: "Phaser",
+    link_group: null,
+    functions: [onOff("PHS1", "ACD_Phaser")],
+    level_params: [],
+  };
   const FS: FootswitchInfo = {
     switch: 2,
     label: "Boost",
     link_group: null,
-    functions: [
-      {
-        func: "on-off",
-        group_id: "G1",
-        node_id: "drive1",
-        fender_id: "ACD_Boost",
-        parameter_id: null,
-        value_a: null,
-        value_b: null,
-        is_active: false,
-      },
-    ],
+    functions: [onOff("drive1", "ACD_Boost")],
     level_params: [],
   };
-  const fsSound = (nodeId: string) =>
-    sound("f1:0", 1, {
-      footswitch: 2,
-      diags: [
-        {
-          ...MUDDY,
-          rx: [
-            {
-              kind: "oneclick",
-              title: "Turn the amp's Bass down 1 or 2.",
-              detail: "",
-              cpuNote: "",
-              ops: [
-                {
-                  kind: "param",
-                  groupId: "G1",
-                  nodeId,
-                  param: "bass",
-                  value: 3,
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    });
-  const input = (): DoctorInputArg => ({
-    key: "f1:0",
+  const fixOn = (d: DoctorDiag, nodeId: string, param: string): DoctorDiag => ({
+    ...d,
+    rx: [
+      {
+        kind: "oneclick",
+        title: d.rx[0].title,
+        detail: "",
+        cpuNote: "",
+        ops: [{ kind: "param", groupId: "G1", nodeId, param, value: 3 }],
+      },
+    ],
+  });
+  const input = (key: string, footswitch: number | null): DoctorInputArg => ({
+    key,
     listIndex: 1,
     scene: null,
-    footswitch: 2,
-    label: "f",
-    tag: "FS3",
+    footswitch,
+    label: key,
+    soundName: footswitch == null ? "Main sound" : "footswitch 3",
+    tag: footswitch == null ? "BASE" : "FS3",
     topologyId: null,
     calibrationLufs: null,
     profileId: null,
     nodes: [AMP],
-    footswitches: [FS],
+    footswitches: [PHASER, FS],
     sceneOverrides: [],
   });
+  const fsSound = (diags: DoctorDiag[]) =>
+    sound("f1:0", 1, { footswitch: 2, diags });
   const shared =
     "This block is shared, so the change affects every sound in this preset.";
 
-  it("says so when a footswitch sound's fix edits a block every sound uses", () => {
+  it("says so once when a footswitch sound's fixes edit a block every sound uses", () => {
     renderResults(
-      { presets: [preset(1, [fsSound("amp1")])], stopped: false },
-      { inputs: [input()] },
+      {
+        presets: [
+          preset(1, [
+            fsSound([
+              fixOn(MUDDY, "amp1", "bass"),
+              fixOn(DARK, "amp1", "treble"),
+            ]),
+          ]),
+        ],
+        stopped: false,
+      },
+      { inputs: [input("f1:0", 2)] },
     );
+    const open = within(detail("1|f1:0") ?? document.body);
+    expect(open.getAllByRole("heading")).toHaveLength(2);
     expect(screen.getAllByText(shared)).toHaveLength(1);
   });
 
-  it("stays quiet when the fix edits the switch's own block", () => {
+  it("stays quiet when the fix edits the switch's own block, found by its switch number", () => {
     renderResults(
-      { presets: [preset(1, [fsSound("drive1")])], stopped: false },
-      { inputs: [input()] },
+      {
+        presets: [preset(1, [fsSound([fixOn(MUDDY, "drive1", "bass")])])],
+        stopped: false,
+      },
+      { inputs: [input("f1:0", 2)] },
     );
+    expect(detail("1|f1:0")).not.toBeNull();
+    expect(screen.queryByText(shared)).toBeNull();
+  });
+
+  it("never shows the line on a main sound, whatever block its fix edits", () => {
+    renderResults(
+      {
+        presets: [
+          preset(1, [
+            sound("p1", 1, { diags: [fixOn(MUDDY, "amp1", "bass")] }),
+          ]),
+        ],
+        stopped: false,
+      },
+      { inputs: [input("p1", null)] },
+    );
+    expect(detail("1|p1")).not.toBeNull();
     expect(screen.queryByText(shared)).toBeNull();
   });
 });
@@ -702,6 +805,7 @@ describe("DoctorResults — reference and cut-through", () => {
             scene: null,
             footswitch: null,
             label: "p1",
+            soundName: "Main sound",
             tag: null,
             topologyId: null,
             calibrationLufs: null,

@@ -291,6 +291,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
         scene: null,
         footswitch: null,
         label: "Synth",
+        soundName: "Main sound",
         tag: null,
         topologyId: "guitar-humbucker",
         calibrationLufs: null,

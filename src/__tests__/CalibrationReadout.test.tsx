@@ -20,8 +20,8 @@ const profile: Profile = {
   calibration_lufs: null,
 };
 
-// The backend's band keys (doctor.rs LABELS_6).
-const BANDS = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
+// The backend's band labels (doctor.rs LABELS_6), shown as they come.
+const BANDS = ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"];
 const SPARSE =
   "Some ranges weren’t played, so Doctor sees less of your tone. Record again with chords and lead.";
 

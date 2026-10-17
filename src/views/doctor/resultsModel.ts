@@ -73,6 +73,13 @@ export function soundLabel(n: SoundName): string {
     : n.name;
 }
 
+/** The sound's name inside a sentence: "Main sound", "Chorus", or "footswitch 3", as the
+ *  opened "Scenes" row's own sentence names it. The backend writes it into the steps for a
+ *  volume jump. */
+export function soundInSentence(n: SoundName): string {
+  return n.footswitch != null ? `footswitch ${String(n.footswitch)}` : n.name;
+}
+
 /** Every app-side string on the Results page that a model function picks. */
 export const RESULTS_TEXT = {
   subtitle:
@@ -411,12 +418,16 @@ function soundByLabel(
   return preset.sounds.find((s) => s.label === label);
 }
 
-/** The opened "Scenes" row: its sentence and its bars. */
+/** The opened "Scenes" row: its sentence, its bars and its steps (the backend's, then the
+ *  app's own step to level the scenes). When the louder sound is the first scene (wire
+ *  scene 0), the unit's reading of it can differ from its footswitch, so the sentence says
+ *  the reading isn't certain and the app adds no leveling step: the backend's only step
+ *  then asks the player to check it by ear. The dot and the bars keep their tones. */
 export function sceneLoudness(
   ctx: ResultsContext,
   preset: DoctorPresetResult,
   sc: DoctorSceneConsistency,
-): { sentence: string; bars: SceneBar[] } {
+): { sentence: string; bars: SceneBar[]; steps: string[] } {
   const bars = sc.rows.map((r) => {
     const s = soundByLabel(preset, r.name);
     return {
@@ -428,6 +439,14 @@ export function sceneLoudness(
   const worst = soundByLabel(preset, sc.worstName);
   const name = worst ? ctx.soundNames.get(worst.key) : undefined;
   const amount = `${Math.abs(sc.worstDeltaDb).toFixed(1)} dB ${sc.worstDeltaDb < 0 ? "quieter" : "louder"}`;
+  const backendSteps = sc.rx.map((rx) => rx.title);
+  if (worst?.scene === 0 && sc.worstDeltaDb > 0) {
+    return {
+      sentence: `Your ${name?.name ?? sc.worstName} scene read ${amount} than the main sound, but that reading isn't certain.`,
+      bars,
+      steps: backendSteps,
+    };
+  }
   const who =
     name?.footswitch != null
       ? `Footswitch ${String(name.footswitch)} is`
@@ -435,6 +454,7 @@ export function sceneLoudness(
   return {
     sentence: `${who} ${amount} than the main sound. That's a big jump when you switch.`,
     bars,
+    steps: [...backendSteps, RESULTS_TEXT.levelScenesStep],
   };
 }
 

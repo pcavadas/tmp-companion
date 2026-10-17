@@ -17,6 +17,7 @@ import {
 } from "../../lib/invoke";
 import { errMsg } from "../../lib/format";
 import { NO_INSTRUMENT, type SetupOption } from "../level/leveling";
+import { soundInSentence, soundNameOf } from "./resultsModel";
 import type {
   DoctorInputArg,
   DoctorCheckResult,
@@ -200,6 +201,7 @@ export function useDoctorFlow({
           scene: o.sceneSlot,
           footswitch: o.footswitch?.switchIndex ?? null,
           label,
+          soundName: soundInSentence(soundNameOf(o)),
           tag: o.tag,
           topologyId: profile?.topology_id ?? null,
           calibrationLufs: profile?.calibration_lufs ?? null,

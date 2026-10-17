@@ -39,12 +39,6 @@ const SR_ONLY: CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-/** A take's band label as it reads on screen ("Low-mids" → "Low mids"). The backend's
- *  labels stay the keys. */
-function bandName(label: string): string {
-  return label.replace(/-/g, " ");
-}
-
 export interface InstrumentRowProps {
   profile: Profile;
   topology: TopologyInfo | null;
@@ -203,7 +197,7 @@ export function InstrumentRow({
                   }}
                 >
                   <Dot size={6} tone="neutral" hollow={!played} />
-                  {bandName(label)}
+                  {label}
                   <span style={SR_ONLY}>
                     {played ? " played" : " not played"}
                   </span>

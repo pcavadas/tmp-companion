@@ -25,9 +25,10 @@ import {
 //     Edge's ring is the near-threshold one (a hedged chip still counts), and its scenes are
 //     the only online Doctor sounds that run the SCENE path — the second scene skips its
 //     preset load (`doctor_skip_load`). It used to drive the Doctor UI over all ~10 Edge
-//     sounds behind a whole-library backup scan; the chip's rendering, its scoping to its own
-//     card and the select → check → Results flow are `DoctorResults.test.tsx`'s and
-//     doctor.spec.ts's offline.
+//     sounds behind a whole-library backup scan; the finding's rendering, its scoping to
+//     its own preset's rows ("keeps a ringing finding on its own preset's rows") and the
+//     select → check → Results flow are `DoctorResults.test.tsx`'s and doctor.spec.ts's
+//     offline.
 test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", () => {
   // Shared across both tests below (mirrors doctor-oracle.online.spec.ts's own teardown):
   // reamp-off FIRST on every test so a mid-test failure can't strand the unit

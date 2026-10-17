@@ -30,6 +30,7 @@ const item: DoctorInputArg = {
   scene: null,
   footswitch: null,
   label: "Clean",
+  soundName: "Main sound",
   tag: null,
   topologyId: null,
   calibrationLufs: null,

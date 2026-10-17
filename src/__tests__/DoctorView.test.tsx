@@ -353,6 +353,13 @@ describe("DoctorView — select → instrument → check → results", () => {
     expect(fsItem?.footswitch).toBe(3);
     expect(fsItem?.scene).toBeNull();
     expect(fsItem?.tag).toMatch(/^FS\d/);
+    // The wire label names the preset; the name the backend writes into a sentence
+    // is the one the screen uses.
+    expect(fsItem?.label).toBe("Studio Clean · Solo");
+    expect(fsItem?.soundName).toBe("footswitch 4");
+    expect(items.find((it) => it.footswitch === null)?.soundName).toBe(
+      "Main sound",
+    );
   });
 
   // BUG→GATE: DoctorInput.footswitches must carry the FULL per-preset roster (incl. a

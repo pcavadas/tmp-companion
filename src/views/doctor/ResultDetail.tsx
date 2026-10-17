@@ -8,7 +8,8 @@
 // "Reference" badge with "Clear" on the reference itself).
 // The SCENES row: how far the furthest sound sits from the main sound, a bar per sound
 // (coloured on the row's own scale, `sceneBarTone`), and what to change (the backend's
-// steps, then "Level this preset's scenes on the Level tab.").
+// steps, then "Level this preset's scenes on the Level tab." unless the louder sound is
+// the first scene, whose reading isn't certain).
 // The FOOTSWITCHES row: what those assignments do, one line per footswitch.
 // Every word is a step the player makes on the unit: Doctor never writes.
 
@@ -230,9 +231,8 @@ interface ScenesDetailProps {
 
 function ScenesDetail({ ctx, preset, sc }: ScenesDetailProps) {
   const { t } = useTheme();
-  const { sentence, bars } = sceneLoudness(ctx, preset, sc);
+  const { sentence, bars, steps } = sceneLoudness(ctx, preset, sc);
   const maxAbs = Math.max(0, ...bars.map((b) => Math.abs(b.deltaDb)));
-  const steps = [...sc.rx.map((rx) => rx.title), RESULTS_TEXT.levelScenesStep];
   return (
     <div data-result-detail={`${String(preset.listIndex)}|consistency`}>
       <Section>

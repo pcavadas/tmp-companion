@@ -28,7 +28,14 @@ pub struct DoctorInput {
     /// Block-acting footswitch index (0-based `switch`) when this sound is a
     /// footswitch state; `None` for base/scene sounds.
     pub footswitch: Option<u32>,
+    /// The wire label ("Tweed Warm · Lead"): the results carry it back and the frontend
+    /// finds each sound by it. It also names the preset, so no sentence on screen uses it.
     pub label: String,
+    /// The sound's name as the screen says it in a sentence: a scene's name ("Lead"),
+    /// "footswitch 3" for a footswitch, "Main sound" for a main sound. Scene consistency
+    /// writes it into its steps. Empty (a caller that sends none) falls back to `label`.
+    #[serde(default)]
+    pub sound_name: String,
     pub tag: Option<String>,
     pub topology_id: Option<String>,
     pub calibration_lufs: Option<f32>,
@@ -61,6 +68,17 @@ pub struct DoctorInput {
 /// [`doctor_force_bypass`] and [`base_isolation_or_refuse`] share. Named purely to keep
 /// their signatures under clippy's `type_complexity` threshold.
 pub(crate) type ForceBypass = Vec<(String, String, bool)>;
+
+impl DoctorInput {
+    /// [`Self::sound_name`], or the label when the caller sent none.
+    fn screen_name(&self) -> &str {
+        if self.sound_name.is_empty() {
+            &self.label
+        } else {
+            &self.sound_name
+        }
+    }
+}
 
 /// The force-bypass isolation list for capturing one sound cleanly (mirrors the
 /// leveller's base/footswitch isolation, `footswitch.rs`): Base forces EVERY
@@ -630,6 +648,11 @@ fn assemble_results(
             }),
         }
     }
+    // Each sound's on-screen name, for the steps scene consistency writes.
+    let screen_names: std::collections::HashMap<&str, &str> = resolved
+        .iter()
+        .map(|(item, _, _)| (item.key.as_str(), item.screen_name()))
+        .collect();
     for p in &mut presets {
         let Some((label, lufs, instrument)) = bases.get(&p.list_index) else {
             continue;
@@ -637,11 +660,21 @@ fn assemble_results(
         // Scene sounds carry Some(wire index); footswitch sounds carry None — both are
         // stomp destinations. Only a MEASURED sound has a loudness, so the `?` admits
         // exactly those.
-        let others: Vec<(String, Option<String>, f64, Option<u32>)> = p
+        let others: Vec<doctor::OtherSound> = p
             .sounds
             .iter()
             .filter(|s| s.scene.is_some() || s.footswitch.is_some())
-            .filter_map(|s| Some((s.label.clone(), s.tag.clone(), s.integrated_lufs?, s.scene)))
+            .filter_map(|s| {
+                Some(doctor::OtherSound {
+                    label: s.label.clone(),
+                    name: screen_names
+                        .get(s.key.as_str())
+                        .map_or_else(|| s.label.clone(), |n| (*n).to_string()),
+                    tag: s.tag.clone(),
+                    lufs: s.integrated_lufs?,
+                    scene: s.scene,
+                })
+            })
             .collect();
         p.scene_consistency = doctor::scene_consistency(label, *lufs, &others, *instrument);
     }

@@ -3520,6 +3520,7 @@ pub fn leveling_damage_hints(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneDeltaRow {
+    /// The sound's wire label (the frontend finds the sound by it and names it itself).
     pub name: String,
     /// FS tag ("FS1"…), None for the base row.
     pub tag: Option<String>,
@@ -3532,20 +3533,35 @@ pub struct SceneDeltaRow {
 #[serde(rename_all = "camelCase")]
 pub struct SceneConsistency {
     pub rows: Vec<SceneDeltaRow>,
+    /// The loudest-jumping sound's wire label, like each row's `name`.
     pub worst_name: String,
     pub worst_delta_db: f64,
     pub rx: Vec<Rx>,
 }
 
+/// One scene or footswitch sound that [`scene_consistency`] compares with the main sound.
+#[derive(Debug, Clone)]
+pub struct OtherSound {
+    /// The sound's wire label: the rows and `worst_name` carry it, and the frontend
+    /// finds the sound by it.
+    pub label: String,
+    /// The sound's name as the screen says it in a sentence ("Lead", "footswitch 3"):
+    /// the steps use it, never the label (which also names the preset).
+    pub name: String,
+    /// FS tag ("FS1"…).
+    pub tag: Option<String>,
+    pub lufs: f64,
+    /// `Some(wire index)` for a scene sound, `None` for a footswitch sound.
+    pub scene: Option<u32>,
+}
+
 /// Sound-loudness consistency: deltas vs the base sound, flagged when any
-/// scene or footswitch sound jumps more than the threshold. `others` =
-/// (name, fs-tag, integrated LUFS, wire scene index): the last element is
-/// `Some(index)` for a scene sound and `None` for a footswitch sound. Returns
-/// None when nothing jumps.
+/// scene or footswitch sound jumps more than the threshold. Returns None when
+/// nothing jumps.
 pub fn scene_consistency(
     base_name: &str,
     base_lufs: f64,
-    others: &[(String, Option<String>, f64, Option<u32>)],
+    others: &[OtherSound],
     instrument: Instrument,
 ) -> Option<SceneConsistency> {
     let t = instrument.thresholds();
@@ -3560,26 +3576,30 @@ pub fn scene_consistency(
         delta_db: 0.0,
         is_ref: true,
     }];
-    let mut worst: Option<(&str, f64, Option<u32>)> = None;
-    for (name, tag, lufs, scene) in others {
-        if !lufs.is_finite() {
+    let mut worst: Option<(&OtherSound, f64)> = None;
+    for o in others {
+        if !o.lufs.is_finite() {
             continue;
         }
-        let delta = lufs - base_lufs;
+        let delta = o.lufs - base_lufs;
         rows.push(SceneDeltaRow {
-            name: name.clone(),
-            tag: tag.clone(),
+            name: o.label.clone(),
+            tag: o.tag.clone(),
             delta_db: delta,
             is_ref: false,
         });
-        if worst.map(|(_, w, _)| delta.abs() > w.abs()) != Some(false) {
-            worst = Some((name, delta, *scene));
+        if worst.map(|(_, w)| delta.abs() > w.abs()) != Some(false) {
+            worst = Some((o, delta));
         }
     }
-    let (worst_name, worst_delta, worst_scene) = worst?;
+    let (worst_sound, worst_delta) = worst?;
     if worst_delta.abs() <= t.scene_delta_db {
         return None;
     }
+    let worst_scene = worst_sound.scene;
+    // The steps and their details name the sound as the screen does; the label stays
+    // in `worst_name` for matching.
+    let worst_name = worst_sound.name.as_str();
     // The steps name the unit's knobs and the jump the player should aim for
     // (the flag's own gate); the measured gap rides each `Rx::detail`.
     let gap = format!("{worst_name} {worst_delta:+.1} dB against the main sound");
@@ -3642,7 +3662,7 @@ pub fn scene_consistency(
     };
     Some(SceneConsistency {
         rows,
-        worst_name: worst_name.to_string(),
+        worst_name: worst_sound.label.clone(),
         worst_delta_db: worst_delta,
         rx,
     })
@@ -5420,21 +5440,22 @@ mod tests {
 
     // ── scene consistency ──
 
+    /// A scene or footswitch sound named the same on the wire and on screen.
+    fn other(name: &str, tag: Option<&str>, lufs: f64, scene: Option<u32>) -> OtherSound {
+        OtherSound {
+            label: name.to_string(),
+            name: name.to_string(),
+            tag: tag.map(str::to_string),
+            lufs,
+            scene,
+        }
+    }
+
     #[test]
     fn scene_consistency_flags_big_jump_only() {
         let scenes = vec![
-            (
-                "Crunch".to_string(),
-                Some("FS1".to_string()),
-                -14.0,
-                Some(1u32),
-            ),
-            (
-                "Lead".to_string(),
-                Some("FS2".to_string()),
-                -18.5,
-                Some(2u32),
-            ),
+            other("Crunch", Some("FS1"), -14.0, Some(1)),
+            other("Lead", Some("FS2"), -18.5, Some(2)),
         ];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("6 dB jump flags");
@@ -5459,7 +5480,7 @@ mod tests {
             .iter()
             .all(|r| r.kind == RxKind::Advisory && r.ops.is_empty()));
         // All within 3 dB → no flag.
-        let tame = vec![("Lead".to_string(), None, -18.0, Some(1u32))];
+        let tame = vec![other("Lead", None, -18.0, Some(1))];
         assert!(scene_consistency("Rhythm", -20.0, &tame, Instrument::Guitar).is_none());
     }
 
@@ -5467,12 +5488,7 @@ mod tests {
     fn scene_quieter_worst_gets_advisory_not_trim() {
         // A much QUIETER worst scene: trimming down is wrong — point to the
         // Level tab instead of prescribing a SceneTrim.
-        let scenes = vec![(
-            "Ballad".to_string(),
-            Some("FS1".to_string()),
-            -27.0,
-            Some(1u32),
-        )];
+        let scenes = vec![other("Ballad", Some("FS1"), -27.0, Some(1))];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("7 dB quieter still flags");
         assert!((sc.worst_delta_db + 7.0).abs() < 1e-9);
@@ -5490,12 +5506,7 @@ mod tests {
     fn scene_zero_worst_gets_verify_by_ear_advisory() {
         // The open loadScene(0) anomaly: a worst scene at wire index 0 gets a
         // verify-by-ear advisory (distinct copy from the plain louder advisory).
-        let scenes = vec![(
-            "Lead".to_string(),
-            Some("FS1".to_string()),
-            -14.0,
-            Some(0u32),
-        )];
+        let scenes = vec![other("Lead", Some("FS1"), -14.0, Some(0))];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("6 dB jump flags");
         assert_eq!(sc.rx.len(), 1);
@@ -5507,12 +5518,7 @@ mod tests {
         );
         // The same jump on wire index 1 is the plain louder advisory — advisory
         // too (no in-app scene trim), but NOT the by-ear copy.
-        let scenes = vec![(
-            "Lead".to_string(),
-            Some("FS1".to_string()),
-            -14.0,
-            Some(1u32),
-        )];
+        let scenes = vec![other("Lead", Some("FS1"), -14.0, Some(1))];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar).unwrap();
         assert_eq!(sc.rx[0].kind, RxKind::Advisory);
         assert!(sc.rx[0].ops.is_empty());
@@ -5524,9 +5530,9 @@ mod tests {
 
     #[test]
     fn scene_consistency_guards_non_finite() {
-        let dead = vec![("Dead".to_string(), None, f64::NEG_INFINITY, Some(1u32))];
+        let dead = vec![other("Dead", None, f64::NEG_INFINITY, Some(1))];
         assert!(scene_consistency("Rhythm", -20.0, &dead, Instrument::Guitar).is_none());
-        let ok = vec![("Lead".to_string(), None, -14.0, Some(1u32))];
+        let ok = vec![other("Lead", None, -14.0, Some(1))];
         assert!(scene_consistency("Rhythm", f64::NEG_INFINITY, &ok, Instrument::Guitar).is_none());
     }
 
@@ -5618,13 +5624,8 @@ mod tests {
         // A footswitch sound (no wire scene index) as the worst jump: there is
         // nothing to SceneTrim — advise leveling / backing off the knob.
         let others = vec![
-            ("Boost".to_string(), Some("FS3".to_string()), -13.0, None),
-            (
-                "Lead".to_string(),
-                Some("FS1".to_string()),
-                -18.0,
-                Some(1u32),
-            ),
+            other("Boost", Some("FS3"), -13.0, None),
+            other("Lead", Some("FS1"), -18.0, Some(1)),
         ];
         let sc = scene_consistency("Rhythm", -20.0, &others, Instrument::Guitar)
             .expect("7 dB FS jump flags");
@@ -5644,13 +5645,8 @@ mod tests {
         // An FS row present but a louder SCENE is the worst: the louder-scene
         // advisory fires and the FS row still appears in the delta table.
         let others = vec![
-            ("Boost".to_string(), Some("FS3".to_string()), -19.0, None),
-            (
-                "Lead".to_string(),
-                Some("FS1".to_string()),
-                -14.0,
-                Some(1u32),
-            ),
+            other("Boost", Some("FS3"), -19.0, None),
+            other("Lead", Some("FS1"), -14.0, Some(1)),
         ];
         let sc = scene_consistency("Rhythm", -20.0, &others, Instrument::Guitar)
             .expect("6 dB scene jump flags");
@@ -6998,25 +6994,41 @@ mod tests {
 
     #[test]
     fn scene_advice_reads_in_the_app_voice() {
-        // (name, integrated LUFS, wire scene index): a louder scene, a louder
-        // first scene (the by-ear case), a louder footswitch, and the quieter
-        // scene and footswitch.
-        let cases: [(&str, f64, Option<u32>); 5] = [
-            ("Chorus", -14.0, Some(1)),
-            ("Intro", -14.0, Some(0)),
-            ("Boost", -13.0, None),
-            ("Ballad", -27.0, Some(1)),
-            ("Clean", -27.0, None),
+        // (wire label, on-screen name, integrated LUFS, wire scene index): a louder
+        // scene, a louder first scene (the by-ear case), a louder footswitch, and the
+        // quieter scene and footswitch. The labels are the frontend's real
+        // "Preset · Sound" shape, which also names the preset.
+        let cases: [(&str, &str, f64, Option<u32>); 5] = [
+            ("Plexi Crunch · Chorus", "Chorus", -14.0, Some(1)),
+            ("Plexi Crunch · Intro", "Intro", -14.0, Some(0)),
+            ("Plexi Crunch · Boost", "footswitch 3", -13.0, None),
+            ("Plexi Crunch · Ballad", "Ballad", -27.0, Some(1)),
+            ("Plexi Crunch · Clean", "footswitch 2", -27.0, None),
         ];
-        for (name, lufs, scene) in cases {
-            let others = vec![(name.to_string(), None, lufs, scene)];
-            let sc = scene_consistency("Rhythm", -20.0, &others, Instrument::Guitar)
+        for (label, name, lufs, scene) in cases {
+            let others = vec![OtherSound {
+                label: label.to_string(),
+                name: name.to_string(),
+                tag: None,
+                lufs,
+                scene,
+            }];
+            let sc = scene_consistency("Plexi Crunch · Base", -20.0, &others, Instrument::Guitar)
                 .expect("a big jump flags");
+            // The label stays the key the frontend matches on.
+            assert_eq!(sc.worst_name, label);
+            assert_eq!(sc.rows[1].name, label);
             for (i, r) in sc.rx.iter().enumerate() {
                 assert_app_voice(&r.title, true);
                 assert!(r.title.ends_with('.'), "{:?}", r.title);
                 assert_eq!(starts_with_or(&r.title), i > 0, "{:?}", r.title);
+                // A step names the sound as the screen does, never by its label.
+                for text in [&r.title, &r.detail] {
+                    assert!(!text.contains(" · "), "{text:?}");
+                    assert!(!text.contains("Plexi Crunch"), "{text:?}");
+                }
             }
+            assert!(sc.rx[0].title.contains(name), "{:?}", sc.rx[0].title);
         }
     }
 

@@ -36,6 +36,7 @@ const input = (o: SetupOption): DoctorInputArg => ({
   scene: o.sceneSlot,
   footswitch: null,
   label: o.key,
+  soundName: o.sceneName,
   tag: o.tag,
   topologyId: null,
   calibrationLufs: null,

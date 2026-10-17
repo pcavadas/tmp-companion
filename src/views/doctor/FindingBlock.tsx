@@ -38,23 +38,16 @@ function firesAt(level: PlaybackLevel): [boolean, boolean, boolean] {
 export interface FindingBlockProps {
   diag: DoctorDiag;
   sound: DoctorSoundResult;
-  /** App-side steps after the backend's fixes. */
-  extraSteps?: readonly string[];
   /** Anything to add under the block (the "too quiet" line under the last one). */
   footnote?: ReactNode;
 }
 
-export function FindingBlock({
-  diag,
-  sound,
-  extraSteps = [],
-  footnote,
-}: FindingBlockProps) {
+export function FindingBlock({ diag, sound, footnote }: FindingBlockProps) {
   const { t } = useTheme();
   const tone = findingTone(diag);
   const lit = tone === "danger" ? t.danger : t.cautionLine;
   const fires = firesAt(diag.fromLevel);
-  const steps = [...diag.rx.map((rx) => rx.title), ...extraSteps];
+  const steps = diag.rx.map((rx) => rx.title);
   const caption = {
     fontSize: t.fontCaption,
     lineHeight: `${String(t.lineCaption)}px`,

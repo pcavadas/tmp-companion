@@ -289,8 +289,8 @@ three tiers: (1) a drivable EQ-10 stereo already in the chain → a value-aware
 one-click on it; (2) a DIFFERENT EQ already present (`OTHER_EQ_IDS`) → an
 **advisory** to use the one you have; (3) no EQ → insert an EQ-10 anchored
 right **after the cab** (`after_cab_anchor` — the wire anchor is the
-neighbour's FenderId, NOT its node_id; a duplicated-model neighbour used to
-silently drop the anchor). Param one-clicks are **value-aware** wherever the
+neighbour's node id, which the device looks up among the group's current node
+ids; a FenderId anchor aborts the device server, see `danger.md`). Param one-clicks are **value-aware** wherever the
 current value rides the graph allowlist: a write that would move a known value
 the WRONG way is dropped, and a blind write on an UNKNOWN value says so in its
 `Rx::detail`. The app shows each fix's `Rx::title` only, as a bullet under "What
@@ -396,12 +396,20 @@ the unit rather than promising a one-click: a louder scene turns its amp's Level
 down until the jump is within the gate (or raises the Middle to stand out
 instead), a louder footswitch sound turns down the block it turns on, a quieter
 one is turned up if it isn't on purpose, and the scene-0 USB anomaly asks for a
-check by ear. The app adds the Level-tab step itself. `DoctorOp` carries no
+check by ear. The app adds the Level-tab step itself, except when the louder sound
+is the first scene (wire scene 0): its reading isn't trusted, so the opened row
+says the reading isn't certain and adds no leveling step. `DoctorOp` carries no
 `SceneTrim` variant.
+
+The steps name each sound as the screen does: `DoctorInput.sound_name` ("Lead",
+"footswitch 3"), which the frontend sends beside the wire `label`. The label
+("Tweed Warm · Lead") also names the preset, so it stays in the rows and
+`worst_name`, where the frontend finds the sound by it, and never in a sentence.
 
 Only MEASURED sounds enter consistency. A Stop returns the sounds the run never
 reached with `status: "unrun"` and `integratedLufs: null` — never a placeholder
-reading — and the results never claim "All clear" while one is unrun or errored.
+reading — and the title never says "Nothing to change in these N sounds" (or "in
+this sound") while one is unrun or errored.
 
 ## Playback level (Fletcher–Munson, PROVISIONAL)
 

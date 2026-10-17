@@ -777,6 +777,7 @@ fn item(
         scene,
         footswitch,
         label: key.to_string(),
+        sound_name: String::new(),
         tag: None,
         topology_id: None,
         calibration_lufs: None,
@@ -885,6 +886,53 @@ fn consistency_compares_only_measured_sounds() {
         "the failed scene stays out: {rows:?}"
     );
     assert!(rows.iter().any(|r| r.name == "s0"));
+}
+
+/// The steps a volume jump writes name the sound as the screen does ("Lead", "footswitch 3"),
+/// never by its wire label, which also names the preset. The rows and `worst_name` keep the
+/// label, because the frontend finds each sound by it.
+#[test]
+fn consistency_steps_use_the_on_screen_name_and_rows_keep_the_label() {
+    let named = |key: &str, scene, footswitch, label: &str, name: &str| {
+        let (mut input, url, kind) = item(key, scene, footswitch);
+        input.label = label.to_string();
+        input.sound_name = name.to_string();
+        (input, url, kind)
+    };
+    // (louder sound, its label, its on-screen name)
+    let cases = [
+        (Some(1), None, "Tweed Warm · Lead", "Lead"),
+        (Some(0), None, "Tweed Warm · Intro", "Intro"),
+        (None, Some(2), "Tweed Warm · Boost", "footswitch 3"),
+    ];
+    for (scene, footswitch, label, name) in cases {
+        let items = vec![
+            named("base", None, None, "Tweed Warm · Base", "Main sound"),
+            named("other", scene, footswitch, label, name),
+        ];
+        let outcomes = vec![
+            measured(-20.0, -40.0, Vec::new()),
+            measured(-14.0, -40.0, Vec::new()),
+        ];
+        let p = &assemble_results(&items, &outcomes)[0];
+        let sc = p
+            .scene_consistency
+            .as_ref()
+            .expect("a 6 dB jump is flagged");
+        assert_eq!(sc.worst_name, label);
+        assert_eq!(
+            sc.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["Tweed Warm · Base", label]
+        );
+        assert!(!sc.rx.is_empty());
+        for r in &sc.rx {
+            for text in [&r.title, &r.detail] {
+                assert!(!text.contains(" · "), "{text:?}");
+                assert!(!text.contains("Tweed Warm"), "{text:?}");
+            }
+        }
+        assert!(sc.rx[0].title.contains(name), "{:?}", sc.rx[0].title);
+    }
 }
 
 // --- #191: one effective graph per sound ---
