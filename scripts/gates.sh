@@ -539,18 +539,24 @@ fi
 
 # The frontend and Rust gates share nothing, so they run side by side: the frontend group in a
 # background subshell whose output is held in a file and printed whole once it ends (the two
-# groups' lines never interleave), the Rust group in the foreground. A Rust failure exits
-# through the trap, which stops the frontend group and removes its log.
+# groups' lines never interleave), the Rust group in the foreground. A Rust failure, Ctrl-C
+# or a TERM exits through the traps, which stop the frontend group and remove its log (the
+# EXIT/INT/TERM shape `scripts/e2e.sh` uses).
 fe_pid=""
 fe_log=""
+# shellcheck disable=SC2329,SC2317  # invoked from the traps, not statically traced
 stop_frontend() {
+  trap - EXIT INT TERM
   if [ -n "$fe_pid" ]; then
     pkill -P "$fe_pid" 2>/dev/null || true
     kill "$fe_pid" 2>/dev/null || true
   fi
   if [ -n "$fe_log" ]; then rm -f "$fe_log"; fi
+  if [ -n "${1:-}" ]; then exit "$1"; fi
 }
 trap stop_frontend EXIT
+trap 'stop_frontend 130' INT
+trap 'stop_frontend 143' TERM
 
 if [ "$want_frontend" -eq 1 ]; then
   fe_log="$(mktemp)"
