@@ -108,6 +108,47 @@ pub(crate) fn settle_after_load_ms() -> u64 {
 const SETTLE_BEFORE_WRITE_MS: u64 = 600;
 pub(crate) const SETTLE_AFTER_SET_MS: u64 = 300;
 pub(crate) const SETTLE_AFTER_REAMP_MS: u64 = 500;
+
+// ── Leveling-speed bisect knobs ──────────────────────────────────────────────────────
+// Diagnostic env overrides for the waits around a capture, read per use like
+// `TMP_SETTLE_AFTER_LOAD_MS`. Every default is today's value, so an unset knob changes
+// nothing. They exist to HW-bisect each wait against the full-capture oracle
+// (`notes/perf.md`'s re-validation oracles); a shortened default lands only with that
+// evidence.
+
+/// `var` parsed as milliseconds, else `default`.
+pub(crate) fn env_ms(var: &str, default: u64) -> u64 {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// The settle between the re-amp engage and the capture (`TMP_SETTLE_AFTER_REAMP_MS`).
+pub(crate) fn settle_after_reamp_ms() -> u64 {
+    env_ms("TMP_SETTLE_AFTER_REAMP_MS", SETTLE_AFTER_REAMP_MS)
+}
+
+/// The last settle before a capture's engage (`TMP_PRE_ENGAGE_SETTLE_MS`).
+pub(crate) fn pre_engage_settle_ms() -> u64 {
+    env_ms("TMP_PRE_ENGAGE_SETTLE_MS", SETTLE_AFTER_SET_MS)
+}
+
+/// The settle after a capture connection's scene recall (`TMP_RECALL_SETTLE_MS`).
+pub(crate) fn recall_settle_ms() -> u64 {
+    env_ms("TMP_RECALL_SETTLE_MS", SETTLE_AFTER_SET_MS)
+}
+
+/// How many heartbeat → settle steps the naked-shape breaker sends before an engage
+/// (`TMP_BREAKER_BEATS`, default 2; see `capture_on_session`).
+pub(crate) fn breaker_beats() -> u64 {
+    env_ms("TMP_BREAKER_BEATS", 2)
+}
+
+/// Whether [`load_preset_isolated`] lapses its session (`TMP_LOAD_LAPSE=0` skips it).
+pub(crate) fn load_lapse() -> bool {
+    env_ms("TMP_LOAD_LAPSE", 1) != 0
+}
 const CAPTURE_TAIL_MS: u64 = 800;
 
 // The device silently DROPS a scene-context write when the session sat IDLE too long

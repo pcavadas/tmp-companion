@@ -594,7 +594,7 @@ pub(super) fn measure_fs_state(
     for (g, n, byp) in bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(pre_engage_settle_ms())?;
     engage_measure_disengage(&mut s, stimulus)
 }
 

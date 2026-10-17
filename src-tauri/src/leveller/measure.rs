@@ -372,7 +372,7 @@ pub(super) fn capture_full_at_params(
     // level write, not follow it.
     if let Some(scene) = recall {
         s.load_scene(scene)?;
-        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+        settle_or_cancel(recall_settle_ms())?;
     }
     for (g, n, p, v) in fs_params {
         s.change_parameter(g, n, p, *v)?;
@@ -432,20 +432,18 @@ pub(crate) fn capture_on_session(
     // engage ≥~850 ms post-recall — HW-validated green, do not perturb.
     //
     if force_bypass.is_empty() && ref_level.is_none() {
-        s.heartbeat()?;
-        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
-        s.heartbeat()?;
+        breaker(s)?;
     }
     // Settle UNCONDITIONALLY before the engage: the caller (or the loop above) may
     // have just issued bypass/param writes even when `ref_level` is `None` — and
     // `measure_fs_state` always settles after its
     // writes for the same reason (the engage latches whatever the DSP holds).
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(pre_engage_settle_ms())?;
     let _ = s.set_reamp_mode(true)?;
     // Past the engage there is NO early return: re-amp is on, and leaving it on strands the
     // unit input-muted. So this settle only wakes early — `reamp_capture` then bails on its
     // own up-front abort check, and the OFF below still goes out on this open session.
-    let _ = settle_abortable(SETTLE_AFTER_REAMP_MS);
+    let _ = settle_abortable(settle_after_reamp_ms());
     let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
     let _ = s.set_reamp_mode(false);
     cap
@@ -858,10 +856,23 @@ pub(crate) fn engage_capture_disengage(
 ) -> Result<audio::Capture, LevelError> {
     let _ = s.set_reamp_mode(true)?;
     // Same no-early-return rule as `capture_full_at`: re-amp is engaged, the OFF must fire.
-    let _ = settle_abortable(SETTLE_AFTER_REAMP_MS);
+    let _ = settle_abortable(settle_after_reamp_ms());
     let cap = audio::reamp_capture(stimulus, RATE, CAPTURE_TAIL_MS);
     let _ = s.set_reamp_mode(false);
     cap
+}
+
+/// The naked-shape idle breaker: [`breaker_beats`] heartbeats, a settle between each, every
+/// idle gap ≤300 ms. The default (2) is the HW-green recall → 300 → hb → 300 → hb cadence
+/// the callers document; the trailing settle before the engage is the caller's.
+fn breaker(s: &mut Session) -> Result<(), LevelError> {
+    for i in 0..breaker_beats() {
+        if i > 0 {
+            settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+        }
+        s.heartbeat()?;
+    }
+    Ok(())
 }
 
 /// One as-is scene reading: fresh connection, recall, engage, measure, disengage —
@@ -910,7 +921,7 @@ pub(super) fn measure_scene_asis(
 ) -> Result<lufs::Loudness, LevelError> {
     let mut s = Session::connect_lean()?;
     s.load_scene(scene_slot)?;
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(recall_settle_ms())?;
     if let Some(pl) = intended_preset_level {
         set_knob(&mut s, &LevelKnob::PresetLevel, pl, None)?;
         settle_or_cancel(SETTLE_AFTER_SET_MS)?;
@@ -918,10 +929,8 @@ pub(super) fn measure_scene_asis(
     for (g, n, byp) in force_bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
-    s.heartbeat()?;
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
-    s.heartbeat()?;
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    breaker(&mut s)?;
+    settle_or_cancel(pre_engage_settle_ms())?;
     engage_measure_disengage(&mut s, stimulus)
 }
 
@@ -971,7 +980,7 @@ pub(super) fn arm_measurement(
     }
     // Cancellable: nothing is engaged yet and the connection is throwaway, so a Stop
     // here bails cleanly (the same settle #128 made interruptible pre-refactor).
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(pre_engage_settle_ms())?;
     Ok(())
 }
 
@@ -1002,11 +1011,9 @@ pub(super) fn arm_pair_measurement(
     // that pins the shape and why it must not spread to the scene arm or a write-bearing
     // base run.
     if scene.is_none() && writes.is_empty() {
-        s.heartbeat()?;
-        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
-        s.heartbeat()?;
+        breaker(s)?;
     }
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(pre_engage_settle_ms())?;
     Ok(())
 }
 

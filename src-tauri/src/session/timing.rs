@@ -44,6 +44,16 @@ pub(super) fn handshake_window(ms: u64, scale: Option<f64>) -> u64 {
         .min(CLEARLY_LIVE_MS)
 }
 
+/// The re-amp setter's collect window under the `TMP_REAMP_ECHO_MS` bisect knob (default
+/// [`REAMP_ECHO_MS`]). Nothing waits on the echo itself: the ON echo queues behind the
+/// handshake drain and the OFF echo is empty (see `Session::set_reamp_mode`).
+pub(super) fn reamp_echo_ms() -> u64 {
+    std::env::var("TMP_REAMP_ECHO_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(REAMP_ECHO_MS)
+}
+
 /// The `connectionRequest` a write after a possible lapse sends first (`TrackedHid`).
 pub(super) const REOPEN_MS: u64 = 100;
 

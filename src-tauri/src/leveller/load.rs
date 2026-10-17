@@ -130,7 +130,9 @@ pub(crate) fn load_preset_isolated(slot: ListIndex, mode: CancelMode) -> Result<
             crate::device_gate::settle(Duration::from_millis(settle_after_load_ms()))
         }
     }
-    s.lapse()?;
+    if load_lapse() {
+        s.lapse()?;
+    }
     drop(s);
     Ok(())
 }
