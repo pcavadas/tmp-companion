@@ -1,5 +1,6 @@
 // App.tsx — the calibrate-nav wiring: the Level tab's "Record yours in Settings"
-// link (on the leveling Set up page) jumps to Settings → Instruments, and a manual
+// link (on the leveling Set up page) jumps to Settings → Instruments, its "Add a target
+// in Settings" link to Settings → Loudness targets, and a manual
 // Settings-tab click clears that seed so a later ordinary visit lands back on
 // the default category. Also: Settings' "Report a bug" opens the same dialog as
 // the native Help menu. LevelView/SettingsView are shallow-mocked (their own
@@ -16,8 +17,11 @@ import type { LevelViewProps } from "../views/level/LevelView";
 import type { SettingsViewProps } from "../views/settings/SettingsView";
 
 vi.mock("../views/level", () => ({
-  LevelView: ({ onCalibrate }: LevelViewProps) => (
-    <button onClick={onCalibrate}>fire-calibrate</button>
+  LevelView: ({ onCalibrate, onAddTarget }: LevelViewProps) => (
+    <>
+      <button onClick={onCalibrate}>fire-calibrate</button>
+      <button onClick={onAddTarget}>fire-add-target</button>
+    </>
   ),
 }));
 
@@ -58,6 +62,17 @@ describe("App — calibrate-nav wiring", () => {
 
     expect(await screen.findByTestId("settings-pane")).toHaveTextContent(
       "instruments",
+    );
+  });
+
+  it("onAddTarget jumps to Settings on the Loudness targets category", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByText("fire-add-target"));
+
+    expect(await screen.findByTestId("settings-pane")).toHaveTextContent(
+      "targets",
     );
   });
 

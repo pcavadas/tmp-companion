@@ -395,21 +395,21 @@ export interface SetupRowPick {
 }
 
 /** The Set up page's commit, pure: one `SetupChoice` per option, with each row's
- *  effective leveling handle folded into its option. `handleOf` resolves a row's
- *  handle (its pick, else the page's preselect); `suggestedSceneOf` a footswitch's
- *  suggested scene context (null while unread). A footswitch whose handle matches one
- *  of its level params is re-targeted at that param (and an unlabeled switch named
- *  after it); a Base row carries its pick as `baseHandle`; a Scene row as
- *  `sceneHandle`. */
+ *  effective leveling handle folded into its option. `rowOf` gives a row's resolved
+ *  instrument, target and scene pick (the caller resolves every one, so there is no
+ *  default to fall back on); `handleOf` resolves a row's handle (its pick, else the
+ *  page's preselect); `suggestedSceneOf` a footswitch's suggested scene context (null
+ *  while unread). A footswitch whose handle matches one of its level params is
+ *  re-targeted at that param (and an unlabeled switch named after it); a Base row carries
+ *  its pick as `baseHandle`; a Scene row as `sceneHandle`. */
 export function buildSetupChoices(
   options: SetupOption[],
-  rowOf: (key: string) => SetupRowPick | undefined,
+  rowOf: (o: SetupOption) => SetupRowPick,
   handleOf: (o: SetupOption) => SceneHandlePick | null,
   suggestedSceneOf: (o: SetupOption) => number | null,
-  defaults: { inst: string; target: string },
 ): SetupChoice[] {
   return options.map((o) => {
-    const row = rowOf(o.key);
+    const row = rowOf(o);
     let option = o;
     if (o.footswitch != null) {
       const chosenHandle = handleOf(o);
@@ -423,7 +423,7 @@ export function buildSetupChoices(
         : undefined;
       const suggested = suggestedSceneOf(o);
       const sceneContext =
-        row?.sceneContext !== undefined
+        row.sceneContext !== undefined
           ? row.sceneContext
           : (suggested ?? o.footswitch.sceneContext);
       const target: FootswitchTarget = candidate
@@ -449,11 +449,7 @@ export function buildSetupChoices(
     } else if (o.sceneSlot != null) {
       option = { ...o, sceneHandle: handleOf(o) };
     }
-    return {
-      option,
-      instId: row?.inst ?? defaults.inst,
-      targetName: row?.target ?? defaults.target,
-    };
+    return { option, instId: row.inst, targetName: row.target };
   });
 }
 
@@ -613,6 +609,15 @@ export function chosenFrom(
 export type Outcome =
   "done" | "clamped" | "unconverged" | "offbranch" | "skipped";
 
+/** Resolve a target NAME to its loudness (LUFS), or `null` when no configured target has
+ *  that name: an empty name, a target deleted in Settings, or a store not loaded yet.
+ *  There is no fallback loudness — the run refuses such a sound (`no_target`). */
+export type TargetLufsOf = (name: string | null) => number | null;
+
+/** WHY a run row was skipped: a backend `SkipKind`, or `no_target`, the run's own refusal
+ *  of a sound whose target name matches no configured target (it never reaches the unit). */
+export type RunSkipKind = SkipKind | "no_target";
+
 export interface RunItem {
   key: string;
   /** 0-based list index of the preset. */
@@ -629,6 +634,10 @@ export interface RunItem {
   instId: string;
   /** Chosen target name. */
   targetName: string;
+  /** The loudness the run leveled this row to: its target's, resolved by name when the
+   *  row's batch began. Absent on a row no run has reached, and on one the run refused
+   *  because no configured target has its name (`no_target`). */
+  targetLufs?: number;
   // live + final:
   status: "queued" | "active" | "result";
   outcome?: Outcome;
@@ -640,10 +649,10 @@ export interface RunItem {
    *  report. Null when the skip happened client-side with no message. The screen picks
    *  its words by `skipKind`, never by this text. */
   skipReason?: string | null;
-  /** WHY a row was skipped, typed (`SkipKind`): from the row's `error` progress item, or
-   *  the failed command's own `CommandError.kind`. `"other"` when nothing says more.
-   *  Set exactly when `outcome === "skipped"`. */
-  skipKind?: SkipKind;
+  /** WHY a row was skipped, typed (`RunSkipKind`): from the row's `error` progress item,
+   *  the failed command's own `CommandError.kind`, or the run's own `no_target` refusal.
+   *  `"other"` when nothing says more. Set exactly when `outcome === "skipped"`. */
+  skipKind?: RunSkipKind;
   /** The clamp's CAUSE (`ClampKind`, from the result's `clamp_kind`) — tells "at full
    *  volume" from the effect's mix floor and the trade's floors without reading text.
    *  Null on a row that did not clamp. */

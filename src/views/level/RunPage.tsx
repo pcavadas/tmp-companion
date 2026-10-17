@@ -31,7 +31,12 @@ import { FlowPage } from "./FlowPage";
 import { StatusMark } from "./StatusMark";
 import { useLiveMeter } from "./liveMeterStore";
 import { isRunOver, type RunPhase } from "./levelRunStore";
-import { groupItemsBySlot, setupRowHookKey, type RunItem } from "./leveling";
+import {
+  groupItemsBySlot,
+  setupRowHookKey,
+  type RunItem,
+  type TargetLufsOf,
+} from "./leveling";
 import { footswitchNo, nowLine, runRowState } from "./runModel";
 
 export interface RunPageProps {
@@ -40,7 +45,7 @@ export interface RunPageProps {
   total: number;
   phase: RunPhase;
   tailMessage?: string | null;
-  targetLufsByName: (name: string | null) => number;
+  targetLufsByName: TargetLufsOf;
   /** The Stop dialog's "Stop": stop after the sound in progress. */
   onStop: () => void;
   /** After a natural finish: on to the Summary. */
@@ -69,6 +74,11 @@ export function RunPage({
   const done = items.filter((x) => x.status === "result").length;
   const now = nowLine(items, currentIndex, phase, tailMessage);
   const focus = now.item ?? (items.length > 0 ? items[0] : null);
+  // The loudness a row is leveled to: the one its batch resolved, else its target's now.
+  // A row whose target matches none has no meter (the run refuses it).
+  const lufsOf = (it: RunItem): number | null =>
+    it.targetLufs ?? targetLufsByName(it.targetName);
+  const focusLufs = focus ? lufsOf(focus) : null;
 
   // Keep the sound in progress in view as the run moves down the list.
   const listRef = useRef<HTMLDivElement>(null);
@@ -139,10 +149,10 @@ export function RunPage({
           >
             {now.text}
           </span>
-          {focus && (
+          {focus && focusLufs != null && (
             <LoudnessMeter
               lufs={now.listening ? lufs : null}
-              target={targetLufsByName(focus.targetName)}
+              target={focusLufs}
               targetName={focus.targetName}
               soundName={focus.sceneName}
             />
@@ -197,7 +207,7 @@ export function RunPage({
                   key={it.key}
                   item={it}
                   stopping={stopping}
-                  targetLufs={targetLufsByName(it.targetName)}
+                  targetLufs={lufsOf(it)}
                 />
               ))}
             </div>
@@ -227,7 +237,7 @@ export function RunPage({
 interface RunRowProps {
   item: RunItem;
   stopping: boolean;
-  targetLufs: number;
+  targetLufs: number | null;
 }
 
 /** One sound of the run: mark, name (a footswitch says which one), target, state word. */

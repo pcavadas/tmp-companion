@@ -11,7 +11,12 @@ import { SetupPage } from "../level/SetupPage";
 import { RunPage } from "../level/RunPage";
 import { SummaryPage } from "../level/SummaryPage";
 import type { SelectOption } from "../../ui/selectValue";
-import type { SetupOption, SetupChoice, RunItem } from "../level/leveling";
+import type {
+  SetupOption,
+  SetupChoice,
+  RunItem,
+  TargetLufsOf,
+} from "../level/leveling";
 import type { RunState, SummaryScenes } from "../level/levelRunStore";
 
 export interface LevelingWizardProps {
@@ -28,13 +33,15 @@ export interface LevelingWizardProps {
   savedInstruments: Partial<Record<number, string>>;
   defaultInst: string;
   /** Resolve a target name to its LUFS (the run's meter, the Summary's clamp side). */
-  targetLufsByName: (name: string | null) => number;
+  targetLufsByName: TargetLufsOf;
   /** The run on screen (the live meter is RunPage's own store read). */
   run: RunState;
   /** Every sound the flow ran, with its latest result (the Summary's rows). */
   results: RunItem[];
   /** Footswitch scenes changed on the Summary. */
   summaryScenes: SummaryScenes;
+  /** Re-amp may still be on, by the flow's latest reading (the Summary's Notice). */
+  reampStillOn: boolean;
   // callbacks
   onCancel: () => void;
   /** Set up's commit: the configured sounds and the presets balanced first. */
@@ -48,6 +55,10 @@ export interface LevelingWizardProps {
   onDone: () => void;
   /** Jump to Settings → Instruments ("Record yours in Settings"). */
   onCalibrate?: () => void;
+  /** Jump to Settings → Loudness targets ("Add a target in Settings"). */
+  onAddTarget?: () => void;
+  /** The app's store is still loading (Set up waits for its targets). */
+  storeLoading?: boolean;
 }
 
 export function LevelingWizard({
@@ -62,6 +73,7 @@ export function LevelingWizard({
   run,
   results,
   summaryScenes,
+  reampStillOn,
   onCancel,
   onStart,
   onInstrumentChange,
@@ -71,6 +83,8 @@ export function LevelingWizard({
   onTryAgain,
   onDone,
   onCalibrate,
+  onAddTarget,
+  storeLoading,
 }: LevelingWizardProps) {
   if (stage === "setup") {
     return (
@@ -85,6 +99,8 @@ export function LevelingWizard({
         onStart={onStart}
         onInstrumentChange={onInstrumentChange}
         onCalibrate={onCalibrate}
+        onAddTarget={onAddTarget}
+        storeLoading={storeLoading}
       />
     );
   }
@@ -108,6 +124,7 @@ export function LevelingWizard({
     <SummaryPage
       items={results}
       stopped={run.phase === "stopped"}
+      reampStillOn={reampStillOn}
       targetLufsByName={targetLufsByName}
       sceneOverrides={summaryScenes}
       onSceneChange={onSummaryScene}

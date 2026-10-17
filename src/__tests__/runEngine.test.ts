@@ -73,6 +73,7 @@ const outcome = (
 
 const summaryCtx = (over: Partial<SummaryContext> = {}): SummaryContext => ({
   stopped: false,
+  reampStillOn: false,
   targetLufsByName: () => -26,
   sceneNamesOf: () => [],
   enablingScenesOf: () => null,
@@ -213,7 +214,7 @@ async function drive(items: RunItem[], deps: EngineDeps) {
     items.map((it) => Object.freeze(it)),
   );
   published.push({ rows, copy: JSON.stringify(rows) });
-  await runEngine(rows, deps, (step) => {
+  const verdict = await runEngine(rows, deps, (step) => {
     steps.push(step);
     rows = Object.freeze(
       applyPatches(rows, step.patches).map((it) => Object.freeze(it)),
@@ -221,7 +222,7 @@ async function drive(items: RunItem[], deps: EngineDeps) {
     published.push({ rows, copy: JSON.stringify(rows) });
   });
   for (const p of published) expect(JSON.stringify(p.rows)).toBe(p.copy);
-  return { steps, rows };
+  return { steps, rows, verdict };
 }
 
 describe("runEngine", () => {
@@ -430,6 +431,81 @@ describe("runEngine", () => {
     ]);
   });
 
+  // A target deleted in Settings has no loudness: the run refuses its sounds before
+  // anything reaches the unit, with a typed kind, and never levels them at a stand-in.
+  it("refuses a sound whose target is not configured, before any command", async () => {
+    const deps = fakeDeps({
+      targetLufsByName: (name) =>
+        name === "Gone" || name === "" ? null : name === "Lead" ? -20 : -26,
+    });
+    const { rows, verdict } = await drive(
+      [
+        base("b", { targetName: "Gone" }),
+        scene("s1", 1),
+        scene("s2", 2, { targetName: "" }),
+        footswitch("f0", 0, { targetName: "Gone" }),
+      ],
+      deps,
+    );
+    expect(rows.map((r) => [r.key, r.outcome, r.skipKind ?? null])).toEqual([
+      ["b", "skipped", "no_target"],
+      ["s1", "done", null],
+      ["s2", "skipped", "no_target"],
+      ["f0", "skipped", "no_target"],
+    ]);
+    expect(deps.levelPreset).not.toHaveBeenCalled();
+    expect(deps.levelFootswitchesApply).not.toHaveBeenCalled();
+    // The scene batch carries only the sound it can level, at its own target, and no
+    // anchor for a main sound that has none.
+    const [args] = vi.mocked(deps.levelScenesApplyBatched).mock.calls[0];
+    expect(args.jobs.map((j) => [j.sceneSlot, j.targetLufs])).toEqual([
+      [1, -26],
+    ]);
+    expect(args.baseAnchor).toBeUndefined();
+    expect(rows[1].targetLufs).toBe(-26);
+    expect(verdict.reampStillOn).toBe(false);
+  });
+
+  it("knows nothing new about re-amp when no command ran", async () => {
+    const deps = fakeDeps({ targetLufsByName: () => null });
+    const { verdict } = await drive([base("b"), scene("s1", 1)], deps);
+    expect(deps.levelPreset).not.toHaveBeenCalled();
+    expect(deps.levelScenesApplyBatched).not.toHaveBeenCalled();
+    expect(verdict.reampStillOn).toBeNull();
+  });
+
+  // A command that returned read re-amp back; a rejection without the flag may have been
+  // refused before anything engaged, so it reads nothing.
+  it("takes a rejection's still-on, and nothing from a rejection without it", async () => {
+    const rejecting = (reampStillOn: boolean) =>
+      fakeDeps({
+        levelPreset: vi.fn<EngineDeps["levelPreset"]>(() =>
+          Promise.reject(
+            Object.assign(new Error("refused"), {
+              kind: "other",
+              reampStillOn,
+            }),
+          ),
+        ),
+      });
+    expect((await drive([base("b")], rejecting(false))).verdict).toEqual({
+      reampStillOn: null,
+    });
+    expect((await drive([base("b")], rejecting(true))).verdict).toEqual({
+      reampStillOn: true,
+    });
+    // A later command of the same run that reads it back off doesn't undo an earlier
+    // still-on.
+    const both = fakeDeps({
+      levelPreset: vi.fn<EngineDeps["levelPreset"]>(() =>
+        Promise.resolve(makeLevelResult({ reamp_still_on: true })),
+      ),
+    });
+    expect(
+      (await drive([base("b"), scene("s1", 1)], both)).verdict.reampStillOn,
+    ).toBe(true);
+  });
+
   it("leaves the re-amp flag unset when the run-end OFF read back", async () => {
     const { rows } = await drive([base("b"), scene("s1", 1)], fakeDeps());
     expect(rows[0].reampStillOn).toBe(false);
@@ -458,12 +534,24 @@ describe("runEngine", () => {
         },
       ),
     });
-    const { rows } = await drive([scene("s1", 1), scene("s2", 2)], deps);
+    const { rows, verdict } = await drive(
+      [scene("s1", 1), scene("s2", 2)],
+      deps,
+    );
     expect(rows.map((r) => [r.status, r.reampStillOn])).toEqual([
       ["queued", true],
       ["queued", true],
     ]);
-    expect(buildSummary(rows, summaryCtx({ stopped: true })).notice).toEqual({
+    expect(verdict.reampStillOn).toBe(true);
+    expect(
+      buildSummary(
+        rows,
+        summaryCtx({
+          stopped: true,
+          reampStillOn: verdict.reampStillOn === true,
+        }),
+      ).notice,
+    ).toEqual({
       tone: "caution",
       title: null,
       text: SUMMARY_TEXT.reampStillOn,
@@ -486,7 +574,7 @@ describe("runEngine", () => {
         },
       ),
     });
-    const { rows } = await drive(
+    const { rows, verdict } = await drive(
       [footswitch("f0", 0), footswitch("f1", 1)],
       deps,
     );
@@ -494,9 +582,13 @@ describe("runEngine", () => {
       ["skipped", "no_signal", true],
       ["skipped", "no_signal", true],
     ]);
-    expect(buildSummary(rows, summaryCtx()).notice?.text).toBe(
-      SUMMARY_TEXT.reampStillOn,
-    );
+    expect(verdict.reampStillOn).toBe(true);
+    expect(
+      buildSummary(
+        rows,
+        summaryCtx({ reampStillOn: verdict.reampStillOn === true }),
+      ).notice?.text,
+    ).toBe(SUMMARY_TEXT.reampStillOn);
   });
 
   // OWNER-ANSWERS 4: the save's verdict is only known once the command returns — the

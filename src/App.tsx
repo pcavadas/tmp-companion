@@ -82,10 +82,11 @@ export default function App() {
   );
 
   const [tab, setTab] = useState<Tab>("level");
-  // Settings category to seed on the NEXT Settings mount — set by the Level tab's
-  // "calibrate" cue (jump to Instruments); null = plain entry, defaults to
-  // "targets". A manual tab click always clears it (below) so a later ordinary
-  // Settings visit doesn't inherit a stale Instruments jump.
+  // Settings category to seed on the NEXT Settings mount — set by the links into it
+  // ("Record yours in Settings" in Level and Doctor jumps to Instruments, Set up's "Add a
+  // target in Settings" to Loudness targets); null = plain entry, defaults to "targets".
+  // A manual tab click always clears it (below) so a later ordinary Settings visit
+  // doesn't inherit a stale jump.
   const [settingsCategory, setSettingsCategory] = useState<
     CategoryId | undefined
   >(undefined);
@@ -95,6 +96,11 @@ export default function App() {
   }, []);
   const onCalibrate = useCallback(() => {
     setSettingsCategory("instruments");
+    setTab("settings");
+  }, []);
+  // Set up's "Add a target in Settings": jump to Loudness targets.
+  const onAddTarget = useCallback(() => {
+    setSettingsCategory("targets");
     setTab("settings");
   }, []);
   const [status, setStatus] = useState<ConnStatus>("connecting");
@@ -338,6 +344,7 @@ export default function App() {
                   deviceState={noUnit}
                   initialGraph={initialGraph}
                   onCalibrate={onCalibrate}
+                  onAddTarget={onAddTarget}
                 />
               )}
               {tab === "doctor" && (

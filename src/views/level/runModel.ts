@@ -19,11 +19,16 @@ export type StatusMarkKind =
 export type ClampCause = "full" | "quieter" | "failed";
 
 /** The clamp cause of a clamped row, by its typed `clampKind`, and for an ordinary clamp
- *  by which side of the target it stayed on. */
-export function clampCause(it: RunItem, targetLufs: number): ClampCause {
+ *  by which side of the target it stayed on: the loudness the run leveled it to
+ *  (`RunItem.targetLufs`), else `targetLufs` (its target's now). With neither, the side
+ *  can't be told, and the row reads as at full volume. */
+export function clampCause(it: RunItem, targetLufs: number | null): ClampCause {
   if (it.clampKind === "partial_trade") return "failed";
   if (it.clampKind === "wet_floor") return "quieter";
-  return it.value != null && it.value > targetLufs ? "quieter" : "full";
+  const target = it.targetLufs ?? targetLufs;
+  return it.value != null && target != null && it.value > target
+    ? "quieter"
+    : "full";
 }
 
 /** The sound a stopped run never reached: no outcome, or the base row the Stop cancelled
@@ -51,7 +56,7 @@ export interface RunRowState {
 export function runRowState(
   it: RunItem,
   stopping: boolean,
-  targetLufs: number,
+  targetLufs: number | null,
 ): RunRowState {
   if (it.status === "active")
     return {

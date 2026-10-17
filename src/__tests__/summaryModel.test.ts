@@ -22,6 +22,7 @@ import { base, fsRow, sceneRow } from "./summaryTestUtils";
 
 const ctx = (over: Partial<SummaryContext> = {}): SummaryContext => ({
   stopped: false,
+  reampStillOn: false,
   targetLufsByName: (name) => (name === "Lead" ? -19 : -23),
   sceneNamesOf: () => [],
   enablingScenesOf: () => null,
@@ -181,7 +182,7 @@ describe("one sentence per outcome, by typed fields", () => {
     }
   });
 
-  it("a skip says what it can by its kind; one that recurs leaves Try again", () => {
+  it("a skip another run can fix says what it can by its kind, and counts in Try again", () => {
     const say = (kind: NonNullable<RunItem["skipKind"]>) =>
       buildSummary([base({ outcome: "skipped", skipKind: kind })], ctx());
     expect(only(say("preset_unreadable")).messages).toEqual([
@@ -194,15 +195,62 @@ describe("one sentence per outcome, by typed fields", () => {
       expect(only(say(kind)).messages).toEqual([SUMMARY_TEXT.notLeveled]);
       expect(say(kind).retryKeys).toEqual(["p3"]);
     }
-    for (const kind of [
-      "no_active_amp",
-      "level_manually",
-      "scene_write_refused",
-      "block_off",
-    ] as const) {
+    for (const kind of ["no_stimulus", "clipped_capture"] as const) {
       expect(only(say(kind)).messages).toEqual([SUMMARY_TEXT.notLeveled]);
-      expect(say(kind).retryKeys).toEqual([]);
+      expect(say(kind).retryKeys).toEqual(["p3"]);
     }
+  });
+
+  // A skip that happens the same way every time says what to change, each kind its own
+  // sentence, and never counts in Try again.
+  it("a skip that recurs says what to change, by its kind, and leaves Try again", () => {
+    const say = (kind: NonNullable<RunItem["skipKind"]>) =>
+      buildSummary(
+        [sceneRow(0, { outcome: "skipped", skipKind: kind })],
+        ctx(),
+      );
+    const cases = [
+      [
+        "no_active_amp",
+        "No amp is on in this sound, so its volume wasn't changed. Choose a block and knob for it when you level it again.",
+      ],
+      [
+        "level_manually",
+        "Leveling can't choose a knob for this sound's amps on its own, so its volume wasn't changed. Choose a block and knob for it when you level it again.",
+      ],
+      [
+        "scene_write_refused",
+        "This scene shares its knob with the main sound, so its volume wasn't changed. Turn on Scene Edit for that block on your Tone Master Pro, or choose another knob for it when you level it again.",
+      ],
+      [
+        "unsupported_knob",
+        "That knob isn't a volume or mix knob, so its volume wasn't changed. Choose a volume or mix knob for it when you level it again.",
+      ],
+      [
+        "knob_missing",
+        "That knob isn't in the preset any more, so its volume wasn't changed. Choose another knob for it when you level it again.",
+      ],
+      [
+        "block_off",
+        "That block is off in this sound, so its volume wasn't changed. Choose another block for it when you level it again.",
+      ],
+      [
+        // The unit's setting is read when it connects, so the fix includes a replug.
+        "scene_change_discards",
+        "Your Tone Master Pro is set to throw away scene changes, so leveling can't save them. On your Tone Master Pro, set Scene Change Behavior to Maintain changes. Then unplug it, plug it back in, and level it again.",
+      ],
+      [
+        "no_target",
+        "Its target isn't in Settings any more, so its volume wasn't changed. Choose a target for it when you level it again.",
+      ],
+    ] as const;
+    for (const [kind, text] of cases) {
+      const m = say(kind);
+      expect(only(m)).toMatchObject({ mark: "danger", messages: [text] });
+      expect(m.retryKeys).toEqual([]);
+    }
+    // Every sentence is its own.
+    expect(new Set(cases.map(([, text]) => text)).size).toBe(cases.length);
   });
 
   it("the backend's own reason never reaches the screen", () => {
@@ -329,7 +377,7 @@ describe("badges and shared messages", () => {
         base({ reampStillOn: true, truePeakDbtp: -0.4 }),
         base({ key: "p4", slot: 4, presetName: "Clean", truePeakDbtp: -0.2 }),
       ],
-      ctx(),
+      ctx({ reampStillOn: true }),
     );
     expect(m.notice).toEqual({
       tone: "caution",
@@ -347,6 +395,16 @@ describe("badges and shared messages", () => {
       ctx(),
     );
     expect(text.notice).toBeNull();
+  });
+
+  it("the restart Notice follows the flow's latest reading, not a row an earlier run marked", () => {
+    // The main sound's run left re-amp on; a later Try again of the scene read it back
+    // off, so the flow's reading is off while the main sound's row keeps its flag.
+    const m = buildSummary(
+      [base({ reampStillOn: true }), sceneRow(0, {})],
+      ctx({ reampStillOn: false }),
+    );
+    expect(m.notice).toBeNull();
   });
 
   it("the base boost: words only, and an e2e hook says whether it was applied", () => {

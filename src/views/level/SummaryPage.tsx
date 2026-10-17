@@ -23,7 +23,7 @@ import { Group } from "../../ui/List";
 import { Button, Notice } from "../../ui/primitives";
 import { FlowPage } from "./FlowPage";
 import { SummaryRow } from "./SummaryRow";
-import { setupRowHookKey, type RunItem } from "./leveling";
+import { setupRowHookKey, type RunItem, type TargetLufsOf } from "./leveling";
 import { buildSummary } from "./summaryModel";
 
 export interface SummaryPageProps {
@@ -31,7 +31,9 @@ export interface SummaryPageProps {
   items: RunItem[];
   /** The last run ended by a Stop. */
   stopped: boolean;
-  targetLufsByName: (name: string | null) => number;
+  /** Re-amp may still be on, by the flow's latest reading: the restart Notice. */
+  reampStillOn: boolean;
+  targetLufsByName: TargetLufsOf;
   /** Footswitch scenes changed here, waiting for Try again. */
   sceneOverrides: Partial<Record<string, number | null>>;
   /** A footswitch's scene picked on its row (`undefined`: back to the one used). */
@@ -43,6 +45,7 @@ export interface SummaryPageProps {
 export function SummaryPage({
   items,
   stopped,
+  reampStillOn,
   targetLufsByName,
   sceneOverrides,
   onSceneChange,
@@ -56,6 +59,7 @@ export function SummaryPage({
     () =>
       buildSummary(items, {
         stopped,
+        reampStillOn,
         targetLufsByName,
         sceneNamesOf: (slot) =>
           (lib.sceneInfo.get(slot) ?? []).map((sc) => sc.name),
@@ -65,7 +69,7 @@ export function SummaryPage({
         sceneOverrides,
         hookKeyOf: setupRowHookKey,
       }),
-    [items, stopped, targetLufsByName, lib, sceneOverrides],
+    [items, stopped, reampStillOn, targetLufsByName, lib, sceneOverrides],
   );
   const n = summary.retryKeys.length;
 

@@ -34,6 +34,7 @@ import {
   optionToRunItem,
   type SetupChoice,
   type PresetRow,
+  type TargetLufsOf,
 } from "./leveling";
 import type {
   SceneInfo,
@@ -63,7 +64,7 @@ export interface UseLevelingFlowDeps {
   /** Per-preset silence hint from the SAME backup read, keyed by 0-based list index —
    *  refines the offbranch row status (stamped on each RunItem at build). */
   silenceHintByIndex: Map<number, SilenceHint>;
-  targetLufsByName: (name: string | null) => number;
+  targetLufsByName: TargetLufsOf;
   /** Drop just the given selection keys (BUG-4: prune the keys a run actually leveled,
    *  accumulating across Try again rounds, so un-run sounds stay selected). */
   deselectKeys: (keys: string[]) => void;
@@ -161,6 +162,7 @@ export function useLevelingFlow({
       run: flow.run,
       results: flow.results,
       summaryScenes: flow.summaryScenes,
+      reampStillOn: flow.reampStillOn,
       openFlow,
       onCancel: onClose,
       onSetupStart,

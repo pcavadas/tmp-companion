@@ -17,7 +17,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 
 import { LevelView } from "../views/level";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
@@ -30,6 +30,7 @@ import type {
   FootswitchLevelResult,
   LevelBlock,
   LevelResult,
+  Store,
 } from "../lib/types";
 import { resetLevelFlow } from "../views/level/levelRunStore";
 import {
@@ -674,6 +675,74 @@ describe("LevelView — full leveling wizard e2e", () => {
       await screen.findByRole("button", { name: /^level 1 sound$/i }),
     );
     expect(inst()).toHaveAccessibleName("Instrument for Plexi: None");
+  });
+
+  // A tab switch unmounts the Level view while the flow stays on Set up, so coming back
+  // mounts Set up before the app's store has loaded again.
+  it("Set up met again after a tab round trip waits for the store, then starts from the saved instrument", async () => {
+    mockLevelingFixture();
+    const first = renderView(true);
+    const user = userEvent.setup();
+    await selectBaseOnly(user);
+    await user.click(
+      await screen.findByRole("button", { name: /^level 1 sound$/i }),
+    );
+    await screen.findByRole("heading", { name: "Level 1 sound" });
+    first.unmount();
+
+    // Back on the Level tab: the store answers only when the test releases it.
+    let release: (st: Store) => void = () => undefined;
+    const pending = new Promise<Store>((resolve) => {
+      release = resolve;
+    });
+    const fixture = vi.mocked(invoke).getMockImplementation();
+    vi.mocked(invoke).mockImplementation(
+      (command: string, args?: InvokeArgs) =>
+        command === "get_store"
+          ? pending
+          : (fixture?.(command, args) ?? Promise.resolve(undefined)),
+    );
+    renderView(true);
+    await screen.findByRole("heading", { name: "Level 1 sound" });
+    await ackBackup(user);
+    expect(
+      screen.getByRole("button", { name: "Start leveling" }),
+    ).toBeDisabled();
+    expect(screen.queryByText("Add a target in Settings")).toBeNull();
+
+    await act(async () => {
+      release(
+        makeStore({
+          profiles: [
+            {
+              id: "strat",
+              name: "Stratocaster",
+              topology_id: "sc",
+              calibration_lufs: -22,
+            },
+            {
+              id: "tele",
+              name: "Telecaster",
+              topology_id: "sc",
+              calibration_lufs: -22,
+            },
+          ],
+          profile_by_slot: { 0: "tele" },
+          targets: [{ name: "Rhythm", lufs: -26 }],
+        }),
+      );
+      await pending;
+    });
+    expect(
+      await screen.findByRole("button", {
+        name: "Instrument for Plexi: Telecaster",
+      }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Start leveling" }));
+    await waitFor(() => {
+      expect(callsOf("level_preset")).toHaveLength(1);
+    });
+    expect(callsOf("level_preset")[0].job.profile_id).toBe("tele");
   });
 
   it("Base-only run → summary → Done clears selection", async () => {

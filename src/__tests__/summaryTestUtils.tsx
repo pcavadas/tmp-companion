@@ -57,6 +57,7 @@ export function renderSummary(
   items: RunItem[],
   over: {
     stopped?: boolean;
+    reampStillOn?: boolean;
     sceneOverrides?: Partial<Record<string, number | null>>;
   } = {},
 ) {
@@ -68,6 +69,7 @@ export function renderSummary(
     <SummaryPage
       items={items}
       stopped={over.stopped ?? false}
+      reampStillOn={over.reampStillOn ?? false}
       targetLufsByName={(name) => (name === "Lead" ? -19 : -23)}
       sceneOverrides={over.sceneOverrides ?? {}}
       onSceneChange={onSceneChange}

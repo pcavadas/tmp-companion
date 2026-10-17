@@ -173,18 +173,40 @@ describe("Summary page", () => {
     ).not.toBeNull();
   });
 
-  // Was SummaryReampWarning.test.tsx; owner answer 8: keyed on the typed flag.
+  // Was SummaryReampWarning.test.tsx: keyed on the typed flag, the flow's latest reading.
   it("re-amp may still be on: one Notice that says to restart the unit", () => {
-    renderSummary([
-      base({ reampStillOn: true }),
-      base({ key: "p4", slot: 4, presetName: "Clean", reampStillOn: true }),
-    ]);
+    renderSummary(
+      [
+        base({ reampStillOn: true }),
+        base({ key: "p4", slot: 4, presetName: "Clean", reampStillOn: true }),
+      ],
+      { reampStillOn: true },
+    );
     expect(
       screen.getAllByText(
         "Your guitar input may still be muted. Restart your Tone Master Pro.",
       ),
     ).toHaveLength(1);
     expect(screen.queryByText("Re-amp may still be on")).toBeNull();
+  });
+
+  it("a unit set to throw away scene changes: one row says how to fix it, with no Try again", () => {
+    renderSummary([
+      base({}),
+      sceneRow(0, { outcome: "skipped", skipKind: "scene_change_discards" }),
+      sceneRow(1, { outcome: "skipped", skipKind: "scene_change_discards" }),
+    ]);
+    expect(
+      screen.getByRole("heading", { name: "1 sound leveled. 2 need you." }),
+    ).toBeInTheDocument();
+    const need = screen.getByRole("region", { name: "Need you" });
+    expect(
+      within(need).getAllByText(
+        "Your Tone Master Pro is set to throw away scene changes, so leveling can't save them. On your Tone Master Pro, set Scene Change Behavior to Maintain changes. Then unplug it, plug it back in, and level it again.",
+      ),
+    ).toHaveLength(2);
+    expect(screen.queryByText(/Couldn't level this sound/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Try again/ })).toBeNull();
   });
 
   it("the footswitch scene choice adds the sound to Try again", async () => {

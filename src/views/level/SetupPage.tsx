@@ -5,7 +5,8 @@
 // Group (a header row per preset with its one instrument, then a row per chosen sound
 // with its Target, Block, Knob and, for a footswitch of a preset with scenes, "Level it in
 // scene"), and the Footer: Cancel on the left; on the right the one thing Start waits for
-// (a link to it), the backup tick and "Start leveling".
+// (a link to it: "Add a target in Settings" while no target is configured, else the first
+// row's missing choice), the backup tick and "Start leveling".
 //
 // What to level was chosen on the list, once; this page only says how. Every dropdown is
 // pre-set to the best guess and always shows exactly what the run will use. Every chosen
@@ -59,6 +60,11 @@ export interface SetupPageProps {
   onInstrumentChange?: (slot: number, id: string) => void;
   /** "Record yours in Settings": go to Settings › Instruments. */
   onCalibrate?: () => void;
+  /** "Add a target in Settings": go to Settings › Loudness targets. */
+  onAddTarget?: () => void;
+  /** The app's store (targets, saved instruments) is still loading: Start waits, and
+   *  nothing says a target is missing yet. */
+  storeLoading?: boolean;
 }
 
 export function SetupPage({
@@ -72,6 +78,8 @@ export function SetupPage({
   onStart,
   onInstrumentChange,
   onCalibrate,
+  onAddTarget,
+  storeLoading = false,
 }: SetupPageProps) {
   const { t } = useTheme();
   const [backedUp, setBackedUp] = useState(false);
@@ -91,9 +99,17 @@ export function SetupPage({
     onInstrumentChange,
   });
   const { groups, firstNeed, pending } = setup;
+  // No target configured: nothing can run until one is added in Settings.
+  const noTargets = setup.noTargets && !storeLoading;
 
   const total = options.length;
-  const ready = total > 0 && backedUp && !pending && firstNeed == null;
+  const ready =
+    total > 0 &&
+    backedUp &&
+    !pending &&
+    !storeLoading &&
+    !setup.noTargets &&
+    firstNeed == null;
   const targetOptions: SelectOption[] = targetNames.map((n) => ({
     value: n,
     label: n,
@@ -141,6 +157,9 @@ export function SetupPage({
     color: t.textSecondary,
     whiteSpace: "nowrap",
   } as const;
+  const needIcon = (
+    <Icon name="warn-tri" size={13} stroke={t.caution} strokeWidth={2} />
+  );
   const labelled = {
     display: "flex",
     alignItems: "center",
@@ -163,7 +182,16 @@ export function SetupPage({
           }
           right={
             <>
-              {pending ? (
+              {noTargets ? (
+                onAddTarget ? (
+                  <Button variant="link" onClick={onAddTarget}>
+                    {needIcon}
+                    Add a target in Settings
+                  </Button>
+                ) : (
+                  <span style={caption}>Add a target in Settings</span>
+                )
+              ) : pending ? (
                 <span style={caption}>Reading footswitch scenes</span>
               ) : (
                 firstNeed?.need && (
@@ -173,12 +201,7 @@ export function SetupPage({
                       goToNeed(firstNeed);
                     }}
                   >
-                    <Icon
-                      name="warn-tri"
-                      size={13}
-                      stroke={t.caution}
-                      strokeWidth={2}
-                    />
+                    {needIcon}
                     {firstNeed.need.text}
                   </Button>
                 )
@@ -187,7 +210,7 @@ export function SetupPage({
               <Button
                 variant="primary"
                 size="lg"
-                busy={pending}
+                busy={pending || storeLoading}
                 disabled={!ready}
                 onClick={start}
               >

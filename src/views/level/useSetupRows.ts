@@ -5,8 +5,12 @@
 // two amps are balanced first. Everything a row shows is derived from that state plus the
 // data the backup scan already read (candidates, scene drives, footswitch scene
 // suggestions), so every dropdown shows exactly what the run will use. A preset's
-// instrument starts from the one saved for it, kept only while the dropdown still offers
-// it, so a dropdown never shows one thing while the run gets another (danger.md).
+// instrument and a sound's target are resolved at render from the user's own pick, kept
+// only while its dropdown still offers it, else the saved instrument (or the target by
+// name), else the default — so they follow the app's store when it loads after the page
+// opened, and a dropdown never shows one thing while the run gets another (danger.md).
+// With no target configured nothing can run: Start waits (`noTargets`), and the run's
+// choices are never built with a target that isn't configured.
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
@@ -39,7 +43,8 @@ import {
 } from "./leveling";
 
 /** One sound's own choices. `undefined` = not chosen: the target goes by name, the knob
- *  is the row's default (or its preselect), the footswitch scene is the suggested one. */
+ *  is the row's default (or its preselect), the footswitch scene is the suggested one. A
+ *  target that is no longer configured counts as not chosen. */
 interface RowState {
   target: string | undefined;
   handle: BlockLevelHandle | null | undefined;
@@ -174,17 +179,16 @@ export function useSetupRows({
     });
   };
 
-  // One instrument per preset: the one saved for the preset, else the default — only an
-  // instrument the dropdown still offers.
-  const [insts, setInsts] = useState<Partial<Record<number, string>>>(() => {
-    const m: Partial<Record<number, string>> = {};
-    presets.forEach((g) => {
-      const saved = savedInstruments[g.slot];
-      m[g.slot] = offersInst(saved) ? saved : defaultInst;
-    });
-    return m;
-  });
-  const instOf = (slot: number): string => insts[slot] ?? defaultInst;
+  // One instrument per preset: the user's pick, else the one saved for the preset, else
+  // the default — only an instrument the dropdown still offers. Only the picks are state;
+  // the rest is read at render, so the saved instruments apply once the store arrives.
+  const [insts, setInsts] = useState<Partial<Record<number, string>>>({});
+  const instOf = (slot: number): string => {
+    const pick = insts[slot];
+    if (offersInst(pick)) return pick;
+    const saved = savedInstruments[slot];
+    return offersInst(saved) ? saved : defaultInst;
+  };
 
   const [rebalance, setRebalance] = useState<ReadonlySet<number>>(new Set());
 
@@ -259,8 +263,17 @@ export function useSetupRows({
     return st.status === "resolved" ? (st.row?.suggested ?? null) : null;
   };
 
+  /** A row's own target pick while it is still configured (`undefined`: by name). */
+  const targetPickOf = (o: SetupOption): string | undefined => {
+    const pick = rows[o.key]?.target;
+    return pick !== undefined && targetNames.includes(pick) ? pick : undefined;
+  };
+  /** The target a row runs at: its pick, else by name (`""` only when no target is
+   *  configured). */
   const targetOf = (o: SetupOption): string =>
-    rows[o.key]?.target ?? targetByName(o.sceneName, targetNames);
+    targetPickOf(o) ?? targetByName(o.sceneName, targetNames);
+  /** No target is configured, so no sound can run: Start waits for one. */
+  const noTargets = targetNames.length === 0;
 
   const modelOf = (o: SetupOption): SetupRowModel => {
     const row = rows[o.key];
@@ -399,7 +412,7 @@ export function useSetupRows({
   // "Target for all": "By name" while every row goes by name; one target when every row
   // lands on it; else "Mixed".
   const targetAll: ForAllValue = (() => {
-    if (options.every((o) => rows[o.key]?.target === undefined))
+    if (options.every((o) => targetPickOf(o) === undefined))
       return { value: TARGET_BY_NAME, mixed: false };
     const used = new Set(options.map(targetOf));
     if (used.size === 1) {
@@ -454,29 +467,23 @@ export function useSetupRows({
   };
 
   /** The run's choices from the rows as they stand (the Start commit), plus the presets
-   *  whose two amps are balanced first. */
+   *  whose two amps are balanced first. None at all while a row's target isn't a
+   *  configured one: there would be no loudness to level it to. */
   const buildChoices = (): {
     choices: SetupChoice[];
     rebalance: number[];
   } => {
-    const byKey = new Map(options.map((o) => [o.key, o]));
+    if (options.some((o) => !targetNames.includes(targetOf(o))))
+      return { choices: [], rebalance: [] };
     const choices = buildSetupChoices(
       options,
-      (key) => {
-        const o = byKey.get(key);
-        if (!o) return undefined;
-        return {
-          inst: instOf(o.slot),
-          target: targetOf(o),
-          sceneContext: rows[key]?.sceneContext,
-        };
-      },
+      (o) => ({
+        inst: instOf(o.slot),
+        target: targetOf(o),
+        sceneContext: rows[o.key]?.sceneContext,
+      }),
       handleFor,
       fsSuggestedFor,
-      {
-        inst: defaultInst,
-        target: targetNames.length > 0 ? targetNames[0] : "",
-      },
     );
     return {
       choices,
@@ -495,6 +502,7 @@ export function useSetupRows({
     rebalance,
     pending,
     firstNeed,
+    noTargets,
     setTarget: (key: string, name: string) => {
       patchRow(key, { target: name });
     },

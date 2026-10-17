@@ -34,8 +34,18 @@ import {
 } from "../../lib/invoke";
 import { onLive } from "../../lib/liveEvents";
 import { logError } from "../../lib/log";
-import { sortRunItems, type RunItem, type SetupOption } from "./leveling";
-import { applyPatches, runEngine, type EngineStep } from "./runEngine";
+import {
+  sortRunItems,
+  type RunItem,
+  type SetupOption,
+  type TargetLufsOf,
+} from "./leveling";
+import {
+  applyPatches,
+  runEngine,
+  type EngineStep,
+  type RunVerdict,
+} from "./runEngine";
 import { IDLE_METER, pushLiveMeter, setLiveMeter } from "./liveMeterStore";
 import type { Stage } from "../overlays/wizardContext";
 import type { AmpCandidate, Profile } from "../../lib/types";
@@ -88,6 +98,11 @@ export interface LevelFlowState {
   results: RunItem[];
   /** Footswitch scenes changed on the Summary, waiting for Try again. */
   summaryScenes: SummaryScenes;
+  /** Re-amp may still be on, so the unit's guitar input may still be muted: the Summary's
+   *  restart Notice. The flow's latest reading, not any row's — a run overwrites it only
+   *  when one of its commands read re-amp back (`RunVerdict.reampStillOn`), so a clean
+   *  Try again clears it and a run that never reached the unit leaves it as it was. */
+  reampStillOn: boolean;
 }
 
 const NO_SCENES: SummaryScenes = {};
@@ -98,6 +113,7 @@ const INITIAL: LevelFlowState = {
   run: EMPTY_RUN,
   results: [],
   summaryScenes: NO_SCENES,
+  reampStillOn: false,
 };
 
 let state: LevelFlowState = INITIAL;
@@ -163,7 +179,12 @@ export function closeFlow(): string[] {
   didRun = false;
   ranKeys = new Set();
   flowEnv = null;
-  set({ stage: "closed", results: [], summaryScenes: NO_SCENES });
+  set({
+    stage: "closed",
+    results: [],
+    summaryScenes: NO_SCENES,
+    reampStillOn: false,
+  });
   return keys;
 }
 
@@ -239,7 +260,7 @@ export function resetLevelFlow(): void {
 /** What the engine needs from the view, captured when the run starts. */
 export interface RunEnv {
   profileById: (id: string) => Profile | null;
-  targetLufsByName: (name: string | null) => number;
+  targetLufsByName: TargetLufsOf;
   /** Per-preset amp `outputLevel` candidates from the startup backup, keyed by 0-based
    *  list index — so a scene run never needs a live discovery round-trip. */
   ampCandidates: Map<number, AmpCandidate[]>;
@@ -291,7 +312,7 @@ export async function runLeveling(
 ): Promise<void> {
   if (running) return;
   flowEnv = env;
-  set({ results: [], summaryScenes: NO_SCENES });
+  set({ results: [], summaryScenes: NO_SCENES, reampStillOn: false });
   await drive(items, env, []);
 }
 
@@ -389,8 +410,10 @@ async function drive(
     });
   };
 
+  // No reading until the engine returns one (it never rejects; a reset mid-run drops it).
+  let verdict: RunVerdict = { reampStillOn: null };
   try {
-    await runEngine(
+    verdict = await runEngine(
       work,
       {
         ...env,
@@ -427,6 +450,7 @@ async function drive(
         set({
           ...(stopped ? { stage: "summary" as const } : {}),
           results: mergeResults(state.results, state.run.items),
+          reampStillOn: verdict.reampStillOn ?? state.reampStillOn,
           run: {
             ...state.run,
             currentIndex: total,

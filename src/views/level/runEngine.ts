@@ -31,7 +31,12 @@ import { errorReampStillOn, errorSkipKind } from "../../lib/connectError";
 import { errMsg } from "../../lib/format";
 import { MODELS } from "../../models/catalog";
 import { resolveDeviceId } from "../../models/deviceId";
-import { buildLevelJob, toFootswitchJobWire, type RunItem } from "./leveling";
+import {
+  buildLevelJob,
+  toFootswitchJobWire,
+  type RunItem,
+  type TargetLufsOf,
+} from "./leveling";
 import type {
   AmpCandidate,
   BatchLevelRun,
@@ -226,7 +231,7 @@ export interface EngineDeps {
   /** Read live: the stop handler flips it while a command is in flight. */
   isCancelled: () => boolean;
   profileById: (id: string) => Profile | null;
-  targetLufsByName: (name: string | null) => number;
+  targetLufsByName: TargetLufsOf;
   /** Per-preset amp `outputLevel` candidates from the startup backup, keyed by 0-based
    *  list index — so a scene run never needs a live discovery round-trip. */
   ampCandidates: Map<number, AmpCandidate[]>;
@@ -241,17 +246,44 @@ export interface EngineDeps {
   earlierBaseRows?: readonly RunItem[];
 }
 
+/** A batch row the run levels: its item, its index in the run, and its target's loudness. */
+interface Runnable {
+  item: RunItem;
+  index: number;
+  targetLufs: number;
+}
+
+/** What a whole run says beyond its rows. */
+export interface RunVerdict {
+  /** The run-end re-amp verdict: `true` when any command of the run said re-amp may still
+   *  be on; `false` when at least one command read it back off and none said otherwise;
+   *  `null` when no command of the run read it back at all (every row was refused or
+   *  skipped before reaching the unit, or each command failed without saying), so the
+   *  run knows nothing new about the unit. */
+  reampStillOn: boolean | null;
+}
+
 /** Drive `items` (already in `sortRunItems` order) one batch at a time. Resolves once
- *  every batch has ended or a stop was seen between batches; never rejects. */
+ *  every batch has ended or a stop was seen between batches, with the run's verdict; never
+ *  rejects. */
 export async function runEngine(
   items: readonly RunItem[],
   deps: EngineDeps,
   emit: (step: EngineStep) => void,
-): Promise<void> {
+): Promise<RunVerdict> {
   const { isCancelled, profileById, targetLufsByName } = deps;
   let work: readonly RunItem[] = items;
   let pending: ItemPatch[] = [];
   let lastIndex = 0;
+  // The run's re-amp verdict (`RunVerdict.reampStillOn`). A command that RETURNED always
+  // read re-amp back (every leveling command ends with the guaranteed OFF), so its flag
+  // is a real reading either way. A REJECTED command says only "still on": a rejection
+  // without the flag may have been refused before anything engaged, so it reads nothing.
+  let reampStillOn: boolean | null = null;
+  const noteReamp = (stillOn: boolean, readBack: boolean) => {
+    if (stillOn) reampStillOn = true;
+    else if (readBack && reampStillOn === null) reampStillOn = false;
+  };
 
   const patch = (index: number, p: Partial<RunItem>) => {
     const change = { index, patch: p };
@@ -402,19 +434,37 @@ export async function runEngine(
     kind: errorSkipKind(error),
     reampStillOn: errorReampStillOn(error),
   });
-  const skipBatch = (batch: Batch, p: Partial<RunItem>) => {
-    for (let j = batch.start; j < batch.end; j++)
-      finish(j, { skipKind: "other", ...p, outcome: "skipped" });
+  /** Skip the batch's rows `rows` (its runnable ones: a row refused for its target keeps
+   *  that reason). */
+  const skipBatch = (rows: readonly Runnable[], p: Partial<RunItem>) => {
+    for (const r of rows)
+      finish(r.index, { skipKind: "other", ...p, outcome: "skipped" });
   };
-  const targetOf = (x: RunItem) => targetLufsByName(x.targetName);
+  /** The batch's rows whose target resolves, each with its loudness. Every other row is
+   *  refused here, before anything reaches the unit, with the typed `no_target`: there is
+   *  no fallback loudness to level it at. */
+  const runnableOf = (batch: Batch): Runnable[] => {
+    const out: Runnable[] = [];
+    for (let j = batch.start; j < batch.end; j++) {
+      const lufs = targetLufsByName(work[j].targetName);
+      if (lufs == null) {
+        finish(j, { outcome: "skipped", skipKind: "no_target" });
+      } else {
+        patch(j, { targetLufs: lufs });
+        out.push({ item: work[j], index: j, targetLufs: lufs });
+      }
+    }
+    return out;
+  };
   const candCache = new Map<number, AmpCandidate[]>();
 
   try {
     for (const batch of planBatches(items)) {
       if (isCancelled()) break;
-      const i = batch.start;
-      const it = work[i];
-      const group = work.slice(batch.start, batch.end);
+      const runnable = runnableOf(batch);
+      if (runnable.length === 0) continue;
+      const i = runnable[0].index;
+      const it = runnable[0].item;
       const profile = profileById(it.instId);
       const envelope = (deps.blocksByIndex.get(it.slot) ?? []).some((id) =>
         ENVELOPE_BIDS.has(id),
@@ -435,12 +485,13 @@ export async function runEngine(
             const res = await deps.levelPreset(
               buildLevelJob(
                 it.slot,
-                targetOf(it),
+                runnable[0].targetLufs,
                 profile,
                 true,
                 it.baseHandle,
               ),
             );
+            noteReamp(res.reamp_still_on, true);
             p = {
               ...resultPatch(res, envelope),
               truePeakDbtp: res.true_peak_dbtp,
@@ -454,6 +505,7 @@ export async function runEngine(
           // One sound's failure shouldn't abort the run — retain its reason, its typed
           // kind, and whether the run left re-amp on.
           const f = failureOf(error);
+          noteReamp(f.reampStillOn, false);
           p = {
             skipReason: f.reason,
             skipKind: f.kind,
@@ -468,12 +520,13 @@ export async function runEngine(
       if (batch.lane === "footswitch") {
         // Block-acting FOOTSWITCHES: the backend measures every switch, then writes them
         // all on ONE session and saves the preset ONCE. Bake vs assign stays internal.
+        const switches = runnable.flatMap((r) =>
+          r.item.footswitch != null
+            ? [{ ...r, footswitch: r.item.footswitch }]
+            : [],
+        );
         const bySwitch = new Map(
-          group.flatMap((g, k) =>
-            g.footswitch != null
-              ? [[g.footswitch.switchIndex, i + k] as const]
-              : [],
-          ),
+          switches.map((r) => [r.footswitch.switchIndex, r.index] as const),
         );
         const resolveFs = batchResolve(bySwitch, envelope);
         markGroupActive(bySwitch, i);
@@ -482,10 +535,8 @@ export async function runEngine(
           const run = await deps.levelFootswitchesApply(
             {
               slot: it.slot,
-              jobs: group.flatMap((g) =>
-                g.footswitch == null
-                  ? []
-                  : [toFootswitchJobWire(g.footswitch, targetOf(g))],
+              jobs: switches.map((r) =>
+                toFootswitchJobWire(r.footswitch, r.targetLufs),
               ),
               save: true,
               ...wireProfile,
@@ -502,9 +553,11 @@ export async function runEngine(
           );
           // The rows streamed before the save and the run-end re-amp OFF; both verdicts
           // ride the return only.
+          noteReamp(run.reampStillOn, true);
           stampRunEnd(batch, bySwitch, run, (r) => r.switch);
         } catch (error) {
           failure = failureOf(error);
+          noteReamp(failure.reampStillOn, false);
           stampReamp(batch, { stillOn: failure.reampStillOn, warning: null });
         }
         sweepUnresolved(bySwitch, {
@@ -528,7 +581,7 @@ export async function runEngine(
             cands = ampBlocks(await deps.listLevelBlocks(it.slot));
           } catch (error) {
             // The live read of the preset's blocks failed: the preset couldn't be read.
-            skipBatch(batch, {
+            skipBatch(runnable, {
               skipReason: errMsg(error),
               skipKind: "preset_unreadable",
             });
@@ -540,24 +593,25 @@ export async function runEngine(
       // A row that names its own control (`handle`) needs no amp candidate. Bail locally
       // only when NOBODY in the group has one; a mixed group still dispatches and the
       // backend skips the amp-needing rows individually.
-      if (cands.length === 0 && !group.some((g) => g.handle != null)) {
-        skipBatch(batch, { skipKind: "no_active_amp" });
+      if (cands.length === 0 && !runnable.some((r) => r.item.handle != null)) {
+        skipBatch(runnable, { skipKind: "no_active_amp" });
         continue;
       }
-      const byScene = new Map(group.map((g, k) => [g.sceneSlot, i + k]));
+      const byScene = new Map(runnable.map((r) => [r.item.sceneSlot, r.index]));
       const resolveScene = batchResolve(byScene, envelope);
       markGroupActive(byScene, i);
       // Keep this preset's BASE job alive through the batch's prepass + headroom-trade
       // phases (issue 1). The base row ran FIRST (base-first sort), so its target is known —
       // look it up in `work`, never the group; a Try again without the main sound anchors
       // on the earlier run's row. Omit the key entirely (not `null`) when no base row was
-      // chosen: no trade to plan.
+      // chosen, or its target is no longer configured (the run refused it): no trade to
+      // plan.
       const baseItem =
         work.find((w) => w.slot === it.slot && w.isBase) ??
         deps.earlierBaseRows?.find((w) => w.slot === it.slot);
-      const baseAnchor = baseItem
-        ? { targetLufs: targetOf(baseItem) }
-        : undefined;
+      const baseLufs = baseItem ? targetLufsByName(baseItem.targetName) : null;
+      const baseAnchor =
+        baseLufs != null ? { targetLufs: baseLufs } : undefined;
       // Per-scene outcomes arrive via the Channel, NOT the returned value — read only for
       // the run-end facts (the save's verdict and the re-amp warning). The offline e2e HTTP
       // bridge no-ops the Channel, so scene rows there resolve to "skipped" (see
@@ -569,10 +623,10 @@ export async function runEngine(
             slot: it.slot,
             // `handle` is `Option`/serde-defaulted on the Rust side — an `undefined` value
             // is simply OMITTED by JSON serialization (never sent as `null`).
-            jobs: group.map((g) => ({
-              sceneSlot: g.sceneSlot ?? 0,
-              targetLufs: targetOf(g),
-              handle: g.handle,
+            jobs: runnable.map((r) => ({
+              sceneSlot: r.item.sceneSlot ?? 0,
+              targetLufs: r.targetLufs,
+              handle: r.item.handle,
             })),
             candidates: cands,
             save: true,
@@ -592,9 +646,11 @@ export async function runEngine(
             );
           },
         );
+        noteReamp(run.reampStillOn, true);
         stampRunEnd(batch, byScene, run, (r) => r.scene_slot);
       } catch (error) {
         failure = failureOf(error);
+        noteReamp(failure.reampStillOn, false);
         stampReamp(batch, { stillOn: failure.reampStillOn, warning: null });
       }
       sweepUnresolved(byScene, {
@@ -619,4 +675,5 @@ export async function runEngine(
   }
   // Patches no step carried yet (a cancelled sweep's revert, a run-end stamp).
   if (pending.length > 0) publish(lastIndex);
+  return { reampStillOn };
 }

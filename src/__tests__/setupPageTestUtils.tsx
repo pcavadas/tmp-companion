@@ -25,31 +25,40 @@ export interface RenderSetupOptions {
   saved?: Partial<Record<number, string>>;
   defaultInst?: string;
   onCalibrate?: () => void;
+  onAddTarget?: () => void;
+  storeLoading?: boolean;
   onInstrumentChange?: (slot: number, id: string) => void;
 }
 
-/** Render Set up over `options`; returns its commit and cancel mocks. */
+/** Render Set up over `options`; returns its commit and cancel mocks, and `rerender` to
+ *  give the same page new inputs (the store arriving after it opened). */
 export function renderSetupPage(
   options: SetupOption[],
   over: RenderSetupOptions = {},
 ) {
   const onStart = vi.fn<(c: SetupChoice[], rebalance: number[]) => void>();
   const onCancel = vi.fn();
-  const view = renderWithTheme(
+  const page = (o: RenderSetupOptions) => (
     <SetupPage
       options={options}
-      instrumentOptions={over.instrumentOptions ?? INSTRUMENTS}
-      recordedInstruments={over.recorded ?? new Set()}
-      targetNames={over.targetNames ?? ["Rhythm", "Lead"]}
-      savedInstruments={over.saved ?? {}}
-      defaultInst={over.defaultInst ?? "none"}
+      instrumentOptions={o.instrumentOptions ?? INSTRUMENTS}
+      recordedInstruments={o.recorded ?? new Set()}
+      targetNames={o.targetNames ?? ["Rhythm", "Lead"]}
+      savedInstruments={o.saved ?? {}}
+      defaultInst={o.defaultInst ?? "none"}
       onCancel={onCancel}
       onStart={onStart}
-      onInstrumentChange={over.onInstrumentChange}
-      onCalibrate={over.onCalibrate}
-    />,
+      onInstrumentChange={o.onInstrumentChange}
+      onCalibrate={o.onCalibrate}
+      onAddTarget={o.onAddTarget}
+      storeLoading={o.storeLoading}
+    />
   );
-  return { onStart, onCancel, view };
+  const view = renderWithTheme(page(over));
+  const rerender = (next: RenderSetupOptions) => {
+    view.rerender(page(next));
+  };
+  return { onStart, onCancel, view, rerender };
 }
 
 /** A Select's trigger by its e2e hook. */

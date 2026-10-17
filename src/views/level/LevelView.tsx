@@ -59,6 +59,8 @@ export interface LevelViewProps {
   initialGraph?: ActiveGraph | null;
   /** Jump to Settings → Instruments (the Set-up step's "calibrate" cue). */
   onCalibrate?: () => void;
+  /** Jump to Settings → Loudness targets (Set up's "Add a target in Settings"). */
+  onAddTarget?: () => void;
 }
 
 export function LevelView({
@@ -66,6 +68,7 @@ export function LevelView({
   deviceState = "off",
   initialGraph,
   onCalibrate,
+  onAddTarget,
 }: LevelViewProps) {
   const { t } = useTheme();
 
@@ -383,6 +386,7 @@ export function LevelView({
           run={flow.run}
           results={flow.results}
           summaryScenes={flow.summaryScenes}
+          reampStillOn={flow.reampStillOn}
           onCancel={flow.onCancel}
           onStart={flow.onSetupStart}
           onRunCancel={flow.onRunCancel}
@@ -391,6 +395,8 @@ export function LevelView({
           onTryAgain={flow.onTryAgain}
           onDone={flow.onDone}
           onCalibrate={onCalibrate}
+          onAddTarget={onAddTarget}
+          storeLoading={store == null}
         />
       )}
 

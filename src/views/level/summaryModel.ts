@@ -9,8 +9,8 @@
 // routing problem) gets its message and stays out of Try again.
 //
 // Words are chosen by typed fields only (`outcome`, `clampKind`, `skipKind`,
-// `persistMismatch`, `reampStillOn`, `silenceHint`, `verifyByEar`), never by the
-// backend's text, which goes to the log.
+// `persistMismatch`, `silenceHint`, `verifyByEar`, and the flow's `reampStillOn`), never
+// by the backend's text, which goes to the log.
 //
 // Two rules beyond one row per sound:
 // - A main sound tried again moves every other sound of its preset (its level is a
@@ -18,12 +18,17 @@
 //   counted in N, and the run puts the main sound first (`runRank`).
 // - When every sound of a preset needs you for the same reason, they share one row
 //   ("All 5 sounds").
-// One Notice at most: re-amp may still be on, else a message two or more sounds share
-// (loud peaks, then one check-by-ear cause), which then leaves those rows.
+// One Notice at most: re-amp may still be on (the flow's latest reading), else a message
+// two or more sounds share (loud peaks, then one check-by-ear cause), which then leaves
+// those rows.
 
-import type { SkipKind } from "../../lib/types";
 import type { SelectOption } from "../../ui/selectValue";
-import { MAIN_SOUND, type RunItem } from "./leveling";
+import {
+  MAIN_SOUND,
+  type RunItem,
+  type RunSkipKind,
+  type TargetLufsOf,
+} from "./leveling";
 import {
   clampCause,
   footswitchNo,
@@ -34,16 +39,19 @@ import {
 /** A predicted true peak above this (dBTP) earns "Loud peaks". */
 const TRUE_PEAK_WARN_DBTP = -1;
 
-/** Skips that happen the same way on every run: their sounds stay out of Try again. */
-const SAME_EVERY_TIME: ReadonlySet<SkipKind> = new Set<SkipKind>([
-  "no_active_amp",
-  "level_manually",
-  "scene_write_refused",
-  "unsupported_knob",
-  "knob_missing",
-  "block_off",
-  "scene_change_discards",
-]);
+/** Skips that happen the same way on every run: their sounds stay out of Try again, and
+ *  each says what to change (`SUMMARY_TEXT.sameEveryTime`). */
+type SameEveryTimeKind = Extract<
+  RunSkipKind,
+  | "no_active_amp"
+  | "level_manually"
+  | "scene_write_refused"
+  | "unsupported_knob"
+  | "knob_missing"
+  | "block_off"
+  | "scene_change_discards"
+  | "no_target"
+>;
 
 type ByEar = NonNullable<RunItem["verifyByEar"]>;
 
@@ -70,7 +78,29 @@ export const SUMMARY_TEXT = {
     "Couldn't read this preset from your Tone Master Pro, so its volume wasn't changed.",
   footswitchesUnreadable:
     "Couldn't read this preset's footswitches, so its volume wasn't changed.",
+  /** A sound another run can fix: a skip that may not happen again (a capture that
+   *  failed, a lost connection, anything untyped), or a trade that was backed out. */
   notLeveled: "Couldn't level this sound, so its volume wasn't changed.",
+  /** A skip that happens the same way every time: what happened, then what to change. A
+   *  knob or block is chosen on Set up, so the fix is for the next time it is leveled. */
+  sameEveryTime: {
+    no_active_amp:
+      "No amp is on in this sound, so its volume wasn't changed. Choose a block and knob for it when you level it again.",
+    level_manually:
+      "Leveling can't choose a knob for this sound's amps on its own, so its volume wasn't changed. Choose a block and knob for it when you level it again.",
+    scene_write_refused:
+      "This scene shares its knob with the main sound, so its volume wasn't changed. Turn on Scene Edit for that block on your Tone Master Pro, or choose another knob for it when you level it again.",
+    unsupported_knob:
+      "That knob isn't a volume or mix knob, so its volume wasn't changed. Choose a volume or mix knob for it when you level it again.",
+    knob_missing:
+      "That knob isn't in the preset any more, so its volume wasn't changed. Choose another knob for it when you level it again.",
+    block_off:
+      "That block is off in this sound, so its volume wasn't changed. Choose another block for it when you level it again.",
+    scene_change_discards:
+      "Your Tone Master Pro is set to throw away scene changes, so leveling can't save them. On your Tone Master Pro, set Scene Change Behavior to Maintain changes. Then unplug it, plug it back in, and level it again.",
+    no_target:
+      "Its target isn't in Settings any more, so its volume wasn't changed. Choose a target for it when you level it again.",
+  } satisfies Record<SameEveryTimeKind, string>,
   loudPeaks:
     "It peaks close to the maximum. If your interface or speaker distorts on it, level it to a quieter target.",
   loudPeaksMany:
@@ -156,7 +186,10 @@ export interface SummaryModel {
 export interface SummaryContext {
   /** The last run ended by a Stop. */
   stopped: boolean;
-  targetLufsByName: (name: string | null) => number;
+  /** Re-amp may still be on: the flow's latest reading (`LevelFlowState.reampStillOn`),
+   *  never a row's own flag, which an earlier run may have set. */
+  reampStillOn: boolean;
+  targetLufsByName: TargetLufsOf;
   /** The preset's scene names, index-aligned with the wire `scenes[]` slots. */
   sceneNamesOf: (slot: number) => readonly string[];
   /** The scenes whose overlay turns a switch's effect on, or null when unknown. */
@@ -180,6 +213,9 @@ interface Verdict {
   retry: boolean;
   scene: SummarySceneChoice | null;
 }
+
+const isSameEveryTime = (kind: RunSkipKind): kind is SameEveryTimeKind =>
+  Object.prototype.hasOwnProperty.call(SUMMARY_TEXT.sameEveryTime, kind);
 
 const sceneValue = (ctx: number | null): string =>
   ctx === null ? "base" : String(ctx);
@@ -307,6 +343,8 @@ function verdictOf(it: RunItem, c: SummaryContext): Verdict {
       };
     default: {
       const kind = it.skipKind ?? "other";
+      if (isSameEveryTime(kind))
+        return { ...v, primary: SUMMARY_TEXT.sameEveryTime[kind] };
       return {
         ...v,
         primary:
@@ -315,7 +353,7 @@ function verdictOf(it: RunItem, c: SummaryContext): Verdict {
             : kind === "footswitches_unreadable"
               ? SUMMARY_TEXT.footswitchesUnreadable
               : SUMMARY_TEXT.notLeveled,
-        retry: !SAME_EVERY_TIME.has(kind),
+        retry: true,
       };
     }
   }
@@ -344,7 +382,7 @@ export function buildSummary(
   let notice: SummaryNotice | null = null;
   let loudShared = false;
   let byEarShared: ByEar | null = null;
-  if (items.some((it) => it.reampStillOn === true))
+  if (c.reampStillOn)
     notice = { tone: "caution", title: null, text: SUMMARY_TEXT.reampStillOn };
   else if (loud >= 2) {
     loudShared = true;

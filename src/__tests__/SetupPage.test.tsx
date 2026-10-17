@@ -7,12 +7,13 @@
 // the backup tick is the only gate before "Start leveling".
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import { blockStripName, type SetupOption } from "../views/level/leveling";
+import { useSetupRows } from "../views/level/useSetupRows";
 import type {
   BackupPresetRow,
   SceneDrive,
@@ -219,6 +220,104 @@ describe("Target goes by name (Q2, O3)", () => {
       "Lead",
     ]);
   });
+
+  it("a picked target that is no longer configured goes back to the one by name", async () => {
+    const opts = [main(0, "Plexi"), scene(0, 0, "Plexi", "Lead")];
+    const { onStart, rerender } = renderSetupPage(opts, {
+      targetNames: ["Rhythm", "Crunch", "Lead"],
+    });
+    const user = userEvent.setup();
+    await choose(user, "target:p0", "Crunch");
+    // Crunch is deleted in Settings while the page stays open.
+    rerender({ targetNames: ["Rhythm", "Lead"] });
+    expect(selectTrigger("target:p0")).toHaveAccessibleName(
+      "Target for Plexi, Main sound: Rhythm",
+    );
+    expect(selectTrigger("target-all")).toHaveAccessibleName(
+      "Target for all sounds: By name",
+    );
+    await startLeveling(user);
+    expect(onStart.mock.calls[0][0].map((c) => c.targetName)).toEqual([
+      "Rhythm",
+      "Lead",
+    ]);
+  });
+});
+
+// Settings can delete every target. With none, there is no loudness to level a sound to,
+// so Start waits for one and points at Settings; the run never gets an empty target.
+describe("with no target configured", () => {
+  it('keeps Start disabled and shows "Add a target in Settings"', async () => {
+    const onAddTarget = vi.fn();
+    const { onStart } = renderSetupPage(
+      [main(0, "Plexi"), scene(0, 0, "Plexi", "Lead")],
+      { targetNames: [], onAddTarget },
+    );
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole("checkbox", { name: "I've backed up with Pro Control" }),
+    );
+    const start = screen.getByRole("button", { name: "Start leveling" });
+    expect(start).toBeDisabled();
+    await user.click(start);
+    expect(onStart).not.toHaveBeenCalled();
+    await user.click(
+      screen.getByRole("button", { name: "Add a target in Settings" }),
+    );
+    expect(onAddTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing is missing while the store is still loading", async () => {
+    renderSetupPage([main(0, "Plexi")], {
+      targetNames: [],
+      storeLoading: true,
+      onAddTarget: vi.fn(),
+    });
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole("checkbox", { name: "I've backed up with Pro Control" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Start leveling" }),
+    ).toBeDisabled();
+    expect(screen.queryByText("Add a target in Settings")).toBeNull();
+  });
+
+  it("never builds the run's choices with an empty or unknown target", () => {
+    const options = [main(0, "Plexi"), scene(0, 0, "Plexi", "Lead")];
+    const { result, rerender } = renderHook(
+      (targetNames: string[]) =>
+        useSetupRows({
+          options,
+          instrumentOptions: [{ value: "none", label: "None" }],
+          targetNames,
+          savedInstruments: {},
+          defaultInst: "none",
+        }),
+      { initialProps: [] as string[] },
+    );
+    expect(result.current.noTargets).toBe(true);
+    expect(result.current.buildChoices().choices).toEqual([]);
+    rerender(["Rhythm", "Lead"]);
+    expect(result.current.noTargets).toBe(false);
+    const names = result.current
+      .buildChoices()
+      .choices.map((c) => c.targetName);
+    expect(names).toEqual(["Rhythm", "Lead"]);
+  });
+
+  it("starts once a target arrives, with that target", async () => {
+    const { onStart, rerender } = renderSetupPage([main(0, "Plexi")], {
+      targetNames: [],
+      onAddTarget: vi.fn(),
+    });
+    rerender({ targetNames: ["Rhythm"], onAddTarget: vi.fn() });
+    expect(screen.queryByText("Add a target in Settings")).toBeNull();
+    await startLeveling(userEvent.setup());
+    expect(onStart.mock.calls[0][0].map((c) => c.targetName)).toEqual([
+      "Rhythm",
+    ]);
+  });
 });
 
 describe("one instrument per preset", () => {
@@ -263,6 +362,61 @@ describe("one instrument per preset", () => {
       "none",
       "none",
     ]);
+  });
+
+  // Coming back to the Level tab mounts Set up before the app's store has loaded: the
+  // instruments it offers, the ones saved per preset and the default all arrive later.
+  it("follows the store when it loads after the page opened", async () => {
+    const { onStart, rerender } = renderSetupPage(
+      [main(0, "Plexi"), main(1, "Tweed")],
+      {
+        instrumentOptions: [{ value: "none", label: "None" }],
+        saved: {},
+        defaultInst: "none",
+        storeLoading: true,
+      },
+    );
+    expect(selectTrigger("inst:0")).toHaveAccessibleName(
+      "Instrument for Plexi: None",
+    );
+    rerender({ saved: { 0: "tele" }, defaultInst: "strat" });
+    expect(selectTrigger("inst:0")).toHaveAccessibleName(
+      "Instrument for Plexi: Tele",
+    );
+    expect(selectTrigger("inst:1")).toHaveAccessibleName(
+      "Instrument for Tweed: Strat",
+    );
+    await startLeveling(userEvent.setup());
+    expect(onStart.mock.calls[0][0].map((c) => c.instId)).toEqual([
+      "tele",
+      "strat",
+    ]);
+  });
+
+  it("keeps a pick over the saved one, and drops one the dropdown no longer offers", async () => {
+    const { onStart, rerender } = renderSetupPage([main(0, "Plexi")], {
+      saved: { 0: "tele" },
+    });
+    const user = userEvent.setup();
+    await choose(user, "inst:0", "strat");
+    // A refresh of the store keeps the pick.
+    rerender({ saved: { 0: "tele" } });
+    expect(selectTrigger("inst:0")).toHaveAccessibleName(
+      "Instrument for Plexi: Strat",
+    );
+    // The picked instrument is deleted in Settings: back to the saved one.
+    rerender({
+      instrumentOptions: [
+        { value: "none", label: "None" },
+        { value: "tele", label: "Tele" },
+      ],
+      saved: { 0: "tele" },
+    });
+    expect(selectTrigger("inst:0")).toHaveAccessibleName(
+      "Instrument for Plexi: Tele",
+    );
+    await startLeveling(user);
+    expect(onStart.mock.calls[0][0].map((c) => c.instId)).toEqual(["tele"]);
   });
 
   it("every sound of a preset uses the preset's instrument", async () => {

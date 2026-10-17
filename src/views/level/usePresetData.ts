@@ -130,13 +130,14 @@ export function usePresetData(
   });
 
   // Case-insensitive lookup by target NAME (the leveling flow carries the display
-  // name, e.g. "Crunch"); −27 is the conservative fallback when a name is unknown
-  // (PR2 re-baseline: +3 from the mono-era −30, same audible loudness under the
-  // new 2-ch BS.1770 convention).
+  // name, e.g. "Crunch"). `null` when no configured target has that name (an empty
+  // name, a target deleted in Settings, or the store not loaded yet): there is no
+  // fallback loudness, so the run refuses such a sound instead of leveling and saving
+  // it at a value no dropdown showed (danger.md, UI values).
   const targetLufsByName = useCallback(
-    (name: string | null): number =>
+    (name: string | null): number | null =>
       store?.targets.find((tg) => tg.name.toLowerCase() === name?.toLowerCase())
-        ?.lufs ?? -27,
+        ?.lufs ?? null,
     [store],
   );
 
