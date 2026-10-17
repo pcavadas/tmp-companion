@@ -103,10 +103,15 @@ pub(super) const REAMP_STATE_WAIT_MS: u64 = 5_000;
 pub(super) const LIVE_BEAT_MS: u64 = 200;
 /// `loadPreset` and `loadScene` echo window (also the rich load's `LoadPreset`).
 pub(super) const LOAD_ECHO_MS: u64 = 300;
-/// `setPresetLevel` echo window (`PresetLevelChanged`).
-pub(super) const SET_LEVEL_ECHO_MS: u64 = 250;
-/// `changeParameter` (float and bool) window.
-pub(super) const CHANGE_PARAMETER_MS: u64 = 250;
+/// `setPresetLevel` echo window (`PresetLevelChanged`). 50 (was 250): leveling ignores the
+/// echo, and the 405/410 leveling bench lost nothing at 50 (HW 2026-10-17, fw 1.8.58: every
+/// judge row passed, same iteration counts, no floor reads). The one reader of the echo,
+/// `probe`'s slot write, treats it as advisory: its read-back confirms the level.
+pub(super) const SET_LEVEL_ECHO_MS: u64 = 50;
+/// `changeParameter` (float and bool) window. 50 (was 250): the setter is fire-and-forget
+/// and the same bench lost nothing at 50 (−24 s on preset 405's footswitch lane, which sends
+/// six writes per capture).
+pub(super) const CHANGE_PARAMETER_MS: u64 = 50;
 /// Save, clear, rename and move of a user preset.
 pub(super) const PRESET_WRITE_ECHO_MS: u64 = 300;
 /// Re-amp setter echo window. 100 (was 400): nothing waits on the echo, and the
