@@ -118,3 +118,33 @@ describe("regression: #313 same-count bracket re-measure", () => {
     expect(bracketCapOf(container).style.height).toBe("122px");
   });
 });
+
+describe("regression: a scaled-down diagram draws its bracket to the lower lane", () => {
+  it("divides the ancestor's CSS scale back out of the measured rects", () => {
+    // The Level list fits a long chain to the window with a transform, so the screen
+    // rects are half size here while the bracket is placed in layout px. The column
+    // lays out 200 px tall but measures 100 on screen: a scale of 0.5.
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(200);
+    mockLaneRects([
+      { top: 100, height: 100 }, // column, at half size
+      { top: 105, height: 38 }, // lane A: the unscaled 110 / 76, halved
+      { top: 155, height: 20 }, // lane B: the unscaled 210 / 40, halved
+    ]);
+    const { container } = renderWithTheme(
+      <SignalChainView
+        graph={{
+          stages: [{ kind: "series", blocks: [b("G1")] }],
+          outputs: {
+            a: { type: "out1", blocks: [b("G2"), b("G3")] },
+            b: { type: "out2", blocks: [b("G5")] },
+          },
+        }}
+      />,
+    );
+    const cap = bracketCapOf(container);
+    // The same geometry as the unscaled ForkTail case above, not half of it.
+    expect(cap.style.top).toBe("39px");
+    expect(cap.style.height).toBe("82px");
+    vi.restoreAllMocks();
+  });
+});

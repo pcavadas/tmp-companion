@@ -44,8 +44,14 @@ function measureLaneBracket(
   const arr = ar.getBoundingClientRect();
   const brr = br.getBoundingClientRect();
   if (!arr.height || !brr.height) return null;
-  const aC = arr.top - ct.top + (arr.height - STRIP_LBL) / 2;
-  const bC = brr.top - ct.top + (brr.height - STRIP_LBL) / 2;
+  // getBoundingClientRect reads the SCREEN box, which an ancestor's CSS scale shrinks
+  // (the Level list fits a long chain to the window with a transform), while the
+  // bracket is placed in the column's own layout px. Divide the scale back out, or a
+  // scaled diagram draws its bracket short of the lower lane.
+  const scale =
+    col.offsetHeight > 0 && ct.height > 0 ? ct.height / col.offsetHeight : 1;
+  const aC = (arr.top - ct.top) / scale + (arr.height / scale - STRIP_LBL) / 2;
+  const bC = (brr.top - ct.top) / scale + (brr.height / scale - STRIP_LBL) / 2;
   return { top: aC, height: Math.max(0, bC - aC) };
 }
 
