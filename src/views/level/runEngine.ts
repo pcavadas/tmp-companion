@@ -34,6 +34,7 @@ import { resolveDeviceId } from "../../models/deviceId";
 import { buildLevelJob, toFootswitchJobWire, type RunItem } from "./leveling";
 import type {
   AmpCandidate,
+  BatchLevelRun,
   ClampKind,
   LevelBlock,
   Profile,
@@ -109,14 +110,12 @@ export interface LevelOutcomeFields {
   clamp_kind?: ClampKind | null;
 }
 
-/** What a command's RETURNED rows add to its streamed ones: the run-end facts the channel
- *  items were sent too early to carry — the batch save's verdict (`persist_mismatch`,
- *  read back after the save) and the re-amp OFF's (`reamp_still_on`, its text twin
- *  `reamp_warning` for the log). Shared by `LevelResult` and `FootswitchLevelResult`. */
+/** What a batched command's RETURNED rows add to its streamed ones: the batch save's
+ *  verdict (`persist_mismatch`, read back after the save), which the channel items were sent
+ *  too early to carry. Shared by `LevelResult` and `FootswitchLevelResult`. The run-end
+ *  re-amp verdict is not read from the rows: it comes back beside them (`BatchLevelRun`). */
 export interface RunEndFields {
   persist_mismatch: boolean | null;
-  reamp_still_on: boolean;
-  reamp_warning?: string | null;
 }
 
 // A `clamp_reason` is set ONLY when the leveled signal isn't effectively reaching the USB 1/2
@@ -364,23 +363,24 @@ export async function runEngine(
       }
     }
   };
-  /** A batched command's RETURNED rows: the batch save's verdict onto the row each one
-   *  names (`keyOf` → the batch's row map), and the run-end re-amp verdict onto every row
-   *  of the batch — the streamed items were sent before either was known. */
+  /** A batched command's RETURN: the batch save's verdict onto the row each returned row
+   *  names (`keyOf` → the batch's row map), and the run-end re-amp verdict — which comes
+   *  back BESIDE the rows, whatever their count — onto every row of the batch, the ones
+   *  never reached included. The streamed items were sent before either was known. */
   const stampRunEnd = <K, R extends RunEndFields>(
     batch: Batch,
     rows: Map<K, number>,
-    returned: readonly R[],
+    returned: BatchLevelRun<R>,
     keyOf: (r: R) => K,
   ) => {
-    for (const r of returned) {
+    for (const r of returned.rows) {
       const idx = rows.get(keyOf(r));
       if (idx != null)
         patch(idx, { persistMismatch: r.persist_mismatch === true });
     }
     stampReamp(batch, {
-      stillOn: returned.some((r) => r.reamp_still_on),
-      warning: returned.find((r) => r.reamp_warning)?.reamp_warning ?? null,
+      stillOn: returned.reampStillOn,
+      warning: returned.reampWarning ?? null,
     });
   };
   /** Copy a command's run-end re-amp verdict onto every row of the batch: the typed flag
@@ -479,7 +479,7 @@ export async function runEngine(
         markGroupActive(bySwitch, i);
         let failure: ReturnType<typeof failureOf> | null = null;
         try {
-          const rows = await deps.levelFootswitchesApply(
+          const run = await deps.levelFootswitchesApply(
             {
               slot: it.slot,
               jobs: group.flatMap((g) =>
@@ -501,8 +501,8 @@ export async function runEngine(
             },
           );
           // The rows streamed before the save and the run-end re-amp OFF; both verdicts
-          // ride the returned rows only.
-          stampRunEnd(batch, bySwitch, rows, (r) => r.switch);
+          // ride the return only.
+          stampRunEnd(batch, bySwitch, run, (r) => r.switch);
         } catch (error) {
           failure = failureOf(error);
           stampReamp(batch, { stillOn: failure.reampStillOn, warning: null });
@@ -564,7 +564,7 @@ export async function runEngine(
       // level-defaults.spec.ts).
       let failure: ReturnType<typeof failureOf> | null = null;
       try {
-        const rows = await deps.levelScenesApplyBatched(
+        const run = await deps.levelScenesApplyBatched(
           {
             slot: it.slot,
             // `handle` is `Option`/serde-defaulted on the Rust side — an `undefined` value
@@ -592,7 +592,7 @@ export async function runEngine(
             );
           },
         );
-        stampRunEnd(batch, byScene, rows, (r) => r.scene_slot);
+        stampRunEnd(batch, byScene, run, (r) => r.scene_slot);
       } catch (error) {
         failure = failureOf(error);
         stampReamp(batch, { stillOn: failure.reampStillOn, warning: null });

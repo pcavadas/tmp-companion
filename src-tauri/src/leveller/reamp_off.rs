@@ -69,6 +69,53 @@ impl ReampOffOutcome {
             }
         }
     }
+
+    /// [`Self::stamp_leveling`] for a BATCHED command: the rows come back inside a
+    /// [`BatchLevelRun`] that carries this outcome whatever the row count — none at all after
+    /// a Stop in the ceiling prepass or when every row failed — and each row is stamped too
+    /// (`stamp_row`).
+    pub(crate) fn stamp_batch<R, E: Into<LevelError>>(
+        self,
+        result: Result<Vec<R>, E>,
+        watch: crate::watcher::DetachWatch,
+        stamp_row: impl Fn(&mut R, ReampOffOutcome),
+    ) -> Result<BatchLevelRun<R>, AppError> {
+        self.stamp_leveling(result.map(BatchLevelRun::new), watch, |run, out| {
+            run.rows.iter_mut().for_each(|r| stamp_row(r, out));
+            run.reamp_still_on = out.still_on();
+            run.reamp_warning = out.warning();
+        })
+    }
+}
+
+/// What a batched leveling command returns (`level_scenes_apply_batched`,
+/// `level_footswitches_apply`): the rows it leveled, and the run-end re-amp verdict BESIDE
+/// them. The verdict is a fact about the run, not about a row, and a batch can end with no
+/// rows at all — a Stop during the ceiling prepass (which engages re-amp once per sound), or a
+/// batch whose every row failed — so it must not ride the rows alone: an OFF that never read
+/// back OFF reaches the Summary on every path (`danger.md`). Each row carries it as well.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BatchLevelRun<T> {
+    /// The leveled rows; a row that failed or never ran is not here (its streamed item said
+    /// why).
+    pub(crate) rows: Vec<T>,
+    /// Re-amp may still be on ([`ReampOffOutcome::still_on`]): what the Summary reads.
+    pub(crate) reamp_still_on: bool,
+    /// Its text twin ([`ReampOffOutcome::warning`]), for the log. Omitted when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reamp_warning: Option<String>,
+}
+
+impl<T> BatchLevelRun<T> {
+    /// `rows`, with no verdict stamped yet ([`ReampOffOutcome::stamp_batch`] stamps it).
+    pub(crate) fn new(rows: Vec<T>) -> Self {
+        Self {
+            rows,
+            reamp_still_on: false,
+            reamp_warning: None,
+        }
+    }
 }
 
 /// GUARANTEED re-amp OFF on a fresh connection — the run-end backstop every
@@ -414,6 +461,62 @@ mod reamp_off_ladder_tests {
                 ..
             }
         ));
+    }
+
+    /// A batched command's verdict rides BESIDE its rows, so a batch that returns no rows (a
+    /// Stop in the ceiling prepass, or every row failed) still says re-amp may be on.
+    #[test]
+    fn a_batch_carries_the_reamp_verdict_whatever_its_row_count() {
+        let stuck = ReampOffOutcome { verified: false };
+        let clean = ReampOffOutcome { verified: true };
+        let watch = crate::watcher::DetachWatch::start();
+
+        let none = stuck
+            .stamp_batch(Ok::<Vec<u32>, LevelError>(Vec::new()), watch, |_, _| {
+                unreachable!("there is no row to stamp")
+            })
+            .expect("an empty batch is still Ok");
+        assert_eq!(
+            none,
+            BatchLevelRun {
+                rows: Vec::new(),
+                reamp_still_on: true,
+                reamp_warning: Some(REAMP_STILL_ON_WARNING.to_string()),
+            }
+        );
+        let wire = serde_json::to_value(&none).expect("serialize");
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "rows": [],
+                "reampStillOn": true,
+                "reampWarning": REAMP_STILL_ON_WARNING,
+            })
+        );
+
+        let stamped = std::cell::Cell::new(0);
+        let some = stuck
+            .stamp_batch(Ok::<_, LevelError>(vec![1u32, 2]), watch, |_, out| {
+                assert_eq!(out, stuck);
+                stamped.set(stamped.get() + 1);
+            })
+            .expect("rows");
+        assert_eq!(
+            (some.rows.len(), stamped.get()),
+            (2, 2),
+            "every row stamped"
+        );
+        assert!(some.reamp_still_on);
+
+        let ok = clean
+            .stamp_batch(Ok::<Vec<u32>, LevelError>(Vec::new()), watch, |_, _| {})
+            .expect("rows");
+        assert!(!ok.reamp_still_on);
+        assert_eq!(
+            serde_json::to_value(&ok).expect("serialize"),
+            serde_json::json!({ "rows": [], "reampStillOn": false }),
+            "no warning key when the OFF read back"
+        );
     }
 
     /// The user's recovery is a restart of the unit: a USB unplug/replug does not clear a

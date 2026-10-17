@@ -19,6 +19,7 @@ import {
   forceTauri,
   makeBackupPresetRow,
   makeBackupRead,
+  makeBatchRun,
   makeLevelResult,
   makeStore,
   mockCommands,
@@ -96,7 +97,7 @@ function mockHappyPath(baseOver: Partial<LevelResult> = {}) {
           skipKind: null,
         });
       });
-      return results;
+      return makeBatchRun(results);
     },
   });
 }

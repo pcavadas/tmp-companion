@@ -1,17 +1,27 @@
 // src/__tests__/useLevelingFlow-reamp-warning.test.ts — the run-end re-amp verdict a
 // command returns reaches every run item of its call, on all three lanes — the typed
-// `reamp_still_on` (what the screen reads) and the `reamp_warning` text (the log's):
-// the base row's own result, and a scene/footswitch batch's RETURNED rows (its per-row
-// results stream over the channel before the run-end OFF, so the return value is the only
-// carrier).
+// flag (what the screen reads) and the warning text (the log's): the base row's own
+// result, and a scene/footswitch batch's RETURN, where the verdict rides beside the rows
+// (its per-row results stream over the channel before the run-end OFF, and a stopped or
+// all-failed batch returns no rows at all).
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { SetupOption } from "../views/level/leveling";
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
-import { isRunOver, resetLevelFlow } from "../views/level/levelRunStore";
 import {
+  isRunOver,
+  requestStop,
+  resetLevelFlow,
+} from "../views/level/levelRunStore";
+import {
+  buildSummary,
+  SUMMARY_TEXT,
+  type SummaryContext,
+} from "../views/level/summaryModel";
+import {
+  makeBatchRun,
   makeChoices,
   makeFootswitchLevelResult,
   makeFootswitchOption,
@@ -25,6 +35,15 @@ import {
 const WARNING = "Re-amp may still be on. Restart your Tone Master Pro.";
 
 const deps = makeLevelingFlowDeps();
+
+const summaryCtx: SummaryContext = {
+  stopped: true,
+  targetLufsByName: () => -26,
+  sceneNamesOf: () => [],
+  enablingScenesOf: () => null,
+  sceneOverrides: {},
+  hookKeyOf: (it) => it.key,
+};
 
 function option(lane: "base" | "scene" | "footswitch", index = 0): SetupOption {
   if (lane === "base") return makeSetupOption();
@@ -69,20 +88,18 @@ describe("run-end re-amp warning", () => {
       mockCommands(
         lane === "scene"
           ? {
-              level_scenes_apply_batched: () => [
-                makeLevelResult({
-                  reamp_warning: WARNING,
-                  reamp_still_on: true,
+              level_scenes_apply_batched: () =>
+                makeBatchRun([makeLevelResult()], {
+                  reampWarning: WARNING,
+                  reampStillOn: true,
                 }),
-              ],
             }
           : {
-              level_footswitches_apply: () => [
-                makeFootswitchLevelResult({
-                  reamp_warning: WARNING,
-                  reamp_still_on: true,
+              level_footswitches_apply: () =>
+                makeBatchRun([makeFootswitchLevelResult()], {
+                  reampWarning: WARNING,
+                  reampStillOn: true,
                 }),
-              ],
             },
       );
       const { result } = renderHook(() => useLevelingFlow(deps));
@@ -98,6 +115,43 @@ describe("run-end re-amp warning", () => {
         expect(row.reampWarning).toBe(WARNING);
         expect(row.reampStillOn).toBe(true);
       }
+    },
+  );
+
+  // A Stop during the ceiling prepass returns no rows; the OFF that never read back OFF must
+  // still reach the Summary as the restart Notice.
+  it.each(["scene", "footswitch"] as const)(
+    "a %s batch stopped before any row finished still reaches the Summary's re-amp Notice",
+    async (lane) => {
+      const stopped = () => {
+        requestStop();
+        return makeBatchRun<never>([], {
+          reampWarning: WARNING,
+          reampStillOn: true,
+        });
+      };
+      mockCommands(
+        lane === "scene"
+          ? { level_scenes_apply_batched: stopped }
+          : { level_footswitches_apply: stopped },
+      );
+      const { result } = renderHook(() => useLevelingFlow(deps));
+      act(() => {
+        result.current.onSetupStart(
+          makeChoices([option(lane, 0), option(lane, 1)]),
+        );
+      });
+      await waitFor(() => {
+        expect(result.current.run.phase).toBe("stopped");
+      });
+      expect(result.current.stage).toBe("summary");
+      for (const row of result.current.results)
+        expect(row.reampStillOn).toBe(true);
+      expect(buildSummary(result.current.results, summaryCtx).notice).toEqual({
+        tone: "caution",
+        title: null,
+        text: SUMMARY_TEXT.reampStillOn,
+      });
     },
   );
 

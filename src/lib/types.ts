@@ -267,6 +267,20 @@ export interface LevelResult {
   reamp_still_on: boolean;
 }
 
+/** What a BATCHED leveling command resolves with (`level_scenes_apply_batched`,
+ * `level_footswitches_apply`; mirrors `leveller::BatchLevelRun`, camelCase): the rows it
+ * leveled and the run-end re-amp verdict BESIDE them. The verdict is a fact about the run, and
+ * a batch can return no rows at all — a Stop during the ceiling prepass, or a batch whose every
+ * row failed — so it is read from here, never from the rows. */
+export interface BatchLevelRun<R> {
+  /** The leveled rows; a row that failed or never ran is absent (its streamed item said why). */
+  rows: R[];
+  /** Re-amp may still be on: what the Summary reads. */
+  reampStillOn: boolean;
+  /** Its text twin, for the log only; absent when the OFF read back. */
+  reampWarning?: string | null;
+}
+
 /** WHICH sound a trade row / clamp error describes (mirrors `headroom_trade::SoundId`,
  * camelCase tagged union — `kind` discriminates). Additive on the wire: mirror only the
  * variants below and treat the union as OPEN for future additive kinds. No `"base"` arm:

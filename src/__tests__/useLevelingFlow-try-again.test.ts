@@ -26,6 +26,7 @@ import {
 } from "../views/level/levelRunStore";
 import {
   callsOf,
+  makeBatchRun,
   makeFootswitchOption,
   makeFootswitchLevelResult,
   makeLevelResult,
@@ -98,7 +99,7 @@ const scenes =
         skipKind: status === "error" ? "preset_unreadable" : null,
       });
     });
-    return [];
+    return makeBatchRun();
   };
 const footswitches: Handler<"level_footswitches_apply"> = ({
   jobs,
@@ -113,7 +114,7 @@ const footswitches: Handler<"level_footswitches_apply"> = ({
       skipKind: null,
     });
   });
-  return [];
+  return makeBatchRun();
 };
 
 beforeEach(() => {

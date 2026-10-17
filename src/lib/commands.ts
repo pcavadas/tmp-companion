@@ -19,6 +19,7 @@ import type {
   AppInfo,
   BackupReadResult,
   BaseAnchor,
+  BatchLevelRun,
   CalibrateResult,
   ConnectResult,
   CopyApplyItem,
@@ -108,7 +109,7 @@ export interface Commands {
   cancel_preset_leveling: { args: undefined; ret: Unit };
   level_scenes_apply_batched: {
     args: SceneLevelApplyArgs & { onResult: Channel<SceneLevelProgressItem> };
-    ret: LevelResult[];
+    ret: BatchLevelRun<LevelResult>;
   };
   cancel_scene_leveling: { args: undefined; ret: Unit };
   list_scene_level_handles: { args: { slot: number }; ret: SceneHandleRow[] };
@@ -120,7 +121,7 @@ export interface Commands {
     args: FootswitchLevelApplyArgs & {
       onResult: Channel<FootswitchLevelProgressItem>;
     };
-    ret: FootswitchLevelResult[];
+    ret: BatchLevelRun<FootswitchLevelResult>;
   };
   cancel_footswitch_leveling: { args: undefined; ret: Unit };
 

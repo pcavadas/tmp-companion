@@ -389,7 +389,8 @@ fn the_footswitch_batch_solves_its_row_on_a_private_rig() {
             crate::watcher::DetachWatch::start(),
         )
     })
-    .expect("footswitch batch");
+    .expect("footswitch batch")
+    .rows;
 
     assert_eq!(rows.len(), 1, "{rows:?}");
     let r = &rows[0];

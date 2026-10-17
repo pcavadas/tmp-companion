@@ -84,6 +84,12 @@ interface LevelResult {
    *  read the run's own measured ceiling instead of trusting a fixture number. */
   constant_c: number;
 }
+/** A batched leveling command's return: the rows, with the run-end re-amp verdict beside them. */
+interface BatchLevelRun<R> {
+  rows: R[];
+  reampStillOn: boolean;
+}
+
 interface FootswitchLevelResult {
   switch: number;
   saved: boolean;
@@ -269,7 +275,7 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
         footswitch: 1,
       });
 
-    const fs410 = (await invoke(
+    const fs410Run = (await invoke(
       page,
       "level_footswitches_apply",
       {
@@ -290,7 +296,8 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
         onResult: "__CHANNEL__:1",
       },
       T * 2,
-    )) as FootswitchLevelResult[];
+    )) as BatchLevelRun<FootswitchLevelResult>;
+    const fs410 = fs410Run.rows;
     expectEverySwitch(fs410, [{ switch: 1 }]);
     assertFsSolved(fs410, () => fsTargetUsed410);
 
@@ -335,7 +342,7 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     }
     const sceneTarget410 = Math.min(...asIsScenes) - 2.0;
 
-    const scenes = (await invoke(
+    const scenesRun = (await invoke(
       page,
       "level_scenes_apply_batched",
       {
@@ -353,7 +360,8 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
         onResult: "__CHANNEL__:1",
       },
       T * 3,
-    )) as LevelResult[];
+    )) as BatchLevelRun<LevelResult>;
+    const scenes = scenesRun.rows;
     // Row identity comes off `scene_slot`, not array index (a mid-batch failure shortens
     // this array).
     expect(
@@ -758,7 +766,7 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
     // 2 footswitch rows (base MUST run first — the pl-context trap 405's own fixture
     // ordering pins, e2e/fixtures/COVERAGE.md row 36) — raw invoke, the channel-streaming
     // seam (.claude/rules/e2e.md).
-    const fs = (await invoke(
+    const fsRun = (await invoke(
       page,
       "level_footswitches_apply",
       {
@@ -771,7 +779,8 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
         onResult: "__CHANNEL__:1",
       },
       T * 3,
-    )) as FootswitchLevelResult[];
+    )) as BatchLevelRun<FootswitchLevelResult>;
+    const fs = fsRun.rows;
     expectEverySwitch(fs, SWITCH_JOBS_405);
     assertFsSolved(fs, (r) => {
       const job = SWITCH_JOBS_405.find((j) => j.switch === r.switch);

@@ -15,6 +15,7 @@ import { useLevelingFlow } from "../views/level/useLevelingFlow";
 import type { SetupChoice, SetupOption } from "../views/level/leveling";
 import { isRunOver, resetLevelFlow } from "../views/level/levelRunStore";
 import {
+  makeBatchRun,
   makeLevelingFlowDeps,
   makeSceneOption,
   makeSetupOption,
@@ -50,7 +51,7 @@ describe("useLevelingFlow — base before scenes at the backend", () => {
       },
       level_scenes_apply_batched: ({ slot }) => {
         calls.push(`scenes@${String(slot)}`);
-        return [];
+        return makeBatchRun();
       },
     });
 

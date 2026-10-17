@@ -296,6 +296,15 @@ bridge_post() {
 # POST one /invoke command and unwrap {"ok":true,"data":...} → echoes compact `data`
 # JSON on stdout; on {"ok":false,...} (or a transport failure) prints the error and
 # returns 1. Every device-touching call in this script goes through this ONE seam.
+# A batched leveling call's run-end re-amp verdict (`reampStillOn`, beside its rows): a
+# run that may have left re-amp on stops the replay. $1=the call's data $2=lane $3=slot
+reamp_verdict() {
+  if [ "$(printf '%s' "$1" | jq -r '.reampStillOn')" = "true" ]; then
+    err "[$2] slot $3: re-amp may still be on after the run — recover with: cargo run --bin probe -- --reamp-off"
+    return 1
+  fi
+}
+
 invoke_cmd() { # $1=json body $2=timeout(s, default 60)
   local resp ok_flag
   if ! resp="$(bridge_post "$1" "${2:-60}")"; then
@@ -614,8 +623,10 @@ process_preset() {
           topologyId:$topo, calibrationLufs:$cal, profileId:$prof, onResult:"__CHANNEL__:0"
       }}')"
     data="$(invoke_cmd "$body" 1800)" || return 1
-    printf '%s' "$data" > "$OUT_DIR/level-scenes-$slot.json"
-    ok "[scenes] slot $slot: $(printf '%s' "$data" | jq 'length') scene row(s) leveled"
+    # The batch returns its rows with the run-end re-amp verdict beside them.
+    printf '%s' "$data" | jq -c '.rows' > "$OUT_DIR/level-scenes-$slot.json"
+    reamp_verdict "$data" "scenes" "$slot" || return 1
+    ok "[scenes] slot $slot: $(printf '%s' "$data" | jq '.rows | length') scene row(s) leveled"
     gap
   else
     log "[scenes] no scene rows for slot $slot — skipping"
@@ -646,8 +657,9 @@ process_preset() {
           topologyId:$topo, calibrationLufs:$cal, profileId:$prof, onResult:"__CHANNEL__:0"
       }}')"
     data="$(invoke_cmd "$body" 1800)" || return 1
-    printf '%s' "$data" > "$OUT_DIR/level-fs-$slot.json"
-    ok "[fs] slot $slot: $(printf '%s' "$data" | jq 'length') footswitch row(s) leveled"
+    printf '%s' "$data" | jq -c '.rows' > "$OUT_DIR/level-fs-$slot.json"
+    reamp_verdict "$data" "fs" "$slot" || return 1
+    ok "[fs] slot $slot: $(printf '%s' "$data" | jq '.rows | length') footswitch row(s) leveled"
     gap
   else
     log "[fs] no footswitch rows for slot $slot — skipping"

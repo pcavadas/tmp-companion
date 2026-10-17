@@ -36,6 +36,7 @@ import type {
   ActiveGraph,
   BackupPresetRow,
   BackupReadResult,
+  BatchLevelRun,
   CalibrateResult,
   FootswitchLevelResult,
   LevelResult,
@@ -134,6 +135,13 @@ export const makeFootswitchLevelResult = (
   reamp_still_on: false,
   ...over,
 });
+
+/** A batched leveling command's return: `rows`, with the run-end re-amp OFF read back
+ *  unless `over` says otherwise. */
+export const makeBatchRun = <R>(
+  rows: R[] = [],
+  over: Partial<Omit<BatchLevelRun<R>, "rows">> = {},
+): BatchLevelRun<R> => ({ rows, reampStillOn: false, ...over });
 
 /** An empty signal graph. */
 export const makeActiveGraph = (
@@ -324,11 +332,11 @@ export const DEFAULT_HANDLERS: Handlers = {
       saved: job.save,
     }),
   cancel_preset_leveling: none,
-  level_scenes_apply_batched: () => [],
+  level_scenes_apply_batched: () => makeBatchRun(),
   cancel_scene_leveling: none,
   list_scene_level_handles: () => [],
   list_footswitch_scene_contexts: () => [],
-  level_footswitches_apply: () => [],
+  level_footswitches_apply: () => makeBatchRun(),
   cancel_footswitch_leveling: none,
 
   // doctor

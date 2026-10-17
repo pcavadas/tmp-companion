@@ -39,6 +39,7 @@ import {
   makeActiveGraph,
   makeBackupPresetRow,
   makeBackupRead,
+  makeBatchRun,
   makeFootswitchLevelResult,
   makeLevelResult,
   makeStore,
@@ -394,7 +395,7 @@ const levelScenesDone: Handler<"level_scenes_apply_batched"> = ({
       skipKind: null,
     });
   });
-  return results;
+  return makeBatchRun(results);
 };
 
 /** "Plexi" (device slot 1 = list index 0) with two FS scenes. No `amp_candidates`, so
@@ -497,7 +498,7 @@ function mockLevelingFixture(
           skipKind: null,
         });
       });
-      return jobs.map(() => footswitchResultStub());
+      return makeBatchRun(jobs.map(() => footswitchResultStub()));
     },
     level_preset: ({ job }) => {
       const ceiling = opts.ceiling;

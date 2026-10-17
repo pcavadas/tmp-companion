@@ -214,7 +214,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
     calibration_lufs: Option<f32>,
     profile_id: Option<String>,
     on_result: tauri::ipc::Channel<FootswitchLevelProgressItem>,
-) -> Result<Vec<leveller::FootswitchLevelResult>, AppError> {
+) -> Result<leveller::BatchLevelRun<leveller::FootswitchLevelResult>, AppError> {
     // Taken first, so a detach anywhere in the run re-labels a failure as a lost connection.
     let watch = DetachWatch::start();
     // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
@@ -275,7 +275,7 @@ pub(crate) fn run_footswitch_batch(
     progress: &mut dyn FnMut(FootswitchLevelProgressItem),
     cancelled: &dyn Fn() -> bool,
     watch: DetachWatch,
-) -> Result<Vec<leveller::FootswitchLevelResult>, AppError> {
+) -> Result<leveller::BatchLevelRun<leveller::FootswitchLevelResult>, AppError> {
     // THE single field-8 read: it resolves every job AND is the planner's scene-overlay
     // source (per-node bake gate) — never add a second read here. `ftsw` is REQUIRED:
     // a body cut before it plans zero jobs and reports a clean run on a preset whose
@@ -421,13 +421,14 @@ pub(crate) fn run_footswitch_batch(
         // Dry run / nothing solved: discard the sweep pollution.
         let _ = Session::connect_lean().map(|mut s| s.load_preset(slot));
     }
-    // Guarantee re-amp OFF on a fresh connection, read back; its verdict rides every
-    // returned row (the rows already streamed over the channel).
+    // Guarantee re-amp OFF on a fresh connection, read back. The rows already streamed over
+    // the channel, so its verdict rides the return: beside the solved rows, whatever their
+    // count (a Stop or a batch whose every switch failed returns none), and on each of them.
     let rows: Result<_, LevelError> = Ok(results.into_iter().flatten().collect::<Vec<_>>());
-    leveller::reamp_off_guaranteed("level_footswitches_apply").stamp_leveling(
+    leveller::reamp_off_guaranteed("level_footswitches_apply").stamp_batch(
         rows,
         watch,
-        |rows, out| rows.iter_mut().for_each(|r| r.stamp_reamp(out)),
+        leveller::FootswitchLevelResult::stamp_reamp,
     )
 }
 

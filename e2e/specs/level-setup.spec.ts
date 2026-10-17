@@ -40,6 +40,12 @@ import {
 // best knob. A knob the scene can't use is offered disabled with its reason; a block whose
 // every knob is disabled is offered disabled with that reason.
 
+/** A batched leveling command's return: the rows, with the run-end re-amp verdict beside them. */
+interface BatchLevelRun<R> {
+  rows: R[];
+  reampStillOn: boolean;
+}
+
 interface FootswitchLevelResult {
   switch: number;
   clamped: boolean;
@@ -574,7 +580,7 @@ test.describe("Level — footswitch opted-in write path (raw invoke, command-lev
           onResult: "__CHANNEL__:1",
         },
         LEVEL_T,
-      ) as Promise<FootswitchLevelResult[]>;
+      ).then((r) => (r as BatchLevelRun<FootswitchLevelResult>).rows);
 
     // -20 is picked only because it sits far from the flat model's constant C
     // (base scene: -15 + 20*log10(presetLevel 0.32) ~= -24.9, `scenario-loudness.json` +
@@ -714,7 +720,7 @@ test.describe("Level — wet-mix footswitch outcome (SPRING, raw invoke)", () =>
           onResult: "__CHANNEL__:1",
         },
         LEVEL_T,
-      ) as Promise<FootswitchLevelResult[]>;
+      ).then((r) => (r as BatchLevelRun<FootswitchLevelResult>).rows);
 
     // Unreachable (-70, far below the curve's -12.02..-17.18 span): the solve pins at
     // WET_FLOOR_FRACTION x the authored mix (0.25 x 0.42 = 0.105) and reports the honest
@@ -914,7 +920,7 @@ test.describe("Level — shared_write_is_scene_local (Boost/Solo, raw invoke, BU
           onResult: "__CHANNEL__:1",
         },
         LEVEL_T * 2,
-      ) as Promise<SceneLevelResult[]>;
+      ).then((r) => (r as BatchLevelRun<SceneLevelResult>).rows);
 
     const from = (await simEvents(page)).length;
     const results = await boostJob(true);

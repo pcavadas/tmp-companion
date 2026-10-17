@@ -28,6 +28,7 @@ import { errMsg } from "./format";
 import { logError } from "./log";
 import type {
   AppInfo,
+  BatchLevelRun,
   CommandErrorKind,
   PresetEntry,
   LevelJob,
@@ -171,11 +172,12 @@ export const cancelPresetLeveling = (): Promise<void> =>
 
 /** Batched APPLY path. One backend command levels all selected scenes and streams row
  * progress over a Tauri channel. Each job carries its OWN per-scene target, so a
- * mixed-target preset still levels in ONE batch. */
+ * mixed-target preset still levels in ONE batch. Resolves with the leveled rows and the
+ * run-end re-amp verdict beside them (`BatchLevelRun`). */
 export const levelScenesApplyBatched = (
   args: SceneLevelApplyArgs,
   onResult: (item: SceneLevelProgressItem) => void,
-): Promise<LevelResult[]> => {
+): Promise<BatchLevelRun<LevelResult>> => {
   const channel = new Channel<SceneLevelProgressItem>();
   channel.onmessage = onResult;
   return invokeCommand("level_scenes_apply_batched", {
@@ -211,11 +213,11 @@ export const listFootswitchSceneContexts = (
 
 /** Level one or more block-acting footswitches' engaged states for preset `slot`,
  * streaming a progress row per switch. Each job picks a switch + the block param to
- * solve. Mirrors `levelScenesApplyBatched`. */
+ * solve. Mirrors `levelScenesApplyBatched`, return shape included. */
 export const levelFootswitchesApply = (
   args: FootswitchLevelApplyArgs,
   onResult: (item: FootswitchLevelProgressItem) => void,
-): Promise<FootswitchLevelResult[]> => {
+): Promise<BatchLevelRun<FootswitchLevelResult>> => {
   const channel = new Channel<FootswitchLevelProgressItem>();
   channel.onmessage = onResult;
   return invokeCommand("level_footswitches_apply", {

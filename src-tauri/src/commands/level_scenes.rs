@@ -439,7 +439,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     // it. `None` = today's behavior verbatim.
     base_anchor: Option<BaseAnchorArg>,
     on_result: tauri::ipc::Channel<SceneLevelProgressItem>,
-) -> Result<Vec<leveller::LevelResult>, AppError> {
+) -> Result<leveller::BatchLevelRun<leveller::LevelResult>, AppError> {
     // Taken first, so a detach anywhere in the run re-labels a failure as a lost connection.
     let watch = DetachWatch::start();
     if jobs.is_empty() {
@@ -528,7 +528,7 @@ fn scene_level_cancelled() -> bool {
 fn run_scene_batch(
     req: SceneBatchRequest<'_>,
     send: &dyn Fn(SceneLevelProgressItem),
-) -> Result<Vec<leveller::LevelResult>, AppError> {
+) -> Result<leveller::BatchLevelRun<leveller::LevelResult>, AppError> {
     let slot = req.slot;
     let mut scene_slots: Vec<u32> = req.jobs.iter().map(|j| j.scene_slot).collect();
     // Force-append base so the prepass always harvests a base doc — one more chance at a
@@ -641,12 +641,13 @@ fn run_scene_batch(
         }
         Err(e) => Err(e),
     };
-    // The rows stream over the channel before this OFF, so its verdict rides the
-    // returned rows (every one: it is a fact about the run), and a failed run's typed error.
-    leveller::reamp_off_guaranteed("level_scenes_apply_batched").stamp_leveling(
+    // The rows stream over the channel before this OFF, so its verdict rides the return:
+    // beside the rows, whatever their count (a Stop in the prepass and a batch whose every
+    // row failed both return none), on every returned row, and on a failed run's typed error.
+    leveller::reamp_off_guaranteed("level_scenes_apply_batched").stamp_batch(
         result,
         req.watch,
-        |rows, out| rows.iter_mut().for_each(|r| r.stamp_reamp(out)),
+        leveller::LevelResult::stamp_reamp,
     )
 }
 
