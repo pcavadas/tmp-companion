@@ -48,10 +48,26 @@ pub(super) fn handshake_window(ms: u64, scale: Option<f64>) -> u64 {
 /// [`REAMP_ECHO_MS`]). Nothing waits on the echo itself: the ON echo queues behind the
 /// handshake drain and the OFF echo is empty (see `Session::set_reamp_mode`).
 pub(super) fn reamp_echo_ms() -> u64 {
-    std::env::var("TMP_REAMP_ECHO_MS")
+    env_window("TMP_REAMP_ECHO_MS", REAMP_ECHO_MS)
+}
+
+/// The `changeParameter` window under the `TMP_CHANGE_PARAMETER_MS` bisect knob (default
+/// [`CHANGE_PARAMETER_MS`]). The setter is fire-and-forget: no caller reads its reply.
+pub(super) fn change_parameter_ms() -> u64 {
+    env_window("TMP_CHANGE_PARAMETER_MS", CHANGE_PARAMETER_MS)
+}
+
+/// The `setPresetLevel` window under the `TMP_SET_LEVEL_ECHO_MS` bisect knob (default
+/// [`SET_LEVEL_ECHO_MS`]). Leveling ignores the echo; only `probe`'s slot write reads it.
+pub(super) fn set_level_echo_ms() -> u64 {
+    env_window("TMP_SET_LEVEL_ECHO_MS", SET_LEVEL_ECHO_MS)
+}
+
+fn env_window(var: &str, default: u64) -> u64 {
+    std::env::var(var)
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(REAMP_ECHO_MS)
+        .unwrap_or(default)
 }
 
 /// The `connectionRequest` a write after a possible lapse sends first (`TrackedHid`).

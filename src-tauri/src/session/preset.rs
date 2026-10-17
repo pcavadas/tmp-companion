@@ -105,7 +105,7 @@ impl Session {
     /// `PresetLevelChanged.presetLevel` if reported (the device's confirmation).
     pub fn set_preset_level(&mut self, level: f32) -> Result<Option<f32>, String> {
         self.raw.clear();
-        self.send_and_collect(&proto::set_preset_level(level), SET_LEVEL_ECHO_MS)?;
+        self.send_and_collect(&proto::set_preset_level(level), set_level_echo_ms())?;
         Ok(self.streams().iter().find_map(|s| {
             dig(&s.body, TMS_PRESET, PRESET_LEVEL_CHANGED)
                 .and_then(|f| field1(&f).and_then(|v| v.as_f32()))
@@ -127,7 +127,7 @@ impl Session {
     ) -> Result<(), String> {
         self.transact(
             &proto::change_parameter(group_id, node_id, parameter_id, value),
-            CHANGE_PARAMETER_MS,
+            change_parameter_ms(),
         )?;
         Ok(())
     }
@@ -145,7 +145,7 @@ impl Session {
     ) -> Result<(), String> {
         self.transact(
             &proto::change_parameter_bool(group_id, node_id, parameter_id, value),
-            CHANGE_PARAMETER_MS,
+            change_parameter_ms(),
         )?;
         Ok(())
     }
