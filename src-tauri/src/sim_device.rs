@@ -34,8 +34,8 @@
 //! See `same_slot_load_tests`.
 //!
 //! **Base snapshot level (fw 1.8.58 static RE, HW 2026-10-17 slot 401):** the unit keeps a
-//! base snapshot whose `presetLevel` is set by a real load and by every scene recall, and
-//! NOT by `setPresetLevel` or a save. A `loadScene(8)` while base is already current
+//! base snapshot whose `presetLevel` is set by a real load, by every scene recall and by a
+//! base-context structural edit, and NOT by `setPresetLevel` or a save. A `loadScene(8)` while base is already current
 //! re-applies that snapshot's level (Scene Change Behavior "MAINTAIN CHANGES", the only
 //! mode modelled); every other recall keeps the live level. So after a level + save, a
 //! base → base recall plays the level of the preset's last real load until the next real
@@ -683,8 +683,9 @@ struct SimState {
     /// per-slot saved store instead (module header), so a load DOES restore the right
     /// slot's value.
     preset_level: f32,
-    /// The device's base-snapshot `presetLevel` (module header): set by a real load and by
-    /// every scene recall, left alone by `setPresetLevel` and by a save. A `loadScene(8)`
+    /// The device's base-snapshot `presetLevel` (module header): set by a real load, by
+    /// every scene recall and by a base-context structural edit, left alone by
+    /// `setPresetLevel` and by a save. A `loadScene(8)`
     /// while base is current restores `preset_level` from it.
     base_snapshot_level: f32,
     /// Scene-scoped knob writes: `(scene, group, node, param) → value`. The model reads
@@ -3882,6 +3883,11 @@ fn confirm_structural(
         // insert/replace set the dirty flag (static RE, `companion-cpm_*`).
         st.working_edits.push(edit);
         st.dirty = true;
+        // A base-context structural edit replaces the base snapshot, live level included
+        // (`tmp-audit` Q41 names removeNode; insert and replace are modelled the same).
+        if st.current_scene.is_none() {
+            st.base_snapshot_level = st.preset_level;
+        }
     }
     reply
 }
@@ -6063,5 +6069,15 @@ mod base_snapshot_tests {
             0.55,
             "that recall refreshed the snapshot"
         );
+    }
+    #[test]
+    fn a_base_structural_edit_refreshes_the_snapshot() {
+        let sim = SimDevice::new();
+        let mut s = loaded(&sim, 0.32);
+        s.set_preset_level(0.55).unwrap();
+        s.save_current_preset(ListIndex(3)).unwrap();
+        assert!(s.insert_node("G1", None, "ACD_ChorusCE2").unwrap());
+        s.load_scene(BASE_SCENE_SLOT).unwrap();
+        assert_eq!(sim.preset_level(), 0.55);
     }
 }
