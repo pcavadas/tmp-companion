@@ -76,6 +76,7 @@ export function SongList({
 
   return (
     <SongsPage
+      busy={busy}
       title="All songs"
       subtitle={`${songCount(songs.length)} on your Tone Master Pro`}
       actions={

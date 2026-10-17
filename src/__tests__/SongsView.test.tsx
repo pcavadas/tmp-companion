@@ -41,6 +41,7 @@ import {
   type Handlers,
 } from "./commandMocks";
 import { renderWithTheme } from "./testKit";
+import { SAVING_NOTE } from "../views/songs/SongsPage";
 
 function renderMgr(connected: boolean) {
   return renderWithTheme(<SongsView connected={connected} />);
@@ -259,6 +260,41 @@ describe("SongsView (device-backed)", () => {
       });
     });
     expect(await screen.findByText("Toto")).toBeInTheDocument();
+  });
+
+  it("says it is saving while a new song is written to the unit, then stops", async () => {
+    let finish: () => void = () => undefined;
+    const written = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    baseMock(
+      { songs: [song(1, "Song 1")] },
+      {
+        create_song_full: async () => {
+          await written;
+          return {
+            songs: [song(1, "Song 1"), song(2, "Toto")],
+            members: null,
+            duplicate_name: false,
+            bpm_warning: null,
+          };
+        },
+      },
+    );
+    renderMgr(true);
+    const user = userEvent.setup();
+    expect(await screen.findByText("Song 1")).toBeInTheDocument();
+    expect(screen.queryByText(SAVING_NOTE)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "New song" }));
+    await user.type(screen.getByLabelText("Song name"), "Toto");
+    await user.click(screen.getByRole("button", { name: "Save song" }));
+    // The form has closed, but the write is still running: the title row says so.
+    expect(await screen.findByText(SAVING_NOTE)).toBeInTheDocument();
+    finish();
+    expect(await screen.findByText("Toto")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText(SAVING_NOTE)).not.toBeInTheDocument();
+    });
   });
 
   it("a create on a name already taken says so by kind, not the tempo message", async () => {

@@ -274,6 +274,7 @@ export function SetlistDetail({
 
   return (
     <SongsPage
+      busy={busy}
       title={title}
       // Hidden while the setlist is read, and on an empty one (its page says it).
       subtitle={entries != null && !empty ? songCount(rows.length) : undefined}
