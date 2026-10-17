@@ -29,7 +29,7 @@ export interface CopyPreset {
   /** 0-based My-Presets list index. */
   slot: number;
   name: string;
-  /** Currently loaded on the unit (the green ON UNIT chip). */
+  /** Currently loaded on the unit (the "Loaded" badge). */
   onUnit: boolean;
   /** The routed signal graph (from the backup); empty when not yet loaded / unparseable. */
   graph: ActiveGraph;
@@ -50,6 +50,8 @@ export interface CopyLibrary {
   presets: CopyPreset[];
   /** `presets` keyed by slot for O(1) lookups (same identity as `presets`). */
   bySlot: Map<number, CopyPreset>;
+  /** The preset list is still arriving (nothing to show yet). */
+  listLoading: boolean;
   /** Backup graph load settled (graphs available). */
   ready: boolean;
   scanning: boolean;
@@ -117,6 +119,7 @@ export function useCopyLibrary(
   return {
     presets,
     bySlot,
+    listLoading: phase.kind === "loading" && rows.length === 0,
     ready: lib.ready,
     scanning: lib.scanning,
     // A failed library scan blocks Copy too: without it every graph is empty.

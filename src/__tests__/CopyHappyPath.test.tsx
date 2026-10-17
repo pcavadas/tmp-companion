@@ -1,7 +1,8 @@
-// src/__tests__/CopyHappyPath.test.tsx — the FULL Copy wizard happy path end-to-end
-// against a mocked invoke bridge: Step 1 (pick reference + a target) → Step 2 (tap a
-// target tile, Replace with an origin block, tick the backup box, Save) → the live
-// `copy_apply` run streams a result → "Saved to the unit." → Done returns to Step 1.
+// src/__tests__/CopyHappyPath.test.tsx — the FULL Copy happy path end-to-end against a
+// mocked invoke bridge: Step 1 (pick the source + a target) → Step 2 (choose a block on
+// the source strip, open a target block's menu, Replace, tick the backup box, Save) → the
+// live `copy_apply` run streams a result → "Saved to your Tone Master Pro" → Done returns
+// to Step 1. Also: a "+" gap's insert reaches the wire as the insert op `diffToOps` makes.
 //
 // The single locked assertion is the device contract: `copy_apply` fires exactly ONCE
 // with a `jobs[]` carrying the edited preset's listIndex + the exact `replace` op shape
@@ -81,12 +82,10 @@ function renderView() {
   return r;
 }
 
-// Drive Step 1 (pick reference + target) → Step 2 (replace TwinReverb with DynaComp, tick
-// the backup box) → click Save. Stops the moment the copy_apply run is fired; the caller
-// asserts the resulting overlay state.
-async function driveToSave(
-  user: ReturnType<typeof userEvent.setup>,
-): Promise<void> {
+type User = ReturnType<typeof userEvent.setup>;
+
+// Step 1: Stadium Lead is the source, Clean Verse the target → Choose blocks.
+async function driveToPlace(user: User): Promise<void> {
   await screen.findByText("Copy blocks between presets", undefined, {
     timeout: 3000,
   });
@@ -100,18 +99,26 @@ async function driveToSave(
   await user.click(cleanMatches[cleanMatches.length - 1]);
   const place = await screen.findByRole(
     "button",
-    { name: /place the blocks/i },
+    { name: /choose blocks/i },
     { timeout: 3000 },
   );
   await user.click(place);
-  const twinTiles = await screen.findAllByText("65 TWN", undefined, {
+  await screen.findByText("Choose a block to copy.", undefined, {
     timeout: 3000,
   });
-  await user.click(twinTiles[twinTiles.length - 1]);
-  const dynaChip = await screen.findByText("DYNAMIC COMPRESSOR", undefined, {
-    timeout: 3000,
-  });
-  await user.click(dynaChip);
+}
+
+// The source strip's DynaComp is the block to copy.
+async function chooseDyna(user: User): Promise<void> {
+  const dyna = document.querySelector<HTMLElement>(
+    '[data-source-card] [data-block-tile="ACD_DynaComp"]',
+  );
+  if (!dyna) throw new Error("no DynaComp on the source strip");
+  await user.click(dyna);
+  await screen.findByText("Dynamic Comp is ready to copy.");
+}
+
+async function backUpAndSave(user: User): Promise<void> {
   await user.click(
     await screen.findByText(/backed up with pro control/i, undefined, {
       timeout: 3000,
@@ -119,12 +126,29 @@ async function driveToSave(
   );
   const save = await screen.findByRole(
     "button",
-    { name: /save to the unit/i },
+    { name: /save to your tone master pro/i },
     { timeout: 3000 },
   );
   await act(async () => {
     await user.click(save);
   });
+}
+
+// Drive Step 1 → Step 2 (choose DynaComp, replace the TwinReverb with it through the
+// Twin's menu, tick the backup box) → click Save. Stops the moment the copy_apply run is
+// fired; the caller asserts the resulting dialog state.
+async function driveToSave(user: User): Promise<void> {
+  await driveToPlace(user);
+  await chooseDyna(user);
+  const twin = document.querySelector<HTMLElement>(
+    '[data-target-card="Clean Verse"] [data-block-tile="ACD_TwinReverb65NoFx"]',
+  );
+  if (!twin) throw new Error("no Twin on Clean Verse");
+  await user.click(twin);
+  await user.click(
+    await screen.findByRole("menuitem", { name: "Replace with Dynamic Comp" }),
+  );
+  await backUpAndSave(user);
 }
 
 beforeEach(() => {
@@ -141,7 +165,9 @@ describe("CopyView — full happy path (Step 1 → Step 2 → save → done)", (
     await driveToSave(user);
 
     // ── SaveOverlay reaches the done state ───────────────────────────────────
-    await screen.findByText("Saved to the unit.", undefined, { timeout: 3000 });
+    await screen.findByText("Saved to your Tone Master Pro", undefined, {
+      timeout: 3000,
+    });
 
     // ── LOCKED ASSERTIONS: the device contract ───────────────────────────────
     // copy_apply fired exactly once.
@@ -183,7 +209,9 @@ describe("CopyView — full happy path (Step 1 → Step 2 → save → done)", (
     const user = userEvent.setup();
     renderView();
     await driveToSave(user);
-    await screen.findByText("Saved to the unit.", undefined, { timeout: 3000 });
+    await screen.findByText("Saved to your Tone Master Pro", undefined, {
+      timeout: 3000,
+    });
     await user.click(
       await screen.findByRole("button", { name: /done/i }, { timeout: 3000 }),
     );
@@ -193,7 +221,7 @@ describe("CopyView — full happy path (Step 1 → Step 2 → save → done)", (
     await user.click(
       await screen.findByRole(
         "button",
-        { name: /place the blocks/i },
+        { name: /choose blocks/i },
         { timeout: 3000 },
       ),
     );
@@ -218,10 +246,51 @@ describe("CopyView — full happy path (Step 1 → Step 2 → save → done)", (
     renderView();
     await driveToSave(user);
 
-    // The overlay shows the FAILURE — not the green success + "N presets updated".
-    await screen.findByText("Save failed.", undefined, { timeout: 3000 });
-    expect(screen.getByText(/device disconnected mid-save/i)).toBeTruthy();
-    expect(screen.queryByText("Saved to the unit.")).toBeNull();
-    expect(screen.queryByText(/preset.*updated/i)).toBeNull();
+    // The dialog shows the FAILURE — never "Saved"; the run's text goes to the log.
+    await screen.findByText("Nothing was saved", undefined, { timeout: 3000 });
+    expect(screen.queryByText(/device disconnected mid-save/i)).toBeNull();
+    expect(screen.queryByText("Saved to your Tone Master Pro")).toBeNull();
+    expect(screen.queryByText("Saved")).toBeNull();
+  });
+
+  it("a + gap's insert reaches copy_apply as the insert op diffToOps makes", async () => {
+    installInvoke();
+    const user = userEvent.setup();
+    renderView();
+    await driveToPlace(user);
+    await chooseDyna(user);
+    // Before the Twin (anchored on it) and at the end (appended: no anchor).
+    await user.click(
+      screen.getByRole("button", {
+        name: "Add here in Clean Verse, before '65 Twin",
+      }),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "Add here in Clean Verse, at the end",
+      }),
+    );
+    await backUpAndSave(user);
+    await screen.findByText("Saved to your Tone Master Pro", undefined, {
+      timeout: 3000,
+    });
+    const [{ jobs }] = callsOf("copy_apply");
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].ops).toEqual([
+      {
+        kind: "insert",
+        group: "G1",
+        key: expect.any(String) as string,
+        before: null,
+        repl: { kind: "model", fenderId: "ACD_DynaComp" },
+      },
+      {
+        kind: "insert",
+        group: "G1",
+        key: expect.any(String) as string,
+        before: { kind: "node", nodeId: "n2" },
+        repl: { kind: "model", fenderId: "ACD_DynaComp" },
+      },
+    ]);
   });
 });

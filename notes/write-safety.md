@@ -36,7 +36,7 @@ Node ids, as two sources describe them:
 
 ## Backup / restore
 
-Pre-edit backups capture the original preset; restore re-imports it in place. Saving permanently alters a preset and cannot be undone from the app, so a new leveling run, a Copy save and a Doctor save each sit behind the "I've backed up with Pro Control" acknowledgment (`ui/BackupAckLabel` — the leveling Set-up footer, the Copy save bar, Doctor's prescription card), and that backup is the only way back. The one exception is the leveling Summary's "Try again", which re-runs sounds of the same flow straight away on the first run's settings — no Set up, so no second acknowledgment (`levelRunStore.retryLeveling`) — and still saves. A leveling run saves each sound automatically as soon as it matches; there is no separate save opt-in (`danger.md`).
+Pre-edit backups capture the original preset; restore re-imports it in place. Saving permanently alters a preset and cannot be undone from the app, so a new leveling run and a Copy save each sit behind the "I've backed up with Pro Control" acknowledgment (`ui/BackupAckLabel` — the leveling Set-up footer and the Copy Place blocks footer; Doctor never writes), and that backup is the only way back. The one exception is the leveling Summary's "Try again", which re-runs sounds of the same flow straight away on the first run's settings — no Set up, so no second acknowledgment (`levelRunStore.retryLeveling`) — and still saves. A leveling run saves each sound automatically as soon as it matches; there is no separate save opt-in (`danger.md`).
 
 ## Preset-schema fidelity (the "newer firmware revision" banner)
 

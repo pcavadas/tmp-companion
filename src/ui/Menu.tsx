@@ -2,7 +2,8 @@
 // `radiusPanel`, `shadowMenu`, 28-high items).
 //
 // Every "click a trigger → floating panel" surface routes through this (the songs/settings
-// context menus, the add-songs popover, the `Select` list), so the anchored card +
+// context menus, the add-songs popover, the `Select` list, Copy's block menu, anchored to a
+// signal-path tile through `anchor`), so the anchored card +
 // outside-dismiss + card
 // chrome live in ONE place instead of being hand-rolled per view (which had drifted to
 // different shadows, radii, and z-index pairs). The CALLER wraps the trigger + <Menu> in
@@ -79,6 +80,10 @@ export interface MenuProps {
   /** Card surface: the compact dropdown ("menu", padded + auto-scroll) or the larger
    *  floating panel ("popover", no padding, caller owns inner layout). Default "menu". */
   surface?: "menu" | "popover";
+  /** The anchor box, when it can't be the Menu's DOM parent: a trigger the caller
+   *  doesn't render itself (a Copy signal-path tile). Read at each placement and outside
+   *  press, so it must be stable (a `useCallback`). Default: the Menu's parent. */
+  anchor?: () => Element | null;
   children: ReactNode;
 }
 
@@ -93,6 +98,7 @@ export function Menu({
   align = "end",
   contentKey,
   surface = "menu",
+  anchor,
   children,
 }: MenuProps) {
   const s = useStyles();
@@ -105,7 +111,7 @@ export function Menu({
   // edges flush, flipped above when it would overflow the window bottom). Converges:
   // `pos` changes no measured dimension, and an unchanged result keeps the old state.
   const place = useCallback(() => {
-    const host = markerRef.current?.parentElement;
+    const host = anchor?.() ?? markerRef.current?.parentElement;
     const card = cardRef.current;
     if (!host || !card) return;
     const r = host.getBoundingClientRect();
@@ -124,7 +130,7 @@ export function Menu({
       gap,
     );
     setPos((p) => (p?.left === next.left && p.top === next.top ? p : next));
-  }, [gap, align]);
+  }, [gap, align, anchor]);
 
   // First placement before paint (the card renders hidden until then), then follow the
   // anchor: any scroll (capture — the list that scrolls is not the window), a window
@@ -159,13 +165,14 @@ export function Menu({
       if (!(target instanceof Node)) return;
       if (cardRef.current?.contains(target)) return;
       if (markerRef.current?.parentElement?.contains(target)) return;
+      if (anchor?.()?.contains(target)) return;
       onClose();
     };
     document.addEventListener("pointerdown", onDown, true);
     return () => {
       document.removeEventListener("pointerdown", onDown, true);
     };
-  }, [onClose]);
+  }, [onClose, anchor]);
 
   return (
     <>

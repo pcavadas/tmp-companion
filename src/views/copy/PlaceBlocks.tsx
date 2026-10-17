@@ -1,41 +1,52 @@
-// src/views/copy/PlaceBlocks.tsx — Step 2: edit each target's path + save.
+// src/views/copy/PlaceBlocks.tsx — Step 2: place blocks into each target, then save (look
+// B, frame BC-Place).
 //
-// Top: the reference strip (its full path, read-only — the blocks you can copy). Then a
-// targets header (count, plus an amber "show only over-budget" filter when any target is
-// over the CPU cap), the scrollable list of target cards, and the action bar (Back + a
-// gating hint or the edited count, then the "I've backed up with Pro Control" checkbox +
-// the Save button, which is disabled until there's an edit, nothing's over budget, AND
-// the backup box is ticked).
+// One scrolling main area: the "Copy from" card (choose the block to copy on its strip),
+// the section label "Copy into N presets" (with "N can't be saved yet" and a "Show only
+// these" / "Show all" link while two or more targets break a limit), then one card per
+// target — in two columns on a wide window. The Footer: Back, Undo and Redo (they never
+// touch your Tone Master Pro) and "N of M presets changed" on the left; on the right the
+// reason Save waits (when there is one, in place of the count, which leaves the room an
+// 800-wide window needs), the "I've backed up with Pro Control" tick and "Save to your
+// Tone Master Pro", greyed until a preset changed, nothing breaks a limit and the tick is
+// on.
 
-import { useMemo, useState, type Dispatch } from "react";
+import { useCallback, useState, type Dispatch } from "react";
+
 import { useTheme } from "../../theme/ThemeContext";
+import { sectionLabel } from "../../theme/tokens";
+import { useWindowWidth } from "../../lib/useWindowWidth";
 import { Button } from "../../ui/primitives";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
+import { Footer } from "../../ui/Footer";
 import { Icon } from "../../ui/Icon";
-import { ActionBar } from "../../ui/ActionBar";
-import { Tag } from "../../ui/Tag";
-import { slotLabel } from "../../lib/format";
-import { CopyPath } from "./CopyPath";
+import { SourceCard } from "./SourceCard";
 import { TargetEditCard } from "./TargetEditCard";
-import { OnUnitChip } from "./OnUnitChip";
-import { editGraphFromActive, originBlocks, type EditMap } from "./copyModel";
+import { COPY_TEXT, cantSaveYet, changedOf, copyInto } from "./copyText";
+import type { EditMap } from "./copyModel";
 import type { CopyPreset } from "./useCopyLibrary";
-import type { CopyAction, OpenBlock } from "./copyFlow";
+import type { CopyAction, OpenBlock, PickedBlock } from "./copyFlow";
+import type { BlockedSlot } from "./validateBlockEdit";
+
+/** From this window width (px) the target cards sit two to a row. */
+const WIDE_WINDOW = 1200;
 
 /** The derived Save gating (CopyView computes it once per edit). */
 export interface SaveGate {
   changedCount: number;
-  /** Slots whose staged edit violates a firmware cap (CPU or a block-count rule) —
+  /** Targets whose staged edit breaks a firmware cap (CPU or a block-count rule) —
    *  they block the save until fixed. */
-  blockedSlots: number[];
+  blocked: BlockedSlot[];
   saveBlocked: boolean;
-  hint: string | null;
+  /** Why Save waits (besides the backup tick), or null. */
+  reason: string | null;
 }
 
 export interface PlaceBlocksProps {
   from: CopyPreset;
   targets: number[];
   edit: EditMap;
+  pick: PickedBlock | null;
   open: OpenBlock | null;
   backedUp: boolean;
   gate: SaveGate;
@@ -52,6 +63,7 @@ export function PlaceBlocks({
   from,
   targets,
   edit,
+  pick,
   open,
   backedUp,
   gate,
@@ -62,17 +74,33 @@ export function PlaceBlocks({
   dispatch,
 }: PlaceBlocksProps) {
   const { t } = useTheme();
-  const [onlyOver, setOnlyOver] = useState(false);
+  const wide = useWindowWidth() >= WIDE_WINDOW;
+  const [onlyBlocked, setOnlyBlocked] = useState(false);
 
-  const refGraph = useMemo(() => editGraphFromActive(from.graph), [from.graph]);
-  const origin = useMemo(() => originBlocks(from.graph), [from.graph]);
+  const { changedCount, blocked, saveBlocked, reason } = gate;
+  const reasonBySlot = new Map(blocked.map((b) => [b.slot, b.reason]));
+  // The filter link shows while two or more targets break a limit.
+  const several = blocked.length > 1;
+  const showBlocked = onlyBlocked && several;
+  const visible = showBlocked
+    ? targets.filter((s) => reasonBySlot.has(s))
+    : targets;
 
-  const { changedCount, blockedSlots, saveBlocked, hint } = gate;
-  const blockedSet = new Set(blockedSlots);
-  const showOver = onlyOver && blockedSlots.length > 0;
-  const visible = showOver ? targets.filter((s) => blockedSet.has(s)) : targets;
+  const onPick = useCallback(
+    (uid: string, model: string) => {
+      dispatch({ type: "pickBlock", uid, model });
+    },
+    [dispatch],
+  );
+  const onCloseMenu = useCallback(() => {
+    dispatch({ type: "closeMenu" });
+  }, [dispatch]);
 
-  const saveDisabled = saveBlocked || !backedUp;
+  const caption = {
+    fontSize: t.fontCaption,
+    lineHeight: `${String(t.lineCaption)}px`,
+    color: t.textSecondary,
+  } as const;
 
   return (
     <div
@@ -81,246 +109,151 @@ export function PlaceBlocks({
         minHeight: 0,
         display: "flex",
         flexDirection: "column",
+        background: t.window,
+        fontFamily: t.fontSans,
+        color: t.text,
       }}
     >
-      {/* reference */}
-      <div
-        style={{
-          flexShrink: 0,
-          padding: `${String(t.space5)}px ${String(t.space8)}px`,
-          borderBottom: `0.5px solid ${t.hairline}`,
-          background: t.window,
-        }}
-      >
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         <div
           style={{
             display: "flex",
-            alignItems: "center",
-            gap: t.space5,
-            marginBottom: t.space1,
+            flexDirection: "column",
+            gap: t.sp12,
+            padding: `${String(t.sp16)}px ${String(t.sp24)}px ${String(t.sp16 + t.sp4)}px`,
           }}
         >
-          <Tag size="md" tone="accent">
-            {slotLabel(from.slot)}
-          </Tag>
-          <span
-            style={{ fontFamily: t.serif, fontSize: t.fsCard, color: t.ink }}
-          >
-            {from.name}
-          </span>
-          {from.onUnit && <OnUnitChip />}
-          <span
-            style={{
-              fontFamily: t.sans,
-              fontSize: t.fsLabel,
-              color: t.mutedInk,
-            }}
-          >
-            — the blocks you can copy. Tap a block in a preset below to use one.
-          </span>
-        </div>
-        <CopyPath graph={refGraph} />
-      </div>
+          <SourceCard from={from} pick={pick} onPick={onPick} />
 
-      {/* targets header */}
-      <div
-        style={{
-          flexShrink: 0,
-          padding: `${String(t.space4)}px ${String(t.space8)}px ${String(t.space3)}px`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: t.space5,
-        }}
-      >
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsMicro,
-            letterSpacing: t.lsTag,
-            textTransform: "uppercase",
-            color: showOver ? t.sevWarn : t.faint,
-          }}
-        >
-          {showOver
-            ? `${String(visible.length)} can't save`
-            : `Editing ${String(targets.length)} preset${targets.length === 1 ? "" : "s"} — each keeps its own path`}
-        </span>
-        {blockedSlots.length > 0 && (
-          <Button
-            variant="bare"
-            aria-pressed={showOver}
-            onClick={() => {
-              setOnlyOver((v) => !v);
-            }}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: t.space3,
-              fontFamily: t.sans,
-              fontSize: t.fsLabel,
-              color: t.sevWarn,
-              border: `0.5px solid ${t.sevWarnChipBorder}`,
-              background: t.sevWarnChipSoft,
-              borderRadius: t.rPill,
-              padding: `${String(t.space2)}px ${String(t.space5)}px`,
-              whiteSpace: "nowrap",
-            }}
-          >
-            <Icon name="warn-tri" size={12} stroke={t.sevWarn} />
-            {`${String(blockedSlots.length)} can't save`} ·{" "}
-            {showOver ? "Show all" : "Show only these"}
-          </Button>
-        )}
-      </div>
-
-      {/* targets list */}
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          padding: `0 ${String(t.space8)}px ${String(t.space7)}px`,
-          display: "flex",
-          flexDirection: "column",
-          gap: t.space4,
-        }}
-      >
-        {visible.map((slot) => {
-          const e = edit[slot];
-          if (!e) return null;
-          return (
-            <TargetEditCard
-              key={slot}
-              slot={slot}
-              name={nameOf(slot)}
-              edit={e}
-              openUid={open?.slot === slot ? open.uid : null}
-              fromName={from.name}
-              origin={origin}
-              onTapBlock={(uid) => {
-                dispatch({ type: "tapBlock", slot, uid });
-              }}
-              onRemove={(uid) => {
-                dispatch({ type: "remove", slot, uid });
-              }}
-              onApply={(uid, mode, model) => {
-                dispatch({ type: "apply", slot, uid, mode, model });
-              }}
-              onClose={() => {
-                dispatch({ type: "closeEditor" });
-              }}
-            />
-          );
-        })}
-      </div>
-
-      {/* draft bar */}
-      <ActionBar
-        left={
           <div
             style={{
               display: "flex",
-              alignItems: "center",
-              gap: t.space5,
-              minWidth: 0,
+              alignItems: "baseline",
+              gap: t.sp12,
+              flexWrap: "wrap",
             }}
           >
+            <span style={sectionLabel(t)}>{copyInto(targets.length)}</span>
+            {several && (
+              <>
+                <span style={caption}>{cantSaveYet(blocked.length)}</span>
+                <Button
+                  variant="link"
+                  size="sm"
+                  aria-pressed={showBlocked}
+                  onClick={() => {
+                    setOnlyBlocked((v) => !v);
+                  }}
+                >
+                  {showBlocked ? COPY_TEXT.showAll : COPY_TEXT.showOnly}
+                </Button>
+              </>
+            )}
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: wide
+                ? "minmax(0, 1fr) minmax(0, 1fr)"
+                : "minmax(0, 1fr)",
+              gap: t.sp12,
+              alignItems: "start",
+            }}
+          >
+            {visible.map((slot) => {
+              const e = edit[slot];
+              if (!e) return null;
+              return (
+                <TargetEditCard
+                  key={slot}
+                  slot={slot}
+                  name={nameOf(slot)}
+                  edit={e}
+                  openUid={open?.slot === slot ? open.uid : null}
+                  pick={pick}
+                  blocked={reasonBySlot.get(slot) ?? null}
+                  onTapBlock={(uid) => {
+                    dispatch({ type: "tapBlock", slot, uid });
+                  }}
+                  onRemove={(uid) => {
+                    dispatch({ type: "remove", slot, uid });
+                  }}
+                  onApply={(uid, mode, model) => {
+                    dispatch({ type: "apply", slot, uid, mode, model });
+                  }}
+                  onCloseMenu={onCloseMenu}
+                />
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <Footer
+        left={
+          <>
             <Button
-              variant="bare"
+              variant="secondary"
+              size="lg"
               onClick={() => {
                 dispatch({ type: "back" });
               }}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: t.space3,
-                fontFamily: t.sans,
-                fontSize: t.fsControl,
-                color: t.ink2,
-              }}
             >
-              <span style={{ display: "inline-flex", transform: "scaleX(-1)" }}>
-                <Icon
-                  name="chev-right"
-                  size={14}
-                  stroke={t.ink2}
-                  strokeWidth={2}
-                />
-              </span>
-              Back
+              {COPY_TEXT.back}
             </Button>
-            <span style={{ width: 1, height: 22, background: t.hairline }} />
-            <div
-              title="Undo / redo your edits — nothing is on the unit yet"
-              style={{ display: "flex", alignItems: "center", gap: t.space3 }}
-            >
-              {(
-                [
-                  { icon: "undo", label: "Undo", enabled: canUndo },
-                  { icon: "redo", label: "Redo", enabled: canRedo },
-                ] as const
-              ).map((b) => (
-                <Button
-                  key={b.icon}
-                  variant="bare"
-                  aria-label={b.label}
-                  disabled={!b.enabled}
-                  onClick={() => {
-                    dispatch({ type: b.icon });
-                  }}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    height: 30,
-                    padding: `0 ${String(t.space5)}px`,
-                    borderRadius: t.rBtn,
-                    opacity: b.enabled ? 1 : 0.35,
-                  }}
-                >
-                  <Icon name={b.icon} size={15} stroke={t.ink2} />
-                </Button>
-              ))}
-            </div>
-            <span style={{ width: 1, height: 22, background: t.hairline }} />
-            {saveBlocked && hint != null ? (
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: t.space4,
-                  fontFamily: t.sans,
-                  fontSize: t.fsControl,
-                  color: t.sevWarn,
-                }}
-              >
-                <Icon name="warn-tri" size={14} stroke={t.sevWarn} />
-                {hint}
-              </span>
-            ) : (
-              <span
-                style={{
-                  fontFamily: t.sans,
-                  fontSize: t.fsControl,
-                  color: t.ink2,
-                }}
-              >
-                <strong style={{ color: t.ink }}>{String(changedCount)}</strong>{" "}
-                of {String(targets.length)} presets edited
+            <Button
+              variant="plain"
+              icon="undo"
+              aria-label={COPY_TEXT.undo}
+              disabled={!canUndo}
+              onClick={() => {
+                dispatch({ type: "undo" });
+              }}
+            />
+            <Button
+              variant="plain"
+              icon="redo"
+              aria-label={COPY_TEXT.redo}
+              disabled={!canRedo}
+              onClick={() => {
+                dispatch({ type: "redo" });
+              }}
+            />
+            {reason == null && (
+              <span style={{ ...caption, whiteSpace: "nowrap" }}>
+                {changedOf(changedCount, targets.length)}
               </span>
             )}
-          </div>
+          </>
         }
         right={
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: t.space7,
-              flexShrink: 0,
-            }}
-          >
+          <>
+            {saveBlocked && reason != null && (
+              <span
+                style={{
+                  ...caption,
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: t.sp6,
+                  minWidth: 0,
+                  maxWidth: 320,
+                  color: t.text,
+                }}
+              >
+                <span
+                  style={{ display: "flex", paddingTop: 1.5, flexShrink: 0 }}
+                >
+                  <Icon
+                    name="warn-tri"
+                    size={13}
+                    stroke={t.caution}
+                    strokeWidth={2}
+                  />
+                </span>
+                {reason}
+              </span>
+            )}
             <BackupAckLabel
               checked={backedUp}
               onChange={(value) => {
@@ -329,13 +262,13 @@ export function PlaceBlocks({
             />
             <Button
               variant="primary"
-              icon="check"
-              disabled={saveDisabled}
+              size="lg"
+              disabled={saveBlocked || !backedUp}
               onClick={onSave}
             >
-              Save to the unit
+              {COPY_TEXT.save}
             </Button>
-          </div>
+          </>
         }
       />
     </div>

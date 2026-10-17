@@ -4,7 +4,13 @@
 // the strip out; its pieces (tiles, jacks, diamonds, wires, the measured split/join
 // brackets) and the StripGraph model live in ./signalChain/.
 
-import { memo, type CSSProperties, type Key, type ReactNode } from "react";
+import {
+  Fragment,
+  memo,
+  type CSSProperties,
+  type Key,
+  type ReactNode,
+} from "react";
 
 import { useTheme } from "../theme/ThemeContext";
 import { BlockTile } from "./signalChain/BlockTile";
@@ -48,16 +54,34 @@ function SignalChainViewImpl({
   const tile = (b: StripBlock, key: Key) => (
     <BlockTile key={key} b={b} size={size} skeleton={skeleton} />
   );
+  // Copy's "+" gaps (`graph.gap`): one in place of each wire between two tiles of a row
+  // or series stage, and one at each end. Unset (Level, and Copy with no block chosen)
+  // `gapAt` adds nothing and `link` is the plain Wire, so the strip renders as before.
+  const gap = graph.gap;
+  const gapAt = (
+    key: string,
+    at: { beforeUid?: string; afterUid?: string },
+  ): ReactNode[] =>
+    gap ? [<Fragment key={key}>{gap.render(at)}</Fragment>] : [];
+  const link = (key: string, prev: StripBlock, next: StripBlock): ReactNode =>
+    gap ? (
+      <Fragment key={key}>
+        {gap.render({ afterUid: prev.uid, beforeUid: next.uid })}
+      </Fragment>
+    ) : (
+      <Wire key={key} ink={ink} />
+    );
   const row = (arr: StripBlock[], pfx: string): ReactNode[] =>
     arr.length > 0
-      ? arr.flatMap((b, i) =>
-          i === 0
-            ? [tile(b, `${pfx}t${String(i)}`)]
-            : [
-                <Wire key={`${pfx}w${String(i)}`} ink={ink} />,
-                tile(b, `${pfx}t${String(i)}`),
-              ],
-        )
+      ? arr.flatMap((b, i) => [
+          ...(i === 0
+            ? gapAt(`${pfx}g`, { beforeUid: b.uid })
+            : [link(`${pfx}w${String(i)}`, arr[i - 1], b)]),
+          tile(b, `${pfx}t${String(i)}`),
+          ...(i === arr.length - 1
+            ? gapAt(`${pfx}gz`, { afterUid: b.uid })
+            : []),
+        ])
       : [<EmptyLane key={`${pfx}empty`} size={size} />];
 
   const splitSection = (
@@ -186,8 +210,11 @@ function SignalChainViewImpl({
     } else {
       st.blocks.forEach((b, j) => {
         if (j > 0)
-          kids.push(<Wire key={`bw${String(i)}-${String(j)}`} ink={ink} />);
+          kids.push(link(`bw${String(i)}-${String(j)}`, st.blocks[j - 1], b));
+        else kids.push(...gapAt(`bg${String(i)}`, { beforeUid: b.uid }));
         kids.push(tile(b, `b${String(i)}-${String(j)}`));
+        if (j === st.blocks.length - 1)
+          kids.push(...gapAt(`bz${String(i)}`, { afterUid: b.uid }));
       });
     }
   });

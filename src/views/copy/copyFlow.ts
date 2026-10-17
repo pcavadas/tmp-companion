@@ -3,11 +3,12 @@
 //
 // The page is ALWAYS in exactly one phase:
 //   • choose — Step 1 (ChoosePresets): pick the reference + the targets.
-//   • edit   — Step 2 (PlaceBlocks): stage edits on each target, with an open inline
-//              editor at most.
+//   • edit   — Step 2 (PlaceBlocks): stage edits on each target. `pick` is the source
+//              block chosen to copy (it stays chosen after each placement, so the next
+//              target is one click); `open` is the target block whose menu is open.
 //   • saving — Step 2 under the SaveOverlay: the copy_apply run and its results.
 // The staged work (`Draft`: the undo/redo history + the "I've backed up" tick) rides
-// every phase, so it survives Back → Place the blocks and a failed save; only a fully
+// every phase, so it survives Back → Choose blocks and a failed save; only a fully
 // saved run clears it. `edit`/`saving` always hold a history, so Step 2 can never
 // render without a working copy.
 //
@@ -24,10 +25,17 @@ import {
   type EditMode,
 } from "./copyModel";
 
-/** The block whose inline editor is open: a target slot + the block's uid. */
+/** The target block whose menu (Replace / Remove) is open: a target slot + the block's
+ *  uid. */
 export interface OpenBlock {
   slot: number;
   uid: string;
+}
+
+/** The source block chosen to copy: its uid on the source strip and its model id. */
+export interface PickedBlock {
+  uid: string;
+  model: string;
 }
 
 /** The staged work. `hist` is the snapshot stack of the whole staged edit + a pointer
@@ -43,22 +51,24 @@ export type CopyPhase =
   | {
       kind: "edit";
       draft: Draft & { hist: EditHistory };
+      pick: PickedBlock | null;
       open: OpenBlock | null;
     }
   | {
       kind: "saving";
       draft: Draft & { hist: EditHistory };
-      /** The editor left open when Save was pressed (still drawn under the overlay). */
+      /** The source block chosen when Save was pressed (still drawn under the overlay,
+       *  and still chosen if some presets come back unsaved). */
+      pick: PickedBlock | null;
+      /** The menu left open when Save was pressed (still drawn under the overlay). */
       open: OpenBlock | null;
       /** The slots this run writes, in order. */
       slots: number[];
       /** Every result seen so far, by slot. */
       results: Map<number, CopyApplyItem>;
-      /** The run settled (resolved or rejected). */
+      /** The run settled (resolved or rejected). A rejected run is logged; what it
+       *  saved is read from `results` alone. */
       done: boolean;
-      /** Set when the whole copy_apply run REJECTS (vs per-preset errors in
-       *  `results`). */
-      error: string | null;
     };
 
 export interface CopyState {
@@ -74,15 +84,19 @@ export type CopyAction =
   | { type: "enterEdit"; hist: EditHistory }
   | { type: "back" }
   | { type: "setBackedUp"; value: boolean }
+  /** Choose a source block to copy; choosing the chosen one again clears it. */
+  | { type: "pickBlock"; uid: string; model: string }
+  /** Open (or, on the open one, close) a target block's menu. */
   | { type: "tapBlock"; slot: number; uid: string }
-  | { type: "closeEditor" }
+  | { type: "closeMenu" }
+  /** Place `model` on target `slot`: replace block `uid`, or insert it before/after
+   *  `uid` (a "+" gap). The source block stays chosen. */
   | { type: "apply"; slot: number; uid: string; mode: EditMode; model: string }
   | { type: "remove"; slot: number; uid: string }
   | { type: "undo" }
   | { type: "redo" }
   | { type: "saveStart"; slots: number[] }
   | { type: "saveResults"; results: Map<number, CopyApplyItem> }
-  | { type: "saveFailed"; error: string }
   | { type: "saveSettled" }
   /** Dismiss the finished SaveOverlay. `hist` is null when every preset saved
    *  (back to Step 1, staged work discarded), else the history re-targeted with the
@@ -119,6 +133,14 @@ function editReducer(
   const { draft } = phase;
   const hist = draft.hist;
   switch (action.type) {
+    case "pickBlock":
+      return {
+        ...phase,
+        pick:
+          phase.pick?.uid === action.uid
+            ? null
+            : { uid: action.uid, model: action.model },
+      };
     case "tapBlock": {
       const o = phase.open;
       const same = o?.slot === action.slot && o.uid === action.uid;
@@ -127,7 +149,7 @@ function editReducer(
         open: same ? null : { slot: action.slot, uid: action.uid },
       };
     }
-    case "closeEditor":
+    case "closeMenu":
       return { ...phase, open: null };
     case "apply": {
       const { slot, uid, mode, model } = action;
@@ -167,11 +189,11 @@ function editReducer(
       return {
         kind: "saving",
         draft,
+        pick: phase.pick,
         open: phase.open,
         slots: action.slots,
         results: new Map(),
         done: false,
-        error: null,
       };
     default:
       return phase;
@@ -186,8 +208,6 @@ function savingReducer(
   switch (action.type) {
     case "saveResults":
       return { ...phase, results: action.results };
-    case "saveFailed":
-      return { ...phase, error: action.error };
     case "saveSettled":
       return { ...phase, done: true };
     case "saveDismiss":
@@ -200,6 +220,7 @@ function savingReducer(
         : {
             kind: "edit",
             draft: { ...phase.draft, hist: action.hist },
+            pick: phase.pick,
             open: null,
           };
     default:
@@ -224,6 +245,7 @@ export function copyReducer(state: CopyState, action: CopyAction): CopyState {
             phase: {
               kind: "edit",
               draft: { ...state.phase.draft, hist: action.hist },
+              pick: null,
               open: null,
             },
           }

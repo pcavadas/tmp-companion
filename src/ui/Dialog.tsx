@@ -30,13 +30,15 @@ import { createPortal } from "react-dom";
 
 import { useTheme } from "../theme/ThemeContext";
 
-/** The dialog width scale. xs = a confirm (Stop, Delete), sm = forms / progress,
- *  explainer = the How leveling works sheet (its two-column table), md = a wider form,
- *  lg = a wide table. (Add xl here when a wider dialog needs one.) */
-export type DialogSize = "xs" | "sm" | "explainer" | "md" | "lg";
+/** The dialog width scale. xs = a confirm (Stop, Delete), progress = a save's progress
+ *  (Copy's), sm = forms, explainer = the How leveling works sheet (its two-column
+ *  table), md = a wider form, lg = a wide table. (Add xl here when a wider dialog needs
+ *  one.) */
+export type DialogSize = "xs" | "progress" | "sm" | "explainer" | "md" | "lg";
 
 const DIALOG_WIDTH: Record<DialogSize, number> = {
   xs: 380,
+  progress: 420,
   sm: 460,
   explainer: 500,
   md: 560,

@@ -196,43 +196,50 @@ device write is `copy_apply` on Save.
 
 ### Functional
 
-- **P1 — Gating order** — disconnected ("Copy lives on the Tone Master Pro") > error ("Try again") >
-  steps. Reference auto-defaults to on-unit preset (or `presets[0]`) on late list arrival.
-- **P2 — Step 1 reference pick** ⌨️(filter) — single-select radio; picking a from-slot that's in the
-  target set auto-removes it from targets.
-- **P3 — Step 1 targets** ⌨️(filter) — multi-select; "Select all" / "Select these N" (filtered) /
-  "Clear" (disabled at 0); to-list excludes the current from-slot.
-- **P4 — "Place the blocks" gating** — disabled until ≥1 target AND a from-slot; shows
-  "Reading presets… %" ReadingPill until backup scan `ready`.
-- **P5 — Step 2 per-target edit** — tap a tile → inline BlockEditor; 3-way Replace / Insert before /
-  Insert after; origin chips (distinct reference blocks, with +cpu); Remove; close ×. Only ONE
-  editor open app-wide. + / ⟲ badges; "edited" chip; CpuMeter per card.
-- **P6 — CPU budget** — push a target over budget → amber card border + "over budget" chip + Save
-  blocked with the right hint ("{name} is over {budget}% — remove a block"); over-budget filter chip.
-- **P7 — Undo / redo** — toolbar buttons; disabled at history ends; a new edit truncates the redo
+- **P1 — Gating order** — disconnected (the shared no-unit page) > error ("Try again") > steps.
+  The source auto-defaults to the loaded preset (or `presets[0]`) on late list arrival.
+- **P2 — Step 1 "Copy from"** ⌨️(search) — one Radio per row (the whole row is its label); picking
+  a source that's in the target set auto-removes it from targets; "Loaded" badge on the loaded one.
+- **P3 — Step 1 "Copy into"** ⌨️(search) — a Checkbox per row; "Select all N shown" ticks the rows
+  the search shows, or clears them when all are ticked (mixed in between); the list excludes the
+  source. A search with no match shows "No presets match …" + "Clear search".
+- **P4 — "Choose blocks" gating** — disabled until ≥1 target AND a source ("Choose at least one
+  preset to copy into"); busy with "Reading presets N%" until the backup scan is `ready`.
+- **P5 — Step 2 placing** — choose a block on the source strip ("… is ready to copy.", "Adds N%
+  CPU"); a "+" in every gap of every target strip inserts it (before the block right of the gap,
+  or after a row's last block; named "Add here in <preset>, before <block>" / "… at the end");
+  the chosen block stays chosen; a target block's menu holds "Replace with <block>" and "Remove".
+  - / ⟲ badges; "Changed" badge; CPU readout per card.
+- **P6 — Firmware limits** — a placement that would break one greys that target's gaps (or leaves
+  Replace out of the menu) with the reason under its strip; a target already over one gets a
+  danger edge + the reason; Save waits with the reason beside it (one preset named, or "N presets
+  can't be saved yet" + a "Show only these" filter).
+- **P7 — Undo / redo** — footer buttons; disabled at history ends; a new edit truncates the redo
   branch.
-- **P8 — Save gate** — "Save to the unit" disabled unless ≥1 edited target + nothing over budget +
-  backup ack ticked.
-- **P9 — Save run** — SaveOverlay streams per-slot status (active spinner / queued / done "updated"
-  or "no change" / error); ProgressBar; Done medallion + Pro-Control restore note → resets to Step 1 when every target saved; a partial or total failure shows a warn medallion and returns to Step 2 with the unsaved edits (#291).
+- **P8 — Save gate** — "Save to your Tone Master Pro" disabled unless ≥1 changed target + nothing
+  over a limit + the backup tick.
+- **P9 — Save run** — the save dialog streams per-slot status (Waiting / Saving / Saved / No change
+  / Couldn't save), a ProgressBar and the line naming unchanged presets; done: "Saved to your Tone
+  Master Pro" → resets to Step 1 when every target saved; "Some presets weren't saved" / "Nothing
+  was saved" return to Step 2 with the unsaved edits (#291). Backend text goes to the log only.
 - **P10 — Multi-preset save** — two targets, different edits each; both written; re-open shows edits
   carried via optimistic cache patch (no second 22 s scan; `read_library_via_backup` called once).
 
 ### Monkey/chaos
 
-- **M-P1 — Back keeps staged edits.** Edit blocks in Step 2 → Back → "Place the blocks" again →
+- **M-P1 — Back keeps staged edits.** Edit blocks in Step 2 → Back → "Choose blocks" again →
   the edits and their undo steps are still there for every target still selected; a newly picked
   target starts fresh, a deselected one drops out (`retargetHistory`). Fixed for #292; gated by
   `CopyStagedEdits.test.tsx`.
 - **M-P2 — Save-abort / disconnect mid-save.** Pull device during a 2-preset save → partial results.
-  The done screen derives all / partial / none from the per-preset results (no green success unless
+  The done dialog derives all / partial / none from the per-preset results (never "Saved" unless
   every target saved); the cache is patched only for the presets that saved, including those the
   channel reported before a rejection; Done keeps the unsaved presets' edits on Step 2 (#291,
   `CopyStagedEdits.test.tsx`). The physical unplug is still untested.
-- **M-P3 — Partial save failure** — one of N presets returns `error` → row shows warn-tri, others
-  "updated", only updated items patch the cache. Gated by `CopyStagedEdits.test.tsx` (#291).
+- **M-P3 — Partial save failure** — one of N presets returns `error` → its row says "Couldn't save",
+  the others "Saved", only updated items patch the cache. Gated by `CopyStagedEdits.test.tsx` (#291).
 - **M-P4 — Double-click Save** — must fire `copy_apply` once.
-- **M-P5 — Rapid tab-switch during the backup scan** that gates "Place the blocks" (shared
+- **M-P5 — Rapid tab-switch during the backup scan** that gates "Choose blocks" (shared
   `libraryScan` with Level/Songs).
 
 ---

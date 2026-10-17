@@ -1,18 +1,20 @@
-// src/views/copy/CopyView.tsx — the Copy tab: a 2-step flow + a save overlay.
+// src/views/copy/CopyView.tsx — the Copy tab: a 2-step flow + a save overlay (look B).
 //
-// Step 1 (ChoosePresets) picks the reference + targets; Step 2 (PlaceBlocks) edits each
-// target's signal path by hand (Replace / Insert / Remove from the reference's blocks)
-// and saves. Everything is staged off-device; the unit is written ONLY on Save, one
-// preset at a time via the live `copy_apply` command, gated on a per-preset CPU budget
-// (76.5%) + the "I've backed up with Pro Control" checkbox. The flow's state is one
+// Step 1 (ChoosePresets) picks the preset to copy from + the targets; Step 2 (PlaceBlocks)
+// edits each target's signal path by hand — choose a block on the source strip, then a
+// "+" gap in each target (insert), or a target block's menu (Replace / Remove) — and
+// saves. Everything is staged off-device; the unit is written ONLY on Save, one changed
+// preset at a time via the live `copy_apply` command, gated on the firmware limits
+// (`checkEdit`) + the "I've backed up with Pro Control" tick. The flow's state is one
 // reducer (./copyFlow): choose | edit | saving, the staged work riding all three.
 
 import { useMemo, useReducer } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { LoadErrorPane } from "../LoadErrorPane";
-import { errMsg, slotLabel } from "../../lib/format";
-import { copyApply } from "../../lib/invoke";
+import { slotLabel } from "../../lib/format";
+import { copyApply, logUnlessCommandError } from "../../lib/invoke";
+import { logError } from "../../lib/log";
 import { patchLibraryGraph } from "../../device/libraryScan";
 import { patchLiveGraph, useLiveDevice } from "../../device/useLiveDevice";
 import { DeviceState } from "../DeviceState";
@@ -29,18 +31,9 @@ import {
   retargetHistory,
 } from "./copyModel";
 import { copyReducer, currentEdit, INITIAL_COPY_STATE } from "./copyFlow";
-import {
-  checkEdit,
-  REASON_COPY,
-  type BlockEditReason,
-} from "./validateBlockEdit";
+import { checkEdit, type BlockedSlot } from "./validateBlockEdit";
+import { saveReason } from "./copyText";
 import type { ActiveGraph, CopyApplyItem, CopyJob } from "../../lib/types";
-
-/** One target slot that can't currently be saved, and why. */
-export interface BlockedSlot {
-  slot: number;
-  reason: BlockEditReason;
-}
 
 export interface CopyViewProps {
   connected: boolean;
@@ -56,9 +49,9 @@ export function CopyView({
   initialGraph,
 }: CopyViewProps) {
   const { t } = useTheme();
-  // The ON-UNIT marker follows the unit's LIVE active preset (the monitor pushes
+  // The "Loaded" badge follows the unit's LIVE active preset (the monitor pushes
   // hardware preset changes), not the frozen connect-time graph — so switching presets
-  // on the unit moves the chip. Falls back to the connect-time slot before any live push
+  // on the unit moves the badge. Falls back to the connect-time slot before any live push
   // arrives (and under Vitest, where the event bridge is inert).
   const live = useLiveDevice(connected);
   const activeSlot = live.activeListIndex ?? initialGraph?.slot ?? null;
@@ -105,7 +98,7 @@ export function CopyView({
   // render — `isEdited` + `checkEdit` walk every block of every target. `checkEdit`
   // covers all 5 firmware caps (CPU + the 4 count/coexistence rules) — this is the
   // UX-only up-front warning; the Rust `copy_apply` guard is the real enforcement.
-  const { changedCount, blockedSlots, blockedSlotNums } = useMemo(() => {
+  const { changedCount, blockedSlots } = useMemo(() => {
     let changed = 0;
     const blocked: BlockedSlot[] = [];
     if (edit) {
@@ -117,21 +110,13 @@ export function CopyView({
         if (reason) blocked.push({ slot: s, reason });
       }
     }
-    return {
-      changedCount: changed,
-      blockedSlots: blocked,
-      blockedSlotNums: blocked.map((b) => b.slot),
-    };
+    return { changedCount: changed, blockedSlots: blocked };
   }, [edit, toSlots]);
   const saveBlocked = !edit || changedCount === 0 || blockedSlots.length > 0;
-  const hint =
-    blockedSlots.length > 1
-      ? `${String(blockedSlots.length)} presets can't save — fix them first.`
-      : blockedSlots.length === 1
-        ? `${nameOf(blockedSlots[0].slot)}: ${REASON_COPY[blockedSlots[0].reason]}.`
-        : changedCount === 0
-          ? "Tap a block in a preset to change it."
-          : null;
+  const reason = saveReason(
+    blockedSlots.map((b) => ({ name: nameOf(b.slot), reason: b.reason })),
+    changedCount,
+  );
 
   // ── save (the only device write) ─────────────────────────────────────────
   const runJobs = (jobs: CopyJob[]): void => {
@@ -147,6 +132,11 @@ export function CopyView({
     const settle = (items: CopyApplyItem[]): void => {
       for (const item of items) seen.set(item.slot, item);
       dispatch({ type: "saveResults", results: new Map(seen) });
+      // The screen says "Couldn't save"; why is for the log (and so a bug report).
+      for (const item of seen.values()) {
+        if (item.outcome === "error")
+          logError(`copy save: ${item.name} wasn't saved: ${item.detail}`);
+      }
       // Patch the cached library graph in place so a second edit reads the just-saved
       // path WITHOUT a ~22 s backup re-scan — an edit NEVER triggers a refetch. The edit
       // the device acked is the truth (optimistic); the device's working-copy read
@@ -175,9 +165,9 @@ export function CopyView({
       dispatch({ type: "saveSettled" });
     };
     void copyApply(jobs, true, onResult).then(settle, (e: unknown) => {
-      // The whole run failed (device error / lost connection) — surface it instead of a
-      // false "saved" (previously this swallowed the rejection and showed success).
-      dispatch({ type: "saveFailed", error: errMsg(e) });
+      // The whole run failed (device error / lost connection): the presets with no
+      // result read as not saved — never a false "saved" — and the cause goes to the log.
+      logUnlessCommandError("copy save", e);
       settle([]);
     });
   };
@@ -228,6 +218,10 @@ export function CopyView({
   const activeSaveSlot = saving
     ? (saving.slots.find((s) => !saving.results.has(s)) ?? null)
     : null;
+  // The ticked presets the save skips: nothing changed in them.
+  const unchanged = saving
+    ? toSlots.filter((s) => !saving.slots.includes(s)).map(nameOf)
+    : [];
 
   return (
     <div
@@ -237,12 +231,13 @@ export function CopyView({
         minHeight: 0,
         display: "flex",
         flexDirection: "column",
-        background: t.bg,
+        background: t.window,
       }}
     >
       {phase.kind === "choose" || !edit || !from ? (
         <ChoosePresets
           presets={presets}
+          listLoading={lib.listLoading}
           fromSlot={fromSlot}
           setFrom={(slot) => {
             dispatch({ type: "setFrom", slot });
@@ -260,13 +255,14 @@ export function CopyView({
           from={from}
           targets={toSlots}
           edit={edit}
+          pick={phase.pick}
           open={phase.open}
           backedUp={phase.draft.backedUp}
           gate={{
             changedCount,
-            blockedSlots: blockedSlotNums,
+            blocked: blockedSlots,
             saveBlocked,
-            hint,
+            reason,
           }}
           canUndo={canUndo}
           canRedo={canRedo}
@@ -283,7 +279,7 @@ export function CopyView({
           results={saving.results}
           activeSlot={activeSaveSlot}
           done={saving.done}
-          failed={saving.error}
+          unchanged={unchanged}
           onDone={onSaveDone}
         />
       )}

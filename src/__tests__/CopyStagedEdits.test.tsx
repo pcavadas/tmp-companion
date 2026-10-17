@@ -1,11 +1,13 @@
-// src/__tests__/CopyStagedEdits.test.tsx — the Copy wizard keeps staged work it has not
+// src/__tests__/CopyStagedEdits.test.tsx — the Copy flow keeps staged work it has not
 // written, against a mocked invoke bridge (the CopyHappyPath harness):
-//   #291  the done screen reports a partial or total failure as one (no green "Saved to
-//         the unit."), and Done keeps the unsaved presets' edits on Step 2;
-//   #292  Back → "Place the blocks" with the same selection keeps the edits + undo;
+//   #291  the done dialog reports a partial or total failure as one (never "Saved to your
+//         Tone Master Pro"), and Done keeps the unsaved presets' edits on Place blocks;
+//   #292  Back → "Choose blocks" with the same selection keeps the edits + undo;
 //   #293  a bypassed block renders bypassed in Copy's strip, and a save's cache patch
 //         keeps the untouched blocks' bypass state;
-//   #294  opening another block resets the editor to Replace.
+//   #294  opening another block acts on THAT block: its menu replaces it, never the
+//         block opened before, and each "+" gap places at its own spot (the B port of
+//         "the editor kept Insert after when another block was opened").
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, act, waitFor, within } from "@testing-library/react";
@@ -119,16 +121,21 @@ function tile(name: string, model: string): HTMLElement {
 }
 
 function undoButton(): HTMLElement {
+  return screen.getByRole("button", { name: "Undo" });
+}
+
+/** Choose `model` on the source strip (the block to copy). */
+async function chooseSource(user: User, model: string): Promise<void> {
   const el = document.querySelector<HTMLElement>(
-    '[title^="Undo / redo"] button[aria-label="Undo"]',
+    `[data-source-card] [data-block-tile="${model}"]`,
   );
-  if (!el) throw new Error("no undo button");
-  return el;
+  if (!el) throw new Error(`no ${model} on the source strip`);
+  await user.click(el);
 }
 
 type User = ReturnType<typeof userEvent.setup>;
 
-/** Step 1: Stadium Lead is the reference; tick each of `targets`; Place the blocks. */
+/** Step 1: Stadium Lead is the source; tick each of `targets`; Choose blocks. */
 async function pickAndPlace(user: User, targets: string[]): Promise<void> {
   await screen.findByText("Copy blocks between presets", undefined, {
     timeout: 3000,
@@ -148,7 +155,7 @@ async function placeBlocks(user: User): Promise<void> {
   await user.click(
     await screen.findByRole(
       "button",
-      { name: /place the blocks/i },
+      { name: /choose blocks/i },
       { timeout: 3000 },
     ),
   );
@@ -157,11 +164,14 @@ async function placeBlocks(user: User): Promise<void> {
   });
 }
 
-/** Replace the '65 Twin on `name` with the Dyna Comp. */
+/** Replace the '65 Twin on `name` with the Dyna Comp (chosen on the source strip, then
+ *  the Twin's menu). */
 async function replaceTwin(user: User, name: string): Promise<void> {
+  if (!document.querySelector('[data-source-card] [aria-pressed="true"]'))
+    await chooseSource(user, "ACD_DynaComp");
   await user.click(tile(name, TWIN));
   await user.click(
-    await screen.findByText("DYNAMIC COMPRESSOR", undefined, { timeout: 3000 }),
+    await screen.findByRole("menuitem", { name: "Replace with Dynamic Comp" }),
   );
 }
 
@@ -173,7 +183,7 @@ async function backUpAndSave(user: User): Promise<void> {
   );
   const save = await screen.findByRole(
     "button",
-    { name: /save to the unit/i },
+    { name: /save to your tone master pro/i },
     { timeout: 3000 },
   );
   await act(async () => {
@@ -200,16 +210,19 @@ describe("Copy save outcome (#291)", () => {
     await replaceTwin(user, "Lead Two");
     await backUpAndSave(user);
 
-    await screen.findByText("Save failed.", undefined, { timeout: 3000 });
-    expect(screen.queryByText("Saved to the unit.")).toBeNull();
-    expect(screen.queryByText(/changes are now on the unit/i)).toBeNull();
-    expect(screen.getByText(/2 presets could not be saved/i)).toBeTruthy();
+    await screen.findByText("Nothing was saved", undefined, { timeout: 3000 });
+    expect(screen.queryByText("Saved to your Tone Master Pro")).toBeNull();
+    expect(screen.queryByText(/undo this/i)).toBeNull();
+    expect(
+      screen.getByText("Your changes are kept, so you can try again."),
+    ).toBeTruthy();
+    expect(screen.getAllByText("Couldn't save")).toHaveLength(2);
 
     await user.click(screen.getByRole("button", { name: /done/i }));
-    // Still on Step 2 with both edits staged (and undoable).
+    // Still on Place blocks with both edits staged (and undoable).
     expect(tileModels("Clean Verse")).toEqual(EDITED);
     expect(tileModels("Lead Two")).toEqual(EDITED);
-    expect(undoButton().style.opacity).toBe("1");
+    expect(undoButton()).toBeEnabled();
   });
 
   it("one of two errors → a partial outcome, and Done keeps only the failed preset's edit", async () => {
@@ -221,21 +234,23 @@ describe("Copy save outcome (#291)", () => {
     await replaceTwin(user, "Lead Two");
     await backUpAndSave(user);
 
-    await screen.findByText("Some presets weren’t saved.", undefined, {
+    await screen.findByText("Some presets weren't saved", undefined, {
       timeout: 3000,
     });
-    expect(screen.queryByText("Saved to the unit.")).toBeNull();
+    expect(screen.queryByText("Saved to your Tone Master Pro")).toBeNull();
     expect(
-      screen.getByText(/1 preset updated · 1 could not be saved/i),
+      screen.getByText(
+        "1 saved. 1 couldn't be saved, and it keeps your changes so you can try again. Restore your Pro Control backup to undo the ones that saved.",
+      ),
     ).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: /done/i }));
-    // The failed preset keeps its staged edit (still "edited")…
+    // The failed preset keeps its staged edit (still "Changed")…
     expect(tileModels("Lead Two")).toEqual(EDITED);
-    expect(within(card("Lead Two")).getByText(/edited/i)).toBeTruthy();
+    expect(within(card("Lead Two")).getByText("Changed")).toBeTruthy();
     // …the saved one restarts from its just-saved graph, with nothing staged.
     expect(tileModels("Clean Verse")).toEqual(EDITED);
-    expect(within(card("Clean Verse")).queryByText(/edited/i)).toBeNull();
+    expect(within(card("Clean Verse")).queryByText("Changed")).toBeNull();
   });
 
   it("a rejected run keeps the presets the channel reported as saved", async () => {
@@ -247,10 +262,11 @@ describe("Copy save outcome (#291)", () => {
     await replaceTwin(user, "Lead Two");
     await backUpAndSave(user);
 
-    await screen.findByText("Some presets weren’t saved.", undefined, {
+    await screen.findByText("Some presets weren't saved", undefined, {
       timeout: 3000,
     });
-    expect(screen.getByText(/device disconnected mid-save/i)).toBeTruthy();
+    // The run's own text is for the log, never the screen.
+    expect(screen.queryByText(/device disconnected mid-save/i)).toBeNull();
     // The saved preset's cache was patched even though the run rejected.
     expect(
       getLibraryScan()
@@ -259,22 +275,27 @@ describe("Copy save outcome (#291)", () => {
     ).toEqual(EDITED);
   });
 
-  it("all saved → the green success state and Done returns to Step 1", async () => {
+  it("all saved → the saved state and Done returns to Step 1", async () => {
     installInvoke();
     const user = userEvent.setup();
     renderView();
     await pickAndPlace(user, ["Clean Verse"]);
     await replaceTwin(user, "Clean Verse");
     await backUpAndSave(user);
-    await screen.findByText("Saved to the unit.", undefined, { timeout: 3000 });
-    expect(screen.getByText(/1 preset updated\./i)).toBeTruthy();
+    await screen.findByText("Saved to your Tone Master Pro", undefined, {
+      timeout: 3000,
+    });
+    expect(
+      screen.getByText("Restore your Pro Control backup to undo this."),
+    ).toBeTruthy();
+    expect(screen.getByText("Saved")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /done/i }));
     await screen.findByText("Copy blocks between presets");
   });
 });
 
 describe("Copy Back keeps staged edits (#292)", () => {
-  it("Back → Place the blocks with the same selection keeps the edit and its undo", async () => {
+  it("Back → Choose blocks with the same selection keeps the edit and its undo", async () => {
     installInvoke();
     const user = userEvent.setup();
     renderView();
@@ -286,7 +307,7 @@ describe("Copy Back keeps staged edits (#292)", () => {
     await placeBlocks(user);
     expect(tileModels("Clean Verse")).toEqual(EDITED);
     // The undo step survived: undo restores the original block.
-    expect(undoButton().style.opacity).toBe("1");
+    expect(undoButton()).toBeEnabled();
     await user.click(undoButton());
     expect(tileModels("Clean Verse")).toEqual(PRISTINE);
   });
@@ -318,7 +339,9 @@ describe("Copy bypass state (#293)", () => {
 
     await replaceTwin(user, "Clean Verse");
     await backUpAndSave(user);
-    await screen.findByText("Saved to the unit.", undefined, { timeout: 3000 });
+    await screen.findByText("Saved to your Tone Master Pro", undefined, {
+      timeout: 3000,
+    });
     const patched = getLibraryScan().graphByIndex.get(1);
     expect(patched?.nodes.map((n) => [n.model, n.bypassed])).toEqual([
       ["ACD_DynaComp", false],
@@ -328,23 +351,56 @@ describe("Copy bypass state (#293)", () => {
   });
 });
 
-describe("Copy block editor mode (#294)", () => {
-  it("opening another block while on Insert after resets the editor to Replace", async () => {
+describe("Copy acts on the block you open (#294)", () => {
+  it("opening another block's menu replaces THAT block, never the one opened before", async () => {
     installInvoke();
     const user = userEvent.setup();
     renderView();
     await pickAndPlace(user, ["Clean Verse"]);
+    await chooseSource(user, "ACD_DynaComp");
+    // Open the Twin's menu, then the Small Hall's instead, and replace.
     await user.click(tile("Clean Verse", TWIN));
-    await user.click(screen.getByRole("radio", { name: "Insert after" }));
-    expect(screen.getByRole("radio", { name: "Insert after" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-
+    expect(
+      await screen.findByRole("menuitem", {
+        name: "Replace with Dynamic Comp",
+      }),
+    ).toBeTruthy();
     await user.click(tile("Clean Verse", "ACD_TMSmallHall"));
-    expect(screen.getByRole("radio", { name: "Replace" })).toHaveAttribute(
-      "aria-checked",
-      "true",
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+    await user.click(
+      screen.getByRole("menuitem", { name: "Replace with Dynamic Comp" }),
     );
+    expect(tileModels("Clean Verse")).toEqual([
+      "ACD_DynaComp",
+      TWIN,
+      "ACD_DynaComp",
+    ]);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("each + gap places at its own spot, and the source block stays chosen", async () => {
+    installInvoke();
+    const user = userEvent.setup();
+    renderView();
+    await pickAndPlace(user, ["Clean Verse"]);
+    await chooseSource(user, "ACD_TMSmallHall");
+    await user.click(
+      screen.getByRole("button", {
+        name: "Add here in Clean Verse, before Dynamic Comp",
+      }),
+    );
+    // Still chosen: the next gap is one click.
+    await user.click(
+      screen.getByRole("button", {
+        name: "Add here in Clean Verse, at the end",
+      }),
+    );
+    expect(tileModels("Clean Verse")).toEqual([
+      "ACD_TMSmallHall",
+      "ACD_DynaComp",
+      TWIN,
+      "ACD_TMSmallHall",
+      "ACD_TMSmallHall",
+    ]);
   });
 });

@@ -11,14 +11,12 @@
 // inserts and removes happen WITHIN the lanes (groups) the target already has,
 // including inside a split's sub-lanes.
 //
-// No "intelligence": no by-role/this-model auto-matching. The user taps a target block
-// and explicitly chooses an origin block + a placement (Replace / Insert before / after)
-// or Remove. `change` drives the edit badge ("replaced" → ⟳, "added" → +) and the
+// No "intelligence": no by-role/this-model auto-matching. The user chooses a block on the
+// reference's strip, then explicitly places it — a "+" gap in a target (Insert before /
+// after a block) or a target block's menu (Replace) — or removes a target block. `change` drives the edit badge ("replaced" → ⟳, "added" → +) and the
 // copied-in styling; `nodeId === null` marks an inserted (not-yet-on-device) block.
 
-import { resolveBlockArt, shortFallback } from "../../models/blockArt";
-import type { ArtVariant, IconId, ToneId } from "../../ui/BlockArt";
-import { chargedTotal, cpuForBid } from "../../models/cpu";
+import { chargedTotal } from "../../models/cpu";
 import type {
   ActiveGraph,
   CopyAnchor,
@@ -106,34 +104,12 @@ export interface PresetEdit {
   origByNodeId: Map<string, { model: string; group: string }>;
 }
 
-/** How a picked model lands on the tapped block: swap it, or insert before/after it. */
+/** How a chosen model lands on its anchor block: swap it, or insert before/after it. */
 export type EditMode = "replace" | "before" | "after";
 
 /** The working-copy map for the chosen targets — keyed by slot. A slot may be absent
  *  (a target outside the current set), so indexing yields `PresetEdit | undefined`. */
 export type EditMap = Partial<Record<number, PresetEdit>>;
-
-/** An origin palette entry — one distinct block from the reference preset. */
-export interface OriginBlock {
-  model: string;
-  /** Full model name (chip label). */
-  name: string;
-  icon: IconId | undefined;
-  tone: ToneId | undefined;
-  footswitch: "plate" | "metal" | "round" | undefined;
-  /** ref-derived per-block body color (pedals) — overlays the tone default. */
-  body: string | undefined;
-  /** ref-derived control-panel color behind the knobs/sliders (EQ/filter pedals). */
-  panel: string | undefined;
-  /** Fender reverb cream-chassis accent (footswitch-band colour); the 8 reverbs. */
-  accent: string | undefined;
-  /** explicit per-model art treatment (= art.variant). */
-  variant: ArtVariant | undefined;
-  /** terse caption (= art.short). */
-  lab: string | undefined;
-  /** Real DSP cost (% of budget), or null when the id is uncosted. */
-  cpu: number | null;
-}
 
 const EMPTY_EDIT_GRAPH: EditGraph = {
   inputType: null,
@@ -145,7 +121,7 @@ const EMPTY_EDIT_GRAPH: EditGraph = {
 };
 
 // ── uid minting (pure — scoped to one derivation, never a module counter) ─────
-// A uid is `cb<N>`. It keys React rows and the open inline editor, and an INSERTED
+// A uid is `cb<N>`. It keys React rows, the chosen block and the open block menu, and an INSERTED
 // block's uid is its insert key on the wire (`diffToOps`) — which a later round's
 // optimistic read-back also adopts as that block's synthetic node id
 // (`activeFromEditGraph`). So a fresh uid must clear every `cb<N>` already in the
@@ -508,32 +484,8 @@ export function cpuOfGraph(graph: EditGraph): number {
   return chargedTotal(models);
 }
 
-/** The origin palette: every DISTINCT block in the reference preset, in path order. */
-export function originBlocks(graph: ActiveGraph): OriginBlock[] {
-  const seen = new Set<string>();
-  const out: OriginBlock[] = [];
-  graph.nodes.forEach((n) => {
-    if (seen.has(n.model)) return;
-    seen.add(n.model);
-    const art = resolveBlockArt(n.model);
-    out.push({
-      model: n.model,
-      name: art?.name ?? shortFallback(n.model),
-      icon: art?.icon,
-      tone: art?.tone,
-      footswitch: art?.footswitch,
-      body: art?.body,
-      panel: art?.panel,
-      accent: art?.accent,
-      variant: art?.variant,
-      lab: art?.short,
-      cpu: cpuForBid(n.model),
-    });
-  });
-  return out;
-}
-
-/** Find an edit block by uid (for the open inline editor), descending into splits. */
+/** Find an edit block by uid (a chosen source block, an open block menu), descending
+ *  into splits. */
 export function findBlock(graph: EditGraph, uid: string): EditBlock | null {
   for (const arr of blockArrays(graph)) {
     const b = arr.find((x) => x.uid === uid);

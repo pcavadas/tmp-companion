@@ -7,7 +7,8 @@
 // THIS module is UX only (up-front grey-out + a save-gate warning): the checkpoint
 // of record is the Rust `copy_apply` guard, which covers every writer. Getting this
 // wrong just means a stale hint, not an unsafe write — but it should still match the
-// firmware's own predicates so the feedback is trustworthy.
+// firmware's own predicates so the feedback is trustworthy. The words for each reason are
+// in ./copyText (`REASON_TEXT`).
 //
 // `block-classification.json` is the byte-exact extraction of the 3 hardcoded id
 // sets the firmware uses (see that file's `_comment` + the plan doc). Membership is
@@ -16,7 +17,7 @@
 // convolution reverb AND a cabinet; its `…NoFxCabIR` sibling is a cabinet only).
 
 import blockClassification from "../../models/block-classification.json";
-import { CPU_BUDGET, chargedCpu, overCpuBudget } from "../../models/cpu";
+import { chargedCpu, overCpuBudget } from "../../models/cpu";
 import {
   blockArrays,
   cpuOfGraph,
@@ -38,16 +39,11 @@ export type BlockEditReason =
   | "ComboHalfStackCabinetsLimit"
   | "GlooperEffectsLimit";
 
-/** Short user-facing copy per reason — the save-gate warning + the greyed-chip
- *  tooltip both read from here, so the two surfaces never drift apart. */
-export const REASON_COPY: Record<BlockEditReason, string> = {
-  ProcessorUtilization: `Over ${String(CPU_BUDGET)}% DSP budget — remove a block`,
-  FXLoopCoexistence:
-    "The stereo FX loop can't coexist with a mono FX loop block",
-  ConvolutionReverbLimit: "Only 1 convolution reverb per preset",
-  ComboHalfStackCabinetsLimit: "Only 2 cabinets per preset",
-  GlooperEffectsLimit: "Only 2 Glooper effects per preset",
-};
+/** One target that can't be saved as it stands, and why. */
+export interface BlockedSlot {
+  slot: number;
+  reason: BlockEditReason;
+}
 
 /** Exact-string set-membership against the firmware's own hardcoded id lists. A
  *  model id not present in a set is simply not a member of that cap — this is not a

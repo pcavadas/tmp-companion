@@ -4,9 +4,11 @@ The Copy tab copies signal-chain blocks from one reference preset into one or mo
 
 ## Flow
 
-1. **Choose presets** — pick a reference preset + the targets.
-2. **Place blocks** — per target, edit the chain (the interactive signal-path renderer shows the result). `copyModel.ts` diffs each edited target against its current graph into an ordered op list (`diffToOps`).
-3. **Save** — `copy_apply` runs the op list per target over a held USB session.
+1. **Choose presets** — pick the preset to copy from + the targets ("Select all N shown" ticks the rows the search shows).
+2. **Place blocks** — choose a block on the source strip; it stays chosen. Then click a "+" gap in a target's strip to insert it there (before the block to the gap's right, or after the last block of a row), or a target block's menu to Replace it with the chosen block or Remove it. A gap or a Replace that would break a firmware limit (`validateBlockEdit.ts::checkOp`, the same predicates as `blockcaps.rs`) is greyed or left out, with the reason under the strip. Undo/Redo span every target and never touch the unit. `copyModel.ts` diffs each edited target against its current graph into an ordered op list (`diffToOps`).
+3. **Save** — behind the "I've backed up with Pro Control" tick, only the targets that changed become jobs; `copy_apply` runs each job's op list over a held USB session. The dialog names the ticked presets it skips as unchanged.
+
+The "+" gaps are the one approved hook into the frozen signal-path code: `StripGraph.gap` / `StripBlock.uid` (`views/signalChain/stripTypes.ts`), drawn by `views/copy/GapPlus.tsx` through `CopyPath`. With a block chosen, a target strip draws a dual cab as one tile, so a gap never lands inside the two cab lanes the display draws for it.
 
 Non-active target presets are rendered from `BackupPresetRow.graph` (the device backup the app already pulls on connect), so no extra device read is needed to draw them.
 
@@ -16,7 +18,7 @@ Saving runs live, link-safe, in-place edits on a held session, re-armed per pres
 
 - `replaceNode` — swap a block for a stock model.
 - `replaceNodeWithBlock` — swap for a user saved block / dual cab (by library index).
-- `insertNode` — add a block (sent bare; `groupId` is the group key; field-2 = the same-group FenderId to insert BEFORE, omitted = append).
+- `insertNode` — add a block (sent bare; `groupId` is the group key; field-2 = the LIVE node id, in the same group, to insert BEFORE, omitted = append). The anchor is matched against the group's CURRENT node ids, and a replace or insert mints a new one, so it is never a FenderId and never a pre-edit id: `copy_apply` resolves each op's anchor (an original block's `nodeId`, or an earlier insert's `key`) through its `DeviceIds`, and checks every insert with `blockcaps::check_op` first — a missing anchor or an over-budget insert aborts the device server (`danger.md`).
 - `removeNode` — remove a block.
 - A user IR is applied as `replaceNode` → `ACD_UserIRTMS` plus a string `changeParameter` on the node's `file` param.
 

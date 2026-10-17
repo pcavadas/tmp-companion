@@ -1,6 +1,8 @@
 // src/views/signalChain/stripTypes.ts — the signal-chain strip's data model (the
 // `StripGraph` every strip renders) plus the geometry constants its pieces share.
 
+import type { ReactNode } from "react";
+
 import type { ArtVariant, IconId, ToneId } from "../../ui/BlockArt";
 import type { HalfStackSpec } from "../../models/blockArt";
 
@@ -58,6 +60,9 @@ export interface StripBlock {
   selected?: boolean;
   /** Edit badge, when this tile was changed. */
   change?: TileChange;
+  /** The block's edit handle (Copy only), handed to a `gap` so it knows its
+   *  neighbours. Never drawn; Level omits it. */
+  uid?: string;
 }
 
 export type StripStage =
@@ -90,6 +95,13 @@ export interface StripGraph {
   outputs?: { a: StripOutputLane; b: StripOutputLane } | null;
   lanes?: StripIndependentLane[] | null;
   stages: StripStage[];
+  /** Copy's "+" gaps: when set, every wire between two tiles of a row or series stage is
+   *  drawn by `render` instead, plus one before the first tile and one after the last.
+   *  `beforeUid` is the tile right of the gap, `afterUid` the tile left of it. Level never
+   *  sets it, so its strip renders exactly as without it. */
+  gap?: {
+    render: (at: { beforeUid?: string; afterUid?: string }) => ReactNode;
+  };
 }
 
 export type Size = "md" | "sm";

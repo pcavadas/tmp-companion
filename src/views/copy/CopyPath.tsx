@@ -3,9 +3,16 @@
 // Copy has NO renderer of its own: it reuses the Level page's `SignalChainView` engine
 // (GUITAR/MIC input nodes, OUT nodes, SPLIT/MIX/JOIN diamonds, rounded split brackets,
 // procedural per-model art). This adapter maps an `EditGraph` → the engine's `StripGraph`
-// and renders it. Tiles are interactive only when `onTap` is provided (the editable
-// target path); the read-only reference strip omits it, so its tiles render exactly as
-// the Level page's do. `change` drives the +/⟲ badge; `selectedUid` the accent ring.
+// and renders it. Tiles are buttons only when `onTap` is given (the source strip chooses a
+// block with it, a target strip opens a block's menu); `selectedUid` draws the ring and
+// `change` the +/⟲ badge. Every tile carries its block's `uid`.
+//
+// `gaps` (a target strip while a source block is chosen) puts a "+" (`GapPlus`) in every
+// gap between blocks and at each end of a row: the engine calls `gap.render` with the
+// uids either side, and a gap places the block before the block to its right, or after
+// the last block of its row. A dual cab is one block here: with gaps on, the strip draws
+// it as its one cab tile instead of the two parallel cab tiles `expandDualCab` makes
+// for display, so its "+" sits before and after it and never inside those two lanes.
 
 import { useMemo } from "react";
 
@@ -16,19 +23,44 @@ import {
   SignalChainView,
   type StripBlock,
   type StripGraph,
+  type StripStage,
 } from "../SignalChainView";
 import { toStripRoute } from "../stripExpand";
-import { type EditBlock, type EditGraph } from "./copyModel";
+import { GapPlus } from "./GapPlus";
+import { blockName, gapLabel } from "./copyText";
+import { blockArrays, type EditBlock, type EditGraph } from "./copyModel";
+
+/** The "+" gaps of a target strip. */
+export interface CopyGaps {
+  /** The target preset's name, for each gap's accessible name. */
+  presetName: string;
+  /** The chosen block would break a firmware limit anywhere in this preset. */
+  disabled: boolean;
+  /** Place the chosen block before or after block `uid`. */
+  onPlace: (uid: string, mode: "before" | "after") => void;
+}
 
 export interface CopyPathProps {
   graph: EditGraph;
-  /** Tap handler — present only for the editable target path (makes tiles buttons). */
+  /** Tap handler — makes the tiles buttons (the source strip, a target strip). */
   onTap?: (uid: string) => void;
-  /** The currently-open block's uid (drives the selected ring). */
+  /** The chosen or open block's uid (drives the selected ring). */
   selectedUid?: string | null;
+  /** A target strip while a source block is chosen: a "+" in every gap. */
+  gaps?: CopyGaps;
 }
 
-export function CopyPath({ graph, onTap, selectedUid }: CopyPathProps) {
+/** The last block of the chain's main path, when the path ends in one series run (no
+ *  split outputs or independent lanes): its trailing gap reads "at the end". */
+function endUid(graph: EditGraph): string | null {
+  if (graph.outputs || (graph.lanes && graph.lanes.length > 0)) return null;
+  const last =
+    graph.stages.length > 0 ? graph.stages[graph.stages.length - 1] : null;
+  if (last?.kind !== "series" || last.blocks.length === 0) return null;
+  return last.blocks[last.blocks.length - 1].uid;
+}
+
+export function CopyPath({ graph, onTap, selectedUid, gaps }: CopyPathProps) {
   const { t } = useTheme();
   const stripGraph = useMemo<StripGraph>(() => {
     const mkTile = (b: EditBlock): StripBlock => {
@@ -40,6 +72,7 @@ export function CopyPath({ graph, onTap, selectedUid }: CopyPathProps) {
       return {
         ...nodeTileArt(b.model, b.cabSimId, isComboBid(b.model)),
         model: b.model,
+        uid: b.uid,
         bypassed: b.bypassed,
         onClick: onTap
           ? () => {
@@ -53,15 +86,66 @@ export function CopyPath({ graph, onTap, selectedUid }: CopyPathProps) {
         cabSim2Enabled: b.cabSim2Enabled,
       };
     };
+    const route = toStripRoute(graph, mkTile);
+    if (!gaps) {
+      return {
+        inputType: graph.inputType ?? undefined,
+        outputType: graph.outputType ?? undefined,
+        ...route,
+      };
+    }
+
+    const byUid = new Map<string, EditBlock>();
+    for (const arr of blockArrays(graph))
+      for (const b of arr) byUid.set(b.uid, b);
+    const last = endUid(graph);
+    const nameOf = (b: EditBlock) => blockName(b.model, b.cabSimId);
     return {
       inputType: graph.inputType ?? undefined,
       outputType: graph.outputType ?? undefined,
-      ...toStripRoute(graph, mkTile),
+      ...route,
+      // The edit graph's own stages, a dual cab left as one tile (see the header). An
+      // emptied series run is left out, as the display expansion leaves it out.
+      stages: graph.stages
+        .filter((st) => st.kind === "split" || st.blocks.length > 0)
+        .map((st): StripStage =>
+          st.kind === "split"
+            ? { kind: "split", a: st.a.map(mkTile), b: st.b.map(mkTile) }
+            : { kind: "series", blocks: st.blocks.map(mkTile) },
+        ),
+      gap: {
+        render: ({ beforeUid, afterUid }) => {
+          const uid = beforeUid ?? afterUid;
+          const b = uid != null ? byUid.get(uid) : undefined;
+          if (uid == null || !b) return null;
+          const mode = beforeUid != null ? "before" : "after";
+          const label = gapLabel(
+            gaps.presetName,
+            mode === "before"
+              ? { before: nameOf(b) }
+              : uid === last
+                ? "end"
+                : { after: nameOf(b) },
+          );
+          return (
+            <GapPlus
+              label={label}
+              mode={mode}
+              disabled={gaps.disabled}
+              onPlace={() => {
+                gaps.onPlace(uid, mode);
+              }}
+            />
+          );
+        },
+      },
     };
-  }, [graph, onTap, selectedUid]);
+  }, [graph, onTap, selectedUid, gaps]);
 
   return (
-    <div style={{ padding: `${String(t.space5)}px 0 ${String(t.space1)}px` }}>
+    // No top padding: the strip's own scroll box reaches 8 px up for the edit badge, into
+    // the card's 10 px gap above.
+    <div style={{ paddingBottom: t.sp2 }}>
       <SignalChainView graph={stripGraph} size="sm" />
     </div>
   );

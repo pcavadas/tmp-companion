@@ -1,6 +1,6 @@
 // src/__tests__/CopyView.test.tsx — the Copy feature: the save-diff model (the
 // load-bearing logic — it maps the staged edits onto real device ops), a render smoke,
-// and the view's live-device regressions: BUG-7 (the ON-UNIT chip follows the live
+// and the view's live-device regressions: BUG-7 (the "Loaded" badge follows the live
 // preset) and BUG-2 (a save to the active preset optimistically repaints the hero).
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -16,7 +16,6 @@ import {
   editGraphFromActive,
   initEdit,
   isEdited,
-  originBlocks,
   removeEditBlock,
   retargetHistory,
   type EditBlock,
@@ -265,14 +264,9 @@ describe("copyModel — edits → device ops", () => {
     ]);
   });
 
-  it("cpuOfGraph returns a finite total + originBlocks de-dupes by model", () => {
+  it("cpuOfGraph returns a finite total", () => {
     const e = baseEdit();
     expect(Number.isFinite(cpuOfGraph(e.graph))).toBe(true);
-    const dupGraph: ActiveGraph = {
-      ...graph,
-      nodes: [node("G1", "x", "ACD_Comp"), node("G1", "y", "ACD_Comp")],
-    };
-    expect(originBlocks(dupGraph).map((o) => o.model)).toEqual(["ACD_Comp"]);
   });
 });
 
@@ -393,8 +387,8 @@ describe("CopyView — live device", () => {
     return forceTauri();
   });
 
-  describe("regression: BUG-7 the ON UNIT chip follows the live preset", () => {
-    it("moves the chip from the connect-time slot to the live one on a tmp://live-preset push", async () => {
+  describe("regression: BUG-7 the Loaded badge follows the live preset", () => {
+    it("moves the badge from the connect-time slot to the live one on a tmp://live-preset push", async () => {
       mockCommands({
         list_presets: () => [
           { slot: 0, name: "Alpha" },
@@ -411,13 +405,13 @@ describe("CopyView — live device", () => {
           })}
         />,
       );
-      // Exactly one ON UNIT chip; it starts in Beta's row (the connect-time graph slot).
-      // Anchor on the unique chip, not the name (names can repeat across Copy's columns).
-      const chip0 = await screen.findByText("ON UNIT");
+      // Exactly one Loaded badge; it starts in Beta's row (the connect-time graph slot).
+      // Anchor on the unique badge, not the name (names repeat across Copy's columns).
+      const chip0 = await screen.findByText("Loaded");
       expect(
-        within(ancestor(chip0, "button")).getByText("Beta"),
+        within(ancestor(chip0, "label")).getByText("Beta"),
       ).toBeInTheDocument();
-      expect(within(ancestor(chip0, "button")).queryByText("Alpha")).toBeNull();
+      expect(within(ancestor(chip0, "label")).queryByText("Alpha")).toBeNull();
 
       // A hardware preset change to slot 0 arrives — the chip follows to Alpha.
       await waitFor(() => {
@@ -434,13 +428,13 @@ describe("CopyView — live device", () => {
         });
       });
       await waitFor(() => {
-        const chip = screen.getByText("ON UNIT"); // still exactly one
+        const chip = screen.getByText("Loaded"); // still exactly one
         expect(
-          within(ancestor(chip, "button")).queryByText("Alpha"),
+          within(ancestor(chip, "label")).queryByText("Alpha"),
         ).toBeInTheDocument();
       });
       expect(
-        within(ancestor(screen.getByText("ON UNIT"), "button")).queryByText(
+        within(ancestor(screen.getByText("Loaded"), "label")).queryByText(
           "Beta",
         ),
       ).toBeNull();
@@ -515,7 +509,7 @@ describe("CopyView — live device", () => {
         "HERO-AFTER-SAVE",
       );
 
-      // Step 1: reference = Stadium Lead (slot 0), target = Clean Verse (slot 1 = active).
+      // Step 1: source = Stadium Lead (slot 0), target = Clean Verse (slot 1 = active).
       await screen.findByText("Copy blocks between presets", undefined, {
         timeout: 3000,
       });
@@ -530,19 +524,32 @@ describe("CopyView — live device", () => {
       await user.click(
         await screen.findByRole(
           "button",
-          { name: /place the blocks/i },
+          { name: /choose blocks/i },
           { timeout: 3000 },
         ),
       );
 
-      // Step 2: replace the TwinReverb tile with DynaComp, back up, Save.
-      const twin = await screen.findAllByText("65 TWN", undefined, {
+      // Step 2: choose DynaComp on the source strip, replace the target's TwinReverb
+      // with it from the Twin's menu, back up, Save.
+      await screen.findByText("Choose a block to copy.", undefined, {
         timeout: 3000,
       });
-      await user.click(twin[twin.length - 1]);
+      const pick = (sel: string): HTMLElement => {
+        const el = document.querySelector<HTMLElement>(sel);
+        if (!el) throw new Error(`no ${sel}`);
+        return el;
+      };
       await user.click(
-        await screen.findByText("DYNAMIC COMPRESSOR", undefined, {
-          timeout: 3000,
+        pick('[data-source-card] [data-block-tile="ACD_DynaComp"]'),
+      );
+      await user.click(
+        pick(
+          '[data-target-card="Clean Verse"] [data-block-tile="ACD_TwinReverb65NoFx"]',
+        ),
+      );
+      await user.click(
+        await screen.findByRole("menuitem", {
+          name: "Replace with Dynamic Comp",
         }),
       );
       await user.click(
@@ -554,12 +561,12 @@ describe("CopyView — live device", () => {
         await user.click(
           await screen.findByRole(
             "button",
-            { name: /save to the unit/i },
+            { name: /save to your tone master pro/i },
             { timeout: 3000 },
           ),
         );
       });
-      await screen.findByText("Saved to the unit.", undefined, {
+      await screen.findByText("Saved to your Tone Master Pro", undefined, {
         timeout: 3000,
       });
 

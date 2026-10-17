@@ -586,9 +586,11 @@ function cardAttrValues(
 export const tileLabels = (page: Page, cardName: string): Promise<string[]> =>
   cardAttrValues(page, cardName, "data-block-tile");
 
-/** The candidate block labels offered in an OPEN BlockEditor (the reference preset's
- *  distinct blocks) — for same/different-model picks. */
-export const candidateLabels = (
-  page: Page,
-  cardName: string,
-): Promise<string[]> => cardAttrValues(page, cardName, "data-candidate");
+/** The block models on Copy's source strip (the `data-block-tile` values in the "Copy
+ *  from" card), in signal order — for same/different-model picks. */
+export const sourceLabels = (page: Page): Promise<string[]> =>
+  page
+    .locator("[data-source-card] [data-block-tile]")
+    .evaluateAll((els) =>
+      els.map((e) => e.getAttribute("data-block-tile") ?? "").filter(Boolean),
+    );

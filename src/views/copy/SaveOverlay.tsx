@@ -1,24 +1,39 @@
-// src/views/copy/SaveOverlay.tsx — the Save progress → done overlay.
+// src/views/copy/SaveOverlay.tsx — saving to your Tone Master Pro (look B, frame
+// BC-Saving).
 //
 // Driven by the REAL `copy_apply` run (the channel streams one result per preset), NOT a
 // synthetic timer: `results` fills as each preset commits, `activeSlot` is the one being
-// written. Progress phase lists every target slot with a status icon (spinner / queued
-// dot / green check / warn for an error). The done phase has three outcomes, derived from
-// how many targets actually saved: ALL saved → a green medallion + the count + a Pro
-// Control backup-restore note (writes to the unit are not undoable from here — undo/redo
-// is offline, pre-save only); SOME or NONE saved → a warn medallion, the counts, and a
-// note that the unsaved presets keep their changes (Done returns to editing them). A
-// single Done button either way.
+// written. Place blocks stays under the scrim; the dialog never closes on a backdrop click
+// and has no button while it saves. It shows a progress bar ("Saving 2 presets"), one row
+// per preset being saved (Waiting, Saving, then Saved / No change / Couldn't save), a line
+// naming the ticked presets that are unchanged and so not saved, and "Keep your Tone
+// Master Pro connected."
+//
+// Done, the title says the outcome, read from how many presets actually saved: all
+// ("Saved to your Tone Master Pro" — the backup is how to undo it), some ("Some presets
+// weren't saved" — the others keep their changes), or none ("Nothing was saved"). One
+// Done closes it. A row's error detail and a rejected run's text go to the log only.
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Dialog, DialogBody, DialogFooter } from "../../ui/Dialog";
+import {
+  Dialog,
+  DialogBody,
+  DialogFooter,
+  DialogHeader,
+} from "../../ui/Dialog";
+import { Dot } from "../../ui/Dot";
 import { Icon } from "../../ui/Icon";
-import { Button } from "../../ui/primitives";
+import { Group, Row } from "../../ui/List";
 import { ProgressBar } from "../../ui/ProgressBar";
 import { Spinner } from "../../ui/Spinner";
-import { Dot } from "../../ui/Dot";
-import { slotLabel } from "../../lib/format";
+import { Button } from "../../ui/primitives";
 import type { CopyApplyItem } from "../../lib/types";
+import {
+  COPY_TEXT,
+  savingPresets,
+  someSavedBody,
+  unchangedLine,
+} from "./copyText";
 
 export interface SaveOverlayProps {
   slots: number[];
@@ -27,15 +42,14 @@ export interface SaveOverlayProps {
   results: Map<number, CopyApplyItem>;
   /** The slot currently being written (null once done). */
   activeSlot: number | null;
-  /** Every target has a result. */
+  /** The run settled (resolved or rejected). */
   done: boolean;
-  /** Set when the whole `copy_apply` run REJECTED (device error / lost connection), as
-   *  opposed to per-preset errors that stream into `results`. Shown in the done phase;
-   *  the outcome itself is derived from `results` (a rejected run may have saved some
-   *  presets before it failed). */
-  failed?: string | null;
+  /** The ticked presets with nothing to save (not in `slots`), by name. */
+  unchanged: readonly string[];
   onDone: () => void;
 }
+
+type RowStatus = "waiting" | "saving" | "saved" | "nochange" | "failed";
 
 export function SaveOverlay({
   slots,
@@ -43,13 +57,12 @@ export function SaveOverlay({
   results,
   activeSlot,
   done,
-  failed,
+  unchanged,
   onDone,
 }: SaveOverlayProps) {
   const { t } = useTheme();
   const total = slots.length;
-  const doneCount = results.size;
-  const pct = total === 0 ? 100 : Math.round((doneCount / total) * 100);
+  const pct = total === 0 ? 100 : Math.round((results.size / total) * 100);
   // A target saved when it has a non-error result; an error row, or no row at all (a
   // rejected or stopped run), means it did not.
   const saved = slots.filter((s) => {
@@ -59,277 +72,172 @@ export function SaveOverlay({
   const unsaved = total - saved;
   const outcome: "all" | "partial" | "none" =
     unsaved === 0 ? "all" : saved === 0 ? "none" : "partial";
-  const ok = outcome === "all";
-  const title =
-    outcome === "all"
-      ? "Saved to the unit."
+  const title = !done
+    ? COPY_TEXT.saving
+    : outcome === "all"
+      ? COPY_TEXT.allSaved
       : outcome === "partial"
-        ? "Some presets weren’t saved."
-        : "Save failed.";
-  const plural = (n: number): string => (n === 1 ? "" : "s");
+        ? COPY_TEXT.someSaved
+        : COPY_TEXT.noneSaved;
+  const body = !done
+    ? null
+    : outcome === "all"
+      ? COPY_TEXT.allSavedBody
+      : outcome === "partial"
+        ? someSavedBody(saved, unsaved)
+        : COPY_TEXT.noneSavedBody;
+  const unchangedText = unchangedLine(unchanged);
+
+  const statusOf = (s: number): RowStatus => {
+    const r = results.get(s);
+    if (r) {
+      return r.outcome === "error"
+        ? "failed"
+        : r.outcome === "skipped"
+          ? "nochange"
+          : "saved";
+    }
+    return !done && s === activeSlot ? "saving" : "waiting";
+  };
+
+  const note = {
+    fontSize: t.fontCaption,
+    lineHeight: `${String(t.lineCaption)}px`,
+    color: t.textSecondary,
+    margin: 0,
+  } as const;
 
   return (
-    <Dialog size="sm" zIndex={60} label="Saving to the unit">
+    <Dialog size="progress" zIndex={60} label={title}>
+      <DialogHeader>
+        <h2
+          style={{
+            margin: 0,
+            fontSize: t.fontLarge,
+            lineHeight: `${String(t.lineLarge)}px`,
+            fontWeight: t.weightSemibold,
+            color: t.text,
+          }}
+        >
+          {title}
+        </h2>
+      </DialogHeader>
       <DialogBody>
-        <div style={{ paddingBottom: t.space7 }}>
-          {done ? (
-            <div style={{ textAlign: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: t.sp8 + t.sp2,
+            paddingBottom: done ? 0 : t.sp16,
+          }}
+        >
+          {body != null && <p style={{ margin: 0 }}>{body}</p>}
+          {!done && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: t.sp8 + t.sp2,
+              }}
+            >
+              <div
+                role="progressbar"
+                aria-label={savingPresets(total)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={pct}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                <ProgressBar percent={pct} />
+              </div>
               <span
                 style={{
-                  width: 48,
-                  height: 48,
-                  borderRadius: t.rPill,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  background: ok ? t.goodSoft : t.warnSoft,
-                  border: `0.5px solid ${ok ? t.goodBorder : t.warnBorder}`,
+                  ...note,
+                  whiteSpace: "nowrap",
+                  fontVariantNumeric: "tabular-nums",
                 }}
               >
-                <Icon
-                  name={ok ? "check" : "warn-tri"}
-                  size={24}
-                  stroke={ok ? t.good : t.warn}
-                  strokeWidth={2.2}
-                />
+                {savingPresets(total)}
               </span>
-              <div
-                style={{
-                  fontFamily: t.serif,
-                  fontSize: t.fsTitle,
-                  color: t.ink,
-                  marginTop: t.space6,
-                }}
-              >
-                {title}
-              </div>
-              <div
-                style={{
-                  fontFamily: t.sans,
-                  fontSize: t.fsBody2,
-                  color: t.mutedInk,
-                  marginTop: t.space3,
-                }}
-              >
-                {outcome === "none" ? (
-                  (failed ??
-                  `${String(total)} preset${plural(total)} could not be saved.`)
-                ) : (
-                  <>
-                    {String(saved)} preset{plural(saved)} updated
-                    {unsaved > 0
-                      ? ` · ${String(unsaved)} could not be saved`
-                      : ""}
-                    .{failed ? ` ${failed}` : ""}
-                  </>
-                )}
-              </div>
-              {/* Once written, the unit can't be rolled back from here — the only
-                  recovery is restoring a Pro Control backup (undo/redo was offline,
-                  pre-save only). Unsaved presets keep their staged changes. */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: t.space5,
-                  marginTop: t.space8,
-                  padding: `${String(t.space5)}px ${String(t.space6)}px`,
-                  borderRadius: t.rMd,
-                  background: t.window,
-                  textAlign: "left",
-                }}
-              >
-                <span style={{ flexShrink: 0, marginTop: t.space1 }}>
-                  <Icon name="refresh" size={15} stroke={t.faint} />
-                </span>
-                <span
-                  style={{
-                    fontFamily: t.sans,
-                    fontSize: t.fsLabel,
-                    lineHeight: 1.45,
-                    color: t.mutedInk,
-                  }}
-                >
-                  {outcome === "none" ? (
-                    <>
-                      Nothing was saved to the unit. Your changes are kept, so
-                      you can try again.
-                    </>
-                  ) : (
-                    <>
-                      {outcome === "all"
-                        ? "Changes are now on the unit"
-                        : "The presets that saved are changed on the unit"}{" "}
-                      and can’t be undone from here. To roll back, restore your
-                      last{" "}
-                      <strong style={{ color: t.ink2 }}>Pro Control</strong>{" "}
-                      backup.
-                      {outcome === "partial" &&
-                        " The others keep your changes, so you can try again."}
-                    </>
-                  )}
-                </span>
-              </div>
             </div>
-          ) : (
-            <>
-              <div
-                style={{
-                  fontFamily: t.serif,
-                  fontSize: t.fsSubhead,
-                  color: t.ink,
-                }}
-              >
-                Saving to the unit…
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "baseline",
-                  justifyContent: "space-between",
-                  margin: `${String(t.space5)}px 0 ${String(t.space4)}px`,
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: t.mono,
-                    fontSize: t.fsUi,
-                    color: t.ink2,
-                  }}
-                >
-                  Updating preset {String(Math.min(doneCount + 1, total))} of{" "}
-                  {String(total)}…
-                </span>
-                <span
-                  style={{
-                    fontFamily: t.mono,
-                    fontSize: t.fsMeta,
-                    color: t.faint,
-                  }}
-                >
-                  saves automatically
-                </span>
-              </div>
-              <ProgressBar percent={pct} height={5} />
-            </>
           )}
-        </div>
-
-        <div>
-          {slots.map((s) => {
-            const res = results.get(s);
-            const isActive = !done && s === activeSlot;
-            const status: "active" | "queued" | "done" | "error" = res
-              ? res.outcome === "error"
-                ? "error"
-                : "done"
-              : isActive
-                ? "active"
-                : "queued";
-            return (
-              <div
-                key={s}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: t.space5,
-                  padding: `${String(t.space4)}px ${String(t.space4)}px`,
-                }}
-              >
-                <span
-                  style={{
-                    width: 16,
-                    display: "inline-flex",
-                    justifyContent: "center",
-                  }}
-                >
-                  {status === "active" && (
-                    <Spinner size={13} stroke={t.sevWarn} />
-                  )}
-                  {status === "queued" && <Dot size={6} color={t.faint} />}
-                  {status === "done" && (
-                    <Icon
-                      name="check"
-                      size={13}
-                      stroke={t.good}
-                      strokeWidth={2.2}
-                    />
-                  )}
-                  {status === "error" && (
-                    <Icon name="warn-tri" size={13} stroke={t.warn} />
-                  )}
-                </span>
-                <span
-                  style={{
-                    fontFamily: t.mono,
-                    fontSize: t.fsMeta,
-                    color: t.faint,
-                    width: 28,
-                  }}
-                >
-                  {slotLabel(s)}
-                </span>
-                <span
-                  style={{
-                    fontFamily: t.serif,
-                    fontSize: t.fsName2,
-                    color: status === "queued" ? t.mutedInk : t.ink,
-                    flex: 1,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {nameOf(s)}
-                </span>
-                {status === "done" && (
-                  <span
-                    style={{
-                      fontFamily: t.mono,
-                      fontSize: t.fsMicro,
-                      color: t.good,
-                    }}
-                  >
-                    {res?.outcome === "skipped" ? "no change" : "updated"}
-                  </span>
-                )}
-                {status === "error" && (
-                  <span
-                    title={res?.detail}
-                    style={{
-                      fontFamily: t.mono,
-                      fontSize: t.fsMicro,
-                      color: t.warn,
-                    }}
-                  >
-                    error
-                  </span>
-                )}
-              </div>
-            );
-          })}
+          <Group>
+            {slots.map((s) => (
+              <SaveRow key={s} name={nameOf(s)} status={statusOf(s)} />
+            ))}
+          </Group>
+          {unchangedText != null && <p style={note}>{unchangedText}</p>}
+          {!done && <p style={note}>{COPY_TEXT.keepConnected}</p>}
         </div>
       </DialogBody>
-
-      <DialogFooter>
-        {done ? (
-          <Button variant="primary" size="sm" onClick={onDone}>
-            Done
+      {done && (
+        <DialogFooter>
+          <Button variant="primary" onClick={onDone}>
+            {COPY_TEXT.done}
           </Button>
-        ) : (
-          <span
-            style={{
-              fontFamily: t.sans,
-              fontSize: t.fsUi,
-              color: t.faint,
-              padding: `${String(t.space4)}px ${String(t.space2)}px`,
-            }}
-          >
-            Writing to the unit. Keep it connected.
-          </span>
-        )}
-      </DialogFooter>
+        </DialogFooter>
+      )}
     </Dialog>
+  );
+}
+
+interface SaveRowProps {
+  name: string;
+  status: RowStatus;
+}
+
+const ROW_WORD: Record<RowStatus, string> = {
+  waiting: COPY_TEXT.rowWaiting,
+  saving: COPY_TEXT.rowSaving,
+  saved: COPY_TEXT.rowSaved,
+  nochange: COPY_TEXT.rowNoChange,
+  failed: COPY_TEXT.rowFailed,
+};
+
+// One preset being saved: its mark, its name and one word for where it is.
+function SaveRow({ name, status }: SaveRowProps) {
+  const { t } = useTheme();
+  return (
+    <Row size="compact" data-save-row={name}>
+      <span
+        style={{
+          width: 14,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {status === "saving" && <Spinner size={14} stroke={t.textSecondary} />}
+        {status === "waiting" && <Dot hollow tone="neutral" />}
+        {(status === "saved" || status === "nochange") && (
+          <Icon name="check" size={14} stroke={t.good} strokeWidth={2.2} />
+        )}
+        {status === "failed" && (
+          <Icon name="warn-tri" size={14} stroke={t.caution} strokeWidth={2} />
+        )}
+      </span>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          fontWeight: t.weightMedium,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {name}
+      </span>
+      <span
+        style={{
+          fontSize: t.fontCaption,
+          color: status === "failed" ? t.text : t.textSecondary,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {ROW_WORD[status]}
+      </span>
+    </Row>
   );
 }

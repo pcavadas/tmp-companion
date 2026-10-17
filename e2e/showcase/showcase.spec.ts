@@ -93,13 +93,13 @@ test.describe("Marketing screenshots", () => {
     ).toBeVisible();
     await grab("level");
 
-    // ── Copy: pick a reference + two targets, place the blocks, wait for the per-target
+    // ── Copy: pick the source + two targets, choose blocks, wait for the per-target
     // signal paths to render their tiles.
     await page.getByRole("button", { name: "Copy", exact: true }).click();
     await page.getByText("Stadium Lead", { exact: true }).first().click();
     await page.getByText("Brit Combo 65", { exact: true }).last().click();
     await page.getByText("Worship Swell", { exact: true }).last().click();
-    const place = page.getByRole("button", { name: /Place the blocks/i });
+    const place = page.getByRole("button", { name: "Choose blocks" });
     await expect(place).toBeEnabled({ timeout: 60_000 }); // backup scan settles
     await place.click();
     await expect(
