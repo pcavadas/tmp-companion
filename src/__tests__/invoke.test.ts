@@ -78,9 +78,6 @@ import {
   moveSetlistSong,
   doctorCheck,
   cancelDoctorCheck,
-  doctorApply,
-  doctorSave,
-  doctorDiscard,
 } from "../lib/invoke";
 import { DEFAULT_HANDLERS } from "./commandMocks";
 import type {
@@ -323,44 +320,6 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
   it("cancel_doctor_check invokes the cooperative cancel command", async () => {
     await cancelDoctorCheck();
     expectCall("cancel_doctor_check", undefined);
-  });
-
-  it("doctor_apply wraps the job; save + discard are identity-addressed", async () => {
-    const ops = [
-      {
-        kind: "param" as const,
-        groupId: "G1",
-        nodeId: "ACD_CabSimTMS",
-        param: "lpf",
-        value: 8000,
-      },
-    ];
-    const job = {
-      listIndex: 3,
-      name: "Synth",
-      ops,
-      topologyId: null,
-      calibrationLufs: null,
-      profileId: null,
-      scene: null,
-      footswitch: null,
-      nodes: [],
-      footswitches: [],
-      sceneOverrides: [],
-    };
-    await doctorApply(job);
-    expectCall("doctor_apply", { job });
-    invokeMock.mockClear();
-    await doctorSave(3, "Synth", 2, ops);
-    expectCall("doctor_save", {
-      listIndex: 3,
-      expectName: "Synth",
-      scene: 2,
-      ops,
-    });
-    invokeMock.mockClear();
-    await doctorDiscard(3);
-    expectCall("doctor_discard", { listIndex: 3 });
   });
 
   it("level_footswitches_apply passes footswitch jobs with a progress channel", async () => {

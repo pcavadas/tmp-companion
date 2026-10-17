@@ -4,16 +4,19 @@
 // selection key) and the per-sound-deterministic DoctorCheckResult that rides
 // the command's return value. DoctorView owns the stage machine; this hook only
 // drives the single `doctor_check` call and exposes `buildItems` (turns the
-// list's chosen SetupOptions + the setup step's per-row instrument into the
-// wire DoctorInputArgs). Mirrors useLevelingFlow's structure, minus the
-// per-item command composition — Doctor is ONE backend command for the whole run.
+// list's chosen SetupOptions + each preset's instrument into the wire
+// DoctorInputArgs). Doctor is ONE backend command for the whole run, and it only
+// listens: nothing on the unit changes.
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 
-import { doctorCheck, cancelDoctorCheck } from "../../lib/invoke";
+import {
+  doctorCheck,
+  cancelDoctorCheck,
+  logUnlessCommandError,
+} from "../../lib/invoke";
 import { errMsg } from "../../lib/format";
 import { NO_INSTRUMENT, type SetupOption } from "../level/leveling";
-import type { RailStep } from "../overlays/wizardContext";
 import type {
   DoctorInputArg,
   DoctorCheckResult,
@@ -23,13 +26,15 @@ import type {
   NodeOverride,
 } from "../../lib/types";
 
-/** The Doctor wizard's 3-step rail, shared by the full-page Set up (current 0)
- *  and the modal Check run (current 1). Results is the last node (current 2). */
-export const DOCTOR_STEPS: readonly RailStep[] = [
-  { key: "setup", label: "Set up" },
-  { key: "check", label: "Check" },
-  { key: "results", label: "Results" },
+/** Doctor's steps, at the right of each page's title. */
+export const DOCTOR_STEPS: readonly string[] = [
+  "Instrument",
+  "Check",
+  "Results",
 ];
+/** The steps when every chosen preset's instrument was already known, so the
+ *  Instrument page was skipped. */
+export const DOCTOR_STEPS_SKIPPED: readonly string[] = ["Check", "Results"];
 
 /** Per-sound run status. `queued` is the local pre-stream state; the backend
  *  streams `active` → `done` (or `error`) per key. */
@@ -50,7 +55,8 @@ export interface DoctorRunState {
   statusByKey: Record<string, DoctorRunStatus>;
   /** Set when the run resolved (its results) — null otherwise. */
   result: DoctorCheckResult | null;
-  /** The rejection text when `status === "failed"`. */
+  /** The rejection text when `status === "failed"` (for the log; the page words
+   *  the failure itself). */
   error: string | null;
   /** Bumped on every start — a retry remounts the run page's live timers. */
   attempt: number;
@@ -169,15 +175,16 @@ export function useDoctorFlow({
   // Turn each chosen list row into a wire DoctorInputArg. The scene wire index is
   // taken verbatim from `SetupOption.sceneSlot` — the SAME 0-based `scenes[]`
   // index leveling's `chosenFrom` assigns (base/whole-preset/footswitch → null,
-  // an FS scene → its row index). Instrument → topology + calibration off the
-  // chosen profile ("none" → null/null); nodes off the backup graph.
+  // an FS scene → its row index). Instrument (one per preset) → topology +
+  // calibration off the chosen profile ("none" → null/null); nodes off the
+  // backup graph.
   const buildItems = useCallback(
     (
       chosen: SetupOption[],
-      instByKey: Record<string, string>,
+      instBySlot: ReadonlyMap<number, string>,
     ): DoctorInputArg[] =>
       chosen.map((o) => {
-        const instId = instByKey[o.key] ?? NO_INSTRUMENT;
+        const instId = instBySlot.get(o.slot) ?? NO_INSTRUMENT;
         const profile =
           instId === NO_INSTRUMENT
             ? null
@@ -241,6 +248,9 @@ export function useDoctorFlow({
         .catch((e: unknown) => {
           // The whole command rejected (an IPC/backend failure) — its own
           // status, never a Stop: the run page says it failed and offers a retry.
+          // Its text goes to the log only (a command rejection is logged by the
+          // invoke layer; anything else here).
+          logUnlessCommandError("doctor_check", e);
           dispatch({ type: "failed", error: errMsg(e) });
         })
         .finally(() => {

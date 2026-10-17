@@ -233,11 +233,7 @@ export function LevelView({
   // ── derived (declared BEFORE the phase early-returns — constant hook count) ─
   // Set up's choices: "None" + each instrument (no dB on Set up), and the targets by name.
   const instOptions = useMemo<SelectOption[]>(
-    () =>
-      instrumentOptions(store?.profiles).map((o) => ({
-        value: o.id,
-        label: o.label,
-      })),
+    () => instrumentOptions(store?.profiles),
     [store?.profiles],
   );
   const recordedInstruments = useMemo<ReadonlySet<string>>(

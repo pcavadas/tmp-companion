@@ -1,10 +1,11 @@
 // src/lib/useAutoAdvance.ts — the run wizards' "auto-advance to the summary".
 //
-// Both the Doctor and Leveling run bodies jump to their summary step a short beat
-// after the run finishes ON ITS OWN. A manual stop suppresses it (Doctor shows a
-// Continue button; Level's store lands on its Summary by itself). `onAdvance` is read through a ref so a fresh callback
-// identity from the parent doesn't reset the in-flight timer; the timer is cleared
-// on unmount or when done/stopped change.
+// Both the Doctor and Leveling run pages jump to their summary page a short beat
+// after the run finishes. `stopped` suppresses it for a caller that lands somewhere
+// else after a Stop (Level's store moves to its Summary by itself); Doctor passes
+// `false`, so its Results open by themselves after a Stop too. `onAdvance` is read
+// through a ref so a fresh callback identity from the parent doesn't reset the
+// in-flight timer; the timer is cleared on unmount or when done/stopped change.
 
 import { useEffect, useRef } from "react";
 

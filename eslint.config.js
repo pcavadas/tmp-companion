@@ -119,7 +119,7 @@ export default tseslint.config(
   {
     // process.env.TMP_E2E_ONLINE is no mode signal in the Playwright test
     // process — each config pins it on its own e2e_server — so a spec/fixture
-    // that reads it directly silently takes the offline branch even online. HW-reproduced twice: `doctor-apply.online.spec.ts`'s original
+    // that reads it directly silently takes the offline branch even online. HW-reproduced twice: a since-removed Doctor apply spec's original
     // describe-level `test.skip(!process.env.TMP_E2E_ONLINE)` (always true) and
     // `ensureScenario` (`e2e/fixtures/scenario.ts`) gating its online/offline
     // check the same way, which silently skipped `e2e_seed_scenario` online and
@@ -154,7 +154,7 @@ export default tseslint.config(
     // Error text on screen goes through `errMsg` (src/lib/format.ts), never a
     // hand-rolled `e instanceof Error ? e.message : "generic"`: a command
     // rejection used to arrive as a bare string, so that idiom showed the generic
-    // fallback and threw the backend's real reason away (the Doctor fix cards
+    // fallback and threw the backend's real reason away (the old Doctor fix cards
     // always read "Couldn't apply this fix."). `invoke` now wraps rejections in
     // `CommandError`, and `errMsg` handles every shape a `catch` can receive.
     files: ["src/views/**/*.{ts,tsx}", "src/App.tsx"],

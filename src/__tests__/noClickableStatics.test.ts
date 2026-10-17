@@ -28,10 +28,6 @@ const INTERACTIVE = new Set(["button", "input", "select", "textarea"]);
 const BACKDROP_ALLOWLIST: Record<string, number> = {
   // The ONE DS dialog's blurred scrim (backdrop click closes the dialog).
   "ui/Dialog.tsx": 1,
-  // The Pick dropdown's fallback full-viewport catcher (outside click closes it).
-  "views/overlays/PickInlineMenu.tsx": 1,
-  // The Pick dropdown's card-portaled catcher (`data-pick-backdrop`).
-  "views/overlays/PickPortalMenu.tsx": 1,
 };
 
 function tsxFiles(dir: string): string[] {

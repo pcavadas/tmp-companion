@@ -1,174 +1,85 @@
-// src/views/doctor/severity.ts — the Doctor results severity model: the three
-// tint levels the cards paint (high / med / ok) mapped onto the theme tokens, plus
-// the small pure helpers that derive a preset's worst severity + badge count.
+// src/views/doctor/severity.ts — how bad a Doctor finding looks, and the one order every
+// list of findings follows.
 //
-// Colors map 1:1 onto theme tokens EXCEPT the med soft tint (see MED_SOFT).
+// A finding shows in one of two tones: `danger` for a confident high-severity finding,
+// `caution` for a medium one AND for a borderline one ("Muddy (borderline)": a high finding
+// fired only just past its limit, `z` under `POSSIBLE_MAX_Z`). The tone is the row's dot,
+// the opened block's colours and the sort key, so a borderline finding never sorts above a
+// row that shows real danger: what the row shows and where it sits always agree.
 
-import type { CSSProperties } from "react";
-
-import type { ThemeTokens } from "../../theme/tokens";
 import type {
   DoctorDiag,
-  DoctorLevelingDamageHint,
-  DoctorPresetResult,
   DoctorSceneConsistency,
-  DoctorSev,
   DoctorSoundResult,
 } from "../../lib/types";
 
-/** The two diagnosis severities plus the "all good" green. */
-export type Sev = DoctorSev | "ok";
-
-export interface SevTone {
-  /** Foreground / accent color — text, bars, rings, borders. */
-  fg: string;
-  /** Soft header / panel tint. */
-  soft: string;
-  /** 0.5px chip / card border tint. */
-  border: string;
-}
-
-// The med soft tint is the ONE color with no exact theme token: the handoff
-// severity table specifies rgba(176,125,28,0.10), while t.sevWarnSoft is 0.08.
-// Every other value below is a straight token reference.
-const MED_SOFT = "rgba(176,125,28,0.10)";
-
-export function sevTone(t: ThemeTokens, sev: Sev): SevTone {
-  switch (sev) {
-    case "high":
-      return { fg: t.warn, soft: t.warnSoft, border: t.warnBorder };
-    case "med":
-      return { fg: t.sevWarn, soft: MED_SOFT, border: t.sevWarnBorder };
-    case "ok":
-      return { fg: t.good, soft: t.goodSoft, border: t.goodBorder };
-  }
-}
-
-const RANK: Record<Sev, number> = { ok: 0, med: 1, high: 2 };
-
-/** Sort key for worst-first ordering (high > med > ok). */
-export function sevRank(sev: Sev): number {
-  return RANK[sev];
-}
+/** A finding's tone on screen. */
+export type FindingTone = "danger" | "caution";
 
 /** A fired card fewer than this many run-to-run standard deviations past its
  *  threshold (`DoctorDiag.z`, unit-free so it reads the same for dB, dB/oct
- *  and peak-height rules) is a near-threshold "possible" verdict (muted,
+ *  and peak-height rules) is a near-threshold "borderline" verdict (caution,
  *  ranked lower). 2.5σ keeps a band rule's old 1.0 dB cutoff (σ 0.4 dB). */
 export const POSSIBLE_MAX_Z = 2.5;
 
-/** True when a diagnosis is a low-confidence "possible" verdict. */
+/** True when a diagnosis is a low-confidence borderline verdict. */
 export function isPossible(diag: DoctorDiag): boolean {
   return diag.z < POSSIBLE_MAX_Z;
 }
 
-/** The label as shown in the UI: "Possible X" when `isPossible`, else the bare
- *  label. The one place that builds this string — chip + expanded heading + the
- *  LevelIndicator aria-label all route through it so the hedge is never dropped. */
+/** The finding's name as shown: "Muddy (borderline)" when `isPossible`, else the bare
+ *  name. The one place that builds this string — the row caption and the opened
+ *  block's heading both route through it, so the hedge is never dropped. */
 export function possibleLabel(diag: DoctorDiag): string {
-  return isPossible(diag) ? `Possible ${diag.label}` : diag.label;
+  return isPossible(diag) ? `${diag.label} (borderline)` : diag.label;
 }
 
-/** A sound's diagnoses worst-first: severity tint (high before med) is the
- *  primary key, confidence `z` (descending) the tiebreaker — so
- *  confidently-past-threshold findings sort above near-threshold "possible"
- *  ones, whatever unit each rule measures in. */
-export function sortedDiags(diags: DoctorDiag[]): DoctorDiag[] {
+/** The tone a finding shows: danger for a confident high finding, caution for a medium
+ *  one or a borderline one. */
+export function findingTone(diag: DoctorDiag): FindingTone {
+  return diag.sev === "high" && !isPossible(diag) ? "danger" : "caution";
+}
+
+/** Sort key for worst-first ordering (danger > caution). */
+export function toneRank(tone: FindingTone): number {
+  return tone === "danger" ? 2 : 1;
+}
+
+/** A sound's findings worst-first: the tone they show first, then confidence `z`
+ *  (descending) — so a confident finding sorts above a borderline one, whatever unit
+ *  each rule measures in. */
+export function sortedDiags(diags: readonly DoctorDiag[]): DoctorDiag[] {
   return [...diags].sort((a, b) => {
-    const r = sevRank(b.sev) - sevRank(a.sev);
+    const r = toneRank(findingTone(b)) - toneRank(findingTone(a));
     return r !== 0 ? r : b.z - a.z;
   });
 }
 
-/** A scene-loudness jump beyond this (dB) bumps the preset's worst severity to
- *  "high" — a big volume leap between scenes is a headline problem. */
-const SCENE_JUMP_HIGH_DB = 5;
-
-/** The severity of the synthetic "Level jumps" row: a big jump (>5 dB) is a
- *  headline problem, a present-but-moderate one is worth a look. */
-export function sceneConsistencySev(sc: DoctorSceneConsistency): Sev {
-  return Math.abs(sc.worstDeltaDb) > SCENE_JUMP_HIGH_DB ? "high" : "med";
+/** The worst tone across a sound's findings; null when it has none. */
+export function soundTone(sound: DoctorSoundResult): FindingTone | null {
+  if (sound.diags.length === 0) return null;
+  return sound.diags.some((d) => findingTone(d) === "danger")
+    ? "danger"
+    : "caution";
 }
 
-/** The severity of the synthetic "Leveling damage" row: factual, never "high"
- *  on its own (see `presetWorstSev`'s note) — "med" once there is at least
- *  one advisory to look at, "ok" (nothing to render) with none. */
-export function levelingDamageSev(hints: DoctorLevelingDamageHint[]): Sev {
-  return hints.length > 0 ? "med" : "ok";
+/** A scene-loudness jump beyond this (dB) shows as danger — a big volume leap between
+ *  scenes is a headline problem. */
+export const SCENE_JUMP_HIGH_DB = 5;
+
+/** A jump within this (dB) is fine: the backend's advice aims every scene under it
+ *  ("until the jump is 3 dB or less"). */
+export const SCENE_JUMP_OK_DB = 3;
+
+/** The tone of a preset's "Scenes" row: danger past `SCENE_JUMP_HIGH_DB`, else caution. */
+export function sceneLoudnessTone(sc: DoctorSceneConsistency): FindingTone {
+  return Math.abs(sc.worstDeltaDb) > SCENE_JUMP_HIGH_DB ? "danger" : "caution";
 }
 
-/** The worst severity across one sound's diagnoses ("ok" when it has none). An
- *  errored sound carries no severity (it shows a message, not a diagnosis). */
-export function soundSev(sound: DoctorSoundResult): Sev {
-  let worst: Sev = "ok";
-  for (const diag of sound.diags) {
-    if (diag.sev === "high") return "high";
-    worst = "med";
-  }
-  return worst;
-}
-
-/** The worst severity across a preset's sounds, bumped by the scene-consistency
- *  finding via `sceneConsistencySev`. A present-but-moderate scene jump still
- *  counts as at least "med" so the header/badge tint matches `presetLookCount`
- *  (which counts the scene finding) instead of painting a flagged preset "all
- *  clear" green. */
-export function presetWorstSev(preset: DoctorPresetResult): Sev {
-  let worst: Sev = "ok";
-  for (const sound of preset.sounds) {
-    const s = soundSev(sound);
-    if (s === "high") return "high";
-    if (s === "med") worst = "med";
-  }
-  const sc = preset.sceneConsistency;
-  if (sc) {
-    if (sceneConsistencySev(sc) === "high") return "high";
-    if (worst === "ok") worst = "med";
-  }
-  // Leveling-damage advisories are factual, not tonal — never bump to "high"
-  // on their own, but a preset carrying one is still worth a look.
-  if (levelingDamageSev(preset.levelingDamage) === "med" && worst === "ok") {
-    worst = "med";
-  }
-  return worst;
-}
-
-/** How many things the card status badge counts: every diagnosis, the
- *  scene-consistency finding (one, when present), plus every leveling-damage
- *  advisory. */
-export function presetLookCount(preset: DoctorPresetResult): number {
-  const diags = preset.sounds.reduce((n, s) => n + s.diags.length, 0);
-  return (
-    diags + (preset.sceneConsistency ? 1 : 0) + preset.levelingDamage.length
-  );
-}
-
-/** The uppercase mono severity kicker shown in an expanded diagnosis panel. */
-export function diagSevLabel(sev: DoctorSev): string {
-  return sev === "high" ? "Needs attention" : "Worth a look";
-}
-
-/** The kicker actually shown beside a diagnosis: a "possible" near-threshold
- *  high-sev finding (muted "Possible X" chip) reads as "Worth a look" too —
- *  a bold "NEEDS ATTENTION" kicker next to a hedged, muted label was
- *  self-contradictory. Only a confidently-past-threshold finding earns the
- *  bold "Needs attention" kicker. */
-export function diagKicker(diag: DoctorDiag): string {
-  return isPossible(diag) ? "Worth a look" : diagSevLabel(diag.sev);
-}
-
-/** The Doctor detail-card chrome (PrescriptionCard / CutThroughCard /
- * MatchCard) — one home for the border/radius/padding so the three cards
- * can't drift; callers override only the tone (border/background). */
-export function doctorCard(
-  t: ThemeTokens,
-  tone?: { border?: string; background?: string },
-): CSSProperties {
-  return {
-    flexShrink: 0,
-    border: `0.5px solid ${tone?.border ?? t.hairlineStrong}`,
-    borderRadius: t.rLg,
-    background: tone?.background ?? t.bg,
-    padding: t.space6,
-  };
+/** The tone of one sound's bar in the opened "Scenes" row, on the row's own scale:
+ *  danger past `SCENE_JUMP_HIGH_DB`, caution past `SCENE_JUMP_OK_DB`, null when fine. */
+export function sceneBarTone(deltaDb: number): FindingTone | null {
+  const size = Math.abs(deltaDb);
+  if (size > SCENE_JUMP_HIGH_DB) return "danger";
+  return size > SCENE_JUMP_OK_DB ? "caution" : null;
 }

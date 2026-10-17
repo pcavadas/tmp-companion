@@ -134,7 +134,7 @@ compute_key() {
 # default-spec literal (the two are separate mirrors on purpose — see that
 # gate's doc comment — this line is what it diffs against). Consumed here by
 # --check-online (which specs a stamp must cover) and --online-spec-set.
-ONLINE_SPEC_SET="doctor.online level.online songs copy doctor-apply.online"
+ONLINE_SPEC_SET="doctor.online level.online songs copy"
 online_spec_set() {
   # shellcheck disable=SC2086  # deliberate word-split: one spec name per printf line
   printf '%s\n' $ONLINE_SPEC_SET

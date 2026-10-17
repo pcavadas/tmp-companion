@@ -146,7 +146,11 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).toContain("alert"); // look B danger Notice / PageState
     expect(ICONS).toContain("usb"); // look B "Plug in your Tone Master Pro" page
     expect(ICONS).toContain("stop"); // look B leveling run's Stop
-    expect(ICONS.length).toBe(46);
+    // look B Doctor's Quiet, Rehearsal and Stage volumes
+    expect(ICONS).toEqual(
+      expect.arrayContaining(["headphones", "speaker", "pulse"]),
+    );
+    expect(ICONS.length).toBe(49);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });

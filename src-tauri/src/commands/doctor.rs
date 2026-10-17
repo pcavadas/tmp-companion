@@ -1,12 +1,12 @@
-//! Doctor (tone diagnosis) commands — capture · diagnose · live apply/save/discard.
+//! Doctor (tone diagnosis) commands — capture · diagnose. Doctor never writes to the
+//! unit: each fix is a step the player makes by hand (the owner's decision), so there is
+//! no apply, save or discard command.
 use super::ProgressStatus;
 use crate::error::LevelError;
 use crate::{
     blockcaps, commands::level_preset::resolve_stimulus_with_capture,
-    commands::media::base64_encode, commands::media::wav_bytes, device_gate::with_released_seize,
-    doctor, footswitch, leveller, scene_jobs::scene_write_verdict_for_param,
-    scene_jobs::SceneWriteVerdict, session, slot_read::read_slot_preset_complete,
-    slot_read::read_slot_preset_parsed, stimulus::read_stimulus_calibrated, topologies, AppState,
+    device_gate::with_released_seize, doctor, footswitch, leveller, session,
+    slot_read::read_slot_preset_complete, stimulus::read_stimulus_calibrated, topologies, AppState,
     AtomicBool, ListIndex, SeqCst, Serialize, Session, State,
 };
 
@@ -142,7 +142,7 @@ fn saved_bypass_map(nodes: &[doctor::DoctorNode]) -> std::collections::HashMap<S
 }
 
 /// What a diagnosed sound's capture must WRITE before engaging — one policy for
-/// doctor_check AND doctor_apply so the audition can never observe a different
+/// every Doctor capture of that sound, so no capture can observe a different
 /// state than the diagnosis. `bypass` is the force-bypass isolation; `params` is
 /// the measured footswitch's `param`-function engaged `valueA` writes (a footswitch
 /// SOUND is its on-off flips PLUS its param jumps — without the latter a param-only
@@ -183,18 +183,18 @@ impl SoundIsolation {
     }
 }
 
-/// Resolve the pre-engage writes for a diagnosed sound — one policy for
-/// doctor_check AND doctor_apply so the audition can never observe a different
-/// bypass/param state than the diagnosis. A SCENE sound always gets NO
-/// write, graph present or not: it rides its own saved overlay/bypass state
-/// (as-played — the scene recall itself asserts whatever the player hears),
-/// so forcing every footswitch block off here would diagnose a baseline the
-/// player never actually hears. Base/footswitch sounds keep the baseline
-/// isolation: graph present → offline derivation (`derived_force_bypass` +
-/// `derived_param_writes`); graph absent → ONE cached live field-8 read per
-/// preset (`doctor_force_bypass` + `param_fn_values`). The sound's captured graph
-/// ([`SoundIsolation::graph`]) is the base `nodes` plus those writes — or, for a scene
-/// sound, plus `scene_overrides` (its saved overlay, which its recall puts on the unit).
+/// Resolve the pre-engage writes for a diagnosed sound — one policy for every Doctor
+/// capture of that sound (the check and the probe arms that replay it), so none can
+/// observe a different bypass/param state than the diagnosis. A SCENE sound always gets
+/// NO write, graph present or not: it rides its own saved overlay/bypass state
+/// (as-played — the scene recall itself asserts whatever the player hears), so forcing
+/// every footswitch block off here would diagnose a baseline the player never actually
+/// hears. Base/footswitch sounds keep the baseline isolation: graph present → offline
+/// derivation (`derived_force_bypass` + `derived_param_writes`); graph absent → ONE
+/// cached live field-8 read per preset (`doctor_force_bypass` + `param_fn_values`). The
+/// sound's captured graph ([`SoundIsolation::graph`]) is the base `nodes` plus those
+/// writes — or, for a scene sound, plus `scene_overrides` (its saved overlay, which its
+/// recall puts on the unit).
 fn resolve_sound_isolation(
     nodes: &[doctor::DoctorNode],
     footswitches: &[footswitch::FootswitchInfo],
@@ -429,9 +429,6 @@ pub struct DoctorSoundResult {
     pub list_index: ListIndex,
     pub scene: Option<u32>,
     pub footswitch: Option<u32>,
-    /// The scene sound's saved overlay, echoed from its `DoctorInput` like `scene` and
-    /// `footswitch` — the apply job sends it back so the A/B captures in the same graph.
-    pub scene_overrides: Vec<doctor::NodeOverride>,
     pub label: String,
     pub tag: Option<String>,
     /// Findings for this sound, each tagged with the quietest playback level it
@@ -455,8 +452,13 @@ pub struct DoctorSoundResult {
     /// not a diagnosis: it fires no rule and carries no `Rx`. `None` when this
     /// sound's capture failed or the ratio was degenerate.
     pub cut_through: Option<doctor::CutThrough>,
-    /// Set when this sound's capture failed (no diags then); the run continues.
+    /// Set when this sound's capture failed (no diags then); the run continues. For the
+    /// log and the bug report: the screen words the failure by [`Self::error_kind`].
     pub error: Option<String>,
+    /// Why this sound's capture failed (`LevelError::skip_kind`), set exactly when
+    /// `error` is — the typed kind the frontend picks its message by (a silent capture,
+    /// `no_signal`, is refined by the preset's backup-scan silence hint).
+    pub error_kind: Option<crate::error::SkipKind>,
     /// How many of this sound's bands the SNR gate (`doctor::output_coverage_with_body`)
     /// dropped as too quiet to trust against its own noise floor — some rules were
     /// silently skipped for lack of signal, not because the tone measured clean.
@@ -492,7 +494,8 @@ pub struct DoctorCheckResult {
 #[derive(Clone)]
 enum SoundOutcome {
     Unrun,
-    Failed(String),
+    /// The capture failed: its text (for the log) and its typed kind.
+    Failed(String, crate::error::SkipKind),
     Measured {
         profile: doctor::SoundProfile,
         /// The captured output's band coverage; `None` on the showcase's curated profiles.
@@ -514,7 +517,6 @@ fn sound_result(
         list_index: item.list_index,
         scene: item.scene,
         footswitch: item.footswitch,
-        scene_overrides: item.scene_overrides.clone(),
         label: item.label.clone(),
         tag: item.tag.clone(),
         diags: Vec::new(),
@@ -525,13 +527,15 @@ fn sound_result(
         band_labels: instrument.labels_owned(),
         cut_through: None,
         error: None,
+        error_kind: None,
         skipped_band_count: 0,
     };
     match outcome {
         SoundOutcome::Unrun => {}
-        SoundOutcome::Failed(e) => {
+        SoundOutcome::Failed(e, kind) => {
             r.status = SoundStatus::Error;
             r.error = Some(e.clone());
+            r.error_kind = Some(*kind);
         }
         SoundOutcome::Measured {
             profile: p,
@@ -755,8 +759,16 @@ fn run_doctor_check(
                 break;
             }
             Err(e) => {
+                let kind = e.skip_kind();
                 let e = e.to_string();
-                outcomes[i] = SoundOutcome::Failed(e.clone());
+                // The screen words the failure by its kind; its text lives here, for the log
+                // and the bug report.
+                log::warn!(
+                    "doctor_check {}: couldn't check this sound ({}): {e}",
+                    item.key,
+                    kind.as_str()
+                );
+                outcomes[i] = SoundOutcome::Failed(e.clone(), kind);
                 progress(DoctorProgressItem {
                     key: item.key.clone(),
                     status: ProgressStatus::Error,
@@ -1035,6 +1047,7 @@ fn doctor_capture_profile(
         skip_load,
         validate.as_ref(),
     )?;
+    audible_or_no_signal(&stereo_loudness)?;
     Ok(profile_capture(
         &samples,
         rate,
@@ -1045,11 +1058,21 @@ fn doctor_capture_profile(
     )?)
 }
 
+/// A silent capture (integrated loudness −inf) is the typed no-signal case, not an
+/// analysis failure: Results word it from the preset's silence hint (the amp at zero, a
+/// muting pedal, nothing on USB 1/2) by its kind, never by its text.
+/// `SoundProfile::from_channels` keeps its own guard for the other callers.
+fn audible_or_no_signal(loudness: &crate::lufs::Loudness) -> Result<(), LevelError> {
+    if loudness.integrated_lufs.is_finite() {
+        Ok(())
+    } else {
+        Err(LevelError::NoSignal)
+    }
+}
+
 /// Profile one Doctor capture: [`leveller::analyze_capture`] (the one
 /// measurement space, shared with the calibration sweeps) with `stereo_loudness`
-/// as its loudness and the cached stimulus PSD. Shared by the diagnosis captures
-/// and both A/B clips of an apply ([`ab_side`]), so the before → after check
-/// measures in exactly the diagnosis's space. An un-aligned onset is refused by
+/// as its loudness and the cached stimulus PSD. An un-aligned onset is refused by
 /// the caller ([`capture_suspect`]), never diagnosed — `doctor_onset` already
 /// WARNs naming the fallback.
 fn profile_capture(
@@ -1072,273 +1095,15 @@ fn profile_capture(
     )
 }
 
-/// One prescription's apply job (camelCase wire — the frontend echoes the ops it
-/// got from `doctor_check`). `name` is the identity guard (apply refuses if the
-/// loaded slot's name differs). Every `DoctorOp` variant (`Param` / `InsertNode`)
-/// is applied live; scene-consistency findings are advisory-only and carry no ops.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DoctorApplyJob {
-    pub list_index: ListIndex,
-    pub name: String,
-    pub ops: Vec<doctor::DoctorOp>,
-    pub topology_id: Option<String>,
-    pub calibration_lufs: Option<f32>,
-    /// The diagnosed sound's instrument-profile id (null when "none") — the A/B
-    /// must replay the SAME stimulus the diagnosis used, so a profile with a
-    /// stored Tier-2 DI capture auditions on that capture (verbatim, calibration
-    /// scaling disabled), not the topology sample.
-    #[serde(default)]
-    pub profile_id: Option<String>,
-    /// The diagnosed sound's own scene (0-based `scenes[]` wire index), when it
-    /// was a scene sound — `None` for Base/footswitch. The A/B captures recall
-    /// this scene so the player auditions the fix in the state that was
-    /// actually diagnosed, not the as-saved base.
-    #[serde(default)]
-    pub scene: Option<u32>,
-    /// The diagnosed sound's own block-acting footswitch (0-based `ftsw` index),
-    /// when it was a footswitch sound — `None` for Base/scene.
-    #[serde(default)]
-    pub footswitch: Option<u32>,
-    /// The preset's chain, from the SAME backup-scan data `doctor_check` was
-    /// given — drives the A/B's OFFLINE force-bypass isolation derivation
-    /// (`footswitch::derived_force_bypass`), mirroring the check's isolation exactly. Empty
-    /// (the pre-fix default) captures with no isolation, same as before.
-    #[serde(default)]
-    pub nodes: Vec<doctor::DoctorNode>,
-    /// The preset's block-acting footswitches, paired with `nodes` for the same
-    /// isolation derivation.
-    #[serde(default)]
-    pub footswitches: Vec<footswitch::FootswitchInfo>,
-    /// The diagnosed scene's saved overlay (`DoctorInput.scene_overrides`), so the A/B
-    /// captures with the same tail the diagnosis used.
-    #[serde(default)]
-    pub scene_overrides: Vec<doctor::NodeOverride>,
-    /// The finding this prescription treats, when it came from a diagnosis card
-    /// (`None` for the Match-reference card) — the A/B re-measures it on both
-    /// clips ([`FindingCheck`]).
-    #[serde(default)]
-    pub diag: Option<DiagRef>,
-}
-
-/// The diagnosed finding an apply job treats: its rule key and the playback level
-/// it was reported at (`LeveledDiag::from_level`), so both clips are judged
-/// against the same threshold the card showed.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiagRef {
-    pub key: String,
-    pub level: crate::profiles::PlaybackLevel,
-}
-
-/// Both A/B clips' integrated loudness (LUFS, 2-ch BS.1770 over the processed
-/// pair). The audition plays them level-matched, and says how far apart they
-/// really are (#257). Playback gain only: nothing is written to the device.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AbLevels {
-    pub before_lufs: f64,
-    pub after_lufs: f64,
-}
-
-/// The treated finding, measured on the BEFORE and AFTER clips with the
-/// diagnosis's own pipeline and threshold (#256): `before`/`after` are its
-/// severity (dB past the gate) when it fires, `None` when it doesn't. An `after`
-/// close to `before` means the fix made no measurable difference — for example a
-/// write that didn't land.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FindingCheck {
-    pub key: String,
-    pub before: Option<f64>,
-    pub after: Option<f64>,
-}
-
-/// Result of a live (unsaved) prescription apply: the before/after audition clips
-/// as `data:audio/wav;base64,…` URLs, so the A/B compares the stored state against
-/// the applied-but-unsaved edit buffer.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DoctorApplyResult {
-    /// The processed stereo pair as captured (mono only on a 1-channel capture),
-    /// so a wide preset auditions as it plays, not as the analysis mixdown (#257).
-    pub before_clip: String,
-    pub after_clip: String,
-    /// `None` when either clip's loudness couldn't be measured (a silent clip).
-    pub levels: Option<AbLevels>,
-    /// `None` without a [`DoctorApplyJob::diag`], or when either clip couldn't be
-    /// profiled (no confident onset, no tail, silence).
-    pub finding: Option<FindingCheck>,
-    /// The run-end re-amp warning (`leveller::REAMP_STILL_ON_WARNING`) when the backstop
-    /// could not read re-amp back OFF. Omitted when `None`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reamp_warning: Option<String>,
-}
-
-/// Identity of a cached BEFORE clip: sound + stimulus + diagnosed context.
-/// `name` catches rename/move, the stimulus path + calibration catch an
-/// instrument-profile switch between applies, and `scene`/`footswitch` (the
-/// last two fields) catch a switch between sounds of the SAME preset — a
-/// scene's cached clip must never serve a different scene or the base sound.
-type BeforeKey = (
-    ListIndex,
-    String,
-    String,
-    Option<u32>,
-    Option<u32>,
-    Option<u32>,
-);
-
-/// Single-entry cache of `doctor_apply`'s BEFORE clip (the stored preset captured at
-/// its own level — ~11 s to produce). The before-state is stable across consecutive
-/// applies on the same sound: the frontend allows ONE unsaved prescription at a time
-/// and `doctor_discard` reloads the stored preset. Invalidation is
-/// correct-by-construction: `Session::{save_current_preset, clear_user_preset,
-/// move_user_preset, import_preset}` — the choke points every stored-preset
-/// mutation routes through — bump `session::stored_preset_generation`, and an entry
-/// filled at another generation is a miss; device detach (`watcher.rs`, an offline unit
-/// can be edited elsewhere) calls [`clear_doctor_before_cache`]. Single-entry bounds
-/// memory (one WAV).
-static BEFORE_CACHE: std::sync::Mutex<Option<(u64, BeforeKey, AbSide)>> =
-    std::sync::Mutex::new(None);
-
-/// Drop the cached `doctor_apply` BEFORE clip — call after anything that changes a
-/// stored preset (a save-bearing command) or on device detach.
-pub(crate) fn clear_doctor_before_cache() {
-    *crate::lock_ok(&BEFORE_CACHE) = None;
-}
-
-fn before_cache_get(key: &BeforeKey) -> Option<AbSide> {
-    let generation = crate::session::stored_preset_generation();
-    crate::lock_ok(&BEFORE_CACHE)
-        .as_ref()
-        .filter(|(g, k, _)| *g == generation && k == key)
-        .map(|(_, _, side)| side.clone())
-}
-
-fn before_cache_put(key: BeforeKey, side: AbSide) {
-    *crate::lock_ok(&BEFORE_CACHE) = Some((crate::session::stored_preset_generation(), key, side));
-}
-
-/// One side of the apply A/B: the clip the player hears, and what the capture
-/// measures — its loudness for the level match, and its profile and coverage for
-/// the before → after finding check. Cached whole for the BEFORE side.
-#[derive(Debug, Clone)]
-struct AbSide {
-    clip: String,
-    lufs: Option<f64>,
-    measured: Option<(doctor::SoundProfile, Vec<bool>)>,
-}
-
-/// Build an [`AbSide`] from one raw A/B capture. The clip is the processed stereo
-/// pair (#257; analysis stays on the mixdown). A side whose loudness or profile
-/// can't be measured still auditions: the audition is the deliverable, the
-/// numbers are a bonus, so those fields go `None` instead of failing the apply.
-fn ab_side(
-    cap: &crate::audio::Capture,
-    stim: &DoctorStim,
-    family: doctor::Instrument,
-    tail_ms: u32,
-) -> Result<AbSide, String> {
-    let rate = cap.sample_rate;
-    let wav = match cap.processed_stereo() {
-        Some(pair) => crate::commands::media::wav_bytes_channels(&pair, 2, rate)?,
-        None => wav_bytes(&cap.channel(0), rate)?,
-    };
-    let clip = format!("data:audio/wav;base64,{}", base64_encode(&wav));
-    let loudness =
-        leveller::measure_processed_as(cap, crate::profiles::PlaybackChannels::Stereo).ok();
-    let lufs = loudness
-        .as_ref()
-        .map(|l| l.integrated_lufs)
-        .filter(|l| l.is_finite());
-    let measured = loudness.and_then(|l| {
-        match profile_capture(
-            &leveller::DoctorSignal::from_capture(cap),
-            rate,
-            l,
-            stim,
-            family,
-            tail_ms,
-        ) {
-            Ok(p) if p.onset.confident() && p.has_tail => Some((p.profile, p.coverage)),
-            Ok(_) => None,
-            Err(e) => {
-                log::warn!("doctor_apply: A/B clip not profiled ({e})");
-                None
-            }
-        }
-    });
-    Ok(AbSide {
-        clip,
-        lufs,
-        measured,
-    })
-}
-
-/// The treated finding's severity on one profiled clip: `Some(margin)` when it
-/// fires at `level`'s threshold, `None` when it doesn't.
-fn finding_severity(
-    measured: &(doctor::SoundProfile, Vec<bool>),
-    nodes: Option<&[doctor::DoctorNode]>,
-    family: doctor::Instrument,
-    kind: doctor::StimulusKind,
-    diag: &DiagRef,
-) -> Option<f64> {
-    let (profile, coverage) = measured;
-    doctor::diagnose_kind(
-        profile,
-        nodes,
-        family,
-        kind,
-        Some(coverage),
-        doctor::playback_offsets(diag.level),
-    )
-    .into_iter()
-    .find(|d| d.key == diag.key)
-    .map(|d| d.severity)
-}
-
-/// The A/B's level match and finding check from its two sides (see
-/// [`AbLevels`] / [`FindingCheck`]). `graph` is the sound's isolated graph
-/// (`SoundIsolation::graph`), the one its diagnosis read, so a graph-gated rule
-/// (washed, buried) judges both clips as the diagnosis did.
-fn ab_report(
-    job: &DoctorApplyJob,
-    graph: &[doctor::DoctorNode],
-    family: doctor::Instrument,
-    kind: doctor::StimulusKind,
-    before: &AbSide,
-    after: &AbSide,
-) -> (Option<AbLevels>, Option<FindingCheck>) {
-    let levels = before
-        .lufs
-        .zip(after.lufs)
-        .map(|(before_lufs, after_lufs)| AbLevels {
-            before_lufs,
-            after_lufs,
-        });
-    let nodes = (!graph.is_empty()).then_some(graph);
-    let finding = job.diag.as_ref().and_then(|diag| {
-        let (b, a) = (before.measured.as_ref()?, after.measured.as_ref()?);
-        Some(FindingCheck {
-            key: diag.key.clone(),
-            before: finding_severity(b, nodes, family, kind, diag),
-            after: finding_severity(a, nodes, family, kind, diag),
-        })
-    });
-    (levels, finding)
-}
-
 /// Apply every op in `ops` on `s`'s live edit buffer (the caller must already
-/// have `confirm_active` + `begin_live_edit`'d the session). Shared by
-/// `doctor_apply` (unsaved A/B) and `doctor_save` (rebuild-from-scratch
-/// persist) — the ONE home of the per-op wire semantics (`Param` →
-/// `change_parameter`; `InsertNode` → `insert_node` + its param follow-ups on
-/// the id the device's confirm gave the fresh node). Inserts are first checked
-/// against the live roster ([`check_doctor_inserts`]). Returns the first
-/// failure's detail string; the caller decides how to recover (both today:
-/// restore the stored preset and report the detail).
+/// have `confirm_active` + `begin_live_edit`'d the session) — the ONE home of a
+/// prescription op's wire semantics (`Param` → `change_parameter`; `InsertNode` →
+/// `insert_node` + its param follow-ups on the id the device's confirm gave the
+/// fresh node). Inserts are first checked against the live roster
+/// ([`check_doctor_inserts`]). Returns the first failure's detail string; the
+/// caller decides how to recover. The app never writes a prescription (Doctor only
+/// describes its fixes); `probe --doctor-inject` is the one caller, through
+/// [`ops_session`].
 fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), String> {
     // The working copy's (group, FenderId, node id)s, kept current as inserts land: the
     // read-back count and the known ids an unconfirmed insert's id is told apart from.
@@ -1417,7 +1182,7 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
 }
 
 /// [`blockcaps::check_insert`] for every Doctor insert, against the live pre-edit
-/// `roster` (the apply path has no other cap or anchor check).
+/// `roster` (the probe's apply path has no other cap or anchor check).
 fn check_doctor_inserts(
     roster: &[blockcaps::RosterEntry],
     ops: &[doctor::DoctorOp],
@@ -1442,29 +1207,25 @@ fn check_doctor_inserts(
 
 /// Open a live-edit session on `list_index`, confirm identity, recall `scene`,
 /// and apply `ops` — the ONE home of the connect → `confirm_active` →
-/// `begin_live_edit` → `load_scene` → `apply_doctor_ops` sequence shared by
-/// `doctor_apply` step (b) (unsaved A/B) and `doctor_save` (rebuild-from-scratch
-/// persist). On success returns the still-open session — `doctor_apply` keeps it
-/// open to capture the AFTER clip on it (`leveller::doctor_capture_on_session_raw`),
-/// `doctor_save` calls `save_current_preset` on it (save must stay the LAST op on
-/// that connection). On ANY op failure the live session is dropped (freeing the
-/// seize) BEFORE `restore_saved_preset` reconnects to discard the partial edit,
-/// and an error naming `verb` ("apply"/"save") is returned.
+/// `begin_live_edit` → `load_scene` → `apply_doctor_ops` sequence. On success
+/// returns the still-open session, so the caller can capture the edit buffer on it
+/// without a recall reverting the ops; it never saves. On ANY failure the live
+/// session is dropped (freeing the seize) BEFORE `restore_saved_preset` reconnects
+/// to discard the partial edit, and an error naming `verb` is returned.
 ///
 /// `scene`: see `apply_ops_under_scene`'s doc.
 ///
-/// `pub(crate)`: shared with `probe --doctor-inject` (touches only
-/// `Session`/`leveller`, no Tauri state); move out of `commands::` if a third
-/// caller appears.
+/// `pub(crate)`: used by `probe --doctor-inject` only (touches only
+/// `Session`/`leveller`, no Tauri state) — the app has no prescription write path
+/// (Doctor describes its fixes, the player makes them on the unit).
 ///
 /// Every failure past this point — including `Session::connect`/`confirm_active`/
 /// `begin_live_edit`/`load_scene`, not just `apply_doctor_ops` — routes through
-/// the same restore: the caller (`doctor_apply` step (b)) is invoked right after
-/// a BEFORE capture that already wrote unsaved force-bypass isolation onto the
-/// live edit buffer (`leveller::doctor_capture`/`capture_full_at`, which never
-/// reloads before returning), so the device is dirty even before this function's
-/// own `Session::connect` runs — a setup failure here must still discard that,
-/// not just an `apply_doctor_ops` failure.
+/// the same restore: the probe calls this right after a BEFORE capture that may
+/// already have written unsaved isolation onto the live edit buffer
+/// (`leveller::doctor_capture`/`capture_full_at`, which never reloads before
+/// returning), so the device can be dirty even before this function's own
+/// `Session::connect` runs — a setup failure here must still discard that.
 pub(crate) fn ops_session(
     list_index: ListIndex,
     expect_name: &str,
@@ -1535,21 +1296,11 @@ pub(crate) fn doctor_scene_refusal(
 /// `lastLoadedScene`), not necessarily the diagnosed scene — omitting the recall
 /// let a scene-2 prescription silently write scene-0's overlay (or base) instead.
 ///
-/// KNOWN LIMITATION, now REFUSED rather than silently leaked: when the
-/// diagnosed node has NO EXISTING overlay in `scene`
-/// ([`SceneWriteVerdict::NeedsEnable`]), a bare `changeParameter` here would
-/// leak to base — `set_node_scene_edit` is what forces the overlay into
-/// existence, per leveling's `set_knob`/`set_knobs`, but enabling it here
-/// isn't a free fix: it reseeds the node's scene overlay from base, wiping
-/// any OTHER already-scene-edited params on that node — the same
-/// reseed-wipes-siblings bug leveling's `set_knob`/`set_knobs` has (fixed
-/// there by a measure-the-diff-and-repair pass; no equivalent repair exists
-/// for Doctor). So Doctor never attempts either shape: `doctor_apply` refuses
-/// the apply before this fn ever runs, for the Absent case and for a
-/// `SceneOverlay::BypassOnly` node the audibility guard does NOT clear — see
-/// [`bypass_only_conflict`], which now reads the same
-/// [`scene_write_verdict_for_param`] the leveling lane does instead of
-/// re-deriving a narrower (BypassOnly-only) rule.
+/// KNOWN LIMITATION: when the diagnosed node has no overlay of its own in `scene`
+/// (`scene_jobs::SceneWriteVerdict` is not `WriteDirect`), a bare `changeParameter`
+/// here leaks to base, and enabling the overlay would reseed the node's other
+/// scene-edited params from base with no repair pass. The one caller
+/// (`probe --doctor-inject`) applies on the base sound only.
 fn apply_ops_under_scene(
     s: &mut Session,
     scene: Option<u32>,
@@ -1561,310 +1312,6 @@ fn apply_ops_under_scene(
         leveller::SETTLE_AFTER_SET_MS,
     ));
     apply_doctor_ops(s, ops)
-}
-
-/// Does `ops` contain a scene-context `Param` write [`scene_write_verdict_for_param`]
-/// won't hand to a plain enable-dropped `changeParameter`? Reads the SAME write-landing
-/// policy the leveling lane consults (`leveller::set_knobs`), rather than
-/// re-deriving a narrower rule: `Refuse` (BypassOnly, and not audibility-guarded —
-/// shares knobs with base; Unknown — truncated field-8 read, 22/25 real presets)
-/// surfaces its reason verbatim; `NeedsEnable` (Absent overlay) ALSO refuses HERE,
-/// even though the verdict itself says a write is possible — Doctor has no
-/// `set_node_scene_edit` + measure-the-diff repair pass (see
-/// [`apply_ops_under_scene`]'s doc), so enabling would reseed the node's other
-/// scene-edited params from base with nothing to repair the collateral damage.
-/// `WriteDirect` proceeds either way it's produced: a Full overlay (enable already
-/// on), or a BypassOnly node whose leak-to-base write `shared_write_is_scene_local`
-/// confirms is audible ONLY in this scene — Doctor sends the SAME enable-dropped
-/// `changeParameter` in both cases, so there is nothing scene-specific to repair.
-/// Pure — takes the already-read preset JSON, so it's unit-testable without a live
-/// session (mirrors [`capture_suspect`]'s split, same reason: `ops_session` itself
-/// needs `Session::connect`). Returns the first conflicting op's user-facing
-/// refusal reason; `None` = safe to proceed.
-///
-/// `InsertNode` ops are never scene-scoped (block topology is shared across
-/// every scene of a preset — only DSP parameters are per-scene), so only
-/// `Param` ops are checked.
-fn bypass_only_conflict(
-    preset: &serde_json::Value,
-    scene: u32,
-    ops: &[doctor::DoctorOp],
-) -> Option<String> {
-    ops.iter().find_map(|op| match op {
-        doctor::DoctorOp::Param { node_id, param, .. } => {
-            match scene_write_verdict_for_param(preset, scene, node_id, param) {
-                SceneWriteVerdict::WriteDirect { .. } => None,
-                SceneWriteVerdict::Refuse { reason, .. } => Some(reason),
-                SceneWriteVerdict::NeedsEnable => Some(format!(
-                    "{node_id} has no scene overlay yet in scene {scene} — Doctor can't safely \
-                     create one here (that would reseed the node's other scene-edited params \
-                     from base with no repair pass); level Base instead, or set up the scene's \
-                     overlay in Pro Control first"
-                )),
-            }
-        }
-        _ => None,
-    })
-}
-
-/// Apply a prescription LIVE onto the edit buffer (never saved) and return the
-/// before/after A/B clips. Both captures run under the diagnosed sound's OWN
-/// context (`job.scene`/`job.footswitch` recalled + isolated via
-/// `footswitch::derived_force_bypass`, same as `doctor_check`'s check loop) — the player
-/// auditions the fix in the state that was actually diagnosed, not the
-/// as-saved base. Flow (honoring one-engage-per-connection + set-then-engage):
-/// (a) capture the STORED preset — this also loads it, so (b) can
-/// `confirm_active` without a second load — (b) apply each op on a fresh session's
-/// live edit buffer, restoring the stored preset on ANY failure, and (c) capture
-/// the edit buffer WITHOUT reloading (a load would discard the unsaved edit).
-/// Persist with `doctor_save`; revert with `doctor_discard`.
-#[tauri::command]
-pub(crate) async fn doctor_apply<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    state: State<'_, AppState>,
-    job: DoctorApplyJob,
-) -> Result<DoctorApplyResult, String> {
-    // Same stimulus SOURCE as the diagnosis: a profile's stored Tier-2 DI
-    // capture when present (injected verbatim — calibration scaling off, the
-    // `doctor_check` rule), else the topology sample with its scalar.
-    let (stim_path, from_capture) = resolve_stimulus_with_capture(
-        &app,
-        None,
-        job.topology_id.clone(),
-        job.profile_id.as_deref(),
-    )?;
-    with_released_seize(state.session.clone(), move || {
-        // Refuse a scene-context Param write BEFORE touching device state (no
-        // BEFORE-clip capture, no force-bypass writes) whenever
-        // `scene_write_verdict_for_param` won't hand it a safe enable-dropped landing —
-        // see `bypass_only_conflict`'s doc. One extra field-8 read, paid only
-        // when relevant (a scene sound with a Param op) — the same read
-        // `resolve_sound_isolation`'s empty-graph fallback already pays
-        // elsewhere in this file. A read failure here also refuses (`?`):
-        // "can't confirm this is safe" must never authorise the write.
-        if let Some(scene) = job.scene {
-            if job
-                .ops
-                .iter()
-                .any(|op| matches!(op, doctor::DoctorOp::Param { .. }))
-            {
-                let (preset, _, _) = read_slot_preset_parsed(job.list_index)?;
-                if let Some(reason) = bypass_only_conflict(&preset, scene, &job.ops) {
-                    return Err(reason);
-                }
-            }
-        }
-        let calibration = if from_capture {
-            None
-        } else {
-            job.calibration_lufs
-        };
-        // Local WAV read, before the run closure: a stimulus failure has touched
-        // no device state, so it must not pay the run-end backstop connection.
-        // Same 3 s Doctor window as the diagnosis captures — the A/B clips must
-        // be measured (and heard) over the space the verdicts were made in.
-        let stim = DoctorStim::new(leveller::doctor_stim_slice(read_stimulus_calibrated(
-            &stim_path,
-            calibration,
-        )?));
-        let kind = if from_capture {
-            doctor::StimulusKind::Capture
-        } else {
-            doctor::StimulusKind::Synthetic
-        };
-        let result = doctor_apply_run(&job, &stim_path, calibration, &stim, kind);
-        // Run-end backstop, success or failure (see `reamp_off_guaranteed`). ONLY
-        // the reamp toggle — never a load_preset here, which would discard the
-        // just-applied unsaved edit buffer on the success path.
-        leveller::reamp_off_guaranteed("doctor_apply").stamp(result, |r, w| r.reamp_warning = w)
-    })
-    .await
-}
-
-/// [`doctor_apply`]'s device work: isolate the diagnosed sound, then (a) the BEFORE
-/// clip, (b) the live apply, (c) the AFTER clip on the same session.
-fn doctor_apply_run(
-    job: &DoctorApplyJob,
-    stim_path: &str,
-    calibration: Option<f32>,
-    stim: &DoctorStim,
-    kind: doctor::StimulusKind,
-) -> Result<DoctorApplyResult, String> {
-    let family = instrument_of_topology(job.topology_id.as_deref());
-    // Pre-engage writes for the diagnosed sound — the SAME
-    // `resolve_sound_isolation` policy `doctor_check` uses (one policy so the
-    // A/B can never observe a different bypass OR param state than the
-    // diagnosis; empty `nodes` falls back to the live field-8 read). Inside
-    // the run (unlike the stimulus read): its empty-graph fallback is a live
-    // device read the backstop must cover.
-    let iso = resolve_sound_isolation(
-        &job.nodes,
-        &job.footswitches,
-        &job.scene_overrides,
-        job.scene,
-        job.footswitch,
-        job.list_index,
-        &mut std::collections::HashMap::new(),
-    );
-    // Same rule as the diagnosis loop: an unisolatable footswitch sound must not
-    // be auditioned — the A/B would compare two captures of the wrong sound.
-    if let Some(e) = &iso.unresolved {
-        return Err(e.clone());
-    }
-    // The Doctor capture tail for the graph the diagnosis was captured in — the
-    // ONE home of the policy (`doctor::doctor_tail_ms`); empty `nodes`
-    // conservatively keeps the full wash-analysis tail.
-    let tail_ms = doctor::doctor_tail_ms(&iso.graph);
-
-    // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
-    //     the slot, so (b) below confirms the already-current preset — no reload.
-    //     ref_level None: capture at the preset's OWN level — never write a
-    //     reference presetLevel a later doctor_save would PERSIST (#1).
-    //     Cached across consecutive applies on the same sound (see BEFORE_CACHE);
-    //     a cache hit MUST still load the slot — the load is what (b) relies on
-    //     AND what discards a stale unsaved edit buffer (a failed earlier apply
-    //     whose restore also failed would otherwise stack Rx on Rx).
-    let key: BeforeKey = (
-        job.list_index,
-        job.name.clone(),
-        stim_path.to_string(),
-        calibration.map(f32::to_bits),
-        job.scene,
-        job.footswitch,
-    );
-    let before = doctor_before_side(job, key, &iso, stim, family, tail_ms)?;
-
-    // (b) APPLY live onto the edit buffer, recalling the diagnosed scene FIRST
-    //     (`ops_session`) so the ops land in it, not wherever the connection
-    //     defaulted to. NEVER saves. On ANY op failure the stored preset is
-    //     reloaded (the partial edit is discarded). Kept OPEN — (c) captures
-    //     on this SAME session, never reconnecting.
-    let mut s = ops_session(job.list_index, &job.name, job.scene, &job.ops, "apply")?;
-
-    // (c) AFTER: capture the live edit buffer on the SAME session (b) just
-    //     wrote to — NOT a fresh reconnect, which would recall the scene
-    //     again and revert the just-applied ops before ever capturing them
-    //     (`leveller::capture_on_session`'s doc). ref_level None like (a):
-    //     nothing touched the level between the captures, so the A/B is
-    //     inherently level-fair at the preset's own level. Past this point
-    //     the ops already applied (b succeeded), so ANY failure here must
-    //     restore the stored preset before returning — the frontend's
-    //     applyLock releases on any `doctorApply` error assuming an
-    //     auto-restore (`PrescriptionCard.tsx`'s "a failed apply
-    //     auto-restores"), and a stranded mutated buffer would let a
-    //     sibling card Apply on top of it.
-    let after = match doctor_after_side(&mut s, &iso, stim, family, tail_ms) {
-        Ok(side) => side,
-        Err(after_err) => {
-            // Free the seize before the restore opens its own connection.
-            drop(s);
-            return Err(match leveller::restore_saved_preset(job.list_index) {
-                Ok(()) => after_err,
-                Err(restore_err) => format!(
-                    "{after_err} AND the restore also failed ({restore_err}) — verify the preset on the unit"
-                ),
-            });
-        }
-    };
-
-    let (levels, finding) = ab_report(job, &iso.graph, family, kind, &before, &after);
-    Ok(DoctorApplyResult {
-        before_clip: before.clip,
-        after_clip: after.clip,
-        levels,
-        finding,
-        reamp_warning: None,
-    })
-}
-
-/// (a) The BEFORE side: the stored preset's capture, from `BEFORE_CACHE` when the
-/// same sound was captured last (still loading the slot — see the caller's step (a)).
-fn doctor_before_side(
-    job: &DoctorApplyJob,
-    key: BeforeKey,
-    iso: &SoundIsolation,
-    stim: &DoctorStim,
-    family: doctor::Instrument,
-    tail_ms: u32,
-) -> Result<AbSide, String> {
-    Ok(match before_cache_get(&key) {
-        Some(side) => {
-            leveller::restore_saved_preset(job.list_index)?;
-            side
-        }
-        None => {
-            let cap = leveller::doctor_capture_raw(
-                job.list_index,
-                job.scene,
-                &iso.bypass,
-                &iso.params,
-                &stim.samples,
-                None,
-                u64::from(tail_ms),
-                false,
-            )?;
-            let side = ab_side(&cap, stim, family, tail_ms)?;
-            before_cache_put(key, side.clone());
-            side
-        }
-    })
-}
-
-/// (c) The AFTER side, captured on the session (b) applied the ops on.
-fn doctor_after_side(
-    s: &mut Session,
-    iso: &SoundIsolation,
-    stim: &DoctorStim,
-    family: doctor::Instrument,
-    tail_ms: u32,
-) -> Result<AbSide, String> {
-    let cap = leveller::doctor_capture_on_session_raw(
-        s,
-        &iso.bypass,
-        &iso.params,
-        &stim.samples,
-        None,
-        u64::from(tail_ms),
-    )?;
-    ab_side(&cap, stim, family, tail_ms)
-}
-
-/// Persist the applied (still-live) edit buffer to `list_index` — SAFELY: the
-/// live edit buffer is NEVER the thing that gets saved. Instead this rebuilds
-/// SAVED+`ops` from scratch — `restore_saved_preset` discards whatever the A/B
-/// captures (or a stacked earlier failed apply) left in the buffer (forced
-/// bypasses, a scene recall — see `doctor_capture_current`'s doc), THEN
-/// re-applies exactly `ops` on a fresh confirmed session and saves. So no
-/// intermediate edit-buffer pollution can ever be persisted, structurally —
-/// not by convention. A failed re-apply reloads the stored preset and returns
-/// an error without saving.
-#[tauri::command]
-pub(crate) async fn doctor_save(
-    state: State<'_, AppState>,
-    list_index: ListIndex,
-    expect_name: String,
-    scene: Option<u32>,
-    ops: Vec<doctor::DoctorOp>,
-) -> Result<(), String> {
-    with_released_seize(state.session.clone(), move || {
-        leveller::restore_saved_preset(list_index)?;
-        let mut s = ops_session(list_index, &expect_name, scene, &ops, "save")?;
-        s.save_current_preset(list_index)?;
-        Ok(())
-    })
-    .await
-}
-
-/// Discard the applied edit buffer by reloading the stored preset.
-#[tauri::command]
-pub(crate) async fn doctor_discard(
-    state: State<'_, AppState>,
-    list_index: ListIndex,
-) -> Result<(), String> {
-    with_released_seize(state.session.clone(), move || {
-        leveller::restore_saved_preset(list_index)
-    })
-    .await
 }
 
 #[cfg(test)]

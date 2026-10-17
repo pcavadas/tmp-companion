@@ -1,7 +1,7 @@
 // src/ui/Dialog.tsx — the single design-system dialog shell + its chrome slots (look B).
 //
-// Every dialog/overlay renders through THIS component (the Doctor run, the "How
-// leveling works" sheet, the copy SaveOverlay, the confirm Modal), so the backdrop, card,
+// Every dialog/overlay renders through THIS component (the "How leveling works" sheet,
+// the copy SaveOverlay, the confirm Modal), so the backdrop, card,
 // and section padding live in exactly one place. Look B: a `scrim` backdrop, a white card
 // (`radiusGroup`, `shadowDialog`, no edge), 20 px padding, a 15/600 title, 13 px body and
 // buttons right-aligned. This file stays BUTTON-FREE: any confirm shell that carries
@@ -29,11 +29,10 @@ import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { useTheme } from "../theme/ThemeContext";
-import { DialogCardCtx } from "./dialogContext";
 
 /** The dialog width scale. xs = a confirm (Stop, Delete), sm = forms / progress,
- *  explainer = the How leveling works sheet (its two-column table), md = the Doctor run
- *  wizard, lg = a wide table. (Add xl here when a wider dialog needs one.) */
+ *  explainer = the How leveling works sheet (its two-column table), md = a wider form,
+ *  lg = a wide table. (Add xl here when a wider dialog needs one.) */
 export type DialogSize = "xs" | "sm" | "explainer" | "md" | "lg";
 
 const DIALOG_WIDTH: Record<DialogSize, number> = {
@@ -44,9 +43,8 @@ const DIALOG_WIDTH: Record<DialogSize, number> = {
   lg: 780,
 };
 
-/** Shared padding for every dialog section (header/body/footer). The Doctor wizard's own
- *  WizardHeader imports this too so nothing drifts. */
-export const DIALOG_PAD_X = 20;
+/** Shared padding for every dialog section (header/body/footer). */
+const DIALOG_PAD_X = 20;
 
 const VIEWPORT_CAP = "calc(100vh - 32px)";
 /** Width twin of VIEWPORT_CAP. The window's minWidth (800) less this margin is narrower
@@ -164,9 +162,7 @@ export function Dialog({
           overflow: "hidden",
         }}
       >
-        <DialogCardCtx.Provider value={cardRef}>
-          {children}
-        </DialogCardCtx.Provider>
+        {children}
       </div>
     </div>,
     document.body,

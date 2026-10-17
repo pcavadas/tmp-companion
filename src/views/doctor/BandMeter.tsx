@@ -1,17 +1,23 @@
-// src/views/doctor/BandMeter.tsx — the opt-in "frequency picture": player-named
-// bands (6 for guitar/bass, 7 with "Sub" for bass-vi) drawn as div bars from a
-// sound's real per-band balance, with the problem band(s) filled in the severity
-// color. Genuinely new visual — flagged as a DS sign-off candidate (kept local for
-// now).
+// src/views/doctor/BandMeter.tsx — "Tone by band": a sound's six bands (seven, with "Sub"
+// first, for Bass VI) as bars from its real per-band balance, the finding's bands in the
+// finding's tone (danger or caution) and the others in the neutral `meter` grey, each
+// labelled underneath in 12 px words. 300 px wide, shown only inside an opened sound. The
+// bars are a picture; the accessible name says what they show ("Tone by band: Low mids
+// too strong").
 
 import { useTheme } from "../../theme/ThemeContext";
 import type { DoctorBandDirection } from "../../lib/types";
-import { sevTone, type Sev } from "./severity";
+import type { FindingTone } from "./severity";
 
 const DIRECTION_WORDS: Record<DoctorBandDirection, string> = {
   strong: "too strong",
   weak: "too weak",
 };
+
+/** The meter's width (px). */
+const METER_W = 300;
+/** The bars' full height (px). */
+const BAR_H = 40;
 
 /** "Low mids", "Highs and Air", "Lows, Mids and Air". */
 function listWords(words: string[]): string {
@@ -36,7 +42,7 @@ function meterLabel(
 
 // Map a per-band balance (dB) to a bar-height %. The capture's balanceDb spans
 // roughly −30…+15 dB; project that onto 8…100% so a silent band still shows a stub
-// and a hot band never overflows the 40px row. (db + 30) / 45 normalizes −30→0,
+// and a hot band never overflows the bar. (db + 30) / 45 normalizes −30→0,
 // +15→1; ×92 + 8 lands it in the 8…100 band, then clamp.
 function barHeightPct(db: number): number {
   const pct = 8 + ((db + 30) / 45) * 92;
@@ -47,14 +53,13 @@ export interface BandMeterProps {
   /** The sound's real per-band balance (dB), one entry per band. */
   balanceDb: number[];
   /** Display labels for the sound's band layout (`DoctorSoundResult.bandLabels`) —
-   *  6 for guitar/bass, 7 ("Sub" first) for bass-vi. Drives both the bar count and
-   *  the axis labels below them. */
+   *  6 for guitar/bass, 7 ("Sub" first) for bass-vi. */
   bandLabels: string[];
-  /** Problem band indices from the diagnosis — filled + ringed in the sev color. */
+  /** The finding's band indices — drawn in its tone. */
   bands: number[];
   /** Whether those bands are too strong or too weak (`DoctorDiag.direction`). */
   direction: DoctorBandDirection;
-  sev: Sev;
+  tone: FindingTone;
 }
 
 export function BandMeter({
@@ -62,66 +67,70 @@ export function BandMeter({
   bandLabels,
   bands,
   direction,
-  sev,
+  tone,
 }: BandMeterProps) {
   const { t } = useTheme();
-  const tone = sevTone(t, sev);
-  const problem = new Set(bands);
-  const faint = "rgba(15,17,21,0.10)";
+  const hotColor = tone === "danger" ? t.danger : t.cautionLine;
+  const hot = new Set(bands);
 
   return (
     <div
       role="img"
       aria-label={meterLabel(bandLabels, bands, direction)}
-      style={{ marginTop: t.space5 }}
+      style={{
+        display: "flex",
+        gap: t.sp6,
+        width: METER_W,
+        maxWidth: "100%",
+        flexShrink: 0,
+      }}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-end",
-          gap: t.space2,
-          height: 40,
-        }}
-      >
-        {bandLabels.map((label, i) => {
-          const hot = problem.has(i);
-          const db = i < balanceDb.length ? balanceDb[i] : -30;
-          return (
-            <div
-              key={label}
-              style={{
-                flex: 1,
-                height: `${String(barHeightPct(db))}%`,
-                borderRadius: "3px 3px 1px 1px",
-                background: hot ? tone.fg : faint,
-                border: hot
-                  ? `0.5px solid ${tone.fg}`
-                  : "0.5px solid transparent",
-                boxSizing: "border-box",
-              }}
-            />
-          );
-        })}
-      </div>
-      <div style={{ display: "flex", gap: t.space2, marginTop: t.space2 }}>
-        {bandLabels.map((label, i) => (
+      {bandLabels.map((label, i) => {
+        const db = i < balanceDb.length ? balanceDb[i] : -30;
+        return (
           <span
             key={label}
             style={{
               flex: 1,
-              textAlign: "center",
-              fontFamily: t.mono,
-              fontSize: 7.5,
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-              color: problem.has(i) ? tone.fg : t.faint,
-              whiteSpace: "nowrap",
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: t.sp4,
             }}
           >
-            {label}
+            <span
+              style={{
+                width: "100%",
+                height: BAR_H,
+                display: "flex",
+                alignItems: "flex-end",
+              }}
+            >
+              <span
+                data-band-bar={label}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  height: `${String(barHeightPct(db))}%`,
+                  background: hot.has(i) ? hotColor : t.meter,
+                  borderRadius: 2,
+                }}
+              />
+            </span>
+            <span
+              style={{
+                fontSize: t.fontCaption,
+                lineHeight: `${String(t.lineCaption)}px`,
+                color: t.textSecondary,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {label}
+            </span>
           </span>
-        ))}
-      </div>
+        );
+      })}
     </div>
   );
 }

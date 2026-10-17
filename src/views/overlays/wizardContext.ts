@@ -1,23 +1,6 @@
-// src/views/overlays/wizardContext.ts — non-component shared bits of the leveling
-// wizard: the dialog-card context and the stage union + rail-step type. Split from
-// ./WizardShell so that file exports only components (React Fast Refresh's
-// component-boundary rule) without disabling it.
+// src/views/overlays/wizardContext.ts — the leveling flow's stage union, shared by the
+// stage switch (`LevelingWizard`) and the store that owns the flow (`levelRunStore`).
+// Split from the switch so that file exports only components (React Fast Refresh's
+// component-boundary rule).
 
 export type Stage = "closed" | "setup" | "run" | "summary";
-
-// DialogCardCtx now lives in the DS Dialog (every <Dialog> provides it); re-exported here
-// so existing importers (Pick, WizardPage, DoctorSetup) keep their import path.
-export { DialogCardCtx } from "../../ui/dialogContext";
-
-/** One node on the header step rail. */
-export interface RailStep {
-  key: string;
-  label: string;
-}
-
-/** `StepRail`/`WizardShell`'s default `steps` value. */
-export const WIZ_STEPS: readonly RailStep[] = [
-  { key: "setup", label: "Set up" },
-  { key: "level", label: "Level" },
-  { key: "summary", label: "Summary" },
-];

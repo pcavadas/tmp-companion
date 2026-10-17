@@ -1,12 +1,11 @@
-// src/views/doctor/matchModel.ts — pure "Match reference" EQ-move math: given
+// src/views/doctor/matchModel.ts — pure "To sound like …" EQ-move math: given
 // two sounds' per-band balanceDb (`DoctorSoundResult.balanceDb`), centred on
 // the median body-band delta so level and the Air/Sub bands cancel, derive
-// the graphic-EQ-10 moves
-// that bring one toward the other. No device I/O — the UI (MatchCard.tsx)
-// wraps the result in a synthetic `DoctorRx` and reuses PrescriptionCard's
-// existing apply/save/discard flow.
+// the graphic-EQ-10 moves that bring one toward the other. No device I/O — the
+// Results page words the moves as a step the player makes on the unit
+// (`resultsModel.ts`'s `matchAdvice`).
 
-import type { DoctorOp, GraphNode } from "../../lib/types";
+import type { GraphNode } from "../../lib/types";
 
 /** Geometric band centers (Hz) — sqrt(lo*hi) per band, VERIFIED against
  *  `src-tauri/src/doctor.rs`'s `BANDS_6`/`BANDS_7` (via `Family::bands()` +
@@ -51,20 +50,15 @@ const DROP_BELOW_DB = 1.5;
  *  product profile). Mirrors `doctor.rs`'s `EQ10_STEREO`. */
 export const EQ10_STEREO = "ACD_TenBandEQStereo";
 
-/** EQ-10 band gain range (dB) — mirrors `doctor.rs`'s `EQ10_BAND_RANGE_DB`
- *  (±12 is the graphic-EQ standard; the band controlIds' fw schema is the
- *  source to re-derive from if a rev differs). */
-export const EQ10_BAND_RANGE_DB = 12;
-
-/** An existing, drivable EQ-10 already in the chain, or null when none — the
- *  reuse-vs-insert gate for the Match-reference fix (mirrors `doctor.rs`'s
+/** An existing, drivable EQ-10 already in the chain, or null when none — whether
+ *  the "To sound like …" step says "On your 10-band EQ" (mirrors `doctor.rs`'s
  *  `eq_move`/`graph_facts`, which reuse `facts.eq10` instead of stacking a
  *  second EQ-10). A bypassed EQ-10 doesn't count (`graph_facts`'s loop
  *  `continue`s past a bypassed node before it ever reaches the EQ-10 check).
  *  When SEVERAL non-bypassed EQ-10s exist, `graph_facts` has no `is_none()`
  *  guard on `f.eq10` (unlike `f.cab`/`f.reverb_mix`) — it overwrites on every
  *  match, so the LAST one in node order wins; mirrored here for parity. */
-export function existingEq10(nodes: GraphNode[]): GraphNode | null {
+export function existingEq10(nodes: readonly GraphNode[]): GraphNode | null {
   let found: GraphNode | null = null;
   for (const n of nodes) {
     if (!n.bypassed && n.model === EQ10_STEREO) found = n;
@@ -72,34 +66,12 @@ export function existingEq10(nodes: GraphNode[]): GraphNode | null {
   return found;
 }
 
-/** Reuse-branch ops for an existing EQ-10: per move, `current + gainDb`
- *  clamped to +/-`EQ10_BAND_RANGE_DB`, missing current value treated as 0 —
- *  mirrors `doctor.rs`'s `eq_move` reuse branch (the `known` case; a fresh
- *  reuse always writes relative-to-current, so there's no separate "unknown
- *  current value" branch to mirror here). */
-export function eq10ReuseOps(eq: GraphNode, moves: EqMove[]): DoctorOp[] {
-  return moves.map((m) => {
-    const current = eq.params[m.controlId] ?? 0;
-    const value = Math.max(
-      -EQ10_BAND_RANGE_DB,
-      Math.min(EQ10_BAND_RANGE_DB, current + m.gainDb),
-    );
-    return {
-      kind: "param",
-      groupId: eq.group_id,
-      nodeId: eq.node_id,
-      param: m.controlId,
-      value,
-    };
-  });
-}
-
 /** True when two sounds share an IDENTICAL band layout (same labels, same
  *  order) with coherent balance arrays — the precondition for every
  *  index-paired computation below. Equal COUNT is not enough: Bass and
  *  Bass VI are both 7 bands with different meanings per index. The one gate
- *  both the Match-reference offer (`SoundRow.canMatch`) and the pairing
- *  itself (`MatchCard`) share, so they can never disagree. */
+ *  both the reference offer and the pairing itself (`matchAdvice`) share, so
+ *  they can never disagree. */
 export function bandLayoutsMatch(
   ref: { bandLabels: string[]; balanceDb: number[] },
   sound: { bandLabels: string[]; balanceDb: number[] },
@@ -210,20 +182,4 @@ export function matchResidualLarge(deltas: number[]): boolean {
 export function eqBandLabel(controlId: string): string {
   const core = controlId.replace(/^gain/, "").replace(/hz$/, "");
   return core.endsWith("k") ? `${core.slice(0, -1)} kHz` : `${core} Hz`;
-}
-
-/** The group id to APPEND the Match-reference EQ-10 to: the LAST guitar-chain
- *  node's group. Guitar groups are identified the same way the backend does
- *  (`doctor.rs`'s `graph_facts`'s `front` field): `group_id` starting with
- *  "G" (mic groups start "M"). This is by construction the last "G"-prefixed
- *  index in the whole node list, so nothing in its own group follows it —
- *  the insert is always an append (`beforeNodeId: null` at the call site).
- *  Returns `null` when the chain has no guitar nodes at all — the caller
- *  doesn't offer Apply then. */
-export function lastGuitarGroup(nodes: GraphNode[]): string | null {
-  let lastIdx = -1;
-  for (let i = 0; i < nodes.length; i++) {
-    if (nodes[i].group_id.startsWith("G")) lastIdx = i;
-  }
-  return lastIdx === -1 ? null : nodes[lastIdx].group_id;
 }

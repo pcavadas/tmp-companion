@@ -257,7 +257,7 @@ static SCENARIO_VERIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// nothing else invalidates the fast path for it. Pinned by
 /// `e2e_server_tests::note_structural_save_flags_structural_saves_only`.
 #[cfg(feature = "e2e")]
-const STRUCTURAL_SAVE_CMDS: [&str; 2] = ["copy_apply", "doctor_save"];
+const STRUCTURAL_SAVE_CMDS: [&str; 1] = ["copy_apply"];
 
 #[cfg(feature = "e2e")]
 /// The origin Tauri treats as the app's OWN webview for ACL purposes. It is

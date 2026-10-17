@@ -56,9 +56,6 @@ import type {
   DoctorInputArg,
   DoctorProgressItem,
   DoctorCheckResult,
-  DoctorApplyJob,
-  DoctorApplyResult,
-  DoctorOp,
   SupportBundleResult,
 } from "./types";
 
@@ -79,7 +76,7 @@ export { isTauri } from "./log";
  * bare string). Branch on `kind`, never on the message text.
  */
 export class CommandError extends Error {
-  /** The backend command that rejected (e.g. `doctor_apply`). */
+  /** The backend command that rejected (e.g. `copy_apply`). */
   readonly cmd: string;
   /** What failed, for a caller that presents kinds differently. A leveling command's
    *  kind is a `SkipKind` (why the run, or the sound, was not leveled). */
@@ -257,32 +254,6 @@ export const doctorCheck = (
  * their results. */
 export const cancelDoctorCheck = (): Promise<void> =>
   invokeCommand("cancel_doctor_check");
-
-/** Apply one prescription's ops LIVE (no save): captures the stored state
- * (before clip), applies the edits to the device's edit buffer, captures again
- * without reloading (after clip). Revert with `doctorDiscard`; persist with
- * `doctorSave`. On a failed structural edit the preset is auto-restored. */
-export const doctorApply = (job: DoctorApplyJob): Promise<DoctorApplyResult> =>
-  invokeCommand("doctor_apply", { job });
-
-/** Persist an applied prescription. Structurally safe: the backend rebuilds
- * SAVED+`ops` from scratch (reload the stored preset, recall `scene`, re-apply
- * `ops` on a fresh confirmed session, save) rather than persisting whatever the
- * A/B left in the live edit buffer — so `ops`/`scene` must be the SAME the card
- * applied (the diagnosed sound's own scene, `null` for base — see `doctorApply`'s
- * `job.scene`). Only offered behind the backup acknowledgment. */
-export const doctorSave = (
-  listIndex: number,
-  expectName: string,
-  scene: number | null,
-  ops: DoctorOp[],
-): Promise<void> =>
-  invokeCommand("doctor_save", { listIndex, expectName, scene, ops });
-
-/** Discard an applied-but-unsaved prescription by reloading the stored preset
- * (the device's edit buffer is dropped on load — the established revert). */
-export const doctorDiscard = (listIndex: number): Promise<void> =>
-  invokeCommand("doctor_discard", { listIndex });
 
 // ─── Instrument profiles + persisted store (Settings window) ──────────────────
 

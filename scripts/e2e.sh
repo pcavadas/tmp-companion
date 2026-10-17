@@ -4,8 +4,8 @@
 #
 #   scripts/e2e.sh                  # OFFLINE (SimDevice) — fast, default, no hardware (~1.5 min)
 #   scripts/e2e.sh offline copy     # OFFLINE, only the copy spec
-#   scripts/e2e.sh online           # ONLINE (real device) — doctor, level, songs, copy, doctor-apply
-#                                   # in turn (~28 min)
+#   scripts/e2e.sh online           # ONLINE (real device) — doctor, level, songs, copy
+#                                   # in turn (~25 min)
 #   scripts/e2e.sh online auto      # ONLINE, exactly the specs this diff requires
 #                                   # (`scripts/gates.sh --required-online`; nothing → exit 0)
 #   scripts/e2e.sh online release   # ONLINE, the specs everything since the last release tag
@@ -207,8 +207,8 @@ Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|doctor.online|le
        scripts/e2e.sh soak <N>
   (no args)             OFFLINE — all specs vs SimDevice (fast, ~1.5 min, no hardware)
   offline copy          OFFLINE — only the copy spec
-  online                ONLINE  — doctor, level, songs, copy, doctor-apply vs the real unit
-                        (~28 min; Pro Control closed)
+  online                ONLINE  — doctor, level, songs, copy vs the real unit
+                        (~25 min; Pro Control closed)
   online auto           ONLINE  — exactly the specs this diff requires
                         (`scripts/gates.sh --required-online`): ANY runs songs, nothing
                         required exits 0 without touching the unit
@@ -555,15 +555,15 @@ fi
 # level.online absorbs level.spec.ts's online half + level-strict.spec.ts (deleted) +
 # level-rerun.spec.ts's online half (retired; level-rerun.spec.ts is now DELETED entirely
 # — its offline half merged into level.spec.ts, offline suite consolidation).
-# doctor-apply.online is back in this set: it is the only spec that reads a Doctor save and
-# discard back from the device, and Doctor-persistence changes require it
-# (scripts/gate-map.tsv's `doctor-persist` class).
+# doctor-apply.online left this set for good with the Doctor write path itself: Doctor
+# never writes to the unit (owner decision Q10/Q11), so there is no save or discard to read
+# back.
 #
 # ORDER: doctor.online BEFORE level.online (the ordering guard below still enforces this
 # for the leveling-equalizes-loudness reason it always has), then songs, then the two
-# STRUCTURAL MUTATORS copy and doctor-apply.online LAST — a structural save (copy_apply,
-# doctor_save) is the one thing that clears the server's SCENARIO_VERIFIED flag
-# (`note_structural_save`, e2e_server.rs), so putting them last means nothing AFTER them in
+# STRUCTURAL MUTATOR copy LAST — a structural save (copy_apply) is the one thing that
+# clears the server's SCENARIO_VERIFIED flag
+# (`note_structural_save`, e2e_server.rs), so putting it last means nothing AFTER it in
 # this run pays a mid-run re-verify/re-import; the cost lands once, on the NEXT run's very
 # first (pristine-checking) seed instead.
 #
@@ -574,7 +574,7 @@ fi
 # process. That specific real-hardware sequence now needs a manual
 # `scripts/e2e.sh online copy doctor.online`; the underlying fix stays gated by that
 # entry's two Rust-level tests either way. See that registry row for the full context.
-case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(doctor.online level.online songs copy doctor-apply.online); FULL_SET=1 ;; esac
+case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(doctor.online level.online songs copy); FULL_SET=1 ;; esac
 
 # RETIRED-FROM-ONLINE GUARD: these spec basenames either still exist as files whose online
 # tier now `test.skip`s every test (level, doctor), or have been deleted outright
@@ -601,9 +601,9 @@ done
 # leveling equalizes the relative scene loudness the doctor's consistency check keys on,
 # so the reverse order silently weakens the doctor oracle. `level*` matches both the
 # dash-named legacy specs and the new `level.online` (dot, not dash). `doctor`/
-# `doctor.online` are the only order-sensitive doctor specs — doctor-apply.online and the
-# retired doctor-oracle.online work presets the level* specs never
-# save to, and the run-start seed self-repairs, so they need no guard.
+# `doctor.online` are the only order-sensitive doctor specs — the retired
+# doctor-oracle.online worked presets the level* specs never save to, and the run-start
+# seed self-repairs, so it needed no guard.
 seen_leveling=0
 for s in "${SPECS[@]:-}"; do
   case "$s" in level*) seen_leveling=1 ;; esac

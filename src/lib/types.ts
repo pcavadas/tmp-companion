@@ -1110,13 +1110,6 @@ export type DoctorOp =
       params: [string, number][];
     };
 
-/** Chain-preview DTO on a `chain`-kind prescription: the resulting block list
- * by model id (the UI resolves art through its existing strip engine). */
-export interface DoctorChainPreview {
-  template: string;
-  blocks: { model: string; added?: boolean }[];
-}
-
 /** One prescription (`doctor::Rx`). `ops` is empty for advisory cards. */
 export interface DoctorRx {
   kind: DoctorRxKind;
@@ -1128,7 +1121,6 @@ export interface DoctorRx {
   detail: string;
   cpuNote: string;
   ops: DoctorOp[];
-  chain?: DoctorChainPreview;
 }
 
 /** Which way a finding's bands are off (`doctor::BandDirection`): the band
@@ -1184,9 +1176,6 @@ export interface DoctorSoundResult {
   /** 0-based `ftsw` array index for a block-acting footswitch sound; null for
    *  Base/scene sounds. */
   footswitch: number | null;
-  /** The scene sound's saved overlay, echoed from its input like `scene` — sent back
-   *  on `DoctorApplyJob.sceneOverrides` so the A/B captures in the diagnosed graph. */
-  sceneOverrides: NodeOverride[];
   label: string;
   tag: string | null;
   diags: DoctorDiag[];
@@ -1204,8 +1193,13 @@ export interface DoctorSoundResult {
   /** Null when this sound's capture failed or the ratio was degenerate (e.g.
    *  a silent capture). */
   cutThrough: CutThrough | null;
-  /** Set when this sound's capture failed (no diags then); the run continued. */
+  /** Set when this sound's capture failed (no diags then); the run continued. For the
+   *  log only: the screen words the failure by `errorKind`. */
   error: string | null;
+  /** Why the capture failed (set exactly when `error` is) — the typed kind the
+   *  Results page picks its message by (`no_signal` is refined by the preset's
+   *  backup-scan silence hint). */
+  errorKind: SkipKind | null;
   /** How many bands the SNR gate dropped as too quiet to trust — some checks
    *  were silently skipped for lack of signal, not because the tone measured
    *  clean. `> 0` IS "gated"; no separate bool rides alongside this. Required
@@ -1259,75 +1253,4 @@ export interface DoctorPresetResult {
 export interface DoctorCheckResult {
   presets: DoctorPresetResult[];
   stopped: boolean;
-}
-
-/** One prescription's apply job (`lib::DoctorApplyJob`, camelCase wire).
- * `name` is the identity guard — apply refuses if the loaded slot's name
- * doesn't match. Scene-trim ops are NOT accepted here (the frontend routes
- * them through the existing scene-leveling command). */
-export interface DoctorApplyJob {
-  listIndex: number;
-  name: string;
-  ops: DoctorOp[];
-  topologyId: string | null;
-  calibrationLufs: number | null;
-  /** The diagnosed sound's instrument-profile id (null when "none") — a profile
-   *  with a stored Tier-2 DI capture auditions the A/B on that same capture,
-   *  mirroring `doctor_check`'s stimulus resolution. */
-  profileId: string | null;
-  /** The diagnosed sound's own scene (0-based `scenes[]` wire index) — null
-   *  for Base/footswitch. The A/B captures recall this scene so the player
-   *  auditions the fix in the state that was actually diagnosed. */
-  scene: number | null;
-  /** The diagnosed sound's own block-acting footswitch (0-based `ftsw`
-   *  index) — null for Base/scene. */
-  footswitch: number | null;
-  /** The preset's chain (same data threaded into `DoctorInputArg.nodes`) —
-   *  drives the backend's OFFLINE force-bypass isolation derivation for the
-   *  A/B captures, mirroring `doctor_check`'s isolation exactly. */
-  nodes: GraphNode[];
-  /** The preset's block-acting footswitches, paired with `nodes` for the
-   *  same isolation derivation. */
-  footswitches: FootswitchInfo[];
-  /** The diagnosed scene's saved overlay (`DoctorSoundResult.sceneOverrides`). */
-  sceneOverrides: NodeOverride[];
-  /** The finding this prescription treats (null for the Match-reference card)
-   *  — the A/B re-measures it on both clips. */
-  diag?: DoctorDiagRef | null;
-}
-
-/** Result of a live (unsaved) prescription apply: before/after audition clips
- * as `data:audio/wav;base64,…` URLs, rendered in the same command so the A/B
- * compares the stored state against the applied-but-unsaved edit buffer. */
-/** Both A/B clips' integrated loudness (LUFS) — `doctor_apply`'s `AbLevels`. */
-export interface AbLevels {
-  beforeLufs: number;
-  afterLufs: number;
-}
-
-/** The treated finding re-measured on both A/B clips — `doctor_apply`'s
- *  `FindingCheck`. `before`/`after` are its severity (dB past its limit) when it
- *  fires, `null` when it doesn't. */
-export interface FindingCheck {
-  key: string;
-  before: number | null;
-  after: number | null;
-}
-
-/** The finding a prescription treats (`DoctorApplyJob.diag`). */
-export interface DoctorDiagRef {
-  key: string;
-  level: PlaybackLevel;
-}
-
-export interface DoctorApplyResult {
-  /** The processed stereo pair, as captured. */
-  beforeClip: string;
-  afterClip: string;
-  /** Null when either clip's loudness couldn't be measured. */
-  levels?: AbLevels | null;
-  /** Null without `DoctorApplyJob.diag`, or when a clip couldn't be profiled. */
-  finding?: FindingCheck | null;
-  /** The run-end re-amp warning — see `LevelResult.reamp_warning`. */
-  reampWarning?: string | null;
 }

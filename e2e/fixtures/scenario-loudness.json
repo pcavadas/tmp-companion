@@ -15,7 +15,7 @@
       ]
     },
     "401": {
-      "_comment": "E2E Pedalboard (gtrSeries, ZERO scenes — the copy/import + doctor-apply simple-chain fixture). Ceiling -20: solvable at Crunch/Rhythm (-21/-23, quieter) but CLAMPS at Lead (-19, louder than the ceiling) — the re-level-clamped loop.",
+      "_comment": "E2E Pedalboard (gtrSeries, ZERO scenes — the copy/import simple-chain fixture). Ceiling -20: solvable at Crunch/Rhythm (-21/-23, quieter) but CLAMPS at Lead (-19, louder than the ceiling) — the re-level-clamped loop.",
       "base": -20.0
     },
     "402": {

@@ -1830,8 +1830,10 @@ fn coverage_rows_marked_playwright_covered_are_cited_by_some_spec() {
         cited_by_file.insert(name.to_string(), rows);
     }
     let spec_files_seen = cited_by_file.len();
+    // A vacuity floor, not a count to keep: 9 spec files today (the two Doctor apply
+    // specs left with the Doctor write path).
     assert!(
-        spec_files_seen > 10,
+        spec_files_seen >= 8,
         "expected many *.spec.ts files under e2e/specs ({spec_files_seen} found) — a \
          directory layout change would otherwise make this gate pass vacuously"
     );
@@ -1907,7 +1909,8 @@ fn every_online_spec_is_in_the_default_online_set() {
     // documented at its own exclusion site in `scripts/e2e.sh` (a "run it explicitly
     // with…" note) and in its own spec file's header. Adding an entry here is how a
     // future spec opts OUT of the default online sweep — do so deliberately. Empty:
-    // `doctor-apply.online` rejoined the default set once Doctor persistence required it.
+    // `doctor-apply.online` once rejoined the default set, then left the suite for good
+    // with the Doctor write path (Doctor never writes, owner decision Q10/Q11).
     const ON_DEMAND_ONLINE_SPECS: &[&str] = &[];
 
     let sh = std::fs::read_to_string("../scripts/e2e.sh").expect("read scripts/e2e.sh");

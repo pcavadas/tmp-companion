@@ -42,23 +42,7 @@ impl ReampOffOutcome {
         }
     }
 
-    /// Stamp the warning on every row of a run's result, or append it to the run's error.
-    /// The run-end step of a command, so it hands back the command's `String` error.
-    pub(crate) fn stamp<T, E: Into<LevelError>>(
-        self,
-        result: Result<T, E>,
-        rows: impl FnOnce(&mut T, Option<String>),
-    ) -> Result<T, String> {
-        match result {
-            Ok(mut r) => {
-                rows(&mut r, self.warning());
-                Ok(r)
-            }
-            Err(e) => Err(self.annotate_err(e.into()).to_string()),
-        }
-    }
-
-    /// [`Self::stamp`] for a leveling command with a TYPED error: `rows` gets this outcome
+    /// The run-end step of a leveling command, with a TYPED error: `rows` gets this outcome
     /// (each row records [`Self::still_on`] and the warning), and a failure becomes an
     /// [`AppError::Leveling`] carrying the failure's own [`SkipKind`] — or
     /// [`SkipKind::ConnectionLost`] when the unit was unplugged since `watch` started — the
@@ -371,10 +355,6 @@ mod reamp_off_ladder_tests {
         );
         let restore_failed = LevelError::Cancelled.with_restore(Err("HID gone".into()));
         assert_eq!(out.annotate_err(restore_failed.clone()), restore_failed);
-        assert_eq!(
-            out.stamp(Err::<(), _>(LevelError::Cancelled), |_, _| {}),
-            Err("cancelled".to_string())
-        );
         assert!(out.still_on(), "the typed signal the frontend reads");
     }
 

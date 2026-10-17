@@ -180,9 +180,8 @@ pub fn doctor_onset(stim_padded: &[f32], samples: &[f32], rate: u32) -> DoctorOn
 /// first (0-based `scenes[]` wire index, `None` = base) and captures with a
 /// caller-chosen tail (`tail_ms` below). Shares `capture_full_at`
 /// with the leveling capture path — the leveling window/timings are untouched.
-/// `ref_level`: `Some(0.5)` for the diagnosis run (measurement SNR); `None` for
-/// the apply A/B (capture at the preset's own level — never writes presetLevel,
-/// so a later `doctor_save` can't persist a reference level).
+/// `ref_level`: `Some(0.5)` for the diagnosis run (measurement SNR); `None`
+/// captures at the preset's own level and never writes presetLevel.
 /// `skip_load`: see `capture_full_at` — the Doctor's consecutive-scene chain skips
 /// the redundant per-sound preset reload (same preset, previous sound clean + Ok).
 /// `tail_ms`: the caller picks — `DOCTOR_TAIL_MS` for a chain that may wash, else
@@ -219,9 +218,7 @@ pub fn doctor_capture(
     )?))
 }
 
-/// [`doctor_capture`] without the mixdown: the raw capture, for the apply A/B, which
-/// plays the processed stereo pair back and measures both its loudness and its
-/// profile (`commands/doctor.rs`'s `ab_side`).
+/// [`doctor_capture`] without the mixdown: the raw multi-channel capture.
 #[allow(clippy::too_many_arguments)]
 pub fn doctor_capture_raw(
     slot: ListIndex,
@@ -376,7 +373,7 @@ pub struct ProfiledCapture {
 }
 
 /// Analyse one Doctor capture — THE measurement space, shared by the
-/// production check, its apply A/B and the calibration sweeps that derive the
+/// production check and the calibration sweeps that derive the
 /// target and thresholds, so none of them can drift apart:
 ///
 /// - onset split from the average (`doctor_onset`);
@@ -425,24 +422,19 @@ pub fn analyze_capture(
     })
 }
 
-/// Doctor A/B AFTER-clip seam: capture the CURRENT live edit-buffer state WITHOUT
-/// loading — a load would discard the unsaved `doctor_apply` prescription edit.
-/// Delegates to `capture_full_at` with `skip_load: true` (its non-load branch is
-/// byte-for-byte this: fresh-connect → (when `scene` is `Some`) re-activate that
-/// 0-based `scenes[]` wire index on THIS connection → write `force_bypass`
-/// isolation → optionally set the reference level BEFORE engaging → engage
-/// re-amp once → capture with the Doctor tail → guaranteed re-amp off).
-/// Deterministic stereo mixdown (`Capture::stereo_mix`, not
-/// an argmax `loudest_channel` pick — see `doctor_capture`'s doc for why). The
-/// scene recall + force-bypass writes land on the UNSAVED edit
-/// buffer ON PURPOSE: `doctor_save` never persists this live buffer (it
-/// rebuilds SAVED+ops from scratch, see `commands/doctor.rs::doctor_save`), so
-/// a forced bypass or scene recall made here can never leak into a save —
-/// `doctor_discard`'s reload clears them either way. `ref_level` MUST match
-/// the before-capture's so the A/B is level-fair (`doctor_apply` passes `None`
-/// to both: the preset's own level, never a presetLevel write). `scene`/
-/// `force_bypass`/`tail_ms`: see `doctor_capture` — the AFTER capture must be
-/// taken under the SAME diagnosed context (scene + isolation) as the BEFORE.
+/// Capture the CURRENT live edit-buffer state WITHOUT loading — a load would discard an
+/// unsaved edit the caller wants to hear (the probe's defect injections). Delegates to
+/// `capture_full_at` with `skip_load: true` (its non-load branch is byte-for-byte this:
+/// fresh-connect → (when `scene` is `Some`) re-activate that 0-based `scenes[]` wire
+/// index on THIS connection → write `force_bypass` isolation → optionally set the
+/// reference level BEFORE engaging → engage re-amp once → capture with the Doctor tail
+/// → guaranteed re-amp off). Deterministic stereo mixdown (`Capture::stereo_mix`, not
+/// an argmax `loudest_channel` pick — see `doctor_capture`'s doc for why). The scene
+/// recall + force-bypass writes land on the UNSAVED edit buffer, which nothing here
+/// saves; the caller's restore reloads the stored preset. `ref_level` MUST match the
+/// before-capture's so a before/after pair is level-fair.
+/// `scene`/`force_bypass`/`tail_ms`: see `doctor_capture` — the after capture must be
+/// taken under the SAME context (scene + isolation) as the before.
 pub fn doctor_capture_current(
     stimulus: &[f32],
     scene: Option<u32>,
@@ -459,31 +451,6 @@ pub fn doctor_capture_current(
         tail_ms,
         true,
     )?))
-}
-
-/// Doctor A/B AFTER-clip seam on an ALREADY-OPEN session — no load, no scene
-/// recall. Used ONLY by `doctor_apply`'s step (c), which must capture on the
-/// SAME session `ops_session` just applied the prescription ops to: a fresh
-/// reconnect (what `doctor_capture_current` does) would recall the scene again,
-/// reverting those unsaved ops before this capture ever ran and silently
-/// rendering an identical AFTER clip. `fs_params` re-plays the measured
-/// footswitch's `param`-function `valueA` writes on THIS session (the BEFORE
-/// capture wrote them on its own throwaway connection, so without the re-play
-/// the A/B would audition a different param state than the diagnosis) — written
-/// before the isolation bypasses, `measure_fs_state`'s order. Returns the raw capture
-/// (see [`doctor_capture_raw`]).
-pub fn doctor_capture_on_session_raw(
-    s: &mut Session,
-    force_bypass: &[(String, String, bool)],
-    fs_params: &[(String, String, String, f32)],
-    stimulus: &[f32],
-    ref_level: Option<f32>,
-    tail_ms: u64,
-) -> Result<audio::Capture, LevelError> {
-    for (g, n, p, v) in fs_params {
-        s.change_parameter(g, n, p, *v)?;
-    }
-    capture_on_session(s, force_bypass, stimulus, ref_level, tail_ms)
 }
 
 /// The Doctor onset seam — see `doctor_onset`'s doc and the fixture's header

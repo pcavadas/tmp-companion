@@ -51,6 +51,9 @@ export const ICONS = [
   "alert",
   "usb",
   "stop",
+  "headphones",
+  "speaker",
+  "pulse",
 ] as const;
 
 export type IconName = (typeof ICONS)[number];

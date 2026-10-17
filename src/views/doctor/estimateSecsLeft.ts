@@ -1,7 +1,7 @@
-// src/views/doctor/estimateSecsLeft.ts — pure helper for DoctorRun's live
-// "about Ns left" estimate. Split out of DoctorRun.tsx (a component file must
-// export only the component, or Fast Refresh — react-refresh/only-export-components —
-// stops working for it).
+// src/views/doctor/estimateSecsLeft.ts — pure helpers for the Check page's live
+// "About 30 seconds left": the estimate and its words. Split out of DoctorRun.tsx (a
+// component file must export only the component, or Fast Refresh —
+// react-refresh/only-export-components — stops working for it).
 
 /** Live remaining-time estimate: remaining sounds × the measured per-sound
  *  rate, counting down through the current sound but never dipping below the
@@ -34,4 +34,15 @@ export function avgSoundMs(priorMs: number, doneAts: number[]): number {
     }
   }
   return sum / n;
+}
+
+/** The time-left caption: "About 30 seconds left", and from a minute up in whole minutes,
+ *  rounded up ("About 2 minutes left"). */
+export function timeLeftText(secs: number): string {
+  if (secs < 60) {
+    const s = Math.max(1, Math.round(secs));
+    return `About ${String(s)} ${s === 1 ? "second" : "seconds"} left`;
+  }
+  const m = Math.ceil(secs / 60);
+  return `About ${String(m)} ${m === 1 ? "minute" : "minutes"} left`;
 }

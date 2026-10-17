@@ -23,8 +23,6 @@ e2e/fixtures/scenario-loudness.json	offline-oracle
 e2e/fixtures/backup-fixture.bin	offline-oracle
 e2e/fixtures/COVERAGE.md	offline-oracle
 e2e/fixtures/showcase/*	offline-oracle
-# Read-only, so naming it in an online run is safe; it proves the refusal offline.
-e2e/specs/doctor-apply-refusal.spec.ts	offline-oracle
 src-tauri/src/session/tests.rs	offline-oracle
 src-tauri/src/leveller/tests.rs	offline-oracle
 src-tauri/src/session/wire_golden*	offline-oracle
@@ -125,27 +123,24 @@ src-tauri/src/e2e_seed.rs	lane
 # ── probe-entry: online runs only its --seed-scenario arm ──
 src-tauri/src/bin/probe.rs	probe-entry
 
-# ── doctor-persist: the Doctor apply/save/discard commands, and the restore both use ──
-# Doctor and leveling share captures, so both level specs run, plus the one spec that reads
-# a Doctor save and discard back from the device.
-src-tauri/src/commands/doctor.rs	doctor-persist
-src-tauri/src/leveller/mod.rs	doctor-persist
-src-tauri/src/leveller/load.rs	doctor-persist
-src-tauri/src/leveller/measure.rs	doctor-persist
-src-tauri/src/leveller/doctor_capture.rs	doctor-persist
-src-tauri/src/leveller/reamp_off.rs	doctor-persist
-src-tauri/src/leveller/secant.rs	doctor-persist
-src-tauri/src/leveller/knob.rs	doctor-persist
-src-tauri/src/leveller/base.rs	doctor-persist
-src-tauri/src/leveller/footswitch.rs	doctor-persist
-src-tauri/src/leveller/scene.rs	doctor-persist
-src-tauri/src/leveller/trade.rs	doctor-persist
-src-tauri/src/leveller/persist.rs	doctor-persist
-src-tauri/src/leveller/rebalance.rs	doctor-persist
-src-tauri/src/leveller/block.rs	doctor-persist
-e2e/specs/doctor-apply.online.spec.ts	spec-doctor-apply-online
-
 # ── level: Doctor and leveling share captures, so both specs run ──
+# The Doctor check, and the leveller (its captures, loads, restores and saves). Doctor
+# writes nothing, so no spec reads a Doctor save back.
+src-tauri/src/commands/doctor.rs	level
+src-tauri/src/leveller/mod.rs	level
+src-tauri/src/leveller/load.rs	level
+src-tauri/src/leveller/measure.rs	level
+src-tauri/src/leveller/doctor_capture.rs	level
+src-tauri/src/leveller/reamp_off.rs	level
+src-tauri/src/leveller/secant.rs	level
+src-tauri/src/leveller/knob.rs	level
+src-tauri/src/leveller/base.rs	level
+src-tauri/src/leveller/footswitch.rs	level
+src-tauri/src/leveller/scene.rs	level
+src-tauri/src/leveller/trade.rs	level
+src-tauri/src/leveller/persist.rs	level
+src-tauri/src/leveller/rebalance.rs	level
+src-tauri/src/leveller/block.rs	level
 src-tauri/src/doctor.rs	level
 src-tauri/src/headroom_trade.rs	level
 src-tauri/src/lufs.rs	level
@@ -184,7 +179,6 @@ e2e/specs/songs.spec.ts	songs
 # ── unexercised: device-facing, but no online spec reaches it ──
 src-tauri/src/commands/bulk_replace.rs	unexercised
 src-tauri/src/commands/library.rs	unexercised
-src-tauri/src/commands/media.rs	unexercised
 src-tauri/src/watcher.rs	unexercised
 src-tauri/src/watcher/*	unexercised
 src-tauri/src/bootstrap.rs	unexercised

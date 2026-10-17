@@ -8,19 +8,6 @@ use super::*;
 pub(crate) const TEMPLATE_SAVE_REFUSED: &str =
     "The unit replaced this preset with an empty one (presetError 6). Nothing was saved.";
 
-/// Bumped on every stored-preset mutation (`save_current_preset`, `clear_user_preset`,
-/// `import_preset`, `move_user_preset` — the choke points every such mutation routes
-/// through). Caches of stored-preset state (the Doctor's BEFORE clip) remember the value
-/// they were filled at and treat any other value as a miss, so the session layer never
-/// calls up into the code that owns them.
-static STORED_PRESET_GENERATION: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// The current [`STORED_PRESET_GENERATION`].
-pub(crate) fn stored_preset_generation() -> u64 {
-    STORED_PRESET_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
-}
-
 /// How many fresh connections [`Session::connect_confirmed`] tries before it refuses.
 pub(crate) const LOAD_CONFIRM_ATTEMPTS: u32 = 3;
 
@@ -46,10 +33,6 @@ pub(crate) fn confirm_on_fresh_connection(
         "{refused} (on {} fresh connections)",
         attempts.max(1)
     ))
-}
-
-fn bump_stored_preset_generation() {
-    STORED_PRESET_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 impl Session {
@@ -356,11 +339,6 @@ impl Session {
             &proto::save_current_preset(list_index.into()),
             PRESET_WRITE_ECHO_MS,
         )?;
-        // Stored-preset mutation choke point: EVERY save routes through here, so this
-        // one bump keeps the Doctor's cached BEFORE clip correct-by-construction
-        // (per-command clears were forgotten on ~7 mutating paths). Over-invalidating is
-        // harmless (the cache is a pure optimization).
-        bump_stored_preset_generation();
         Ok(())
     }
 
@@ -371,8 +349,6 @@ impl Session {
             &proto::clear_user_preset(list_index.into()),
             PRESET_WRITE_ECHO_MS,
         )?;
-        // Stored-preset mutation — see save_current_preset's choke-point note.
-        bump_stored_preset_generation();
         Ok(())
     }
 
@@ -496,8 +472,6 @@ impl Session {
             self.keepalive_pump()?;
             echo = self.import_echo();
         }
-        // Stored-preset mutation — see save_current_preset's choke-point note.
-        bump_stored_preset_generation();
         Ok(echo)
     }
 
@@ -533,8 +507,6 @@ impl Session {
             &proto::move_user_preset(old.into(), new.into()),
             PRESET_WRITE_ECHO_MS,
         )?;
-        // Stored-preset mutation — see save_current_preset's choke-point note.
-        bump_stored_preset_generation();
         Ok(())
     }
 

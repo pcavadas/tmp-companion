@@ -104,8 +104,7 @@ export async function listPresets(page: Page): Promise<Preset[]> {
  *  presence-only check that a structurally mutilated preset trivially passes, so
  *  `e2e_seed_scenario` (and its re-verify) was never even invoked online
  *  (2026-08-01 incident, third and final link — see the registry in
- *  `notes/user-journeys.md`; `doctor-apply.online.spec.ts`'s own comment records the
- *  first occurrence of this class). */
+ *  `notes/user-journeys.md`, which also records the first occurrence of this class). */
 export async function ensureScenario(page: Page): Promise<void> {
   if (!(await isOnline(page))) {
     const list = await listPresets(page);
@@ -280,11 +279,32 @@ export async function selectPresetsForCheck(
   await filter.fill("");
 }
 
-/** Click "Check N sounds" then "Run check on N sounds" — the two-step Doctor run trigger,
- *  always immediately after `selectPresetsForCheck`. */
+/** Click "Check N sounds" — always immediately after `selectPresetsForCheck`. When Doctor
+ *  asks which instrument plays the chosen presets (one has none saved yet), choose None
+ *  for all of them (the instrument a check uses when none is chosen — the same stimulus
+ *  as before Doctor asked) and click "Check N sounds" again. Doctor remembers the choice
+ *  for each preset, so a later check of the same presets skips the question. */
 export async function runDoctorCheck(page: Page): Promise<void> {
-  await page.getByRole("button", { name: /Check \d+ sounds/ }).click();
-  await page.getByRole("button", { name: /Run check on \d+ sounds/ }).click();
+  const check = page.getByRole("button", { name: /^Check \d+ sounds?$/ });
+  await check.click();
+  // Every page after the list carries Doctor's Steps; the Instrument page is the one
+  // that asks.
+  const ask = page.getByRole("heading", {
+    name: "Which instrument plays these?",
+  });
+  await expect(ask.or(page.getByRole("list", { name: "Steps" }))).toBeVisible();
+  if (!(await ask.isVisible())) return;
+  const forAll = page.locator('[data-select="inst-all"]');
+  if (await forAll.isVisible()) {
+    await forAll.click();
+    await page.locator('[data-select-option="inst-all:none"]').click();
+  } else {
+    const one = page.locator('[data-select^="inst:"]').first();
+    const tid = await one.getAttribute("data-select");
+    await one.click();
+    await page.locator(`[data-select-option="${tid ?? ""}:none"]`).click();
+  }
+  await check.click();
 }
 
 /** Best-effort invoke: swallow errors (offline lacks some commands; online a teardown

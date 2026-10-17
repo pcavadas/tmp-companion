@@ -1,14 +1,12 @@
-// Pins the "Match reference" EQ-move math: pure delta → EQ-10 move mapping,
+// Pins the "To sound like …" EQ-move math: pure delta → EQ-10 move mapping,
 // no device I/O. Derivation notes sit inline per case (see matchModel.ts for
 // the verified band-center table + the EQ10_BANDS mirror of doctor.rs).
 
 import { describe, it, expect } from "vitest";
 
 import {
-  eq10ReuseOps,
   eqMovesFor,
   existingEq10,
-  lastGuitarGroup,
   matchDeltas,
   matchResidualLarge,
 } from "../views/doctor/matchModel";
@@ -185,76 +183,5 @@ describe("existingEq10", () => {
     const last = node("G2", "eq2", EQ10);
     const nodes = [node("G1", "eq1", EQ10), last];
     expect(existingEq10(nodes)).toBe(last);
-  });
-});
-
-describe("eq10ReuseOps", () => {
-  it("clamps current + move to +/-12 dB", () => {
-    const eq = node("G1", "eq1", EQ10, { params: { gain62hz: 10 } });
-    const ops = eq10ReuseOps(eq, [{ controlId: "gain62hz", gainDb: 6 }]);
-    expect(ops).toEqual([
-      {
-        kind: "param",
-        groupId: "G1",
-        nodeId: "eq1",
-        param: "gain62hz",
-        value: 12,
-      },
-    ]);
-  });
-
-  it("clamps on the negative side too", () => {
-    const eq = node("G1", "eq1", EQ10, { params: { gain62hz: -10 } });
-    const ops = eq10ReuseOps(eq, [{ controlId: "gain62hz", gainDb: -6 }]);
-    expect(ops[0]).toMatchObject({ value: -12 });
-  });
-
-  it("treats a missing current param as 0", () => {
-    const eq = node("G1", "eq1", EQ10, { params: {} });
-    const ops = eq10ReuseOps(eq, [{ controlId: "gain250hz", gainDb: 3 }]);
-    expect(ops[0]).toMatchObject({ param: "gain250hz", value: 3 });
-  });
-
-  it("carries the EQ node's own group_id/node_id", () => {
-    const eq = node("G3", "eqNode9", EQ10, { params: { gain1khz: 0 } });
-    const ops = eq10ReuseOps(eq, [{ controlId: "gain1khz", gainDb: 2 }]);
-    expect(ops[0]).toMatchObject({ groupId: "G3", nodeId: "eqNode9" });
-  });
-});
-
-describe("lastGuitarGroup", () => {
-  it("is the guitar group when it's the chain tail", () => {
-    const nodes = [
-      node("G1", "n1", "ACD_TweedDeluxe"),
-      node("G1", "n2", "ACD_CabSimTMS"),
-    ];
-    expect(lastGuitarGroup(nodes)).toBe("G1");
-  });
-
-  it("is still the guitar group when a mic group trails it", () => {
-    const nodes = [
-      node("G1", "n1", "ACD_TweedDeluxe"),
-      node("G1", "n2", "ACD_CabSimTMS"),
-      node("M1", "n3", "ACD_Mic1"),
-    ];
-    expect(lastGuitarGroup(nodes)).toBe("G1");
-  });
-
-  it("picks the LAST guitar group when there are several", () => {
-    const nodes = [
-      node("G1", "n1", "ACD_TweedDeluxe"),
-      node("G2", "n2", "ACD_Overdrive"),
-      node("G2", "n3", "ACD_CabSimTMS"),
-    ];
-    expect(lastGuitarGroup(nodes)).toBe("G2");
-  });
-
-  it("is null when the chain has no guitar nodes", () => {
-    const nodes = [node("M1", "n1", "ACD_Mic1")];
-    expect(lastGuitarGroup(nodes)).toBeNull();
-  });
-
-  it("is null for an empty chain", () => {
-    expect(lastGuitarGroup([])).toBeNull();
   });
 });

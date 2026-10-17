@@ -2275,4 +2275,4 @@ pub(crate) fn filter_amp_candidates(blocks: Vec<session::LevelBlock>) -> Vec<Lev
 
 #[cfg(test)]
 #[path = "scene_jobs_tests.rs"]
-pub(crate) mod scene_jobs_tests;
+mod scene_jobs_tests;

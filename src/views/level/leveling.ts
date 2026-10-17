@@ -26,7 +26,7 @@ import type {
   SilenceHint,
   SkipKind,
 } from "../../lib/types";
-import type { PickOption } from "../overlays/Pick";
+import type { SelectOption } from "../../ui/selectValue";
 import { blockArtTile, shortFallback } from "../../models/blockArt";
 import { stripNameFor } from "../../models/catalog";
 
@@ -205,22 +205,15 @@ export const NO_INSTRUMENT = "none";
  *  scenes — the voice guide's word, on the list, Set up, the run and Doctor alike. */
 export const MAIN_SOUND = "Main sound";
 
-/** The instrument `Pick` options shared by the Level and Doctor setup steps:
- *  "None" (the no-instrument path — level/diagnose against the default reference)
- *  followed by each saved profile, calibrated ones flagged with their reference dB. */
+/** The instrument choices shared by Level's Set up and Doctor's Instrument page: "None"
+ *  (the no-instrument path — level or diagnose against the default reference) followed by
+ *  each saved instrument. No loudness figures: the Voice guide keeps them in Settings. */
 export function instrumentOptions(
   profiles: Profile[] | undefined,
-): PickOption[] {
+): SelectOption[] {
   return [
-    { id: NO_INSTRUMENT, label: "None" },
-    ...(profiles ?? []).map((p) => {
-      const cal = p.calibration_lufs;
-      return {
-        id: p.id,
-        label: p.name,
-        sub: cal != null ? `${cal.toFixed(1)} dB` : undefined,
-      };
-    }),
+    { value: NO_INSTRUMENT, label: "None" },
+    ...(profiles ?? []).map((p) => ({ value: p.id, label: p.name })),
   ];
 }
 
@@ -329,8 +322,9 @@ export interface SetupOption {
   sceneSlot: number | null;
   /** Display name: "Main sound" / the scene name / the footswitch's name. */
   sceneName: string;
-  /** Tag chip for the Doctor rows: "BASE" | `FS${n}` | null (em-dash for an untagged
-   *  named scene). Level shows none (a footswitch says "footswitch 3"). */
+  /** The sound's tag, sent with a Doctor check (the backend's scene-loudness rows carry
+   *  it): "BASE" | `FS${n}` | null (em-dash for an untagged named scene). No screen shows
+   *  it (a footswitch says "footswitch 3"). */
   tag: string | null;
   /** False ⇒ a preset with no scenes and no footswitches. */
   hasScenes: boolean;
@@ -695,7 +689,7 @@ export interface RunItem {
    *  cause when the RunItem is built. */
   verifyByEar?: "envelope" | "wet_floor" | "rebalance";
   /** The preset's backup-scan silence hint, stamped at item build — refines the
-   *  offbranch row status (see `offbranchStatus`). */
+   *  offbranch row's message on the Summary (`summaryModel.ts`). */
   silenceHint?: SilenceHint;
   /** Base rows only: this row's base-pair BOOST disclosure, carried verbatim from the
    *  result's `base_boost` — see `BaseBoostSummary`'s own doc. `null`/undefined on every
@@ -732,15 +726,6 @@ export function groupItemsBySlot(items: RunItem[]): PresetGroup<RunItem>[] {
     g.items.push(it);
   });
   return [...by.values()].sort((a, b) => a.slot - b.slot);
-}
-
-/** The offbranch ("silent capture") status, refined by the preset's JSON-visible cause
- *  when the backup scan found one — Doctor's no-signal line. (Level's run and Summary
- *  word the same causes from `silenceHint` directly.) */
-export function offbranchStatus(hint: SilenceHint | undefined): string {
-  if (hint === "amp_zero") return "amp output at zero";
-  if (hint === "exp_mute") return "exp pedal may mute";
-  return "not on USB 1/2";
 }
 
 /** Turn a checked setup row into a run item with its resolved instrument + target. */

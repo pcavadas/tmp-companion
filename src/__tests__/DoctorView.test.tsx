@@ -1,12 +1,14 @@
-// src/__tests__/DoctorView.test.tsx — the Doctor tab stage machine (select → setup
-// → run → results), device mocked.
+// src/__tests__/DoctorView.test.tsx — the Doctor tab stage machine (select → instrument
+// → check → results), device mocked.
 //
 //   • Disconnected shows the shared "Plug in your Tone Master Pro" page.
 //   • Connected renders the preset list from the mocked list/store/backup rows.
-//   • Ticking a preset offers "Check 1 sound…" (singular); the run fires ONE
-//     `doctor_check` carrying the right key/listIndex/nodes, then auto-advances to
-//     the results placeholder.
-//   • The list never recalls a preset and the whole flow never saves.
+//   • Ticking a preset offers "Check 1 sound" (singular). A preset with no saved
+//     instrument goes through "Which instrument plays these?" (one per preset; the
+//     choice is remembered with `set_preset_instrument`, never on the unit); one whose
+//     instrument is saved (an explicit None counts) skips straight to the check. The run
+//     fires ONE `doctor_check` with the right key/listIndex/nodes, then lands on Results.
+//   • The list never recalls a preset and nothing in the flow writes to the unit.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen } from "@testing-library/react";
@@ -16,7 +18,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { DoctorView } from "../views/doctor";
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type { CommandArgs } from "../lib/commands";
-import type { DoctorCheckResult, FootswitchInfo } from "../lib/types";
+import type { DoctorCheckResult, FootswitchInfo, Store } from "../lib/types";
 import {
   forceTauri,
   makeBackupPresetRow,
@@ -25,6 +27,7 @@ import {
   mockCommands,
 } from "./commandMocks";
 import { renderWithTheme } from "./testKit";
+import { choose } from "./setupPageTestUtils";
 
 // In-app: the live bridges and the library scan subscribe.
 forceTauri();
@@ -77,6 +80,7 @@ function mockOnePreset(
     hangCheck?: boolean;
     footswitch?: boolean;
     bareFootswitch?: boolean;
+    store?: Partial<Store>;
   } = {},
 ) {
   lastDoctorArgs = null;
@@ -86,6 +90,7 @@ function mockOnePreset(
       makeStore({
         targets: [{ name: "Rhythm", lufs: -26 }],
         playback_level: "rehearsal",
+        ...opts.store,
       }),
     read_library_via_backup: () =>
       makeBackupRead({
@@ -126,7 +131,6 @@ function mockOnePreset(
               label: it.key,
               tag: it.tag,
               diags: [],
-              sceneOverrides: [],
               status: "measured" as const,
               integratedLufs: -20,
               tailRatioDb: 0,
@@ -141,6 +145,7 @@ function mockOnePreset(
               ],
               cutThrough: null,
               error: null,
+              errorKind: null,
               skippedBandCount: 0,
             })),
             sceneConsistency: null,
@@ -173,7 +178,37 @@ describe("DoctorView — connection gating", () => {
   });
 });
 
-describe("DoctorView — select → setup → run → results", () => {
+/** Tick Studio Clean and click "Check N sounds". */
+async function chooseAndCheck(
+  user: ReturnType<typeof userEvent.setup>,
+  sounds: number,
+) {
+  await screen.findByText("Studio Clean");
+  await user.click(
+    screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
+  );
+  await user.click(
+    await screen.findByRole("button", {
+      name: `Check ${String(sounds)} ${sounds === 1 ? "sound" : "sounds"}`,
+    }),
+  );
+}
+
+/** On the Instrument page: choose None for Studio Clean and check. */
+async function chooseNoneAndRun(
+  user: ReturnType<typeof userEvent.setup>,
+  sounds: number,
+) {
+  await screen.findByText("Which instrument plays these?");
+  await choose(user, "inst:0", "none");
+  await user.click(
+    screen.getByRole("button", {
+      name: `Check ${String(sounds)} ${sounds === 1 ? "sound" : "sounds"}`,
+    }),
+  );
+}
+
+describe("DoctorView — select → instrument → check → results", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
     resetLibraryScan();
@@ -181,39 +216,36 @@ describe("DoctorView — select → setup → run → results", () => {
     mockOnePreset();
   });
 
-  it("walks the whole flow, fires ONE doctor_check, and auto-advances to results", async () => {
+  it("walks the whole flow, fires ONE doctor_check, and lands on Results", async () => {
     renderView(true);
     const user = userEvent.setup();
 
-    // The list renders from the mocked reads.
-    await screen.findByText("Studio Clean");
+    await chooseAndCheck(user, 1);
 
-    // Tick the preset → a single sound (its main sound) → "Check 1 sound…" (singular).
-    await user.click(
-      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
-    );
-    await user.click(
-      await screen.findByRole("button", { name: /check 1 sound…/i }),
-    );
-
-    // Set up shows the instrument Pick with its default (None, no profiles).
+    // No instrument saved for the preset: the Instrument page asks, with "Choose" in
+    // the attention look, and Check waits for it.
     expect(
-      await screen.findByText("What are you playing?"),
+      await screen.findByText("Which instrument plays these?"),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("None").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        "Studio Clean doesn't have one yet. Doctor needs it to judge the tone.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Check 1 sound" }),
+    ).toBeDisabled();
+    await chooseNoneAndRun(user, 1);
 
-    // Run the check → the run fires and auto-advances to the results page (the one
-    // all-clear sound resolves to the summary + a "Check other sounds" exit).
-    // (The mocked check resolves at once, so the transient run title isn't asserted.)
-    await user.click(
-      screen.getByRole("button", { name: /run check on 1 sound/i }),
-    );
     expect(
       await screen.findByRole(
         "button",
-        { name: /check other sounds/i },
+        { name: "Check other sounds" },
         { timeout: 3000 },
       ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Nothing to change in this sound" }),
     ).toBeInTheDocument();
 
     // ONE doctor_check, carrying the right key / listIndex / nodes.
@@ -223,15 +255,79 @@ describe("DoctorView — select → setup → run → results", () => {
     expect(lastDoctorArgs?.items[0].listIndex).toBe(0);
     expect(lastDoctorArgs?.items[0].scene).toBeNull();
     expect(lastDoctorArgs?.items[0].nodes).toEqual([]);
+    expect(lastDoctorArgs?.items[0].profileId).toBeNull();
     // No live-preset event fired in this test → no slot to restore.
     expect(lastDoctorArgs?.restoreListIndex).toBeNull();
 
-    // The list never recalled a preset, and the whole flow never saved.
+    // The list never recalled a preset, and nothing wrote to the unit.
     expect(fired("load_preset_on_amp")).toBe(false);
     expect(fired("load_scene_on_amp")).toBe(false);
-    expect(fired("doctor_save")).toBe(false);
-    expect(fired("doctor_apply")).toBe(false);
     expect(fired("level_preset")).toBe(false);
+    expect(fired("copy_apply")).toBe(false);
+  });
+
+  it("remembers the chosen instrument for the preset in the app's own store (owner answer 6)", async () => {
+    renderView(true);
+    const user = userEvent.setup();
+    await chooseAndCheck(user, 1);
+    await chooseNoneAndRun(user, 1);
+    await screen.findByRole(
+      "button",
+      { name: "Check other sounds" },
+      { timeout: 3000 },
+    );
+    const calls = vi
+      .mocked(invoke)
+      .mock.calls.filter((c) => c[0] === "set_preset_instrument");
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toEqual({ slot: 0, profileId: "none" });
+  });
+
+  it("skips the Instrument page when the preset's instrument is saved — an explicit None counts", async () => {
+    mockOnePreset({ store: { profile_by_slot: { 0: "none" } } });
+    renderView(true);
+    const user = userEvent.setup();
+    await chooseAndCheck(user, 1);
+
+    expect(
+      await screen.findByRole(
+        "button",
+        { name: "Check other sounds" },
+        { timeout: 3000 },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Which instrument plays these?")).toBeNull();
+    // The steps say the Instrument page was skipped.
+    const steps = screen.getByRole("list", { name: "Steps" });
+    expect(steps).toHaveTextContent("Check›Results");
+    expect(steps).not.toHaveTextContent("Instrument");
+    expect(callsFor("doctor_check")).toBe(1);
+    expect(fired("set_preset_instrument")).toBe(false);
+  });
+
+  it("asks again when the saved instrument is no longer offered", async () => {
+    mockOnePreset({ store: { profile_by_slot: { 0: "gone" } } });
+    renderView(true);
+    const user = userEvent.setup();
+    await chooseAndCheck(user, 1);
+    expect(
+      await screen.findByText("Which instrument plays these?"),
+    ).toBeInTheDocument();
+    expect(fired("doctor_check")).toBe(false);
+  });
+
+  it("Back from the Instrument page keeps the ticks", async () => {
+    renderView(true);
+    const user = userEvent.setup();
+    await chooseAndCheck(user, 1);
+    await screen.findByText("Which instrument plays these?");
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(
+      await screen.findByRole("button", { name: "Check 1 sound" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
+    ).toBeChecked();
   });
 
   it("includes a block-acting footswitch sound (footswitch set, scene null, FS tag)", async () => {
@@ -239,23 +335,13 @@ describe("DoctorView — select → setup → run → results", () => {
     renderView(true);
     const user = userEvent.setup();
 
-    await screen.findByText("Studio Clean");
-
-    // Whole-row select includes Base + the footswitch child key → 2 sounds.
-    await user.click(
-      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
-    );
-    await user.click(
-      await screen.findByRole("button", { name: /check 2 sounds…/i }),
-    );
-    await screen.findByText("What are you playing?");
-    await user.click(
-      screen.getByRole("button", { name: /run check on 2 sounds/i }),
-    );
+    // Whole-row select includes the main sound + the footswitch child key → 2 sounds.
+    await chooseAndCheck(user, 2);
+    await chooseNoneAndRun(user, 2);
     expect(
       await screen.findByRole(
         "button",
-        { name: /check other sounds/i },
+        { name: "Check other sounds" },
         { timeout: 3000 },
       ),
     ).toBeInTheDocument();
@@ -280,23 +366,14 @@ describe("DoctorView — select → setup → run → results", () => {
     renderView(true);
     const user = userEvent.setup();
 
-    await screen.findByText("Studio Clean");
-    // Whole-row select: Base + the one SELECTABLE footswitch child (Solo) → 2 sounds.
-    // The bare Tuner switch has no level candidate, so it's not offered as its own
-    // row — it should still ride along on every sound's `footswitches` roster.
-    await user.click(
-      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
-    );
-    await user.click(
-      await screen.findByRole("button", { name: /check 2 sounds…/i }),
-    );
-    await screen.findByText("What are you playing?");
-    await user.click(
-      screen.getByRole("button", { name: /run check on 2 sounds/i }),
-    );
+    // Whole-row select: the main sound + the one SELECTABLE footswitch child (Solo) → 2
+    // sounds. The bare Tuner switch has no level candidate, so it's not offered as its
+    // own row — it should still ride along on every sound's `footswitches` roster.
+    await chooseAndCheck(user, 2);
+    await chooseNoneAndRun(user, 2);
     await screen.findByRole(
       "button",
-      { name: /check other sounds/i },
+      { name: "Check other sounds" },
       { timeout: 3000 },
     );
 
@@ -314,21 +391,35 @@ describe("DoctorView — select → setup → run → results", () => {
     const { unmount } = renderView(true);
     const user = userEvent.setup();
 
-    await screen.findByText("Studio Clean");
-    await user.click(
-      screen.getByRole("checkbox", { name: "Choose Studio Clean" }),
-    );
-    await user.click(
-      await screen.findByRole("button", { name: /check 1 sound…/i }),
-    );
-    await screen.findByText("What are you playing?");
-    await user.click(
-      screen.getByRole("button", { name: /run check on 1 sound/i }),
-    );
+    await chooseAndCheck(user, 1);
+    await chooseNoneAndRun(user, 1);
+    expect(
+      await screen.findByRole("heading", { name: "Checking 1 sound" }),
+    ).toBeInTheDocument();
 
     // The check hangs — a tab switch (unmount) must cancel the orphaned run.
     expect(fired("cancel_doctor_check")).toBe(false);
     unmount();
     expect(fired("cancel_doctor_check")).toBe(true);
+  });
+
+  it("an all-clear check offers only Check other sounds, back to the list", async () => {
+    renderView(true);
+    const user = userEvent.setup();
+    await chooseAndCheck(user, 1);
+    await chooseNoneAndRun(user, 1);
+    await screen.findByRole(
+      "button",
+      { name: "Check other sounds" },
+      { timeout: 3000 },
+    );
+    // All clear: the footer's one action is "Check other sounds" — back to the list.
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+    await user.click(
+      screen.getByRole("button", { name: "Check other sounds" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Check 1 sound" }),
+    ).toBeInTheDocument();
   });
 });

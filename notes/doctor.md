@@ -2,14 +2,31 @@
 
 Feature-level doc; thresholds + calibration evidence live in
 `notes/doctor-calibration.md`. The Doctor diagnoses selected sounds' tonal
-problems from re-amp captures and offers one-click prescriptions.
+problems from re-amp captures and describes each fix as a step the player makes
+on the unit. It never writes to the unit (the owner's decision, Q10/Q11): no
+apply, no save, no before/after.
 
 ## Flow
 
-`Select → Setup → Run → Results` (`DoctorView` + `useDoctorFlow`; select is the
-default stage). The RUN is READ-ONLY: `doctor_check` never saves, forces re-amp
-OFF afterwards, and restores the active preset. Writes happen only from Results
-via an explicit prescription apply.
+`Select → Instrument → Check → Results` (`DoctorView` + `useDoctorFlow`; each a
+look B page under the toolbar, select is the default stage). Instrument is one
+per PRESET, remembered in the app's own store on this computer
+(`set_preset_instrument` → `profile_by_slot`, never the unit); the page is
+SKIPPED when every chosen preset already has one saved and still offered (an
+explicit "None" counts), and the Steps then read "Check › Results". The CHECK is
+READ-ONLY: `doctor_check` never saves, forces re-amp OFF afterwards, and restores
+the active preset. Stop asks first ("Stop checking?"); after a Stop the Results
+open by themselves. Results are one flat list worst first (`resultsModel.ts`:
+the tone a row shows — danger for a confident high finding, caution for a medium
+or borderline one — then slot, then order in the preset; a preset's "Scenes" and
+"Footswitches" rows sort in by their own tone; then sounds that couldn't be
+checked, then sounds never reached, then the clean ones folded into "N more sound
+good"). The worst row is open on arrival; on a wide window the opened sound sits
+in a panel beside the list. A failed sound is worded by its typed
+`DoctorSoundResult.errorKind` (a `SkipKind`; `no_signal` refined by the preset's
+backup-scan silence hint), never by its `error` text, which goes to the log. A
+silent capture (integrated loudness −inf: a footswitch that routes to OUT2, an amp
+at zero) is that `no_signal` kind (`audible_or_no_signal`), not an analysis error.
 
 ## Engine split
 
@@ -18,8 +35,9 @@ via an explicit prescription apply.
   (`DoctorOp`s) + the scene-loudness consistency check + the cut-through
   estimate.
 - Device work — `leveller::doctor_capture` (capture) + `commands/doctor.rs`
-  (`doctor_check` / `doctor_apply` / `doctor_save` / `doctor_discard` /
-  `doctor_cancel`).
+  (`doctor_check` / `cancel_doctor_check`). Its `ops_session` /
+  `apply_doctor_ops` (apply a fix's `DoctorOp`s live, never saved) serve only
+  `probe --doctor-inject`; the app has no apply path.
 
 ## The metric (deviation vs authored target + consensus)
 
@@ -186,11 +204,11 @@ only as the empty-graph fallback). A **scene sound gets NO force-bypass write
 at all** — `derived_force_bypass` is never called for one — because the scene
 recall itself asserts whatever overlay/bypass state the scene SAVED
 (as-played: a scene's diagnosis must hear what the player hears, not a
-synthetic all-off baseline). One `resolve_sound_isolation` policy is shared
-by `doctor_check` AND `doctor_apply`, so the A/B can never observe a
-different bypass state than the diagnosis.
+synthetic all-off baseline). One `resolve_sound_isolation` policy decides every
+capture of a sound, so none can observe a different bypass state than the
+diagnosis.
 
-**One graph per sound.** The tail policy (diagnosis AND A/B captures), the
+**One graph per sound.** The tail policy, the
 diagnosis and the prescriptions' current values all read the graph the sound
 was CAPTURED in (`SoundIsolation::graph`), never the saved base graph:
 `doctor::effective_nodes` applies the sound's isolation writes
@@ -205,7 +223,7 @@ a time-based block (the wash rule needs the decay), 0.3 s dry
 (`doctor::doctor_tail_ms`). HW-A/B'd against the original 6 s + 2.5 s oracle
 (`probe --doctor-window-ab`): 0 verdict flips. Capture runs ~4.7 s/sound
 (pad + tail included). Every capture is analysed through ONE seam,
-`leveller::analyze_capture`, which the production check, its apply A/B and the
+`leveller::analyze_capture`, which the production check and the
 calibration sweeps all call, so the shipped constants are derived in exactly
 the space they are applied in:
 
@@ -261,7 +279,7 @@ gate's pre-onset floor averages 2048-point Welch segments
 run. The stimulus PSD is computed once per stimulus, not per capture (#197). A
 single capture can occasionally misread — repeated runs are the arbiter.
 
-## Prescriptions & apply
+## Prescriptions
 
 `Rx` derivation is graph-aware (`graph_facts`): fixes prefer an existing
 carrier block over inserting one, inserts are gated by the `blockcaps` limits,
@@ -275,44 +293,19 @@ neighbour's FenderId, NOT its node_id; a duplicated-model neighbour used to
 silently drop the anchor). Param one-clicks are **value-aware** wherever the
 current value rides the graph allowlist: a write that would move a known value
 the WRONG way is dropped, and a blind write on an UNKNOWN value says so in its
-`Rx::detail`. Apply (`doctor_apply`) edits the device edit buffer
-under the DIAGNOSED scene/footswitch isolation — nothing persists until
-`doctor_save`, which **rebuilds SAVED+ops from scratch** (restore → fresh
-confirmed session → re-apply exactly `ops` → save), so intermediate
-edit-buffer pollution can never be persisted structurally. `doctor_discard`
-reloads the stored preset. The frontend serializes applies (`applyLock.ts`)
-and allows ONE unsaved prescription at a time; A/B audition captures
-before/after clips (BEFORE cached per sound — `BEFORE_CACHE`, keyed on
-list index + name + stimulus + calibration + scene + footswitch; a cache hit
-still reloads the slot). Each clip is the processed STEREO pair as captured
-(analysis stays on the mixdown), and the result carries both clips'
-integrated loudness, so `ABAudition` turns the louder one down to match and
-says the real gap (#257; playback gain only, nothing is written). The same
-result re-measures the treated finding on both clips with the diagnosis's own
-pipeline, graph and threshold (`FindingCheck`, #256): cleared, reduced, no
-measurable change (a fix that may not have landed), or worse. The muddy and harsh EQ
-cuts grow with the finding's margin past its gate (`sized_cut_db`: the shipped
-3 dB / 2 dB plus the margin, capped at 6 dB), never below the shipped size. `severity.ts` ranks findings per sound and rolls up
-the preset's worst severity.
-
-**Scene-context safety:** a bare `changeParameter` under a scene recall lands
-in the overlay only when that node's scene overlay is already `Full` (a
-genuine per-param overlay, Scene-Edit ON). Two OTHER overlay states leak the
-write to BASE instead — silently changing every scene that shares the knob.
-`BypassOnly` (Scene-Edit OFF) is guarded: `doctor_apply` reads the slot's
-saved field-8 JSON once, classifies the target node via `scene_overlay`
-(`scene_jobs`), and REFUSES the apply before any device write with
-an actionable message, when it would land there. `Absent` (no overlay at
-all yet) stays an unguarded, pre-existing limitation — `set_node_scene_edit`
-would materialize the overlay but also reseeds it from base, wiping any
-OTHER already-scene-edited params on the same node (the same
-reseed-wipes-siblings shape leveling's `set_knob`/`set_knobs` had before its
-own repair pass; no equivalent repair exists for Doctor yet).
+`Rx::detail`. The app shows each fix's `Rx::title` only, as a bullet under "What
+to change", in the backend's order; the `ops` stay on the wire (the shared-block
+line reads which blocks they touch) but the app never applies them — the apply,
+save, discard and A/B before/after paths were removed with the owner's decision
+(Q10/Q11). The muddy and harsh EQ cuts grow with the finding's margin past its
+gate (`sized_cut_db`: the shipped 3 dB / 2 dB plus the margin, capped at 6 dB),
+never below the shipped size. `severity.ts` gives each finding the tone it shows
+and the one worst-first order (`findingTone`, `sortedDiags`).
 
 **SNR-gate transparency:** `DoctorSoundResult.coverageGated`/
 `skippedBandCount` surface when `output_coverage_with_body` dropped ≥1 band
-as too quiet to trust — the UI shows a small `info` badge next to an
-otherwise-normal row (SoundRow) rather than silently under-checking a quiet
+as too quiet to trust — the opened sound says "Some bands were too quiet to
+check." under its last finding rather than silently under-checking a quiet
 capture. Absent on an errored/showcase sound (no coverage computed at all)
 reads as "not gated", never as "everything gated".
 
@@ -321,12 +314,11 @@ BACKUP-SCAN-ONLY, zero-capture scan of a preset's footswitch `param`
 assignments for two shapes the CURRENT `param_class` gate could never have
 produced — a wet-mix param assign-leveled to ~0 (an effect silenced whenever
 the switch engages) and an Other-class param actually swept (never a level
-control). Surfaced per preset as an advisory-only synthetic row
-(`LevelingDamageRow`, sibling of the scene-consistency row) — factual copy
-only ("this switch changes X"), never "the old leveler damaged this", since a
-footswitch can legitimately sweep any parameter via Pro Control. Counted by
-`severity.ts::presetLookCount` so a preset whose ONLY finding is a damage
-advisory still surfaces under "Needs a look".
+control). Surfaced per preset as an advisory-only "Footswitches" row (sibling of
+the "Scenes" row, caution, "2 footswitches worth checking") — factual copy only
+("Turns the effect almost silent when you press it."), never "damage", since a
+footswitch can legitimately sweep any parameter via Pro Control. It sorts in
+with the findings, so a preset whose ONLY finding is this advisory still shows.
 
 ## Cut-through estimate + reference match (flagship)
 
@@ -334,21 +326,24 @@ advisory still surfaces under "Needs a look".
   presence contrast = high-mids+highs over lows..mids band power (dB; Air and
   the Bass VI Sub band excluded), with a percentile against the **pinned
   25-value factory-bank distribution** (`FACTORY_CONTRAST_DB`) and an advisory
-  below the factory p10 (+10 dB). Framed "estimated" in the UI
-  (`CutThroughCard`); guitar-anchored — bass families report contrast only
-  (no bass factory sweep yet). An ESTIMATE card, not a diagnosis: no rule, no
+  below the factory p10 (+10 dB). Shown in an opened sound as "Cutting through
+  the mix" ("More presence than 62% of the factory presets."), and hidden when
+  there is no factory comparison; guitar-anchored — bass families report
+  contrast only (no bass factory sweep yet). An ESTIMATE card, not a diagnosis: no rule, no
   Rx ops. (The originally-planned invented "dense mix masker spectrum" was
   dropped — anchoring on a measured distribution is defensible; a constant we
   made up is not.)
-- **Reference match** (`matchModel.ts` + `MatchCard`, fully CLIENT-side): pick
-  any sound of the run as reference; other same-layout sounds get EQ-10 moves
+- **Reference match** (`matchModel.ts` + `resultsModel.ts::matchAdvice`, fully
+  CLIENT-side): "Use as reference" on any sound of the run; other same-layout
+  sounds get "To sound like <reference>" with EQ-10 moves
   from the balanceDb deltas already on the wire, centred on the MEDIAN body-band
   delta so Air and Bass VI's Sub can't shift every other move through the
   all-band mean (#254) (log-nearest band, combined
-  when bands collide, clamped ±6 dB, sub-1.5 dB moves dropped) applied through
-  the existing PrescriptionCard A/B flow as one EQ-10 insert; when any delta
-  exceeds EQ reach the card adds an honest cab/amp-swap advisory. Zero new
-  captures, commands, or wire fields.
+  when bands collide, clamped ±6 dB, sub-1.5 dB moves dropped) worded as one
+  step: on the chain's own 10-band EQ, on a new one after the cab, or — with no
+  CPU room for one — on an EQ already there; when any delta exceeds EQ reach it
+  adds "EQ only gets part of the way. A different cab or amp gets closer." Zero
+  new captures, commands, or wire fields.
 
 ## Validation arms (probe)
 
@@ -428,11 +423,11 @@ merged by diagnosis key. The offsets are **monotonic in loudness** (louder ⇒
 tighter or equal ⇒ never fewer firings — asserted by
 `playback_offsets_are_monotonic`), so a finding's firing set is always a
 louder-suffix and one ordinal fully describes it: `LeveledDiag.from_level` ∈
-{quiet, rehearsal, stage}. The UI renders this as `LevelIndicator`
-(`src/views/doctor/LevelIndicator.tsx`) — three venue pictographs lit in the
-finding's severity colour where it fires: `tiny` beside each diagnosis chip on
-the collapsed triage row, `rich` (with labels) in the expanded header. `quiet`
-shows as an all-lit "at any volume" state. **The indicator is a read-only render
+{quiet, rehearsal, stage}. The UI renders this inside an opened sound only, in
+each finding's heading (`FindingBlock.tsx`): "Heard at every volume" / "Heard at
+rehearsal volume and up" / "Heard only at stage volume" beside three venue icons
+(Quiet, Rehearsal, Stage) lit in the finding's tone where it fires. No row
+carries them. **The indicator is a read-only render
 of `from_level` and is fully decoupled from the Settings `playback_level`
 store** — the Doctor diagnoses all three levels regardless of the room level
 chosen for leveling. The offsets are additive at comparison time — they never

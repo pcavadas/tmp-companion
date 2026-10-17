@@ -12,8 +12,9 @@ import {
 
 // ONLINE Doctor consolidation (8-file → 4-file suite shrink). Two oracles that both need
 // the real device, merged into one file so the online run pays ONE Playwright boot/rest
-// for Doctor instead of three (doctor.spec.ts's online half + doctor-oracle.online.spec.ts +
-// doctor-apply.online.spec.ts, which stays its own spec — see its own header).
+// for Doctor instead of two (doctor.spec.ts's online half + doctor-oracle.online.spec.ts).
+// Doctor never writes to the unit (the owner's decision), so no online spec reads a Doctor
+// save back.
 //
 // (a) is doctor-oracle.online.spec.ts moved here (its two wire-seam-only rows, FIZZY and
 //     BRIGHT, are covered numerically by src-tauri/src/doctor_audio_oracle.rs) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
@@ -135,8 +136,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", ()
     // (src-tauri/src/commands/doctor.rs) falls back to the legacy live field-8
     // read (cached per list index) whenever a sound's `nodes` is empty — this
     // spec raw-invokes the command directly rather than replaying a backup scan,
-    // so it exercises that fallback path deliberately, same as
-    // doctor-apply.online.spec.ts's raw jobs.
+    // so it exercises that fallback path deliberately.
     const baseItem = {
       key: "base",
       listIndex: ORACLE.slot,

@@ -31,7 +31,6 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::blockcaps;
 use crate::profiles::PlaybackLevel;
@@ -1606,16 +1605,12 @@ pub struct Rx {
     /// "no CPU change" | "+N.N% CPU" (real delta from the model-cpu table).
     pub cpu_note: String,
     pub ops: Vec<DoctorOp>,
-    /// Chain-preview DTO for `kind == Chain`: `{ "template": …, "blocks":
-    /// [{ "model": FenderId, "added"?: true }] }` — the UI resolves art by
-    /// model id through its existing strip engine.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub chain: Option<Value>,
 }
 
-/// One concrete device edit. Serde casing mirrors the `copy_apply` wire
-/// convention (camelCase field names via rename). `Deserialize` is needed by
-/// `doctor_apply` (the frontend sends these back verbatim to apply live).
+/// One concrete device edit behind a fix. Serde casing mirrors the `copy_apply` wire
+/// convention (camelCase field names via rename). The app shows only the fix's words
+/// and never applies it; the ops still ride the wire (the shared-block caption reads
+/// which blocks they touch) and `probe --doctor-inject` applies them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DoctorOp {
@@ -2065,18 +2060,7 @@ fn advisory(title: &str, detail: &str) -> Rx {
         detail: detail.to_string(),
         cpu_note: String::new(),
         ops: Vec::new(),
-        chain: None,
     }
-}
-
-/// Chain-preview DTO: the current roster's models plus the inserted one.
-fn chain_preview(nodes: &[DoctorNode], template: &str, inserted: &str, at: usize) -> Value {
-    let mut blocks: Vec<Value> = nodes
-        .iter()
-        .map(|n| serde_json::json!({ "model": n.model }))
-        .collect();
-    blocks.insert(at, serde_json::json!({ "model": inserted, "added": true }));
-    serde_json::json!({ "template": template, "blocks": blocks })
 }
 
 /// Where to drop a block immediately AFTER the cab, in the cab's group.
@@ -2089,8 +2073,6 @@ struct CabAnchor {
     /// chain order, not audibility — skipping one would drift the block when it's
     /// re-enabled).
     before: Option<String>,
-    /// Chain-preview insert index (cab index + 1).
-    at: usize,
 }
 
 /// The [`CabAnchor`] for the chain's cab, or `None` when there's no cab.
@@ -2108,7 +2090,6 @@ fn after_cab_anchor(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<CabAncho
     Some(CabAnchor {
         group: cab_group.clone(),
         before,
-        at: idx + 1,
     })
 }
 
@@ -2199,7 +2180,6 @@ fn eq_move(
             detail,
             cpu_note: "no CPU change".to_string(),
             ops,
-            chain: None,
         });
     }
     // A different EQ is already in the chain — advise using it, never stack a
@@ -2218,7 +2198,6 @@ fn eq_move(
         None => CabAnchor {
             group: facts.front.as_ref().map(|(g, _)| g.clone())?,
             before: None,
-            at: nodes.len(),
         },
     };
     let cpu_note = insert_cpu_note(nodes, EQ10_STEREO)?;
@@ -2233,7 +2212,6 @@ fn eq_move(
             fender_id: EQ10_STEREO.to_string(),
             params: gains.iter().map(|(p, v)| ((*p).to_string(), *v)).collect(),
         }],
-        chain: Some(chain_preview(nodes, "after · +EQ", EQ10_STEREO, anchor.at)),
     })
 }
 
@@ -2396,7 +2374,6 @@ fn localized_cut_rx(
                         value,
                     })
                     .collect(),
-                chain: None,
             },
             None => advisory(
                 &format!("Cut a narrow notch in {place} on the parametric EQ you already have."),
@@ -2409,7 +2386,6 @@ fn localized_cut_rx(
         None => facts.front.as_ref().map(|(g, _)| CabAnchor {
             group: g.clone(),
             before: None,
-            at: nodes.len(),
         }),
     };
     if let (Some(anchor), Some(cpu_note)) = (anchor, insert_cpu_note(nodes, PARAM_EQ)) {
@@ -2424,7 +2400,6 @@ fn localized_cut_rx(
                 fender_id: PARAM_EQ.to_string(),
                 params: band_params(2),
             }],
-            chain: Some(chain_preview(nodes, "after · +EQ", PARAM_EQ, anchor.at)),
         }];
     }
     eq_move(
@@ -2493,7 +2468,6 @@ fn cut_move(
                 param: param.to_string(),
                 value: freq,
             }],
-            chain: None,
         });
     }
     let group = facts.front.as_ref().map(|(g, _)| g.clone())?;
@@ -2510,7 +2484,6 @@ fn cut_move(
             fender_id: HIGH_LOW_PASS.to_string(),
             params: vec![(param.to_string(), freq)],
         }],
-        chain: None,
     })
 }
 
@@ -2556,7 +2529,6 @@ fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
             fender_id: COMPRESSOR.to_string(),
             params: Vec::new(),
         }],
-        chain: Some(chain_preview(nodes, "after · +COMP", COMPRESSOR, 0)),
     })
 }
 
@@ -2683,7 +2655,6 @@ pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -
                     param: param.clone(),
                     value: 0.25,
                 }],
-                chain: None,
             }],
             // Dwell-style springs (and delay wash) have no wet/dry mix to set;
             // an unknown or already-low mix means the wash lives elsewhere.
@@ -3856,6 +3827,7 @@ mod cut_through_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     /// Per-band scatter (σ, dB) of a noise-floor estimate over `seeds` independent
     /// windows of `len` samples of seeded white noise, for `family`'s bands.
@@ -4945,12 +4917,11 @@ mod tests {
         let rx = generate_rx("muddy", &without);
         assert_eq!(rx.len(), 2);
         assert_eq!(rx[0].kind, RxKind::Advisory, "the amp knob always leads");
-        assert_eq!(rx[1].kind, RxKind::Chain, "no EQ → insert with preview");
+        assert_eq!(rx[1].kind, RxKind::Chain, "no EQ → insert one");
         assert_eq!(
             rx[1].title,
             "Or add a 10-band EQ after the cab and cut the low mids."
         );
-        assert!(rx[1].chain.is_some());
         match &rx[1].ops[0] {
             DoctorOp::InsertNode { fender_id, .. } => {
                 assert_eq!(fender_id, "ACD_TenBandEQStereo");
@@ -5145,27 +5116,6 @@ mod tests {
     }
 
     #[test]
-    fn eq_insert_chain_preview_marks_the_added_block_after_the_cab() {
-        // The preview the UI renders must place the +added EQ tile right after
-        // the cab, not at the tail — the visible half of the placement fix.
-        let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_SpaceEcho"], &[]);
-        let rx = generate_rx("muddy", &p);
-        let preview = rx
-            .iter()
-            .find(|r| r.kind == RxKind::Chain)
-            .and_then(|r| r.chain.clone())
-            .expect("chain preview");
-        let blocks = preview["blocks"].as_array().expect("blocks array");
-        // amp(0) · cab(1) · +EQ(2, added) · delay(3)
-        assert_eq!(blocks[2]["model"], "ACD_TenBandEQStereo");
-        assert_eq!(blocks[2]["added"], true);
-        assert!(
-            blocks[3].get("added").is_none(),
-            "the delay stays downstream of the EQ"
-        );
-    }
-
-    #[test]
     fn muddy_and_harsh_inserts_carry_their_band_cuts() {
         // muddy → the 250 Hz band at −3; harsh → the 1k + 2k bands at −2. Fresh
         // insert, so the values are absolute.
@@ -5271,7 +5221,6 @@ mod tests {
             }
             other => panic!("expected InsertNode, got {other:?}"),
         }
-        assert!(chain.chain.is_some());
     }
 
     #[test]

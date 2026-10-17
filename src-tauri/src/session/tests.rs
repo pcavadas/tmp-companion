@@ -1098,13 +1098,14 @@ fn latest_json_payload_from_reports_takes_a_later_field9_reply() {
     );
 }
 
-/// BUG→GATE (online e2e `doctor-apply.online.spec.ts`, the post-discard working-copy read;
-/// HW 2026-10-14, fw 1.8.58, 3/3 at a 100 ms settle): a session opened inside the device's
-/// inactivity drop receives the previous session's queued replies FIRST — last of them that
-/// session's handshake copy of the working copy BEFORE its loads, here the applied block a
-/// Doctor discard had just thrown away. The unit's carrier sizes were 2871 (stale, one block
-/// more) → 2451 (the restore's neighbour) → 2691 → 2691 (the restored copy). Longest-wins
-/// read the stale one; the latest copy is the restored one.
+/// BUG→GATE (online e2e `doctor-apply.online.spec.ts`, since removed with the Doctor write
+/// path; the post-discard working-copy read; HW 2026-10-14, fw 1.8.58, 3/3 at a 100 ms
+/// settle): a session opened inside the device's inactivity drop receives the previous
+/// session's queued replies FIRST — last of them that session's handshake copy of the
+/// working copy BEFORE its loads, here the applied block a Doctor discard had just thrown
+/// away. The unit's carrier sizes were 2871 (stale, one block more) → 2451 (the restore's
+/// neighbour) → 2691 → 2691 (the restored copy). Longest-wins read the stale one; the
+/// latest copy is the restored one.
 #[test]
 fn latest_json_payload_reads_past_a_longer_inherited_copy() {
     let stale = b"STALE_WORKING_COPY_WITH_THE_APPLIED_EQ".to_vec();

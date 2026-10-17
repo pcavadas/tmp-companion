@@ -23,11 +23,8 @@ import type {
   ConnectResult,
   CopyApplyItem,
   CopyJob,
-  DoctorApplyJob,
-  DoctorApplyResult,
   DoctorCheckResult,
   DoctorInputArg,
-  DoctorOp,
   DoctorProgressItem,
   FootswitchLevelJobWire,
   FootswitchLevelProgressItem,
@@ -137,17 +134,6 @@ export interface Commands {
     ret: DoctorCheckResult;
   };
   cancel_doctor_check: { args: undefined; ret: Unit };
-  doctor_apply: { args: { job: DoctorApplyJob }; ret: DoctorApplyResult };
-  doctor_save: {
-    args: {
-      listIndex: number;
-      expectName: string;
-      scene: number | null;
-      ops: DoctorOp[];
-    };
-    ret: Unit;
-  };
-  doctor_discard: { args: { listIndex: number }; ret: Unit };
 
   // Instrument profiles + persisted store
   get_store: { args: undefined; ret: Store };

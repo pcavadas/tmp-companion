@@ -1,50 +1,33 @@
-// Pins presetWorstSev's tinting so the header/badge severity never contradicts
-// presetLookCount (which counts a scene-consistency finding).
+// src/__tests__/severity.test.ts — the tone a Doctor finding shows and the one order
+// every list follows. A borderline ("possible") finding shows caution and sorts below
+// every confident danger finding, so where a row sits always agrees with what it shows;
+// the hedge and the ranking key on `z`, never on a rule's raw margin (#253).
 
 import { describe, it, expect } from "vitest";
 
 import {
-  diagKicker,
+  findingTone,
   isPossible,
-  presetWorstSev,
+  possibleLabel,
+  sceneBarTone,
+  sceneLoudnessTone,
   sortedDiags,
+  soundTone,
 } from "../views/doctor/severity";
 import type {
   DoctorDiag,
-  DoctorPresetResult,
   DoctorSceneConsistency,
+  DoctorSoundResult,
 } from "../lib/types";
 
-function preset(
-  sceneConsistency: DoctorSceneConsistency | null,
-): DoctorPresetResult {
-  return { listIndex: 0, sounds: [], sceneConsistency, levelingDamage: [] };
-}
-
-function sceneJump(worstDeltaDb: number): DoctorSceneConsistency {
-  return { rows: [], worstName: "Lead", worstDeltaDb, rx: [] };
-}
-
-describe("presetWorstSev", () => {
-  it("is 'ok' with no diagnoses and no scene jump", () => {
-    expect(presetWorstSev(preset(null))).toBe("ok");
-  });
-
-  it("tints a MODERATE scene jump (≤5 dB) as 'med', not 'ok'", () => {
-    // The badge counts the scene finding, so the tint must not read "all clear".
-    expect(presetWorstSev(preset(sceneJump(3)))).toBe("med");
-    expect(presetWorstSev(preset(sceneJump(-4)))).toBe("med");
-  });
-
-  it("bumps a BIG scene jump (>5 dB) to 'high'", () => {
-    expect(presetWorstSev(preset(sceneJump(6)))).toBe("high");
-  });
-});
-
-function diag(sev: "high" | "med", severity: number): DoctorDiag {
+function diag(
+  sev: "high" | "med",
+  severity: number,
+  key = "muddy",
+): DoctorDiag {
   return {
-    key: "muddy",
-    label: "Muddy",
+    key,
+    label: key === "muddy" ? "Muddy" : key,
     sev,
     severity,
     // A band rule: σ 0.4 dB.
@@ -58,20 +41,75 @@ function diag(sev: "high" | "med", severity: number): DoctorDiag {
   };
 }
 
-describe("diagKicker", () => {
-  it("reads 'Worth a look' for a near-threshold ('possible') high-sev diag", () => {
-    // z < POSSIBLE_MAX_Z (2.5σ, 1.0 dB on a band rule) — the muted "Possible X" chip
-    // must not sit beside a bold "NEEDS ATTENTION" kicker.
-    expect(diagKicker(diag("high", 0.4))).toBe("Worth a look");
+function sceneJump(worstDeltaDb: number): DoctorSceneConsistency {
+  return { rows: [], worstName: "Lead", worstDeltaDb, rx: [] };
+}
+
+describe("findingTone and the borderline label", () => {
+  it("shows a confident high finding as danger", () => {
+    expect(findingTone(diag("high", 4.2))).toBe("danger");
+    expect(possibleLabel(diag("high", 4.2))).toBe("Muddy");
   });
 
-  it("reads 'Needs attention' for a confidently-past-threshold high-sev diag", () => {
-    expect(diagKicker(diag("high", 1.0))).toBe("Needs attention");
-    expect(diagKicker(diag("high", 4.2))).toBe("Needs attention");
+  it("shows a borderline high finding as caution, named '(borderline)'", () => {
+    // z < POSSIBLE_MAX_Z (2.5σ, 1.0 dB on a band rule).
+    const d = diag("high", 0.4);
+    expect(isPossible(d)).toBe(true);
+    expect(findingTone(d)).toBe("caution");
+    expect(possibleLabel(d)).toBe("Muddy (borderline)");
   });
 
-  it("reads 'Worth a look' for a med-sev diag regardless of severity", () => {
-    expect(diagKicker(diag("med", 6))).toBe("Worth a look");
+  it("shows a medium finding as caution", () => {
+    expect(findingTone(diag("med", 6))).toBe("caution");
+  });
+});
+
+describe("worst first agrees with what the row shows", () => {
+  it("never sorts a borderline high finding above a confident danger one", () => {
+    const borderline = { ...diag("high", 0.4, "boomy"), z: 2.4 };
+    const real = diag("high", 4.2, "muddy");
+    expect(sortedDiags([borderline, real]).map((d) => d.key)).toEqual([
+      "muddy",
+      "boomy",
+    ]);
+  });
+
+  it("sorts a borderline high finding with the caution findings, by confidence", () => {
+    const borderline = { ...diag("high", 0.4, "boomy"), z: 1.0 };
+    const med = { ...diag("med", 3, "dark"), z: 7.5 };
+    expect(sortedDiags([borderline, med]).map((d) => d.key)).toEqual([
+      "dark",
+      "boomy",
+    ]);
+  });
+
+  it("gives a sound the worst tone its findings show", () => {
+    const sound = (diags: DoctorDiag[]) =>
+      ({ diags }) as unknown as DoctorSoundResult;
+    expect(soundTone(sound([]))).toBeNull();
+    expect(soundTone(sound([diag("high", 0.4)]))).toBe("caution");
+    expect(soundTone(sound([diag("med", 6), diag("high", 4.2)]))).toBe(
+      "danger",
+    );
+  });
+});
+
+describe("sceneLoudnessTone", () => {
+  it("is caution for a moderate jump and danger past 5 dB", () => {
+    expect(sceneLoudnessTone(sceneJump(3))).toBe("caution");
+    expect(sceneLoudnessTone(sceneJump(-4))).toBe("caution");
+    expect(sceneLoudnessTone(sceneJump(6))).toBe("danger");
+    expect(sceneLoudnessTone(sceneJump(-6))).toBe("danger");
+  });
+
+  it("colours each bar on the row's own scale, so the worst bar matches the row's dot", () => {
+    expect(sceneBarTone(0.5)).toBeNull();
+    expect(sceneBarTone(-3)).toBeNull();
+    expect(sceneBarTone(4)).toBe("caution");
+    expect(sceneBarTone(-35)).toBe("danger");
+    for (const worst of [4, -4.5, 6, -35]) {
+      expect(sceneBarTone(worst)).toBe(sceneLoudnessTone(sceneJump(worst)));
+    }
   });
 });
 
@@ -91,7 +129,7 @@ describe("hedging and ranking across rule units (#253)", () => {
     expect(isPossible(band)).toBe(true);
   });
 
-  it("ranks the more certain finding first within a tint", () => {
+  it("ranks the more certain finding first within a tone", () => {
     expect(sortedDiags([band, tilt]).map((d) => d.key)).toEqual([
       "dark",
       "muddy",

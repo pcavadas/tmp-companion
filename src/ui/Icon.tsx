@@ -4,7 +4,8 @@
 // Light-only app — no sun/moon (the dark toggle was removed). Adds the prototype
 // page icons: gauge · cable · music · spinner · warn-tri · info · refresh · grip ·
 // trash · lock, and look B's chev-updown (Select) · minus (a mixed Checkbox) · alert
-// (danger Notice and PageState) · stop (the leveling run's Stop).
+// (danger Notice and PageState) · stop (the leveling run's Stop) · headphones, speaker
+// and pulse (Doctor's Quiet, Rehearsal and Stage volumes).
 
 import type { IconName } from "./iconNames";
 
@@ -370,6 +371,27 @@ export function Icon({
       return (
         <svg {...props}>
           <rect x="7" y="7" width="10" height="10" rx="1.5" />
+        </svg>
+      );
+    case "headphones":
+      return (
+        <svg {...props}>
+          <path d="M4.5 15v-3a7.5 7.5 0 0 1 15 0v3" />
+          <rect x="4" y="14" width="4" height="6" rx="1.5" />
+          <rect x="16" y="14" width="4" height="6" rx="1.5" />
+        </svg>
+      );
+    case "speaker":
+      return (
+        <svg {...props}>
+          <path d="M5 9.5h3.5L13 6v12l-4.5-3.5H5z" />
+          <path d="M16.5 9a4.5 4.5 0 0 1 0 6" />
+        </svg>
+      );
+    case "pulse":
+      return (
+        <svg {...props}>
+          <path d="M3 12h3l2-6 4 12 3-9 2 3h4" />
         </svg>
       );
     default:

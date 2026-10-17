@@ -311,7 +311,7 @@ pub(crate) fn predicted_true_peak_dbtp(ref_tp_dbtp: f64, ref_level: f32, final_l
 /// `doctor_capture_current`'s doc), so `scene: None` there means "don't touch
 /// scene state at all" — a recall would risk REVERTING those unsaved edits
 /// before this capture ever ran (the same hazard `capture_on_session` exists to
-/// avoid for `doctor_apply`'s step (c)). `tail_ms` is `CAPTURE_TAIL_MS` for
+/// avoid). `tail_ms` is `CAPTURE_TAIL_MS` for
 /// every existing `capture_full` call, so that path is otherwise unchanged by
 /// this extraction.
 pub(super) fn capture_full_at(
@@ -389,11 +389,8 @@ pub(super) fn capture_full_at_params(
 /// that first, if at all, since re-`load_scene`ing
 /// between writes reverts the prior write's unsaved value (`set_knobs`'s doc); this
 /// seam exists precisely so a caller that has ALREADY applied unsaved edits on `s`
-/// (Doctor's `ops_session`) can capture them without a further recall silently
-/// discarding them. Shared tail of `capture_full_at` (which recalls the scene,
-/// then calls this) and `doctor_capture_on_session_raw` (used by
-/// `commands::doctor::doctor_apply`'s step (c), on the session step (b) just
-/// wrote to).
+/// can capture them without a further recall silently discarding them. The tail of
+/// `capture_full_at` (which recalls the scene, then calls this).
 pub(crate) fn capture_on_session(
     s: &mut Session,
     force_bypass: &[(String, String, bool)],
@@ -408,8 +405,8 @@ pub(crate) fn capture_on_session(
     for (g, n, byp) in force_bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
-    // `None` = capture at the preset's OWN stored level (Doctor's apply A/B),
-    // leaving the edit buffer's presetLevel untouched.
+    // `None` = capture at the preset's OWN stored level, leaving the edit buffer's
+    // presetLevel untouched.
     if let Some(ref_level) = ref_level {
         set_knob(s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0), None)?;
     }
@@ -424,8 +421,7 @@ pub(crate) fn capture_on_session(
     //
     // PRODUCTION fix, not harness-only: the naked shape is reached by
     // `capture_asis_full` (probe --measure-scene / --measure-current), by
-    // `measure_sound_asis_strict`'s scene rows (empty bypass, no reference level),
-    // and by Doctor's apply A/B whenever the diagnosed sound needs no isolation. Two
+    // and `measure_sound_asis_strict`'s scene rows (empty bypass, no reference level). Two
     // shapes over-fire benignly toward the proven-green timing: caller-side
     // `fs_params` writes (invisible here — the line is already warm) and the
     // no-recall captures (no mute window to outlive) — both cost one extra 300 ms
@@ -441,8 +437,8 @@ pub(crate) fn capture_on_session(
         s.heartbeat()?;
     }
     // Settle UNCONDITIONALLY before the engage: the caller (or the loop above) may
-    // have just issued bypass/param writes even when `ref_level` is `None` — the
-    // Doctor apply A/B path — and `measure_fs_state` always settles after its
+    // have just issued bypass/param writes even when `ref_level` is `None` — and
+    // `measure_fs_state` always settles after its
     // writes for the same reason (the engage latches whatever the DSP holds).
     settle_or_cancel(SETTLE_AFTER_SET_MS)?;
     let _ = s.set_reamp_mode(true)?;

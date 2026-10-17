@@ -28,7 +28,6 @@ pub(crate) mod level_footswitch;
 pub(crate) mod level_preset;
 pub(crate) mod level_scenes;
 pub(crate) mod library;
-pub(crate) mod media;
 pub(crate) mod presets;
 pub(crate) mod setlists;
 pub(crate) mod settings;

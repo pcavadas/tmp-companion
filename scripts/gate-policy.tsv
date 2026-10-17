@@ -21,13 +21,11 @@ unit-lane@remote	-
 remote-runner	-
 remote-runner@remote	ALL
 probe-entry	ANY
-doctor-persist	doctor.online level.online doctor-apply.online
 level	doctor.online level.online
 # An online spec file's own edit requires that spec alone: a spec change cannot move the
 # product code the other specs exercise.
 spec-doctor-online	doctor.online
 spec-level-online	level.online
-spec-doctor-apply-online	doctor-apply.online
 # Every online run opens the HID transport and seeds (imports and saves) before its spec, so
 # one spec proves a dependency bump still drives the device; the advisory covers the crates
 # that also carry audio and the app shell.

@@ -105,7 +105,7 @@ Runs the full Level + Copy happy paths against the real unit **non-destructively
 
 **Both probe emission seams resolve their stimulus through `probe_stimulus_path(topology_id)`** — the bundled topology WAV, consulting neither the profile's captured DI nor `TMP_LEVELLER_STIMULUS`, unlike the leveling arms that honour both. Unless both sides are pinned to one WAV, a run and its "independent" re-measure grade different waveforms, and the difference is large enough to move a verdict.
 
-Footswitch rows are externally validated through `probe --measure-footswitch <slot> <switch> <topology> [--lev g:n:p] [--target L] [--dump-wav D]`. The **`doctor_apply` path is NOT externally validated** (no expectation-emitting re-measure exists for it).
+Footswitch rows are externally validated through `probe --measure-footswitch <slot> <switch> <topology> [--lev g:n:p] [--target L] [--dump-wav D]`. Doctor writes nothing to the unit, so there is no Doctor write path to validate.
 
 **Env vars:**
 

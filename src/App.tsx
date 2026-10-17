@@ -5,7 +5,7 @@
 //   • Level    → <LevelView/>   now-playing strip + preset list + the §4
 //                destructive-write ritual, bound to real invoke wrappers.
 //   • Doctor   → <DoctorView/>   tone diagnosis: re-amp captures, spectral
-//                findings, one-click prescriptions.
+//                findings, fixes described as steps on the unit (it never writes).
 //   • Copy     → <CopyView/>     copy blocks between presets (staged off-device).
 //   • Songs    → <SongsView/>    device-backed songs + setlists CRUD.
 // The four device tabs render the shared <DeviceState/> page until a unit connects.
@@ -341,7 +341,11 @@ export default function App() {
                 />
               )}
               {tab === "doctor" && (
-                <DoctorView connected={connected} deviceState={noUnit} />
+                <DoctorView
+                  connected={connected}
+                  deviceState={noUnit}
+                  onCalibrate={onCalibrate}
+                />
               )}
               {tab === "copy" && (
                 <CopyView

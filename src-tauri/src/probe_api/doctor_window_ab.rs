@@ -145,7 +145,7 @@ pub fn probe_doctor_window_ab(
     // production constants, and 4 s has no production counterpart.
     let prod_stim = leveller::doctor_stim_slice(stim.clone());
     let four_s = stim.len().min(4 * 48_000);
-    // Variant b's tail must match what `doctor_check`/`doctor_apply` actually
+    // Variant b's tail must match what `doctor_check` actually
     // pick for THIS slot's graph — 300 ms dry, 1500 ms wet/unknown
     // (`doctor::doctor_tail_ms`, `commands/doctor.rs`'s `tail_ms`) — else a
     // dry preset's shipped 300 ms window goes unvalidated by an arm labeled

@@ -1,14 +1,14 @@
-// src/views/doctor/DoctorView.tsx — the Doctor tab (tone diagnosis).
+// src/views/doctor/DoctorView.tsx — the Doctor tab (tone diagnosis), look B.
 //
-// A thin stage machine (select → setup → run → results) over the SAME expandable
-// preset→scene tree as the Level tab. Each stage is its own component: only the
-// Check (run) step is a modal; Set up and Results are full-page body swaps (the
-// Copy-tab pattern). The select body stays MOUNTED under the run modal so the
-// check reads as an overlay.
+// A small stage machine over four pages under the toolbar: choose the sounds on the shared
+// preset list (DoctorSelect) → which instrument plays them (DoctorInstrument, skipped when
+// every chosen preset already has one saved) → the check (DoctorRun) → Results
+// (DoctorResults). Each is a full page; the list is not kept under the others.
 //
-// The check is READ-ONLY on the device (a short test tone per sound); the ONLY
-// writes are the results-page prescriptions (a later WP), each backup-gated +
-// revertible.
+// Doctor only listens and describes: the check plays a short test tone through each sound
+// and changes nothing on the unit, and every fix is a step the player makes by hand. The
+// one thing it remembers is each preset's instrument, in the app's own store on this
+// computer (never on the unit).
 
 import { useCallback, useMemo, useState } from "react";
 
@@ -19,29 +19,45 @@ import { usePresetData } from "../level/usePresetData";
 import { useLiveDevice } from "../../device/useLiveDevice";
 import {
   chosenFrom,
-  hasInstrument,
   instrumentOptions,
-  instrumentName,
   type SetupOption,
 } from "../level/leveling";
-import { useDoctorFlow } from "./useDoctorFlow";
+import {
+  useDoctorFlow,
+  DOCTOR_STEPS,
+  DOCTOR_STEPS_SKIPPED,
+} from "./useDoctorFlow";
 import { DoctorSelect } from "./DoctorSelect";
-import { DoctorSetup } from "./DoctorSetup";
+import { DoctorInstrument } from "./DoctorInstrument";
 import { DoctorRun } from "./DoctorRun";
 import { DoctorResults } from "./DoctorResults";
-import type { PickOption } from "../overlays/Pick";
+import {
+  everyInstrumentChosen,
+  initialInstruments,
+  presetsOf,
+} from "./instrumentModel";
+import {
+  soundLabel,
+  soundNameOf,
+  type ResultsContext,
+  type SoundName,
+} from "./resultsModel";
+import type { RunName } from "./runRows";
 
-type Stage = "select" | "setup" | "run" | "results";
+type Stage = "select" | "instrument" | "run" | "results";
 
 export interface DoctorViewProps {
   connected: boolean;
   /** What to show while no unit is connected (App's connect state). Default "off". */
   deviceState?: NoUnitState;
+  /** "Record yours in Settings": Settings › Instruments. */
+  onCalibrate?: () => void;
 }
 
 export function DoctorView({
   connected,
   deviceState = "off",
+  onCalibrate,
 }: DoctorViewProps) {
   const {
     phase,
@@ -65,83 +81,129 @@ export function DoctorView({
     toggleExpand,
     toggleAll,
     refresh,
+    rememberInstrument,
   } = usePresetData(connected);
 
   const [stage, setStage] = useState<Stage>("select");
   const [filter, setFilter] = useState("");
   const [chosen, setChosen] = useState<SetupOption[]>([]);
+  // The Instrument page was skipped: every chosen preset's instrument was known.
+  const [skipped, setSkipped] = useState(false);
 
   const flow = useDoctorFlow({
     store,
     graphByIndex,
-    // The FULL footswitch roster (incl. Other-class-only switches) — the damage
-    // detector's offline force-bypass derivation needs every switch that can toggle a
-    // block, not just `footswitchInfo`'s levelable-only subset (that one still drives
-    // the SELECT list below, where a non-levelable FS row has nothing to diagnose as
-    // its own sound).
+    // The FULL footswitch roster (incl. Other-class-only switches) — the force-bypass
+    // derivation needs every switch that can toggle a block, not just `footswitchInfo`'s
+    // levelable-only subset (that one still drives the list, where a non-levelable
+    // switch has nothing to diagnose as its own sound).
     footswitchesByIndex: allFootswitchInfo,
     sceneOverridesByIndex,
   });
 
-  // The run recalls presets on the unit — remember the player's live slot so
-  // the backend can restore it when the check ends (null → last-scanned slot).
+  // The run recalls presets on the unit — remember the player's live slot so the backend
+  // can put it back when the check ends; it also marks "Loaded" on the list.
   const { activeListIndex } = useLiveDevice(connected);
 
-  // Instrument options — "None" + the store's profiles, calibrated ones flagged
-  // (shared with the Level tab's Set up step). Drives every instrument Pick.
-  const instOptions = useMemo<PickOption[]>(
+  const instOptions = useMemo(
     () => instrumentOptions(store?.profiles),
     [store?.profiles],
   );
-
-  // The run's own items carry each sound's chosen profile — no second copy of
-  // the setup step's picks is kept here.
-  const runItems = flow.run.items;
-  const instNameForKey = useCallback(
-    (key: string): string | null => {
-      const id = runItems.find((it) => it.key === key)?.profileId;
-      if (id == null || !hasInstrument(id)) return null;
-      return instrumentName(store?.profiles, id);
-    },
-    [runItems, store?.profiles],
+  const recordedInstruments = useMemo<ReadonlySet<string>>(
+    () =>
+      new Set(
+        (store?.profiles ?? [])
+          .filter((p) => p.calibration_lufs != null)
+          .map((p) => p.id),
+      ),
+    [store?.profiles],
   );
 
+  const presets = useMemo(() => presetsOf(chosen), [chosen]);
+  const [instInit, setInstInit] = useState<ReadonlyMap<number, string>>(
+    () => new Map(),
+  );
+
+  // How each chosen sound is named on the Check and Results pages.
+  const soundNames = useMemo(
+    () =>
+      new Map<string, SoundName>(chosen.map((o) => [o.key, soundNameOf(o)])),
+    [chosen],
+  );
   const presetNames = useMemo(
     () => new Map(rows.map((r) => [r.slot, r.name])),
     [rows],
   );
+  const resultsCtx = useMemo<ResultsContext>(
+    () => ({ soundNames, presetNames, silenceHintByIndex }),
+    [soundNames, presetNames, silenceHintByIndex],
+  );
+  const nameOf = useCallback(
+    (key: string): RunName => {
+      const n = soundNames.get(key);
+      return n
+        ? { preset: n.preset, sound: soundLabel(n) }
+        : { preset: "", sound: key };
+    },
+    [soundNames],
+  );
 
-  // Select → Set up: resolve the list's ticked scene keys into the setup rows.
-  // ponytail: FS rows reuse the leveling filter (level_params-gated) — a
-  // tone-changing FS with no levelable param won't appear; lift with a
-  // diagnosis-specific chosenFrom if ever needed.
+  const runItems = flow.run.items;
+  const { startRun, buildItems, reset } = flow;
+
+  // Select → (Instrument →) Check. The Instrument page is skipped when every chosen
+  // preset already has an instrument saved (an explicit "None" counts).
   const handleCheck = useCallback(() => {
     const options = chosenFrom(sel, rows, sceneInfo, footswitchInfo);
     if (options.length === 0) return;
+    const init = initialInstruments(presetsOf(options), store, instOptions);
     setChosen(options);
-    setStage("setup");
-  }, [sel, rows, sceneInfo, footswitchInfo]);
+    if (everyInstrumentChosen(init)) {
+      setSkipped(true);
+      startRun(buildItems(options, init), activeListIndex);
+      setStage("run");
+    } else {
+      setSkipped(false);
+      setInstInit(init);
+      setStage("instrument");
+    }
+  }, [
+    sel,
+    rows,
+    sceneInfo,
+    footswitchInfo,
+    store,
+    instOptions,
+    startRun,
+    buildItems,
+    activeListIndex,
+  ]);
 
-  // Set up → Run: build the wire items and fire the ONE check command.
-  const { startRun, buildItems, reset } = flow;
   const handleRun = useCallback(
-    (map: Record<string, string>) => {
-      startRun(buildItems(chosen, map), activeListIndex);
+    (instBySlot: ReadonlyMap<number, string>) => {
+      startRun(buildItems(chosen, instBySlot), activeListIndex);
       setStage("run");
     },
     [startRun, buildItems, chosen, activeListIndex],
   );
 
-  // A failed run → the same sounds again.
-  const handleRetry = useCallback(() => {
+  // The same sounds again, with the same instruments (a failed check, or Results).
+  const handleAgain = useCallback(() => {
     startRun(runItems, activeListIndex);
+    setStage("run");
   }, [startRun, runItems, activeListIndex]);
 
-  // Results (or a failed run) → Select (fresh check on new sounds).
+  // Back to the list, ticks kept.
   const handleCheckMore = useCallback(() => {
     reset();
     setStage("select");
   }, [reset]);
+
+  const inputByKey = useMemo(
+    () => new Map(runItems.map((it) => [it.key, it])),
+    [runItems],
+  );
+  const steps = skipped ? DOCTOR_STEPS_SKIPPED : DOCTOR_STEPS;
 
   // ── render ──────────────────────────────────────────────────────────────────
   if (!connected) return <DeviceState state={deviceState} />;
@@ -150,75 +212,78 @@ export function DoctorView({
     return <LoadErrorPane what="presets" onRetry={() => void refresh()} />;
   }
 
-  if (stage === "setup") {
+  if (stage === "instrument") {
     return (
-      <DoctorSetup
-        options={chosen}
-        presetCount={new Set(chosen.map((o) => o.slot)).size}
+      <DoctorInstrument
+        presets={presets}
+        soundCount={chosen.length}
         instrumentOptions={instOptions}
-        store={store}
+        recordedInstruments={recordedInstruments}
+        initial={instInit}
+        onInstrumentChange={rememberInstrument}
         onBack={() => {
           setStage("select");
         }}
         onRun={handleRun}
+        onCalibrate={onCalibrate}
+      />
+    );
+  }
+
+  if (stage === "run") {
+    return (
+      <DoctorRun
+        key={flow.run.attempt}
+        status={flow.run.status}
+        items={runItems}
+        statusByKey={flow.run.statusByKey}
+        nameOf={nameOf}
+        steps={steps}
+        onStop={flow.stopRun}
+        onComplete={() => {
+          setStage("results");
+        }}
+        onRetry={handleAgain}
+        onBack={handleCheckMore}
       />
     );
   }
 
   if (stage === "results" && flow.run.result) {
-    // Each diagnosed sound's EXACT input (chain, full footswitch roster,
-    // stimulus) — the prescription cards' A/B replays it, so the audition forces
-    // off the same blocks the diagnosis did.
-    const inputByKey = new Map(runItems.map((it) => [it.key, it]));
     return (
       <DoctorResults
+        key={flow.run.attempt}
         result={flow.run.result}
-        presetNames={presetNames}
+        ctx={resultsCtx}
         inputByKey={inputByKey}
-        silenceHintByIndex={silenceHintByIndex}
+        steps={steps}
         onCheckMore={handleCheckMore}
+        onCheckAgain={handleAgain}
       />
     );
   }
 
   return (
-    <>
-      <DoctorSelect
-        rows={rows}
-        sel={sel}
-        pendingWhole={pendingWhole}
-        expanded={expanded}
-        ready={ready}
-        filter={filter}
-        loading={phase.kind === "loading"}
-        scan={scan}
-        sceneInfo={sceneInfo}
-        footswitchInfo={footswitchInfo}
-        presetCount={presetCount}
-        sceneCount={sceneCount}
-        onFilterChange={setFilter}
-        onTogglePreset={togglePreset}
-        onToggleExpand={toggleExpand}
-        onToggleKey={toggleKey}
-        onToggleAll={toggleAll}
-        onCheck={handleCheck}
-      />
-      {stage === "run" && (
-        <DoctorRun
-          key={flow.run.attempt}
-          status={flow.run.status}
-          items={runItems}
-          statusByKey={flow.run.statusByKey}
-          error={flow.run.error}
-          instName={instNameForKey}
-          onStop={flow.stopRun}
-          onComplete={() => {
-            setStage("results");
-          }}
-          onRetry={handleRetry}
-          onBack={handleCheckMore}
-        />
-      )}
-    </>
+    <DoctorSelect
+      rows={rows}
+      sel={sel}
+      pendingWhole={pendingWhole}
+      expanded={expanded}
+      ready={ready}
+      activeSlot={activeListIndex}
+      filter={filter}
+      loading={phase.kind === "loading"}
+      scan={scan}
+      sceneInfo={sceneInfo}
+      footswitchInfo={footswitchInfo}
+      presetCount={presetCount}
+      soundCount={sceneCount}
+      onFilterChange={setFilter}
+      onTogglePreset={togglePreset}
+      onToggleExpand={toggleExpand}
+      onToggleKey={toggleKey}
+      onToggleAll={toggleAll}
+      onCheck={handleCheck}
+    />
   );
 }

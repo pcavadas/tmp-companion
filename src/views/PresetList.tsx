@@ -17,7 +17,7 @@
 // "Clear filter" in place of the rows. The filter bar and the list keep a 960 px maximum
 // width, centred, on a wide window.
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import { slotLabel } from "../lib/format";
 import { useTheme } from "../theme/ThemeContext";
@@ -66,6 +66,8 @@ export interface PresetListProps {
   onToggleKey: (key: string) => void;
   /** Select all: receives the slots of the presets the filter shows. */
   onToggleAll: (slots: readonly number[]) => void;
+  /** One line above the list, scrolling with it (Doctor's "what Doctor does"). */
+  intro?: ReactNode;
 }
 
 /** The filter bar and list's maximum width on a wide window. */
@@ -113,6 +115,7 @@ export function PresetList(props: PresetListProps) {
     onToggleExpand,
     onToggleKey,
     onToggleAll,
+    intro,
   } = props;
   const { t } = useTheme();
 
@@ -310,6 +313,18 @@ export function PresetList(props: PresetListProps) {
               padding: `0 ${String(t.sp16)}px ${String(t.sp16)}px`,
             }}
           >
+            {intro != null && (
+              <p
+                style={{
+                  margin: `0 0 ${String(t.sp8 + t.sp2)}px`,
+                  fontSize: t.fontBody,
+                  lineHeight: `${String(t.lineBody)}px`,
+                  color: t.textSecondary,
+                }}
+              >
+                {intro}
+              </p>
+            )}
             {loading ? (
               <PresetRowsSkeleton rows={10} />
             ) : noMatch ? (

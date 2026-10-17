@@ -1,5 +1,5 @@
-// src/ui/Select.tsx — the ONE dropdown (look B). Replaces the Pick family (Pick,
-// PickTrigger, PickPortalMenu, PickInlineMenu, PickListRow, usePickAnchor) as screens move.
+// src/ui/Select.tsx — the ONE dropdown (look B). It replaced the old Pick family, deleted
+// once the last screen that used it (Doctor) moved to look B.
 //
 // A button showing the current value and an up/down chevron; a click opens an anchored
 // list in the `Menu` chrome (portaled to <body>, placed from the trigger's own rect, left

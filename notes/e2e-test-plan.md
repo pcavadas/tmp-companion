@@ -8,7 +8,7 @@ Discovery-only artifact (no implementation). **Currency rule:** the operational
 instructions (runner invocations, preconditions, recovery) are kept current; the
 scenario inventory and automation backlog are a snapshot as of the date above — check
 `notes/user-journeys.md` + `ls e2e/specs/` for today's coverage. Maps **every** interactive surface, state
-machine, edge state, and chaos sequence across the tabs (5 at snapshot time; Doctor landed after — its journeys are tracked in `notes/user-journeys.md` and gated by `doctor.spec.ts` + `doctor-apply.online.spec.ts`), consolidates them into a runnable
+machine, edge state, and chaos sequence across the tabs (5 at snapshot time; Doctor landed after — its journeys are tracked in `notes/user-journeys.md` and gated by `doctor.spec.ts` + `doctor.online.spec.ts`; Doctor never writes, so no spec reads a Doctor save back), consolidates them into a runnable
 scenario set, and tags each scenario with a regression-automation recommendation.
 
 Sources: a full read of `src/views/**`, `src/App.tsx`, `src/ui/{DeviceStatus,ErrorBoundary}`,
@@ -344,8 +344,8 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 ## 8. CLAUDE.md corrections found during discovery
 
 1. ✅ resolved (2026-07-05): **No "Disclaimer/Backup" wizard stage.** CLAUDE.md and
-   `overlays/StepRail.tsx` (then in `WizardShell.tsx`) now both describe the 3-step rail (Set up · Level · Summary) —
-   the doc/code mismatch is gone.
+   the flow's Steps (`LEVEL_STEPS`, shown by `FlowPage`; the wizard rail it replaced is gone) both
+   describe the 3 steps (Set up · Level · Summary) — the doc/code mismatch is gone.
 2. ✅ resolved (2026-07-05): **Row click does not recall the preset.** `LevelView.tsx` and
    `PresetRow.tsx` comments now agree with the code (click only selects; recall is owned by
    Pro Control / the footswitches).

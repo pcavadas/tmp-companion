@@ -4,7 +4,11 @@
 
 import { describe, expect, it } from "vitest";
 
-import { estimateSecsLeft, avgSoundMs } from "../views/doctor/estimateSecsLeft";
+import {
+  estimateSecsLeft,
+  avgSoundMs,
+  timeLeftText,
+} from "../views/doctor/estimateSecsLeft";
 
 describe("estimateSecsLeft", () => {
   it("full-queue start: no time elapsed on the current sound", () => {
@@ -96,5 +100,20 @@ describe("estimateSecsLeft + avgSoundMs replay (HW scenario, preset 024)", () =>
     // tick after the slow sound 1 completes (30 -> 44) — the old
     // mean-from-start model jumped +35 (24 -> 59) on this same timeline.
     expect(maxJump).toBeLessThanOrEqual(15);
+  });
+});
+
+describe("timeLeftText", () => {
+  it("counts seconds under a minute", () => {
+    expect(timeLeftText(30)).toBe("About 30 seconds left");
+    expect(timeLeftText(1)).toBe("About 1 second left");
+    expect(timeLeftText(59)).toBe("About 59 seconds left");
+  });
+
+  it("counts whole minutes from a minute up, rounded up", () => {
+    expect(timeLeftText(60)).toBe("About 1 minute left");
+    expect(timeLeftText(61)).toBe("About 2 minutes left");
+    expect(timeLeftText(120)).toBe("About 2 minutes left");
+    expect(timeLeftText(121)).toBe("About 3 minutes left");
   });
 });

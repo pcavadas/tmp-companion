@@ -235,9 +235,6 @@ mod imp {
         *crate::lock_ok(&ctx.session) = None;
         note_detached();
         crate::monitor::reset_startup_state();
-        // An offline unit can be edited elsewhere (Pro Control, the unit itself) --
-        // the Doctor's cached BEFORE clip can no longer be trusted.
-        crate::commands::doctor::clear_doctor_before_cache();
         log::info!("hotplug: TMP detached — session released");
         let _ = ctx.app.emit(EVT_DETACHED, ());
     }
@@ -362,11 +359,10 @@ mod imp {
     fn emit_event(app: &tauri::AppHandle, session: &Arc<Mutex<Option<Session>>>, evt: &str) {
         if evt == EVT_DETACHED {
             // Same cleanup order as macOS: release the stale handle, reset the
-            // monitor and Doctor caches, then notify the frontend.
+            // monitor, then notify the frontend.
             *crate::lock_ok(session) = None;
             note_detached();
             crate::monitor::reset_startup_state();
-            crate::commands::doctor::clear_doctor_before_cache();
             log::info!("hotplug: TMP detached — session released");
         } else {
             log::info!("hotplug: TMP attached");

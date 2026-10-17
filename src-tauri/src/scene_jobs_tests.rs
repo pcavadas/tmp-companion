@@ -746,11 +746,8 @@ fn bake_gate_preset() -> serde_json::Value {
 // overlays untouched). Classifying it as a knob overlay is the bug this split fixes, so
 // each shape below is pinned exactly.
 
-/// `saved_preset()` with scene 0's `ampA` overlay replaced by `params`. `pub(crate)`
-/// so `commands::doctor_tests`' `bypass_only_conflict` tests share this fixture
-/// shape instead of re-typing it (both scan `scene_overlay` against `ampA`/`G1`/
-/// `ACD_TwinReverb`).
-pub(crate) fn with_scene0_overlay(params: serde_json::Value) -> serde_json::Value {
+/// `saved_preset()` with scene 0's `ampA` overlay replaced by `params`.
+fn with_scene0_overlay(params: serde_json::Value) -> serde_json::Value {
     let mut p = saved_preset();
     p["scenes"][0]["guitarNodes"]["G1"]["ampA"] =
         serde_json::json!({ "dspUnitParameters": params });
@@ -838,18 +835,14 @@ fn restating_base_skips_a_bypass_only_scene_which_inherits_the_bake() {
 // outright ("shares knobs with base"); `shared_write_is_scene_local` clears it.
 
 /// `hbe_boost_preset()`'s node id/param, named once so the matrix tests below don't repeat
-/// the literals. `pub(crate)` alongside the preset builder — `commands::doctor_tests`'
-/// `bypass_only_conflict` matrix reuses both rather than re-typing the anatomy.
-pub(crate) const HBE_NODE: &str = "boost";
-pub(crate) const HBE_PARAM: &str = "gain";
+/// the literals.
+const HBE_NODE: &str = "boost";
+const HBE_PARAM: &str = "gain";
 
 /// The bug's exact shape: one node (`boost`/`ACD_Boost`, group G1) bypassed in base with
 /// `gain` 2.5, and 4 scenes — Dirt/Crunch (Full, own gain), Clean (bypass-only, stays
 /// bypassed), Solo (bypass-only, un-bypassed — the sole audible scene for a shared write).
-/// `pub(crate)` so `commands::doctor_tests` can drive `bypass_only_conflict` (the OTHER
-/// consumer of `scene_write_verdict_for_param`) against the exact same anatomy instead of
-/// re-typing it.
-pub(crate) fn hbe_boost_preset() -> serde_json::Value {
+fn hbe_boost_preset() -> serde_json::Value {
     serde_json::json!({
         "lastLoadedScene": 2,
         "audioGraph": { "guitarNodes": { "G1": [

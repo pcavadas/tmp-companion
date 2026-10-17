@@ -73,24 +73,19 @@ required_err() { (cd "$r" && /bin/bash scripts/gates.sh --required-online 3>&1 1
 # The remote twin's reading (remote-lane.yml): `<class>@remote` policy rows win.
 required_remote() { (cd "$r" && TMP_GATES_LANE=remote /bin/bash scripts/gates.sh --required-online 2>/dev/null) | tr '\n' ' ' | sed 's/ $//'; }
 
-ALL="doctor.online level.online songs copy doctor-apply.online"
+ALL="doctor.online level.online songs copy"
 
 diff_of src-tauri/src/commands/songs.rs
 check "songs.rs → songs" "songs" "$(required)"
-for f in src-tauri/src/doctor.rs src-tauri/src/scene_jobs.rs; do
+# Doctor and leveling share captures (the Doctor check, the leveller and its restore), so
+# both level specs run. Doctor writes nothing, so no spec reads a Doctor save back.
+for f in src-tauri/src/doctor.rs src-tauri/src/scene_jobs.rs src-tauri/src/commands/doctor.rs \
+  src-tauri/src/leveller/mod.rs src-tauri/src/leveller/scene.rs; do
   diff_of "$f"
   check "$f → doctor.online level.online" "doctor.online level.online" "$(required)"
 done
-# Doctor persistence (apply/save/discard, and the restore they share) also needs the one
-# spec that reads a save and a discard back from the device.
-for f in src-tauri/src/commands/doctor.rs src-tauri/src/leveller/mod.rs src-tauri/src/leveller/scene.rs; do
-  diff_of "$f"
-  check "$f → doctor.online level.online doctor-apply.online" \
-    "doctor.online level.online doctor-apply.online" "$(required)"
-done
 # An online spec file's own edit requires that spec alone.
-for pair in doctor.online:e2e/specs/doctor.online.spec.ts level.online:e2e/specs/level.online.spec.ts \
-  doctor-apply.online:e2e/specs/doctor-apply.online.spec.ts; do
+for pair in doctor.online:e2e/specs/doctor.online.spec.ts level.online:e2e/specs/level.online.spec.ts; do
   diff_of "${pair#*:}"
   check "${pair#*:} → ${pair%%:*}" "${pair%%:*}" "$(required)"
 done
@@ -98,7 +93,7 @@ for f in src-tauri/src/session/mod.rs src-tauri/src/session/link.rs src-tauri/sr
   src-tauri/src/session/preset.rs src-tauri/src/blockcaps.rs src-tauri/src/hid/write_completion.rs \
   e2e/fixtures/scenario.ts scripts/e2e.sh scripts/lib/e2e-lane.sh; do
   diff_of "$f"
-  check "$f → all five" "$ALL" "$(required)"
+  check "$f → all four" "$ALL" "$(required)"
 done
 # The song-list harvest runs before every spec (scan + seed), so songs alone covers it.
 diff_of src-tauri/src/session/songs.rs
@@ -107,18 +102,18 @@ check "session/songs.rs → songs" "songs" "$(required)"
 for f in scripts/e2e.sh scripts/level-validate.sh scripts/device-lock.sh scripts/lib/e2e-lane.sh \
   e2e/playwright.online.config.ts; do
   diff_of "$f"
-  check "$f → all five on the unit" "$ALL" "$(required)"
+  check "$f → all four on the unit" "$ALL" "$(required)"
   check "$f → nothing on the twin" "" "$(required_remote)"
 done
 # The twin's own runner: every spec on the twin, nothing on the unit.
 for f in scripts/e2e-remote.sh e2e/playwright.remote.config.ts; do
   diff_of "$f"
   check "$f → nothing on the unit" "" "$(required)"
-  check "$f → all five on the twin" "$ALL" "$(required_remote)"
+  check "$f → all four on the twin" "$ALL" "$(required_remote)"
 done
 # Shared harness: both lanes run it.
 diff_of e2e/fixtures/scenario.ts
-check "scenario.ts → all five on the twin too" "$ALL" "$(required_remote)"
+check "scenario.ts → all four on the twin too" "$ALL" "$(required_remote)"
 diff_of src-tauri/src/commands/songs.rs
 check "a class with no @remote row reads the same on the twin" "songs" "$(required_remote)"
 diff_of src-tauri/Cargo.lock
@@ -130,7 +125,7 @@ check "session/ftsw.rs → doctor.online level.online" "doctor.online level.onli
 # A session command module that touches a wait primitive or a window const is transport.
 diff_of src-tauri/src/session/ftsw.rs
 printf '        self.pump_silent(LIVE_BEAT_MS)?;\n' >> "$r/src-tauri/src/session/ftsw.rs"
-check "session/ftsw.rs touching a pump → all five" "$ALL" "$(required)"
+check "session/ftsw.rs touching a pump → all four" "$ALL" "$(required)"
 check "the timing escalation names the file" 1 "$(required_err | grep -c 'advisory: src-tauri/src/session/ftsw.rs touches session timing')"
 for f in src-tauri/src/session/tests.rs src-tauri/src/session/boundary_tests.rs src-tauri/src/session/wire_golden.txt; do
   diff_of "$f"
@@ -144,10 +139,10 @@ for f in notes/e2e-test-plan.md scripts/gate-map.tsv scripts/gates.sh .github/wo
   check "$f → nothing" "" "$(required)"
 done
 diff_of src-tauri/src/foo.rs
-check "unmapped src-tauri/src/foo.rs → all five" "$ALL" "$(required)"
+check "unmapped src-tauri/src/foo.rs → all four" "$ALL" "$(required)"
 check "unmapped file is named as unclassified" 1 "$(required_err | grep -c 'unclassified: src-tauri/src/foo.rs')"
 diff_of src-tauri/src/commands/songs.rs src-tauri/src/leveller/mod.rs
-check "songs.rs + leveller/mod.rs → canonical order" "doctor.online level.online songs doctor-apply.online" "$(required)"
+check "songs.rs + leveller/mod.rs → canonical order" "doctor.online level.online songs" "$(required)"
 diff_of src-tauri/src/commands/bulk_replace.rs
 check "unexercised file → ANY" "ANY" "$(required)"
 check "unexercised file prints an advisory" 1 "$(required_err | grep -c 'advisory (unexercised)')"

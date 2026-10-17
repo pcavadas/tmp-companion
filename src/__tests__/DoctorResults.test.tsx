@@ -1,272 +1,41 @@
-// src/__tests__/DoctorResults.test.tsx — the Doctor RESULTS page in its dense
-// row-per-sound form: summary copy + counts, worst-first ordering, the "Needs a
-// look" filter, per-row expansion (explainer + prescription), the healthy-collapse
-// reveal, the shared-block caption at row level, the synthetic Level-jumps row, and
-// the prescription lifecycle (apply → ack-gated save → saved; discard). The device
-// commands (apply/save/discard) are mocked.
+// src/__tests__/DoctorResults.test.tsx — Doctor's Results page (look B): one flat list
+// worst first, the worst sound open on arrival with its findings (name, when it's heard,
+// explanation, band meter, "What to change" in the backend's order), rows with no
+// loudness, band picture or venue icons, the folded clean row, the "Scenes" and
+// "Footswitches" rows, errors worded by typed kind, the reference and "To sound like …",
+// the wide window's side panel, and the footer. Doctor never writes: no command is sent
+// from this page. The stopped-check titles are the #190 gate.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { invoke } from "@tauri-apps/api/core";
 
-vi.mock("../lib/invoke", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/invoke")>();
-  return {
-    ...actual,
-    doctorApply: vi.fn(),
-    doctorSave: vi.fn(),
-    doctorDiscard: vi.fn(),
-  };
-});
-
-// Imported AFTER the mock so the view + prescription cards pick up the mocks.
-import { doctorApply, doctorSave, doctorDiscard } from "../lib/invoke";
 import { DoctorResults } from "../views/doctor/DoctorResults";
+import {
+  DOCTOR_STEPS,
+  DOCTOR_STEPS_SKIPPED,
+} from "../views/doctor/useDoctorFlow";
+import type { ResultsContext, SoundName } from "../views/doctor/resultsModel";
 import type {
-  DoctorApplyResult,
   DoctorCheckResult,
   DoctorDiag,
   DoctorInputArg,
-  DoctorLevelingDamageHint,
-  DoctorOp,
+  DoctorPresetResult,
   DoctorSoundResult,
   FootswitchInfo,
+  GraphNode,
   SilenceHint,
 } from "../lib/types";
 import { renderWithTheme } from "./testKit";
 
-const NAMES = new Map<number, string>([
-  [0, "Studio Clean"],
-  [1, "Muddy Rhythm"],
-  [2, "Broken Lead"],
-]);
+const LABELS = ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"];
 
-// One all-clear preset, one high-severity preset (a banded muddy diag with a
-// oneclick + advisory rx, a time-domain washed-out diag, and a scene-consistency
-// jump of +6 dB), and one preset whose single sound errored.
-function fixture(): DoctorCheckResult {
-  return {
-    presets: [
-      {
-        listIndex: 0,
-        sounds: [
-          {
-            key: "p0",
-            listIndex: 0,
-            scene: null,
-            footswitch: null,
-            label: "Clean Base",
-            tag: null,
-            diags: [],
-            sceneOverrides: [],
-            status: "measured",
-            integratedLufs: -20,
-            tailRatioDb: 0,
-            balanceDb: [],
-            bandLabels: [
-              "Lows",
-              "Low mids",
-              "Mids",
-              "High mids",
-              "Highs",
-              "Air",
-            ],
-            cutThrough: null,
-            error: null,
-            skippedBandCount: 0,
-          },
-        ],
-        sceneConsistency: null,
-        levelingDamage: [],
-      },
-      {
-        listIndex: 1,
-        sounds: [
-          {
-            key: "p1s0",
-            listIndex: 1,
-            scene: null,
-            footswitch: null,
-            label: "Rhythm Crunch",
-            tag: "BASE",
-            diags: [
-              {
-                key: "muddy",
-                label: "Muddy",
-                sev: "high",
-                severity: 4.2,
-                z: 10.5,
-                bands: [1],
-                direction: "strong",
-                detail: "+4.2 dB around 250 Hz",
-                fromLevel: "rehearsal",
-                explain:
-                  "The low mids build up and stack with the bass player.",
-                rx: [
-                  {
-                    kind: "oneclick",
-                    title: "Add a low cut at 90 Hz",
-                    detail: "Trims the boom without thinning the body.",
-                    cpuNote: "+0.4% CPU",
-                    ops: [
-                      {
-                        kind: "param",
-                        groupId: "g",
-                        nodeId: "n",
-                        param: "hpf",
-                        value: 90,
-                      },
-                    ],
-                  },
-                  {
-                    kind: "advisory",
-                    title: "Nudge Bass down a notch",
-                    detail: "Roll the amp's Bass back a hair.",
-                    cpuNote: "",
-                    ops: [],
-                  },
-                ],
-              },
-            ],
-            sceneOverrides: [],
-            status: "measured",
-            integratedLufs: -18,
-            tailRatioDb: 0,
-            balanceDb: [-6, 4, -2, -8, -12, -18],
-            bandLabels: [
-              "Lows",
-              "Low mids",
-              "Mids",
-              "High mids",
-              "Highs",
-              "Air",
-            ],
-            cutThrough: null,
-            error: null,
-            skippedBandCount: 0,
-          },
-          {
-            key: "p1s1",
-            listIndex: 1,
-            scene: 0,
-            footswitch: null,
-            label: "Lead Solo",
-            tag: "FS1",
-            diags: [
-              {
-                key: "washed",
-                label: "Washed out",
-                sev: "med",
-                severity: 6,
-                z: 15,
-                bands: [],
-                direction: "strong",
-                detail: "tail 6 dB over dry",
-                fromLevel: "quiet",
-                explain: "The reverb tail is burying the dry signal.",
-                rx: [
-                  {
-                    kind: "oneclick",
-                    title: "Bring the reverb mix down to 25%",
-                    detail: "Keeps the space, restores the attack.",
-                    cpuNote: "0% CPU",
-                    ops: [
-                      {
-                        kind: "param",
-                        groupId: "g",
-                        nodeId: "verb",
-                        param: "mix",
-                        value: 25,
-                      },
-                    ],
-                  },
-                ],
-              },
-            ],
-            sceneOverrides: [
-              { group_id: "g", node_id: "verb", bypassed: false, params: {} },
-            ],
-            status: "measured",
-            integratedLufs: -19,
-            tailRatioDb: 6,
-            balanceDb: [-4, -2, 0, -3, -5, -7],
-            bandLabels: [
-              "Lows",
-              "Low mids",
-              "Mids",
-              "High mids",
-              "Highs",
-              "Air",
-            ],
-            cutThrough: null,
-            error: null,
-            skippedBandCount: 0,
-          },
-        ],
-        sceneConsistency: {
-          rows: [
-            { name: "Rhythm", tag: "BASE", deltaDb: 0, isRef: true },
-            { name: "Crunch", tag: "FS1", deltaDb: 6, isRef: false },
-          ],
-          worstName: "Crunch",
-          worstDeltaDb: 6,
-          rx: [
-            {
-              kind: "advisory",
-              title: "Crunch is much louder than the base sound",
-              detail:
-                "Crunch jumps +6.0 dB when you switch to it — level it from the Level tab.",
-              cpuNote: "",
-              ops: [],
-            },
-          ],
-        },
-        levelingDamage: [],
-      },
-      {
-        listIndex: 2,
-        sounds: [
-          {
-            key: "p2",
-            listIndex: 2,
-            scene: null,
-            footswitch: null,
-            label: "Broken Base",
-            tag: null,
-            diags: [],
-            sceneOverrides: [],
-            status: "error",
-            integratedLufs: null,
-            tailRatioDb: null,
-            balanceDb: [],
-            bandLabels: [
-              "Lows",
-              "Low mids",
-              "Mids",
-              "High mids",
-              "Highs",
-              "Air",
-            ],
-            cutThrough: null,
-            error: "The capture came back silent — check the cable.",
-            skippedBandCount: 0,
-          },
-        ],
-        sceneConsistency: null,
-        levelingDamage: [],
-      },
-    ],
-    stopped: false,
-  };
-}
-
-/** The `doctor_check` input a sound was diagnosed with (chain + roster empty
- *  unless the test supplies them). */
-function inputFor(
+function sound(
   key: string,
   listIndex: number,
-  extra: Partial<DoctorInputArg> = {},
-): DoctorInputArg {
+  over: Partial<DoctorSoundResult> = {},
+): DoctorSoundResult {
   return {
     key,
     listIndex,
@@ -274,1365 +43,757 @@ function inputFor(
     footswitch: null,
     label: key,
     tag: null,
-    topologyId: null,
-    calibrationLufs: null,
-    profileId: null,
-    nodes: [],
-    footswitches: [],
-    sceneOverrides: [],
-    ...extra,
-  };
-}
-
-function renderResults(
-  result: DoctorCheckResult = fixture(),
-  onCheckMore: () => void = () => undefined,
-  silenceHintByIndex: Map<number, SilenceHint> = new Map<number, SilenceHint>(),
-  inputByKey = new Map<string, DoctorInputArg>(),
-) {
-  return renderWithTheme(
-    <DoctorResults
-      result={result}
-      presetNames={NAMES}
-      inputByKey={inputByKey}
-      silenceHintByIndex={silenceHintByIndex}
-      onCheckMore={onCheckMore}
-    />,
-  );
-}
-
-function resetMocks() {
-  vi.mocked(doctorApply).mockReset();
-  vi.mocked(doctorSave).mockReset();
-  vi.mocked(doctorDiscard).mockReset();
-  vi.mocked(doctorApply).mockResolvedValue({
-    beforeClip: "data:audio/wav;base64,AAAA",
-    afterClip: "data:audio/wav;base64,BBBB",
-  });
-  vi.mocked(doctorSave).mockResolvedValue(undefined);
-  vi.mocked(doctorDiscard).mockResolvedValue(undefined);
-}
-
-describe("DoctorResults — summary + cards", () => {
-  beforeEach(resetMocks);
-
-  it("summarizes worst-first with the right counts", () => {
-    renderResults();
-    expect(screen.getByText("1 of 3 presets need a look")).toBeInTheDocument();
-    // n-of-total flagged, then the scene-jump clause (the fixture's +6 dB jump
-    // is its own preset's ONLY finding besides the sound diag), then the
-    // needs-attention count folding in that high-severity scene jump (the
-    // sound-level "Muddy" high diag + the scene jump = 2).
-    expect(
-      screen.getByText(
-        /2 of 4 sounds flagged · level jumps in 1 preset · 2 need attention/,
-      ),
-    ).toBeInTheDocument();
-  });
-
-  it("counts a scene-consistency-only preset without an '0 of' subtitle lie", () => {
-    // A preset with a BIG scene jump but no sound-level diags at all: the old
-    // subtitle only walked sounds[].diags, so soundsFlagged/needAttention both
-    // read 0 while the title (presetLookCount, which DOES see sceneConsistency)
-    // said "1 preset needs a look" — a self-contradictory "0 of N flagged".
-    const sceneOnly: DoctorCheckResult = {
-      presets: [
-        {
-          listIndex: 0,
-          sounds: [
-            {
-              key: "p0",
-              listIndex: 0,
-              scene: null,
-              footswitch: null,
-              label: "Clean Base",
-              tag: null,
-              diags: [],
-              sceneOverrides: [],
-              status: "measured",
-              integratedLufs: -20,
-              tailRatioDb: 0,
-              balanceDb: [],
-              bandLabels: [
-                "Lows",
-                "Low mids",
-                "Mids",
-                "High mids",
-                "Highs",
-                "Air",
-              ],
-              cutThrough: null,
-              error: null,
-              skippedBandCount: 0,
-            },
-          ],
-          sceneConsistency: {
-            rows: [
-              { name: "Base", tag: "BASE", deltaDb: 0, isRef: true },
-              { name: "Crunch", tag: "FS1", deltaDb: 7, isRef: false },
-            ],
-            worstName: "Crunch",
-            worstDeltaDb: 7,
-            rx: [],
-          },
-          levelingDamage: [],
-        },
-      ],
-      stopped: false,
-    };
-    renderResults(sceneOnly);
-    expect(screen.getByText("1 of 1 presets need a look")).toBeInTheDocument();
-    const subtitle = screen.getByText(/level jumps in 1 preset/);
-    expect(subtitle.textContent).not.toMatch(/0 of/);
-    // The +7 dB jump is > the 5 dB high-severity cutoff, so it also counts
-    // toward "need attention".
-    expect(subtitle.textContent).toMatch(/1 needs attention/);
-  });
-
-  it("shows an all-clear summary + no filter when nothing is flagged", () => {
-    const clean: DoctorCheckResult = {
-      presets: [
-        {
-          listIndex: 0,
-          sounds: [
-            {
-              key: "p0",
-              listIndex: 0,
-              scene: null,
-              footswitch: null,
-              label: "Clean Base",
-              tag: null,
-              diags: [],
-              sceneOverrides: [],
-              status: "measured",
-              integratedLufs: -20,
-              tailRatioDb: 0,
-              balanceDb: [],
-              bandLabels: [
-                "Lows",
-                "Low mids",
-                "Mids",
-                "High mids",
-                "Highs",
-                "Air",
-              ],
-              cutThrough: null,
-              error: null,
-              skippedBandCount: 0,
-            },
-          ],
-          sceneConsistency: null,
-          levelingDamage: [],
-        },
-      ],
-      stopped: false,
-    };
-    renderResults(clean);
-    expect(screen.getByText("All 1 sound sounds good")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Nothing to fix — Doctor didn't find any tone problems.",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("radiogroup", { name: "Filter results" }),
-    ).not.toBeInTheDocument();
-    // The happy path shows the clean card itself — no "Show all" strip hiding it.
-    expect(screen.getByText("Clean Base")).toBeInTheDocument();
-    expect(screen.queryByText("Show all")).not.toBeInTheDocument();
-  });
-
-  it("shows per-card status badges (count + all-clear)", async () => {
-    const user = userEvent.setup();
-    renderResults();
-    // The high preset: 2 diagnoses + 1 scene finding = 3 things.
-    expect(screen.getByText("3 to look at")).toBeInTheDocument();
-    // Default filter hides the fully-clean preset; the errored preset stays and
-    // reads "Not fully checked" — its only sound was never heard, so it is not
-    // "All clear" (#190). Reveal the clean one via "Everything".
-    expect(screen.queryByText("All clear")).not.toBeInTheDocument();
-    expect(screen.getByText("Not fully checked")).toBeInTheDocument();
-    await user.click(screen.getByRole("radio", { name: "Everything" }));
-    expect(screen.getAllByText("All clear")).toHaveLength(1);
-  });
-
-  it("orders the cards worst-first, ties broken by slot", async () => {
-    const user = userEvent.setup();
-    const { container } = renderResults();
-    await user.click(screen.getByRole("radio", { name: "Everything" }));
-    const text = container.textContent;
-    const muddy = text.indexOf("Muddy Rhythm");
-    const clean = text.indexOf("Studio Clean");
-    const broken = text.indexOf("Broken Lead");
-    expect(muddy).toBeGreaterThanOrEqual(0);
-    expect(muddy).toBeLessThan(clean);
-    expect(clean).toBeLessThan(broken);
-  });
-
-  it("renders an errored sound as a message, not a diagnosis", () => {
-    renderResults();
-    expect(
-      screen.getByText("The capture came back silent — check the cable."),
-    ).toBeInTheDocument();
-  });
-
-  it("expands a problem row to show its explanation, detail, and fix; collapses on a second click", async () => {
-    const user = userEvent.setup();
-    renderResults();
-    const explain = "The low mids build up and stack with the bass player.";
-    expect(screen.queryByText(explain)).not.toBeInTheDocument();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    expect(screen.getByText(explain)).toBeInTheDocument();
-    expect(screen.getByText("+4.2 dB around 250 Hz")).toBeInTheDocument();
-    // The finding carries a level indicator for the quietest level it fires at
-    // (fromLevel "rehearsal" → the aria/title says "at rehearsal volume and up").
-    expect(
-      screen.getAllByRole("img", { name: /at rehearsal volume and up/i })
-        .length,
-    ).toBeGreaterThan(0);
-    expect(screen.getByText("Add a low cut at 90 Hz")).toBeInTheDocument();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    expect(screen.queryByText(explain)).not.toBeInTheDocument();
-  });
-
-  it("shows a fires-at-every-volume finding as an at-any-volume indicator (previously invisible)", () => {
-    renderResults();
-    // "Washed out" fires at fromLevel "quiet" (every volume). The old text pill
-    // rendered NOTHING for that case; the indicator now shows it as an all-lit,
-    // accessibly-labelled state on the collapsed triage row.
-    expect(
-      screen.getAllByRole("img", { name: /washed out at any volume/i }).length,
-    ).toBeGreaterThan(0);
-  });
-
-  it("shows the full BandMeter only for a banded diagnosis, no toggle", async () => {
-    const user = userEvent.setup();
-    renderResults();
-    // Muddy (bands: [1]) draws the labelled BandMeter; Washed out (no bands) doesn't.
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(screen.getByText("Lead Solo"));
-    expect(screen.getAllByText("Lows")).toHaveLength(1);
-    expect(screen.queryByText("Show the frequencies")).not.toBeInTheDocument();
-  });
-
-  it("does not expand a clear or errored row", async () => {
-    const user = userEvent.setup();
-    renderResults();
-    await user.click(screen.getByRole("radio", { name: "Everything" }));
-    // Clear row: clicking reveals nothing (no prescription surfaces).
-    await user.click(screen.getByText("Clean Base"));
-    // Errored row: clicking keeps the message, opens nothing.
-    await user.click(screen.getByText("Broken Base"));
-    expect(
-      screen.queryByRole("button", { name: /apply to the unit/i }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("gives an advisory prescription no Apply button", async () => {
-    const user = userEvent.setup();
-    renderResults();
-    await user.click(screen.getByText("Rhythm Crunch"));
-    // Only the oneclick rx is applicable; the advisory is static.
-    expect(
-      screen.getAllByRole("button", { name: /apply to the unit/i }),
-    ).toHaveLength(1);
-    expect(screen.getByText("Nudge Bass down a notch")).toBeInTheDocument();
-  });
-});
-
-describe("DoctorResults — filter", () => {
-  beforeEach(resetMocks);
-
-  // The cross-card scoping half of doctor.online.spec.ts's Edge EQ-ring run, which no
-  // device behaviour can change: a ring diagnosed on one preset's sounds renders on THAT
-  // card only — never on a flagged sibling's, never on a clean one's.
-  it("keeps a ring chip on its own card", async () => {
-    const user = userEvent.setup();
-    const ring: DoctorDiag = {
-      key: "resonant",
-      label: "Ringing",
-      sev: "med",
-      severity: 3,
-      z: 8,
-      bands: [3],
-      direction: "strong",
-      detail: "a narrow peak at 2.6 kHz",
-      fromLevel: "quiet",
-      explain: "A narrow peak rings over every note.",
-      rx: [],
-    };
-    const result = fixture();
-    const [clean, flagged, broken] = result.presets;
-    // Every sound of the middle preset rings, as Edge's base-graph EQ ring does.
-    flagged.sounds = flagged.sounds.map((s) => ({
-      ...s,
-      diags: [...s.diags, ring],
-    }));
-    renderResults(result);
-    await user.click(screen.getByRole("radio", { name: "Everything" }));
-    const card = (listIndex: number): HTMLElement => {
-      const name = NAMES.get(listIndex) ?? "";
-      const el = document.querySelector<HTMLElement>(
-        `[data-preset-card="${name}"]`,
-      );
-      expect(el, `${name}'s card renders`).not.toBeNull();
-      if (!el) throw new Error(name);
-      return el;
-    };
-    expect(
-      within(card(flagged.listIndex)).getAllByText("Ringing"),
-    ).toHaveLength(flagged.sounds.length);
-    for (const sibling of [clean, broken]) {
-      expect(
-        within(card(sibling.listIndex)).queryByText("Ringing"),
-      ).not.toBeInTheDocument();
-    }
-  });
-
-  it("hides fully-clean presets by default and flips via the 'Show all' strip", async () => {
-    const user = userEvent.setup();
-    renderResults();
-    // Default "Needs a look": the clean preset is hidden.
-    expect(screen.queryByText("Studio Clean")).not.toBeInTheDocument();
-    const strip = screen.getByText("1 preset sounds good");
-    expect(strip).toBeInTheDocument();
-    await user.click(strip);
-    expect(screen.getByText("Studio Clean")).toBeInTheDocument();
-  });
-});
-
-describe("DoctorResults — healthy collapse", () => {
-  beforeEach(resetMocks);
-
-  // A flagged preset that also has a clear sound → the collapse line appears.
-  function mixedFixture(): DoctorCheckResult {
-    const muddy: DoctorDiag = {
-      key: "muddy",
-      label: "Muddy",
-      sev: "high",
-      severity: 4,
-      z: 10,
-      bands: [1],
-      direction: "strong",
-      detail: "+4 dB around 250 Hz",
-      fromLevel: "quiet",
-      explain: "The low mids build up.",
-      rx: [
-        {
-          kind: "advisory",
-          title: "Nudge Bass",
-          detail: "Roll it back.",
-          cpuNote: "",
-          ops: [],
-        },
-      ],
-    };
-    return {
-      presets: [
-        {
-          listIndex: 1,
-          sounds: [
-            {
-              key: "p1s0",
-              listIndex: 1,
-              scene: null,
-              footswitch: null,
-              label: "Rhythm Crunch",
-              tag: "BASE",
-              diags: [muddy],
-              sceneOverrides: [],
-              status: "measured",
-              integratedLufs: -18,
-              tailRatioDb: 0,
-              balanceDb: [-6, 4, -2, -8, -12, -18],
-              bandLabels: [
-                "Lows",
-                "Low mids",
-                "Mids",
-                "High mids",
-                "Highs",
-                "Air",
-              ],
-              cutThrough: null,
-              error: null,
-              skippedBandCount: 0,
-            },
-            {
-              key: "p1s1",
-              listIndex: 1,
-              scene: 0,
-              footswitch: null,
-              label: "Clean Lead",
-              tag: "FS1",
-              diags: [],
-              sceneOverrides: [],
-              status: "measured",
-              integratedLufs: -19,
-              tailRatioDb: 0,
-              balanceDb: [-4, -2, 0, -3, -5, -7],
-              bandLabels: [
-                "Lows",
-                "Low mids",
-                "Mids",
-                "High mids",
-                "Highs",
-                "Air",
-              ],
-              cutThrough: null,
-              error: null,
-              skippedBandCount: 0,
-            },
-          ],
-          sceneConsistency: null,
-          levelingDamage: [],
-        },
-      ],
-      stopped: false,
-    };
-  }
-
-  it("collapses clear rows and reveals them on click", async () => {
-    const user = userEvent.setup();
-    renderResults(mixedFixture());
-    expect(screen.queryByText("Clean Lead")).not.toBeInTheDocument();
-    await user.click(screen.getByText("1 sound checks out"));
-    expect(screen.getByText("Clean Lead")).toBeInTheDocument();
-  });
-});
-
-describe("DoctorResults — Level jumps (scene consistency) row", () => {
-  beforeEach(resetMocks);
-
-  it("renders as a synthetic row and expands to the advisory scene fix", async () => {
-    const user = userEvent.setup();
-    renderResults();
-    expect(screen.getByText("Level jumps")).toBeInTheDocument();
-    expect(screen.getByText("Crunch +6.0 dB vs base")).toBeInTheDocument();
-    // Collapsed: no Apply button (the scene fix is advised, not applied).
-    expect(
-      screen.queryByText(
-        "Run scene leveling from the Level tab to apply this one.",
-      ),
-    ).not.toBeInTheDocument();
-
-    await user.click(screen.getByText("Level jumps"));
-    expect(
-      screen.getByText(
-        "Run scene leveling from the Level tab to apply this one.",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /apply to the unit/i }),
-    ).not.toBeInTheDocument();
-  });
-});
-
-// Minimal one-sound, one-preset fixtures for the P3 fix tests below — full
-// band layout so SoundRow renders normally, everything else at safe defaults.
-function baseSound(
-  overrides: Partial<DoctorSoundResult> = {},
-): DoctorSoundResult {
-  return {
-    key: "p0",
-    listIndex: 0,
-    scene: null,
-    footswitch: null,
-    label: "Test Sound",
-    tag: null,
     diags: [],
-    sceneOverrides: [],
     status: "measured",
-    integratedLufs: -20,
-    tailRatioDb: 0,
-    balanceDb: [0, 0, 0, 0, 0, 0],
-    bandLabels: ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"],
-    cutThrough: null,
+    integratedLufs: -18,
+    tailRatioDb: -40,
+    balanceDb: [-6, 4, -2, -8, -12, -18],
+    bandLabels: LABELS,
+    cutThrough: { contrastDb: 2, factoryPercentile: 62.4, advisory: false },
     error: null,
+    errorKind: null,
     skippedBandCount: 0,
-    ...overrides,
+    ...over,
   };
 }
 
-function singlePresetResult(
-  sound: DoctorSoundResult,
-  levelingDamage: DoctorLevelingDamageHint[] = [],
-): DoctorCheckResult {
+const MUDDY: DoctorDiag = {
+  key: "muddy",
+  label: "Muddy",
+  sev: "high",
+  severity: 4.2,
+  z: 10.5,
+  bands: [1],
+  direction: "strong",
+  detail: "+4.2 dB around 250 Hz",
+  fromLevel: "quiet",
+  explain: "The low mids build up and stack with the bass player.",
+  rx: [
+    {
+      kind: "advisory",
+      title: "Turn the amp's Bass down 1 or 2.",
+      detail: "",
+      cpuNote: "",
+      ops: [],
+    },
+    {
+      kind: "chain",
+      title: "Or add a 10-band EQ after the cab and cut the low mids.",
+      detail: "EQ-10 250 Hz −6 dB",
+      cpuNote: "+3.1% CPU",
+      ops: [],
+    },
+  ],
+};
+
+const DARK: DoctorDiag = {
+  key: "dark",
+  label: "Dark",
+  sev: "med",
+  severity: 1,
+  z: 20,
+  bands: [3, 4, 5],
+  direction: "weak",
+  detail: "tilted 5.0 dB/octave darker",
+  fromLevel: "rehearsal",
+  explain: "The whole tone leans dark, so it sounds dull and boxed in.",
+  rx: [
+    {
+      kind: "advisory",
+      title: "Raise the amp's Treble or Presence.",
+      detail: "",
+      cpuNote: "",
+      ops: [],
+    },
+  ],
+};
+
+function preset(
+  listIndex: number,
+  sounds: DoctorSoundResult[],
+  over: Partial<DoctorPresetResult> = {},
+): DoctorPresetResult {
+  return {
+    listIndex,
+    sounds,
+    sceneConsistency: null,
+    levelingDamage: [],
+    ...over,
+  };
+}
+
+const NAMES: Record<string, SoundName> = {
+  p0: { preset: "Clean DI", name: "Main sound", footswitch: null },
+  p1: { preset: "Tweed Warm", name: "Main sound", footswitch: null },
+  "s1:0": { preset: "Tweed Warm", name: "Lead", footswitch: null },
+  p2: { preset: "Broken Lead", name: "Main sound", footswitch: null },
+};
+
+function ctx(hints: [number, SilenceHint][] = []): ResultsContext {
+  return {
+    soundNames: new Map(Object.entries(NAMES)),
+    presetNames: new Map([
+      [0, "Clean DI"],
+      [1, "Tweed Warm"],
+      [2, "Broken Lead"],
+    ]),
+    silenceHintByIndex: new Map(hints),
+  };
+}
+
+// One clean preset, one with a confident Muddy + medium Dark on its main sound and a
+// medium Dark on its Lead scene, and one whose sound couldn't be checked.
+function fixture(stopped = false): DoctorCheckResult {
   return {
     presets: [
-      {
-        listIndex: sound.listIndex,
-        sounds: [sound],
-        sceneConsistency: null,
-        levelingDamage,
-      },
+      preset(0, [sound("p0", 0)]),
+      preset(1, [
+        sound("p1", 1, { diags: [DARK, MUDDY] }),
+        sound("s1:0", 1, { scene: 0, diags: [{ ...DARK, z: 9 }] }),
+      ]),
+      preset(2, [
+        sound("p2", 2, {
+          status: "error",
+          error: "The capture came back silent — check the cable.",
+          errorKind: "other",
+          integratedLufs: null,
+          cutThrough: null,
+        }),
+      ]),
     ],
-    stopped: false,
+    stopped,
   };
 }
 
-describe("DoctorResults — silence-hint refines a silent-capture error (P3-3)", () => {
-  beforeEach(resetMocks);
+interface RenderOpts {
+  hints?: [number, SilenceHint][];
+  inputs?: DoctorInputArg[];
+  steps?: readonly string[];
+}
 
-  function silentFixture(errorText: string): DoctorCheckResult {
-    return singlePresetResult(
-      baseSound({
-        label: "Broken Base",
-        sceneOverrides: [],
-        status: "error",
-        integratedLufs: null,
-        error: errorText,
-      }),
-    );
-  }
+function renderResults(result: DoctorCheckResult, opts: RenderOpts = {}) {
+  const onCheckMore = vi.fn();
+  const onCheckAgain = vi.fn();
+  const view = renderWithTheme(
+    <DoctorResults
+      result={result}
+      ctx={ctx(opts.hints)}
+      inputByKey={new Map((opts.inputs ?? []).map((i) => [i.key, i]))}
+      steps={opts.steps ?? DOCTOR_STEPS}
+      onCheckMore={onCheckMore}
+      onCheckAgain={onCheckAgain}
+    />,
+  );
+  return { onCheckMore, onCheckAgain, view };
+}
 
-  it("shows the backup-scan cause instead of the raw error when the capture was silent", () => {
-    renderResults(
-      silentFixture("no signal captured"),
-      undefined,
-      new Map([[0, "amp_zero"]]),
-    );
-    expect(screen.getByText("amp output at zero")).toBeInTheDocument();
-    expect(screen.queryByText("no signal captured")).not.toBeInTheDocument();
-  });
+const rowEl = (id: string) => {
+  const el = document.querySelector<HTMLElement>(`[data-result-row="${id}"]`);
+  if (!el) throw new Error(`no row ${id}`);
+  return el;
+};
+const row = (id: string) => within(rowEl(id));
+const rowButton = (id: string) => row(id).getByRole("button");
+const detail = (id: string) =>
+  document.querySelector<HTMLElement>(`[data-result-detail="${id}"]`);
 
-  it("falls back to the generic offbranch status with no hint", () => {
-    renderResults(silentFixture("no signal captured"));
-    expect(screen.getByText("not on USB 1/2")).toBeInTheDocument();
-  });
-
-  it("leaves an unrelated error message untouched even with a hint on file", () => {
-    renderResults(
-      silentFixture("no stimulus reached the device (captured only silence)"),
-      undefined,
-      new Map([[0, "amp_zero"]]),
-    );
-    expect(
-      screen.getByText(
-        "no stimulus reached the device (captured only silence)",
-      ),
-    ).toBeInTheDocument();
-  });
+beforeEach(() => {
+  vi.mocked(invoke).mockClear();
 });
 
-describe("DoctorResults — SNR-gate transparency badge (P3-4)", () => {
-  beforeEach(resetMocks);
-
-  it("shows a titled badge when the coverage gate dropped bands", () => {
-    renderResults(
-      singlePresetResult(
-        baseSound({
-          label: "Quiet DI",
-          skippedBandCount: 2,
-        }),
-      ),
-    );
+describe("DoctorResults — the list", () => {
+  it("titles the page by the rows that need a look, worst first", () => {
+    renderResults(fixture());
     expect(
-      screen.getByTitle("Some checks skipped — signal too quiet on 2 bands"),
-    ).toBeInTheDocument();
-  });
-
-  it("stays hidden on a fully-covered capture", () => {
-    renderResults(singlePresetResult(baseSound({ label: "Clean" })));
-    expect(screen.queryByTitle(/some checks skipped/i)).not.toBeInTheDocument();
-  });
-});
-
-describe("DoctorResults — leveling-damage advisory row (P3-5)", () => {
-  beforeEach(resetMocks);
-
-  const hint: DoctorLevelingDamageHint = {
-    switch: 0,
-    label: "MOD",
-    nodeId: "n1",
-    fenderId: "ACD_TCEChorus",
-    parameterId: "mix",
-    kind: "deletedEffect",
-    detail: "mix: engaged 0.00, base 0.42",
-  };
-
-  it("surfaces even when the preset's only finding is a damage advisory", async () => {
-    const user = userEvent.setup();
-    renderResults(
-      singlePresetResult(baseSound({ label: "Clean Base" }), [hint]),
-    );
-    // Not filtered out of "Needs a look" despite zero diags/errors — the
-    // regression this fix targets (`presetLookCount` must count it).
-    expect(screen.getByText("Leveling damage")).toBeInTheDocument();
-    expect(screen.getByText("1 assignment worth checking")).toBeInTheDocument();
-    await user.click(screen.getByText("Leveling damage"));
-    expect(
-      screen.getByText("mix: engaged 0.00, base 0.42"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("drops to ~0 when engaged — the effect goes silent"),
-    ).toBeInTheDocument();
-  });
-
-  it("stays hidden when there are no advisories", () => {
-    renderResults(singlePresetResult(baseSound({ label: "Clean Base" })));
-    expect(screen.queryByText("Leveling damage")).not.toBeInTheDocument();
-  });
-});
-
-describe("DoctorResults — prescription lifecycle", () => {
-  beforeEach(resetMocks);
-
-  it("applies, auditions, then ack-gates the save through to saved", async () => {
-    const user = userEvent.setup();
-    renderResults();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-
-    expect(await screen.findByText("Listen & compare")).toBeInTheDocument();
-    expect(
-      screen.getByText("Applied to the unit · not saved"),
-    ).toBeInTheDocument();
-    // "Rhythm Crunch" (p1s0) is the BASE sound — scene/footswitch null, and the
-    // preset has no graph/footswitches wired in this fixture, so both arrive
-    // empty. The diagnosed context rides every apply, not just a subset.
-    expect(doctorApply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        listIndex: 1,
-        name: "Muddy Rhythm",
-        scene: null,
-        footswitch: null,
-        nodes: [],
-        footswitches: [],
-      }),
-    );
-
-    const save = screen.getByRole("button", { name: /save to preset/i });
-    expect(save).toBeDisabled();
-    expect(doctorSave).not.toHaveBeenCalled();
-
-    await user.click(screen.getByText("I've backed up with Pro Control"));
-    expect(save).toBeEnabled();
-    await user.click(save);
-
-    expect(await screen.findByText("Saved to the preset.")).toBeInTheDocument();
-    // The save re-applies the SAME ops the card applied (the structural-safety
-    // redesign: doctor_save never persists the live edit buffer).
-    expect(doctorSave).toHaveBeenCalledWith(1, "Muddy Rhythm", null, [
-      { kind: "param", groupId: "g", nodeId: "n", param: "hpf", value: 90 },
-    ]);
-  });
-
-  // #256 / #257: the apply names the finding it treats, and the applied card
-  // reports what the A/B measured — the level gap the audition matched, and the
-  // finding before → after.
-  it("sends the treated finding and shows the measured before → after", async () => {
-    vi.mocked(doctorApply).mockResolvedValue({
-      beforeClip: "data:audio/wav;base64,AAAA",
-      afterClip: "data:audio/wav;base64,BBBB",
-      levels: { beforeLufs: -18, afterLufs: -19.5 },
-      finding: { key: "muddy", before: 2.5, after: null },
-    });
-    const user = userEvent.setup();
-    renderResults();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-
-    expect(
-      await screen.findByText("Muddy: +2.5 dB over → cleared by the fix."),
+      screen.getByRole("heading", { name: "2 sounds need a look" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "After is 1.5 dB quieter. Levels matched for comparison.",
+        "Worst first. Make the change on your Tone Master Pro, then check again.",
       ),
     ).toBeInTheDocument();
-    expect(doctorApply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        diag: { key: "muddy", level: "rehearsal" },
-      }),
+    const ids = [...document.querySelectorAll("[data-result-row]")].map((e) =>
+      e.getAttribute("data-result-row"),
+    );
+    // The danger row, then the caution row, then the one that couldn't be checked,
+    // then the folded clean row (not a result row itself).
+    expect(ids).toEqual(["1|p1", "1|s1:0", "2|p2"]);
+    const steps = screen.getByRole("list", { name: "Steps" });
+    expect(within(steps).getByText("Results")).toHaveAttribute(
+      "aria-current",
+      "step",
     );
   });
 
-  it("applies a SCENE sound's fix under its own scene, not the base", async () => {
-    // "Lead Solo" (p1s1) is scene 0 of preset 1 — the A/B must recall that
-    // scene, not diagnose/audition the as-saved base.
-    const user = userEvent.setup();
-    renderResults();
+  it("names each row by its preset and sound, and lists its findings in order", () => {
+    renderResults(fixture());
+    expect(row("1|p1").getByText("Tweed Warm")).toBeInTheDocument();
+    expect(row("1|p1").getByText("Main sound")).toBeInTheDocument();
+    expect(row("1|p1").getByText("Muddy, Dark")).toBeInTheDocument();
+    expect(row("1|s1:0").getByText("Lead")).toBeInTheDocument();
+    expect(row("1|s1:0").getByText("Dark")).toBeInTheDocument();
+  });
 
-    await user.click(screen.getByText("Lead Solo"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
+  it("puts no loudness, band picture or venue icons on a row", () => {
+    renderResults(fixture());
+    expect(document.body.textContent).not.toMatch(/LUFS/);
+    // Only the open sound (the worst) carries band meters: one per banded finding.
+    expect(screen.getAllByRole("img", { name: /^Tone by band/ })).toHaveLength(
+      2,
     );
+    expect(row("1|s1:0").queryByRole("img")).toBeNull();
+    expect(row("1|s1:0").queryByText("Quiet")).toBeNull();
+  });
 
-    expect(doctorApply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        listIndex: 1,
-        name: "Muddy Rhythm",
-        scene: 0,
-        footswitch: null,
-        // The scene's overlay rides along so the A/B captures in the diagnosed graph.
-        sceneOverrides: [
-          { group_id: "g", node_id: "verb", bypassed: false, params: {} },
-        ],
+  it("opens the worst sound on arrival with its findings, worst first", () => {
+    renderResults(fixture());
+    expect(rowButton("1|p1")).toHaveAttribute("aria-expanded", "true");
+    expect(rowButton("1|s1:0")).toHaveAttribute("aria-expanded", "false");
+    const open = within(detail("1|p1") ?? document.body);
+    const headings = open.getAllByRole("heading").map((h) => h.textContent);
+    expect(headings).toEqual(["Muddy", "Dark"]);
+    expect(open.getByText("Heard at every volume")).toBeInTheDocument();
+    expect(
+      open.getByText("Heard at rehearsal volume and up"),
+    ).toBeInTheDocument();
+    expect(
+      open.getByText("The low mids build up and stack with the bass player."),
+    ).toBeInTheDocument();
+    expect(
+      open.getByRole("img", { name: "Tone by band: Low mids too strong" }),
+    ).toBeInTheDocument();
+    expect(
+      open.getByRole("img", {
+        name: "Tone by band: High mids, Highs and Air too weak",
       }),
-    );
+    ).toBeInTheDocument();
+  });
 
-    // The save must recall the SAME scene, not omit it — omitting it would let
-    // doctor_save's rebuild-from-scratch land the ops in whatever scene the
-    // preset's saved lastLoadedScene happens to be, not the diagnosed scene 0.
-    await user.click(screen.getByText("I've backed up with Pro Control"));
-    await user.click(screen.getByRole("button", { name: /save to preset/i }));
-    expect(await screen.findByText("Saved to the preset.")).toBeInTheDocument();
-    expect(doctorSave).toHaveBeenCalledWith(1, "Muddy Rhythm", 0, [
-      { kind: "param", groupId: "g", nodeId: "verb", param: "mix", value: 25 },
+  it("lists the fixes as steps in the backend's order, and nothing technical", () => {
+    renderResults(fixture());
+    const open = within(detail("1|p1") ?? document.body);
+    const muddy = open.getAllByRole("list")[0];
+    expect(
+      within(muddy)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual([
+      "Turn the amp's Bass down 1 or 2.",
+      "Or add a 10-band EQ after the cab and cut the low mids.",
     ]);
+    expect(open.getAllByText("What to change")).toHaveLength(2);
+    // The technical detail, the CPU note: the log's, not the screen's.
+    expect(screen.queryByText("EQ-10 250 Hz −6 dB")).toBeNull();
+    expect(screen.queryByText("+3.1% CPU")).toBeNull();
+    expect(screen.queryByText("+4.2 dB around 250 Hz")).toBeNull();
   });
 
-  it("discards an applied prescription back to draft", async () => {
+  it("opens and closes rows on click; several may be open", async () => {
+    renderResults(fixture());
     const user = userEvent.setup();
-    renderResults();
+    await user.click(rowButton("1|s1:0"));
+    expect(rowButton("1|s1:0")).toHaveAttribute("aria-expanded", "true");
+    expect(detail("1|p1")).not.toBeNull();
+    expect(detail("1|s1:0")).not.toBeNull();
+    await user.click(rowButton("1|p1"));
+    expect(detail("1|p1")).toBeNull();
+  });
 
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-    const discard = await screen.findByRole("button", { name: /discard/i });
-    await user.click(discard);
-
+  it("words a sound that couldn't be checked by its kind, never the backend's text", () => {
+    renderResults(fixture());
     expect(
-      await screen.findByRole("button", { name: /apply to the unit/i }),
+      row("2|p2").getByText("Couldn't check this sound. Check again."),
     ).toBeInTheDocument();
-    expect(doctorDiscard).toHaveBeenCalledWith(1);
-    expect(doctorSave).not.toHaveBeenCalled();
+    expect(screen.queryByText(/came back silent/)).toBeNull();
+    // Nothing to open.
+    expect(row("2|p2").queryByRole("button")).toBeNull();
   });
 
-  it("locks sibling Apply buttons from the moment an apply is IN FLIGHT", async () => {
-    let resolveApply: (r: DoctorApplyResult) => void = () => undefined;
-    vi.mocked(doctorApply).mockImplementation(
-      () =>
-        new Promise<DoctorApplyResult>((res) => {
-          resolveApply = res;
-        }),
-    );
-    const user = userEvent.setup();
-    renderResults();
-
-    // Expand both problem rows → two Apply buttons.
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(screen.getByText("Lead Solo"));
-    const applies = screen.getAllByRole("button", {
-      name: /apply to the unit/i,
-    });
-    expect(applies).toHaveLength(2);
-    await user.click(applies[0]);
-
-    const sibling = screen.getByRole("button", { name: /apply to the unit/i });
-    expect(sibling).toBeDisabled();
-    expect(
-      screen.getByText("Save or discard the applied fix first."),
-    ).toBeInTheDocument();
-
-    resolveApply({
-      beforeClip: "data:audio/wav;base64,AAAA",
-      afterClip: "data:audio/wav;base64,BBBB",
-    });
-    expect(await screen.findByText("Listen & compare")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    ).toBeDisabled();
-  });
-
-  it("discards the applied-but-unsaved edit on 'Check other sounds' (once)", async () => {
-    const onCheckMore = vi.fn();
-    const user = userEvent.setup();
-    const { unmount } = renderResults(fixture(), onCheckMore);
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-    await screen.findByText("Listen & compare");
-
-    await user.click(
-      screen.getByRole("button", { name: /check other sounds/i }),
-    );
-    expect(doctorDiscard).toHaveBeenCalledWith(1);
-    expect(onCheckMore).toHaveBeenCalled();
-
-    unmount();
-    expect(doctorDiscard).toHaveBeenCalledTimes(1);
-  });
-
-  it("discards the applied-but-unsaved edit on unmount", async () => {
-    const user = userEvent.setup();
-    const { unmount } = renderResults();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-    await screen.findByText("Listen & compare");
-    expect(doctorDiscard).not.toHaveBeenCalled();
-
-    unmount();
-    expect(doctorDiscard).toHaveBeenCalledWith(1);
-    expect(doctorDiscard).toHaveBeenCalledTimes(1);
-  });
-
-  it("discards the applied-but-unsaved edit when its OWN row collapses (page stays mounted)", async () => {
-    // The card unmounts on its own (SoundRow renders the expanded region
-    // conditionally) well before the whole results page ever does — that
-    // must not strand the device edit or the sibling Apply lock.
-    const user = userEvent.setup();
-    renderResults();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(screen.getByText("Lead Solo"));
-    await user.click(
-      screen.getAllByRole("button", { name: /apply to the unit/i })[0],
-    );
-    await screen.findByText("Listen & compare");
-    expect(doctorDiscard).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    ).toBeDisabled();
-
-    // Collapse the row holding the applied-but-unsaved edit.
-    await user.click(screen.getByText("Rhythm Crunch"));
-
-    expect(screen.queryByText("Listen & compare")).not.toBeInTheDocument();
-    expect(doctorDiscard).toHaveBeenCalledWith(1);
-    expect(doctorDiscard).toHaveBeenCalledTimes(1);
-    // ...and the sibling unlocks now that the lock is free.
-    expect(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    ).toBeEnabled();
-  });
-
-  it("won't collapse a row while its apply is in flight; leaving the page discards once and a late resolve doesn't re-discard", async () => {
-    let resolveApply: (r: DoctorApplyResult) => void = () => undefined;
-    vi.mocked(doctorApply).mockImplementation(
-      () =>
-        new Promise<DoctorApplyResult>((res) => {
-          resolveApply = res;
-        }),
-    );
-    const user = userEvent.setup();
-    const { unmount } = renderResults();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-
-    // Busy: the row toggle and "Check other sounds" are inert, so nothing on
-    // the page can orphan the in-flight apply.
-    await user.click(screen.getByText("Rhythm Crunch"));
-    expect(screen.getByText("Applying…")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /check other sounds/i }),
-    ).toBeDisabled();
-    expect(doctorDiscard).not.toHaveBeenCalled();
-
-    // A tab switch can't be disabled: the page unmount discards right away
-    // (the lock was taken before the await).
-    unmount();
-    expect(doctorDiscard).toHaveBeenCalledWith(1);
-    expect(doctorDiscard).toHaveBeenCalledTimes(1);
-
-    // The apply landing afterward must not re-discard nor blow up.
-    resolveApply({
-      beforeClip: "data:audio/wav;base64,AAAA",
-      afterClip: "data:audio/wav;base64,BBBB",
-    });
-    await waitFor(() => {
-      expect(doctorApply).toHaveBeenCalledTimes(1);
-    });
-    expect(doctorDiscard).toHaveBeenCalledTimes(1);
-  });
-
-  it("remembers a SAVED fix across collapse + reopen — no second Apply over the saved preset", async () => {
-    const user = userEvent.setup();
-    renderResults();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-    await screen.findByText("Listen & compare");
-    await user.click(screen.getByText("I've backed up with Pro Control"));
-    await user.click(screen.getByRole("button", { name: /save to preset/i }));
-    await screen.findByText("Saved to the preset.");
-
-    // Collapse (the card unmounts), then reopen (it remounts).
-    await user.click(screen.getByText("Rhythm Crunch"));
-    expect(screen.queryByText("Saved to the preset.")).not.toBeInTheDocument();
-    await user.click(screen.getByText("Rhythm Crunch"));
-
-    expect(screen.getByText("Saved to the preset.")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /apply to the unit/i }),
-    ).not.toBeInTheDocument();
-    expect(doctorApply).toHaveBeenCalledTimes(1);
-    expect(doctorDiscard).not.toHaveBeenCalled();
-  });
-
-  it("does not discard when the page unmounts while a save is in flight", async () => {
-    let resolveSave: () => void = () => undefined;
-    vi.mocked(doctorSave).mockImplementation(
-      () =>
-        new Promise<undefined>((res) => {
-          resolveSave = () => {
-            res(undefined);
-          };
-        }),
-    );
-    const user = userEvent.setup();
-    const { unmount } = renderResults();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-    await screen.findByText("Listen & compare");
-    await user.click(screen.getByText("I've backed up with Pro Control"));
-    await user.click(screen.getByRole("button", { name: /save to preset/i }));
-    expect(doctorSave).toHaveBeenCalledTimes(1);
-
-    // Mid-save: collapse is refused, and leaving the page must not queue a
-    // discard behind the save.
-    await user.click(screen.getByText("Rhythm Crunch"));
-    expect(screen.getByText("Listen & compare")).toBeInTheDocument();
-    unmount();
-    resolveSave();
-    await waitFor(() => {
-      expect(doctorSave).toHaveBeenCalledTimes(1);
-    });
-    expect(doctorDiscard).not.toHaveBeenCalled();
-  });
-
-  it("shows the backend's own reason when an apply is refused (a bare-string rejection)", async () => {
-    vi.mocked(doctorApply).mockRejectedValue(
-      "guarded insert refused: over the CPU budget",
-    );
-    const user = userEvent.setup();
-    renderResults();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-
-    expect(
-      await screen.findByText("guarded insert refused: over the CPU budget"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Couldn't apply this fix.")).toBeNull();
-    // The failed apply released the lock: Apply is offered again.
-    expect(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    ).toBeEnabled();
-  });
-
-  it("does not discard on leave when nothing is applied (or after a save)", async () => {
-    const user = userEvent.setup();
-    const { unmount } = renderResults();
-
-    await user.click(screen.getByText("Rhythm Crunch"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-    await screen.findByText("Listen & compare");
-    await user.click(screen.getByText("I've backed up with Pro Control"));
-    await user.click(screen.getByRole("button", { name: /save to preset/i }));
-    await screen.findByText("Saved to the preset.");
-
-    unmount();
-    expect(doctorDiscard).not.toHaveBeenCalled();
-  });
-});
-
-describe("DoctorResults — shared-block caption", () => {
-  beforeEach(resetMocks);
-
-  const CAPTION =
-    "This block is shared — the change affects all sounds of this preset.";
-
-  function diag(op: DoctorOp, key: string): DoctorDiag {
-    return {
-      key,
-      label: key === "muddy" ? "Muddy" : "Harsh",
-      sev: "high",
-      severity: 4,
-      z: 10,
-      bands: [1],
-      direction: "strong",
-      detail: "+4 dB around 250 Hz",
-      fromLevel: "quiet",
-      explain: "The low mids build up.",
-      rx: [
-        {
-          kind: "oneclick",
-          title: "Add a low cut",
-          detail: "Trims the boom.",
-          cpuNote: "+0.4% CPU",
-          ops: [op],
-        },
-      ],
+  it("refines a silent capture by the preset's silence hint", () => {
+    const r = fixture();
+    r.presets[2].sounds[0] = {
+      ...r.presets[2].sounds[0],
+      error: "no signal captured",
+      errorKind: "no_signal",
     };
-  }
+    renderResults(r, { hints: [[2, "exp_mute"]] });
+    expect(
+      row("2|p2").getByText(
+        "An expression pedal mutes this sound. Move it, then check again.",
+      ),
+    ).toBeInTheDocument();
+  });
 
-  // A single-preset result whose one sound carries the given diagnoses — the caller
-  // supplies whether the sound is a footswitch (key `f0:0`, FootswitchInfo index 0).
-  function fsFixture(
-    diags: DoctorDiag[],
-    footswitch: number | null,
-  ): DoctorCheckResult {
-    const sound: DoctorSoundResult = {
-      key: footswitch == null ? "p0" : "f0:0",
-      listIndex: 0,
-      scene: null,
-      footswitch,
-      label: "Overdrive",
-      tag: footswitch == null ? null : "FS4",
-      diags,
-      sceneOverrides: [],
-      status: "measured",
-      integratedLufs: -18,
-      tailRatioDb: 0,
-      balanceDb: [-6, 4, -2, -8, -12, -18],
-      bandLabels: ["Lows", "Low mids", "Mids", "High mids", "Highs", "Air"],
-      cutThrough: null,
-      error: null,
-      skippedBandCount: 0,
-    };
-    return {
+  it("folds the clean sounds into one row and opens it on click", async () => {
+    renderResults(fixture());
+    const user = userEvent.setup();
+    const fold = screen.getByRole("button", { name: "1 more sounds good" });
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    expect(document.querySelector('[data-result-row="0|p0"]')).toBeNull();
+    await user.click(fold);
+    expect(row("0|p0").getByText("Sounds good")).toBeInTheDocument();
+  });
+
+  it("marks a borderline finding as such, and never sorts it above a real danger row", () => {
+    const borderline: DoctorDiag = { ...MUDDY, z: 1.2 };
+    renderResults({
       presets: [
-        {
-          listIndex: 0,
-          sounds: [sound],
-          sceneConsistency: null,
-          levelingDamage: [],
-        },
+        preset(0, [sound("p0", 0, { diags: [borderline] })]),
+        preset(1, [sound("p1", 1, { diags: [MUDDY] })]),
       ],
       stopped: false,
-    };
-  }
+    });
+    const ids = [...document.querySelectorAll("[data-result-row]")].map((e) =>
+      e.getAttribute("data-result-row"),
+    );
+    expect(ids).toEqual(["1|p1", "0|p0"]);
+    expect(row("0|p0").getByText("Muddy (borderline)")).toBeInTheDocument();
+  });
 
-  // FS4 (switch index 3) toggles one block, node "DRV1".
-  const fsInfo = new Map<number, FootswitchInfo[]>([
-    [
-      0,
-      [
-        {
-          switch: 3,
-          label: "Drive",
-          link_group: null,
-          functions: [
+  it("says when some bands were too quiet to check", () => {
+    const r = fixture();
+    r.presets[1].sounds[0] = { ...r.presets[1].sounds[0], skippedBandCount: 2 };
+    renderResults(r);
+    expect(
+      within(detail("1|p1") ?? document.body).getByText(
+        "Some bands were too quiet to check.",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("DoctorResults — all clear and stopped checks (#190)", () => {
+  it("all clear: says there is nothing to change, offers only Check other sounds", async () => {
+    const { onCheckMore } = renderResults(
+      {
+        presets: [preset(0, [sound("p0", 0)]), preset(1, [sound("p1", 1)])],
+        stopped: false,
+      },
+      { steps: DOCTOR_STEPS_SKIPPED },
+    );
+    expect(
+      screen.getByRole("heading", {
+        name: "Nothing to change in these 2 sounds",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^Worst first/)).toBeNull();
+    expect(row("0|p0").getByText("Sounds good")).toBeInTheDocument();
+    expect(row("1|p1").getByText("Sounds good")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "Check other sounds" }));
+    expect(onCheckMore).toHaveBeenCalledOnce();
+    expect(screen.getByRole("list", { name: "Steps" })).not.toHaveTextContent(
+      "Instrument",
+    );
+  });
+
+  it("a stopped check never claims all clear: it says it stopped, and lists the sounds it never reached", () => {
+    renderResults({
+      presets: [
+        preset(0, [
+          sound("p0", 0),
+          sound("s0:0", 0, { scene: 0, status: "unrun", integratedLufs: null }),
+        ]),
+      ],
+      stopped: true,
+    });
+    expect(
+      screen.getByRole("heading", {
+        name: "Stopped. Nothing to change in the 1 sound checked.",
+      }),
+    ).toBeInTheDocument();
+    // The all-clear title is never claimed while a sound went unchecked.
+    expect(
+      screen.queryByRole("heading", {
+        name: /^Nothing to change in th(ese|is)/,
+      }),
+    ).toBeNull();
+    expect(row("0|s0:0").getByText("Not checked")).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/(^|[^\d.])-?0\.0\s*LUFS/);
+    expect(
+      screen.getByRole("button", { name: "Check again" }),
+    ).toBeInTheDocument();
+  });
+
+  it("a stopped check with findings lists the unreached sounds too", () => {
+    renderResults({
+      presets: [
+        preset(1, [
+          sound("p1", 1, { diags: [MUDDY] }),
+          sound("s1:0", 1, { scene: 0, status: "unrun", integratedLufs: null }),
+        ]),
+      ],
+      stopped: true,
+    });
+    expect(
+      screen.getByRole("heading", { name: "1 sound needs a look" }),
+    ).toBeInTheDocument();
+    expect(row("1|s1:0").getByText("Not checked")).toBeInTheDocument();
+  });
+
+  it("Check again re-runs; Check other sounds goes back to the list", async () => {
+    const { onCheckAgain, onCheckMore } = renderResults(fixture());
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+    expect(onCheckAgain).toHaveBeenCalledOnce();
+    await user.click(
+      screen.getByRole("button", { name: "Check other sounds" }),
+    );
+    expect(onCheckMore).toHaveBeenCalledOnce();
+  });
+});
+
+describe("DoctorResults — preset-level rows", () => {
+  it("shows a volume jump between scenes as its own row, opened to the steps", () => {
+    renderResults({
+      presets: [
+        preset(
+          1,
+          [
+            sound("p1", 1, { label: "Tweed Warm · Base" }),
+            sound("s1:0", 1, { scene: 0, label: "Tweed Warm · Lead" }),
+          ],
+          {
+            sceneConsistency: {
+              rows: [
+                {
+                  name: "Tweed Warm · Base",
+                  tag: "BASE",
+                  deltaDb: 0,
+                  isRef: true,
+                },
+                {
+                  name: "Tweed Warm · Lead",
+                  tag: "FS1",
+                  deltaDb: 6,
+                  isRef: false,
+                },
+              ],
+              worstName: "Tweed Warm · Lead",
+              worstDeltaDb: 6,
+              rx: [
+                {
+                  kind: "advisory",
+                  title: "Turn Lead's amp Output down until it's within 3 dB.",
+                  detail: "",
+                  cpuNote: "",
+                  ops: [],
+                },
+              ],
+            },
+          },
+        ),
+      ],
+      stopped: false,
+    });
+    expect(row("1|consistency").getByText("Scenes")).toBeInTheDocument();
+    expect(
+      row("1|consistency").getByText("Volume jumps between scenes"),
+    ).toBeInTheDocument();
+    // It is the only finding, so it is open on arrival.
+    const open = within(detail("1|consistency") ?? document.body);
+    expect(
+      open.getByText(
+        "Your Lead scene is 6.0 dB louder than the main sound. That's a big jump when you switch.",
+      ),
+    ).toBeInTheDocument();
+    expect(open.getByText("Main sound")).toBeInTheDocument();
+    expect(open.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Turn Lead's amp Output down until it's within 3 dB.",
+      "Level this preset's scenes on the Level tab.",
+    ]);
+  });
+
+  it("shows footswitch assignments worth checking, read from the preset alone", () => {
+    renderResults({
+      presets: [
+        preset(0, [sound("p0", 0)], {
+          levelingDamage: [
             {
-              func: "on-off",
-              group_id: "g",
-              node_id: "DRV1",
-              fender_id: "ACD_Overdrive",
-              parameter_id: null,
-              value_a: null,
-              value_b: null,
-              is_active: false,
+              switch: 8,
+              label: "VERB KILL",
+              nodeId: "n1",
+              fenderId: "ACD_TMSpring63",
+              parameterId: "mix",
+              kind: "deletedEffect",
+              detail: "mix 0.3 → 0.0",
+            },
+            {
+              switch: 9,
+              label: "WAH SWEEP",
+              nodeId: "n2",
+              fenderId: "ACD_CryBabyQ535",
+              parameterId: "position",
+              kind: "sweptOther",
+              detail: "position 0.2 → 0.9",
             },
           ],
-          level_params: [],
-        },
+        }),
       ],
-    ],
-  ]);
-
-  const paramOp = (nodeId: string): DoctorOp => ({
-    kind: "param",
-    groupId: "g",
-    nodeId,
-    param: "hpf",
-    value: 90,
-  });
-
-  function renderShared(
-    result: DoctorCheckResult,
-    roster: FootswitchInfo[] = fsInfo.get(0) ?? [],
-  ) {
-    // Every sound's input carries the preset's FULL roster, as DoctorView
-    // builds it from `allFootswitchInfo`.
-    const inputByKey = new Map(
-      result.presets.flatMap((p) =>
-        p.sounds.map((snd) => [
-          snd.key,
-          inputFor(snd.key, p.listIndex, {
-            footswitch: snd.footswitch,
-            footswitches: roster,
-          }),
-        ]),
+      stopped: false,
+    });
+    expect(
+      row("0|leveling-damage").getByText("2 footswitches worth checking"),
+    ).toBeInTheDocument();
+    const open = within(detail("0|leveling-damage") ?? document.body);
+    expect(
+      open.getByText(
+        "These footswitches change more than the volume. Check them if you didn't set them up that way.",
       ),
-    );
-    return renderWithTheme(
-      <DoctorResults
-        result={result}
-        presetNames={new Map([[0, "Overdrive Rhythm"]])}
-        inputByKey={inputByKey}
-        silenceHintByIndex={new Map()}
-        onCheckMore={() => undefined}
-      />,
-    );
-  }
-
-  it("captions an FS fix that edits a block outside the switch's own set — once per row", async () => {
-    const user = userEvent.setup();
-    // Two diags both editing the shared CAB1 → the caption still shows exactly once.
-    renderShared(
-      fsFixture(
-        [diag(paramOp("CAB1"), "muddy"), diag(paramOp("CAB1"), "harsh")],
-        3,
-      ),
-    );
-    await user.click(screen.getByText("Overdrive"));
-    expect(screen.getAllByText(CAPTION)).toHaveLength(1);
+    ).toBeInTheDocument();
+    expect(open.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "VERB KILL: Turns the effect almost silent when you press it.",
+      "WAH SWEEP: Changes the tone, not only the volume, when you press it.",
+    ]);
+    expect(screen.queryByText("mix 0.3 → 0.0")).toBeNull();
   });
+});
 
-  it("omits the caption when the fix edits the switch's own block", async () => {
-    const user = userEvent.setup();
-    renderShared(fsFixture([diag(paramOp("DRV1"), "muddy")], 3));
-    await user.click(screen.getByText("Overdrive"));
-    expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
-  });
-
-  it("never captions a Base sound (footswitch == null)", async () => {
-    const user = userEvent.setup();
-    renderShared(fsFixture([diag(paramOp("CAB1"), "muddy")], null));
-    await user.click(screen.getByText("Overdrive"));
-    expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
-  });
-
-  it("applies a FOOTSWITCH sound's fix under its own switch + the preset's footswitches", async () => {
-    const user = userEvent.setup();
-    renderShared(fsFixture([diag(paramOp("CAB1"), "muddy")], 3));
-    await user.click(screen.getByText("Overdrive"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-    expect(doctorApply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        listIndex: 0,
-        scene: null,
-        footswitch: 3,
-        footswitches: fsInfo.get(0),
-      }),
-    );
-  });
-
-  // A non-levelable switch (FS1, a phaser with no level param) ahead of the
-  // levelable FS4 in the FULL roster. The diagnosis forced the phaser off;
-  // the A/B must get the same roster or it auditions the phaser ON (#288).
-  const phaser: FootswitchInfo = {
-    switch: 0,
-    label: "Phaser",
+describe("DoctorResults — shared-block line", () => {
+  const AMP: GraphNode = {
+    group_id: "G1",
+    node_id: "amp1",
+    model: "ACD_TweedDeluxe",
+    bypassed: false,
+    params: {},
+  };
+  const FS: FootswitchInfo = {
+    switch: 2,
+    label: "Boost",
     link_group: null,
     functions: [
       {
         func: "on-off",
-        group_id: "g",
-        node_id: "PHS1",
-        fender_id: "ACD_Phaser",
+        group_id: "G1",
+        node_id: "drive1",
+        fender_id: "ACD_Boost",
         parameter_id: null,
         value_a: null,
         value_b: null,
-        is_active: true,
+        is_active: false,
       },
     ],
     level_params: [],
   };
-
-  it("auditions under the SAME full footswitch roster the diagnosis used, incl. non-levelable switches", async () => {
-    const roster = [phaser, ...(fsInfo.get(0) ?? [])];
-    const user = userEvent.setup();
-    renderShared(fsFixture([diag(paramOp("CAB1"), "muddy")], null), roster);
-    await user.click(screen.getByText("Overdrive"));
-    await user.click(
-      screen.getByRole("button", { name: /apply to the unit/i }),
-    );
-    expect(doctorApply).toHaveBeenCalledWith(
-      expect.objectContaining({ footswitch: null, footswitches: roster }),
-    );
-  });
-
-  it("finds an FS sound's own blocks by its switch number, not its levelable-list position", async () => {
-    // Key `f0:0` = position 0 of the LEVELABLE list (FS4), but position 0 of
-    // the full roster is the phaser. A position lookup would treat DRV1 as
-    // shared and caption the row.
-    const user = userEvent.setup();
-    renderShared(fsFixture([diag(paramOp("DRV1"), "muddy")], 3), [
-      phaser,
-      ...(fsInfo.get(0) ?? []),
-    ]);
-    await user.click(screen.getByText("Overdrive"));
-    expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
-  });
-});
-
-describe("DoctorResults — severity (possible verdicts)", () => {
-  beforeEach(resetMocks);
-
-  // One sound with two equal-sev-tint diagnoses so severity is the ONLY
-  // differentiator: a confidently-past-threshold finding (3.0) and a
-  // near-threshold one (0.4 dB = 1σ, below POSSIBLE_MAX_Z).
-  function severityFixture(): DoctorCheckResult {
-    const mk = (key: string, label: string, severity: number): DoctorDiag => ({
-      key,
-      label,
-      sev: "med",
-      severity,
-      z: severity / 0.4,
-      bands: [],
-      direction: "strong",
-      detail: `${label} detail`,
-      fromLevel: "quiet",
-      explain: `${label} explanation.`,
-      rx: [
+  const fsSound = (nodeId: string) =>
+    sound("f1:0", 1, {
+      footswitch: 2,
+      diags: [
         {
-          kind: "advisory",
-          title: `Fix ${label}`,
-          detail: "Advisory.",
-          cpuNote: "",
-          ops: [],
+          ...MUDDY,
+          rx: [
+            {
+              kind: "oneclick",
+              title: "Turn the amp's Bass down 1 or 2.",
+              detail: "",
+              cpuNote: "",
+              ops: [
+                {
+                  kind: "param",
+                  groupId: "G1",
+                  nodeId,
+                  param: "bass",
+                  value: 3,
+                },
+              ],
+            },
+          ],
         },
       ],
     });
-    return {
-      presets: [
-        {
-          listIndex: 0,
-          sounds: [
-            {
-              key: "p0",
-              listIndex: 0,
-              scene: null,
-              footswitch: null,
-              label: "Edge Rhythm",
-              tag: null,
-              // Deliberately possible-first in the source array — the UI must
-              // REORDER it below the confident one.
-              diags: [mk("fizzy", "Fizzy", 0.4), mk("harsh", "Harsh", 3.0)],
-              sceneOverrides: [],
-              status: "measured",
-              integratedLufs: -18,
-              tailRatioDb: 0,
-              balanceDb: [0, 0, 0, 0, 0, 0],
-              bandLabels: [
-                "Lows",
-                "Low mids",
-                "Mids",
-                "High mids",
-                "Highs",
-                "Air",
-              ],
-              cutThrough: null,
-              error: null,
-              skippedBandCount: 0,
-            },
-          ],
-          sceneConsistency: null,
-          levelingDamage: [],
-        },
-      ],
-      stopped: false,
-    };
-  }
+  const input = (): DoctorInputArg => ({
+    key: "f1:0",
+    listIndex: 1,
+    scene: null,
+    footswitch: 2,
+    label: "f",
+    tag: "FS3",
+    topologyId: null,
+    calibrationLufs: null,
+    profileId: null,
+    nodes: [AMP],
+    footswitches: [FS],
+    sceneOverrides: [],
+  });
+  const shared =
+    "This block is shared, so the change affects every sound in this preset.";
 
-  it("mutes a low-severity finding as 'Possible …' and leaves a confident one plain", () => {
-    renderResults(severityFixture());
-    // Low confidence (1σ < POSSIBLE_MAX_Z) → the "possible" chip treatment.
-    expect(screen.getByText("Possible Fizzy")).toBeInTheDocument();
-    // High severity (3.0) → the plain label, no "Possible" prefix.
-    expect(screen.getByText("Harsh")).toBeInTheDocument();
-    expect(screen.queryByText("Possible Harsh")).not.toBeInTheDocument();
+  it("says so when a footswitch sound's fix edits a block every sound uses", () => {
+    renderResults(
+      { presets: [preset(1, [fsSound("amp1")])], stopped: false },
+      { inputs: [input()] },
+    );
+    expect(screen.getAllByText(shared)).toHaveLength(1);
   });
 
-  it("ranks the confident finding above the 'possible' one", () => {
-    const { container } = renderResults(severityFixture());
-    const text = container.textContent;
-    // Confident (Harsh) renders before possible (Fizzy) despite the source order.
-    expect(text.indexOf("Harsh")).toBeGreaterThanOrEqual(0);
-    expect(text.indexOf("Harsh")).toBeLessThan(text.indexOf("Possible Fizzy"));
+  it("stays quiet when the fix edits the switch's own block", () => {
+    renderResults(
+      { presets: [preset(1, [fsSound("drive1")])], stopped: false },
+      { inputs: [input()] },
+    );
+    expect(screen.queryByText(shared)).toBeNull();
   });
 });
 
-// BUG→GATE #190: a stopped run returns the sounds it never reached as `unrun` with no
-// loudness. They must read as unchecked — never as a measured "0.0 LUFS" or "All clear".
-describe("DoctorResults — sounds a stopped run never reached (#190)", () => {
-  beforeEach(resetMocks);
-
-  function soundRow(label: string): HTMLElement {
-    const row = screen
-      .getByText(label)
-      .closest<HTMLElement>("[data-sound-row]");
-    if (row == null) throw new Error(`no sound row for ${label}`);
-    return row;
-  }
-
-  function stoppedRun(): DoctorCheckResult {
-    return {
+describe("DoctorResults — reference and cut-through", () => {
+  it("reads cut-through against the factory presets, and hides it with no comparison", async () => {
+    const r: DoctorCheckResult = {
       presets: [
-        {
-          listIndex: 0,
-          sounds: [
-            baseSound({ key: "p0", label: "Measured Base" }),
-            baseSound({
-              key: "s0:0",
-              scene: 0,
-              label: "Never Reached",
-              sceneOverrides: [],
-              status: "unrun",
-              integratedLufs: null,
-              tailRatioDb: null,
-              balanceDb: [],
-            }),
-          ],
-          sceneConsistency: null,
-          levelingDamage: [],
-        },
+        preset(0, [
+          sound("p0", 0, {
+            cutThrough: {
+              contrastDb: -4,
+              factoryPercentile: 12,
+              advisory: true,
+            },
+          }),
+        ]),
+        preset(1, [
+          sound("p1", 1, {
+            cutThrough: {
+              contrastDb: 2,
+              factoryPercentile: null,
+              advisory: false,
+            },
+          }),
+        ]),
       ],
-      stopped: true,
+      stopped: false,
     };
-  }
-
-  it("labels the unrun sound as not checked, with no loudness", () => {
-    renderResults(stoppedRun());
-    const row = soundRow("Never Reached");
+    renderResults(r);
+    const user = userEvent.setup();
+    await user.click(rowButton("0|p0"));
+    const open = within(detail("0|p0") ?? document.body);
+    expect(open.getByText("Cutting through the mix")).toBeInTheDocument();
     expect(
-      within(row).getByText("Not checked — the run was stopped"),
+      open.getByText("More presence than 12% of the factory presets."),
     ).toBeInTheDocument();
-    expect(within(row).queryByText(/LUFS/)).not.toBeInTheDocument();
-    expect(within(row).queryByText("Sounds good")).not.toBeInTheDocument();
+    expect(
+      open.getByText(
+        "Less presence than most factory presets, so it gets lost in a busy mix.",
+      ),
+    ).toBeInTheDocument();
+    await user.click(rowButton("1|p1"));
+    expect(
+      within(detail("1|p1") ?? document.body).queryByText(
+        "Cutting through the mix",
+      ),
+    ).toBeNull();
   });
 
-  it("never claims all clear while a sound went unchecked", () => {
-    renderResults(stoppedRun());
-    expect(screen.queryByText(/sounds? good$/)).not.toBeInTheDocument();
-    expect(screen.queryByText("All clear")).not.toBeInTheDocument();
-    expect(screen.getByText("Not fully checked")).toBeInTheDocument();
+  it("uses a sound as the reference and tells another how to sound like it", async () => {
+    renderResults(
+      {
+        presets: [
+          preset(0, [sound("p0", 0, { balanceDb: [3, 0, 0, 0, 0, 0] })]),
+          preset(1, [
+            sound("p1", 1, { diags: [MUDDY], balanceDb: [0, 0, 0, 0, 0, 0] }),
+          ]),
+        ],
+        stopped: false,
+      },
+      {
+        inputs: [
+          {
+            key: "p1",
+            listIndex: 1,
+            scene: null,
+            footswitch: null,
+            label: "p1",
+            tag: null,
+            topologyId: null,
+            calibrationLufs: null,
+            profileId: null,
+            nodes: [
+              {
+                group_id: "G1",
+                node_id: "amp1",
+                model: "ACD_TweedDeluxe",
+                bypassed: false,
+                params: {},
+              },
+            ],
+            footswitches: [],
+            sceneOverrides: [],
+          },
+        ],
+      },
+    );
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole("button", { name: "1 more sounds good" }),
+    );
+    await user.click(rowButton("0|p0"));
+    await user.click(
+      within(detail("0|p0") ?? document.body).getByRole("button", {
+        name: "Use as reference",
+      }),
+    );
+    const ref = within(detail("0|p0") ?? document.body);
+    expect(ref.getByText("Reference")).toBeInTheDocument();
+    expect(ref.getByRole("button", { name: "Clear" })).toBeInTheDocument();
+    const other = within(detail("1|p1") ?? document.body);
     expect(
-      screen.getByText(/1 not checked \(the run was stopped\)/),
+      other.getByText("To sound like Clean DI, Main sound"),
     ).toBeInTheDocument();
+    expect(
+      other.getByText("Add a 10-band EQ after the cab and set 62 Hz +3 dB."),
+    ).toBeInTheDocument();
+    await user.click(ref.getByRole("button", { name: "Clear" }));
+    expect(screen.queryByText("To sound like Clean DI, Main sound")).toBeNull();
+  });
+});
+
+describe("DoctorResults — nothing writes", () => {
+  it("sends no command from any click on the page", async () => {
+    renderResults(fixture());
+    const user = userEvent.setup();
+    await user.click(rowButton("1|s1:0"));
+    await user.click(
+      screen.getByRole("button", { name: "1 more sounds good" }),
+    );
+    await user.click(rowButton("0|p0"));
+    await user.click(
+      within(detail("0|p0") ?? document.body).getByRole("button", {
+        name: "Use as reference",
+      }),
+    );
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+  });
+});
+
+describe("DoctorResults — wide window", () => {
+  const original = window.innerWidth;
+  afterEach(() => {
+    act(() => {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: original,
+      });
+      window.dispatchEvent(new Event("resize"));
+    });
   });
 
-  it("titles a stopped run with no findings as stopped, not '0 of N need a look'", () => {
-    renderResults(stoppedRun());
+  it("shows the opened sound beside the list, and a click switches it", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1440,
+    });
+    renderResults(fixture());
+    // The worst sound is shown beside the list, once — not under its row.
+    expect(rowButton("1|p1")).toHaveAttribute("aria-current", "true");
     expect(
-      screen.getByText("Check stopped · nothing flagged so far"),
+      document.querySelectorAll('[data-result-detail="1|p1"]'),
+    ).toHaveLength(1);
+    expect(
+      screen.getByRole("heading", { name: "Tweed Warm Main sound" }),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/0 of \d+ presets? need a look/)).toBeNull();
-  });
-
-  it("keeps the measured sound's own reading", () => {
-    renderResults(stoppedRun());
-    const row = soundRow("Measured Base");
-    expect(within(row).getByText("-20.0")).toBeInTheDocument();
+    await userEvent.setup().click(rowButton("1|s1:0"));
+    expect(rowButton("1|s1:0")).toHaveAttribute("aria-current", "true");
+    expect(rowButton("1|p1")).not.toHaveAttribute("aria-current");
+    expect(detail("1|p1")).toBeNull();
+    expect(detail("1|s1:0")).not.toBeNull();
   });
 });

@@ -24,7 +24,7 @@
 //
 // Fixed in #308, once here:
 //   1. The card PORTALS to `document.body` at `position: fixed`, placed by
-//      `usePickAnchor`'s shared `placeAnchored` rule against the viewport — so a menu on
+//      the shared `placeAnchored` rule (`./placeAnchored`) against the viewport — so a menu on
 //      the last rows of an `overflowY: auto` list (SongList) flips ABOVE its trigger
 //      instead of being clipped by the scroller. It re-places on scroll/resize, when
 //      its own content resizes, and whenever `contentKey` changes (a list whose rows
@@ -47,7 +47,7 @@ import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { useStyles } from "../theme/ThemeContext";
-import { placeAnchored } from "../views/overlays/usePickAnchor";
+import { placeAnchored } from "./placeAnchored";
 
 export interface MenuProps {
   /** Dismiss — fired by a pointerdown outside the card and its anchor box. */

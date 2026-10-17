@@ -171,7 +171,7 @@ pub fn probe_doctor_inject(
     let before_tail = u64::from(before_tail_ms);
 
     // BEFORE: the stored preset as-is (also loads it, so the live edit below
-    // confirms the already-current preset — the doctor_apply shape).
+    // confirms the already-current preset).
     let (_, before_line) = measure(
         &stim,
         "before",

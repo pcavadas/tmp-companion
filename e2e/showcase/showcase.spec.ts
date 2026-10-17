@@ -1,4 +1,5 @@
 import { test, expect } from "../fixtures/test";
+import { runDoctorCheck } from "../fixtures/scenario";
 import { fileURLToPath } from "node:url";
 
 // Marketing-screenshot tour (NOT a gate): drives the REAL React UI against the curated,
@@ -136,16 +137,15 @@ test.describe("Marketing screenshots", () => {
         .click();
     }
     await filter.fill("");
-    await page.getByRole("button", { name: /Check 3 sounds/ }).click();
-    await page.getByRole("button", { name: /Run check on 3 sounds/ }).click();
-    // The run auto-advances to Results on a natural finish (fake capture is instant).
-    // Capture the COLLAPSED results — the full list of diagnoses as chips across the
-    // three cards. Wait on a chip from the first and last card so the list is painted.
-    await expect(page.getByText(/presets? need a look/).first()).toBeVisible({
-      timeout: 120_000,
-    });
-    await expect(page.getByText("Gets lost in the mix").first()).toBeVisible();
-    await expect(page.getByText("Harsh").first()).toBeVisible();
+    await runDoctorCheck(page);
+    // The check moves on to Results by itself (the fake capture is instant). Capture the
+    // results with the worst sound open — the findings listed worst first across the three
+    // presets. Wait on a finding from the first and last preset so the list is painted.
+    await expect(
+      page.getByRole("heading", { name: /sounds? needs? a look/ }),
+    ).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByText(/Gets lost in the mix/).first()).toBeVisible();
+    await expect(page.getByText(/Harsh/).first()).toBeVisible();
     await grab("doctor");
 
     // ── Frame pass: composite each captured tab into a floating macOS window. Done last

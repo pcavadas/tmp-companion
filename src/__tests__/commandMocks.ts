@@ -334,9 +334,6 @@ export const DEFAULT_HANDLERS: Handlers = {
   // doctor
   doctor_check: () => ({ presets: [], stopped: false }),
   cancel_doctor_check: none,
-  doctor_apply: () => ({ beforeClip: "", afterClip: "" }),
-  doctor_save: none,
-  doctor_discard: none,
 
   // profiles / store / support
   get_store: () => makeStore(),

@@ -199,10 +199,10 @@ describe("src/views module shape (#313)", () => {
   });
 
   it("the component detector counts a value re-export from another module", () => {
-    // `export { DialogCardCtx } from "../../ui/dialogContext"` — a re-exported
+    // `export { LevelingWizard } from "./LevelingWizard"` — a re-exported
     // component must count toward the one-per-file cap, not slip past it.
-    const sf = parsed.get(join(VIEWS, "overlays", "wizardContext.ts"));
-    expect(sf && componentExports(sf)).toContain("DialogCardCtx");
+    const sf = parsed.get(join(VIEWS, "overlays", "index.ts"));
+    expect(sf && componentExports(sf)).toContain("LevelingWizard");
   });
 
   it("no views file exports more than one component", () => {
