@@ -73,6 +73,11 @@ pub(super) struct TrackedHid {
     /// by a preset load that lands without the error. While set,
     /// [`Session::save_current_preset`] refuses.
     pub(super) template_mark: std::sync::Arc<crate::hid::TemplateMark>,
+    /// The loaded preset's scene count, proven on THIS connection: the latest
+    /// `sceneListResponse` (125) since the last `presetLoaded` (11) push or host preset
+    /// load or import. Never carried to another connection, which cannot tell a preset
+    /// changed on the unit's own screen in between.
+    pub(super) scene_count: std::cell::Cell<Option<usize>>,
 }
 
 impl TrackedHid {
@@ -84,15 +89,22 @@ impl TrackedHid {
             nominal_ms: std::cell::Cell::new(0),
             auto_reopen: true,
             reopened: std::cell::RefCell::new(Vec::new()),
+            scene_count: std::cell::Cell::new(None),
         }
     }
-    /// Note a template substitution in any reassembled body of `reports`.
+    /// Note a template substitution, and the latest reported scene count, in the
+    /// reassembled bodies of `reports`.
     pub(super) fn scan(&self, reports: &[Vec<u8>]) {
-        if proto::reassemble_streams(reports)
-            .iter()
-            .any(|s| is_template_substitution(&s.body))
-        {
+        let streams = proto::reassemble_streams(reports);
+        if streams.iter().any(|s| is_template_substitution(&s.body)) {
             self.note_substituted();
+        }
+        for s in &streams {
+            if let Some(names) = decode_scene_list(&s.body) {
+                self.scene_count.set(Some(names.len()));
+            } else if dig(&s.body, TMS_PRESET, PRESET_LOADED_PUSH).is_some() {
+                self.scene_count.set(None);
+            }
         }
     }
     pub(super) fn note_substituted(&self) {
@@ -125,6 +137,12 @@ impl TrackedHid {
                 let reports = self.inner.transact(&reopen, REOPEN_MS)?;
                 self.reopened.borrow_mut().extend(reports);
             }
+        }
+        if [PRESET_LOAD, PRESET_IMPORT]
+            .into_iter()
+            .any(|f| dig(body, TMS_PRESET, f).is_some())
+        {
+            self.scene_count.set(None);
         }
         self.last_write.set(std::time::Instant::now());
         self.nominal_ms.set(0);
@@ -209,6 +227,11 @@ impl Session {
     /// preset's name, and a save would persist it.
     pub fn template_substituted(&self) -> bool {
         self.hid.template_mark.is_set()
+    }
+
+    /// The loaded preset's scene count as proven on this connection (`TrackedHid::scene_count`).
+    pub(super) fn reported_scene_count(&self) -> Option<usize> {
+        self.hid.scene_count.get()
     }
 
     /// Run a preset load: the mark clears only when `load` succeeds and its own reply

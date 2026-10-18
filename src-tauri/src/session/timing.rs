@@ -14,9 +14,6 @@ pub(crate) const HID_INACTIVITY_DROP_MS: u64 = 750;
 /// Host-silence cap of a keepalive window: well inside [`HID_INACTIVITY_DROP_MS`].
 pub(crate) const KEEPALIVE_WINDOW_MS: u64 = 350;
 
-/// How long an import waits for its `importPresetResponse` echo.
-pub(super) const IMPORT_ECHO_WAIT_MS: u64 = 1500;
-
 /// Host silence under which the client is certainly still open. Between this and the
 /// drop the device's timer and ours may disagree, so callers treat it as lapsed: a
 /// re-arm on a still-live client costs one `connectionError`, a skipped one costs the read.
@@ -128,6 +125,13 @@ pub(super) const LIVE_VALUE_REQUEST_MS: u64 = 300;
 pub(super) const LIVE_VALUE_POLL_MS: u64 = 200;
 /// A per-node scene edit (`setNodeSceneEdit`).
 pub(super) const SCENE_EDIT_ECHO_MS: u64 = 300;
+/// One beat of [`super::Session::recall_scene_doc`]'s wait for the recalled scene's field-3 push.
+pub(super) const RECALL_DOC_BEAT_MS: u64 = 150;
+/// One poll window of [`super::Session::live_scene_count`]'s `sceneListResponse` wait…
+pub(super) const SCENE_LIST_POLL_MS: u64 = 100;
+/// …and how many windows it pumps, kept alive, before giving up (~3 s): on a fresh
+/// connection the reply lands 1.1–1.3 s after the request, behind the handshake drain (HW).
+pub(super) const SCENE_LIST_POLLS: u32 = 30;
 /// Replace, remove, insert, node-JSON and string-parameter sends.
 pub(super) const STRUCTURAL_EDIT_ECHO_MS: u64 = 200;
 /// The settle after an IR file write, before its read-back.

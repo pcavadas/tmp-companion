@@ -17,11 +17,17 @@
 //! 0. `ProcessorUtilization` — Σ per-block `cpuByBid`, rounded half away from zero,
 //!    ≤ `budget` (76.5), so a total of exactly 76.5 fails. An id missing from the
 //!    table costs `unknownCost` (20), as on the device.
-//! 1. `FXLoopCoexistence` — `ACD_FxLoop3_4` (stereo) is mutually exclusive with EITHER
-//!    `ACD_FxLoop3` or `ACD_FxLoop4` (mono). Bidirectional; not a count.
-//! 2. `ConvolutionReverbLimit` — max 1 member of `convolutionSet`.
-//! 3. `ComboHalfStackCabinetsLimit` — max 2 member-weight of `cabinetSet`; a dual-cab
-//!    node (`dspUnitParameters.cabsim2enabled == true`) counts as 2.
+//! 1. `FXLoopCoexistence` — an FX-loop candidate (`fxLoops`) is refused when the preset
+//!    already holds the same loop, or when it is `ACD_FxLoop3_4` (stereo) and either mono
+//!    `ACD_FxLoop3` / `ACD_FxLoop4` is present, or the reverse. A non-loop candidate always
+//!    passes. Not a count.
+//! 2. `ConvolutionReverbLimit` — max 1 member of `convolutionSet`: `(cand∈set) −
+//!    (replaced∈set) + (any member present ? 1 : 0) < 2`, so a non-member candidate and a
+//!    member→member replace always pass.
+//! 3. `ComboHalfStackCabinetsLimit` — max 2 member-weight of `cabinetSet`: each member
+//!    node weighs 1, plus 1 when its `dspUnitParameters.cabsim2enabled` is true (an amp's
+//!    second mic or a CabSim's second cab). A `cabinetExempt` candidate
+//!    (`ACD_ExternalCab`) always passes.
 //! 4. `GlooperEffectsLimit` — max 2 of `ACD_Glooper`.
 //!
 //! Membership is **exact-string** against the sets in `block-classification.json` — the
@@ -66,7 +72,9 @@ impl std::fmt::Display for BlockCapError {
 struct Sets {
     convolution: HashSet<String>,
     cabinet: HashSet<String>,
+    cabinet_exempt: HashSet<String>,
     glooper: String,
+    fx_loops: HashSet<String>,
     fx_loop_stereo: String,
     fx_loop_mono: HashSet<String>,
 }
@@ -89,6 +97,8 @@ fn sets() -> &'static Sets {
         Sets {
             convolution: string_set("convolutionSet"),
             cabinet: string_set("cabinetSet"),
+            cabinet_exempt: string_set("cabinetExempt"),
+            fx_loops: string_set("fxLoops"),
             glooper: v
                 .get("glooper")
                 .and_then(Value::as_str)
@@ -210,10 +220,8 @@ pub(crate) fn check_loaded_roster(file: &Roster, live: &Roster) -> Result<(), St
 
 /// Walk decoded preset JSON into the pre-edit roster the guard counts against —
 /// sourced from `session::extract_active_graph`, the ONE place that owns the node walk
-/// AND the load-bearing dual-cab discriminator (`cabsim2enabled` is a real second cab
-/// ONLY on the standalone `ACD_CabSimTMS`; on an amp the same key means a dual MIC on
-/// one cab — see `session/tests.rs`'s `extract_active_graph_amp_half_stack…` test). A single
-/// source means the cabinet weighting here can never drift from what the strip renders.
+/// AND the cabinet-cap weight (`GraphNode::second_cab_slot`: `cabsim2enabled` on any
+/// node, an amp's second mic as much as a CabSim's second cab).
 pub fn roster_from_preset(preset: &Value) -> Vec<RosterEntry> {
     crate::session::extract_active_graph(preset, None)
         .nodes
@@ -222,67 +230,55 @@ pub fn roster_from_preset(preset: &Value) -> Vec<RosterEntry> {
             group: n.group_id,
             node_id: n.node_id,
             fender_id: n.model,
-            dual_cab: n.cab_sim2_enabled == Some(true),
+            dual_cab: n.second_cab_slot,
         })
         .collect()
 }
 
-/// The running per-cap totals a roster contributes. A dual-cab node's cabinet
-/// contribution is 2 (`ComboHalfStackCabinetsLimit`'s vtable-confirmed weight); every
-/// other membership contributes 1. Signed so [`Counts::remove`] (a replace/remove
-/// delta) can never underflow-panic.
+/// The running per-cap totals a roster contributes. A cabinet member with a second cab
+/// slot weighs 2 (`ComboHalfStackCabinetsLimit`); every other membership contributes 1.
+/// Signed so [`Counts::remove`] (a replace/remove delta) can never underflow-panic.
 #[derive(Debug, Clone, Default)]
 pub struct Counts {
     pub conv: i64,
     pub cabinet: i64,
     pub glooper: i64,
     pub cpu: f64,
-    pub fx_stereo: i64,
-    pub fx_mono: i64,
+    /// How many of each FX-loop id (`fxLoops`) the graph holds.
+    pub fx_loops: std::collections::BTreeMap<String, i64>,
 }
 
 impl Counts {
     /// Add one node's contribution (an insert, or the candidate side of a replace).
     pub fn add(&mut self, id: &str, dual_cab: bool) {
-        let s = sets();
-        if s.convolution.contains(id) {
-            self.conv += 1;
-        }
-        if s.cabinet.contains(id) {
-            self.cabinet += if dual_cab { 2 } else { 1 };
-        }
-        if id == s.glooper {
-            self.glooper += 1;
-        }
-        if id == s.fx_loop_stereo {
-            self.fx_stereo += 1;
-        }
-        if s.fx_loop_mono.contains(id) {
-            self.fx_mono += 1;
-        }
-        self.cpu += cost(id);
+        self.step(id, dual_cab, 1);
     }
 
     /// Subtract one node's contribution (a remove, or the replaced-anchor side of a
     /// replace — mode matters: an insert/append never subtracts).
     pub fn remove(&mut self, id: &str, dual_cab: bool) {
+        self.step(id, dual_cab, -1);
+    }
+
+    fn step(&mut self, id: &str, dual_cab: bool, sign: i64) {
         let s = sets();
         if s.convolution.contains(id) {
-            self.conv -= 1;
+            self.conv += sign;
         }
         if s.cabinet.contains(id) {
-            self.cabinet -= if dual_cab { 2 } else { 1 };
+            self.cabinet += sign * if dual_cab { 2 } else { 1 };
         }
         if id == s.glooper {
-            self.glooper -= 1;
+            self.glooper += sign;
         }
-        if id == s.fx_loop_stereo {
-            self.fx_stereo -= 1;
+        if s.fx_loops.contains(id) {
+            *self.fx_loops.entry(id.to_string()).or_default() += sign;
         }
-        if s.fx_loop_mono.contains(id) {
-            self.fx_mono -= 1;
-        }
-        self.cpu -= cost(id);
+        self.cpu += sign as f64 * cost(id);
+    }
+
+    fn holds_loop(&self, id: &str) -> bool {
+        self.fx_loops.get(id).is_some_and(|&n| n > 0)
     }
 }
 
@@ -318,18 +314,19 @@ pub fn counts(roster: &[RosterEntry]) -> Counts {
     c
 }
 
-/// The authoritative per-op guard: would inserting/replacing `candidate_id` push any of
-/// the 5 caps over its max, given the CURRENT running `counts`? Applies the same
-/// formula for every count cap: `(cand∈set) − (replaced∈set, only on a replace) +
-/// existing < MAX+1`. `FXLoopCoexistence` isn't a count — it's a bidirectional mutual
-/// exclusion, checked as its own branch.
+/// The authoritative per-op guard: would inserting/replacing `candidate_id` break any
+/// of the 5 caps, given the CURRENT running `counts`? Each rule is the fw 1.8.58
+/// client's own predicate (module docs), so a candidate a count cap does not cover
+/// passes it, except that an already over-cap cabinet count refuses every candidate but
+/// an exempt one, as on the unit.
 ///
 /// `is_replace` selects whether `replaced_id`'s contribution is subtracted (an
 /// insert/append never frees a slot); `cand_dual_cab`/`replaced_dual_cab` are whether
-/// the candidate/replaced node is a dual-cab CabSim (counts as 2 cabinet slots).
+/// the candidate/replaced node takes a second cabinet slot (2 on the cabinet cap, for a
+/// cabinet member only, matching what [`Counts`] holds).
 ///
 /// Checked in firmware enum order (0..4); returns the FIRST violated reason, matching
-/// the TS `checkEdit` sibling so the two guards never disagree on which reason to show.
+/// the TS `checkOp` sibling so the two guards never disagree on which reason to show.
 pub fn check_op(
     counts: &Counts,
     candidate_id: &str,
@@ -338,25 +335,56 @@ pub fn check_op(
     cand_dual_cab: bool,
     replaced_dual_cab: bool,
 ) -> Result<(), BlockCapError> {
+    let s = sets();
+    // A replace with no resolved target frees nothing.
+    let is_replace = is_replace && replaced_id.is_some();
+    let replaced = replaced_id.filter(|_| is_replace).unwrap_or("");
     let mut next = counts.clone();
     next.add(candidate_id, cand_dual_cab);
     if is_replace {
-        next.remove(replaced_id.unwrap_or(""), replaced_dual_cab);
+        next.remove(replaced, replaced_dual_cab);
     }
-
     if over_budget(next.cpu) {
         return Err(BlockCapError::ProcessorUtilization);
     }
-    if next.fx_stereo > 0 && next.fx_mono > 0 {
-        return Err(BlockCapError::FXLoopCoexistence);
+
+    // FX loops: the candidate against every loop left after the replace.
+    if s.fx_loops.contains(candidate_id) {
+        let mut others = counts.clone();
+        if is_replace {
+            others.remove(replaced, replaced_dual_cab);
+        }
+        let stereo = &s.fx_loop_stereo;
+        let clash = others.holds_loop(candidate_id)
+            || (candidate_id == stereo && s.fx_loop_mono.iter().any(|m| others.holds_loop(m)))
+            || (s.fx_loop_mono.contains(candidate_id) && others.holds_loop(stereo));
+        if clash {
+            return Err(BlockCapError::FXLoopCoexistence);
+        }
     }
-    if next.conv > 1 {
+
+    let member = |set: &HashSet<String>, id: &str| i64::from(set.contains(id));
+    let conv = member(&s.convolution, candidate_id) - member(&s.convolution, replaced)
+        + i64::from(counts.conv > 0);
+    if conv > 1 {
         return Err(BlockCapError::ConvolutionReverbLimit);
     }
-    if next.cabinet > 2 {
-        return Err(BlockCapError::ComboHalfStackCabinetsLimit);
+
+    if !s.cabinet_exempt.contains(candidate_id) {
+        // Members only, as `Counts` holds them: a dual flag on a non-member weighs nothing.
+        let weight = |id: &str, dual: bool| member(&s.cabinet, id) * if dual { 2 } else { 1 };
+        let cand = weight(candidate_id, cand_dual_cab);
+        let gone = if is_replace {
+            weight(replaced, replaced_dual_cab)
+        } else {
+            0
+        };
+        if counts.cabinet + cand - gone > 2 {
+            return Err(BlockCapError::ComboHalfStackCabinetsLimit);
+        }
     }
-    if next.glooper > 2 {
+
+    if next.glooper > 2 && candidate_id == s.glooper {
         return Err(BlockCapError::GlooperEffectsLimit);
     }
     Ok(())
@@ -623,5 +651,153 @@ mod tests {
         );
         let c = counts(&r);
         assert_eq!(c.cabinet, 3, "dual-cab (2) + one more cabinet (1)");
+    }
+
+    // fw 1.8.58 client rules, the cabinet weights confirmed on the unit's own screen.
+    const AMP_COMBO: &str = "ACD_TwinReverb65NoFxCabIR";
+    const STANDALONE_CAB_MODEL: &str = "ACD_Fen57Champ";
+    const EXTERNAL_CAB: &str = "ACD_ExternalCab";
+
+    #[test]
+    fn an_amp_with_its_second_mic_takes_two_cabinet_slots() {
+        let preset = serde_json::json!({"audioGraph": {"guitarNodes": {"G1": [{
+            "FenderId": AMP_COMBO, "nodeId": "amp",
+            "dspUnitParameters": {"cabsim2enabled": true}
+        }]}}});
+        let c = counts(&roster_from_preset(&preset));
+        assert_eq!(c.cabinet, 2);
+        assert_eq!(
+            check_op(&c, STANDALONE_CAB, None, false, false, false),
+            Err(BlockCapError::ComboHalfStackCabinetsLimit),
+            "the unit greys out every cabinet and IR"
+        );
+        let one_mic = counts(&roster(&[(AMP_COMBO, false)]));
+        assert_eq!(
+            check_op(&one_mic, STANDALONE_CAB, None, false, false, false),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn external_cab_neither_counts_nor_is_ever_refused() {
+        let c = counts(&roster(&[(EXTERNAL_CAB, false), (AMP_COMBO, false)]));
+        assert_eq!(c.cabinet, 1, "ExternalCab is exempt");
+        assert_eq!(check_op(&c, CAB_A, None, false, false, false), Ok(()));
+        let full = counts(&roster(&[(CAB_A, false), (CAB_B, false), (CAB_C, false)]));
+        assert_eq!(
+            check_op(&full, EXTERNAL_CAB, None, false, false, false),
+            Ok(()),
+            "an exempt candidate passes even over the cap"
+        );
+        assert_eq!(
+            check_op(&full, NON_CAPPED, None, false, false, false),
+            Err(BlockCapError::ComboHalfStackCabinetsLimit),
+            "over the cap, every other candidate is refused"
+        );
+    }
+
+    #[test]
+    fn standalone_cabinet_models_count_toward_the_cap() {
+        let c = counts(&roster(&[(STANDALONE_CAB_MODEL, false), (CAB_A, false)]));
+        assert_eq!(c.cabinet, 2);
+        assert_eq!(
+            check_op(&c, CAB_B, None, false, false, false),
+            Err(BlockCapError::ComboHalfStackCabinetsLimit)
+        );
+    }
+
+    #[test]
+    fn a_dual_cab_replace_frees_two_slots_and_a_dual_candidate_takes_two() {
+        let c = counts(&roster(&[(STANDALONE_CAB, true), (CAB_A, false)]));
+        assert_eq!(c.cabinet, 3);
+        assert_eq!(
+            check_op(&c, CAB_B, Some(STANDALONE_CAB), true, false, true),
+            Ok(())
+        );
+        let one = counts(&roster(&[(CAB_A, false)]));
+        assert_eq!(
+            check_op(&one, STANDALONE_CAB, None, false, true, false),
+            Err(BlockCapError::ComboHalfStackCabinetsLimit)
+        );
+    }
+
+    #[test]
+    fn the_convolution_cap_counts_presence_not_members() {
+        let two = counts(&roster(&[(CONV_ONLY_A, false), (CONV_ONLY_B, false)]));
+        assert_eq!(
+            check_op(&two, CONV_ONLY_A, Some(CONV_ONLY_B), true, false, false),
+            Ok(()),
+            "a member-for-member replace passes even over the cap"
+        );
+        assert_eq!(
+            check_op(&two, NON_CAPPED, None, false, false, false),
+            Ok(())
+        );
+        let c = counts(&roster(&[("ACD_PrincetonReverb68CabIRConvRvb", false)]));
+        assert_eq!(
+            check_op(&c, CONV_ONLY_A, None, false, false, false),
+            Err(BlockCapError::ConvolutionReverbLimit),
+            "the '68 Princeton reverb combo is a convolution member on fw 1.8.58"
+        );
+    }
+
+    #[test]
+    fn no_fx_loop_may_appear_twice() {
+        for id in [
+            "ACD_FxLoop1",
+            "ACD_FxLoop2",
+            "ACD_FxLoop3",
+            "ACD_FxLoop4",
+            "ACD_FxLoop3_4",
+        ] {
+            let c = counts(&roster(&[(id, false)]));
+            assert_eq!(
+                check_op(&c, id, None, false, false, false),
+                Err(BlockCapError::FXLoopCoexistence),
+                "{id}"
+            );
+            assert_eq!(
+                check_op(&c, id, Some(id), true, false, false),
+                Ok(()),
+                "{id}"
+            );
+        }
+        let c = counts(&roster(&[("ACD_FxLoop1", false), ("ACD_FxLoop3_4", false)]));
+        assert_eq!(
+            check_op(&c, "ACD_FxLoop2", None, false, false, false),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_replace_with_no_resolved_target_frees_nothing() {
+        let c = counts(&roster(&[(CAB_A, false), (CAB_B, false)]));
+        assert_eq!(
+            check_op(&c, CAB_C, None, true, false, false),
+            Err(BlockCapError::ComboHalfStackCabinetsLimit)
+        );
+        // 2 × 36 = 72 fits; a third reaches 108 with nothing freed.
+        let full = counts(&roster(&[
+            ("ACD_GuitarSynth", false),
+            ("ACD_GuitarSynth", false),
+        ]));
+        assert_eq!(
+            check_op(&full, "ACD_GuitarSynth", None, true, false, false),
+            Err(BlockCapError::ProcessorUtilization)
+        );
+    }
+
+    #[test]
+    fn a_dual_flag_on_a_non_member_frees_no_cabinet_slot() {
+        let c = counts(&roster(&[
+            (CAB_A, false),
+            (CAB_B, false),
+            (NON_CAPPED, true),
+        ]));
+        assert_eq!(c.cabinet, 2);
+        assert_eq!(
+            check_op(&c, CAB_C, Some(NON_CAPPED), true, false, true),
+            Err(BlockCapError::ComboHalfStackCabinetsLimit)
+        );
     }
 }

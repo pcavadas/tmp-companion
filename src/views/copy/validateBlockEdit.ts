@@ -10,8 +10,8 @@
 // firmware's own predicates so the feedback is trustworthy. The words for each reason are
 // in ./copyText (`REASON_TEXT`).
 //
-// `block-classification.json` is the byte-exact extraction of the 3 hardcoded id
-// sets the firmware uses (see that file's `_comment`). Membership is
+// `block-classification.json` holds the fw 1.8.58 client's id sets (see that file's
+// `_comment`). Membership is
 // EXACT-STRING ONLY — no `resolveDeviceId` / suffix-stripping — because the suffix
 // itself is the classification signal (e.g. a `…CabIRConvRvb` reverb combo is both a
 // convolution reverb AND a cabinet; its `…NoFxCabIR` sibling is a cabinet only).
@@ -28,7 +28,9 @@ import {
 
 const CONV_SET = new Set<string>(blockClassification.convolutionSet);
 const CABINET_SET = new Set<string>(blockClassification.cabinetSet);
+const CABINET_EXEMPT = new Set<string>(blockClassification.cabinetExempt);
 const GLOOPER_ID = blockClassification.glooper;
+const FX_LOOPS = new Set<string>(blockClassification.fxLoops);
 const FX_LOOP_STEREO = blockClassification.fxLoopStereo;
 const FX_LOOP_MONO = new Set<string>(blockClassification.fxLoopMono);
 
@@ -62,37 +64,35 @@ export function classify(model: string): {
 }
 
 /** The graph's current standing against each cap, walked once from `blockArrays`
- *  (no `applyEditOp` clone per check). A `cabSim2Enabled`
- *  block occupies two cabinet slots (a dual-cab node). `fxLoopPresent` is the set of
- *  FX-loop ids (stereo `ACD_FxLoop3_4` / mono `ACD_FxLoop3`/`ACD_FxLoop4`) currently
- *  present anywhere in the graph — loops 1/2 are non-placeable rear-panel fixtures
- *  and never appear here since they're not in `fxLoopStereo`/`fxLoopMono`. */
+ *  (no `applyEditOp` clone per check). A cabinet member with `secondCabSlot` (an amp's
+ *  second mic or a CabSim's second cab) occupies two cabinet slots. `fxLoops` counts
+ *  each FX-loop id present anywhere in the graph. */
 export interface BaseCounts {
   cpu: number;
   conv: number;
   cabinet: number;
   glooper: number;
-  fxLoopPresent: Set<string>;
+  fxLoops: Map<string, number>;
 }
 
 export function baseCounts(graph: EditGraph): BaseCounts {
   let conv = 0;
   let cabinet = 0;
   let glooper = 0;
-  const fxLoopPresent = new Set<string>();
+  const fxLoops = new Map<string, number>();
   const cpu = cpuOfGraph(graph);
   for (const arr of blockArrays(graph)) {
     for (const b of arr) {
       const c = classify(b.model);
       if (c.convLimit) conv += 1;
-      if (c.cabinet) cabinet += b.cabSim2Enabled ? 2 : 1;
+      if (c.cabinet) cabinet += b.secondCabSlot ? 2 : 1;
       if (c.glooper) glooper += 1;
-      if (b.model === FX_LOOP_STEREO || FX_LOOP_MONO.has(b.model)) {
-        fxLoopPresent.add(b.model);
+      if (FX_LOOPS.has(b.model)) {
+        fxLoops.set(b.model, (fxLoops.get(b.model) ?? 0) + 1);
       }
     }
   }
-  return { cpu, conv, cabinet, glooper, fxLoopPresent };
+  return { cpu, conv, cabinet, glooper, fxLoops };
 }
 
 function countReason(counts: {
@@ -106,10 +106,24 @@ function countReason(counts: {
   return null;
 }
 
-function fxLoopReason(present: Set<string>): BlockEditReason | null {
-  const stereo = present.has(FX_LOOP_STEREO);
-  const mono = blockClassification.fxLoopMono.some((id) => present.has(id));
-  return stereo && mono ? "FXLoopCoexistence" : null;
+/** Whether FX loop `id` clashes with the loops in `present`: the same loop again, or
+ *  the stereo `ACD_FxLoop3_4` against either mono loop (both directions). */
+function fxLoopClash(id: string, present: Map<string, number>): boolean {
+  const has = (x: string) => (present.get(x) ?? 0) > 0;
+  if (has(id)) return true;
+  if (id === FX_LOOP_STEREO) return [...FX_LOOP_MONO].some(has);
+  return FX_LOOP_MONO.has(id) && has(FX_LOOP_STEREO);
+}
+
+/** The save-gate's FX-loop rule over a whole graph: any loop that clashes with the
+ *  others. */
+function fxLoopReason(present: Map<string, number>): BlockEditReason | null {
+  for (const id of present.keys()) {
+    const others = new Map(present);
+    others.set(id, (others.get(id) ?? 0) - 1);
+    if (fxLoopClash(id, others)) return "FXLoopCoexistence";
+  }
+  return null;
 }
 
 /** The anchor being replaced — only meaningful (and only read) when `mode ===
@@ -120,11 +134,13 @@ export interface CheckOpOpts {
 }
 
 /** The per-op guard behind the grey-out: would placing `candidateModel` via `mode`
- *  (against a graph currently at `counts`) violate a firmware cap? Mode-aware:
- *  `replace` frees the anchor's own slot (CPU, count + coexistence); `before`/`after`
- *  never do (a fresh insert is never a dual-cab node — `applyEditOp`'s insert
- *  branch never sets `cabSim2Enabled`). Returns the first violated reason, or
- *  `null` when the placement is fine. */
+ *  (against a graph currently at `counts`) violate a firmware cap? Mirrors the Rust
+ *  `blockcaps::check_op` (fw 1.8.58 client predicates): `replace` frees the anchor's
+ *  own slot (CPU, counts, FX loop), and its second-cab flag carries onto the
+ *  replacement (`applyEditOp` spreads the anchor); `before`/`after` never do. A
+ *  candidate a rule doesn't cover passes it, except that a cabinet count already over
+ *  the cap refuses every candidate but an exempt one (`ACD_ExternalCab`). Returns the
+ *  first violated reason, or `null` when the placement is fine. */
 export function checkOp(
   counts: BaseCounts,
   candidateModel: string,
@@ -141,24 +157,33 @@ export function checkOp(
     (anchor ? chargedCpu(anchor.model) : 0);
   if (overCpuBudget(cpu)) return "ProcessorUtilization";
 
-  // FX-loop coexistence: fold the anchor's freed slot + the candidate into the
-  // present set, then test both directions at once.
-  const present = new Set(counts.fxLoopPresent);
-  if (anchor) present.delete(anchor.model);
-  present.add(candidateModel);
-  const fx = fxLoopReason(present);
-  if (fx) return fx;
+  if (FX_LOOPS.has(candidateModel)) {
+    const others = new Map(counts.fxLoops);
+    if (anchor && others.has(anchor.model)) {
+      others.set(anchor.model, (others.get(anchor.model) ?? 0) - 1);
+    }
+    if (fxLoopClash(candidateModel, others)) return "FXLoopCoexistence";
+  }
 
-  // Count caps: candidate adds, a replaced anchor frees its own contribution.
+  // The convolution cap counts presence, not members.
   const conv =
-    counts.conv + (cand.convLimit ? 1 : 0) - (anchorClass?.convLimit ? 1 : 0);
+    (cand.convLimit ? 1 : 0) -
+    (anchorClass?.convLimit ? 1 : 0) +
+    (counts.conv > 0 ? 1 : 0);
+  if (conv > 1) return "ConvolutionReverbLimit";
+
+  if (!CABINET_EXEMPT.has(candidateModel)) {
+    const candCabinet = cand.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
+    const anchorCabinet = anchorClass?.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
+    if (counts.cabinet + candCabinet - anchorCabinet > 2) {
+      return "ComboHalfStackCabinetsLimit";
+    }
+  }
+
   const glooper =
     counts.glooper + (cand.glooper ? 1 : 0) - (anchorClass?.glooper ? 1 : 0);
-  const candCabinet = cand.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
-  const anchorCabinet = anchorClass?.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
-  const cabinet = counts.cabinet + candCabinet - anchorCabinet;
-
-  return countReason({ conv, cabinet, glooper });
+  if (cand.glooper && glooper > 2) return "GlooperEffectsLimit";
+  return null;
 }
 
 /** The save-gate: does the FINAL edited graph violate a firmware cap? Applies the
@@ -168,5 +193,5 @@ export function checkOp(
 export function checkEdit(edit: PresetEdit): BlockEditReason | null {
   const counts = baseCounts(edit.graph);
   if (overCpuBudget(counts.cpu)) return "ProcessorUtilization";
-  return fxLoopReason(counts.fxLoopPresent) ?? countReason(counts);
+  return fxLoopReason(counts.fxLoops) ?? countReason(counts);
 }

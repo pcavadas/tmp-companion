@@ -1806,10 +1806,14 @@ pub struct DoctorNode {
     /// device-driven discriminator the strip renderer uses.
     #[serde(default)]
     pub cab_sim_id: Option<String>,
-    /// True only when a standalone CabSim runs two cabinets (counts as 2
-    /// cabinet slots in the firmware caps).
+    /// True only when a standalone CabSim runs two cabinets (the strip's dual-cab
+    /// split); the cabinet-cap weight is [`Self::second_cab_slot`].
     #[serde(default)]
     pub cab_sim2_enabled: Option<bool>,
+    /// Whether the node takes a second cabinet-cap slot (`session::GraphNode`'s
+    /// `second_cab_slot`: an amp's second mic or a CabSim's second cab).
+    #[serde(default)]
+    pub second_cab_slot: bool,
     /// The node's allowlisted current param values (reverb mix names + cab
     /// hpf/lpf + EQ-10 band gains — see `session::GraphNode.params`), for
     /// value-aware prescriptions. `default` so pre-params payloads still deserialize.
@@ -1828,6 +1832,7 @@ impl DoctorNode {
             bypassed: n.bypassed,
             cab_sim_id: n.cab_sim_id.clone(),
             cab_sim2_enabled: n.cab_sim2_enabled,
+            second_cab_slot: n.second_cab_slot,
             params: n.params.clone(),
         }
     }
@@ -2012,16 +2017,14 @@ fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
 /// CPU-gate an insert: `Some(note)` when the block fits every firmware cap,
 /// `None` when it doesn't (a fix that can't apply must not render a button).
 fn insert_cpu_note(nodes: &[DoctorNode], candidate: &str) -> Option<String> {
-    // Mirror `blockcaps::roster_from_preset`'s mapping: dual-cab weighting is
-    // real only on the standalone CabSim (on an amp the same flag means a
-    // dual MIC on one cab).
+    // Mirror `blockcaps::roster_from_preset`'s mapping.
     let roster: Vec<blockcaps::RosterEntry> = nodes
         .iter()
         .map(|n| blockcaps::RosterEntry {
             group: n.group_id.clone(),
             node_id: n.node_id.clone(),
             fender_id: n.model.clone(),
-            dual_cab: n.model == CAB_STANDALONE && n.cab_sim2_enabled == Some(true),
+            dual_cab: n.second_cab_slot,
         })
         .collect();
     let counts = blockcaps::counts(&roster);
@@ -4800,6 +4803,7 @@ mod tests {
                 cab_sim_id: (cabbed.contains(m) || *m == "ACD_CabSimTMS")
                     .then(|| "SomeCab".to_string()),
                 cab_sim2_enabled: None,
+                second_cab_slot: false,
                 params: HashMap::new(),
             })
             .collect()
@@ -5094,6 +5098,7 @@ mod tests {
             bypassed: false,
             cab_sim_id: None,
             cab_sim2_enabled: None,
+            second_cab_slot: false,
             params: HashMap::new(),
         });
         let (_, before) = eq_insert(&generate_rx("muddy", &p)).expect("insert");
@@ -6307,6 +6312,7 @@ mod tests {
             bypassed: false,
             cab_sim_id: None,
             cab_sim2_enabled: None,
+            second_cab_slot: false,
             params,
         }
     }

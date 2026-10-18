@@ -437,16 +437,6 @@ impl Session {
     /// returns nothing about where the import landed: callers prove the landing from the
     /// stored row (`replace_inplace::StoredProof`).
     pub fn import_preset(&mut self, preset_bytes: &[u8]) -> Result<(), String> {
-        self.import_preset_echo(preset_bytes).map(|_| ())
-    }
-
-    /// [`Self::import_preset`], also returning the `(listEnum, presetSlot)` of an
-    /// `importPresetResponse` echo when one lands in the ingest wait. Only
-    /// `probe --import-reload-check` reads it, to log whether the echo is ever sent.
-    pub(crate) fn import_preset_echo(
-        &mut self,
-        preset_bytes: &[u8],
-    ) -> Result<Option<(u32, u32)>, String> {
         // The ONE import choke point: refuse a body the firmware would silently replace.
         // An undecodable body passes through — the firmware's own LZ4/JSON check handles it.
         if let Some(doc) = crate::library::decode_preset_bytes(preset_bytes)
@@ -458,23 +448,14 @@ impl Session {
         self.raw.clear();
         let payload = proto::lz4_block_compress_stored(preset_bytes);
         let body = proto::import_preset_request(&payload);
-        // Longer wait than setters (300 ms): a ~100-frame import takes longer to
-        // ingest, and any importPresetResponse echo trails the whole burst — kept alive,
-        // and over as soon as the echo lands.
-        self.send_chunked_collect(&body, KEEPALIVE_WINDOW_MS)?;
-        let mut echo = self.import_echo();
-        for _ in 1..IMPORT_ECHO_WAIT_MS.div_ceil(KEEPALIVE_WINDOW_MS) {
-            if echo.is_some() {
-                break;
-            }
-            self.keepalive_pump()?;
-            echo = self.import_echo();
-        }
-        Ok(echo)
+        // No wait for an `importPresetResponse`: fw 1.8.58 sent none within 5 s, and callers
+        // prove the landing from the stored row on a fresh connection.
+        self.send_chunked_collect(&body, KEEPALIVE_WINDOW_MS)
     }
 
-    /// Keep the session alive up to `max_ms` longer, until an `importPresetResponse`
-    /// echo lands. For `probe --import-reload-check`'s echo log only.
+    /// The `(listEnum, presetSlot)` of an `importPresetResponse` echo, keeping the session
+    /// alive up to `max_ms` after an import until one lands. For
+    /// `probe --import-reload-check`'s echo log only.
     pub(crate) fn await_import_echo(&mut self, max_ms: u64) -> Result<Option<(u32, u32)>, String> {
         let mut echo = self.import_echo();
         for _ in 0..max_ms.div_ceil(KEEPALIVE_WINDOW_MS) {

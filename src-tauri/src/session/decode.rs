@@ -12,6 +12,8 @@ pub(super) const CURRENT_PRESET_DATA_CHANGED: u32 = 3; // currentPresetDataChang
 pub(super) const SCENE_LOADED: u32 = 102; // SceneLoaded { sceneSlot, sceneJson (LZ4) }
 
 pub(super) const SCENE_LIST_RESPONSE: u32 = 125; // sceneListResponse { dummy, sceneList[] }
+pub(super) const PRESET_LOAD: u32 = 10; // loadPreset { tabEnum, presetSlot }
+pub(super) const PRESET_IMPORT: u32 = 117; // importPresetRequest { presetJson }
 
 /// Decoded `PresetLoaded` (`TMS[2] → [11]`) addressing fields. All slots are the
 /// device's own (1-based where applicable); the caller applies the list-index

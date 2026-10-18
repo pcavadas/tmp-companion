@@ -986,17 +986,7 @@ pub(crate) fn prepass_scene_docs(
                 if active == Some(session::BASE_SCENE_SLOT) {
                     base_doc = active_doc.clone();
                 } else {
-                    s.raw.clear();
-                    s.send_and_collect(&proto::load_scene(session::BASE_SCENE_SLOT as u64), 300)?;
-                    let mut doc = None;
-                    for _ in 0..4 {
-                        s.heartbeat()?;
-                        s.pump_silent(150)?;
-                        if let Ok(v) = s.current_preset_value() {
-                            doc = Some(v);
-                            break;
-                        }
-                    }
+                    let doc = s.recall_scene_doc(session::BASE_SCENE_SLOT)?;
                     active = Some(session::BASE_SCENE_SLOT);
                     active_doc = doc.clone();
                     base_doc = doc;
@@ -1006,17 +996,7 @@ pub(crate) fn prepass_scene_docs(
         } else if active == Some(scene) {
             docs.push((scene, active_doc.clone()));
         } else {
-            s.raw.clear();
-            s.send_and_collect(&proto::load_scene(scene as u64), 300)?;
-            let mut doc = None;
-            for _ in 0..4 {
-                s.heartbeat()?;
-                s.pump_silent(150)?;
-                if let Ok(v) = s.current_preset_value() {
-                    doc = Some(v);
-                    break;
-                }
-            }
+            let doc = s.recall_scene_doc(scene)?;
             active = Some(scene);
             active_doc = doc.clone();
             docs.push((scene, doc));

@@ -139,17 +139,7 @@ pub fn probe_bench_scene_leveling(
                 vec![(session::BASE_SCENE_SLOT, s.current_preset_value().ok())];
             if let Some(names) = &scenes {
                 for idx in 0..names.len() as u32 {
-                    s.raw.clear();
-                    s.send_and_collect(&proto::load_scene(idx as u64), 300)?;
-                    let mut doc = None;
-                    for _ in 0..4 {
-                        s.heartbeat()?;
-                        s.pump_silent(150)?;
-                        if let Ok(v) = s.current_preset_value() {
-                            doc = Some(v);
-                            break;
-                        }
-                    }
+                    let doc = s.recall_scene_doc(idx)?;
                     docs.push((idx, doc));
                 }
             }

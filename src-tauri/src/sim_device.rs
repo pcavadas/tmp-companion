@@ -150,6 +150,10 @@ const F_CHANGE_PARAMETER: u32 = 12;
 const F_LOAD_SCENE: u32 = 101;
 /// `sceneLoaded`(102){ sceneSlot(1), sceneJson(2) (lz4) } — the recall push.
 const F_SCENE_LOADED: u32 = 102;
+/// `sceneListRequest`(126) → `sceneListResponse`(125): the active preset's scene names,
+/// one per `scenes[]` entry, answered to the requester.
+const F_SCENE_LIST_REQUEST: u32 = 126;
+const F_SCENE_LIST_RESPONSE: u32 = 125;
 const F_SET_NODE_SCENE_EDIT: u32 = 107;
 /// `setFootswitchAssignment`(54) / `clearFootswitchAssignment`(55) — the `ftsw` working-copy
 /// setters (`proto::set_footswitch_assignment`). The device echoes both to every client
@@ -1499,6 +1503,12 @@ impl SimDevice {
         self
     }
 
+    /// A fake whose working copy is [`SCENED_PRESET_JSON`]: the default graph with 8 scenes.
+    #[cfg(test)]
+    pub fn scened() -> SimDevice {
+        SimDevice::new().with_preset_json(SCENED_PRESET_JSON)
+    }
+
     /// Override the preset JSON a `loadPreset` echoes as `currentPresetDataChanged`(3) —
     /// the pre-edit roster the `blockcaps` guard reads. Lets a test configure a specific
     /// `audioGraph` (e.g. one already at a block-count cap) to exercise the guard's
@@ -2106,6 +2116,14 @@ impl SimDevice {
             st.dirty = true;
             return vec![frame(&preset_level_changed(level))];
         }
+        if proto::first_bytes(&f, F_SCENE_LIST_REQUEST).is_some() {
+            let mut list = Vec::new();
+            for scene in &working_scenes(&mut st) {
+                let name = scene["sceneName"].as_str().unwrap_or_default();
+                list.extend(proto::len_delimited(2, name.as_bytes()));
+            }
+            return frame_multi(&preset_message(F_SCENE_LIST_RESPONSE, &list));
+        }
         if let Some(ls) = proto::first_bytes(&f, F_LOAD_SCENE) {
             // LoadScene{ sceneSlot(1) } — the 0-based scenes[] wire index, OR the
             // `BASE_SCENE_SLOT` (8) sentinel that recalls base (not a real `scenes[]`
@@ -2114,15 +2132,7 @@ impl SimDevice {
             // The target scene's stored document; `None` for base.
             let mut target = None;
             if wire_slot != crate::session::BASE_SCENE_SLOT {
-                let slot0 = st.current_slot;
-                let scenes =
-                    serde_json::from_str::<serde_json::Value>(&render_json(&mut st, slot0, true))
-                        .ok()
-                        .and_then(|mut v| match v.get_mut("scenes")?.take() {
-                            serde_json::Value::Array(a) => Some(a),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
+                let scenes = working_scenes(&mut st);
                 let count = scenes.len();
                 if count == 0 {
                     // Scene-less preset (static RE, fw 1.8.58): the unit swaps the working copy
@@ -3641,6 +3651,15 @@ fn render_json_stored_name(st: &mut SimState, slot0: u32) -> String {
         .unwrap_or_default()
 }
 
+/// The current working copy's `scenes[]` (empty when it has none).
+fn working_scenes(st: &mut SimState) -> Vec<serde_json::Value> {
+    let slot0 = st.current_slot;
+    serde_json::from_str::<serde_json::Value>(&render_json(st, slot0, true))
+        .ok()
+        .and_then(|mut v| v.get_mut("scenes")?.as_array_mut().map(std::mem::take))
+        .unwrap_or_default()
+}
+
 /// The node ids `group` holds in the current working copy, minus `except`.
 fn working_group_ids(st: &mut SimState, group: &str, except: Option<&str>) -> Vec<String> {
     let slot0 = st.current_slot;
@@ -4930,7 +4949,7 @@ mod scene_context_tests {
     // NEXT load — including a save while base (BASE_SCENE_SLOT) is active.
     #[test]
     fn saving_records_the_active_scene_for_the_next_load() {
-        let sim = SimDevice::new().with_preset_json(SCENED_PRESET_JSON);
+        let sim = SimDevice::scened();
         let mut s = Session::from_transport(Box::new(sim.clone()));
         s.load_preset(ListIndex(1)).unwrap();
         s.load_scene(4).unwrap();
@@ -6067,9 +6086,7 @@ mod base_snapshot_tests {
 
     #[test]
     fn a_recall_from_a_scene_keeps_the_live_level_and_refreshes_the_snapshot() {
-        let sim = SimDevice::new()
-            .with_preset_json(SCENED_PRESET_JSON)
-            .with_saved_scene(3, Some(0));
+        let sim = SimDevice::scened().with_saved_scene(3, Some(0));
         let mut s = loaded(&sim, 0.32);
         s.set_preset_level(0.55).unwrap();
         s.load_scene(BASE_SCENE_SLOT).unwrap();

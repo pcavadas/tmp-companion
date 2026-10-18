@@ -125,6 +125,26 @@ pub(crate) fn import_echo_frames(list_enum: u64, slot: u64) -> Vec<Vec<u8>> {
     crate::sim_device::frame_multi(&crate::sim_device::preset_message(118, &echo))
 }
 
+/// A `sceneListResponse`(125) carrying `names`, as the device frames it.
+pub(crate) fn scene_list_frames(names: &[&str]) -> Vec<Vec<u8>> {
+    let mut list = Vec::new();
+    for name in names {
+        list.extend(crate::proto::len_delimited(2, name.as_bytes()));
+    }
+    crate::sim_device::frame_multi(&crate::sim_device::preset_message(125, &list))
+}
+
+/// A `func:"param"` `ftsw` entry shaped like the fw 1.8.58 factory presets' (every key a
+/// device-authored one carries, `linkGroup` included).
+pub(crate) fn full_param() -> serde_json::Value {
+    serde_json::json!({
+        "func": "param", "groupId": "guitarNodes", "nodeId": "amp",
+        "parameterId": "gain", "valueType": 2, "valueA": 0.2, "valueB": 0.8,
+        "colorA": 3, "colorB": 4, "customLabel": "VERB", "switchType": 1,
+        "isActive": false, "linkGroup": 0
+    })
+}
+
 /// `frames` as reply batches of `per` frames — one batch per pump window.
 pub(crate) fn streamed(frames: &[Vec<u8>], per: usize) -> Vec<Batch> {
     frames.chunks(per).map(<[Vec<u8>]>::to_vec).collect()

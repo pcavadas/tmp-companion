@@ -40,6 +40,12 @@ pub struct GraphNode {
     /// Whether this CabSim runs two cabinets in parallel (`cabsim2enabled`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cab_sim2_enabled: Option<bool>,
+    /// Whether this node takes a SECOND slot of the cabinet cap: `cabsim2enabled` set on
+    /// ANY node, an amp's second mic as much as a CabSim's second cab (fw 1.8.58, static
+    /// RE + HW). Unlike [`Self::cab_sim2_enabled`] it is not suppressed on amps, because it
+    /// feeds `blockcaps`, not the strip.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub second_cab_slot: bool,
     /// ALLOWLISTED current `dspUnitParameters` values for Doctor's value-aware
     /// prescriptions: the reverb wet/dry mix names (`mix`, `wetdrymix`), the cab
     /// low/high cut (`hpf`, `lpf`), the EQ-10 `gain*hz` band gains, and the
@@ -354,6 +360,10 @@ pub(crate) fn extract_active_graph(
                 let cab_sim2_enabled = dual
                     .and_then(|p| p.get("cabsim2enabled"))
                     .and_then(|b| b.as_bool());
+                let second_cab_slot = params
+                    .and_then(|p| p.get("cabsim2enabled"))
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true);
                 let node_params = doctor_params(params.and_then(|p| p.as_object()));
                 blocks.push(GraphNode {
                     group_id: group_id.clone(),
@@ -363,6 +373,7 @@ pub(crate) fn extract_active_graph(
                     cab_sim_id,
                     cab_sim_id2,
                     cab_sim2_enabled,
+                    second_cab_slot,
                     params: node_params,
                 });
             }
