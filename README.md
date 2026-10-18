@@ -9,7 +9,8 @@ Ships on macOS, universal (Apple Silicon & Intel) — CoreAudio for re-amp
 measurement, IOKit for exclusive USB-HID access. Also publishes an **alpha**
 `.deb`/`.rpm` for Linux (hidraw + ALSA) — see
 [notes/linux-packaging.md](notes/linux-packaging.md) and
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md) — and an **unsigned** `setup.exe` for
+Windows (Win32 HID + WASAPI).
 
 ## Features
 
@@ -42,6 +43,11 @@ whenever that build succeeds — the Linux jobs are non-blocking, so an occasion
 release may carry the DMG alone. See
 [notes/linux-packaging.md](notes/linux-packaging.md) for what "alpha" means here
 and why there's no AppImage.
+
+An **unsigned** `setup.exe` for Windows is published the same way — the Windows
+job is non-blocking too, so a release may carry it or not. There is no
+code-signing certificate: SmartScreen will warn on first launch ("More info" →
+"Run anyway"), and Windows installs update by hand (no updater feed).
 
 Plug in your Tone Master Pro and close Fender's Pro Control first — the app needs
 exclusive USB access.

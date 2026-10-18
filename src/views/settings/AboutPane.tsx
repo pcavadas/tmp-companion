@@ -5,9 +5,11 @@
 // is kept. A found update surfaces through the app-level update toast, not here; a
 // failed check goes quietly back to the button.
 //
-// No update channel (the Linux .deb/.rpm): a check could only ever come back empty, and
-// calling that "up to date" would be a lie. So the check and the switch go, and a
-// two-line block says the packages update by hand and where to get them.
+// No update channel (the Linux .deb/.rpm, the Windows setup.exe): a check could
+// only ever come back empty, and calling that "up to date" would be a lie. So the
+// check and the switch go, and a two-line block says the install updates by hand
+// and where to get it — worded per OS (the Windows one adds the unsigned-installer
+// warning, since there is no signing certificate).
 
 import { useEffect, useRef, useState } from "react";
 
@@ -22,7 +24,7 @@ import { SettingsPage } from "./SettingsPage";
 /** How long "Up to date" stays before the button comes back. */
 const UPTODATE_MS = 2600;
 
-/** Where a Linux user actually gets a newer build. Plain selectable text, not a link:
+/** Where a Linux or Windows user actually gets a newer build. Plain selectable text, not a link:
  *  the app has no external-link capability (no opener plugin), and adding one is a
  *  dependency decision that belongs in its own change. */
 const RELEASES_URL =
@@ -128,8 +130,9 @@ export function AboutPane({ updater, onReportBug }: AboutPaneProps) {
             }}
           >
             <span>
-              Linux packages update by hand. Download the latest .deb or .rpm
-              from the releases page:
+              {platform === "windows"
+                ? "Windows installs update by hand. Download the latest setup.exe from the releases page:"
+                : "Linux packages update by hand. Download the latest .deb or .rpm from the releases page:"}
             </span>
             <span
               style={{
@@ -141,6 +144,18 @@ export function AboutPane({ updater, onReportBug }: AboutPaneProps) {
             >
               {RELEASES_URL}
             </span>
+            {platform === "windows" && (
+              <span
+                style={{
+                  fontSize: t.fontCaption,
+                  lineHeight: `${String(t.lineCaption)}px`,
+                  color: t.textSecondary,
+                }}
+              >
+                The installer is unsigned, so Windows will warn on first launch
+                — choose “Run anyway”.
+              </span>
+            )}
           </div>
         ) : (
           <Row>

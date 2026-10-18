@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Bump src-tauri/tauri.conf.json's `version` field in place. Shared by all three
-// build legs of one release — the macOS job (via scripts/release-build.sh) and
-// the Linux build-deb/build-rpm CI jobs (release.yml) — so they agree on the
-// exact same version string instead of three copies of the same one-liner
-// drifting out of sync.
+// Bump src-tauri/tauri.conf.json's `version` field in place. Shared by every
+// build leg — the macOS job (via scripts/release-build.sh), the Linux
+// build-deb/build-rpm and Windows build-nsis CI jobs (release.yml), and ci.yml's
+// bundle legs — so they agree on the exact same version string instead of N
+// copies of the same one-liner drifting out of sync.
 import { readFileSync, writeFileSync } from "node:fs";
 
 const version = process.argv[2];
