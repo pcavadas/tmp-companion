@@ -1,14 +1,17 @@
 # Global Settings — complete inventory with defaults
 
-Source: Owner's Manual v1.8, printed pp. 32–36 (+ p.7, 27, 42 for cross-scope rules). Page refs are **printed** pages.
+Source: Owner's Manual v1.8, printed pp. 32–36 (+ p.7, 27, 42 for cross-scope rules).
+Page refs are **printed** pages.
 
-Reached via the **gear** at upper right. Seven categories on a persistent bottom nav bar, in this on-screen order:
+Reached via the **gear** at upper right.
+Seven categories on a persistent bottom nav bar, in this on-screen order:
 
 `Preferences` · `I/O` · `Footswitch` · `Bluetooth` · `EQ` · `Mixer` · `Tuner`
 
 The bar is global chrome — it stays visible inside the EQ, Mixer and Tuner screens.
 
-**Everything here is device-global** unless a row says otherwise. For what is per-preset or per-scene, see `SKILL.md`; for what is per-block, see `references/workflows.md`; for the override precedence between the two, see §8 below.
+**Everything here is device-global** unless a row says otherwise.
+For what is per-preset or per-scene, see `SKILL.md`; for what is per-block, see `references/workflows.md`; for the override precedence between the two, see §8 below.
 
 ---
 
@@ -70,7 +73,8 @@ Displays the rear panel at left with five subcategories.
 
 ### MIDI
 
-Full chart in `midi-cc-map.md`. Settings and defaults:
+Full chart in `midi-cc-map.md`.
+Settings and defaults:
 
 | Setting              | Default        | Options                                                                               |
 | -------------------- | -------------- | ------------------------------------------------------------------------------------- |
@@ -106,8 +110,10 @@ Global, and applies across **Presets, Songs and Setlists** modes.
 
 How a scene reloads **after it has been modified but not saved**:
 
-- **`MAINTAIN CHANGES` (default)** — reloads the scene in its last modified state. Lets you edit several scenes and save once.
-- **`DISCARD CHANGES`** — reloads exactly as last saved. The manual warns explicitly: when creating or editing scenes under this setting, **the preset must be saved before switching scenes or the changes are lost.**
+- **`MAINTAIN CHANGES` (default)** — reloads the scene in its last modified state.
+  Lets you edit several scenes and save once.
+- **`DISCARD CHANGES`** — reloads exactly as last saved.
+  The manual warns explicitly: when creating or editing scenes under this setting, **the preset must be saved before switching scenes or the changes are lost.**
 
 What the firmware does (static RE, fw 1.8.58):
 
@@ -115,7 +121,8 @@ What the firmware does (static RE, fw 1.8.58):
 - **DISCARD:** every `loadScene` first rebuilds base and every overlay from the stored preset, losing all unsaved block, overlay and footswitch edits, whatever scene it targets.
 - Loading another preset discards unsaved edits under either setting (HW).
 
-Any host-side workflow that accumulates unsaved per-scene writes across scene recalls and saves once at the end is only valid under `MAINTAIN CHANGES`. Over USB the setting reads as `footswitchSettingsRequest` (Settings 47) → `footswitchSettingsResponse` (48) field 12: 0 = MAINTAIN (left out on the wire), 1 = DISCARD; the backup's `settingsBackup.sceneChangeBehavior` stores the same ordinal (static RE + HW, fw 1.8.58).
+Any host-side workflow that accumulates unsaved per-scene writes across scene recalls and saves once at the end is only valid under `MAINTAIN CHANGES`.
+Over USB the setting reads as `footswitchSettingsRequest` (Settings 47) → `footswitchSettingsResponse` (48) field 12: 0 = MAINTAIN (left out on the wire), 1 = DISCARD; the backup's `settingsBackup.sceneChangeBehavior` stores the same ordinal (static RE + HW, fw 1.8.58).
 
 > The MODE footswitch toggles Presets ⇄ Effects. With a second assignment page present the strip reads `FS: FX PAGE 1`, and it cycles page 1 → page 2 → back to Preset mode.
 
@@ -128,7 +135,8 @@ Any host-side workflow that accumulates unsaved per-scene writes across scene re
 | Bluetooth   | **OFF**                                          |
 | Device name | — (pop-up keyboard; appears in the pairing list) |
 
-Audio only. Routable to Headphones / Output 1 / Output 2 / **USB 1/2** from the mixer.
+Audio only.
+Routable to Headphones / Output 1 / Output 2 / **USB 1/2** from the mixer.
 
 ---
 
@@ -143,7 +151,8 @@ A **10-band graphic EQ plus a volume fader** — eleven faders total.
 **Gain grid is labelled ±12 dB with 3 dB gridlines**: `+12 / +9 / +6 / +3 / 0 / −3 / −6 / −9 / −12 dB`.
 
 - **Three built-in profiles** rendered as **curve glyph buttons**, not words, lower left in this order: flat (default) · high cut (descending shelf) · low cut (ascending shelf).
-- **Four user slots** — buttons `USER 1` … `USER 4` with `SAVE` to their right in the same row. The `⋯` menu names a saved setting.
+- **Four user slots** — buttons `USER 1` … `USER 4` with `SAVE` to their right in the same row.
+  The `⋯` menu names a saved setting.
 - **Output assignment**: `OUTPUT 1` and `OUTPUT 2` are two **separate, independently toggled** buttons stacked at the far right.
 
 Remember `Retain Global EQ` defaults **OFF** — the EQ returns to flat on every power-up unless you turn that on.
@@ -154,7 +163,8 @@ Remember `Retain Global EQ` defaults **OFF** — the EQ returns to flat on every
 
 **Six channels, left → right:** `HEADPHONES` · `OUTPUT 1` · `OUTPUT 2` · `USB 1/2` · `USB 3` · `USB 4`
 
-Every channel has a fader, a meter, `M` (mute) and `S` (solo). What differs is the row above:
+Every channel has a fader, a meter, `M` (mute) and `S` (solo).
+What differs is the row above:
 
 | Channel                              | Extra controls                                     | Meter               |
 | ------------------------------------ | -------------------------------------------------- | ------------------- |
@@ -162,11 +172,15 @@ Every channel has a fader, a meter, `M` (mute) and `S` (solo). What differs is t
 | `USB 1/2`                            | `AUX` · Bluetooth _(no MASTER)_                    | **2 bars (stereo)** |
 | `USB 3`, `USB 4`                     | `PRE` / `POST` _(no AUX, no Bluetooth, no MASTER)_ | **1 bar (mono)**    |
 
-- **MASTER assign** exists **only** on the three physical outputs, and each is toggled independently. Assigned faders move in unison with the master volume knob; unassigned ones are independent.
-- **`PRE` / `POST` is per-channel** — USB 3 and USB 4 each have their own pair, both defaulting to `PRE`. (The prose describes it as a single choice "out USB 3/4"; the UI shows two.) `PRE` sends the dry input at unity, fader-independent; `POST` makes the fader affect it. The dry instrument send carries a fixed +11.95 dB trim and clamps at 24-bit full scale, so hard picks can clip USB 3 while the A/D and the preset input are intact (static RE + HW, fw 1.8.58).
+- **MASTER assign** exists **only** on the three physical outputs, and each is toggled independently.
+  Assigned faders move in unison with the master volume knob; unassigned ones are independent.
+- **`PRE` / `POST` is per-channel** — USB 3 and USB 4 each have their own pair, both defaulting to `PRE`. (The prose describes it as a single choice "out USB 3/4"; the UI shows two.) `PRE` sends the dry input at unity, fader-independent; `POST` makes the fader affect it.
+  The dry instrument send carries a fixed +11.95 dB trim and clamps at 24-bit full scale, so hard picks can clip USB 3 while the A/D and the preset input are intact (static RE + HW, fw 1.8.58).
 - **Solo is additive** — soloing mutes the others, but touching additional solo buttons adds those channels back into the mix.
 - **AUX** and **Bluetooth** buttons inject those sources into the selected channel — including `USB 1/2`.
-- **Meter scale, top → bottom:** `0 / −5 / −10 / −15 / −20 / −30 / −40 / −50 / −60 dB` (screen says `dB`; prose says dBFS). Yellow 0 → −20, green below −20. The bar is RMS over the poll interval and the red top cell lights only when that reads 0 dBFS, so short clips never show: a clean meter does not prove an unclipped USB 3 send (static RE, fw 1.8.58).
+- **Meter scale, top → bottom:** `0 / −5 / −10 / −15 / −20 / −30 / −40 / −50 / −60 dB` (screen says `dB`; prose says dBFS).
+  Yellow 0 → −20, green below −20.
+  The bar is RMS over the poll interval and the red top cell lights only when that reads 0 dBFS, so short clips never show: a clean meter does not prove an unclipped USB 3 send (static RE, fw 1.8.58).
 
 > Mixer state is **global and invisible to a preset**. Anything measuring or capturing `USB 1/2` is downstream of that channel's fader, mute and solo (a solo on any other channel silences it) and of any AUX/Bluetooth injection. The master volume knob does not reach it: the knob moves only the strips whose `linkToMasterLvl` flag is set, and `usb12`'s never is (HW). The whole mixer state is readable offline from the backup's `settingsBackup.mixerSaveData`, and live over Mixer reads on a kept-alive session.
 

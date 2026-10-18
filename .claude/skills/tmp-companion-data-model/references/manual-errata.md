@@ -1,8 +1,10 @@
 # Owner's Manual errata
 
-Source: Owner's Manual v1.8 (rev. J), read end to end (text layer + every page rendered as an image). Page refs are **printed** pages.
+Source: Owner's Manual v1.8 (rev. J), read end to end (text layer + every page rendered as an image).
+Page refs are **printed** pages.
 
-Where the manual contradicts itself or its own artwork. Device behaviour the manual leaves open is stated in the other references; device questions still open are in `notes/open-questions.md`.
+Where the manual contradicts itself or its own artwork.
+Device behaviour the manual leaves open is stated in the other references; device questions still open are in [`notes/open-questions.md`](../../../../notes/open-questions.md).
 
 ---
 
@@ -32,18 +34,23 @@ Confirmed as genuinely printed — not extraction artefacts.
 
 ### F1. The DAW Mode page has "ghost" text — **do not use its text extraction**
 
-The PDF text layer for p.45 contains strings that are **not rendered on the page**: `DAW 99 Studio Pro`, `FOOTSWITCH ASSIGNMENT`, `VOLUME UP`, `VOLUME DOWN`, `MUTE TRACK`, `SOLO TRACK`, `ARM TRACK`, `PLAY STOP`, and an instruction bar reading "SELECT FOOTSWITCH TO **TOGGLE** …". They describe a different, track-oriented DAW layout the published manual does not show.
+The PDF text layer for p.45 contains strings that are **not rendered on the page**: `DAW 99 Studio Pro`, `FOOTSWITCH ASSIGNMENT`, `VOLUME UP`, `VOLUME DOWN`, `MUTE TRACK`, `SOLO TRACK`, `ARM TRACK`, `PLAY STOP`, and an instruction bar reading "SELECT FOOTSWITCH TO **TOGGLE** …".
+They describe a different, track-oriented DAW layout the published manual does not show.
 
-The **visible** layout is authoritative, and is corroborated three ways: the rendered screenshot, the page's own prose naming exactly those eight transport functions, and the tell that the real equivalent instruction bar on p.27 says "TO **ACTIVATE**". See `workflows.md` §10.
+The **visible** layout is authoritative, and is corroborated three ways: the rendered screenshot, the page's own prose naming exactly those eight transport functions, and the tell that the real equivalent instruction bar on p.27 says "TO **ACTIVATE**".
+See `workflows.md` §10.
 
 ### F2. The signal-path thumbnails are schematic
 
-The p.18 template icons draw every element as an identical square and do **not** distinguish a terminal (`INSTRUMENT` / `OUTPUT`) from a block. Square counts are not block limits and not element inventories.
+The p.18 template icons draw every element as an identical square and do **not** distinguish a terminal (`INSTRUMENT` / `OUTPUT`) from a block.
+Square counts are not block limits and not element inventories.
 
 ### F3. The tuner screenshot is a composite
 
-p.32 shows yellow bars lit on both sides of centre while reading `+1` cents — not a physically possible single-pitch state. Illustrative only.
+p.32 shows yellow bars lit on both sides of centre while reading `+1` cents — not a physically possible single-pitch state.
+Illustrative only.
 
 ### F4. Model inventory is out of scope here
 
-The manual defers all per-model amp/cab/pedal/mic description to the separate **Model Guide**. This repo bundles it as `src/models/tmp-model-guide.json`; `tmp-companion-catalog` owns the id→name/category contract, and `product_profile.json` outranks both on on-device availability.
+The manual defers all per-model amp/cab/pedal/mic description to the separate **Model Guide**.
+This repo bundles it as `src/models/tmp-model-guide.json`; `tmp-companion-catalog` owns the id→name/category contract, and `product_profile.json` outranks both on on-device availability.

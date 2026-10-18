@@ -1,82 +1,42 @@
-# tmp-companion
+@AGENTS.md
 
-A **macOS-first** Tauri 2 desktop app (Rust backend + React/TypeScript frontend; ships on macOS, plus an **alpha** `.deb`/`.rpm` for Linux (see `notes/linux-packaging.md`) and an **unsigned** NSIS `setup.exe` for Windows (see `CONTRIBUTING.md`)) that auto-levels real Fender Tone Master Pro presets to a LUFS target by driving the device over USB in **re-amp mode** — no guitar plugged in. It plays a synthetic guitar-like sample through a preset's full DSP chain, captures the processed USB-Out, measures loudness, computes the `presetLevel` that hits the target, and saves it back automatically during the run, gated by an "I've backed up with Pro Control" acknowledgment in Set up (the save rules are in `danger.md`). It renders its **own** UI: this is a USB host controller that draws its own interface, not a plugin.
+# Claude Code specifics
 
-**UX north-star:** fewest possible clicks per action. The audience is thousands of users, many not comfortable with computers. Every feature ships whole in v1 — no subsetting. The app is **click-only**: no keyboard shortcuts, no command palette. One carve-out: Enter/Escape inside a focused text input, committing or cancelling that field's own edit, is standard text-field behavior, not a shortcut — and in the inline renames that commit on blur, Escape is the only cancel path there is. Key handling anywhere outside a text input (dialog Escape-to-close included) stays banned.
-
-**Architecture map: [`notes/overview.md`](notes/overview.md).** There is deliberately no module tree here — nearly every backend file carries a `//!` header and nearly every frontend file a `//` header, and those are the authority. Feature docs live in [`notes/`](notes/).
+[`AGENTS.md`](AGENTS.md) is the canonical guide for every agent; this file adds only what Claude Code loads on its own.
 
 ## Where the rules live
 
-| File | Loads | Carries |
-| --- | --- | --- |
-| [`.claude/rules/danger.md`](.claude/rules/danger.md) | always | **Read this before touching the device.** Data loss, device wedging, machine crashes. |
-| `.claude/rules/*.md` | when you edit matching files | Path-scoped conventions — frontend, theme/DS, models/catalog, Rust backend, leveling/DSP, e2e, shell |
-| [`notes/gotchas.md`](notes/gotchas.md) | on reference | The hardware evidence behind every rule |
-| `.claude/skills/` | on task match | Product data model, wire protocol, catalog contract, frontend how-to, `/verify`, CodeRabbit, native-window driving |
+Path-scoped rules load only once Claude reads a file their `paths:` glob matches, so anything that must hold while running a command lives in `AGENTS.md` instead.
 
-Path-scoped rules only load once Claude **reads** a matching file, so anything that must hold while *running* a command lives below instead.
+- [`.claude/rules/danger.md`](.claude/rules/danger.md) loads always and is re-injected after compaction: the device danger rules, each linked to its `notes/device/` section.
+- [`device-session.md`](.claude/rules/device-session.md): `session/`, `hid`, the monitor and the device gate → `notes/device/session.md`.
+- [`device-presets.md`](.claude/rules/device-presets.md): copy, in-place replace, slot and backup code → `notes/device/presets.md`, `notes/copy.md`.
+- [`device-scenes.md`](.claude/rules/device-scenes.md): the leveller, scene jobs and footswitches → `notes/device/scenes.md`, `notes/device/reamp-audio.md`, `notes/leveling.md`.
+- [`leveling-dsp.md`](.claude/rules/leveling-dsp.md): measurement, leveling and Doctor code.
+- [`rust-backend.md`](.claude/rules/rust-backend.md): any Rust file.
+- [`frontend.md`](.claude/rules/frontend.md), [`theme-ds.md`](.claude/rules/theme-ds.md), [`models-catalog.md`](.claude/rules/models-catalog.md): `src/`, the token layer and UI primitives, the catalog and block art.
+- [`e2e.md`](.claude/rules/e2e.md): the Playwright harness, its specs and `scripts/e2e.sh`.
+- [`shell-scripts.md`](.claude/rules/shell-scripts.md): any `*.sh`.
+- [`docs-writing.md`](.claude/rules/docs-writing.md): any markdown file.
+- [`docs-site.md`](.claude/rules/docs-site.md): the GitHub Pages site under `docs/`.
+- [`app-icon.md`](.claude/rules/app-icon.md): `src-tauri/icons/`.
 
-## Traps that fire when you run something
+## Skills
 
-- **`git push` RUNS the gates synchronously.** The pre-push hook is `gates.sh --check || gates.sh`, and the green stamp is keyed to a CONTENT hash of the whole worktree (tracked + untracked files; gitignored paths like `dist/` are excluded) — any NON-PROSE edit orphans it, and only ONE stamp is kept. So **every** push after an edit pays the full multi-minute run inside the push. Run `bash scripts/gates.sh` from the repo root yourself first. **A tool-level timeout (143) on `git push` is that gate being slow, NOT a failed push** — check `git ls-remote origin <branch>` before retrying. `gates.sh` also routinely outruns a 10-minute tool ceiling, so start it with `run_in_background`. **PRs run the OFFLINE gates only** — `gate-pr.sh` checks the green stamp alone, so no PR waits on your local unit. A device-facing PR does wait on the required `remote-lane` status: `.github/workflows/remote-lane.yml` sends a remote-device runner outside this repo the online specs its diff maps to, and that runner runs them (10–45 min) and posts the status; any other PR gets "not needed" at once. The online suite runs at release, when the unit is plugged in by hand: `scripts/pre-release.sh` lists every merged change since the last release tag that touched device-facing code (`scripts/gates.sh --device-changes`), then runs the specs that range requires (`scripts/e2e.sh online release`). **The ONLINE stamp is keyed to the same whole-worktree hash**, so land every code/config/script edit before an online run. Prose (`*.md`, `docs/`) is excluded from both stamps' key, with one exception: `e2e/fixtures/COVERAGE.md` is parsed by `fixture_gates`, so it re-keys both stamps like code. **Stamps are PER-WORKTREE** — `$(git rev-parse --git-dir)/tmp-gates` resolves to `.git/worktrees/<name>/`, not the shared common dir — so a sibling worktree's stamp never satisfies this one's PR gate, and REMOVING a worktree destroys its stamps along with the device hours behind an online one. A passing online run MERGES the specs it ran into the tree's ONLINE stamp; `scripts/gates.sh --required-online [--since <ref>]` names the specs a diff or a range reaches (`scripts/gate-map.tsv` + `scripts/gate-policy.tsv`; `scripts/e2e.sh online auto|release` runs exactly those). Soak never stamps, level.online stamps only after the ffmpeg judge passed, and no run stamps unless the unit presents its stock USB interfaces. Rebasing onto a peer's non-prose commits orphans both stamps exactly as your own edits do — rebase first, then run.
-- **Stale e2e server = false-green or fake-online.** An orphaned `e2e_server` plus Playwright's `reuseExistingServer` makes a `TMP_E2E_ONLINE=1` run silently REUSE the old server. If that one was offline (SimDevice), the "online" suite passes green **without ever touching the device**. Confirm `seeded snapshot from the real device` — but look in the **server log** (`$SERVER_LOG`, which `scripts/e2e.sh` greps at its ready-gate), NOT the runner's stdout: the runner prints only `ONLINE e2e (real device) — seeding the scenario presets…`, so grepping stdout for the snapshot line returns nothing on a perfectly good online run. **Killing one port is no longer enough:** offline runs N servers on `TMP_E2E_PORT + 0..N-1`, so a base-port-only kill leaves the other workers' servers alive for `reuseExistingServer` to adopt. Let `scripts/e2e.sh` do it — its `kill_port_range` sweeps the worktree's whole 8-port stride and kills only `e2e_server` processes, so it can't take out a concurrent run in a sibling worktree. Online and offline use DISJOINT bands (online: bridge 9400+, Vite 1621+), so both lanes can run side by side in one worktree; never SIGKILL an online lane (SIGINT runs the recovery trap). The ports are per-worktree derived, not always 7600. **`online` is a MODE SUBCOMMAND** (`scripts/e2e.sh online [spec…]`), not an env var: `TMP_E2E_ONLINE=1 scripts/e2e.sh level.online` seeds the real device and then reports `No tests found` — and a pipeline's exit status is its LAST stage, so `… | tail` reports tail's success, not the run's.
-- **A leveling run must end with re-amp OFF.** A dropped OFF strands the unit input-muted. Recovery: `cargo run --bin probe -- --reamp-off` (a user restarts the unit; an unplug/replug does not clear it — [→ evidence](notes/gotchas.md#a-stuck-re-amp-survives-a-usb-unplug--restarting-the-unit-clears-it-fw-1858-static)).
+Skills under `.claude/skills/` load on a task match; reach for them by task.
 
-- **A preset with NO blocks re-amps as clean passthrough (HW, fw 1.8.58) — don't read it as a wedged device.** Before concluding the hardware is broken, confirm the preset under test actually has blocks (`probe --slot-json <1-based slot>`, count nodes carrying `dspUnitParameters`). The discriminator is spectral and the filters must be STEEP — a 2nd-order bandpass leaks and reads as a flat gain. Two companion red herrings: `probe --activegraph`'s "no preset JSON in handshake" only means it didn't open a dense-heartbeat session, and `is_engaged` keys on the 400 ms momentary spread (`FLOOR_TRIP_LU`), so a stationary stimulus such as an EBow can still read FLOOR on a valid capture. [→ evidence](notes/gotchas.md#a-preset-with-no-blocks-re-amps-as-clean-passthrough--do-not-mistake-it-for-a-dead-chain)
+- `verify`: before declaring any change done (the per-change-class runbook).
+- `tmp-companion-protocol`: wire encoding, framing and the `.preset` codec.
+- `tmp-companion-data-model`: what a preset, scene, block or footswitch means in product terms, from the Owner's Manual.
+- `tmp-companion-catalog`: the model catalog, block art and the CPU-cost table under `src/models/`.
+- `tmp-companion-frontend`: building or changing a view, a DS component or a frontend test.
+- `coderabbit`: anything touching a CodeRabbit review; read it before posting any `@coderabbitai` command.
+- `drive-native-window`: only when a task needs the literal native window; use the headless e2e harness first.
 
-- **A probe binary run from the wrong CWD can't find its stimulus.** `probe_stimulus_path` resolves `resources/samples/<id>.wav` relative to the CURRENT DIRECTORY (both candidates are CWD-rooted), so a binary copied out of its build dir — e.g. to A/B two builds — must run with `cwd = <worktree>/src-tauri`, or it dies with "no bundled stimulus found" that reads like a build or device fault.
+## Hooks
 
-- **`gate-pr.sh` matches the command TEXT, and its `gh` is unanchored.** The blocking regex is `gh … pr (create|merge)`, so merely *quoting* `pr create` inside an `echo`/heredoc trips it. Don't put those words in a Bash string; the block is not evidence the hook is broken.
-- **commitlint rejects ANY capitalized first word** after `type(scope):` — including an acronym. `docs(device): HW-validated the …` reads correct and is rejected all the same. Lowercase the lead word. Check with `echo "<subject>" | bunx commitlint` instead of burning a commit attempt.
-- **Fresh clone or worktree:** run `bun install` before `bunx tsc --noEmit` / `bun run test`, or you get hundreds of phantom "Cannot find module 'react'" errors. (`dist/` is gitignored; `build.rs` stubs `dist/index.html`, so bare `cargo` checks need no frontend build.)
-- **Worktrees share ONE stash stack.** A `git stash apply/pop` can restore an *older* version of a committed branch file, silently reverting it mid-session. Never bare `git stash` in a worktree — use `git stash push -u -m "<tag>"` and `apply` by SHA. NB `lint-staged` pushes and drops a transient stash on every commit; benign, but it rides the same stack, so don't mis-blame it in a pollution audit.
+`.claude/settings.json` registers two `PreToolUse(Bash)` hooks from `scripts/claude-hooks/`.
 
-## Invariants no single module can state
-
-- **`blockcaps.rs` is the SOLE enforcement of the 5 block rules (the CPU budget + 4 count caps).** The device enforces none of the 4 count caps, and its CPU-budget check is fatal: an over-budget INSERT gets no reply and aborts the server (fw 1.8.58 static RE; a replace gets `presetError` 14). Any new apply path must call it, because nothing downstream will.
-- **`SCRATCH_SLOTS` (`slot.rs`) is the ONE declaration of the scratch zone** — widening it is one edit, not four. It is not a universal guard: `probe_import_file` (and the in-place replace path behind it) guards an EMPTY TARGET slot instead, so an import — or the scratch copy a refused in-place replace leaves behind — can land at any empty USER slot, outside the zone.
-- **Block art is original SVG through the BlockArt engine — never an `<img>` photo tile.** The copyrighted vendor PNGs are not bundled and must not be reintroduced (Fender IP).
-- **`ui/primitives.tsx` is deliberately NOT split** — `Modal` (the confirm shell, drawn on `ui/Dialog`) renders `Button`, so splitting reintroduces a circular import; `Dialog.tsx` stays button-free, so the import goes one way.
-- **`blockArt.ts` must NOT import `catalog.ts`** — it closes a module-init cycle (a TDZ crash). Enforced by `no-restricted-imports` in `eslint.config.js`.
-
-## Commands
-
-```bash
-bun install                                   # first-time deps
-bun run tauri dev                             # launch the app
-bun run test                                  # frontend Vitest
-bunx tsc --noEmit                             # frontend typecheck
-bun run lint                                  # strict eslint (--max-warnings 0)
-bun run format                                # prettier --write
-bun run build                                 # vite production bundle
-bun run e2e                                   # offline Playwright (SimDevice, ~1.5 min)
-bash scripts/gates.sh                         # everything the pre-push hook runs
-
-cd src-tauri && cargo test --lib              # Rust unit tests
-cargo clippy --all-targets                    # lint
-cargo fmt                                     # nothing else formats Rust — on you
-cargo run --bin probe                         # headless HW re-validation (device plugged in, Pro Control CLOSED)
-```
-
-**Definition of done:** the `/verify` skill is the per-change-class runbook; `scripts/gates.sh` plus the pre-push and PreToolUse hooks are what actually enforce it. `notes/user-journeys.md` tracks journey coverage and the bug→gate registry.
-
-**Every user-reported bug becomes a gate.** Each bug class gets a non-regression spec plus fixture, landing with or before the fix. Never characterize or expected-fail a product bug to keep CI green.
-
-## Rules with no other home
-
-- **App icon (level-meter mark):** flat terracotta (`#d97757`) macOS-squircle tile, 3 white bottom-aligned level bars in a 6:11:8 height rhythm. [→ evidence](notes/gotchas.md#app-icon-level-meter-mark)
-- **Marketing site** (`docs/index.html` + `.nojekyll` + `assets/`): GitHub Pages Actions deployment combines `main` `docs/` with the `codex/linux-package-repos` branch (see `.github/workflows/pages.yml`). It is a PROJECT repo, so the URL is a `/tmp-companion/` **subpath** — all asset paths must be RELATIVE. [→ evidence](notes/gotchas.md#marketing-site-docsindexhtml--nojekyll--assets)
-- **CodeRabbit: progressive review is automatic — post NO command on a reviewed PR.** Pushing fix commits or replying to threads is enough. [→ evidence](notes/gotchas.md#coderabbit-progressive-review-is-automatic--post-no-command-on-a-reviewed-pr)
-- **Auto-merge arms ONLY for `main`-targeted PRs.** [→ evidence](notes/gotchas.md#auto-merge-arms-only-for-main-targeted-prs)
-- **Connection is fully automatic** — there are no manual Connect/Disconnect buttons. [→ evidence](notes/gotchas.md#fully-automatic-connection)
-- **Editing `index.html` triggers a FULL webview reload** (not HMR) in `tauri dev`, re-running connect-on-mount. Reload via the UI instead.
-- **Shared seams** — the cross-module reuse contracts: `backup::xor_jld` (the `.preset` codec) + `library::decode_preset_bytes`; `crate::replace_inplace::replace_inplace_core` (in-place re-import); `audiograph::for_each_node` / `for_each_node_mut` + `node_id` (the node-walk helpers the scan and edit modules share).
-
-## How leveling works
-
-`presetLevel` is a **linear amplitude** control: `captured_LUFS = 20·log10(presetLevel) + C`. So `leveller::level_preset` measures once at a reference level, solves `C`, and sets the exact value — over **three fresh connections** (load / measure / apply) — a conservative shape; fw 1.8.58 would allow one heartbeated connection (`danger.md`).
-
-`C` is each preset's **max reachable** loudness. A louder target clamps, and the ceiling is preset- and model-specific — there is no hard `−17 LUFS` rule (a maxed 65 Twin reached `−11 LUFS` comfortably). For relative leveling, pick a target below the quietest preset's measured max.
-
-Full model — scene/footswitch recipes, parallel-amp rebalance, Fletcher–Munson playback compensation, the verify-by-ear causes, and the outcome taxonomy: **[`notes/leveling.md`](notes/leveling.md)**.
+- `block-bypass.sh` refuses a `git commit` or `git push` that disables the git hooks (`--no-verify`, `HUSKY=0`, a `core.hooksPath` override).
+- `gate-pr.sh` refuses to open or merge a PR without a green `scripts/gates.sh --check` stamp for the worktree.
+  It matches the command TEXT and its `gh` is unanchored, so merely quoting the words `pr create` inside an `echo` or heredoc trips it; the block is not evidence the hook is broken.

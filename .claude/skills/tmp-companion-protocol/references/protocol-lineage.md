@@ -1,12 +1,17 @@
 # Protocol lineage — Mustang LT → TMS
 
-TMP's USB protocol is not an independent design. It is a direct lineal descendant of the protocol Fender introduced for the **Mustang LT** family (and shipped under the internal `tone-sdk` C++ library after the 2018-era app rewrite). This reference captures what TMS inherited verbatim, what it added, and what it dropped. It exists so a future session does not need to re-derive the lineage from scratch.
+TMP's USB protocol is not an independent design.
+It is a direct lineal descendant of the protocol Fender introduced for the **Mustang LT** family (and shipped under the internal `tone-sdk` C++ library after the 2018-era app rewrite).
+This reference captures what TMS inherited verbatim, what it added, and what it dropped.
+It exists so a future session does not need to re-derive the lineage from scratch.
 
 ## The evidence chain
 
-- [LtAmp by brentmaxwell](https://github.com/brentmaxwell/LtAmp) — open-source .NET library for Mustang LT. Ships [`Docs/Protocol.md`](https://github.com/brentmaxwell/LtAmp/blob/main/Docs/Protocol.md) (wire envelope) and `Schema/protobuf/` (full message catalog).
+- [LtAmp by brentmaxwell](https://github.com/brentmaxwell/LtAmp) — open-source .NET library for Mustang LT.
+  Ships [`Docs/Protocol.md`](https://github.com/brentmaxwell/LtAmp/blob/main/Docs/Protocol.md) (wire envelope) and `Schema/protobuf/` (full message catalog).
 - [Hayden Bursk, "C++ Desktop Application Architecture for Digital Amplifier Connectivity", Fender Engineering on Medium](https://medium.com/fender-engineering/c-desktop-application-architecture-for-digital-amplifier-connectivity-454da5c44026) — first-party write-up of the `tone-sdk` SDK design that underpins the LT desktop app (and, by structural identity, TMS).
-- [fmmp by spod](https://github.com/spod/fmmp) — Mustang Micro Plus recon. Has `protobuf/{gt,ltx}/` subtrees and documents the wider Fender connected-device protocol family.
+- [fmmp by spod](https://github.com/spod/fmmp) — Mustang Micro Plus recon.
+  Has `protobuf/{gt,ltx}/` subtrees and documents the wider Fender connected-device protocol family.
 
 ## Inherited from LT (identical or near-identical)
 
@@ -23,39 +28,59 @@ TMP's USB protocol is not an independent design. It is a direct lineal descendan
 
 ## Added in TMS (no LT equivalent)
 
-- **13-way `oneof type` router** in `FenderMessageTMS` (`FenderMessageTMS.proto:19-33`): TestMessage / PresetMessage / SettingsMessage / ConnectionMessage / MixerMessage / TunerMessage / LooperMessage / BackupMessage / WifiMessage / SongMessage / SetlistMessage / UserIRMessage / MidiMessage. LT has a single flat `FenderMessageLT` with no category dispatch.
-- **`UndoReplaceNode` + `UndoReplaceNodeResponse`** (`UndoReplaceNode.proto`, `UndoReplaceNodeResponse.proto`, surfaced via `PresetMessage.proto:113-114, 260-261`): LT has `ReplaceNode` + `ReplaceNodeStatus` but no undo. TMS's undo is **stateless** — the caller carries `originalNodeJson` payload; no server-side undo stack. See `replacenode-family.md`.
-- **LZ4-block-compressed `presetJson` payload** inside `CurrentPresetDataChanged.presetJson` and `AllBlockPresetsResponse.field1` (`quick-reference.md`, Wire-format gotchas). LT exchanges presets as plain JSON.
+- **13-way `oneof type` router** in `FenderMessageTMS` (`FenderMessageTMS.proto:19-33`): TestMessage / PresetMessage / SettingsMessage / ConnectionMessage / MixerMessage / TunerMessage / LooperMessage / BackupMessage / WifiMessage / SongMessage / SetlistMessage / UserIRMessage / MidiMessage.
+  LT has a single flat `FenderMessageLT` with no category dispatch.
+- **`UndoReplaceNode` + `UndoReplaceNodeResponse`** (`UndoReplaceNode.proto`, `UndoReplaceNodeResponse.proto`, surfaced via `PresetMessage.proto:113-114, 260-261`): LT has `ReplaceNode` + `ReplaceNodeStatus` but no undo.
+  TMS's undo is **stateless** — the caller carries `originalNodeJson` payload; no server-side undo stack.
+  See `replacenode-family.md`.
+- **LZ4-block-compressed `presetJson` payload** inside `CurrentPresetDataChanged.presetJson` and `AllBlockPresetsResponse.field1` (`quick-reference.md`, Control-plane writes).
+  LT exchanges presets as plain JSON.
 - **`SongMessage` + `SetlistMessage` + `UserIRMessage`** categories in the top-level oneof — three product surfaces LT does not have (no song player, no setlist mode, no user IR import on the LT).
-- **Rich factory/QA test surface** in `TestMessage` (51 sub-types: XMOS programming, SD card test, brightness, CPU temperature, rear-panel pad/phantom/instrument-select/impedance switching). LT exposes `QASlots*` + `LoopbackTest` only. See the Test/Loopback subsection of `quick-reference.md`.
-- **Scene/scene-edit surface** in `PresetMessage` (`LoadScene`/`CreateScene`/`DeleteScene`/`SetNodeSceneEdit`/`SetSceneAmpControl{1,2}`, fields 101-114 and 133-134). LT presets are flat; scenes are a TMS-era addition.
+- **Rich factory/QA test surface** in `TestMessage` (51 sub-types: XMOS programming, SD card test, brightness, CPU temperature, rear-panel pad/phantom/instrument-select/impedance switching).
+  LT exposes `QASlots*` + `LoopbackTest` only.
+  See the Test/Loopback subsection of `quick-reference.md`.
+- **Scene/scene-edit surface** in `PresetMessage` (`LoadScene`/`CreateScene`/`DeleteScene`/`SetNodeSceneEdit`/`SetSceneAmpControl{1,2}`, fields 101-114 and 133-134).
+  LT presets are flat; scenes are a TMS-era addition.
 
 ## Absent in TMS
 
 These message families appear in LT but are absent from TMS's extracted proto tree (grep the extracted `*.proto` returns zero hits for each):
 
-- **`ModalStatusMessage`** with `SYNC_BEGIN` / `SYNC_END` context wrappers. LT uses these to bracket bulk-sync sessions; TMS does not. In TMS `batchStatus` does the equivalent job: 1/2 queue a group of requests and 3 drains it in order (`quick-reference.md`, First-connect handshake).
-- **`FrameBufferMessage`**. LT can request the amp's display as a framebuffer for app-side mirroring. TMS has a 1024×600 touchscreen; if Pro Control ever mirrored it the message would exist. The absence is itself a finding: Pro Control rebuilds the UI from the preset JSON, it does not framebuffer-mirror.
-- **`ProcessorUtilization`** / `MemoryUsage`. LT exposes CPU/MEM telemetry. TMS keeps its CPU budget firmware-internal — a static per-model cost table checked on edit, with no wire telemetry (static RE, fw 1.8.58) — so the companion enforces it itself (`blockcaps.rs`).
+- **`ModalStatusMessage`** with `SYNC_BEGIN` / `SYNC_END` context wrappers.
+  LT uses these to bracket bulk-sync sessions; TMS does not.
+  In TMS `batchStatus` does the equivalent job: 1/2 queue a group of requests and 3 drains it in order (`quick-reference.md`, First-connect handshake).
+- **`FrameBufferMessage`**.
+  LT can request the amp's display as a framebuffer for app-side mirroring.
+  TMS has a 1024×600 touchscreen; if Pro Control ever mirrored it the message would exist.
+  The absence is itself a finding: Pro Control rebuilds the UI from the preset JSON, it does not framebuffer-mirror.
+- **`ProcessorUtilization`** / `MemoryUsage`.
+  LT exposes CPU/MEM telemetry.
+  TMS keeps its CPU budget firmware-internal — a static per-model cost table checked on edit, with no wire telemetry (static RE, fw 1.8.58) — so the companion enforces it itself (`blockcaps.rs`).
 
 ## SDK architecture (from the Medium post)
 
 The Medium post documents `tone-sdk` as a separate C++ library with:
 
-- **Four-thread model:** UI / Send / Model / HID. Events flow UI → send queue → HID → response/ack queue → model queue → RxCpp observables → UI.
+- **Four-thread model:** UI / Send / Model / HID.
+  Events flow UI → send queue → HID → response/ack queue → model queue → RxCpp observables → UI.
 - **Lock-free queues:** initially `moodycamel::ConcurrentQueue`, replaced with `boost::lockfree::queue` after discovering moodycamel is not linearizable across multi-producer scenarios (caused backup/restore message interleaving in LT testing).
 - **Pattern-match dispatch:** `ni::matchine` (Native Instruments' open-source pattern-matching library) for handling responses.
-- **Observer pattern:** `RxCpp` (Reactive Extensions for C++), exposed via a `ModelObservable` wrapper. Two subject flavours: `Rx::behavior<T>` (replays current state on subscribe) and `Rx::subject<T>` (notifies future changes only).
+- **Observer pattern:** `RxCpp` (Reactive Extensions for C++), exposed via a `ModelObservable` wrapper.
+  Two subject flavours: `Rx::behavior<T>` (replays current state on subscribe) and `Rx::subject<T>` (notifies future changes only).
 - **Transport abstraction:** HID is one transport; the post explicitly notes "if the transport mechanism was to change, to BLE for example, we would only need a new transport layer."
 
 These are architectural priors.
 
 ## What this changes about TMP recon
 
-- The `0x33 / 0x34 / 0x35` framing is **not a TMP innovation**; it has been in the public domain since the LT release. Recon docs may safely cite "the Fender `tone-sdk` HID envelope" as prior art.
-- Naming convention `FenderMessage{LT,GT,LTX,TMS}` is a family-naming pattern. Future Fender connected products are likely to use `FenderMessage<two-or-three-letter-product-tag>`.
-- The single-in-flight contract is an SDK-level invariant. In TMS the reply carries no `batchStatus`; requests queued with 1/2 are answered in order when a 3 drains them, each reply to its stored sender.
-- The presence of `UndoReplaceNode` and the absence of `ModalStatus` brackets suggest TMS evolved toward **stateless / per-call atomicity** rather than LT's session-bracket model. Drivers should mirror this: one message, one effect, no implicit session state.
+- The `0x33 / 0x34 / 0x35` framing is **not a TMP innovation**; it has been in the public domain since the LT release.
+  Recon docs may safely cite "the Fender `tone-sdk` HID envelope" as prior art.
+- Naming convention `FenderMessage{LT,GT,LTX,TMS}` is a family-naming pattern.
+  Future Fender connected products are likely to use `FenderMessage<two-or-three-letter-product-tag>`.
+- The single-in-flight contract is an SDK-level invariant.
+  In TMS the reply carries no `batchStatus`; requests queued with 1/2 are answered in order when a 3 drains them, each reply to its stored sender.
+- The presence of `UndoReplaceNode` and the absence of `ModalStatus` brackets suggest TMS evolved toward **stateless / per-call atomicity** rather than LT's session-bracket model.
+  Drivers should mirror this: one message, one effect, no implicit session state.
 
 ## Sources
 

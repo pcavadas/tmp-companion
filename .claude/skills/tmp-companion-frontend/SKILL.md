@@ -5,24 +5,36 @@ description: "How to build and change the TMP Companion app's React/TypeScript f
 
 # TMP Companion frontend
 
-TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~40 `invoke` commands and a React + TypeScript frontend that talks to it. This skill is the playbook for changing that frontend without re-deriving the house conventions — the app receives recurring **design handoffs** that would otherwise each re-learn the same token mapping, file layout, test scaffold and lint traps.
+TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~40 `invoke` commands and a React + TypeScript frontend that talks to it.
+This skill is the playbook for changing that frontend without re-deriving the house conventions — the app receives recurring **design handoffs** that would otherwise each re-learn the same token mapping, file layout, test scaffold and lint traps.
 
-**Orient first.** [`notes/overview.md`](../../../notes/overview.md) is the architecture map (_what is where_) and [`.claude/rules/frontend.md`](../../rules/frontend.md) carries the edit-time lint/contract rules, loading automatically when you open a `src/` file. This skill is the _how-to_. `CLAUDE.md` is the index and wins on any rule it states; tell the user if you spot drift.
+**Orient first.**
+[`notes/architecture.md`](../../../notes/architecture.md) is the architecture map (_what is where_) and [`.claude/rules/frontend.md`](../../rules/frontend.md) carries the edit-time lint/contract rules, loading automatically when you open a `src/` file.
+This skill is the _how-to_.
+`AGENTS.md` is the agent guide and wins on any rule it states; tell the user if you spot drift.
 
 ## Layout at a glance
 
-`src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (five feature folders — `level`, `doctor`, `copy`, `songs`, `settings` — plus a flat `CatalogView` and `views/overlays/`, the Level flow's stage switch `LevelingWizard`), and `App.tsx` (shell routing). Full file tree: `references/ui-components.md`.
+`src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (five feature folders — `level`, `doctor`, `copy`, `songs`, `settings` — plus a flat `CatalogView` and `views/overlays/`, the Level flow's stage switch `LevelingWizard`), and `App.tsx` (shell routing).
+Full file tree: `references/ui-components.md`.
 
-The app is **click-only by design** — no keyboard shortcuts, no command palette. Enter/Escape inside a focused text input, committing or cancelling that field's own edit, is exempt — see the carve-out in `CLAUDE.md`.
+The app is **click-only by design** — no keyboard shortcuts, no command palette.
+Enter/Escape inside a focused text input, committing or cancelling that field's own edit, is exempt — see the carve-out in `AGENTS.md`.
 
 ## When you're handed a Claude-Design handoff
 
-A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prototype + a written spec; the work is landing its design in real components wired to the real backend. Detail for steps 1, 2, 4, 5: `references/gotchas.md`.
+A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prototype + a written spec; the work is landing its design in real components wired to the real backend.
+Detail for steps 1, 2, 4, 5: `references/gotchas.md`.
 
 1. **Read the whole handoff first**, and enumerate every deliverable it lists.
-2. **Reconcile the design against the codebase before coding.** A handoff may **refine an already-shipped feature**, not add a new one.
-3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/green means GREEN — map it to `good`/`goodFill`; the full severity table is in `references/theme-tokens.md`. There is no `t.ok`/`t.err`/`t.info` alias; never add one.
-4. **One component per file.** Split a multi-component prototype into focused files under the right feature folder, each re-exported from the folder's `index.ts`.
+2. **Reconcile the design against the codebase before coding.**
+   A handoff may **refine an already-shipped feature**, not add a new one.
+3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex.
+   A design color with no token means pick the closest one or ask — never hardcode `#c0392b`.
+   **Severity-token trap:** a handoff's `ok`/green means GREEN — map it to `good`/`goodFill`; the full severity table is in `references/theme-tokens.md`.
+   There is no `t.ok`/`t.err`/`t.info` alias; never add one.
+4. **One component per file.**
+   Split a multi-component prototype into focused files under the right feature folder, each re-exported from the folder's `index.ts`.
 5. **A Catalog-tab handoff that changes catalog DATA must keep the test oracles in sync.**
 
 ## Conventions
@@ -31,20 +43,31 @@ A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prot
 
 Two hooks, both from `theme/ThemeContext`:
 
-- `const { t } = useTheme();` — `t` is the token object: the look B groups (`color`, `type`, `space`, `radius`, `size`, `elevation` — e.g. `t.window`, `t.surface`, `t.text`, `t.action`, `t.fontBody`, `t.sp12`, `t.radiusControl`, `t.row`) plus the frozen signal-path tokens. LIGHT-ONLY; there is no dark mode.
+- `const { t } = useTheme();` — `t` is the token object: the look B groups (`color`, `type`, `space`, `radius`, `size`, `elevation` — e.g. `t.window`, `t.surface`, `t.text`, `t.action`, `t.fontBody`, `t.sp12`, `t.radiusControl`, `t.row`) plus the frozen signal-path tokens.
+  LIGHT-ONLY; there is no dark mode.
 - `const s = useStyles();` — `s` is the composed-style registry (`s.searchBox`, `s.popoverCard`, `s.menuCard`).
 
-`src/theme/tokens.ts` is the source of truth for token names — **read it** rather than trusting a summary here. Three rules the tests enforce (`DSPrimitives.test.tsx` source scans): the signal-path tokens (`bgAlt`, `ink`, `mono`, `space5`, …) are read ONLY by the frozen diagram files (`ui/BlockArt.tsx`, `ui/blockart/`, `models/blockArt.ts`, `views/SignalChainView.tsx`, `views/ActiveSignalChainView.tsx`, `views/signalChain/`), which you never edit; the type is Inter only in four sizes (12/13/15/20) — no serif, mono or uppercase; and the one letter-spacing is `trackingTitle` on PageHead's title. Section labels are `sectionLabel(t)` (sentence case); selection is grey (`rowSelected`), never terracotta.
+`src/theme/tokens.ts` is the source of truth for token names — **read it** rather than trusting a summary here.
+Three rules the tests enforce (`DSPrimitives.test.tsx` source scans): the signal-path tokens (`bgAlt`, `ink`, `mono`, `space5`, …) are read ONLY by the frozen diagram files (`ui/BlockArt.tsx`, `ui/blockart/`, `models/blockArt.ts`, `views/SignalChainView.tsx`, `views/ActiveSignalChainView.tsx`, `views/signalChain/`), which you never edit; the type is Inter only in four sizes (12/13/15/20) — no serif, mono or uppercase; and the one letter-spacing is `trackingTitle` on PageHead's title.
+Section labels are `sectionLabel(t)` (sentence case); selection is grey (`rowSelected`), never terracotta.
 
-Styling is **inline `style={{}}` objects**, read straight off `t`. This is the deliberate house style — do not reach for CSS modules, styled-components, Tailwind, or a className system. The full token table + the composed-style list live in `references/theme-tokens.md`.
+Styling is **inline `style={{}}` objects**, read straight off `t`.
+This is the deliberate house style — do not reach for CSS modules, styled-components, Tailwind, or a className system.
+The full token table + the composed-style list live in `references/theme-tokens.md`.
 
 ### Primitives, Icon, and block art
 
-Primitives live in `ui/primitives.tsx` + a few stand-alone `ui/` files (`Dialog` — the ONE DS dialog shell, `Menu` — the ONE anchored popover, `Select` — the ONE dropdown, `List` (`Group`/`Row`/`Caret`), `Badge`, `Footer`, `PageHead`, `Steps`, `PageState`, `SplitView`, `PageColumn`, `MoreMenu`, `Spinner`, …) — reuse before hand-rolling. Icons route through `ui/Icon` — never paste raw emoji/symbol chars. Device block art (amps/cabs/pedals/mics) renders through the procedural SVG engine `ui/BlockArt.tsx` + `ui/blockart/*` — **never render Fender product photos**. Full inventory, the FenderId→art resolution algorithm, and the strip prop-parity rules: `references/ui-components.md`.
+Primitives live in `ui/primitives.tsx` + a few stand-alone `ui/` files (`Dialog` — the ONE DS dialog shell, `Menu` — the ONE anchored popover, `Select` — the ONE dropdown, `List` (`Group`/`Row`/`Caret`), `Badge`, `Footer`, `PageHead`, `Steps`, `PageState`, `SplitView`, `PageColumn`, `MoreMenu`, `Spinner`, …) — reuse before hand-rolling.
+Icons route through `ui/Icon` — never paste raw emoji/symbol chars.
+Device block art (amps/cabs/pedals/mics) renders through the procedural SVG engine `ui/BlockArt.tsx` + `ui/blockart/*` — **never render Fender product photos**.
+Full inventory, the FenderId→art resolution algorithm, and the strip prop-parity rules: `references/ui-components.md`.
 
 ### No-fabricate rule
 
-Every value shown must trace to a real backend command. A field with no backing data renders an explicit empty / `—` / disabled state — never an invented number. Slow-to-arrive regions use the `.tmp-skel` shimmer skeletons, driven by real fetch status, not timers. Corollary — size repeated UI off real data, never a literal count: `references/gotchas.md`.
+Every value shown must trace to a real backend command.
+A field with no backing data renders an explicit empty / `—` / disabled state — never an invented number.
+Slow-to-arrive regions use the `.tmp-skel` shimmer skeletons, driven by real fetch status, not timers.
+Corollary — size repeated UI off real data, never a literal count: `references/gotchas.md`.
 
 ## Wiring a Tauri command into the UI
 
@@ -58,36 +81,52 @@ export const listLevelBlocks = (slot: number): Promise<LevelBlock[]> =>
 
 Two load-bearing rules:
 
-- **Casing:** top-level arg keys passed to `invoke` are **camelCase** (Tauri converts them to the Rust handler's snake_case params), but keys _inside_ a JSON payload struct stay **snake_case** to match `serde` (e.g. `target_lufs`, `topology_id`). Get this wrong and the command silently receives `undefined`.
-- **The type mirror + command registry:** `src/lib/types.ts` mirrors the Rust `serde` structs by hand — adding a Rust field without updating it **fails silently**. `src/lib/commands.ts`'s `Commands` interface names every command's `{ args; ret }`; wrappers call the private `invokeCommand<K>`, so a wrong arg key or return type is a `tsc` error. A new command needs its `Commands` entry, its wrapper, its default in `DEFAULT_HANDLERS` (`src/__tests__/commandMocks.ts` — typed total, so `tsc` asks for it) and an `expectCall` in `invoke.test.ts`, whose last test checks the wrappers reach exactly the registry's commands.
+- **Casing:** top-level arg keys passed to `invoke` are **camelCase** (Tauri converts them to the Rust handler's snake_case params), but keys _inside_ a JSON payload struct stay **snake_case** to match `serde` (e.g. `target_lufs`, `topology_id`).
+  Get this wrong and the command silently receives `undefined`.
+- **The type mirror + command registry:** `src/lib/types.ts` mirrors the Rust `serde` structs by hand — adding a Rust field without updating it **fails silently**.
+  `src/lib/commands.ts`'s `Commands` interface names every command's `{ args; ret }`; wrappers call the private `invokeCommand<K>`, so a wrong arg key or return type is a `tsc` error.
+  A new command needs its `Commands` entry, its wrapper, its default in `DEFAULT_HANDLERS` (`src/__tests__/commandMocks.ts` — typed total, so `tsc` asks for it) and an `expectCall` in `invoke.test.ts`, whose last test checks the wrappers reach exactly the registry's commands.
 
-If a command doesn't exist yet, that's a backend change — coordinate it, don't fake data. Grep the existing seams before assuming one's missing. Detail: `references/gotchas.md`.
+If a command doesn't exist yet, that's a backend change — coordinate it, don't fake data.
+Grep the existing seams before assuming one's missing.
+Detail: `references/gotchas.md`.
 
 ### Shared device data: the `libraryScan` store (App-owned, ONE scan/connection)
 
-Device data too expensive to read per-tab (scenes, blocks, graphs, footswitches, the song↔preset map) is read ONCE per connection into the module-scoped store `src/device/libraryScan.ts`, whose scan `App.tsx` triggers; a new tab CONSUMES it and never adds its own trigger. The app-global live device state (`src/device/useLiveDevice.ts`) is the same module-store pattern. Both stores: `references/gotchas.md`.
+Device data too expensive to read per-tab (scenes, blocks, graphs, footswitches, the song↔preset map) is read ONCE per connection into the module-scoped store `src/device/libraryScan.ts`, whose scan `App.tsx` triggers; a new tab CONSUMES it and never adds its own trigger.
+The app-global live device state (`src/device/useLiveDevice.ts`) is the same module-store pattern.
+Both stores: `references/gotchas.md`.
 
 ## Testing
 
-Tests are **Vitest + React Testing Library**, jsdom environment, rendered through the theme provider. The full pattern (mock overrides, async `findBy`, asserting an `invoke` was called with the right args) is in `references/testing.md`. The essentials:
+Tests are **Vitest + React Testing Library**, jsdom environment, rendered through the theme provider.
+The full pattern (mock overrides, async `findBy`, asserting an `invoke` was called with the right args) is in `references/testing.md`.
+The essentials:
 
-- **Render through the theme provider** — `useTheme`/`useStyles` throw outside it. `renderWithTheme` (`src/__tests__/testKit.tsx`) wraps it:
+- **Render through the theme provider** — `useTheme`/`useStyles` throw outside it.
+  `renderWithTheme` (`src/__tests__/testKit.tsx`) wraps it:
   ```tsx
   renderWithTheme(<SettingsView connected={false} />);
   ```
-- **The kit covers the environment:** `forceTauri()` for the in-app paths, `mockLiveEvents()` to push `tmp://` events, the `getBBox` stub is global. Name a test file after its unit; a bug lock is a `describe("regression: …")` inside it.
-- **`invoke` is globally mocked** in `src/__tests__/setup.ts` — every command resolves its typed empty default (`DEFAULT_HANDLERS` in `commandMocks.ts`) so any screen mounts. Override per-test with `mockCommands({ get_store: () => makeStore({ targets }) })` (each handler's return is checked against the registry), then read `callsOf("save_targets")` / `fired(...)` to verify a write happened.
-- **Real timers wherever a test awaits `findBy`/`waitFor`.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and hang forever polling a frozen clock. Fake timers fit only a bare timeout with no DOM wait.
+- **The kit covers the environment:** `forceTauri()` for the in-app paths, `mockLiveEvents()` to push `tmp://` events, the `getBBox` stub is global.
+  Name a test file after its unit; a bug lock is a `describe("regression: …")` inside it.
+- **`invoke` is globally mocked** in `src/__tests__/setup.ts` — every command resolves its typed empty default (`DEFAULT_HANDLERS` in `commandMocks.ts`) so any screen mounts.
+  Override per-test with `mockCommands({ get_store: () => makeStore({ targets }) })` (each handler's return is checked against the registry), then read `callsOf("save_targets")` / `fired(...)` to verify a write happened.
+- **Real timers wherever a test awaits `findBy`/`waitFor`.**
+  RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and hang forever polling a frozen clock.
+  Fake timers fit only a bare timeout with no DOM wait.
 - After adding a test, run the suite (`bun run test`) — a green `tsc` + build does **not** run your test.
 
 **Full UI journeys** are covered by the Playwright e2e harness (`references/gotchas.md`).
 
 ## Lint & typecheck traps
 
-`bun run lint` (`--max-warnings 0`) + `bunx tsc --noEmit` are the strict checks — see `.claude/rules/frontend.md` for the escape-hatch ban and the other common findings. Two more, restated here because this skill's own frontmatter names them:
+`bun run lint` (`--max-warnings 0`) + `bunx tsc --noEmit` are the strict checks — see `.claude/rules/frontend.md` for the escape-hatch ban and the other common findings.
+Two more, restated here because this skill's own frontmatter names them:
 
 - **`react-hooks/refs`** ERRORS on reading/writing `ref.current` during render — **sync the ref in an EFFECT (after commit), not during render.**
-- **`react-hooks/set-state-in-effect`** ERRORS on a synchronous `setState` in an effect — use the **"adjust state during render when an input changes"** prev-compare pattern (`const [prev,setPrev]=useState(x); if (x!==prev){setPrev(x); …}`), or derive the value during render (no state at all). Timers/ref-writes stay in the effect; only the `setState` moves.
+- **`react-hooks/set-state-in-effect`** ERRORS on a synchronous `setState` in an effect — use the **"adjust state during render when an input changes"** prev-compare pattern (`const [prev,setPrev]=useState(x); if (x!==prev){setPrev(x); …}`), or derive the value during render (no state at all).
+  Timers/ref-writes stay in the effect; only the `setState` moves.
 
 More traps (other eslint rules, fresh-worktree/TypeScript-6 setup, stale IDE diagnostics): `references/gotchas.md`.
 
@@ -103,7 +142,8 @@ bun run format        # prettier --write — run before calling a change "done"
 bun run build         # Vite production build
 ```
 
-Then sanity-check against the _ask_: for a handoff, re-walk its deliverable list vs the final export. State plainly what you verified.
+Then sanity-check against the _ask_: for a handoff, re-walk its deliverable list vs the final export.
+State plainly what you verified.
 
 ## References
 

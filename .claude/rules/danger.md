@@ -1,71 +1,80 @@
-# Danger rules — data loss, device wedging, machine crashes
+# Danger rules
 
-**This file has no `paths:` frontmatter on purpose.** It loads unconditionally and is re-injected after compaction, exactly like `CLAUDE.md`. Every rule here comes from a real Tone Master Pro or from static RE of its firmware; each one is expensive or impossible to relearn, and none is visible in the code.
-
-Full hardware evidence for the linked entries is in [`notes/gotchas.md`](../../notes/gotchas.md) — read the entry before changing the behaviour it governs.
-
----
+This file has no `paths:` frontmatter on purpose: it loads unconditionally and is re-injected after compaction.
+Each rule guards against data loss, a wedged device or a crashed machine.
+The mechanism and evidence for each rule live in the linked [`notes/device/`](../../notes/device/) section; read it before changing the behaviour a rule governs.
 
 ## Destructive writes
 
-- **DANGER** — **Slot addressing: device `userSlot` = list index + 1** (HW, fw 1.8.58). [→ evidence](../../notes/gotchas.md#slot-addressing-device-userslot--list-index--1)
-
-- **DANGER** — **Confirm a slot mapping with a non-destructive READ first, and put the guard in the SAME ADDRESS SPACE as the mutation.** Before any destructive op (`clear` / `move` / `save`-over) keyed on a slot/index mapping: a guard that checks list-index space while `clear` acts in 1-based device-slot space **deletes a real preset**. On real hardware with irreplaceable presets, an unconfirmed mapping plus a wrong-space guard equals silent data loss.
-
-- **The first connection after a load can echo the slot loaded BEFORE it** (HW, fw 1.8.58). The echo is identity and must keep winning over a matching name, so a load → reconnect → confirm path lapses the load's connection and confirms through `Session::connect_confirmed` (lapse and retry on a fresh connection). Never relax the guard to accept the name instead. [→ evidence](../../notes/gotchas.md#the-first-connection-after-a-load-can-echo-the-slot-loaded-before-it-fw-1858-hw)
-
-- **DANGER** — **Saving permanently alters a preset, and a leveling run saves automatically.** Each sound is saved as soon as it matches (Base via `presetLevel` per item; scene and footswitch writes in the preset's one batch-end save) — saving is not opt-in, because an unsaved working-copy edit is discarded the moment the preset or scene changes. The only gate is the "I've backed up with Pro Control" acknowledgment in Set up, ticked before the run can start (the Summary's "Try again" re-runs sounds of the same flow straight away, with no Set up, and does not ask again). That backup is the only way back: the app has no revert, so a save cannot be undone from the app.
-
-- **DANGER** — **`saveCurrentPreset` is durable when it returns, but a same-slot `loadPreset` right after a save is a NO-OP** (HW, fw 1.8.58): it keeps the live working copy and DSP instead of re-reading the stored row, so it can never "refresh from the device". An unsaved edit since the save (every app edit sets the dirty flag, next bullet) makes the same-slot load a REAL reload (~0.3 s). To materialize the stored row otherwise, load another slot, then the target. There is no commit window: captures to T+40 s and `presetDataRequest` (field 8) / `currentPresetDataChanged` (field 3) reads to T+200 s all saw the saved row (HW, fw 1.8.58). The code still ends the connection after a save and never chains a `saveCurrentPreset` before a `loadPreset` on one connection (conservative; the save itself runs synchronously, in order — static RE, fw 1.8.58). **NEVER add a preset load before `save_deferred_scene_writes`** — it performs no load itself and saves the run's UNSAVED deferred working-copy writes; those writes set the dirty flag (static RE, fw 1.8.58), so a load ahead of it would be a real reload that WIPES them. [→ evidence](../../notes/gotchas.md#savecurrentpreset-is-durable-when-it-returns-a-same-slot-loadpreset-right-after-it-is-a-no-op-fw-1858)
-
-- **DANGER** — **A same-slot `loadPreset` over a CLEAN working copy is a NO-OP** (fw 1.8.58): it keeps the working copy, so it discards nothing. Every edit the app makes sets the dirty flag and turns it into a real reload (HW, fw 1.8.58, for `setPresetLevel`, `changeParameter`, `insertNode`; static RE for the rest). Discard unsaved edits only through `leveller::restore_saved_preset`, which loads a neighbour slot first so a clear flag can never keep a stale working copy. [→ evidence](../../notes/gotchas.md#savecurrentpreset-is-durable-when-it-returns-a-same-slot-loadpreset-right-after-it-is-a-no-op-fw-1858)
-
-- **DANGER** — **A `func: "param"` footswitch with no `valueType` makes the firmware REJECT the whole IMPORTED preset at its first real LOAD** — the rejected-at-load class below (static RE + HW, fw 1.8.58). Every emitted param-func footswitch entry must carry a numeric `valueType`. [→ evidence](../../notes/gotchas.md#a-param-func-footswitch-without-valuetype-makes-the-firmware-silently-replace-the-whole-imported-preset)
-
-- **A footswitch ROW carrying TWO entries (on-off + param on one switch) is LEGAL** (static RE + HW, fw 1.8.58: nothing checks combinations, factory presets carry such rows, and an imported body with one loads whole). `footswitch.rs`'s `validate_import_body` and `fixture_gates` still refuse it — a conservative choice; relax them only with a HW-checked emitter change. [→ evidence](../../notes/gotchas.md#a-dual-entry-footswitch-row-is-legal-on-fw-1858--it-gutted-imports-on-fw-1845)
-
-- **DANGER** — **A body the firmware rejects at LOAD becomes a silent EMPTY preset that keeps the stored name** (static RE + HW, fw 1.8.58). The first real load — never a later one — swaps in the empty template (`preset_id` `af08d1ac-…`, 0 blocks) and answers `presetError` (field 53) 6. The import itself, and its reload onto the loaded slot, send no error, and the stored row still holds the imported body. Slot+name confirms pass on it, so a load → save of an imported body can overwrite the original with nothing, and a `presetDataRequest` read of the stored row cannot see the rejection. `replace_inplace_with` therefore proves the loaded working copy holds the file's blocks (`replace_inplace::load_and_prove`) before every save, and loads an import that landed directly on its target to prove it too; any new import → load → save path must use it. An import that nothing saves over proves its landing from the stored row instead (`replace_inplace::StoredProof`: the predicted lowest empty slot reads the template before the import and the file after it), which is enough because nothing is written on its strength. [→ evidence](../../notes/gotchas.md#a-body-rejected-at-load-becomes-a-silent-empty-preset-that-keeps-its-name)
-
-- **DANGER** — **An `insertNode` (field 34) whose anchor is not a node id in its group, or that goes over the CPU budget, gets NO reply and ABORTS the device server** (static RE, fw 1.8.58, not HW-triggered). systemd restarts it; a third crash within 60 s leaves it down (unit file's start limit, inferred). The anchor (field 2) is matched against the group's current node ids, and a replace or insert mints a new one (the FenderId if it is free in the group, else the first free `<FenderId>_1`, `_2`…), so never send a FenderId as an anchor or reuse a pre-edit id after a replace: resolve it through `copy_apply`'s `DeviceIds`, and check every insert with `blockcaps::check_op` first. Never re-send an unconfirmed insert blind — read it back (`Session::insert_landed`). [→ evidence](../../notes/gotchas.md#an-insert-with-a-missing-anchor-or-over-the-cpu-budget-aborts-the-device-server)
-
-- **DANGER** — **A `loadScene(N ≠ 8)` on a preset with NO scenes replaces the working copy with the empty template under the preset's name** and broadcasts `presetError` 6; a save then persists the empty body. An N at or above the scene count likely aborts the device server (static RE, fw 1.8.58). Send a scene recall only for a scene the preset has (`session::scene_index_ok`).
-
-- **DANGER** — **A base recall right after a level + save plays the preset's OLD level** (static RE + HW, fw 1.8.58). Under MAINTAIN CHANGES a `loadScene(8)` while base is current re-applies the base snapshot taken at the last real load, scene recall or base structural edit; neither `setPresetLevel` nor a save updates that snapshot. So a run that saves a new `presetLevel` with base active must end with a real reload (`leveller::reload_after_level_save`, called by `apply_levels` and `save_deferred_scene_writes`), or the user's next base tap plays the old level and a save from there stores it again. Any new presetLevel save path must call it.
-
-- **OPEN — a batched scene-leveling save has reverted the ONE scene it just leveled**, when that scene was also `restore_scene` (the preset's on-load scene, recalled right before the save) (HW, twice; caught by the `persist_mismatch` check, not silent). The mechanism is unresolved: under MAINTAIN CHANGES a recall keeps the scene's unsaved edits (static RE, fw 1.8.58), so the likely causes are a unit set to DISCARD CHANGES at the time (the probe path skips the app's `scene_discard_guard`) or a write that a one-key overlay entry sent to base (open: notes/open-questions.md). [→ evidence](../../notes/gotchas.md#a-batched-scene-leveling-save-can-revert-the-one-scene-it-just-leveled-if-that-scene-is-also-restore_scene--a-pre-existing-platform-agnostic-bug-not-a-linux-audio-defect)
+- **DANGER: device `userSlot` = list index + 1.**
+  Before any destructive op keyed on a slot mapping (`clear`, `move`, save-over), confirm the mapping with a non-destructive read and put the guard in the mutation's own address space; a list-index guard on a 1-based `clear` deletes a real preset.
+  [→](../../notes/device/presets.md#slot-addressing)
+- **The first connection after a load can echo the slot loaded before it.**
+  The echo is identity and must keep winning over a matching name: confirm through `Session::connect_confirmed`, never by name.
+  [→](../../notes/device/presets.md#loading)
+- **DANGER: a save is permanent and a leveling run saves automatically.**
+  The only gate is the "I've backed up with Pro Control" acknowledgment in Set up; the app has no revert.
+  [→](../../notes/device/presets.md#saving)
+- **DANGER: a same-slot `loadPreset` over a clean working copy is a no-op**, including right after a save.
+  Discard unsaved edits only through `leveller::restore_saved_preset` (it loads a neighbour slot first), and never add a preset load before `save_deferred_scene_writes`, which would wipe the run's unsaved writes.
+  [→](../../notes/device/presets.md#saving)
+- **DANGER: a body the firmware rejects at load becomes a silent empty preset that keeps its name.**
+  Prove the loaded working copy with `replace_inplace::load_and_prove` before every save; an import nothing saves over proves its landing with `replace_inplace::StoredProof`.
+  [→](../../notes/device/presets.md#rejected-at-load)
+- **DANGER: every emitted param-func footswitch entry carries a numeric `valueType`** and the other required fields, or the imported preset is rejected at load.
+  `footswitch::validate_import_body` and `fixture_gates` also refuse a two-entry row (legal on the device, kept refused until a hardware-checked emitter change).
+  [→](../../notes/device/presets.md#footswitch-json)
+- **DANGER: an `insertNode` (field 34) whose anchor is not a node id in its group, or that exceeds the CPU budget, aborts the device server.**
+  Never assume a FenderId is a node id: anchor on the id the confirm returned (`copy_apply`'s `DeviceIds`), check every insert with `blockcaps::check_op`, and read an unconfirmed insert back (`Session::insert_landed`) instead of re-sending it.
+  [→](../../notes/device/presets.md#insert-abort)
+- **DANGER: send a `loadScene` only for a scene the preset has** (`session::scene_index_ok`).
+  On a preset with no scenes it swaps in the empty template under the preset's name.
+  [→](../../notes/device/scenes.md#scene-index-bounds)
+- **DANGER: a base recall after a `presetLevel` save plays the old level** until a real reload.
+  Any path that saves `presetLevel` with base active must end with `leveller::reload_after_level_save`.
+  [→](../../notes/device/scenes.md#presetlevel-on-recall)
+- **OPEN: a batched scene-leveling save has reverted the one scene it leveled when that scene was `restore_scene`.**
+  The `persist_mismatch` check catches it; the cause is open.
+  [→](../../notes/open-questions.md#batched-save-revert)
 
 ## Re-amp and measurement
 
-- **One engage per capture, on a fresh connection — for ACCURACY, not safety** (HW, fw 1.8.58). A held, heartbeated connection re-engages safely, but only the FIRST capture after an engage is accurate (within 0.04 LU of an isolated capture): later captures on one engage read up to 0.29 LU low, and a re-engage per capture on a held connection reads 0.06–0.09 LU low. The `ReAmpModeChanged` echo is NOT proof of engagement — a finite captured loudness is; read the real state with Mixer `reAmpModeRequest` (4) → field 9. `leveller::level_preset` uses **three fresh connections** (load / measure / apply), a conservative shape fw 1.8.58 does not require. For SCENE and footswitch leveling only the measurement prepass reconnects (one engage per scene); that path's apply — per-scene `outputLevel` + save, all pure SENDS with no engage — runs on ONE persistent session. Either way the run must still end with a guaranteed re-amp OFF on its own fresh connection. See `notes/protocol.md`. [→ evidence](../../notes/gotchas.md#re-amp-engages-reliably-only-once-per-connection)
-
-- **DANGER** — **A silent/failed re-amp inject reads as the device's STATIONARY OUTPUT FLOOR**, and `measure_c` would accept it as a valid `C` without the production floor guards. An engage dropped by a session lapse or a `batchStatus` ≥ 4 leaves re-amp off, and the capture reads the post-DSP floor (HW, fw 1.8.58). [→ evidence](../../notes/gotchas.md#a-silentfailed-re-amp-inject-reads-as-the-devices-stationary-output-floor-and-measure_c-would-accept-it-as-a-valid-c-without-the-production-floor-guards-below)
-
-- **An engage sent after ≥750 ms of host OUT silence is DROPPED** (HW, fw 1.8.58: at 740 ms it applied, at 760 ms it drew `connectionError`). The silence counts from the last OUT report sent, read windows included, not from the last command; re-amp stays off and the capture reads the stationary floor exactly as if the inject failed. Keep every idle gap ≤300 ms, a safe proxy: `leveller::capture_on_session` (and `arm_pair_measurement`'s zero-write base arm) heartbeat the naked shape to do exactly that (recall → 150 ms → heartbeat → 100 ms → engage). [→ evidence](../../notes/gotchas.md#an-engage-after-a-naked-scene-recall-latches-silence--break-the-idle-with-heartbeats)
-
-- **Re-amp latches nothing** (static RE + HW, fw 1.8.58). `changeParameter`, `setPresetLevel` and `loadScene` all reach the audio mid-engage while OUT traffic keeps the session live (a level step within 100 ms, a scene change within ~300 ms); any change sent after ≥750 ms of host silence is dropped. A `loadPreset` and an engage on one connection work when heartbeats cover the post-load wait. The code keeps conservative shapes: it sets the level before engaging, engages once per scene, and loads on its own connection before a fresh one sets and engages (the `measure_knob_at` shape).
-
-- **Re-amp toggle** is `SettingsMessage(3) → reampModeActive(30)`, NOT MixerMessage. ON = `1a05f201020801`, OFF = `1a03f20100`. Toggle only through Settings 30, the route the unit's UI and Pro Control use. Never send Mixer `setReAmpMode(15)`: both routes reach the mixer, but 15 skips the Settings flag, and a later Settings ON is then acknowledged with value 1 and does nothing (HW, fw 1.8.58). Read the real state with Mixer `reAmpModeRequest(4)` → field 9.
-
-- **Leveling runs must end with a GUARANTEED re-amp OFF on a fresh connection.** A dropped OFF strands the unit input-muted (re-amp replaces Inputs 1 and 2, so the guitar is unheard). Developer recovery: `cargo run --bin probe -- --reamp-off`. The user's recovery is a RESTART of the unit — a USB unplug/replug does not clear it (static RE, fw 1.8.58; the app says "Restart your Tone Master Pro" and keys it on the typed `reamp_still_on`, never the text) [→ evidence](../../notes/gotchas.md#a-stuck-re-amp-survives-a-usb-unplug--restarting-the-unit-clears-it-fw-1858-static). Cancel never early-returns past the re-amp engage for this reason, and the post-cancel restore/deferred-save cleanup always runs to completion. The shipped app's backstop is `leveller::ReampRunGuard`, held by `device_gate::with_released_seize_blocking` around every device command: a command that engaged and then panicked, returned early, or never ran its own run-end OFF still gets the OFF ladder on a fresh connection when its work ends.
-
-- **`load_preset` + `set_preset_level` on one connection: the set sticks** — the device finishes the load before it applies the set (static RE + HW, fw 1.8.58), and a no-load set on the already-current preset persists across USB reconnects. The code still loads on its own connection (conservative).
-
-- **The scene-context rule: a bare write/measure with no preceding `loadScene` lands in whatever scene the connection currently holds, never base by default.** A preset loads into its SAVED `lastLoadedScene`. [→ evidence](../../notes/gotchas.md#the-scene-context-rule-a-bare-writemeasure-with-no-preceding-loadscene-lands-in-whatever-scene-the-connection-currently-holds-never-base-by-default)
-
-- **OPEN — do not trust scene-0 leveling until resolved.** On a two-amp preset, a USB `loadScene(0)` reached a different amp state than a footswitch press of scene 0. The device handles both as the same `loadScene` message (static RE, fw 1.8.58), so the difference is in what the panel sends: a scene footswitch whose `isActive` flag is already set sends `loadScene(8)` (base), and a touch on the already-active scene sends nothing (static RE, fw 1.8.58) (open: notes/open-questions.md).
-
-- **`outputLevel`=0 is DEEP DIGITAL SILENCE on the real TMP**, and the leveling measurement ERRORS ("no signal captured") on a silent capture — a finite LUFS is not recoverable from silence. [→ evidence](../../notes/gotchas.md#outputlevel0-is-deep-digital-silence-on-the-real-tmp-and-the-leveling-measurement-errors-no-signal-captured-on-a-silent-capture)
-
-- **48 kHz stimulus required — a host and app convention, not a device requirement.** The stimulus WAVs are 48 kHz and `pick_config` opens the streams at the stimulus rate, so the host side (the macOS Core Audio rate; on Windows, both endpoints' shared-mode default format) must offer 48 kHz. On Linux `hw:` negotiates the rate directly with the hardware (`pick_config`'s `target_rate`), and the TMP's `hw:` interface natively offers 48 kHz (HW). The device itself does not need it: the re-amp round trip is pitch-exact and slip-free at 44.1, 48, 88.2 and 96 kHz through its fixed 44.1 kHz I²S and SRC (static RE + HW, fw 1.8.58). [→ evidence](../../notes/gotchas.md#48-khz-stimulus-required)
+- **One engage per capture, on a fresh connection, for accuracy.**
+  Only the first capture after an engage is accurate; the `ReAmpModeChanged` echo is not proof of engagement, a finite captured loudness is.
+  [→](../../notes/device/reamp-audio.md#engage-and-capture-accuracy)
+- **DANGER: a silent or failed inject reads as the stationary output floor**, and `measure_c` would accept it as a valid `C` without the production floor guards.
+  [→](../../notes/device/reamp-audio.md#silent-captures)
+- **750 ms of host OUT silence lapses the session** and drops the next message, an engage included.
+  Keep every idle gap ≤300 ms: `leveller::capture_on_session` heartbeats between the scene recall and the engage (recall, 150 ms, heartbeat, 100 ms, engage).
+  [→](../../notes/device/session.md#session-lapse)
+- **Mid-engage edits reach the audio while OUT traffic flows.**
+  The code still sets the level before engaging, engages once per scene, and loads on its own connection (`measure_knob_at`), a conservative shape.
+  [→](../../notes/device/reamp-audio.md#engage-and-capture-accuracy)
+- **Toggle re-amp only through `SettingsMessage` `reampModeActive` (field 30)**, never Mixer `setReAmpMode` (15); read the real state with Mixer `reAmpModeRequest` (4) → field 9.
+  [→](../../notes/device/reamp-audio.md#re-amp-toggle)
+- **DANGER: every re-amp run ends with a guaranteed OFF on a fresh connection.**
+  A dropped OFF leaves the unit input-muted until a restart; `leveller::ReampRunGuard` (held by `device_gate::with_released_seize_blocking`) is the backstop, cancel never skips it, and the user-facing error keys on `reamp_still_on`.
+  [→](../../notes/device/reamp-audio.md#stuck-re-amp)
+- **A write with no preceding `loadScene` lands in whatever scene the connection holds**, never base by default; a preset loads into its saved `lastLoadedScene`.
+  [→](../../notes/device/scenes.md#scene-context)
+- **OPEN: do not trust scene-0 leveling.**
+  A USB `loadScene(0)` and a footswitch press of scene 0 reached different amp states; what the panel sends is [RE, inferred].
+  [→](../../notes/open-questions.md#scene-0-via-footswitch)
+- **`outputLevel` 0 is digital silence**, and the measurement errors ("no signal captured") rather than invent a loudness.
+  [→](../../notes/device/reamp-audio.md#silent-captures)
+- **The stimulus is 48 kHz**, so `audio::pick_config` needs a 48 kHz host format; the device itself does not.
+  [→](../../notes/device/reamp-audio.md#sample-rate)
 
 ## Resources and connections
 
-- **DANGER** — **`audio::LiveReamp` is ring-buffered (`LIVE_RING_SECS`).** An unbounded capture buffer (multi-channel 48 kHz × minutes × dozens of rows) **OOMs the whole Mac**. Never reintroduce unbounded capture accumulation; reuse ONE stream pair per preset rather than rebuilding per scene, which also avoids coreaudiod churn.
-
-- **`0xe00002c5` means another handle holds the exclusive seize** — Pro Control, or an overlapping `Session` in this process, which `Hid::open` names in its error; it clears when that handle closes. There is no device open lockout, so no rest is needed (HW, fw 1.8.58). Sessions reopen with no fixed gap (the UI's drop-then-reopen waits on `hid::wait_released`), `hid.rs` re-enumerates at 3×400 ms (`ENUM_RETRY_DELAY_MS`), and `scripts/e2e.sh` retries a failed seed after 2 s. [→ evidence](../../notes/gotchas.md#0xe00002c5-means-another-handle-holds-the-seize--the-open-lockout-model-was-a-host-side-misdiagnosis)
-
-- **Exclusive HID seize blocks Pro Control.** `IOHIDDeviceOpen` fails while Pro Control is running; the app shows "Another app is using your Tone Master Pro" (the `busy` kind; the backend's "close Pro Control" text goes to the log).
+- **DANGER: `audio::LiveReamp` is ring-buffered (`LIVE_RING_SECS`).**
+  An unbounded capture buffer OOMs the whole Mac; reuse one stream pair per preset.
+- **`0xe00002c5` means another handle holds the exclusive seize** (Pro Control, or an overlapping `Session` that `Hid::open` names); there is no device open lockout.
+  Serialize every device op through `device_gate::DEVICE_OP_LOCK`.
+  [→](../../notes/device/session.md#exclusive-seize)
 
 ## UI values
 
-- **DANGER** — **A dropdown must DISPLAY the value that will be used.** The one dropdown, `ui/Select.tsx`, shows the stored value itself (`resolveSelectValue`), or a placeholder when nothing is chosen — never `options[0]` for a value missing from `options`, which shows one thing while another is submitted; keep it that way. Gate: `src/__tests__/SelectStaleValue.test.tsx`, with `SelectLateContent.test.tsx` for the list placed over late content. Derive defaults from the live option source, never hard-coded ids: a hard-coded id the store lacks displays one target while the run silently uses another.
+- **DANGER: a dropdown displays the value that will be used.**
+  `ui/Select.tsx` shows the stored value (`resolveSelectValue`) or a placeholder, never `options[0]`; derive defaults from the live option source.
+  Gates: `src/__tests__/SelectStaleValue.test.tsx`, `SelectLateContent.test.tsx`.

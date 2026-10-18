@@ -1,15 +1,20 @@
 # Theme tokens & composed styles
 
-The companion is **light-only** — `src/theme/tokens.ts` exports ONE token object (`light`); its type `ThemeTokens` is DERIVED (`typeof light`), so a new token is one keyed entry with its doc comment — never a second hand-written interface line. `useTheme()` returns `{ t }` where `t` is that object. This file mirrors `tokens.ts` + `styles.ts` for a quick lookup — `tokens.ts` is the source of truth; if a value here ever disagrees, trust the file.
+The companion is **light-only** — `src/theme/tokens.ts` exports ONE token object (`light`); its type `ThemeTokens` is DERIVED (`typeof light`), so a new token is one keyed entry with its doc comment — never a second hand-written interface line.
+`useTheme()` returns `{ t }` where `t` is that object.
+This file mirrors `tokens.ts` + `styles.ts` for a quick lookup — `tokens.ts` is the source of truth; if a value here ever disagrees, trust the file.
 
 The object is two parts, spread together:
 
-1. **The look B tokens** — six exported groups (`color`, `type`, `space`, `radius`, `size`, `elevation`). Everything outside the signal-path diagram reads ONLY these.
-2. **The frozen signal-path tokens** — read ONLY by the keep-as-is diagram files (below). Do not use them anywhere else.
+1. **The look B tokens** — six exported groups (`color`, `type`, `space`, `radius`, `size`, `elevation`).
+   Everything outside the signal-path diagram reads ONLY these.
+2. **The frozen signal-path tokens** — read ONLY by the keep-as-is diagram files (below).
+   Do not use them anywhere else.
 
 A name not in `tokens.ts` does not exist — look up the B token here; never add an alias.
 
-Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styled-components, no Tailwind, no className system — that's deliberate.
+Styling is **inline `style={{}}` objects** read off `t`.
+No CSS modules, no styled-components, no Tailwind, no className system — that's deliberate.
 
 ## Colour (`color`)
 
@@ -56,11 +61,13 @@ Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styl
 | info, neutral                          | `textSecondary` icon, `text` words | `groupHeader` | `border`      | Notice `info`, Badge `neutral` (`segmentTrack` fill), Dot `neutral` (`meter`) |
 | working, in progress                   | `accent`                           | `accentFill`  | —             | Dot `working`, Spinner, ProgressBar                                           |
 
-**Severity-token trap:** a handoff's green is `good`, never terracotta; its error is `danger`, never `link`/`action`. There is no `t.ok` / `t.err` / `t.info` / `t.warn` alias — never add one. (`warn` survives only as a frozen signal-path token, the diagram header's over-budget CPU figure.)
+**Severity-token trap:** a handoff's green is `good`, never terracotta; its error is `danger`, never `link`/`action`.
+There is no `t.ok` / `t.err` / `t.info` / `t.warn` alias — never add one. (`warn` survives only as a frozen signal-path token, the diagram header's over-budget CPU figure.)
 
 ## Type (`type`) — Inter only
 
-`fontSans` `'Inter', system-ui, sans-serif` is the only face. Four sizes, three weights; hierarchy comes from weight, not more sizes.
+`fontSans` `'Inter', system-ui, sans-serif` is the only face.
+Four sizes, three weights; hierarchy comes from weight, not more sizes.
 
 | Size          | px  | Line             | Use                                                        |
 | ------------- | --- | ---------------- | ---------------------------------------------------------- |
@@ -69,11 +76,17 @@ Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styl
 | `fontLarge`   | 15  | `lineLarge` 20   | Dialog titles, empty-state titles, a Doctor finding's name |
 | `fontTitle`   | 20  | `lineTitle` 26   | Page and step titles                                       |
 
-Weights `weightRegular` 400 · `weightMedium` 500 · `weightSemibold` 600. `trackingTitle` `-0.01em` is the ONE letter-spacing, on PageHead's title only. No serif, no mono, no uppercase, no other letter-spacing outside the diagram. Numbers that line up use `fontVariantNumeric: "tabular-nums"` (SlotLabel, meters, counts).
+Weights `weightRegular` 400 · `weightMedium` 500 · `weightSemibold` 600.
+`trackingTitle` `-0.01em` is the ONE letter-spacing, on PageHead's title only.
+No serif, no mono, no uppercase, no other letter-spacing outside the diagram.
+Numbers that line up use `fontVariantNumeric: "tabular-nums"` (SlotLabel, meters, counts).
 
 ## Spacing (`space`)
 
-Named by pixels: `sp2` · `sp4` · `sp6` · `sp8` · `sp12` · `sp16` · `sp24` · `sp32`. A composite built from those tokens is allowed where a frame calls for it: the Row's 10 px gap (`t.sp8 + 2`), the 20 px Dialog padding, the 52–64 px sub-row indents, the 1–2 px optical nudges. Keep those as drawn rather than snapping them to a step. Never add a new spacing token: a value that must AGREE across surfaces gets a role-named const beside its component (e.g. `DIALOG_PAD_X` = 20 in `ui/Dialog.tsx`).
+Named by pixels: `sp2` · `sp4` · `sp6` · `sp8` · `sp12` · `sp16` · `sp24` · `sp32`.
+A composite built from those tokens is allowed where a frame calls for it: the Row's 10 px gap (`t.sp8 + 2`), the 20 px Dialog padding, the 52–64 px sub-row indents, the 1–2 px optical nudges.
+Keep those as drawn rather than snapping them to a step.
+Never add a new spacing token: a value that must AGREE across surfaces gets a role-named const beside its component (e.g. `DIALOG_PAD_X` = 20 in `ui/Dialog.tsx`).
 
 ## Radii (`radius`)
 
@@ -91,11 +104,15 @@ Named by pixels: `sp2` · `sp4` · `sp6` · `sp8` · `sp12` · `sp16` · `sp24` 
 
 `bgAlt` (`#ffffff` — the diagram sits on white) · `bg` · `ink` · `ink2` · `mutedInk` · `faint` · `hairline` · `hairlineStrong` · `accentDeep` · `accentSoft` · `accentBorder` · `onAccent` · `warn` · `sevWarn` · `sevWarnBorder` · `shadow` · `shadowBadge` · `dropShadowStripArt` · `strip*` · `serif` · `sans` · `mono` · `fsSubhead` · `fsName2` · `fsUi` · `fsLabel` · `fsData` · `fsData2` · `fsTag` · `lsTag` · `rBtn` · `rCard` · `rLg` · `space1`…`space8`.
 
-Read ONLY by `ui/BlockArt.tsx`, `ui/blockart/`, `models/blockArt.ts`, `views/SignalChainView.tsx`, `views/ActiveSignalChainView.tsx` and `views/signalChain/` — names and values frozen with that code. `FONT_SANS` (exported) and `plainButton` are imported by the diagram too, so they stay as they are. **Enforced:** `src/__tests__/DSPrimitives.test.tsx` scans every other source file and fails on a `t.<signal-path token>` read, on `textTransform`, and on a `letterSpacing` other than PageHead's `trackingTitle` or an `"inherit"` reset. A value the diagram gets from a caller (Level's live-scene tag colour) is passed as a B token.
+Read ONLY by `ui/BlockArt.tsx`, `ui/blockart/`, `models/blockArt.ts`, `views/SignalChainView.tsx`, `views/ActiveSignalChainView.tsx` and `views/signalChain/` — names and values frozen with that code.
+`FONT_SANS` (exported) and `plainButton` are imported by the diagram too, so they stay as they are.
+**Enforced:** `src/__tests__/DSPrimitives.test.tsx` scans every other source file and fails on a `t.<signal-path token>` read, on `textTransform`, and on a `letterSpacing` other than PageHead's `trackingTitle` or an `"inherit"` reset.
+A value the diagram gets from a caller (Level's live-scene tag colour) is passed as a B token.
 
 ## Composed styles — `useStyles()` → `s`
 
-`src/theme/styles.ts` `buildStyles(t)` returns the composed style objects more than one component reuses, so a literal lives in exactly one place. Read directly (`style={s.searchBox}`) or spread + override (`style={{ ...s.searchBox, flex: 1 }}`).
+`src/theme/styles.ts` `buildStyles(t)` returns the composed style objects more than one component reuses, so a literal lives in exactly one place.
+Read directly (`style={s.searchBox}`) or spread + override (`style={{ ...s.searchBox, flex: 1 }}`).
 
 | Entry           | What it is                                                                                                  |
 | --------------- | ----------------------------------------------------------------------------------------------------------- |
@@ -103,7 +120,9 @@ Read ONLY by `ui/BlockArt.tsx`, `ui/blockart/`, `models/blockArt.ts`, `views/Sig
 | `s.popoverCard` | Floating popover card (white, `radiusGroup`, `shadowMenu`, no border) — the `Menu` `surface="popover"`      |
 | `s.menuCard`    | Scrollable menu card (white, `radiusPanel`, `shadowMenu`, 4 px inset) — the `Menu` and `Select` list        |
 
-Helpers in `tokens.ts`: `sectionLabel(t)` (a section label: sentence case, 12/600 `textSecondary` — there are no kickers), `plainInput(t, extra?)` (the border-less transparent inline-edit input) and `plainButton(extra?)` (the native-`<button>` reset behind clickable rows, chips and glyphs; the `Button` `bare` variant). For a search/filter box prefer the `SearchInput` primitive over re-inlining `s.searchBox`. When you need a shared style that doesn't exist yet, add it here (built from B tokens) rather than duplicating an inline literal.
+Helpers in `tokens.ts`: `sectionLabel(t)` (a section label: sentence case, 12/600 `textSecondary` — there are no kickers), `plainInput(t, extra?)` (the border-less transparent inline-edit input) and `plainButton(extra?)` (the native-`<button>` reset behind clickable rows, chips and glyphs; the `Button` `bare` variant).
+For a search/filter box prefer the `SearchInput` primitive over re-inlining `s.searchBox`.
+When you need a shared style that doesn't exist yet, add it here (built from B tokens) rather than duplicating an inline literal.
 
 ## Component catalogue
 
