@@ -13,7 +13,7 @@ A write or measure with no preceding `loadScene` lands in whatever scene the uni
 So every base-context write or measure recalls base first, hoisted to the top of its connection before the connection's first write: `leveller`'s `capture_full_at`, `set_knob`, `set_knobs` and `write_footswitch_values`, and `commands/doctor.rs`'s `apply_ops_under_scene`.
 `SimDevice` models the stored `lastLoadedScene` offline, so a missing recall is gate-catchable.
 `loadScene` (101) pushes field 3 and `sceneLoaded` (102) only when the scene index changes; re-recalling the active scene sends neither [HW+RE].
-So a run reads the already-active scene from the post-load document instead of recalling it, or that scene would stay unclassifiable.
+So a host that harvests scene documents by recall reads the already-active scene from the post-load document instead, or that scene stays unclassifiable.
 Every `loadScene` sets the dirty flag, even one that fails [RE].
 
 ### Across reconnects
@@ -61,6 +61,7 @@ Open shapes: a `{bypass, bypassType}` overlay, a one-key non-bypass overlay such
 ### The app's classifier
 
 `scene_jobs::scene_overlay` (`SceneOverlay::{Full, BypassOnly, Absent, Unknown}`) calls an overlay OFF when every key is in the bypass family (`BYPASS_ONLY_KEYS`), not when it has one key.
+`Unknown` is a cut or missing read (or a base slot, which has no overlay), and a write against it is refused, since either guess can corrupt the preset.
 So a `{bypass, bypassType}` overlay and a one-key `{outputLevel}` overlay classify opposite to the device rule; `scene_jobs::scene_write_verdict_for_param`, `overlay_scene_onto_graph`, `leveller::set_knobs`' write shape and `SimDevice` all follow the classifier.
 `set_knobs` sends the Scene-Edit enable only for a node with no overlay in the target scene, where the reseed has nothing to lose, and refuses a scene-scoped knob write against a `BypassOnly` or `Unknown` overlay, since enabling reseeds and omitting the enable leaks to base.
 Every pre-write gap stays at 300 ms or less (`SETTLE_AFTER_SCENE_RECALL_MS` 150, plus `SETTLE_AFTER_SCENE_EDIT_MS` 300 only when an enable was sent), because a write after 750 ms of host silence is dropped with no `presetError` ([Session lapse](session.md#session-lapse)).
@@ -72,7 +73,7 @@ Under MAINTAIN CHANGES, `loadScene(8)` while base is already current re-applies 
 That snapshot's level is the one of the last real load, scene recall or base structural edit, not the saved row; a save never refreshes it [HW+RE], nor does `setPresetLevel` [RE, inferred].
 A preset levelled to −20 and saved with base active played −27.5 on the next base recall until it was reloaded [HW].
 So a run that saves a new `presetLevel` with base active ends with a real reload (`leveller::reload_after_level_save`), or the user's next base tap plays the old level and a save from there stores it again.
-Every capture re-asserts the run's own level after its recall (`leveller::recall_reassert_save` and the capture arms), so an unsaved level the run holds survives a base recall.
+How a leveling run keeps its own unsaved level through a base recall is in [leveling.md#capture-level](../leveling.md#capture-level).
 Footswitch runs dirty the working copy with their isolation writes, so their next same-slot load is a real reload anyway.
 
 ## Footswitch state on recall

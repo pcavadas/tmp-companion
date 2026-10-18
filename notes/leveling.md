@@ -52,7 +52,7 @@ The Doctor differs only for scenes: a scene sound is measured as played, riding 
 
 ## Capture level
 
-Every capture re-asserts the run's own `presetLevel` after its recall, so a level the run holds unsaved (a landed headroom trade's raise) survives a base recall ([device/scenes.md#presetlevel-on-recall](device/scenes.md#presetlevel-on-recall)); with no trade the re-assert writes the saved level, read from the batch's field-8 document.
+Every capture re-asserts the run's own `presetLevel` after its recall (`leveller::recall_reassert_save` and the capture arms), so a level the run holds unsaved (a landed headroom trade's raise) survives a base recall ([device/scenes.md#presetlevel-on-recall](device/scenes.md#presetlevel-on-recall)); with no trade the re-assert writes the saved level, read from the batch's field-8 document.
 Gated offline by `a_capture_renders_at_the_run_level_not_the_recall_reverted_one`, against SimDevice's recall revert, which applies once the slot has been saved in the run.
 
 The prepass and the solve are coupled: `prepass_scene_ceilings` produces the as-is reading that `correct_iter` takes as its `measured0`, and compares it with a post-apply capture.
@@ -64,8 +64,7 @@ The scene lane's choice has its own pure-logic gate (`a_scene_batch_captures_at_
 ## Run order
 
 Within a preset the run goes base → base-context footswitches → scenes → scene-context footswitches (`runRank`, `views/level/leveling.ts`).
-A recall writes only the footswitches' `isActive` flags, never block bypass, so a scene renders the base chain's own state for any node its overlay has no entry for [HW+RE] ([device/scenes.md#footswitch-state-on-recall](device/scenes.md#footswitch-state-on-recall)).
-A footswitch's handle is often a block the preset leaves on in base, so leveling such a switch after the scenes moves every scene already on target: cutting a base-on `ACD_TubeScreamer.level` by 2.0 dB moved all three scenes of a preset by 2.0 dB, with every lane reporting `clamped: false`, `saved: true`, `persist_mismatch: false` [HW].
+A footswitch's handle is often a block the preset leaves on in base, and leveling it moves every scene by the same dB ([device/scenes.md#footswitch-state-on-recall](device/scenes.md#footswitch-state-on-recall)), so leveling such a switch after the scenes moves every scene already on target while every lane reports `clamped: false`, `saved: true`, `persist_mismatch: false` [HW].
 Base stays on target, because a base capture forces every footswitch-owned block off, which hides the drift.
 The dependency is one-way (a base-context switch is measured in base, so a scene's amp overlay never moves it), so ordering fixes it with no re-solve pass.
 A switch a scene enables (`scenes[].ftswStates`) is solved after that scene.
@@ -104,9 +103,9 @@ That verify is the same complete-or-fail re-read, so on a preset whose read come
 A stopped scene batch whose save failed leaves its writes unsaved in the working copy: its rows say the save did not hold, and the next load of the preset (a Try again's prepass included) discards them.
 The frontend merges that verdict from the command's returned rows, since the streamed rows predate the save.
 The cancelled item itself persists nothing: `restore_after_unsaved_error` reloads the stored preset to discard the measurement edits (through `leveller::restore_saved_preset`, which loads a neighbour slot first).
-There is no run-level rollback and no in-app revert; the Pro Control backup acknowledged in Set up is the only way back.
+There is no run-level rollback and no in-app revert; the Pro Control backup acknowledged in Set up (`ui/BackupAckLabel`, which Copy's saves also sit behind) is the only way back.
 Stop asks first ("Stop leveling?", a dialog only its own buttons close); the UI then shows "Stopping after <sound> in <preset>" and lands on the Summary by itself once the run has wound down.
-The sounds the run had not reached read "Not reached" there, and the Summary's "Try again" covers them along with any sound whose save did not hold.
+The sounds the run had not reached read "Not reached" there, and the Summary's "Try again" (`levelRunStore.retryLeveling`) covers them along with any sound whose save did not hold, without asking for the acknowledgment again.
 
 ## Re-validating a timing change
 
@@ -140,10 +139,8 @@ Levers measured and not taken:
 ## Re-amp run end
 
 The code sets the level and recalls the scene before each engage, with one engage per capture on a fresh connection, because only the first capture after an engage is accurate ([device/reamp-audio.md#engage-and-capture-accuracy](device/reamp-audio.md#engage-and-capture-accuracy)).
-A zero-write pre-engage shape gets a heartbeat to break the idle ([device/reamp-audio.md#idle-gap-before-an-engage](device/reamp-audio.md#idle-gap-before-an-engage)), and every measurement is floor-guarded ([device/reamp-audio.md#silent-captures](device/reamp-audio.md#silent-captures)): a still-flat read after the quiet-gap retry is refused as `FLOOR_READ_ERR`.
-The guard trips on a 400 ms momentary-loudness spread at or below `FLOOR_TRIP_LU` = 0.4: a stationary floor reads ~0.1 LU, while a stimulus reads ≥ 0.67 LU even through a saturated chain (shipped stimuli 7.3–10.6 LU, Doctor slices 6.7–11.7 LU) [HW].
-It is disarmed for a stimulus whose own spread is under `STATIONARY_STIM_LU` = 2.0.
-Check a "no signal captured" with `probe --channels <slot>`: if it reads finite loudness, the failing tool's connection shape is to blame.
+A zero-write pre-engage shape gets a heartbeat to break the idle ([device/reamp-audio.md#idle-gap-before-an-engage](device/reamp-audio.md#idle-gap-before-an-engage)), and every measurement is floor-guarded, with the thresholds in [device/reamp-audio.md#silent-captures](device/reamp-audio.md#silent-captures): a still-flat read after the quiet-gap retry is refused as `FLOOR_READ_ERR`.
+Check a "no signal captured" with `probe --channels <list index>`: if it reads finite loudness, the failing tool's connection shape is to blame.
 
 An OFF that never reads back OFF reaches the run result typed (`reamp_still_on`, and `reampStillOn` on a failed leveling command's error) beside the `reamp_warning` text.
 The two batched commands return `{ rows, reampStillOn, reampWarning }`, the verdict beside the rows, because a batch can return no rows at all: a Stop during the ceiling prepass (which engages re-amp once per sound), or a batch whose every row failed.

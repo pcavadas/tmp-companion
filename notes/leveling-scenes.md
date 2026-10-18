@@ -11,7 +11,7 @@ Amp `outputLevel` is linear in dB with full authority, so each scene is leveled 
 Base is leveled first through `presetLevel`, which scales every scene; each scene then moves only its own amp's `outputLevel`.
 The app command `level_scenes_apply_batched` runs `leveller::level_scenes_oneshot`: measure each scene as-is, `solve_level`, then `apply_level`, a bounded correction that always lands the best point.
 A scene that cannot reach the target clamps honestly ("clamped at <LUFS>").
-Every base-context write or measure recalls base (`session::BASE_SCENE_SLOT`) first, at the top of its connection, because a preset loads into its saved `lastLoadedScene` ([device/scenes.md#scene-context](device/scenes.md#scene-context)); `capture_full_at`, `set_knob`, `set_knobs`, `write_footswitch_values` and `commands/doctor.rs`'s `apply_ops_under_scene` all do.
+Every base-context write or measure recalls base first ([device/scenes.md#scene-context](device/scenes.md#scene-context)).
 
 ### Amp choice
 
@@ -39,11 +39,11 @@ A saved document that still cannot answer (no `audioGraph`, or a requested scene
 That bound matters: a `loadScene` on a preset with no scenes substitutes the empty template and answers `presetError` 6 [RE], and a `loadScene` index past a preset's scenes likely aborts the device server [RE, likely] ([device/scenes.md#scene-index-bounds](device/scenes.md#scene-index-bounds)).
 The live walk (`prepass_scene_docs`) is probe-only.
 
-`classify_scene_knobs` refuses a scene whose document answers for no amp at all, rather than classifying it against the base graph: a live field-3 document cut before the amp nodes would drive the base amp in a scene whose own overlay swaps to another [HW].
+`classify_scene_knobs` refuses a scene whose document answers for no amp at all, rather than classifying it against the base graph: a live field-3 document cut before the amp nodes drives the base amp in a scene whose own overlay swaps to another [HW].
 The refusal is repaired from the saved preset through `read_slot_preset_complete`'s backup-backed read (`audioGraph` + `scenes`); a scene the saved preset cannot answer either is skipped and reported, never leveled against base.
 Gates: `a_truncated_swap_scene_levels_its_own_amp_not_the_base_one`, `a_scene_whose_doc_never_arrived_skips_instead_of_classifying_against_base`, `a_scene_whose_doc_is_partial_skips_instead_of_classifying_against_base`, `a_scene_whose_saved_overlay_is_unclassifiable_skips_instead_of_losing_its_headroom_silently`.
 
-For the scene already active (the saved `lastLoadedScene`), the prepass reads the post-load document instead of recalling it, because a recall that changes nothing pushes no field 3 and would leave that scene unclassifiable [RE].
+For the scene already active (the saved `lastLoadedScene`), the probe-only live walk reads the post-load document instead of recalling it, because re-recalling the active scene pushes no field 3 and would leave that scene unclassifiable [HW+RE] ([device/scenes.md#scene-context](device/scenes.md#scene-context)).
 The prepass is also the runners' preset load: `level_scenes_oneshot` and `level_scenes_rebalance` never re-load the preset, and the UI batches adjacent same-preset scene rows that share instrument and target into one `level_scenes_apply_batched` call.
 Together they stop the unit from flashing back to the preset's base twice per scene.
 
@@ -52,8 +52,7 @@ Together they stop the unit from flashing back to the preset's base twice per sc
 Scene writes accumulate unsaved in the working copy (`LevelOptions.defer`: no per-apply save, no restore), and the runner persists them with one `saveCurrentPreset` (field 14) at batch end (`save_deferred_scene_writes`).
 That save first recalls the preset's original `lastLoadedScene` (`recall_original_scene`), so it stamps the scene the preset was loaded in, then saves on a connection that never re-amped, with one retry.
 It also fires on cancel, so already-reported scenes persist.
-Under MAINTAIN CHANGES unsaved scene-edit writes survive scene recalls and reconnects, and one save persists every accumulated overlay [HW+RE].
-Under DISCARD CHANGES every `loadScene` rebuilds base and every overlay from the stored preset, so that one pre-save recall would wipe every deferred write [RE] ([device/scenes.md#scene-change-behavior](device/scenes.md#scene-change-behavior)).
+One save works because MAINTAIN CHANGES keeps unsaved overlay writes across recalls and reconnects; under DISCARD CHANGES that one pre-save recall would wipe every deferred write ([device/scenes.md#scene-change-behavior](device/scenes.md#scene-change-behavior)).
 The deferred-write lanes (`level_scenes_apply_batched`, `level_footswitches_apply`) therefore refuse a positively read DISCARD before any device write (`scene_discard_guard`, read from the startup settings backup).
 Never add a preset load before `save_deferred_scene_writes`: it would be a real reload that wipes the deferred writes ([device/presets.md#save-then-load-on-one-connection](device/presets.md#save-then-load-on-one-connection)).
 The batch save can revert the one scene it leveled when that scene is also `restore_scene` ([device/scenes.md#batched-scene-save](device/scenes.md#batched-scene-save)).
@@ -132,11 +131,11 @@ They detect only "my own writes did not persist": a dropped chunked edit, an idl
 The footswitch verify (`verify_fs_persisted_writes`) also compares the preset's stored `presetLevel`, read at the start of the batch, with the same re-read: the batch writes no `presetLevel`, so a different value means its save reverted the base level, and every switch in the batch is stamped mismatched.
 
 A re-read that cannot answer says UNCONFIRMED, never "did not persist".
-A truncated read loses `scenes` first, so a missing section is unverifiable, not absent: a cut re-read can miss a scene whose saved state re-measures on target [HW].
+A truncated read loses `scenes` first ([device/presets.md#reading-presets](device/presets.md#reading-presets)), so a missing section is unverifiable, not absent: a cut re-read can miss a scene whose saved state re-measures on target [HW].
 The grading keeps `Unverifiable` distinct from `Absent` (`SceneOverlay::Unknown` carries the distinction into `persisted_value`), because a document can arrive whole and still carry no `scenes`.
 It is not an amnesty: when the section is present and covers the slot, a genuinely absent overlay stays a miss.
 `a_truncated_reread_is_unconfirmed_not_a_lost_write` and its footswitch twin assert both directions.
-`ftsw` sorts ahead of `scenes` in a stored row's keys [RE], so it can survive the cut that takes `scenes` and works as a scene-count oracle; `--slot-json` pretty-prints a parsed value without `preserve_order`, so its key order says nothing about wire order.
+`--slot-json` pretty-prints a parsed value without `preserve_order`, so its key order says nothing about the wire order behind the `ftsw` scene-count oracle.
 
 ## Parallel-amp rebalance
 

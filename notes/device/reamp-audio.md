@@ -11,7 +11,7 @@ Toggle re-amp only with `SettingsMessage` (3) → `reampModeActive` (30): ON is 
 That is the route the unit's own UI and Pro Control use [RE].
 Never send Mixer `setReAmpMode` (15): both routes reach the mixer, but 15 skips the Settings flag, and a later Settings ON is then acknowledged with value 1 and does nothing [HW+RE].
 The Settings echo (`reampModeActive`) is sent to every host even when nothing changed, so it is not proof of engagement, and neither is a finite captured loudness ([Silent captures](#silent-captures)) [HW+RE].
-The proof is a Mixer `reAmpModeRequest` (4) → field 9 read or a capture that passes `leveller::measure_floor_guarded`.
+The proof is a Mixer `reAmpModeRequest` (4) → field 9 read or a capture that passes an armed `leveller::measure_floor_guarded`.
 The Mixer read is answered to the requester on a live, heartbeated session; a silent Mixer read means the session had lapsed [HW+RE].
 `Session::read_reamp_state` reads both stores (Mixer field 9 and the Settings flag through `usbSettingsRequest` (55) → field 56), and a store that never answered reads `None`, never OFF.
 Setters carry no `batchStatus`: an engage with batch 4 or more is dropped with no reply, and one with batch 1 or 2 waits for a batch 3 ([Request batching](session.md#request-batching)) [HW+RE].
@@ -47,9 +47,9 @@ Write-bearing shapes skip the heartbeat, because their writes already break the 
 ## Silent captures
 
 A failed or dropped engage does not return silence: it returns the unit's stationary post-DSP output floor, a finite, plausible LUFS [HW].
-Its tells are a momentary-loudness spread near 0.1 LU (a plucked stimulus through any chain spreads far wider) and a `C` that is the same across very different presets.
+Its tells are a 400 ms momentary-loudness spread near 0.1 LU, where a stimulus spreads at least 0.67 LU even through a saturated chain (shipped stimuli 7.3–10.6 LU, Doctor slices 6.7–11.7 LU), and a `C` that is the same across very different presets [HW].
 The floor is post-DSP, so `presetLevel` scales it and the `20·log10` model still fits: a full `--levelpreset` solve and verify landed 0.00 LU error while measuring only the floor, so solve/verify self-consistency proves nothing about the inject [HW].
-The production leveller guards every measurement (`leveller::measure_floor_guarded`, `require_live`): `FLOOR_TRIP_LU` = 0.4 on the 400 ms momentary spread, a stimulus-aware disarm for near-stationary EBow captures, a quiet-gap retry, and refusal of a read that stays flat.
+The production leveller guards every measurement (`leveller::measure_floor_guarded`, `require_live`): `FLOOR_TRIP_LU` = 0.4 on the 400 ms momentary spread, a disarm when the stimulus's own spread is at or below `STATIONARY_STIM_LU` = 2.0 or unmeasurable (near-stationary EBow captures), a quiet-gap retry, and refusal of a read that stays flat.
 `leveller::is_engaged` keys on that spread, so a stationary stimulus can still read `FLOOR/SILENT`; do not retune the threshold without captures that separate a failed inject from a stationary stimulus.
 `probe --stim-ab` is the diagnostic sweep.
 A capture of true digital silence ("no signal captured") is a muted path, not a dropped engage: `outputLevel` 0 ([outputLevel 0](#outputlevel-0)) or a USB 1/2 strip muted or soloed away ([open question](../open-questions.md#usb-12-pre-flight)); `probe --channels <list index>` shows which USB channels carry signal, and a power cycle is never the cure.

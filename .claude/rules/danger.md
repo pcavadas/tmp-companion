@@ -41,7 +41,7 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
 ## Re-amp and measurement
 
 - **One engage per capture, on a fresh connection, for accuracy.**
-  Only the first capture after an engage is accurate; proof of engagement is a Mixer `reAmpModeRequest` (4) → field 9 read or a capture that passes `leveller::measure_floor_guarded`, never the Settings echo or a finite loudness.
+  Only the first capture after an engage is accurate; proof of engagement is a Mixer `reAmpModeRequest` (4) → field 9 read or a capture that passes an armed `leveller::measure_floor_guarded`, never the Settings echo or a finite loudness.
   [→](../../notes/device/reamp-audio.md#engage-and-capture-accuracy)
 - **DANGER: a silent or failed inject reads as the stationary output floor**, and `measure_c` would accept it as a valid `C` without the production floor guards.
   [→](../../notes/device/reamp-audio.md#silent-captures)

@@ -153,6 +153,7 @@ The toolbar's `DeviceStatus` reads "Not connected", "Connecting…", "In use by 
 The snapshot's preset list is strict (`list_my_presets_strict`, [Reading presets](presets.md#reading-presets)).
 With `MONITOR_ENABLED` already set (a webview reload), `connect_device` serves the cached snapshot instead of `reset_startup_state()`, because the live pump never re-runs its one-shot handshake.
 `monitor::refresh_snapshot_graph` keeps the cached `graph` current on every field-3 push.
+The app reads scenes lazily: the active preset from field 3, other rows from the startup backup scan (`BackupPresetRow.scenes`); nothing loads a preset at startup or during setup.
 A flooded handshake can miss both the field-3 push and the `PresetLoaded` body, and an idle unit never pushes field 3 on its own, so the monitor retries the snapshot (`GRAPH_RETRY_MAX` = 2, 3 s apart) and refills that budget on every snapshot with a graph and every pause/resume cycle.
 
 ### Sharing the seize with commands

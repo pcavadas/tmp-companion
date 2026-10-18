@@ -12,7 +12,8 @@ Does a footswitch press of scene 0 reach the same state as a USB `loadScene(0)`?
 On the 2-amp Guitar preset, a USB `loadScene(0)` materializes a different amp state than the physical footswitch press [HW].
 The server handles every source as the same `loadScene` message, and scene 0 takes no special path; the candidates are in what the panel sends ([device/scenes.md#panel-and-footswitch-scene-changes](device/scenes.md#panel-and-footswitch-scene-changes)) [RE].
 
-- **Why it matters:** every scene-0 reading. Level and Doctor do not trust it: the Doctor's first-scene advisory ("the first scene's USB reading can differ from its footswitch"), and `fixture_gates.rs` leaves scene 0 of the 2-amp fixtures unjudged.
+- **Why it matters:** every scene-0 reading.
+  Level and Doctor do not trust it: the Doctor's first-scene advisory ("the first scene's USB reading can differ from its footswitch"), and `fixture_gates.rs` leaves scene 0 of the 2-amp fixtures unjudged.
 - **What would answer it (HW, attended, no save):** from another scene, press scene 0's switch once and read `lastLoadedScene`, the amps' bypass and the footswitch states with `currentPresetDataRequest` (field 2) on a fresh connection; press it again and check whether `lastLoadedScene` becomes 8; then send USB `loadScene(0)` from the same start and compare.
 - **Code:** `doctor.rs` (`scene_zero_worst_gets_verify_by_ear_advisory`), the scene-0 exclusions in `fixture_gates.rs`, the scene-0 rule in `.claude/rules/danger.md`.
 
@@ -27,8 +28,11 @@ Two causes fit:
 - the unit was set to DISCARD CHANGES, where every `loadScene` rebuilds base and every overlay from the stored preset (the probe path skips the app's `scene_discard_guard`);
 - the write's overlay entry had one key, so it landed on base and the recall re-applied the overlay's old value ([Scene-write landing shapes](#scene-write-landing-shapes)).
 
-- **Why it matters:** it decides whether the `restore_scene` recall before the deferred save is safe. A fix must cover the three save paths that share `recall_original_scene`: `apply_levels`, `save_deferred_scene_writes` and `write_fs_values_on_session`. `recall_reassert_save` re-applies `presetLevel` after the recall; nothing re-applies a per-scene block write.
-- **What would answer it (HW):** on the unit that reproduced it, read Scene Change Behavior (`footswitchSettingsRequest`, Settings 47 → field 12). If it reads MAINTAIN, repeat the probe run and compare base `outputLevel` with `scenes[0]` in a `presetDataRequest` (field 8) read: under the one-key cause, base holds 1.0 next to the overlay's 0.96.
+- **Why it matters:** it decides whether the `restore_scene` recall before the deferred save is safe.
+  A fix must cover the three save paths that share `recall_original_scene`: `apply_levels`, `save_deferred_scene_writes` and `write_fs_values_on_session`.
+  `recall_reassert_save` re-applies `presetLevel` after the recall; nothing re-applies a per-scene block write.
+- **What would answer it (HW):** on the unit that reproduced it, read Scene Change Behavior (`footswitchSettingsRequest`, Settings 47 → field 12).
+  If it reads MAINTAIN, repeat the probe run and compare base `outputLevel` with `scenes[0]` in a `presetDataRequest` (field 8) read: under the one-key cause, base holds 1.0 next to the overlay's 0.96.
 - **Code:** `leveller::recall_original_scene` (`leveller/knob.rs`), `save_deferred_scene_writes` (`leveller/scene.rs`), `leveller::persist_mismatches`, the 410 arc in `e2e/specs/level.online.spec.ts`.
 
 ## Scene-write landing shapes
@@ -48,7 +52,8 @@ The app's classifier differs from the device rule at exactly those shapes ([devi
 Does a stuck re-amp survive a USB unplug, and does a restart of the unit clear it?
 Static evidence says re-amp stays on across an unplug and a restart clears it [RE] ([device/reamp-audio.md#stuck-re-amp](device/reamp-audio.md#stuck-re-amp)).
 
-- **Why it matters:** the user-facing recovery text. The app tells the user to restart the unit when a run could not read re-amp back OFF.
+- **Why it matters:** the user-facing recovery text.
+  The app tells the user to restart the unit when a run could not read re-amp back OFF.
 - **What would answer it (HW, attended):** engage re-amp, unplug and replug, play the guitar and read Mixer `reAmpModeRequest` (4) → field 9; then restart the unit and read again.
 - **Code:** the `reamp_still_on` flag and the "Restart your Tone Master Pro" Notice (`leveller::ReampRunGuard`, `error.rs`), the stuck re-amp rule in `.claude/rules/danger.md`.
 
@@ -86,7 +91,8 @@ Subtracting the stimulus's band shape is exact on a clean chain and over-correct
 How late do the save reply and the structural-edit confirms arrive after a load?
 Static analysis predicts a confirm queues in the one HID reply FIFO behind the load's full push set, so it arrives after the load's `sceneLoaded` (102) [RE, inferred]; the field-3 push alone arrives 0.1–0.45 s after a load [HW].
 
-- **Why it matters:** it sizes the confirm windows. A confirm still queued behind the load's pushes reads as missing and sends the edit into read-back recovery ([copy.md#read-back](copy.md#read-back)).
+- **Why it matters:** it sizes the confirm windows.
+  A confirm still queued behind the load's pushes reads as missing and sends the edit into read-back recovery ([copy.md#read-back](copy.md#read-back)).
 - **What would answer it (HW):** a recorded trace (`TMP_TRACE_DIR`, [e2e-recording.md](e2e-recording.md)) of a load followed by `replaceNode`, `insertNode` (field 34) and `saveCurrentPreset` (field 14).
 - **Code:** `commands/copy_apply.rs` (`apply_copy_op`), `Session::insert_landed`.
 
@@ -117,8 +123,11 @@ The master knob is not in the USB 1/2 path ([device/reamp-audio.md#output-routin
 
 Can the Companion measure presets the instrument stimulus does not reach?
 
-- **Mic/Line templates.** In re-amp, USB-In 4 replaces Input 2 ([device/reamp-audio.md#re-amp-toggle](device/reamp-audio.md#re-amp-toggle)) [RE], and the app drives only USB-In 3 (`REAMP_INSTRUMENT_OUT_CH`), so a preset on a `Mic/Line Series`, `Mic/Line Parallel 1` or `Mic/Line Split` template gets no stimulus [RE, inferred]. Open: does a stimulus on USB-In 4 reach and measure those chains?
-- **Loops 1 and 2.** They are relay loops switched by the preset's top-level `fxLoop` object (`fxLoop1Enabled` / `fxLoop1Bypassed`, …), not audio-graph nodes, and re-amp bypasses them [RE]; their position ahead of the instrument A/D is [RE, inferred]. Gear in loop 1 or 2 is missing from every capture. Open: does a re-amp capture of a preset with loop 1 engaged and a pedal in it equal the same preset with the loop off?
+- **Mic/Line templates.** In re-amp, USB-In 4 replaces Input 2 ([device/reamp-audio.md#re-amp-toggle](device/reamp-audio.md#re-amp-toggle)) [RE], and the app drives only USB-In 3 (`REAMP_INSTRUMENT_OUT_CH`), so a preset on a `Mic/Line Series`, `Mic/Line Parallel 1` or `Mic/Line Split` template gets no stimulus [RE, inferred].
+  Open: does a stimulus on USB-In 4 reach and measure those chains?
+- **Loops 1 and 2.** They are relay loops switched by the preset's top-level `fxLoop` object (`fxLoop1Enabled` / `fxLoop1Bypassed`, …), not audio-graph nodes, and re-amp bypasses them [RE]; their position ahead of the instrument A/D is [RE, inferred].
+  Gear in loop 1 or 2 is missing from every capture.
+  Open: does a re-amp capture of a preset with loop 1 engaged and a pedal in it equal the same preset with the loop off?
 
 - **Why it matters:** both cases read as "no signal", or as a confident number for a chain that was never fully measured.
 - **What would answer it (HW):** a capture with a stimulus on USB-In 4 through a Mic/Line template; captures of one preset with loop 1 engaged (a pedal in it) and off.

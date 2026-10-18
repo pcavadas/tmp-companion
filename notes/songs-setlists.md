@@ -14,7 +14,8 @@ Facts are for firmware 1.8.58 unless a line says otherwise.
 - Songs: add, rename, remove, set notes, and per-song BPM.
 - Setlists: add, rename, remove, and add / remove / move a song within a setlist.
 - `addSetlistSong` takes the global song slot of the song to add; `removeSetlistSong` and `moveSetlistSong` address a 1-based position within the setlist, and `moveSetlistSong` is an array splice (`commands/setlists.rs`).
-- `assignSongPreset`'s `presetSceneSlot` must be a scene the preset has, or 8 (`BASE_SCENE_SLOT`, the whole preset); the unit refuses any other with SongError 5 and writes no row [RE]. `Session::assign_song_preset` reads the row back, so a refusal is an error.
+- `assignSongPreset`'s `presetSceneSlot` must be a scene the preset has, or 8 (`BASE_SCENE_SLOT`, the whole preset); the unit refuses any other with SongError 5 and writes no row [RE].
+  `Session::assign_song_preset` reads the row back, so a refusal is an error.
 
 **Per-song BPM.**
 There is no dedicated setter: the BPM is `SettingsMessage.tapTempoBpm{value, originatorId=1}` applied to the active song.

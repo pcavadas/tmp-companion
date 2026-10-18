@@ -2,6 +2,7 @@
 paths:
   - "src-tauri/src/leveller/**"
   - "src-tauri/src/scene_jobs*.rs"
+  - "src-tauri/src/scenes.rs"
   - "src-tauri/src/footswitch.rs"
   - "src-tauri/src/commands/level_*.rs"
   - "src-tauri/src/session/reamp.rs"

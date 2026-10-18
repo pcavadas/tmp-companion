@@ -20,10 +20,7 @@ Every backend module carries a `//!` header, and for the bulk/offline feature mo
 
 ## Wire protocol
 
-- **`batchStatus` (field 10): 0, 3 or absent apply at once (3 also drains the queue), 1 and 2 queue until a batch 3, ≥4 is dropped with no reply.**
-  The queue outlives a session, so a 1 or 2 left behind is answered on the next session.
-  Setters, commands and the heartbeat are sent without one; after the handshake, a request that needs its reply uses `proto::BATCH_DRAIN` or none (`extra_burst` debug-asserts it).
-  [→](../../notes/device/session.md#request-batching)
+- **`batchStatus` (field 10) follows [request batching](../../notes/device/session.md#request-batching)**: after the handshake, a request uses `proto::BATCH_DRAIN` or none, and `extra_burst` debug-asserts it.
 - **A Pro Control rename is `renameCurrentPreset` (13) + `saveCurrentPreset` (14)**: send both to persist; the byte-exact setter and import framing is the `tmp-companion-protocol` skill.
   [→](../../notes/device/session.md#pro-control-framing)
 - **Live per-node structural edits** go through `copy_apply` and the probe's `replace_many_held`, sharing the `nodeReplaced` (40) / `nodeRemoved` (36) / `nodeInserted` (33) confirm gate and never saving after a `presetError` (53).

@@ -3,6 +3,7 @@ paths:
   - "e2e/**"
   - "scripts/e2e.sh"
   - "scripts/hw-e2e.sh"
+  - "src-tauri/src/e2e_seed.rs"
 ---
 
 # e2e harness rules

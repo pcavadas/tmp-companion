@@ -12,6 +12,8 @@ paths:
   - "src-tauri/src/preset_io.rs"
   - "src-tauri/src/library.rs"
   - "src-tauri/src/paramedit.rs"
+  - "src-tauri/src/commands/held_edit.rs"
+  - "src-tauri/src/e2e_seed.rs"
 ---
 
 # Preset write rules

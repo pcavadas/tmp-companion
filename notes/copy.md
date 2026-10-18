@@ -30,7 +30,7 @@ Targets that are not the active preset are drawn from `BackupPresetRow.graph` (t
 
 `copy_apply` runs each target's op list (`replaceNode`, `replaceNodeWithBlock`, `insertNode`, `removeNode`) on one held session, re-armed per preset; the wire shapes, confirms and node-id minting are in [device/presets.md#structural-edits](device/presets.md#structural-edits).
 Every insert is checked with `blockcaps::check_op` first, and its anchor (an original block's `nodeId`, or an earlier insert's key) is resolved to the device's current id through `DeviceIds`, because a missing anchor or an over-budget insert aborts the device server ([device/presets.md#insert-abort](device/presets.md#insert-abort)).
-`diffToOps` orders the ops so each insert's anchor is still present when it lands ([device/presets.md#node-ids](device/presets.md#node-ids)).
+`diffToOps` emits removes, then replaces, then inserts right to left, so each insert's anchor is still present when it lands ([device/presets.md#node-ids](device/presets.md#node-ids); `copyModel.test.ts` "INV-A").
 Never save on `presetError` or an unconfirmed edit; an unconfirmed edit is read back and re-sent once only when it visibly did not land ([device/presets.md#confirms](device/presets.md#confirms)).
 Block-mutation code touches all three places a block lives and never normalizes ids ([device/presets.md#three-keyed-places](device/presets.md#three-keyed-places)).
 Probe entry points: `probe --insert-active` and `--insert-map`; the probe's replace arms use `replace_many_held`.

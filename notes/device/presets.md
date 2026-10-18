@@ -48,7 +48,6 @@ So `read_slot_preset_complete` names a slot from `monitor::startup_preset_name`,
 The backup streams at the unit's report pace (~28 KB/s) and is mostly `acdDefaultsBackup` and IR files [HW+RE].
 `Session::device_backup`'s `max_secs` bounds the gap between progress events, not the transfer; add no wall-clock cap.
 Global settings (`sampleRate`, the mixer strips, `sceneChangeBehavior`) are in the backup's `settingsBackup` JSON.
-The app reads scenes lazily: the active preset from field 3, other rows from the startup backup scan (`BackupPresetRow.scenes`); nothing loads a preset at startup or during setup.
 
 ## Saving
 
@@ -77,15 +76,10 @@ The save handler is synchronous and messages run in order, so static analysis ex
 The hardware check is pending, so the code ends a save's connection before any load ([open question](../open-questions.md#save-then-load-on-one-connection)).
 Never add a preset load before `save_deferred_scene_writes`: its unsaved writes set the dirty flag, so the load would be a real reload that wipes them.
 
-### No revert in the app
-
-A save cannot be undone from the app; leveling and Copy saves sit behind the "I've backed up with Pro Control" acknowledgment (`ui/BackupAckLabel`), and the Summary's "Try again" (`levelRunStore.retryLeveling`) does not ask again.
-
 ## Loading
 
 A `loadPreset` sends `presetError` 6 if the body was rejected, `presetChanged` (25) if the row changed, then the full push set (field 3, `presetLoaded` (11), field 22, `sceneListResponse` (125), `sceneLoaded` (102)), even after a no-op load [RE].
 Field 3 arrives 0.1–0.45 s after a load [HW].
-A preset loads into its stored `lastLoadedScene`, applied exactly as saved ([Scene context](scenes.md#scene-context)).
 A `setPresetLevel` after a load on the same connection held every time [HW] (within ~1 s untested); the code still loads on its own connection, a conservative choice.
 
 ### Echo of the previous slot
@@ -194,7 +188,6 @@ An insert or replace mints the model's FenderId, then the first free `<FenderId>
 `nodeInserted` and `nodeReplaced` carry the new node, with its minted id, in field 3; their field 2 echoes the anchor as sent or the old id [HW+RE].
 A load keeps stored ids as they are (`cab1` in the scenario fixtures); a stored duplicate id overwrites the first node's map entry and reads back once [RE].
 So never assume a FenderId is a node id: `copy_apply` resolves each anchor through `DeviceIds` (the confirms' `nodeJson` or a working-copy read) and refuses one it cannot resolve.
-`diffToOps` emits removes, then replaces, then inserts right to left, so each insert's anchor is still present when it lands (`copyModel.test.ts` "INV-A").
 
 ### Three keyed places
 

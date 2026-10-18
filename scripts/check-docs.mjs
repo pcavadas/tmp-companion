@@ -16,12 +16,14 @@
 //   3. `--strict` (report-only, never changes the exit code): stale-wording ban list in prose
 //      and comments — firmware 1.8.45 mentions, `#NNN` issue references in comments, and
 //      plan labels such as `R5` or `AC3`.
+//   4. Size caps, in bytes (SIZE_CAPS): AGENTS.md ≤ 10,240, CLAUDE.md ≤ 6,144,
+//      .claude/rules/danger.md ≤ 8,192 and every notes/**/*.md ≤ 20,480.
 //
 // `--staged` (the pre-commit hook) reads every file from the index — the bytes the commit
 // will hold — and reports only failures in staged files, unless the commit deletes or
 // renames a file, which can break links anywhere: then the whole tree.
 //
-// Prints `file:line: message` per failure and exits 1 on any failure from checks 1–2.
+// Prints `file:line: message` per failure and exits 1 on any failure from checks 1, 2 and 4.
 // Plain ESM on node builtins, so `node` or `bun` runs it unchanged.
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync, statSync } from "node:fs";
@@ -331,6 +333,32 @@ function checkHtmlLinks(file, line, l) {
   }
 }
 
+// ── 4. size caps ──────────────────────────────────────────────────────────
+// [test, cap in bytes]; the first matching entry applies.
+const SIZE_CAPS = [
+  [(f) => f === "AGENTS.md", 10240],
+  [(f) => f === "CLAUDE.md", 6144],
+  [(f) => f === ".claude/rules/danger.md", 8192],
+  [(f) => f.startsWith("notes/") && f.endsWith(".md"), 20480],
+];
+function checkSize(file) {
+  const cap = SIZE_CAPS.find(([test]) => test(file))?.[1];
+  if (cap === undefined) return;
+  let size;
+  if (fromIndex) {
+    const text = indexText.get(file);
+    // indexText skips only a blob over MAX_BYTES, which is far over every cap.
+    size = text === undefined ? MAX_BYTES + 1 : Buffer.byteLength(text, "utf8");
+  } else {
+    try {
+      size = statSync(file).size;
+    } catch {
+      return;
+    }
+  }
+  if (size > cap) fail(file, 1, `${size} bytes, over the ${cap}-byte cap`);
+}
+
 // ── scan ──────────────────────────────────────────────────────────────────
 const CODE_EXT = /^(rs|ts|tsx|mjs|js|sh|yml|yaml|py|toml)$/;
 const DATA_EXT = /^(json|tsv)$/;
@@ -344,6 +372,7 @@ for (const file of tracked) {
   )
     continue;
   if (only && !only.has(file)) continue;
+  checkSize(file);
   const text = readText(file);
   if (text === null) continue;
   if (isMd) {

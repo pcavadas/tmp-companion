@@ -7,6 +7,10 @@ paths:
   - "src-tauri/src/doctor*.rs"
   - "src-tauri/src/commands/level_*.rs"
   - "src-tauri/src/commands/doctor*.rs"
+  - "src-tauri/src/stimulus.rs"
+  - "src-tauri/src/profiles.rs"
+  - "src-tauri/src/topologies.rs"
+  - "src-tauri/src/headroom_trade.rs"
 ---
 
 # Leveling and DSP rules
@@ -23,7 +27,7 @@ The re-amp and destructive-write rules are in [`danger.md`](danger.md); the leve
   `level_scenes_apply_batched` calls `leveller::level_scenes_oneshot`: an isolated fresh capture per scene, then `solve_level` → `apply_level` with a bounded secant correction.
   Only the amp's `outputLevel` changes; preamp, master and volume are forbidden.
   [→](../../notes/leveling-scenes.md)
-- **Pick the amp per scene from the live audioGraph**; a bypassed amp's knob measures flat and clamps.
+- **Pick the amp per scene from that scene's document**, which the run derives from its one saved field-8 read (`scene_jobs::scene_docs_from_saved`), never a live recall walk (`prepass_scene_docs` is probe-only); a bypassed amp's knob measures flat and clamps.
   Amp ids match check-first, then strip ([`models-catalog.md`](models-catalog.md)).
 - **Output Assign is per preset and re-applied to the global mixer on every preset load.**
   [→](../../notes/device/reamp-audio.md#output-routing)

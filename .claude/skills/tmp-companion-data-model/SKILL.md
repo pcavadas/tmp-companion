@@ -129,7 +129,7 @@ My-Presets selections (`tabEnum=1`) render the slot number.
   Copy applies live structural edits (`commands/copy_apply.rs` → `session::{replace_node,insert_node,remove_node}`) and walks with `audiograph::for_each_node{,_mut}` + `node_id` — never a private traversal.
 - **Leveling**: `presetLevel` is a **global multiplier** over all scenes, so the base scene is levelled first; each footswitch scene is levelled on its **active amp's `outputLevel`**.
   Reamp bypasses the analog Loops 1–2.
-  Mechanism: [`notes/leveling.md`](../../../notes/leveling.md).
+  Mechanism: [`notes/leveling.md`](../../../notes/leveling.md); scenes and footswitches: [`notes/leveling-scenes.md`](../../../notes/leveling-scenes.md).
 - **Signal chain + Catalog**: the 12 templates, block types and cabinet sub-model are what the strip renders; `tmp-companion-catalog` owns the id→art/name mapping.
 
 ## References

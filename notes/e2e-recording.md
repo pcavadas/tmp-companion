@@ -64,7 +64,7 @@ Events:
 - `fw`: `fw`, parsed from a `currentFwResponse` report.
 - `capture`: `cap_id`, `backend`, `t_start_us`, `t_end_us`, `stim_sha256`, `stim_frames`, `rate`, `tail_ms`, `channels`, `frames`, `lufs_i`, `true_peak_dbtp`, `spread_lu`, `peak`, `rms`, `engage`, `ctx`, `wav`, `err`.
   Loudness is the processed pair's; `peak` and `rms` cover every returned channel.
-  `engage` is the last re-amp toggle seen on the wire, its `seq` and whether an echo arrived: context, not proof (proof is a Mixer `reAmpModeRequest` (4) → field 9 read, or a capture that passes `leveller::measure_floor_guarded`).
+  `engage` is the last re-amp toggle seen on the wire, its `seq` and whether an echo arrived: context, not proof (proof is a Mixer `reAmpModeRequest` (4) → field 9 read, or a capture that passes an armed `leveller::measure_floor_guarded`).
   `ctx` names the sound (`label`, `slot`, `scene_slot`, `switch`) when the caller knows it.
 - `cmd`: `name`, `args_sha256`, `ok`, `ms`, from the e2e server's `/invoke` route only.
 - `state`: `kind` (`field8`), `slot`, `bytes`, `complete`, `canon_sha256`, `pristine`, `file`.

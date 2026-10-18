@@ -39,7 +39,7 @@ Twelve diagnoses:
 - **washed**: a post-stimulus tail-RMS rule with an onset-aligned split ([doctor-thresholds.md#onset-alignment](doctor-thresholds.md#onset-alignment)) and a tail window pinned to `DOCTOR_TAIL_MS`.
 - **resonant** and **boxy**: localized peaks ([Localized rules](#localized-rules)).
 
-There is no dynamics-spread (`spiky`) rule: a spread rule cannot fire on the shipped stimuli, and the momentary statistic that could revive it trips on gates, swells and tremolo.
+There is no dynamics-spread (`spiky`) rule, for the reason the leveling run has no dynamics cause ([leveling-scenes.md#verify-by-ear-causes](leveling-scenes.md#verify-by-ear-causes)).
 
 ## Localized rules
 

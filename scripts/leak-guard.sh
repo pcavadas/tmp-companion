@@ -26,8 +26,9 @@
 # Exits non-zero and prints the offending file:line on any match; exits 2 if the
 # combined pattern is not a valid ERE (a broken pattern must never pass silently).
 # Portable to macOS /bin/bash 3.2.57 + BSD grep: no arrays, no GNU-only flags,
-# no `&& cmd` statements (set -e unsafe); here-docs (not pipes) keep `status` in
-# scope. Test under /bin/bash explicitly, not a newer PATH bash.
+# no `&& cmd` statements (set -e unsafe); process substitution (not a pipe) keeps
+# the loops, and so `status`, in this shell. Test under /bin/bash explicitly, not a
+# newer PATH bash.
 
 set -euo pipefail
 
@@ -75,31 +76,26 @@ report() { # <file-label> <grep-output>
 }
 
 if [ "$mode" = "--all" ] || [ "$mode" = "all" ]; then
-  # All tracked files, scanned in the working tree.
-  while IFS= read -r f; do
-    if [ -z "$f" ]; then continue; fi
+  # All tracked files, scanned in the working tree. NUL-separated (-z), so a name git
+  # would C-quote (a tab, newline, quote or backslash in it) is read verbatim.
+  while IFS= read -r -d '' f; do
     if [ ! -f "$f" ]; then continue; fi
     # Plain grep first (fast, skips binaries); re-scan a hit with the allowlist applied.
     out="$(grep -lIE "$pattern" -- "$f" 2>/dev/null || true)"
     if [ -n "$out" ]; then out="$(scan <"$f")"; fi
     if [ -n "$out" ]; then report "$f" "$out"; fi
-  done <<EOF
-$(git -c core.quotepath=off ls-files)
-EOF
+  done < <(git ls-files -z)
 else
-  # Staged additions/modifications, scanned from the index (the exact bytes that
-  # would be committed), not the working tree.
-  while IFS= read -r f; do
-    if [ -z "$f" ]; then continue; fi
+  # Staged additions, modifications, renames and type changes, scanned from the index
+  # (the exact bytes that would be committed), not the working tree; NUL-separated (-z).
+  while IFS= read -r -d '' f; do
     if ! git cat-file -e ":$f" 2>/dev/null; then
       printf 'LEAK-GUARD: cannot read the staged copy of %s — refusing rather than skipping it\n' "$f" >&2
       exit 2
     fi
     out="$(git show ":$f" | scan)"
     if [ -n "$out" ]; then report "$f (staged)" "$out"; fi
-  done <<EOF
-$(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR)
-EOF
+  done < <(git diff --cached --name-only -z --diff-filter=ACMRT)
 fi
 
 if [ "$status" -ne 0 ]; then
