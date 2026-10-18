@@ -61,7 +61,7 @@ mod tests {
         })
     }
 
-    // AC2 — apply writes params into the matching-model block only.
+    // Apply writes params into the matching-model block only.
     #[test]
     fn apply_writes_matching_model_only() {
         let t = BlockTemplate {

@@ -42,10 +42,10 @@ pub(crate) fn discover_active_graph() -> Result<(session::ActiveGraph, String), 
 ///
 /// Primary path is the RICH LEAN SESSION (the bench intel-session / `prepass_scene_docs`
 /// pattern): heartbeat warmup → `send_and_collect(LoadPreset)` → pump past the 125 hit →
-/// read `current_preset_blocks` from the accumulated field-3 push bodies. Field-78
-/// (`connect_for_discovery`) is the fallback: it failed on 1.8.45 while its window was
-/// silent, and delivers kept-alive on 1.8.58. Without this, FS-scene leveling found zero
-/// amp candidates and silently skipped every scene (the device never switched scenes).
+/// read `current_preset_blocks` from the accumulated field-3 push bodies. The fallback is
+/// the discovery handshake's own `currentPresetDataChanged` (field 3) reply
+/// (`connect_for_discovery`). Without block discovery, FS-scene leveling finds zero amp
+/// candidates and silently skips every scene.
 /// `slot` is the 0-based list index; every path opens its own session.
 pub(crate) fn load_then_discover_blocks(
     slot: ListIndex,
@@ -85,7 +85,7 @@ pub(crate) fn load_then_discover_blocks(
     }
 }
 
-/// 1.8.45-safe block discovery: a single rich lean session loads the preset via
+/// Primary block discovery: a single rich lean session loads the preset via
 /// `send_and_collect` (NOT `load_preset`, which discards the reports the field-3 push
 /// rides on) and reads the level blocks from the accumulated push bodies. Mirrors the
 /// bench intel session + `prepass_scene_docs`. Private: the primary path of

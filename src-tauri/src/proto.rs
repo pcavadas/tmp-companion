@@ -9,7 +9,9 @@
 //!   `0x35 0x00 <body_len> <protobuf FenderMessageTMS>` zero-padded to 63.
 //!
 //! Top-level `FenderMessageTMS` oneof slots used here:
-//!   2 presetMessage · 4 connectionMessage · 5 mixerMessage · field 10 = batchStatus.
+//!   2 presetMessage · 3 settingsMessage · 4 connectionMessage · 5 mixerMessage ·
+//!   8 backupMessage · 11 songMessage · 12 setlistMessage · 13 user-IR · field 10 =
+//!   batchStatus.
 
 /// Maximum protobuf body that fits in a single 63-byte output report
 /// (`0x35 0x00 <len>` header = 3 bytes).
@@ -53,9 +55,8 @@ fn field_bytes(out: &mut Vec<u8>, field_no: u32, value: &[u8]) {
     out.extend_from_slice(value);
 }
 
-/// Append a 32-bit float field (wire type 5, little-endian). The Python
-/// `pb_field` only supports varint/len-delim; `SetPresetLevel.presetLevel` is a
-/// `float`, so this helper is the one addition called out in the plan.
+/// Append a 32-bit float field (wire type 5, little-endian) — e.g.
+/// `SetPresetLevel.presetLevel`.
 pub(crate) fn field_f32(out: &mut Vec<u8>, field_no: u32, value: f32) {
     put_varint(out, tag(field_no, 5));
     out.extend_from_slice(&value.to_le_bytes());
@@ -125,7 +126,7 @@ pub fn make_chunked_envelopes(body: &[u8]) -> Vec<[u8; 63]> {
 /// no back-references). Valid per the LZ4 block spec and accepted by
 /// [`lz4_block_decompress`]; emitting matches would only shrink the payload, not
 /// change correctness, so this avoids an LZ4-compressor dependency. The on-wire
-/// `importPresetRequest.presetJson` is `LZ4_block(raw .preset bytes)` (AC3).
+/// `importPresetRequest.presetJson` is `LZ4_block(raw .preset bytes)`.
 pub fn lz4_block_compress_stored(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() + 1 + data.len() / 255);
     let lit = data.len();
@@ -145,8 +146,8 @@ pub fn lz4_block_compress_stored(data: &[u8]) -> Vec<u8> {
 // ─── message builders (each returns the FenderMessageTMS body) ───────────────
 
 /// `TMS.<tms_field>{ <inner_field>{ field1 = inner_value } }` with optional
-/// `batchStatus` (field 10). Heartbeat omits batch — the device rejects a
-/// heartbeat that carries one.
+/// `batchStatus` (field 10). Heartbeat omits batch — 1/2 would queue it until a
+/// batch 3, and ≥4 drops it.
 fn request(tms_field: u32, inner_field: u32, inner_value: u64, batch: Option<u64>) -> Vec<u8> {
     let mut inner = Vec::new();
     field_varint(&mut inner, 1, inner_value);
@@ -162,8 +163,8 @@ pub fn connection_request() -> Vec<u8> {
     request(4, 1, 1, None)
 }
 
-/// ConnectionMessage.connectionHeartbeat{ dummy = true }. NO batchStatus
-/// (load-bearing: the device replies `ConnectionError` if one is present).
+/// ConnectionMessage.connectionHeartbeat{ dummy = true }. NO batchStatus: 1/2 would
+/// queue it until a batch 3 and ≥4 drops it (static RE + HW, fw 1.8.58).
 pub fn heartbeat() -> Vec<u8> {
     request(4, 4, 1, None)
 }
@@ -218,11 +219,10 @@ pub fn request_all_block_presets(batch: Option<u64>) -> Vec<u8> {
 }
 
 /// SettingsMessage.currentFwRequest{ dummy = true } → the device replies with
-/// `currentFwResponse{ data = "<firmware version>" }`. **NO `batchStatus`** and
-/// it must ride INSIDE the handshake burst: with a batch the device answers
-/// nothing, and standalone after the burst it replies `ConnectionError`
-/// (HW-confirmed — same omit-batch rule as the setters). The reply
-/// is harvested by `session::extract_fw_version`.
+/// `currentFwResponse{ data = "<firmware version>" }`. **NO `batchStatus`**, and it
+/// rides INSIDE the handshake burst: it is answered at once, but sent after the batch-3
+/// request its reply queues behind the ~1.2 s handshake drain (static RE + HW, fw
+/// 1.8.58). The reply is harvested by `session::extract_fw_version`.
 pub fn current_fw_request() -> Vec<u8> {
     request(3, 1, 1, None)
 }
@@ -260,9 +260,9 @@ pub fn backup_request() -> Vec<u8> {
 
 /// PresetMessage.loadPreset{ tabEnum, presetSlot }. `tab_enum` 0 omitted (1 =
 /// UserPresets). presetSlot is field 6. NO `batchStatus` — LoadPreset is a
-/// command; with a batchStatus the device silently ignores it (confirmed live:
-/// with-batch → 0 response streams, no-batch → responds). Same rule as the
-/// other setters; only requests (PresetListRequest, …) carry a batch.
+/// command: 1/2 would hold it until a batch 3 and ≥4 drops it (static RE + HW, fw
+/// 1.8.58). Same rule as the other setters; only requests (PresetListRequest, …)
+/// carry a batch.
 pub fn load_preset(preset_slot: u64, tab_enum: u64) -> Vec<u8> {
     let mut inner = Vec::new();
     if tab_enum != 0 {
@@ -279,9 +279,9 @@ pub fn load_my_preset(slot: crate::slot::DeviceSlot) -> Vec<u8> {
 }
 
 /// PresetMessage.setPresetLevel{ presetLevel } — float clamped to 0.0..=1.0.
-/// NO `batchStatus`: like the re-amp setter, the device silently ignores this
-/// mutation if a batchStatus is present (confirmed live — a level sweep was
-/// flat until the batch was dropped). Setters omit batch; requests include it.
+/// NO `batchStatus`: like every setter, 1/2 would hold the write until a batch 3
+/// and ≥4 drops it (static RE + HW, fw 1.8.58). Setters omit batch; requests
+/// include it.
 pub fn set_preset_level(level: f32) -> Vec<u8> {
     let mut inner = Vec::new();
     field_f32(&mut inner, 1, level.clamp(0.0, 1.0));
@@ -291,9 +291,9 @@ pub fn set_preset_level(level: f32) -> Vec<u8> {
 /// PresetMessage.changeParameter{ groupId, nodeId, parameterId, floatVal } —
 /// set one block control. groupId/nodeId/parameterId are strings (e.g. "G1",
 /// "ACD_TM59Bassman", "outputLevel"); the value goes in the `value` oneof's
-/// floatVal slot (field 5). NO `batchStatus` (setter rule — with it the device
-/// silently ignores the change). HW-proven to move loudness; needs no
-/// SetNodeSceneEdit and is latched by re-amp at engage.
+/// floatVal slot (field 5). NO `batchStatus` (setter rule — see
+/// [`set_preset_level`]). HW-proven to move loudness; needs no SetNodeSceneEdit,
+/// and is audible mid-engage (a live write).
 pub fn change_parameter(group_id: &str, node_id: &str, parameter_id: &str, value: f32) -> Vec<u8> {
     let mut inner = Vec::new();
     field_bytes(&mut inner, 1, group_id.as_bytes());
@@ -342,17 +342,14 @@ pub fn change_parameter_bool(
 // PresetMessage.replaceNode{ destGroup, nodeIdToReplace, fenderId } (field **39**) —
 // swap a node to a different model; the device fills the new model's default
 // parameters and emits `nodeReplaced` (40). It is setter-framed: no `batchStatus`, as
-// production's `Session::replace_node` sends it. (An older note said it needed
-// batch=11; on fw 1.8.58 a `batchStatus` of 4 or more is dropped with no reply,
-// device-confirmed.)
+// production's `Session::replace_node` sends it (≥4 is dropped with no reply,
+// device-confirmed).
 
 /// PresetMessage.nodeJsonRequest (field 119){ groupId=1, nodeId=2 } — Pro Control
-/// sends this immediately BEFORE `replaceNode` to put the device into the
-/// node-edit context (the device replies `nodeJsonResponse`, field 120). Without
-/// it, fw 1.8.45 silently DROPS the subsequent `replaceNode` (HW-confirmed via a
-/// Pro Control USB capture). NO batchStatus (matches the capture). On fw 1.8.58
-/// `nodeJsonRequest` is a stateless read whose `nodeJsonResponse` (120) goes to every
-/// client (static RE): the preamble is harmless, not required.
+/// sends this immediately BEFORE `replaceNode`; production sends it before a replace or
+/// a remove. NO batchStatus (matches the capture). On fw 1.8.58 `nodeJsonRequest` is a stateless
+/// read whose `nodeJsonResponse` (120) goes to every client (static RE): the preamble is
+/// harmless, not required.
 pub fn node_json_request(group_id: &str, node_id: &str) -> Vec<u8> {
     let mut inner = Vec::new();
     field_bytes(&mut inner, 1, group_id.as_bytes());
@@ -377,20 +374,17 @@ pub fn replace_node(
     body
 }
 
-/// PresetMessage.insertNode{ groupId=1, nodeIdInsertLocation=2, fenderId=3 } (field
-/// **34**) — ADD a new block to the chain. Byte-exact from an observed add-block
-/// exchange (fw 1.8.45): the device sends `insertNode` **BARE** — NO `nodeJsonRequest`(119) edit-context preamble
-/// (unlike [`replace_node`]; mirroring replace's preamble made the device REJECT the
-/// insert) and NO `batchStatus`. Field 2 is OPTIONAL: omit to **APPEND** at the end of
-/// the group, or set it to the **LIVE node id**, in the same group, to insert BEFORE
-/// (HW-verified fw 1.8.45: the new block lands AHEAD of the field-2 node — the "insert
-/// after" label from the capture was a misread). The anchor is matched against the group's
-/// current node ids, and a replace or insert mints a new one (the model's default id, then
-/// `_1`, `_2`…), so it is never a FenderId and never a pre-edit id; `copy_apply` resolves it
-/// through its `DeviceIds`. On fw 1.8.58 an anchor that names no node in the group aborts the
-/// device server (`danger.md`). `group_id` is the group KEY ("G1".."G7" / "M1".."M4"), the
-/// same convention as [`replace_node`]. The device confirms with `nodeInserted` (field 33).
-/// `insert_before_fender_id` is that node id; the parameter keeps its historical name.
+/// PresetMessage.insertNode{ groupId=1, nodeIdInsertLocation=2, fenderId=3 } (field **34**) — ADD a
+/// new block to the chain. Sent **BARE**, as Pro Control sends it: NO `nodeJsonRequest`(119)
+/// preamble (unlike [`replace_node`]) and NO `batchStatus`. Field 2 is OPTIONAL: omit to **APPEND**
+/// at the end of the group, or set it to the **LIVE node id**, in the same group, to insert BEFORE
+/// it (HW). The anchor is matched against the group's current node ids, and a replace or insert
+/// mints a new one (the model's default id, then `_1`, `_2`…), so it is never a FenderId and never
+/// a pre-edit id; `copy_apply` resolves it through its `DeviceIds`. An anchor that names no node in
+/// the group aborts the device server (static RE, fw 1.8.58; `danger.md`). `group_id` is the group
+/// KEY ("G1".."G7" / "M1".."M4"), the same convention as [`replace_node`]. The device confirms with
+/// `nodeInserted` (field 33). `insert_before_fender_id` is that node id; the parameter keeps its
+/// historical name.
 pub fn insert_node(
     group_id: &str,
     insert_before_fender_id: Option<&str>,
@@ -414,10 +408,11 @@ pub fn insert_node(
 /// insert a fresh `fender_id` into `group_id` at a POSITION (`index`, group-relative),
 /// the index-based sibling of [`insert_node`]'s `before`-anchor. Inner field numbers:
 /// groupId = 1, fenderId = 3, index = 4. Same bare framing as [`insert_node`].
-/// HW (fw 1.8.45): `index = 0` into a single-block group landed the new block AFTER the
-/// existing one (it does NOT prepend), so the production Copy path uses [`insert_node`]'s
+/// HW: `index = 0` into a single-block group landed the new block AFTER the existing one
+/// (it does NOT prepend), so the production Copy path uses [`insert_node`]'s
 /// `before`-anchor instead; this stays a TOOLING primitive (`probe --insert-map
-/// --at-index`) for characterising the index semantics.
+/// --at-index`). A failed insert aborts the device server like field 34 (static RE, fw
+/// 1.8.58).
 pub fn insert_node_at_block_index(
     group_id: &str,
     index: u64,
@@ -438,8 +433,7 @@ pub fn insert_node_at_block_index(
 /// PresetMessage.replaceNodeWithBlock{ destGroup, nodeIdToReplace, fenderId, index }
 /// (field **100**) — swap a node to one of the user's SAVED blocks; `index` selects
 /// the saved entry within that fenderId's library list (the `blockPresetsMap` array
-/// position). Same request/response framing
-/// as `replace_node`: REQUIRES `batchStatus`.
+/// position). Setter-framed like [`replace_node`]: NO batchStatus.
 pub fn replace_node_with_block(
     dest_group: &str,
     node_id: &str,
@@ -484,8 +478,8 @@ pub fn save_current_preset(user_slot: crate::slot::DeviceSlot) -> Vec<u8> {
 /// PresetMessage.renameCurrentPreset{ displayName } — rename the current edit
 /// buffer (field **13**). Setter: NO `batchStatus`. Persisted via a subsequent
 /// `saveCurrentPreset`. Goldens here are spec-derived from `PresetMessage.proto` +
-/// `RenameCurrentPreset.proto`; confirm byte-exact against a Pro Control capture
-/// before relying on framing.
+/// `RenameCurrentPreset.proto`. A rename to the same name sends nothing back (static RE,
+/// fw 1.8.58).
 pub fn rename_current_preset(display_name: &str) -> Vec<u8> {
     let mut inner = Vec::new();
     field_bytes(&mut inner, 1, display_name.as_bytes());
@@ -519,7 +513,7 @@ pub fn clear_user_preset(user_slot: crate::slot::DeviceSlot) -> Vec<u8> {
 /// assignment object `function_json` — the SAME JSON shape carried in the preset's
 /// top-level `ftsw[switch][func]` (e.g. an `on-off` or a `param` function; schemas RE'd
 /// verbatim from the Pro Control 1.8.2 binary's embedded reference preset). `swap` is a
-/// bool flag (semantics empirically TBD — `probe --ftsw-validate`). Setter framing: by
+/// bool flag (semantics unknown; production sends `false`). Setter framing: by
 /// default NO `batchStatus` (mirrors `changeParameter`); the `batch` param exists only so
 /// the validation probe can A/B whether the device requires one. proto3 zero-omission: a 0
 /// `footswitchAddress`/`functionIndex` and `swap=false` are dropped to match the real
@@ -568,9 +562,9 @@ pub fn clear_footswitch_assignment(footswitch_address: u64, function_index: u64)
 ///
 /// Byte-verified against the device's live USB-HID traffic:
 /// ON = `1a 05 f2 01 02 08 01`, OFF = `1a 03 f2 01 00`. Two things
-/// are load-bearing and were the reason an earlier version was silently ignored:
-///   1. NO `batchStatus` (field 10). Like the heartbeat, the device rejects a
-///      Global-Settings setter that carries one.
+/// are load-bearing:
+///   1. NO `batchStatus` (field 10): 1/2 hold the engage until a batch 3 and ≥4
+///      drops it (device-confirmed, fw 1.8.58).
 ///   2. OFF sends an EMPTY `ReampModeActive` (proto3 omits the default `false`),
 ///      not an explicit `value=0`.
 pub fn set_reamp_mode(active: bool) -> Vec<u8> {
@@ -589,13 +583,12 @@ pub fn set_reamp_mode(active: bool) -> Vec<u8> {
 /// All five read requests in the extracted schema — `allChannelsDisplayDataRequest`
 /// (1), `allChannelsDisplayStateRequest` (2, whose reply carries each strip's fader,
 /// mute and PRE state; the app reads the USB 3 strip from the settings backup
-/// instead, #157), `globalEqDisplayInfoRequest` (3),
+/// instead), `globalEqDisplayInfoRequest` (3),
 /// `reAmpModeRequest` (4), `masterLevelInfoRequest` (5) — are the same
 /// `{ bool dummy = 1 }` shape, so one builder covers the sweep.
 ///
-/// On fw 1.8.45 `probe --mixer` got silence from all five. On fw 1.8.58 they are served
-/// on a kept-alive session, and `reAmpModeRequest` (4) → field 9 is the device-confirmed
-/// re-amp oracle (`Session::read_reamp_state`).
+/// On fw 1.8.58 they are served on a kept-alive session, and `reAmpModeRequest` (4) →
+/// field 9 is the device-confirmed re-amp oracle (`Session::read_reamp_state`).
 pub fn mixer_request(request_field: u32) -> Vec<u8> {
     let mut inner = Vec::new();
     field_varint(&mut inner, 1, 1); // dummy=true
@@ -604,23 +597,16 @@ pub fn mixer_request(request_field: u32) -> Vec<u8> {
 
 /// `MixerMessage{ SetMasterLevel{ masterLevel: float } }` — field **16** on TMS 5.
 ///
-/// A WRITE, not a read. On fw 1.8.45 TMS 5 *reads* went unanswered (`probe --mixer` got
-/// silence from all five requests); on fw 1.8.58 they are served on a kept-alive session.
-///
-/// This write is still never verified by a reply here. It is verified out of band by
+/// A WRITE, not a read. This write is never verified by a reply here. It is verified out of band by
 /// re-reading `settingsBackup.mixerSaveData.masterVolume` from a fresh `--device-backup`.
 ///
 /// `masterLevel` is `float` (wire type 5 / fixed32 LE), not a varint — the mixer
 /// schema uses floats for every level, and a varint here would encode a silently
 /// wrong message that the device drops without complaint.
 ///
-/// Carries NO `batchStatus` — setters/commands and the heartbeat must omit it
-/// (only *requests* carry it; a setter WITH one is silently ignored, the same
-/// rule `set_reamp_mode` and every other setter in this file follow). A batched
-/// variant existed briefly to rule out "un-batched write ignored" as a confound
-/// while TMS 5's write-serving status was open; the retest (with and without
-/// `batchStatus`) landed the same null either way, so the diagnostic has already
-/// answered the question it existed to ask — see `open-questions.md` A1.
+/// Carries NO `batchStatus` — setters/commands and the heartbeat omit it (only
+/// *requests* carry it; on a setter 1/2 hold the write until a batch 3 and ≥4 drops
+/// it, the same rule `set_reamp_mode` and every other setter in this file follow).
 pub fn set_master_level(level: f32) -> Vec<u8> {
     let mut inner = Vec::new();
     put_varint(&mut inner, tag(1, 5)); // masterLevel, fixed32
@@ -630,17 +616,15 @@ pub fn set_master_level(level: f32) -> Vec<u8> {
 
 /// `SettingsMessage.sceneChangeBehavior` — field **83** on TMS 3.
 ///
-/// Unlike the mixer, this rides the SettingsMessage path, which is **provably
-/// served**: `set_reamp_mode` drives field 30 on the same TMS 3 branch every
-/// leveling run. Structurally identical too — `{ uint32 value = 1 }` wrapped in a
+/// This rides the SettingsMessage path: `set_reamp_mode` drives field 30 on the same
+/// TMS 3 branch every leveling run, and the device echoes it to every client (static RE,
+/// fw 1.8.58). Structurally identical too — `{ uint32 value = 1 }` wrapped in a
 /// field-numbered submessage — so `1a05 9a05 02 0801` here is the exact analogue
 /// of the re-amp golden `1a05 f201 02 0801`.
 ///
-/// `value` is the `SceneChangeBehavior::Behavior` enum recovered from the client's
-/// Qt MOC table: keys `Retain`, `Revert`, in that declaration order. **0 = Retain
-/// is inferred, not proven** (MOC stores enum values in a separate array that was
-/// not decoded) — writing a value and reading it back via `--device-backup` is
-/// what settles the ordinal.
+/// `value` is the `SceneChangeBehavior::Behavior` enum: 0 = Retain (MAINTAIN CHANGES,
+/// omitted on the wire when read), 1 = Revert (DISCARD CHANGES) (static RE + HW, fw
+/// 1.8.58). `footswitchSettingsRequest` (47) reads it back (see [`settings_request`]).
 ///
 /// GLOBAL setting: the caller MUST restore the original value.
 pub fn set_scene_change_behavior(value: u64) -> Vec<u8> {
@@ -677,9 +661,8 @@ pub fn settings_request(field: u32) -> Vec<u8> {
 /// `gtrSplit`, `gtrMicSeries`, `gtrMicMix`, `gtrMicMix2`, `gtrMicMix3`,
 /// `gtrMicParallel`, `micSeries`, `micParallel1`, `micSplit`.
 ///
-/// Operates on the working copy. Nothing persists unless a save follows — but run
-/// it on a SCRATCH slot regardless, because "does it autosave?" is exactly one of
-/// the things the experiment is measuring.
+/// Operates on the working copy and sets the dirty flag (static RE, fw 1.8.58): nothing
+/// persists unless a save follows. Run it on a SCRATCH slot regardless.
 pub fn switch_template(template_type: &str) -> Vec<u8> {
     let mut inner = Vec::new();
     field_bytes(&mut inner, 1, template_type.as_bytes());
@@ -690,11 +673,10 @@ pub fn switch_template(template_type: &str) -> Vec<u8> {
 /// `PresetMessage` (TMS field 2); inner `ExportPresetRequest{ listEnum=1,
 /// presetSlot=2 }`.
 ///
-/// **DEAD on firmware 1.7.75 (AC1 finding):** the device sends NO
-/// `exportPresetResponse` (116), in or out of the handshake burst, with any batch
-/// grouping — it appears unimplemented. Kept (with its golden test) to document
-/// the wire format and make re-testing on a future firmware trivial; the live
-/// slot-read path is `preset_data_request` (field 8). proto3 zero-value omission:
+/// Served on fw 1.8.58: the device answers the originator with `exportPresetResponse`
+/// (116), the slot's JSON encrypted and then LZ4-compressed — complete, but opaque
+/// without the device key (static RE). Kept (with its golden test) for the wire format;
+/// the live slot-read path is `preset_data_request` (field 8). proto3 zero-value omission:
 /// `listEnum`/`presetSlot` of 0 are dropped to match the real serializer.
 #[cfg_attr(
     not(test),
@@ -744,7 +726,7 @@ pub fn preset_data_request(list_enum: u64, preset_slot: u64, batch: Option<u64>)
 ///
 /// Returns only the protobuf BODY (no batchStatus — sent standalone). `payload`
 /// is the on-wire `presetJson`, which is `lz4_block_compress_stored(raw .preset
-/// bytes)` (AC3, from a Pro Control import capture). The body is multi-KB; send it
+/// bytes)` (from a Pro Control import capture). The body is multi-KB; send it
 /// via [`make_chunked_envelopes`], not `make_envelope`.
 pub fn import_preset_request(payload: &[u8]) -> Vec<u8> {
     let mut inner = Vec::new();
@@ -756,11 +738,11 @@ pub fn import_preset_request(payload: &[u8]) -> Vec<u8> {
 /// `RequestNextEmptyPresetSlot{ afterSlot=1 }`; reply `nextEmptyPresetSlotResponse`
 /// (82). proto3 zero-omission on `afterSlot`; optional `batchStatus`.
 ///
-/// **DEAD on firmware 1.7.75 (like `exportPresetRequest`):** the device sends NO
-/// `nextEmptyPresetSlotResponse`, standalone or in-burst, any batch. Kept (with its
-/// golden + decode test) to document the wire format and make re-testing on a future
-/// firmware trivial; the live scratch-slot picker finds the empty slot by
-/// **observation** (import, then re-list) — see `replace_inplace::replace_inplace_with`.
+/// Served on fw 1.8.58: the device BROADCASTS field 82 with the first empty slot after
+/// `afterSlot` (−1 when the library is full) — the same finder that picks an import's
+/// landing slot, the lowest empty one (static RE). Kept (with its golden + decode test)
+/// for the wire format; the live scratch-slot path predicts the lowest empty slot from
+/// the listing and proves the landing — see `replace_inplace::replace_inplace_with`.
 #[cfg_attr(
     not(test),
     expect(
@@ -785,7 +767,7 @@ pub fn request_next_empty_preset_slot(after_slot: u64, batch: Option<u64>) -> Ve
 /// usual `presetMessage` field 2); inner `SongPresetListRequest{ songSlot=1 }` is
 /// field **12**. The device replies with `songPresetListResponse` (13), whose
 /// records carry `userPresetSlot` (the real device slot a Song row points at) and
-/// `presetSceneSlot` — the positional binding AC7 must preserve. proto3
+/// `presetSceneSlot` — the positional binding a preset edit must preserve. proto3
 /// zero-omission on `songSlot`; optional `batchStatus` for in-burst sends.
 pub fn song_preset_list_request(song_slot: u64, batch: Option<u64>) -> Vec<u8> {
     let mut inner = Vec::new();
@@ -915,8 +897,8 @@ pub fn set_node_scene_edit(group_id: &str, node_id: &str, enable: bool) -> Vec<u
 
 /// PresetMessage.loadPreset addressed BY SONG — make a song the ACTIVE song.
 /// `LoadPreset{ tabEnum=1, …, songSlot=4, songPresetSlot=5, presetSlot=6 }` with
-/// `tabEnum=5` (the Songs context). RE'd from a Pro Control capture (#786:
-/// `12 0a 52 08 0805 2002 2804 3001`) — setting a song's BPM requires the song to
+/// `tabEnum=5` (the Songs context). RE'd from a Pro Control capture (capture frame
+/// 786: `12 0a 52 08 0805 2002 2804 3001`) — setting a song's BPM requires the song to
 /// be active, which PC achieves by loading one of the song's footswitch presets
 /// with `tabEnum=5`. A setter → NO batchStatus.
 pub fn load_song(song_slot: u64, song_preset_slot: u64, preset_slot: u64) -> Vec<u8> {
@@ -1115,8 +1097,8 @@ pub fn export_response_preset_json(tms_body: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Decode a `nextEmptyPresetSlotResponse` body (TMS[2] → field 82 → presetSlot[1]
-/// varint). Paired with [`request_next_empty_preset_slot`] — **dead on 1.7.75**,
-/// kept as documented wire format.
+/// varint). Paired with [`request_next_empty_preset_slot`], kept as documented wire
+/// format.
 #[cfg_attr(
     not(test),
     expect(
@@ -1147,11 +1129,9 @@ pub fn song_preset_list_records(tms_body: &[u8], song_slot: u64) -> Option<Vec<V
         .then(|| all_bytes(&resp_fields, 2).into_iter().map(parse).collect())
 }
 
-// The non-strict `song_list_records` / `setlist_list_records` /
-// `setlist_song_list_records` decoders were removed — every list-read path uses the
-// fail-closed `*_records_strict` variants (a tolerant decode could accept a tail-
-// truncated record set, which these reads must never do). `song_preset_list_records`
-// above stays: the song-preset read still uses the tolerant decode.
+// Every song/setlist list-read path uses the fail-closed `*_records_strict` variants (a
+// tolerant decode could accept a tail-truncated record set); only the song-preset read
+// (`song_preset_list_records` above) uses the tolerant decode.
 
 /// Decode an LZ4 *block* (not frame) payload — the on-wire `presetJson` format.
 /// The caller already knows the exact compressed length (protobuf length-delimited
@@ -1261,7 +1241,7 @@ fn read_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
 
 /// Decode a protobuf message into `(field_no, Val)` pairs. Tolerates truncation
 /// (a length running past the buffer yields the remaining bytes) so a partially
-/// reassembled stream still parses what it can — mirrors `parse_pb`.
+/// reassembled stream still parses what it can.
 pub fn parse(buf: &[u8]) -> Vec<(u32, Val)> {
     let mut out = Vec::new();
     let mut pos = 0;
@@ -1302,7 +1282,7 @@ pub fn parse(buf: &[u8]) -> Vec<(u32, Val)> {
                 };
                 // Saturating: a garbage length (up to `u64::MAX` from a 10-byte
                 // varint) clips to the buffer like any other overrun, never
-                // overflowing or slicing `end < pos` (#260).
+                // overflowing or slicing `end < pos`.
                 let len = usize::try_from(len).unwrap_or(usize::MAX);
                 let end = pos.saturating_add(len).min(buf.len());
                 out.push((field_no, Val::Bytes(buf[pos..end].to_vec())));
@@ -1353,7 +1333,7 @@ pub fn all_bytes(fields: &[(u32, Val)], field_no: u32) -> Vec<&[u8]> {
 /// The tolerant [`parse`] silently CLIPS a cut field into a plausible shorter value,
 /// which made truncated multi-packet list reads look valid (a cut name / dropped
 /// trailing records). `parse_strict` is used to validate that a reassembled response
-/// is COMPLETE before accepting it (fail-closed). Per the reassembly review.
+/// is COMPLETE before accepting it (fail-closed).
 pub fn parse_strict(buf: &[u8]) -> Result<Vec<(u32, Val)>, String> {
     let mut out = Vec::new();
     let mut pos = 0;
@@ -1499,13 +1479,12 @@ pub enum SingleFrame {
 
 /// Group raw 64-byte input reports into message bodies. macOS prepends a
 /// report-id `0x00`; byte 1 is the magic: `0x35` single-frame, `0x33` stream
-/// start, `0x34` continuation. Port of `reassemble_streams`.
+/// start, `0x34` continuation.
 ///
 /// A single-frame (0x35) response interleaved mid-stream — e.g. a heartbeat reply or
 /// small event arriving during a large 0x33/0x34 stream — must NOT close the open
 /// stream. It is pushed as its own stream and the open one keeps appending the
-/// continuation 0x34 frames (interleaved single-frames were truncating large
-/// flow-controlled streams like the preset-data JSON).
+/// continuation 0x34 frames, so a large stream like the preset-data JSON stays whole.
 pub fn reassemble_streams(reports: &[Vec<u8>]) -> Vec<Stream> {
     Reassembler::new(SingleFrame::Standalone).reassemble(reports)
 }
@@ -1515,7 +1494,7 @@ pub fn reassemble_streams(reports: &[Vec<u8>]) -> Vec<Stream> {
 /// HW-verified (raw frame dump): device list responses are `0x33 start · 0x34 cont* ·
 /// 0x35 final` — a `0x34` never follows a `0x35` within a stream, so the trailing
 /// `0x35` carries the tail (last record). The global [`reassemble_streams`] keeps the
-/// `0x35` separate (load-bearing for the partial preset-JSON path, where an interleaved
+/// `0x35` separate (load-bearing for the preset-JSON path, where an interleaved
 /// `0x35` heartbeat must NOT close the stream), which DROPS the final frame of complete
 /// list responses → systematic tail truncation. The strict list harvests use this
 /// variant; a standalone `0x35` with no open stream is still kept as its own message.
@@ -1528,7 +1507,7 @@ pub fn reassemble_streams_final(reports: &[Vec<u8>]) -> Vec<Stream> {
 /// ([`reassemble_streams`], [`reassemble_streams_final`]) are this type over a whole report
 /// set, differing only in their [`SingleFrame`] policy. A long-lived reader (the live-sync
 /// monitor, the device backup) feeds it every report once and drops them, so its buffer is
-/// one open stream instead of the session's whole history, re-parsed on every pump (#262).
+/// one open stream instead of the session's whole history, re-parsed on every pump.
 #[derive(Debug)]
 pub struct Reassembler {
     single_frame: SingleFrame,
@@ -1723,11 +1702,10 @@ mod tests {
 
     #[test]
     fn insert_node_matches_pc_capture_insert_before() {
-        // Pro Control capture #324: insertNode{ groupId="G1",
+        // Pro Control capture frame 324: insertNode{ groupId="G1",
         // nodeIdInsertLocation="ACD_TM59BassmanCabIR", fenderId="ACD_TCIntegratedPre" }.
-        // field-2 = the live node id to insert BEFORE (HW-verified fw 1.8.45); in this capture
-        // that node's id equals its model's FenderId. The bytes are the capture's verbatim;
-        // only the placement interpretation was corrected.
+        // field-2 = the live node id to insert BEFORE (HW); in this capture that node's id
+        // equals its model's FenderId. The bytes are the capture's verbatim.
         let pkt = make_envelope(&insert_node(
             "G1",
             Some("ACD_TM59BassmanCabIR"),
@@ -1751,7 +1729,7 @@ mod tests {
 
     #[test]
     fn insert_node_at_block_index_structure() {
-        // No Pro Control capture (PC uses the bare field-34 after-anchor) — assert the
+        // No Pro Control capture (PC uses the bare field-34 before-anchor) — assert the
         // structural encoding: TMS[2] → insertNodeAtBlockIndex[99]{ groupId=1, fenderId=3,
         // index=4 }, no top-level batchStatus.
         let inner = edit_inner(&insert_node_at_block_index("G2", 0, "ACD_Klon", None), 99);
@@ -1808,7 +1786,7 @@ mod tests {
 
     #[test]
     fn set_reamp_mode_matches_pro_control_capture() {
-        // Byte-exact against Pro Control's live HID frames (#218 ON / #242 OFF):
+        // Byte-exact against Pro Control's live HID frames (capture frames 218 ON / 242 OFF):
         //   ON  = 1a 05 f2 01 02 08 01   OFF = 1a 03 f2 01 00   (no batchStatus)
         assert_eq!(hex(&set_reamp_mode(true)), "1a05f201020801");
         assert_eq!(hex(&set_reamp_mode(false)), "1a03f20100");
@@ -1855,7 +1833,7 @@ mod tests {
         //   2a 08   82 01 05   0d 00 00 80 3e
         // The inner tag is 0x0d = (1<<3)|5 — wire type 5 (fixed32), NOT 0 (varint):
         // encoding a level as a varint yields a message the device drops in silence,
-        // and with TMS-5 reads unserved there would be no reply to reveal the error.
+        // and SetMasterLevel has no reply to reveal the error.
         assert_eq!(hex(&set_master_level(0.25)), "2a088201050d0000803e");
         // Little-endian payload, and the level round-trips bit-exactly.
         let b = set_master_level(0.499_999_2);
@@ -1923,8 +1901,8 @@ mod tests {
         assert_eq!(fields[0].1.as_bytes(), Some(&b"ABC"[..]));
     }
 
-    /// #260: field 1, wire type 2, a 10-byte varint length of `u64::MAX`. The
-    /// unchecked `pos + len` overflowed (debug) or sliced `end < pos` (release).
+    /// Field 1, wire type 2, a 10-byte varint length of `u64::MAX`: an unchecked
+    /// `pos + len` would overflow (debug) or slice `end < pos` (release).
     #[test]
     fn parse_survives_a_u64_max_length() {
         let buf = [
@@ -2002,7 +1980,7 @@ mod tests {
             hex(&export_preset_request(1, 11, Some(2))),
             "12079a07040801100b5002"
         );
-        // No-batch variant (the setter-style form AC1 will also try live).
+        // No-batch variant (the setter-style form).
         assert_eq!(
             hex(&export_preset_request(1, 11, None)),
             "12079a07040801100b"
@@ -2113,7 +2091,7 @@ mod tests {
 
     #[test]
     fn import_chunks_reassemble_to_lz4_presetjson() {
-        // End-to-end AC3 encode path: .preset bytes → LZ4 → field 117 → chunks.
+        // End-to-end import encode path: .preset bytes → LZ4 → field 117 → chunks.
         // Reassembling + LZ4-decompressing must recover the original bytes.
         let preset: Vec<u8> = b"{\"info\":{\"displayName\":\"T\"}}".repeat(40); // > MAX_BODY, multi-chunk
         let body = import_preset_request(&lz4_block_compress_stored(&preset));
@@ -2233,10 +2211,10 @@ mod tests {
 
     #[test]
     fn song_setlist_write_setters_match_golden() {
-        // tapTempoBpm — BYTE-EXACT vs the live Pro Control capture body (#815,
+        // tapTempoBpm — BYTE-EXACT vs the live Pro Control capture body (capture frame 815,
         // BPM 137.0): settingsMessage[3]{ tapTempoBpm[12]{ value[1]=137.0f, originatorId[2]=1 } }.
         assert_eq!(hex(&set_tap_tempo_bpm(137.0, 1)), "1a0962070d000009431001");
-        // load_song — BYTE-EXACT vs the capture body (#786):
+        // load_song — BYTE-EXACT vs the capture body (capture frame 786):
         // presetMessage[2]{ loadPreset[10]{ tabEnum=5, songSlot=2, songPresetSlot=4, presetSlot=1 } }.
         assert_eq!(hex(&load_song(2, 4, 1)), "120a52080805200228043001");
         // addSong{ songName="Toto" }: songMessage[11]{ addSong[4]{ songName[1]="Toto" } }.
@@ -2425,8 +2403,8 @@ mod tests {
         let ls = parse(first_bytes(&pm, 101).unwrap());
         assert_eq!(first_varint(&ls, 1), Some(2));
         // sceneSlot=0 is emitted EXPLICITLY (non-canonical proto3) — the device
-        // ignores an empty LoadScene{}, so omission made scenes[0] unloadable
-        // (HW-found).
+        // ignores an empty LoadScene{}, so omitting it would make scenes[0] unloadable
+        // (HW).
         let pm0 = parse(first_bytes(&parse(&load_scene(0)), 2).unwrap());
         let ls0 = parse(first_bytes(&pm0, 101).unwrap());
         assert_eq!(first_varint(&ls0, 1), Some(0));
@@ -2486,7 +2464,7 @@ mod tests {
         assert_eq!(streams[0].body, b"ABCD");
     }
 
-    // ─── property tests (#278) ───────────────────────────────────────────────
+    // ─── property tests ──────────────────────────────────────────────────────
     // The golden vectors above pin known exchanges; these feed the decoders arbitrary
     // bytes, since every one of them reads device- or file-supplied input.
 

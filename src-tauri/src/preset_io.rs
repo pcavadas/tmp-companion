@@ -4,7 +4,7 @@
 //!
 //! * [`OfflineIo`] — structural / full-preset edits.
 //!   Re-encodes the mutated JSON to `.preset` bytes and lands it via the
-//!   HW-validated AC7 **in-place re-import** ([`crate::replace_inplace::replace_inplace_core`]),
+//!   HW-validated **in-place re-import** ([`crate::replace_inplace::replace_inplace_core`]),
 //!   preserving the slot + Song binding. Refuses any edit that changes `info.preset_id`
 //!   (a different identity empties the Song row).
 //!
@@ -13,8 +13,8 @@
 //!   identity-preserving by construction. Refuses any diff outside `dspUnitParameters`
 //!   (those must go OFFLINE).
 //!
-//! Both open their own fresh device connections per the leveller/AC7 discipline
-//! (re-amp/once-per-connection gotchas) rather than borrowing a long-lived session.
+//! Both open their own fresh device connections (the load on its own connection, kept
+//! conservatively) rather than borrowing a long-lived session.
 
 use serde_json::Value;
 
@@ -24,9 +24,9 @@ use crate::session::Session;
 
 // ─── identity guard ────────────────────────────────────────────────────────────
 
-/// Refuse an edit that changes the preset's identity. The device binds Songs to a
-/// slot by `info.preset_id` + scene structure; overwriting a slot with a
-/// different-identity preset silently empties the Song row (HW-demonstrated). An
+/// Refuse an edit that changes the preset's identity. Song rows reference the stored
+/// preset row (static RE); overwriting a slot with a different-identity preset silently
+/// empties the Song row (HW-demonstrated). An
 /// in-place edit MUST keep the original `preset_id`.
 fn assert_identity_preserved(before_json: &str, after_json: &str) -> Result<(), String> {
     let before: Value =
@@ -45,7 +45,7 @@ fn assert_identity_preserved(before_json: &str, after_json: &str) -> Result<(), 
 
 // ─── OFFLINE adapter ─────────────────────────────────────────────────────────────
 
-/// Lands full-preset edits via AC7 in-place re-import. Stateless — opens fresh
+/// Lands full-preset edits via in-place re-import. Stateless — opens fresh
 /// connections internally.
 pub struct OfflineIo;
 
@@ -169,21 +169,21 @@ impl PresetIo for LiveIo {
         if changes.is_empty() {
             return Ok(()); // the engine already filters no-ops; nothing to send
         }
-        // conn1: load the target (makes it current — persists across reconnect). Loading
-        // and editing in ONE connection is unsafe (a load's own apply can override an
-        // immediate set), so load, drop, then reconnect (the leveller/AC7 rule).
+        // conn1: load the target (makes it current — persists across reconnect). The load
+        // gets its own connection (a conservative shape: on fw 1.8.58 a set after a load
+        // on one connection holds), so load, drop, then reconnect.
         {
             let mut s = Session::connect()?;
             s.load_preset(target.list_index)?;
-            // Let the unit discard this connection's queued replies (#177).
+            // Let the unit discard this connection's queued replies.
             s.lapse()?;
         }
-        // conn2: fresh handshake re-attaches to the now-current preset. CONFIRM it is the
-        // target before mutating+saving (a dropped load = wrong-preset save = data loss),
-        // then heartbeat-warm the line so fw 1.8.45 accepts the edits from a live
-        // controller. changeParameter is fire-and-forget (no ack), so there is no
-        // per-edit confirm to gate on — the pre-edit confirm + the identity guard are the
-        // safety net. session/preset.rs translates the 0-based list index to the 1-based userSlot.
+        // conn2: fresh handshake re-attaches to the now-current preset. CONFIRM it is the target
+        // before mutating+saving (a dropped load = wrong-preset save = data loss), then keep OUT
+        // traffic flowing so the session does not lapse (750 ms). Nothing gates on
+        // changeParameter's `parameterChanged` (23) echo — the pre-edit confirm + the identity
+        // guard are the safety net. session/preset.rs translates the 0-based list index to the
+        // 1-based userSlot.
         let mut s = Session::connect_confirmed(target.list_index, Some(&target.display_name))?;
         s.begin_live_edit()?;
         for c in &changes {
@@ -193,10 +193,9 @@ impl PresetIo for LiveIo {
         Ok(())
     }
 
-    /// LIVE read-back is transaction-level for now: a successful write means the
-    /// device acked every `changeParameter` + the save. Full param value-readback is
-    /// a Phase-3 refinement — the USB partial + the leveller's level-only block filter
-    /// (`current_preset_blocks`) cannot read back arbitrary params yet.
+    /// LIVE read-back is transaction-level: a successful write means every
+    /// `changeParameter` send and the save succeeded. A full `presetDataRequest`
+    /// (field 8) read-back is possible on a kept-alive session but not wired.
     fn read_back(&mut self, _target: &PresetTarget) -> Result<String, String> {
         Ok(String::new())
     }

@@ -444,17 +444,15 @@ mod imp {
     /// stay alive for the device's whole life: the device is owned by the
     /// manager's internal device set, so releasing the manager (or the copied
     /// device set) before use frees the device. We additionally `CFRetain` the
-    /// device and reclaim both at thread exit. (The earlier crash was exactly
-    /// this use-after-free.) All calls here run on the HID worker thread.
+    /// device and reclaim both at thread exit. All calls here run on the HID worker
+    /// thread.
     ///
     /// On persistent `kIOReturnExclusiveAccess` this re-ENUMERATES (fresh
-    /// manager + device copy) between attempts instead of only re-opening:
-    /// after some session closes the device object can go stale/re-register,
-    /// and re-opening the stale ref fails 0xe00002c5 FOREVER while a fresh
-    /// enumeration succeeds immediately (HW-observed: the second of
-    /// two back-to-back probe sessions failed through 5 s of same-ref retries,
-    /// yet a fresh process connected instantly). Genuine Pro Control contention
-    /// persists across every attempt and still surfaces the error (~3 s).
+    /// manager + device copy) between attempts instead of only re-opening. A
+    /// persistent 0xe00002c5 means another handle holds the seize (Pro Control, or
+    /// an overlapping `Session` in this process); waiting helps only while that
+    /// handle is closing. Genuine contention persists across every attempt and
+    /// still surfaces the error (~3 s).
     ///
     /// # Safety
     ///
@@ -547,17 +545,13 @@ mod imp {
         CFRelease(devices as CFTypeRef);
 
         // Open + seize, retrying briefly on kIOReturnExclusiveAccess (0xe00002c5).
-        // That code fires both when Pro Control genuinely holds the device AND on a
-        // transient SELF-collision WITHIN one operation: `with_released_seize` drops
-        // the app's old seize and immediately reconnects, but the kernel can lag a
-        // few ms recycling the exclusive lock after the prior handle closed (the Hid
-        // Drop blocks on the worker-thread join + IOHIDDeviceClose, but the
-        // kernel-side release isn't instantaneous). The device-op gate
-        // (`DEVICE_OP_LOCK`) serializes whole operations so two of them can't
-        // overlap; this short bounded retry covers the remaining intra-operation
-        // drop→reconnect lag (≤7 opens / ≤6 sleeps ≈ 0.48 s). The stale-ref case
-        // needs re-enumeration, not more same-ref retries — see `open_device`.
-        // A failed open holds nothing, so re-opening needs no cleanup between.
+        // That code means another handle holds the seize: Pro Control, or a handle
+        // of this process still closing (`with_released_seize` drops the app's old
+        // seize and immediately reconnects). The device-op gate (`DEVICE_OP_LOCK`)
+        // serializes whole operations so two of them can't overlap; this short
+        // bounded retry is a cheap safety net for a handle still closing (≤7 opens /
+        // ≤6 sleeps ≈ 0.48 s). A failed open holds nothing, so re-opening needs no
+        // cleanup between.
         const OPEN_RETRY_RETRIES: u32 = 6;
         const OPEN_RETRY_DELAY_MS: u64 = 80;
         let mut rc = IOHIDDeviceOpen(device, K_IOHID_OPTIONS_TYPE_SEIZE_DEVICE);
@@ -593,9 +587,9 @@ mod imp {
     }
 
     /// Everything the worker holds for an open, seized device, released in ONE place: its
-    /// `Drop` (#266). The normal close and a worker unwinding both run the same teardown, so
-    /// a panic can no longer leak the seize (every later open then failing 0xe00002c5) or
-    /// free the report buffer while IOKit can still call back into it.
+    /// `Drop`. The normal close and a worker unwinding both run the same teardown, so a
+    /// panic cannot leak the seize (every later open then failing 0xe00002c5) or free the
+    /// report buffer while IOKit can still call back into it.
     struct Seized {
         manager: IOHIDManagerRef,
         device: IOHIDDeviceRef,
@@ -612,8 +606,8 @@ mod imp {
             // close. NOTE — do NOT add a "drain until quiet" pump here: on a
             // live-cadence (heartbeat) session, pumping ~1.5 s without
             // heartbeats before close reliably WEDGED the device's next
-            // exclusive open (HW A/B: identical sequences opened
-            // clean 4/4 without the drain, 0xe00002c5 with it).
+            // exclusive open (HW A/B, before fw 1.8.58: 4/4 clean without the
+            // drain, 0xe00002c5 with it).
             // SAFETY: runs on the worker thread that opened and scheduled `device` (IOKit's
             // threading rule); each ref is released exactly once, here, and `recv` is freed
             // only after the device is unscheduled and closed, so no callback can reach it.
@@ -701,7 +695,7 @@ mod imp {
                     }
                 };
                 // ALL outbound sends chunk when needed: a body ≤ MAX_BODY is one 0x35 frame
-                // (identical to the old `make_envelope`), a larger one splits into the
+                // (identical to `make_envelope`), a larger one splits into the
                 // 0x33/0x34/0x35 multi-packet frames the device accepts (symmetric with
                 // inbound). Without this a long-FenderId `changeParameter` (e.g. a 40-char
                 // reverb+cab amp id + "outputLevel") overflowed a single report and PANICKED.
@@ -744,7 +738,7 @@ mod imp {
                                 // Pump in short slices; exit early once at least one
                                 // report arrived, no multi-packet stream is open, and
                                 // the line stayed quiet for EAGER_QUIET_MS. `max_ms`
-                                // is the hard cap (the old fixed-window behavior).
+                                // is the hard cap.
                                 let mut elapsed = 0u64;
                                 let mut open = false;
                                 let mut scanned = 0usize;
@@ -871,9 +865,9 @@ mod imp {
     }
 
     /// The open, `flock`ed hidraw node. An [`OwnedFd`]: a worker that unwinds still closes
-    /// it, releasing the lock with it (#266). A leaked fd kept its `flock` for the life of
-    /// the process, and every later open failed "already in use by another TMP Companion
-    /// process".
+    /// it, releasing the lock with it. A leaked fd would keep its `flock` for the life of
+    /// the process, and every later open would fail "already in use by another TMP
+    /// Companion process".
     fn open_device() -> Result<OwnedFd, DeviceError> {
         open_locked(&find_hidraw()?)
     }
@@ -1152,7 +1146,7 @@ mod imp {
             assert!(!fold_frame_open(&out, false));
         }
 
-        /// #266: a worker that unwinds while holding the device must still release its
+        /// A worker that unwinds while holding the device must still release its
         /// `flock`, or every later open in this process fails "already in use by another
         /// TMP Companion process". Driven through the real [`open_locked`] on a temp file.
         #[test]
@@ -1230,7 +1224,7 @@ mod imp {
     use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
     use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
-    /// Inbound: report id + the device's 64 (HW-measured, fw 1.8.45: the descriptor
+    /// Inbound: report id + the device's 64 (HW-measured: the descriptor
     /// declares 65 in AND 65 out — the outbound 63-byte frame is zero-padded up to
     /// whatever the descriptor says, so only the inbound length is pinned).
     const INPUT_REPORT_LEN: u16 = 65;
@@ -1731,9 +1725,8 @@ mod imp {
         }
     }
 
-    /// The ONE close path, normal or unwinding (#266): a worker panic used to drop `Dev`
-    /// with its read still pending, and the kernel could then complete it into the freed
-    /// `read_buf` / `OVERLAPPED`.
+    /// The ONE close path, normal or unwinding: dropping `Dev` with its read still pending
+    /// would let the kernel complete it into the freed `read_buf` / `OVERLAPPED`.
     impl Drop for Dev {
         fn drop(&mut self) {
             // Cancel the pending read and wait for it, so the buffer outlives the I/O.

@@ -1,7 +1,7 @@
-//! Crash-safe file writes for user-owned data (#280).
+//! Crash-safe file writes for user-owned data.
 //!
 //! Every write of data the user would miss (the settings store, the saved-block library,
-//! the revert snapshots `bulk_revert` restores from, a calibration capture, the cached
+//! the pre-write revert snapshots, a calibration capture, the cached
 //! device settings) goes through [`write_atomic`], or through [`commit`] when a library
 //! writes the temp file itself. A plain `fs::write` truncates in place, so a crash or a
 //! full disk mid-write leaves a half-written file; a rename with no `sync_all` can land

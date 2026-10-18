@@ -116,7 +116,7 @@ mod tests {
         list.iter().map(|s| s.to_string()).collect()
     }
 
-    // AC2 — relink replaces the file, preserving cuts + level.
+    // Relink replaces the file, preserving cuts + level.
     #[test]
     fn relink_preserves_cuts_and_level() {
         let mut p = ir_preset("Foo.wav", 80.0, 12000.0, -16.0);
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(relink_ir(&mut other, "Foo.wav", "Baz.wav"), 0);
     }
 
-    // AC4 — SIC assignment writes the sicid field (optionally file-scoped).
+    // SIC assignment writes the sicid field (optionally file-scoped).
     #[test]
     fn set_sic_writes_field() {
         let mut p = ir_preset("Foo.wav", 0.0, 1.0, 0.0);

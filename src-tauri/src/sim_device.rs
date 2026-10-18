@@ -12,75 +12,78 @@
 //! - a REJECTED edit replies `presetError`(53) and must NEVER be followed by a save
 //!   (an unconfirmed save corrupted a real preset — `confirm_structural_edit`),
 //! - a structural edit can be armed to be silently DROPPED ([`Injection::DropFirstStructural`]).
-//!   That "cold first edit" is a fw 1.8.45 belief with no cited HW evidence: fw 1.8.58 has
-//!   no silent-drop path for a correctly framed edit (INFERRED). A missing confirm there is a
-//!   confirm queued behind the FIFO, a lapse (which draws ConnectionError), a backup freeze,
-//!   or an insert abort, so the held-session path recovers by read-back, never by blind
-//!   re-send (`apply_copy_op`'s `recover_unconfirmed`),
-//! - a `replaceNode` naming a node its group lacks ABORTS the device server (static RE that
-//!   it throws; whether it is caught is OPEN). The fake records [`SimEvent::ServerAbort`] and
-//!   fails every later send; no product path should ever reach it.
+//!   fw 1.8.58 has no silent-drop path for a correctly framed edit (INFERRED): a missing
+//!   confirm is a confirm queued behind the FIFO, a lapse (which draws ConnectionError), a
+//!   backup freeze, or an insert abort, so the held-session path recovers by read-back, never
+//!   by blind re-send (`apply_copy_op`'s `recover_unconfirmed`),
+//! - a `replaceNode` naming a node its group lacks gets `presetError` 14 on the device, like
+//!   an over-budget replace, with no `nodeReplaced` and no dirty flag (static RE, fw 1.8.58).
+//!   Known deviation: the fake instead records [`SimEvent::ServerAbort`] and fails every
+//!   later send; no product path should ever reach it.
 //!
 //! Configure [`SimDevice::with_drop_first`] / [`SimDevice::with_reject_at`] to drive
 //! the drop and rejection cases. Replies are produced SYNCHRONOUSLY from the send call
 //! (the reports land in `Session::raw`); the subsequent heartbeat `pump`s return empty,
-//! exactly as the confirm loop expects.
+//! exactly as the confirm loop expects. Known deviation: the device paces every reply
+//! through one FIFO at ~2.1 ms per 60-byte frame; the fake models that only under
+//! [`Injection::QueuedHandshakeFlood`].
 //!
 //! **Same-slot load (fw 1.8.58):** a `loadPreset` of the loaded slot
 //! ([`SimState::loaded_identity`]: the last real load, or the last save's target) over a clean
 //! working copy, in its stored `lastLoadedScene`, is a NO-OP that keeps the working copy and
 //! still pushes it. Every working-copy edit, `loadScene` included, sets
 //! [`SimState::dirty`], which makes that load a real reload; a real load and a save clear it.
+//! Known deviation: a rename to the same name sets it here; the device ignores that rename.
 //! See `same_slot_load_tests`.
 //!
-//! **Base snapshot level (fw 1.8.58 static RE, HW 2026-10-17 slot 401):** the unit keeps a
-//! base snapshot whose `presetLevel` is set by a real load, by every scene recall and by a
-//! base-context structural edit, and NOT by `setPresetLevel` or a save. A `loadScene(8)` while base is already current
-//! re-applies that snapshot's level (Scene Change Behavior "MAINTAIN CHANGES", the only
-//! mode modelled); every other recall keeps the live level. So after a level + save, a
-//! base → base recall plays the level of the preset's last real load until the next real
-//! load ([`SimState::base_snapshot_level`]; `base_snapshot_tests`).
+//! **Base snapshot level (static RE + HW, fw 1.8.58):** the unit keeps a base snapshot whose
+//! `presetLevel` is set by a real load, by every scene recall and by a base-context
+//! structural edit, and NOT by `setPresetLevel` or a save. A `loadScene(8)` while base is
+//! already current re-applies that snapshot's level (Scene Change Behavior "MAINTAIN
+//! CHANGES"); every other recall keeps the live level. So after a level + save, a base →
+//! base recall plays the level of the preset's last real load until the next real load
+//! ([`SimState::base_snapshot_level`]; `base_snapshot_tests`). Known deviation: DISCARD
+//! CHANGES, under which every `loadScene` rebuilds base and every overlay from the stored
+//! preset, is not modelled.
 //!
 //! **Saved doc (e2e only):** a save is tracked per slot ([`SimState::saved_levels`]) and a
 //! later REAL load of that slot materializes it, as the real device does on fw 1.8.58 (a
 //! save is durable when its handler returns). The doc is `presetLevel` PLUS a
 //! footswitch bake's own baked param PLUS a scene deferred save's own overlay param PLUS the
-//! `ftsw` array (`SavedDoc`) — narrower than a full merged presetJson still (the CAPTURE MODEL
-//! doesn't reseed a scene overlay's write on load, only its TEXT round-trips; `SavedDoc`'s doc
+//! `ftsw` array (`SavedDoc`) — narrower than a full merged presetJson (`SavedDoc`'s doc
 //! comment has the residual deviation).
 //!
-//! **Footswitch assignment writes (HW semantics, no dedicated echo):**
+//! **Footswitch assignment writes:**
 //! `setFootswitchAssignment`(54) and `clearFootswitchAssignment`(55) edit the WORKING-COPY
 //! `ftsw` array — live but unsaved until a `saveCurrentPreset`, exactly as on the unit. The
-//! schema has no confirm echo for either (unlike `nodeReplaced`), so the fake answers them
-//! with NOTHING and the caller confirms the only way hardware allows: a
-//! `currentPresetDataRequest`(2) re-prompt, whose `currentPresetDataChanged`(3) push renders
-//! the edited `ftsw` (`Session::live_ftsw`; the read-back branch of
-//! `leveller::write_fs_values_on_session`'s confirm gate). A set REPLACES the function at
+//! device echoes each to every client, then sends the CHANGE push (static RE, fw 1.8.58);
+//! the caller confirms through a `currentPresetDataRequest`(2) re-prompt, whose
+//! `currentPresetDataChanged`(3) push renders the edited `ftsw` (`Session::live_ftsw`; the
+//! read-back branch of `leveller::write_fs_values_on_session`'s confirm gate). Known
+//! deviation: the fake sends no echo. A set REPLACES the function at
 //! `functionIndex` or APPENDS when the index is at/past the switch's function count; a clear
 //! SPLICES, shifting the switch's remaining functions down. The `swap` flag is decoded and
 //! recorded on the [`SimEvent`] but models no behavioural difference — its device semantics
-//! are empirically unresolved (`proto::set_footswitch_assignment`) and production always
-//! sends `false`.
+//! are unknown (`proto::set_footswitch_assignment`) and production always sends `false`.
 //!
-//! **Scene recall semantics (HW-verified fw 1.8.45, this week):** a `loadScene` recall
-//! merges the scene's JSON overlay onto base PER PARAM, not per node — a FULL overlay
-//! masks base for every param it lists, but a bypass-only overlay (`{bypass: …}`) masks
-//! ONLY `bypass`; every other param renders base, with NO retention from whatever scene
-//! was recalled before ([`SimState::rendered_param`] / [`SimState::rendered_bypass`],
-//! resolved fresh on every call, never cached). `scenes[].ftswStates` is a DERIVED CACHE
-//! the real device ignores on recall — the sim never reads that key either, deriving a
-//! footswitch's active state from the materialized block-bypass state alone. A
-//! `changeParameter` write accepts RAW values outside `[0,1]` (dB-calibrated params like
-//! `ACD_Boost.gain`) with no clamp. And a scene-context write with no preceding
-//! `setNodeSceneEdit(enable=true)` lands on BASE only when the node's overlay in that scene
-//! is NOT Full-shaped (BypassOnly, empty, or absent — Scene Edit disabled/never
-//! materialized); against a Full-shaped overlay it lands ON the overlay EVEN FOR a param
-//! the overlay doesn't yet carry, extending it per-param with siblings and base untouched
-//! (HW-verified fw 1.8.45, crafted Full-partial overlay — see `overlay_is_full_shaped`'s
-//! doc). The Scene-Edit flag state decides the landing, never per-param containment
-//! (`F_CHANGE_PARAMETER`'s `landing_scene`). See `scene_context_tests` for the pinning
-//! tests, one per fact.
+//! **Scene recall semantics (static RE + HW, fw 1.8.58):** a `loadScene` recall merges a
+//! bypass-only overlay (`{bypass: …}`) onto base key by key, and replaces the node's whole
+//! `dspUnitParameters` with any other overlay. Known deviation: the fake renders a
+//! non-bypass overlay PER PARAM, falling through to base for a param it omits (what the
+//! device renders there is unknown); nothing is retained from the scene recalled before
+//! ([`SimState::rendered_param`] / [`SimState::rendered_bypass`], resolved fresh on every
+//! call, never cached). Every recall applies the target scene's `scenes[].ftswStates` to the
+//! footswitches' `isActive` flags (LED and next-press state) only — never to bypass or DSP.
+//! Known deviation: the sim never reads that key, deriving a footswitch's active state from
+//! the materialized block-bypass state alone. A `changeParameter` write accepts RAW values
+//! outside `[0,1]` (dB-calibrated params like `ACD_Boost.gain`) with no clamp. A
+//! scene-context write lands on the scene's overlay when the node has an overlay entry there
+//! and the param is `bypass` or the entry has more than one key; otherwise it lands on base
+//! (static RE, fw 1.8.58). Known deviation: with no preceding `setNodeSceneEdit(enable=true)`
+//! the fake lands the write on the overlay when the production classifier calls it Full
+//! (`overlay_is_full_shaped`), else on base, so a knob write against a `{bypass, clipState}`
+//! entry lands on base here and one against a one-key `{outputLevel}` entry lands on the
+//! overlay (`F_CHANGE_PARAMETER`'s `landing_scene`). See `scene_context_tests` for the pinning tests, one per fact.
 //!
 //! [`Session`]: crate::session::Session
 //! [`HidTransport`]: crate::hid::HidTransport
@@ -143,9 +146,9 @@ const F_CHANGE_PARAMETER: u32 = 12;
 const F_LOAD_SCENE: u32 = 101;
 const F_SET_NODE_SCENE_EDIT: u32 = 107;
 /// `setFootswitchAssignment`(54) / `clearFootswitchAssignment`(55) — the `ftsw` working-copy
-/// setters (`proto::set_footswitch_assignment`). NO dedicated confirm echo on the real device
-/// (`Session::set_footswitch_assignment`'s doc), so neither replies here either: the caller
-/// confirms through the field-2 re-prompt above.
+/// setters (`proto::set_footswitch_assignment`). The device echoes both to every client
+/// (static RE, fw 1.8.58); the fake answers neither (known deviation), and the caller
+/// confirms through the field-2 re-prompt below.
 const F_SET_FOOTSWITCH_ASSIGNMENT: u32 = 54;
 const F_CLEAR_FOOTSWITCH_ASSIGNMENT: u32 = 55;
 /// `currentPresetDataRequest`(2) — the WORKING-COPY re-prompt (`proto::current_preset_data_request`).
@@ -219,8 +222,7 @@ pub enum SimEvent {
     Remove { group: String, node_id: String },
     /// `currentPresetDataRequest`(2) — the working-copy re-prompt (`Session::live_ftsw` /
     /// `live_preset_value`). Recorded so a test can pin WHERE a read sits relative to the
-    /// edits and the save (Copy reads BEFORE saving; a read after the save was the scrape
-    /// the 2026-09-02 stale-cache incident came from).
+    /// edits and the save (Copy reads BEFORE saving).
     WorkingCopyRead,
     /// `renameCurrentPreset`(13).
     Renamed(String),
@@ -254,8 +256,8 @@ pub enum SimEvent {
     /// the REQUESTED 0-based function slot (an `index` past the switch's current function count
     /// APPENDS, so the landed slot can be lower — see [`SimState::ftsw_set`]). `function_json`
     /// is the raw wire string, so a test can parse the exact `valueA`/`valueB` that went out.
-    /// `swap` is the wire flag verbatim; the fake models no behavioural difference for it (the
-    /// semantics are HW-unverified — `proto::set_footswitch_assignment`).
+    /// `swap` is the wire flag verbatim; the fake models no behavioural difference for it (its
+    /// semantics are unknown — `proto::set_footswitch_assignment`).
     SetFootswitchAssignment {
         addr: u32,
         index: u32,
@@ -266,10 +268,9 @@ pub enum SimEvent {
     ClearFootswitchAssignment { addr: u32, index: u32 },
     /// `SettingsMessage(3) → reampModeActive(30)` — the re-amp toggle (`true` = engage).
     /// Recorded because the ENGAGE is the only ordering landmark a capture has: everything a
-    /// measurement sets up (the scene recall, the isolation bypasses, the pinned handle) is
-    /// only in that capture if it went out BEFORE the engage — re-amp latches preset state at
-    /// engage (`danger.md`), so "the write happened" and "the write was heard" are different
-    /// facts and only the order tells them apart.
+    /// measurement sets up (the scene recall, the isolation bypasses, the pinned handle) goes
+    /// out BEFORE the engage — the code keeps the conservative set-then-engage order
+    /// (`danger.md`), so only the order tells "the write happened" from "the write was heard".
     ReAmp(bool),
     /// `Session::heartbeat` — a pure fire-and-forget keep-alive send with no reply, the ONLY
     /// caller of `HidTransport::send` (as opposed to `transact`/`transact_chunked`). Recorded
@@ -308,7 +309,7 @@ pub enum SimEvent {
 
 /// Every request kind (`(tms, inner)`) the offline suite sends that the fake answers with
 /// nothing — the census. A kind outside it is listed on `/sim/state` (`unhandled_new`) and
-/// FAILS the test that sent it (#279): the Playwright `page` fixture's teardown and the
+/// FAILS the test that sent it: the Playwright `page` fixture's teardown and the
 /// `e2e_server_tests` `serial()` guard both check, so a new request production starts
 /// sending is either modelled here or added to this list with its reason. A test that
 /// sends one on purpose opts in for that kind alone (`Serial::allow_unmodeled`).
@@ -379,15 +380,15 @@ impl Injection {
     /// - `unreachable`: no fw 1.8.58 path drops a correctly framed structural edit
     ///   (INFERRED); a write to a lapsed session draws `ConnectionError(0)` (device-confirmed),
     ///   so a lapse drop is not silent. Confirms carry the node JSON (static RE).
-    /// - `unverified`: seen once on fw 1.8.45 (2026-09-02); on fw 1.8.58 a same-slot save
-    ///   sends 25 and then the CHANGE push (static RE).
+    /// - `unverified`: never seen on fw 1.8.58, where a same-slot save sends `presetChanged`
+    ///   (25) and then the CHANGE push (static RE).
     /// - `not-device-shaped`: the server never truncates a push; a lapse cuts frames with no
     ///   final, and every later message draws `ConnectionError` (device-confirmed).
     ///
     /// `queued-handshake-flood` is `reachable`: the unit keeps sending its queue at its
     /// ~2.1 ms frame cadence while no host is open, the next session inside the drop gets
     /// the rest of it ahead of its own replies, and 0.75 s of host silence discards it
-    /// (device-confirmed 2026-10-14, fw 1.8.58: reopens 0–500 ms after a close, 3 each).
+    /// (HW, fw 1.8.58: reopens 0–500 ms after a close).
     ///
     /// `reject-next-load` is `reachable`: fw 1.8.58 substitutes the empty template for a
     /// body it rejects at its first real load and answers that load `presetError` 6
@@ -509,7 +510,8 @@ pub(crate) struct SimSongRow {
 /// A CONFIRMED structural edit on the current working copy (`replaceNode` /
 /// `replaceNodeWithBlock` / `insertNode` / `removeNode`), applied in order when the fake
 /// renders a field-2 re-prompt (`load_echo_json` with `working = true`): the device's
-/// working copy shows a confirmed edit (HW 6/6 re-prompts, fw 1.8.45, 2026-09-03), and Copy
+/// working copy shows a confirmed edit (`currentPresetDataRequest` (2) answers the working
+/// copy — static RE, fw 1.8.58), and Copy
 /// reads it there BEFORE saving. Cleared by the next `loadPreset`. A save bakes the
 /// working copy's edits into the target slot's stored roster ([`SimState::saved_edits`]), so a
 /// later load of that slot shows the node ids the device minted, as the unit does.
@@ -541,9 +543,9 @@ const FLOOD_DRAIN_MS: u64 = 1_200;
 /// transport call spends its window from `remaining_ms` and adds it to `silent_ms`, a write
 /// zeroes `silent_ms`; the queue is handed over whole once `remaining_ms` is spent, handed
 /// to a new connection at its `connectionRequest`, or discarded once `silent_ms` reaches
-/// [`crate::session::HID_INACTIVITY_DROP_MS`] — the three outcomes the unit showed
-/// (2026-10-14: reopened 0–500 ms after a close, the next session got the rest of the
-/// queue first; after 0.75 s of host silence, nothing). Whole, not per frame: the queue's
+/// [`crate::session::HID_INACTIVITY_DROP_MS`] — the three outcomes the unit shows (HW, fw
+/// 1.8.58: reopened 0–500 ms after a close, the next session gets the rest of the queue
+/// first; after 0.75 s of host silence, nothing). Whole, not per frame: the queue's
 /// field-3 copy is last, and the products read whole documents.
 #[derive(Debug)]
 struct SimFlood {
@@ -557,7 +559,7 @@ struct SimState {
     /// [`SimEvent::Unhandled`] records, in order — the census log, apart from `events`.
     unhandled: Vec<SimEvent>,
     /// Whether this fake is the installed [`LIVE`] one, whose out-of-census requests go
-    /// to [`UNMODELED_LOG`] for the e2e tests' #279 gate.
+    /// to [`UNMODELED_LOG`] for the e2e tests' unmodelled-request gate.
     #[cfg(all(test, feature = "e2e"))]
     is_live: bool,
     /// The injections armed on this fake, in arming order (`/sim/state`).
@@ -569,20 +571,20 @@ struct SimState {
     /// Count of structural edits (`replace`/`insert`/`remove`) seen — drives the
     /// drop-first / reject-at adversarial injections.
     structural_seen: u32,
-    /// When set, the FIRST structural edit is silently DROPPED (no confirm, no error) —
-    /// the fw 1.8.45 cold-first-edit belief, whose read-back shows "not landed".
+    /// When set, the FIRST structural edit is silently DROPPED (no confirm, no error), so a
+    /// read-back shows "not landed" (not a fw 1.8.58 shape — [`Injection::tag`]).
     drop_first: bool,
     /// When set, the FIRST structural edit LANDS but its confirm is lost — the case a
     /// blind re-send would turn into a second block.
     lose_first_confirm: bool,
-    /// When set, `nodeInserted`/`nodeReplaced` carry no new node id (their HW payload is
-    /// not decoded yet).
+    /// When set, `nodeInserted`/`nodeReplaced` carry no new node id (the device always sends
+    /// the node JSON — `unreachable`).
     bare_confirms: bool,
     /// When `Some(n)`, the Nth structural edit (1-based) is REJECTED with `presetError`.
     reject_at: Option<u32>,
     /// When set, a `saveCurrentPreset` queues a `currentPresetDataChanged`(3) push of the
-    /// PRE-edit (load-time) document for the next `pump` — the stale document a held
-    /// session once scraped off its buffer as the Copy post-save read-back (HW 2026-09-02).
+    /// PRE-edit (load-time) document for the next `pump` — a stale document a held session
+    /// could scrape off its buffer as a post-save read-back.
     stale_push_after_save: bool,
     /// Confirmed structural edits since the last load — see [`WorkingEdit`].
     working_edits: Vec<WorkingEdit>,
@@ -626,29 +628,26 @@ struct SimState {
     preset_json: String,
     /// Whether a field-8 (SAVED document) read of a non-scenario slot answers with
     /// [`SimState::preset_json`] verbatim ([`SimDevice::with_saved_preset_json`]). Off, such a
-    /// read answers nothing, as before. Never persists a save: the body stays the one the test
+    /// read answers nothing. Never persists a save: the body stays the one the test
     /// configured.
     saved_preset_json: bool,
     /// Lazy cache of a parsed [`SimState::scene_render_json_source`], shared by
-    /// `overlay_is_full_shaped` (every scene-context `changeParameter` on the live dispatch
-    /// path) and the two `#[cfg(test)]` renderers — each used to clone the source string and
-    /// re-parse it on every call. INVALIDATED (set back to `None`) at every WIRE-DRIVEN point
-    /// the SOURCE STRING can change: `F_LOAD_PRESET` (a slot change picks a different e2e
-    /// scenario doc) and [`SimDevice::with_preset_json`] (the plain-build override). A save
-    /// does NOT invalidate it — `record_save`/`with_patched_doc` patch the ECHOED text
-    /// (`current_preset_data_changed`), never `scene_render_json_source`'s own raw scenario
-    /// read. `current_scene` does NOT invalidate it either — the cache is the un-recalled
-    /// document; scene selection is applied fresh on every read via
-    /// [`crate::scene_jobs::scene_overlay`]. A test that pokes `current_slot`
-    /// directly on a live `SimState` (bypassing `F_LOAD_PRESET`) — e.g. `physics_tests` —
-    /// must clear this itself if it exercises the cache; today none of those tests do
+    /// `overlay_is_full_shaped` (every scene-context `changeParameter` on the live dispatch path)
+    /// and the two `#[cfg(test)]` renderers. INVALIDATED (set back to `None`) at every WIRE-DRIVEN
+    /// point the SOURCE STRING can change: `F_LOAD_PRESET` (a slot change picks a different e2e
+    /// scenario doc) and [`SimDevice::with_preset_json`] (the plain-build override). A save does
+    /// NOT invalidate it — `record_save`/`with_patched_doc` patch the ECHOED text
+    /// (`current_preset_data_changed`), never `scene_render_json_source`'s own raw scenario read.
+    /// `current_scene` does NOT invalidate it either — the cache is the un-recalled document; scene
+    /// selection is applied fresh on every read via [`crate::scene_jobs::scene_overlay`]. A test
+    /// that pokes `current_slot` directly on a live `SimState` (bypassing `F_LOAD_PRESET`) — e.g.
+    /// `physics_tests` — must clear this itself if it exercises the cache; none of those tests do
     /// (they only reach `model_lufs`, which never reads this field).
     parsed_preset_cache: Option<serde_json::Value>,
 
     // ── DSP state for the offline physics-faithful capture model (`e2e_capture`) ──
-    // Pure state writes updated by the wire setters below; the setters echo nothing
-    // (they match the real device, which acks these fire-and-forget). Read only by the
-    // offline `--features e2e` capture model, so they carry no reply framing.
+    // Pure state writes updated by the wire setters below. Read only by the offline
+    // `--features e2e` capture model, so they carry no reply framing.
     /// The 0-based list index of the last REAL `loadPreset` (the sidecar / stored-knob key).
     /// A skipped same-slot load leaves it alone, and so does a save to another slot.
     current_slot: u32,
@@ -670,8 +669,8 @@ struct SimState {
     /// drive a save first.
     saved_scene: HashMap<u32, Option<u32>>,
     /// Gate seam: while scene `.0` is active, field-3 pushes are cut at the first byte of `.1`.
-    /// Field-8 stays whole — and since #176 production derives its scene docs from field-8
-    /// (`scene_jobs::scene_docs_from_saved`), so a cut push never reaches it.
+    /// `presetDataRequest` (field 8) stays whole — and production derives its scene docs from
+    /// it (`scene_jobs::scene_docs_from_saved`), so a cut push never reaches it.
     #[cfg(feature = "e2e")]
     truncated_scene_push: Option<(u32, String)>,
     /// The last `setPresetLevel` — the linear global multiplier the model shifts by
@@ -697,21 +696,12 @@ struct SimState {
     /// `routedNode` mutes the routed sound → silence. Cleared on `loadPreset`.
     bypass_writes: HashMap<String, bool>,
     /// `(scene, group, node)` triples that have had `setNodeSceneEdit(enable=true)` sent
-    /// THIS session, since the last `loadPreset` — the gate `F_CHANGE_PARAMETER` checks
-    /// before routing a scene-context write onto BASE instead of the scene (HW fw
-    /// 1.8.45, module header): a write against a node with NO recorded enable, whose
-    /// scene overlay is not Full-shaped, lands on base rather than extending the overlay.
-    /// Scene-keyed only (base writes never consult this set). Cleared on `loadPreset`,
-    /// same as `param_writes`/`bypass_writes`.
-    ///
-    /// KNOWN OFFLINE DIVERGENCE: on hardware a Scene-Edit enable does NOT survive a
-    /// reconnect (session-scoped, like the re-amp toggle and the loaded scene itself),
-    /// but this set lives on `SimState`, which this fake's `Arc<Mutex<_>>` persists
-    /// ACROSS `Session` instances — the sim has no transport-level "new connection"
-    /// signal distinct from a wire message, so there is no cheap seam to clear it on
-    /// reconnect without one. An offline spec must not rely on a write landing on the
-    /// overlay ACROSS a fresh connection without re-sending the enable — only
-    /// `loadPreset` is a trustworthy reset point here.
+    /// since the last `loadPreset` — the gate `F_CHANGE_PARAMETER` checks before routing a
+    /// scene-context write onto BASE instead of the scene (module header): a write against a
+    /// node with NO recorded enable, whose scene overlay is not Full-shaped, lands on base
+    /// rather than extending the overlay. Scene-keyed only (base writes never consult this
+    /// set). Cleared on `loadPreset`, same as `param_writes`/`bypass_writes`. It persists
+    /// across `Session`s, as the device's Scene-Edit state (overlay data) does.
     scene_edit_enabled: std::collections::HashSet<(u32, String, String)>,
     /// The WORKING-COPY `ftsw` array once a `setFootswitchAssignment`(54) /
     /// `clearFootswitchAssignment`(55) has edited it this load; `None` = untouched, so the
@@ -759,10 +749,9 @@ struct SimState {
     /// one: the read-only echo paths lazily insert into that map too). `F_LOAD_PRESET`
     /// gates its `preset_level`/baked-param restore on this set, not on `saved_levels`,
     /// so a slot that's merely been LOOKED AT (echoed) but never saved keeps the old
-    /// "preserve the last-set value" behavior — restoring unconditionally on every load
-    /// (this fix's first cut) broke scene/base-only offline specs on OTHER scenario
-    /// slots that never save a presetLevel at all, caught only by the full offline
-    /// Playwright e2e suite, not `cargo test --lib` alone.
+    /// "preserve the last-set value" behavior; restoring unconditionally on every load
+    /// would break scene/base-only offline specs on scenario slots that never save a
+    /// presetLevel.
     #[cfg(feature = "e2e")]
     ever_saved: std::collections::HashSet<u32>,
     /// Per-capture hold, ms ([`set_capture_delay`]): the offline capture is otherwise
@@ -778,15 +767,14 @@ struct SimState {
 /// INSTANCE, never the process-global scenario `OnceLock`s: a save mutates one slot's
 /// own copy, never the shared immutable fixture text.
 ///
-/// REMAINING DEVIATION from the plan's full "merged presetJson" (module header,
-/// `record_save`'s doc): `scene_params` (the fold below) makes the SAVED DOCUMENT TEXT
-/// correctly carry a scene overlay's write (`persisted_value`'s scene-overlay read consults
-/// it). `F_LOAD_PRESET` reseeds `param_writes` from BOTH `params` (the `SCENE_BASE` entries)
-/// and `scene_params` on a fresh load of a slot saved this run (that handler's own comment),
-/// so after a save→load round trip the CAPTURE MODEL (`model_lufs`, which reads
-/// `param_writes`, not the doc text) renders the same scene values the saved document and
-/// the scene-recall push carry — a scene saved with its amps at `outputLevel` 0 recalls
-/// silent (post-review amendment 4, closed for #176).
+/// REMAINING DEVIATION from a full merged presetJson (module header, `record_save`'s doc):
+/// `scene_params` (the fold below) makes the SAVED DOCUMENT TEXT correctly carry a scene overlay's
+/// write (`persisted_value`'s scene-overlay read consults it). `F_LOAD_PRESET` reseeds
+/// `param_writes` from BOTH `params` (the `SCENE_BASE` entries) and `scene_params` on a fresh load
+/// of a slot saved this run (that handler's own comment), so after a save→load round trip the
+/// CAPTURE MODEL (`model_lufs`, which reads `param_writes`, not the doc text) renders the same
+/// scene values the saved document and the scene-recall push carry — a scene saved with its amps at
+/// `outputLevel` 0 recalls silent.
 ///
 /// `ftsw` ASSIGN edits DO round-trip, because the production Assign flow has two readers that
 /// a non-persisting `ftsw` makes lie: `leveller::verify_fs_persisted_writes` re-reads FIELD-8
@@ -915,8 +903,7 @@ impl SimState {
 
     /// Parse [`SimState::scene_render_json_source`] once and cache it — shared by
     /// `overlay_is_full_shaped` (the live `F_CHANGE_PARAMETER` dispatch path) and the two
-    /// `#[cfg(test)]` renderers below, which each used to clone the source string and
-    /// re-parse it on every call. See [`SimState::parsed_preset_cache`] for the
+    /// `#[cfg(test)]` renderers below. See [`SimState::parsed_preset_cache`] for the
     /// invalidation contract; a stale cache here would silently falsify offline gates, so
     /// every call site that can change the source string clears it first.
     fn parsed_preset(&mut self) -> Option<&serde_json::Value> {
@@ -953,8 +940,7 @@ impl SimState {
     }
 
     /// The BASE graph node's own `(group, node, param)` value, from the cached parsed doc —
-    /// the un-overlaid fallback both renderers fall through to. Shared walk, replacing what
-    /// used to be a hand-rolled `guitarNodes` traversal duplicated in three places.
+    /// the un-overlaid fallback both renderers fall through to.
     #[cfg(any(test, feature = "e2e"))]
     fn base_graph_value(
         &mut self,
@@ -975,9 +961,10 @@ impl SimState {
     }
 
     /// The EFFECTIVE value of `(group, node, param)` a `loadScene` recall renders RIGHT
-    /// NOW (HW fw 1.8.45): an explicit `changeParameter` write for the active scene wins;
-    /// else the active scene's own JSON overlay carries the param (a FULL overlay masks
-    /// base for every param it lists, a bypass-only overlay masks nothing else); else an
+    /// NOW: an explicit `changeParameter` write for the active scene wins; else the active
+    /// scene's own JSON overlay carries the param (a FULL overlay masks base for every param
+    /// it lists, a bypass-only overlay masks nothing else — per param, a known deviation from
+    /// the device's whole-object replace, module header); else an
     /// explicit BASE write; else base's own static value. Resolved fresh every call from
     /// the cached parsed doc, so recalling a DIFFERENT scene never retains a value the new
     /// scene's own overlay doesn't carry
@@ -1025,10 +1012,10 @@ impl SimState {
 
     /// The EFFECTIVE `bypass` a `loadScene` recall renders RIGHT NOW for `(group, node)` —
     /// the bypass analogue of [`SimState::rendered_param`], and the mechanism behind fact
-    /// 2 (HW fw 1.8.45): it derives from an explicit `changeParameter` bool write, else
-    /// the active scene's own overlay, else base — and NEVER consults a fixture's
-    /// `ftswStates` array (a derived cache the real device also ignores on recall), by
-    /// construction: nothing in this method's lookup chain ever reads that key. Two callers:
+    /// 2: it derives from an explicit `changeParameter` bool write, else the active scene's
+    /// own overlay, else base — and NEVER consults a fixture's `ftswStates` array (the device
+    /// applies it only to footswitch `isActive` flags, never to bypass), by construction:
+    /// nothing in this method's lookup chain ever reads that key. Two callers:
     /// [`SimDevice::rendered_bypass`] (`#[cfg(test)]`, the scene-recall pins) and — under
     /// `e2e` — [`model_lufs`]'s leveled-param activation, which needs it to tell "the run
     /// forced this block OFF" from "the run never touched it and the preset has it ON" (see
@@ -1185,9 +1172,8 @@ impl SimState {
     }
 
     /// Take-or-base the working `ftsw` array, run `f` against switch `addr`'s function list,
-    /// and write the array back to `ftsw_working` — the byte-identical take/write-back
-    /// prelude and epilogue [`SimState::ftsw_set`]/[`SimState::ftsw_clear`] used to
-    /// duplicate.
+    /// and write the array back to `ftsw_working` — the take/write-back prelude and epilogue
+    /// [`SimState::ftsw_set`]/[`SimState::ftsw_clear`] share.
     fn with_working_ftsw(&mut self, addr: u32, f: impl FnOnce(&mut Vec<serde_json::Value>)) {
         let mut arr = match self.ftsw_working.take() {
             Some(a) => a,
@@ -1199,24 +1185,19 @@ impl SimState {
 
     /// True when scene `scene`'s overlay for `node` is FULL-shaped — routed straight
     /// through the production classifier ([`crate::scene_jobs::scene_overlay`])
-    /// off the cached parsed doc, so this sim's landing rule tracks the real classifier BY
-    /// CONSTRUCTION (micNodes overlays, FenderId-keyed overlay entries, and `Unknown`
-    /// handling all included — the old hand-rolled walk here covered only
-    /// `guitarNodes`/node-id keying and folded `Unknown` into "not full", which happened to
-    /// give the same conservative answer for that one shape but was a second, divergeable
-    /// copy of the real rule). `scene_overlay` resolves the node's group itself off the
-    /// roster, so no `group` argument is needed here.
+    /// off the cached parsed doc, so this sim's landing rule tracks the production
+    /// classifier BY CONSTRUCTION (micNodes overlays, FenderId-keyed overlay entries, and
+    /// `Unknown` handling all included). `scene_overlay` resolves the node's group itself off
+    /// the roster, so no `group` argument is needed here.
     ///
     /// The landing gate below (fact 4) needs exactly this — Full-shaped or not — and NOT
-    /// "does the overlay carry THIS param": HW-verified fw 1.8.45 (crafted Full-partial
-    /// overlay: a TubeScreamer scene-0 overlay carrying `blend`/`overdrive`/`tone` but not
-    /// `level`, base `level` 0.65) proved an enable-less `changeParameter(level, …)` lands
-    /// IN the overlay — EXTENDING it per-param, siblings unchanged, base untouched — not on
-    /// base. The Scene-Edit flag state alone decides the landing.
+    /// "does the overlay carry THIS param": an enable-less `changeParameter` lands IN a
+    /// multi-key overlay even for a param it lacks, EXTENDING it, siblings unchanged, base
+    /// untouched (static RE + HW).
     ///
     /// False when the node has NO overlay at all in this scene (Absent), the overlay is
     /// Unknown (base slot, or an unparseable cached doc), or BypassOnly — all land on BASE
-    /// below, per the HW-proven leak-to-base for "no per-scene knobs materialized here".
+    /// below. Where this classifier and the device's key-count rule differ: module header.
     fn overlay_is_full_shaped(&mut self, scene: u32, node: &str) -> bool {
         let Some(doc) = self.parsed_preset() else {
             return false;
@@ -1346,8 +1327,8 @@ fn with_patched_doc(json: &str, doc: &SavedDoc) -> String {
 /// Patch `scene_params` entries (`record_save`'s fold) into `scenes[scene].{guitarNodes,
 /// micNodes}.<group>` of the already-parsed doc `v` — [`with_patched_doc`]'s scene-overlay
 /// sibling. Resolves the node's own `(node_id, fender_id)` off ONE `audiograph::roster(v)` walk
-/// hoisted before the loop (the per-entry `roster_entry` call this used to make was a fresh
-/// whole-graph rebuild EVERY entry — the hot-path cost this hoist resolves), then locates and
+/// hoisted before the loop (a per-entry `roster_entry` call would rebuild the whole graph for
+/// EVERY entry), then locates and
 /// writes the overlay entry through [`crate::scene_jobs::scene_overlay_entry_mut`] —
 /// the write-side counterpart of `scene_jobs::scene_overlay_for`'s read, so the two can never key
 /// a node differently. A node no longer in the base graph, or a scene/group the doc doesn't
@@ -1577,8 +1558,8 @@ impl SimDevice {
     }
 
     /// The request kinds this fake answered with nothing that are outside
-    /// [`UNHANDLED_CENSUS`], deduplicated, in first-seen order — the #279 gate's question,
-    /// asked of one fake.
+    /// [`UNHANDLED_CENSUS`], deduplicated, in first-seen order — the unmodelled-request
+    /// gate's question, asked of one fake.
     #[cfg(test)]
     pub(crate) fn unmodeled(&self) -> Vec<(u32, u32)> {
         let st = self.state.lock().expect("sim lock");
@@ -1639,7 +1620,8 @@ impl SimDevice {
 
     /// The value last written to `node`'s `bypass` via `changeParameter`'s BOOL path
     /// (`ChangeParameter.boolVal`), or `None` if never written. Node-keyed only (matches
-    /// `bypass_writes`) — the sim's bypass model isn't scene-scoped.
+    /// `bypass_writes`). Known deviation: the device records a bypass write per scene when
+    /// the node has an overlay entry in that scene (static RE, fw 1.8.58).
     #[cfg(test)]
     pub fn bypass_write(&self, node: &str) -> Option<bool> {
         self.state
@@ -1764,8 +1746,9 @@ impl SimDevice {
                 }
             }
             // SettingsMessage(3) → reampModeActive(30) → { value(1) } — the re-amp toggle
-            // (ON=`1a05f201020801`, OFF=`1a03f20100`). Latched for the capture model; the
-            // real device acks nothing, so no reply.
+            // (ON=`1a05f201020801`, OFF=`1a03f20100`). Latched for the capture model. The
+            // device echoes the Settings flag to every client, even when nothing changed
+            // (static RE, fw 1.8.58); known deviation: the fake sends no echo.
             if let Some(sm) = proto::first_bytes(&top, TMS_SETTINGS) {
                 let settings = proto::parse(sm);
                 // usbSettingsRequest(55) → usbSettingsResponse(56){ reampModeActive(1){
@@ -1888,13 +1871,11 @@ impl SimDevice {
             // Saved doc (e2e only — module header): a load restores THIS slot's own saved
             // `presetLevel` AND baked param overlay — but ONLY once this run has actually
             // SAVED slot0 at least once (`ever_saved`). A slot nobody has saved this run keeps
-            // the "preserve the last-set value" behavior: restoring on EVERY load changed the
-            // ambient `preset_level` for scene/base-only offline fixtures that never save a
-            // presetLevel, shifting their calibrated measured LUFS (caught only by the full
-            // offline Playwright e2e suite, not `cargo test --lib` alone). A plain (non-e2e) build has no per-slot
-            // scenario doc to consult, so `preset_level` keeps its old behavior
-            // unconditionally, and
-            // `param_writes` simply starts empty (today's behavior).
+            // the "preserve the last-set value" behavior: restoring on EVERY load would change
+            // the ambient `preset_level` for scene/base-only offline fixtures that never save a
+            // presetLevel, shifting their calibrated measured LUFS. A plain (non-e2e) build has
+            // no per-slot scenario doc to consult, so it always preserves `preset_level`, and
+            // `param_writes` simply starts empty.
             #[cfg(feature = "e2e")]
             if st.ever_saved.contains(&slot0) {
                 st.preset_level = st.saved_doc(slot0).preset_level;
@@ -1945,8 +1926,8 @@ impl SimDevice {
         if proto::first_bytes(&f, F_CURRENT_PRESET_DATA_REQUEST).is_some() {
             // `currentPresetDataRequest`(2) → a fresh `currentPresetDataChanged`(3) push of the
             // WORKING COPY (unsaved `ftsw` edits included — `load_echo_json`). This is the
-            // device's re-prompt, and the ONLY confirm channel the no-dedicated-echo setters
-            // have: `Session::live_ftsw` sends exactly this and reads `ftsw` off the reply.
+            // device's re-prompt, and the confirm channel the footswitch setters use:
+            // `Session::live_ftsw` sends exactly this and reads `ftsw` off the reply.
             // Also fires inside the handshake burst, which is faithful — the real unit pushes
             // its current preset there too.
             st.events.push(SimEvent::WorkingCopyRead);
@@ -1964,7 +1945,7 @@ impl SimDevice {
             return match saved_slot_json_body(&mut st, slot0) {
                 // Plaintext (NOT lz4): every read path does `from_utf8_lossy` on field 9.
                 Some(j) => frame_multi(&preset_data_changed(dev_slot, j.as_bytes())),
-                None => Vec::new(), // non-scenario slot: the read times out, as offline today
+                None => Vec::new(), // non-scenario slot: the read times out
             };
         }
         if let Some(rn) = proto::first_bytes(&f, F_REPLACE_NODE) {
@@ -1974,9 +1955,8 @@ impl SimDevice {
                 node_id: node_id.clone(),
                 fender_id: fender_id.clone(),
             });
-            // static RE that `replaceNode` naming an unknown id throws; whether the server
-            // catches it is OPEN, so the fake models the uncaught case. A narrow rule, on by
-            // default; a general sim abort model may replace it.
+            // The device answers an unknown id with `presetError` 14 and no abort (static RE,
+            // fw 1.8.58). Known deviation: the fake aborts its server instead.
             if !working_group_ids(&mut st, &group, None).contains(&node_id) {
                 server_abort(
                     &mut st,
@@ -2064,9 +2044,8 @@ impl SimDevice {
             st.dirty = false;
             st.loaded_identity = Some((1, 0, 0, slot0));
             if st.stale_push_after_save {
-                // The PRE-edit (load-time) document — exactly what the real unit handed the
-                // Copy post-save buffer scrape (HW 2026-09-02, fw 1.8.45). A read taken
-                // BEFORE the save never sees it.
+                // The PRE-edit (load-time) document — what a post-save buffer scrape would
+                // read. A read taken BEFORE the save never sees it.
                 let json = load_echo_json(&mut st, slot0, false);
                 let push = frame_multi(&current_preset_data_changed(&json));
                 st.pending_pushes.extend(push);
@@ -2109,9 +2088,10 @@ impl SimDevice {
                         })
                         .unwrap_or(0);
                 if count == 0 {
-                    // Scene-less preset (fw 1.8.58 static RE): the unit swaps the working copy
+                    // Scene-less preset (static RE, fw 1.8.58): the unit swaps the working copy
                     // for its EMPTY template under the same name, answers presetError 6, sets
-                    // the dirty flag and keeps the requested scene index.
+                    // the dirty flag and leaves the scene index where it was. Known deviation:
+                    // the fake moves the scene index to the requested one.
                     st.events.push(SimEvent::LoadScene(wire_slot));
                     st.template_substituted = true;
                     st.dirty = true;
@@ -2124,7 +2104,8 @@ impl SimDevice {
                     return reports;
                 }
                 if wire_slot as usize >= count {
-                    // An index past the preset's scenes aborts the device server (static RE).
+                    // An index past the preset's scenes LIKELY aborts the device server
+                    // (static RE, fw 1.8.58).
                     server_abort(
                         &mut st,
                         format!("loadScene({wire_slot}) past {count} scenes"),
@@ -2134,9 +2115,8 @@ impl SimDevice {
             }
             // Base snapshot (module header): a base → base recall re-applies the snapshot's
             // level, discarding an unsaved `setPresetLevel` and ignoring a save since the last
-            // real load (HW 2026-10-17, slot 401: levelled to −20 and saved, the recall played
-            // the old 0.32 level). Every other recall keeps the live level and refreshes the
-            // snapshot with it.
+            // real load (static RE + HW, fw 1.8.58). Every other recall keeps the live level
+            // and refreshes the snapshot with it.
             if wire_slot == crate::session::BASE_SCENE_SLOT && st.current_scene.is_none() {
                 st.preset_level = st.base_snapshot_level;
             } else {
@@ -2148,13 +2128,14 @@ impl SimDevice {
                 Some(wire_slot)
             };
             st.events.push(SimEvent::LoadScene(wire_slot));
-            // The loadScene handler sets the dirty flag unconditionally (fw 1.8.58 static RE,
-            // static RE of the load-scene handler), so the next same-slot load is real.
+            // The loadScene handler sets the dirty flag unconditionally (static RE, fw 1.8.58),
+            // so the next same-slot load is real.
             st.dirty = true;
             let current_slot = st.current_slot;
             // Push `currentPresetDataChanged`(3) so the un-engaged scene-leveling PRE-PASS can
-            // classify each scene's routing (the real device pushes the scene graph on a scene
-            // CHANGE) — RENDERED for the recalled scene: its stored overlay applied over base
+            // classify each scene's routing (the device pushes field 3 and `sceneLoaded` (102)
+            // only when the scene index changes; known deviation: the fake pushes field 3 on
+            // every recall) — RENDERED for the recalled scene: its stored overlay applied over base
             // (`scene_recall_echo_json`), so the live doc carries the values the recall
             // actually sounds (403 "Clean"'s amps at `outputLevel` 0), not base's. Without the
             // push the pre-pass harvests nothing and every scene fails to classify ("read
@@ -2166,7 +2147,7 @@ impl SimDevice {
             // changeParameter{ group(1), node(2), param(3), floatVal(5) | boolVal(7) }.
             let inner = proto::parse(cp);
             // Every write the fake applies counts as a non-empty change list, which is when
-            // the device sets the dirty flag (static RE, `companion-change_parameter_handler.c`).
+            // the device sets the dirty flag (static RE, fw 1.8.58).
             st.dirty = true;
             let (group, node, param) = (
                 str_field(&inner, 1),
@@ -2193,17 +2174,15 @@ impl SimDevice {
                     param: param.clone(),
                     value: v,
                 });
-                // Fact 4 (HW fw 1.8.45, revised): a scene-context write with NO preceding
-                // `setNodeSceneEdit(enable=true)` for this (scene, group, node) lands on
-                // BASE only when that node's overlay in this scene is NOT Full-shaped
-                // (BypassOnly, empty, or altogether absent — Scene Edit disabled/never
-                // materialized). Against a FULL-shaped overlay the write lands ON the
-                // overlay EVEN FOR a param it doesn't yet carry, extending it per-param —
-                // the Scene-Edit flag state decides the landing, not per-param containment
-                // (see `overlay_is_full_shaped`'s doc for the crafted-fixture HW evidence).
-                // Copied out of `st` up front: `overlay_is_full_shaped` below now needs
-                // `&mut st` (the cached-parse lookup), which the match scrutinee borrowing
-                // `st.current_scene` directly would conflict with.
+                // Fact 4: a scene-context write with NO preceding `setNodeSceneEdit(enable=true)`
+                // for this (scene, group, node) lands on BASE only when that node's overlay in this
+                // scene is NOT Full-shaped (BypassOnly, empty, or altogether absent). Against a
+                // FULL-shaped overlay the write lands ON the overlay EVEN FOR a param it doesn't
+                // yet carry, extending it per-param. The device's rule is the overlay entry's key
+                // count; the module header lists where the two differ. Copied out of `st` up front:
+                // `overlay_is_full_shaped` below now needs `&mut st` (the cached-parse lookup),
+                // which the match scrutinee borrowing `st.current_scene` directly would conflict
+                // with.
                 let current_scene = st.current_scene;
                 let landing_scene = match current_scene {
                     Some(sc)
@@ -2244,7 +2223,7 @@ impl SimDevice {
                 st.dirty = true;
             }
             // Fact 4's gate (F_CHANGE_PARAMETER, above): track which (scene, group, node)
-            // triples have had Scene Edit enabled THIS session, since the last load.
+            // triples have had Scene Edit enabled since the last load.
             if let Some(sc) = st.current_scene {
                 if enable {
                     st.scene_edit_enabled
@@ -2254,7 +2233,7 @@ impl SimDevice {
                         .remove(&(sc, group.clone(), node.clone()));
                 }
             }
-            // HW-confirmed (B): enabling Scene Edit on a node RESEEDS that node's scene
+            // HW-confirmed: enabling Scene Edit on a node RESEEDS that node's scene
             // overlay from base — any prior override for OTHER params on this node in the
             // active scene is lost, replaced by whatever the node currently holds at base.
             // The offline model can only see explicit writes, so it reseeds from base's
@@ -2283,18 +2262,17 @@ impl SimDevice {
             // handed the WHOLE assembled body, so there is nothing to reassemble here.
             //
             // Applies to the WORKING COPY (`ftsw_working`), NOT the saved doc: on hardware the
-            // edit is live-but-unsaved until a `saveCurrentPreset`, and it is the field-3
-            // re-prompt above — never a dedicated echo — that confirms it, which is exactly the
-            // read-back branch `leveller::write_fs_values_on_session` falls to. Hence NO reply
-            // (`Session::set_footswitch_assignment`'s "no dedicated confirm echo").
+            // edit is live-but-unsaved until a `saveCurrentPreset`. The caller confirms it
+            // through the field-3 re-prompt above, the read-back branch
+            // `leveller::write_fs_values_on_session` falls to. The device also echoes field 54
+            // to every client (static RE, fw 1.8.58); known deviation: the fake sends NO reply.
             let inner = proto::parse(sfa);
             let addr = proto::first_varint(&inner, 1).unwrap_or(0) as u32;
             let index = proto::first_varint(&inner, 2).unwrap_or(0) as u32;
             let function_json = str_field(&inner, 3);
-            // The wire flag verbatim. Its device semantics are empirically TBD
-            // (`proto::set_footswitch_assignment`; `probe --ftsw-validate` is the resolver) and
-            // production always sends `false`, so the fake records it and models no behavioural
-            // difference rather than inventing one.
+            // The wire flag verbatim. Its device semantics are unknown
+            // (`proto::set_footswitch_assignment`) and production always sends `false`, so the
+            // fake records it and models no behavioural difference rather than inventing one.
             let swap = proto::first_varint(&inner, 4).unwrap_or(0) != 0;
             st.events.push(SimEvent::SetFootswitchAssignment {
                 addr,
@@ -2304,14 +2282,14 @@ impl SimDevice {
             });
             if let Ok(func) = serde_json::from_str::<serde_json::Value>(&function_json) {
                 st.ftsw_set(addr, index, func);
-                // Sets the dirty flag on success (static RE, `companion-set_footswitch_assignment.c`).
+                // Sets the dirty flag on success (static RE, fw 1.8.58).
                 st.dirty = true;
             }
             return Vec::new();
         }
         if let Some(cfa) = proto::first_bytes(&f, F_CLEAR_FOOTSWITCH_ASSIGNMENT) {
             // ClearFootswitchAssignment{ footswitchAddress(1), functionIndex(2) } — the same
-            // working-copy + no-echo model as field 54 above.
+            // working-copy model, and the same missing echo, as field 54 above.
             let inner = proto::parse(cfa);
             let addr = proto::first_varint(&inner, 1).unwrap_or(0) as u32;
             let index = proto::first_varint(&inner, 2).unwrap_or(0) as u32;
@@ -2487,8 +2465,8 @@ impl SimDevice {
                     Some(a) if a > removed => Some(a - 1),
                     other => other,
                 };
-                // Setlist members drop the removed song and follow the shift (fw 1.8.58
-                // static RE; not HW-checked): `removeSong` is a plain
+                // Setlist members drop the removed song and follow the shift (static RE,
+                // fw 1.8.58): `removeSong` is a plain
                 // `DELETE FROM Songs`, `SetlistSongs` cascades on the song id, a trigger
                 // closes the position gap, and the membership read reports the
                 // renumbered `Songs.slot`.
@@ -2590,7 +2568,7 @@ pub fn set_live(dev: &SimDevice) {
 
 /// Every out-of-census request any installed [`LIVE`] fake answered with nothing, in
 /// order and not deduplicated, across fake replacements (`reamp_webview` installs a new
-/// fake mid-test). The e2e tests' #279 gate reads the entries its test added.
+/// fake mid-test). The e2e tests' unmodelled-request gate reads the entries its test added.
 #[cfg(all(test, feature = "e2e"))]
 static UNMODELED_LOG: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 
@@ -2618,42 +2596,41 @@ pub fn live_events() -> Vec<SimEvent> {
 
 // ─── offline physics-faithful capture model (`--features e2e`) ──────────────────────
 //
-// The single injection point is [`LiveSimRig`]'s capture (`audio::reamp_capture` on the
-// offline e2e rig). Instead of returning the stimulus verbatim (which made loudness bugs
-// invisible offline), it drives
-// the real loudness law the leveller assumes — `captured_LUFS = 20·log10(presetLevel) + C`
-// — plus a scene-relative `outputLevel` term, so the offline e2e suite becomes a genuine
-// oracle. The model is DETERMINISTIC (no noise): a scaled copy of the fixed stimulus whose
-// measured LUFS lands exactly at the modeled value. Scaling changes only LEVEL, never the
-// spectrum, so the Doctor's spectral diagnosis is unaffected.
+// The single injection point is [`LiveSimRig`]'s capture (`audio::reamp_capture` on the offline e2e
+// rig). Instead of returning the stimulus verbatim (which would hide loudness bugs offline), it
+// drives the real loudness law the leveller assumes — `captured_LUFS = 20·log10(presetLevel) + C` —
+// plus a scene-relative `outputLevel` term, so the offline e2e suite becomes a genuine oracle. The
+// model is DETERMINISTIC (no noise): a scaled copy of the fixed stimulus whose measured LUFS lands
+// exactly at the modeled value. Scaling changes only LEVEL, never the spectrum, so the Doctor's
+// spectral diagnosis is unaffected.
 //
-// GRAPH ECHO (the PR3 faithful fix — `load_echo_json` + `scenario_json_for`): `loadPreset` and
-// `loadScene` echo each SCENARIO slot's REAL presetJson as `currentPresetDataChanged`(3), so
-// offline scene-leveling's prepass classifies each scene against the SAME amp node the
-// backup-derived candidates name (`written == stored` → faithful convergence AND a correct amp
-// pick for the parallel/split templates). Without it the prepass doc (a constant default graph)
-// didn't contain the backup candidate's amp, so `build_scene_jobs` failed to match and every
-// scene read-failed. Any non-scenario slot (and all non-e2e builds) still uses the default graph.
+// GRAPH ECHO (`load_echo_json` + `scenario_json_for`): `loadPreset` and `loadScene` echo each
+// SCENARIO slot's REAL presetJson as `currentPresetDataChanged`(3), so offline scene-leveling's
+// prepass classifies each scene against the SAME amp node the backup-derived candidates name
+// (`written == stored` → faithful convergence AND a correct amp pick for the parallel/split
+// templates). Without it the prepass doc (a constant default graph) would not contain the backup
+// candidate's amp, so `build_scene_jobs` would fail to match and every scene would read-fail. Any
+// non-scenario slot (and all non-e2e builds) still uses the default graph.
 //
-// FIDELITY DECISIONS (PR3, updated by the `leveled_params` addition):
+// FIDELITY DECISIONS:
 //  • The "clamped-at-max" outcome is authored on Base (presetLevel → C clamp at LEVEL_MAX,
 //    fully faithful); a scene-outputLevel CLAMP verdict is still NOT faithfully authorable
 //    (the closed-loop verify converges regardless of the sidecar clamp) → base-path only.
 //  • `SlotLoudness::offbranch_switch_node` models a block-acting footswitch whose toggled
 //    block sits on a MUTED parallel branch (engaging it routes to dead air) — the model reads
-//    `bypass_writes` directly, no field-8 needed, so this ONE off-branch shape has always been
+//    `bypass_writes` directly, no field-8 needed, so this ONE off-branch shape is
 //    offline-faithful (the field-8 read `saved_slot_json_body` performs is for the LEVELED-PARAM
 //    knob curve below, a separate mechanism).
-//  • STALE (superseded): earlier revisions of this comment called offline footswitch leveling
-//    "unmodeled (out of PR3 scope)" and listed it under "online-only classes" below.
-//    `SlotLoudness::leveled_params` (a drive pedal's own knob → `saturated_pedal_lufs`, module
-//    header) now models it — see `e2e_server_tests.rs::the_footswitch_rows_still_converge_after_a_base_boost` for full offline
+//  • Offline footswitch leveling: `SlotLoudness::leveled_params` (a drive pedal's own knob →
+//    `saturated_pedal_lufs`, module header) models it — see
+//    `e2e_server_tests.rs::the_footswitch_rows_still_converge_after_a_base_boost` for full offline
 //    footswitch-leveling coverage, including a save→load round trip of the baked value
 //    (`SimState::param_writes` reseeded from the `SavedDoc` on load).
 //  • The ASSIGN-path footswitch WIRE flow is modeled too (module header): `handle` applies
 //    `setFootswitchAssignment`(54)/`clearFootswitchAssignment`(55) to the working-copy `ftsw`,
 //    the field-2 re-prompt renders it back for the confirm gate, and a save persists it into
-//    `SavedDoc::ftsw` so the field-8 persist verify resolves. The CAPTURE side is modeled too, as of the wet-floor fix: `model_lufs`'s
+//    `SavedDoc::ftsw` so the field-8 persist verify resolves. The CAPTURE side is modeled too:
+//    `model_lufs`'s
 //    leveled-param predicate also fires on "no bypass write for the node AND the recall
 //    renders it ENGAGED", which is exactly an Assign's isolation shape
 //    (`siblings_off_excluding` forces only the OTHER switches' blocks off). A swept param
@@ -3092,10 +3069,8 @@ enum Contribution {
 }
 
 /// Evaluate `lp`'s [`LeveledCurve`] into its [`Contribution`] — the ONE site both curves are
-/// computed from (this used to be two complementary filters at two call sites in
-/// `model_lufs`, one filtering `== SaturatedPedal` and early-returning, the other filtering
-/// `!= WetMix` to 0.0; an exhaustive `match lp.curve` here means a future third variant fails
-/// to compile instead of silently reading flat). `None` propagates `model_lufs`'s off-branch
+/// computed from (an exhaustive `match lp.curve` here means a future third variant fails to
+/// compile instead of silently reading flat). `None` propagates `model_lufs`'s off-branch
 /// silence for an engaged-but-unrendered `SaturatedPedal` block, not a curve failure.
 #[cfg(feature = "e2e")]
 fn leveled_contribution(st: &mut SimState, lp: &LeveledParam) -> Option<Contribution> {
@@ -3171,16 +3146,15 @@ fn to_dual_mono(mono: &[f32], rate: u32) -> crate::audio::Capture {
 /// Scale `stimulus` so its measured integrated LUFS, AS THE SIM WILL EMIT IT
 /// (dual-mono, per `to_dual_mono`), lands exactly at `l_model`
 /// (`s = 10^((l_model − DUAL_MONO_GAIN_LU − l_stim)/20)`). `l_stim` is measured
-/// MONO (`measure_mono` — the input/stimulus-side convention never changes, T2),
+/// MONO (`measure_mono` — the input/stimulus-side convention),
 /// so without the `DUAL_MONO_GAIN_LU` term the stereo meter would add its own
 /// +3.01 ON TOP of a buffer already scaled to hit `l_model`, landing every
-/// offline capture +3 too hot (plan finding F1 — the double-count trap this
-/// constant closes; see `scale_stimulus_lands_on_model` for the contract proof
+/// offline capture +3 too hot (see `scale_stimulus_lands_on_model` for the contract proof
 /// through the PRODUCTION measure path, not a hand-rolled stereo re-check).
 /// Deterministic. A silent stimulus (non-finite `l_stim`) can't be modeled →
 /// returned verbatim (still dual-mono).
 fn scale_stimulus(stimulus: &[f32], rate: u32, l_model: f64) -> crate::audio::Capture {
-    // ponytail: re-measure L_stim per capture — ebur128 over the fixed ~3 s WAV is sub-ms
+    // Re-measure L_stim per capture — ebur128 over the fixed ~3 s WAV is sub-ms
     // and replaces a multi-second real capture, so caching it (keyed by stimulus identity,
     // which differs across tests) isn't worth the invalidation risk.
     let l_stim = crate::lufs::measure_mono(stimulus, rate)
@@ -3195,7 +3169,7 @@ fn scale_stimulus(stimulus: &[f32], rate: u32, l_model: f64) -> crate::audio::Ca
 }
 
 /// The stimulus, dual-mono — the pre-physics fallback (no live SimDevice /
-/// unmodeled `l_stim`). Mirrors the real TMP's mirrored USB-Out (D1).
+/// unmodeled `l_stim`). Mirrors the real TMP's mirrored USB-Out 1&2.
 fn passthrough(stimulus: &[f32], rate: u32) -> crate::audio::Capture {
     to_dual_mono(stimulus, rate)
 }
@@ -3305,17 +3279,16 @@ pub(crate) fn saturated_pedal_lufs(v: f32) -> Option<f64> {
         return None;
     }
     if v <= 0.20 {
-        // The cliff: 42 LU over this 0.10 span. Floor anchor +3 (PR2 D1: the
-        // coherent +3 world) from the mono-era -62.0.
+        // The cliff: 42 LU over this 0.10 span, from a −59.0 floor.
         return Some(-59.0 + 420.0 * (v - 0.10));
     }
     if v <= 0.30 {
         // Shoulder — the cliff's top IS the plateau's own floor (continuous, no
-        // dip). Anchor +3 (PR2 D1) from the mono-era -20.0.
+        // dip).
         return Some(-17.0);
     }
     // The compressed plateau: +3 LU across the remaining 0.70 of knob travel
-    // (a RELATIVE span, untouched by the D1 absolute shift above).
+    // (a RELATIVE span).
     let t = ((v - 0.30) / 0.70).min(1.0);
     Some(-17.0 + 3.0 * t)
 }
@@ -3880,11 +3853,11 @@ fn confirm_structural(
 ) -> Vec<Vec<u8>> {
     let (reply, lands) = structural_reply(st, confirm_field, &payload);
     if lands {
-        // insert/replace set the dirty flag (static RE, `companion-cpm_*`).
+        // insert/replace set the dirty flag (static RE, fw 1.8.58).
         st.working_edits.push(edit);
         st.dirty = true;
         // A base-context structural edit replaces the base snapshot, live level included
-        // (`tmp-audit` Q41 names removeNode; insert and replace are modelled the same).
+        // (static RE, fw 1.8.58).
         if st.current_scene.is_none() {
             st.base_snapshot_level = st.preset_level;
         }
@@ -4365,7 +4338,7 @@ mod physics_tests {
     // The scaling actually lands the measured LUFS on the modeled value.
     #[test]
     fn scale_stimulus_lands_on_model() {
-        // T1/F1: run the scaled capture through the PRODUCTION measure path
+        // Run the scaled capture through the PRODUCTION measure path
         // (`leveller::processed_lufs`, the 2-ch BS.1770 hub every leveling
         // measurement uses) rather than a hand-rolled per-channel re-check — a bug
         // in `Capture::processed_stereo`'s stereo pairing wouldn't show up in a
@@ -4380,11 +4353,9 @@ mod physics_tests {
         );
     }
 
-    // T1/F1, the brief's exact contract test: a capture built for l_model = -24.0
-    // must measure -24.0 through the production path, tight tolerance — this is
-    // what would have shipped +3.0 (or +6.0, stacked with the C-table shift) off
-    // had `scale_stimulus` not compensated for the dual-mono duplication it now
-    // performs.
+    // The contract test: a capture built for l_model = -24.0 must measure -24.0
+    // through the production path, tight tolerance — without `scale_stimulus`'s
+    // dual-mono compensation it would read +3.0 off.
     #[test]
     fn scale_stimulus_contract_survives_dual_mono_emission() {
         let rate = 48_000u32;
@@ -4447,9 +4418,8 @@ mod physics_tests {
             "cliff span must be ~42 LU, got {}",
             hi - lo
         );
-        // Our two FS fixture targets (-23/-21, PR2 D1: +3 from the mono-era -26/-24)
-        // must land ON this cliff, not the flat plateau — the whole reason the
-        // fixture is solvable at a tight ±0.1 LU offline.
+        // Our two FS fixture targets (-23/-21) must land ON this cliff, not the flat plateau — the
+        // whole reason the fixture is solvable at a tight ±0.1 LU offline.
         assert!(
             (lo..=hi).contains(&-23.0) && (lo..=hi).contains(&-21.0),
             "targets -23/-21 must fall inside the cliff [{lo}, {hi}]"
@@ -4532,8 +4502,7 @@ mod physics_tests {
             0.1857,
         );
         let lufs = model_lufs(&mut st, &sc, &stored).unwrap();
-        // PR2 re-baseline: +3 from the mono-era -26 (the cliff's floor anchor moved
-        // -62 → -59, same -420*(v-0.10) slope).
+        // The cliff: −59 floor anchor, −420·(v−0.10) slope.
         assert!(
             (lufs - (-23.0)).abs() < 0.2,
             "v=0.1857 should land near -23 LUFS, got {lufs}"
@@ -4822,11 +4791,9 @@ mod physics_tests {
         );
     }
 
-    /// fw 1.8.58 recall shape (static RE, `tmp-audit` COMPANION_QUESTIONS Q41; HW 2026-10-17,
-    /// slot 401): a recall from a scene keeps an unsaved `presetLevel`, and a base → base
-    /// recall re-applies the base snapshot's level, which a save does not refresh. The old
-    /// model (every recall reverts to the SAVED level) was the 1.8.45 reading and is the
-    /// wrong shape on 1.8.58.
+    /// fw 1.8.58 recall shape (static RE + HW): a recall from a scene keeps an unsaved
+    /// `presetLevel`, and a base → base recall re-applies the base snapshot's level, which a
+    /// save does not refresh.
     #[test]
     fn scene_recalls_follow_the_base_snapshot_not_the_saved_value() {
         let sim = SimDevice::new();
@@ -4857,7 +4824,7 @@ mod physics_tests {
     }
 }
 
-// ─── scene-context model tests (the bug this PR fixes was invisible without these) ──
+// ─── scene-context model tests ──
 #[cfg(test)]
 mod scene_context_tests {
     use super::*;
@@ -4973,7 +4940,7 @@ mod scene_context_tests {
         );
     }
 
-    // ── HW fw 1.8.45 findings (this week) ──────────────────────────────────────────
+    // ── Scene recall and landing facts (static RE + HW) ───────────────────────────
 
     const PER_PARAM_OVERLAY_FIXTURE: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
         {"FenderId":"X","nodeId":"amp","dspUnitParameters":{"bypass":false,"gain":2.5}}
@@ -5037,9 +5004,9 @@ mod scene_context_tests {
         );
     }
 
-    // (2) `ftswStates` is a derived cache the device ignores on recall — a crafted
-    // fixture whose `ftswStates[0]` says the switch is active must NOT override the
-    // materialized bypass state (here: the overlay bypasses the block → FS inactive).
+    // (2) A recall applies `ftswStates` to footswitch `isActive` flags only, never to
+    // bypass — a crafted fixture whose `ftswStates[0]` says the switch is active must NOT
+    // override the overlay's bypass (here: the overlay bypasses the block).
     #[test]
     fn scene_recall_ignores_the_stored_ftsw_states_cache_and_derives_from_materialized_bypass() {
         const FIXTURE: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
@@ -5123,11 +5090,8 @@ mod scene_context_tests {
 
     // (4, revised) A scene-context write with no preceding Scene Edit enable, on a node
     // whose overlay in this scene IS Full-shaped but doesn't yet carry the written param,
-    // lands ON the overlay — extending it per-param — not on base. HW-verified fw 1.8.45,
-    // crafted Full-partial overlay: a TubeScreamer scene-0 overlay carrying
-    // blend/overdrive/tone but not `level` (base `level` 0.65); an enable-less
-    // `changeParameter(level, 0.22)` landed IN the overlay, every sibling param survived
-    // unchanged (no reseed), and base stayed 0.65.
+    // lands ON the overlay — extending it per-param, siblings unchanged (no reseed) — not
+    // on base (static RE + HW).
     #[test]
     fn scene_context_write_without_scene_edit_enable_on_a_full_overlay_extends_it_per_param() {
         const FIXTURE: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
@@ -5793,8 +5757,8 @@ mod oracle_and_census_tests {
         }
     }
 
-    /// A Mixer reply that arrives after the Settings request went out is still read. The
-    /// online idempotency run read it as missing when it came ~2.4 s late.
+    /// A Mixer reply that arrives after the Settings request went out is still read (HW: a
+    /// reply can arrive ~2.4 s late).
     #[test]
     fn a_mixer_reply_that_lands_after_the_settings_request_still_reads() {
         let sim = SimDevice::new();
@@ -6030,8 +5994,8 @@ mod base_snapshot_tests {
         s
     }
 
-    // HW 2026-10-17, slot 401: levelled and saved, then a base recall played the level of
-    // the last real load.
+    // HW, fw 1.8.58: levelled and saved, then a base recall played the level of the last
+    // real load.
     #[test]
     fn a_base_recall_on_base_plays_the_last_real_loads_level_even_after_a_save() {
         let sim = SimDevice::new();

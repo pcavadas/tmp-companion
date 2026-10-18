@@ -3,7 +3,7 @@
 //!
 //! The kernel writes a pending read's result into the `OVERLAPPED` and the read buffer when
 //! it completes, so both must outlive the I/O: a device handle dropped with a read still in
-//! flight is a use-after-free (#266). [`release`] is what the device's `Drop` runs, on the
+//! flight is a use-after-free. [`release`] is what the device's `Drop` runs, on the
 //! normal close and on a worker unwinding alike.
 
 pub(super) trait PendingRead {
