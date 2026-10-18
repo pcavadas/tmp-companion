@@ -63,7 +63,7 @@ Device-checked dirty setters: `setPresetLevel`, `changeParameter` (bool `bypass`
 Also: every `loadScene` and `removeNode` (even a failed one), `setNodeSceneEdit` outside base, a rename to a new name, and a load that substitutes the empty template for a `version` it cannot use [RE].
 `setFootswitchAssignment`, `clearFootswitchAssignment`, an insert and a replace set it only when they succeed [RE].
 A same-name rename and a move set nothing; a real load and a save clear it [RE].
-`SimDevice` models these rules, except that it marks every rename dirty (`same_slot_load_tests`).
+`SimDevice` models these rules (`same_slot_load_tests`).
 `isDirty` rides field 22 (`Session::active_preset_dirty`), but a `currentPresetInfoRequest` is answered ~1.1 s later, dearer than a reload [HW].
 
 ### Discarding unsaved edits

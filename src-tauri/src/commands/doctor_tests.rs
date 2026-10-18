@@ -615,7 +615,8 @@ fn hpf_op() -> Vec<doctor::DoctorOp> {
 // ordering is unit-testable offline.
 #[test]
 fn apply_ops_under_scene_recalls_before_writing() {
-    let sim = crate::sim_device::SimDevice::new();
+    let sim = crate::sim_device::SimDevice::new()
+        .with_preset_json(crate::sim_device::FOUR_SCENES_FIXTURE);
     let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
     apply_ops_under_scene(&mut s, Some(2), &hpf_op()).expect("apply_ops_under_scene");
     let ev = sim.events();

@@ -16,10 +16,8 @@
 //!   missing confirm is a confirm queued behind the FIFO, a lapse (which draws ConnectionError),
 //!   a backup freeze, or an insert abort, so the held-session path recovers by read-back, never
 //!   by blind re-send (`apply_copy_op`'s `recover_unconfirmed`),
-//! - a `replaceNode` naming a node its group lacks gets `presetError` 14 on the device, like
-//!   an over-budget replace, with no `nodeReplaced` and no dirty flag (static RE, fw 1.8.58).
-//!   Known deviation: the fake instead records [`SimEvent::ServerAbort`] and fails every
-//!   later send; no product path should ever reach it.
+//! - a `replaceNode` naming a node its group lacks gets `presetError` 14, like an
+//!   over-budget replace, with no `nodeReplaced` and no dirty flag (static RE, fw 1.8.58).
 //!
 //! Configure [`SimDevice::with_drop_first`] / [`SimDevice::with_reject_at`] to drive
 //! the drop and rejection cases. Replies are produced SYNCHRONOUSLY from the send call
@@ -33,8 +31,7 @@
 //! working copy, in its stored `lastLoadedScene`, is a NO-OP that keeps the working copy and
 //! still pushes it. Every working-copy edit, `loadScene` included, sets
 //! [`SimState::dirty`], which makes that load a real reload; a real load and a save clear it.
-//! Known deviation: a rename to the same name sets it here; the device ignores that rename.
-//! See `same_slot_load_tests`.
+//! A rename to the current name is ignored and leaves it clear. See `same_slot_load_tests`.
 //!
 //! **Base snapshot level (static RE + HW, fw 1.8.58):** the unit keeps a base snapshot whose
 //! `presetLevel` is set by a real load, by every scene recall and by a base-context
@@ -59,8 +56,7 @@
 //! device echoes each to every client, then sends the CHANGE push (static RE, fw 1.8.58);
 //! the caller confirms through a `currentPresetDataRequest`(2) re-prompt, whose
 //! `currentPresetDataChanged`(3) push renders the edited `ftsw` (`Session::live_ftsw`; the
-//! read-back branch of `leveller::write_fs_values_on_session`'s confirm gate). Known
-//! deviation: the fake sends no echo. A set REPLACES the function at
+//! read-back branch of `leveller::write_fs_values_on_session`'s confirm gate). A set REPLACES the function at
 //! `functionIndex` or APPENDS when the index is at/past the switch's function count; a clear
 //! SPLICES, shifting the switch's remaining functions down. The `swap` flag is decoded and
 //! recorded on the [`SimEvent`] but models no behavioural difference — its device semantics
@@ -74,8 +70,9 @@
 //! ([`SimState::rendered_param`] / [`SimState::rendered_bypass`], resolved fresh on every
 //! call, never cached). Every recall applies the target scene's `scenes[].ftswStates` to the
 //! footswitches' `isActive` flags (LED and next-press state) only — never to bypass or DSP.
-//! Known deviation: the sim never reads that key, deriving a footswitch's active state from
-//! the materialized block-bypass state alone. A `changeParameter` write accepts RAW values
+//! A recall pushes `currentPresetDataChanged`(3) and `sceneLoaded`(102) only when the scene
+//! index changes, and a `loadScene(N ≠ 8)` on a scene-less preset substitutes the empty
+//! template, answers `presetError` 6 and keeps the scene index. A `changeParameter` write accepts RAW values
 //! outside `[0,1]` (dB-calibrated params like `ACD_Boost.gain`) with no clamp. A
 //! scene-context write lands on the scene's overlay when the node has an overlay entry there
 //! and the param is `bypass` or the entry has more than one key; otherwise it lands on base
@@ -103,6 +100,13 @@ use crate::proto;
 /// override written for the scene being measured (a scene with no override measures its
 /// stored knob → a 0 LU shift, the locked convention).
 pub(crate) const SCENE_BASE: i64 = -1;
+
+/// A preset with four empty scenes, for tests that recall scenes 0–3: a `loadScene(N ≠ 8)` on
+/// a scene-less preset substitutes the empty template instead (static RE, fw 1.8.58).
+#[cfg(test)]
+pub(crate) const FOUR_SCENES_FIXTURE: &str = r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
+    {"FenderId":"ACD_Twin57","nodeId":"amp","dspUnitParameters":{"bypass":false,"outputLevel":0.5}}
+]}},"scenes":[{},{},{},{}]}"#;
 
 /// FenderMessageTMS field carrying a `PresetMessage`.
 const TMS_PRESET: u32 = 2;
@@ -144,11 +148,12 @@ const F_SAVE: u32 = 14;
 const F_SET_PRESET_LEVEL: u32 = 76;
 const F_CHANGE_PARAMETER: u32 = 12;
 const F_LOAD_SCENE: u32 = 101;
+/// `sceneLoaded`(102){ sceneSlot(1), sceneJson(2) (lz4) } — the recall push.
+const F_SCENE_LOADED: u32 = 102;
 const F_SET_NODE_SCENE_EDIT: u32 = 107;
 /// `setFootswitchAssignment`(54) / `clearFootswitchAssignment`(55) — the `ftsw` working-copy
 /// setters (`proto::set_footswitch_assignment`). The device echoes both to every client
-/// (static RE, fw 1.8.58); the fake answers neither (known deviation), and the caller
-/// confirms through the field-2 re-prompt below.
+/// (static RE, fw 1.8.58); the caller confirms through the field-2 re-prompt below.
 const F_SET_FOOTSWITCH_ASSIGNMENT: u32 = 54;
 const F_CLEAR_FOOTSWITCH_ASSIGNMENT: u32 = 55;
 /// `currentPresetDataRequest`(2) — the WORKING-COPY re-prompt (`proto::current_preset_data_request`).
@@ -1172,6 +1177,27 @@ impl SimState {
         present
     }
 
+    /// Write a recalled scene's `ftswStates` (one bool per switch) into the working copy's
+    /// `isActive` flags, on every function of each switch. A document with no `ftsw` stays
+    /// without one.
+    fn apply_ftsw_states(&mut self, states: &[bool]) {
+        let mut arr = match self.ftsw_working.take() {
+            Some(a) => a,
+            None => self.base_ftsw(),
+        };
+        let Some(switches) = arr.as_array_mut().filter(|a| !a.is_empty()) else {
+            return;
+        };
+        for (sw, on) in switches.iter_mut().zip(states) {
+            for func in sw.as_array_mut().into_iter().flatten() {
+                if let Some(obj) = func.as_object_mut() {
+                    obj.insert("isActive".into(), serde_json::Value::Bool(*on));
+                }
+            }
+        }
+        self.ftsw_working = Some(arr);
+    }
+
     /// Take-or-base the working `ftsw` array, run `f` against switch `addr`'s function list,
     /// and write the array back to `ftsw_working` — the take/write-back prelude and epilogue
     /// [`SimState::ftsw_set`]/[`SimState::ftsw_clear`] share.
@@ -1749,7 +1775,7 @@ impl SimDevice {
             // SettingsMessage(3) → reampModeActive(30) → { value(1) } — the re-amp toggle
             // (ON=`1a05f201020801`, OFF=`1a03f20100`). Latched for the capture model. The
             // device echoes the Settings flag to every client, even when nothing changed
-            // (static RE, fw 1.8.58); known deviation: the fake sends no echo.
+            // (static RE, fw 1.8.58).
             if let Some(sm) = proto::first_bytes(&top, TMS_SETTINGS) {
                 let settings = proto::parse(sm);
                 // usbSettingsRequest(55) → usbSettingsResponse(56){ reampModeActive(1){
@@ -1775,10 +1801,11 @@ impl SimDevice {
                     let dropped = !on
                         && (st.reamp_off_never_lands
                             || std::mem::replace(&mut st.drop_next_reamp_off, false));
+                    st.events.push(SimEvent::ReAmp(on));
                     if !dropped {
                         st.reamp_on = on;
+                        return frame_multi(&proto::set_reamp_mode(on));
                     }
-                    st.events.push(SimEvent::ReAmp(on));
                 }
                 if let Some(tap) = proto::first_bytes(&settings, F_TAP_TEMPO_BPM) {
                     let bpm = proto::first_f32(&proto::parse(tap), 1).unwrap_or(0.0);
@@ -1956,14 +1983,12 @@ impl SimDevice {
                 node_id: node_id.clone(),
                 fender_id: fender_id.clone(),
             });
-            // The device answers an unknown id with `presetError` 14 and no abort (static RE,
-            // fw 1.8.58). Known deviation: the fake aborts its server instead.
+            // An unknown id gets `presetError` 14, no `nodeReplaced` and no dirty flag (static
+            // RE, fw 1.8.58).
             if !working_group_ids(&mut st, &group, None).contains(&node_id) {
-                server_abort(
-                    &mut st,
-                    format!("replaceNode names {group}/{node_id}, which the group lacks"),
-                );
-                return Vec::new();
+                let mut code = Vec::new();
+                proto::field_varint(&mut code, 1, 14);
+                return vec![frame(&preset_message(F_PRESET_ERROR, &code))];
             }
             return confirm_replace(&mut st, group, node_id, fender_id);
         }
@@ -2029,9 +2054,18 @@ impl SimDevice {
             );
         }
         if let Some(rename) = proto::first_bytes(&f, F_RENAME) {
-            st.events
-                .push(SimEvent::Renamed(str_field(&proto::parse(rename), 1)));
-            st.dirty = true;
+            let name = str_field(&proto::parse(rename), 1);
+            // A rename to the current name is ignored: no reply, no dirty flag (static RE,
+            // fw 1.8.58).
+            let slot0 = st.current_slot;
+            let current =
+                serde_json::from_str::<serde_json::Value>(&render_json(&mut st, slot0, true))
+                    .ok()
+                    .and_then(|v| v.pointer("/info/displayName")?.as_str().map(String::from));
+            st.events.push(SimEvent::Renamed(name.clone()));
+            if current.as_deref() != Some(name.as_str()) {
+                st.dirty = true;
+            }
             return Vec::new();
         }
         if let Some(save) = proto::first_bytes(&f, F_SAVE) {
@@ -2077,32 +2111,30 @@ impl SimDevice {
             // `BASE_SCENE_SLOT` (8) sentinel that recalls base (not a real `scenes[]`
             // entry — HW-confirmed; `session::BASE_SCENE_SLOT`).
             let wire_slot = proto::first_varint(&proto::parse(ls), 1).unwrap_or(0) as u32;
+            // The target scene's stored document; `None` for base.
+            let mut target = None;
             if wire_slot != crate::session::BASE_SCENE_SLOT {
                 let slot0 = st.current_slot;
-                let count =
+                let scenes =
                     serde_json::from_str::<serde_json::Value>(&render_json(&mut st, slot0, true))
                         .ok()
-                        .and_then(|v| {
-                            v.get("scenes")
-                                .and_then(serde_json::Value::as_array)
-                                .map(Vec::len)
+                        .and_then(|mut v| match v.get_mut("scenes")?.take() {
+                            serde_json::Value::Array(a) => Some(a),
+                            _ => None,
                         })
-                        .unwrap_or(0);
+                        .unwrap_or_default();
+                let count = scenes.len();
                 if count == 0 {
                     // Scene-less preset (static RE, fw 1.8.58): the unit swaps the working copy
                     // for its EMPTY template under the same name, answers presetError 6, sets
-                    // the dirty flag and leaves the scene index where it was. Known deviation:
-                    // the fake moves the scene index to the requested one.
+                    // the dirty flag and leaves the scene index where it was, so nothing is
+                    // pushed.
                     st.events.push(SimEvent::LoadScene(wire_slot));
                     st.template_substituted = true;
                     st.dirty = true;
-                    st.current_scene = Some(wire_slot);
                     let mut code = Vec::new();
                     proto::field_varint(&mut code, 1, crate::session::PRESET_ERROR_TEMPLATE);
-                    let mut reports = vec![frame(&preset_message(F_PRESET_ERROR, &code))];
-                    let json = load_echo_json(&mut st, slot0, true);
-                    reports.extend(frame_multi(&current_preset_data_changed(&json)));
-                    return reports;
+                    return vec![frame(&preset_message(F_PRESET_ERROR, &code))];
                 }
                 if wire_slot as usize >= count {
                     // An index past the preset's scenes LIKELY aborts the device server
@@ -2113,6 +2145,20 @@ impl SimDevice {
                     );
                     return Vec::new();
                 }
+                target = scenes.into_iter().nth(wire_slot as usize);
+            }
+            // Every recall applies the target scene's `ftswStates` to the footswitches'
+            // `isActive` flags, never to bypass or DSP (static RE, fw 1.8.58). Base carries none.
+            if let Some(states) = target
+                .as_ref()
+                .and_then(|t| t.get("ftswStates"))
+                .and_then(serde_json::Value::as_array)
+            {
+                let states: Vec<bool> = states
+                    .iter()
+                    .map(|b| b.as_bool().unwrap_or(false))
+                    .collect();
+                st.apply_ftsw_states(&states);
             }
             // Base snapshot (module header): a base → base recall re-applies the snapshot's
             // level, discarding an unsaved `setPresetLevel` and ignoring a save since the last
@@ -2123,26 +2169,26 @@ impl SimDevice {
             } else {
                 st.base_snapshot_level = st.preset_level;
             }
-            st.current_scene = if wire_slot == crate::session::BASE_SCENE_SLOT {
-                None
-            } else {
-                Some(wire_slot)
-            };
+            let new_scene = (wire_slot != crate::session::BASE_SCENE_SLOT).then_some(wire_slot);
+            let changed = st.current_scene != new_scene;
+            st.current_scene = new_scene;
             st.events.push(SimEvent::LoadScene(wire_slot));
             // The loadScene handler sets the dirty flag unconditionally (static RE, fw 1.8.58),
             // so the next same-slot load is real.
             st.dirty = true;
-            let current_slot = st.current_slot;
-            // Push `currentPresetDataChanged`(3) so the un-engaged scene-leveling PRE-PASS can
-            // classify each scene's routing (the device pushes field 3 and `sceneLoaded` (102)
-            // only when the scene index changes; known deviation: the fake pushes field 3 on
-            // every recall) — RENDERED for the recalled scene: its stored overlay applied over base
+            // The device pushes `currentPresetDataChanged`(3) and `sceneLoaded`(102) only when
+            // the scene index changes (static RE, fw 1.8.58).
+            if !changed {
+                return Vec::new();
+            }
+            // Field 3 is RENDERED for the recalled scene: its stored overlay applied over base
             // (`scene_recall_echo_json`), so the live doc carries the values the recall
-            // actually sounds (403 "Clean"'s amps at `outputLevel` 0), not base's. Without the
-            // push the pre-pass harvests nothing and every scene fails to classify ("read
-            // failed").
+            // actually sounds (403 "Clean"'s amps at `outputLevel` 0), not base's.
+            let current_slot = st.current_slot;
             let json = scene_recall_echo_json(&mut st, current_slot);
-            return frame_multi(&current_preset_data_changed(&json));
+            let mut reports = frame_multi(&current_preset_data_changed(&json));
+            reports.extend(frame_multi(&scene_loaded(wire_slot, target.as_ref())));
+            return reports;
         }
         if let Some(cp) = proto::first_bytes(&f, F_CHANGE_PARAMETER) {
             // changeParameter{ group(1), node(2), param(3), floatVal(5) | boolVal(7) }.
@@ -2266,7 +2312,7 @@ impl SimDevice {
             // edit is live-but-unsaved until a `saveCurrentPreset`. The caller confirms it
             // through the field-3 re-prompt above, the read-back branch
             // `leveller::write_fs_values_on_session` falls to. The device also echoes field 54
-            // to every client (static RE, fw 1.8.58); known deviation: the fake sends NO reply.
+            // to every client (static RE, fw 1.8.58).
             let inner = proto::parse(sfa);
             let addr = proto::first_varint(&inner, 1).unwrap_or(0) as u32;
             let index = proto::first_varint(&inner, 2).unwrap_or(0) as u32;
@@ -2286,11 +2332,11 @@ impl SimDevice {
                 // Sets the dirty flag on success (static RE, fw 1.8.58).
                 st.dirty = true;
             }
-            return Vec::new();
+            return frame_multi(&preset_message(F_SET_FOOTSWITCH_ASSIGNMENT, sfa));
         }
         if let Some(cfa) = proto::first_bytes(&f, F_CLEAR_FOOTSWITCH_ASSIGNMENT) {
             // ClearFootswitchAssignment{ footswitchAddress(1), functionIndex(2) } — the same
-            // working-copy model, and the same missing echo, as field 54 above.
+            // working-copy model, and the same echo, as field 54 above.
             let inner = proto::parse(cfa);
             let addr = proto::first_varint(&inner, 1).unwrap_or(0) as u32;
             let index = proto::first_varint(&inner, 2).unwrap_or(0) as u32;
@@ -2300,7 +2346,7 @@ impl SimDevice {
             if st.ftsw_clear(addr, index) {
                 st.dirty = true;
             }
-            return Vec::new();
+            return frame_multi(&preset_message(F_CLEAR_FOOTSWITCH_ASSIGNMENT, cfa));
         }
         if let Some(nj) = proto::first_bytes(&f, F_NODE_JSON_REQUEST) {
             // `nodeJsonRequest`(119) → `nodeJsonResponse`(120){ nodeJsonString(1) }. The
@@ -4123,6 +4169,20 @@ fn current_preset_data_changed(json: &[u8]) -> Vec<u8> {
     preset_message(F_CURRENT_PRESET_DATA_CHANGED, &inner)
 }
 
+/// `sceneLoaded`(102){ sceneSlot(1), sceneJson(2) } — the recall push; `sceneJson` is the
+/// recalled scene's stored document as an lz4 block, absent for base.
+fn scene_loaded(wire_slot: u32, scene: Option<&serde_json::Value>) -> Vec<u8> {
+    let mut inner = Vec::new();
+    if wire_slot != 0 {
+        proto::field_varint(&mut inner, 1, u64::from(wire_slot));
+    }
+    if let Some(sc) = scene {
+        let lz4 = proto::lz4_block_compress_stored(sc.to_string().as_bytes());
+        inner.extend_from_slice(&proto::len_delimited(2, &lz4));
+    }
+    preset_message(F_SCENE_LOADED, &inner)
+}
+
 /// `presetDataChanged`(9) — `{ listEnum(1)=1, presetSlot(2)=dev_slot, presetJson(3) }`.
 /// `presetJson` is PLAINTEXT here (unlike field 3's lz4 block): the read path hands the
 /// field-9 bytes straight to `from_utf8_lossy` (`session::read_slot_preset_json`).
@@ -4913,7 +4973,7 @@ mod scene_context_tests {
     // override for that param is copied into the scene's overlay.
     #[test]
     fn enabling_scene_edit_reseeds_the_node_from_base() {
-        let sim = SimDevice::new();
+        let sim = SimDevice::new().with_preset_json(FOUR_SCENES_FIXTURE);
         let mut s = Session::from_transport(Box::new(sim.clone()));
         s.load_preset(ListIndex(0)).unwrap();
         // A prior scene-3 overlay write on "drive" (as if scene-edited earlier).
@@ -5006,13 +5066,15 @@ mod scene_context_tests {
     }
 
     // (2) A recall applies `ftswStates` to footswitch `isActive` flags only, never to
-    // bypass — a crafted fixture whose `ftswStates[0]` says the switch is active must NOT
-    // override the overlay's bypass (here: the overlay bypasses the block).
+    // bypass — a crafted fixture whose `ftswStates[0]` says the switch is active sets its
+    // `isActive` but must NOT override the overlay's bypass (here: the overlay bypasses the
+    // block).
     #[test]
-    fn scene_recall_ignores_the_stored_ftsw_states_cache_and_derives_from_materialized_bypass() {
+    fn scene_recall_sets_is_active_from_ftsw_states_and_never_bypass() {
         const FIXTURE: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
             {"FenderId":"X","nodeId":"fx","dspUnitParameters":{"bypass":false}}
         ]}},
+        "ftsw":[[{"func":"onOff","groupId":"G1","nodeId":"fx","isActive":false}]],
         "scenes":[
             {"guitarNodes":{"G1":{"fx":{"dspUnitParameters":{"bypass":true}}}},
              "ftswStates":[true]}
@@ -5021,6 +5083,16 @@ mod scene_context_tests {
         let mut s = Session::from_transport(Box::new(sim.clone()));
         s.load_preset(ListIndex(10)).unwrap();
         s.load_scene(0).unwrap();
+        let live = {
+            let mut st = sim.state.lock().expect("sim lock");
+            let slot = st.current_slot;
+            serde_json::from_str::<serde_json::Value>(&render_json(&mut st, slot, true))
+                .expect("json")
+        };
+        assert_eq!(
+            live["ftsw"][0][0]["isActive"], true,
+            "ftswStates[0] sets isActive"
+        );
         assert_eq!(
             sim.rendered_bypass("G1", "fx"),
             Some(true),
@@ -5880,32 +5952,6 @@ mod oracle_and_census_tests {
     }
 
     #[test]
-    fn a_replace_naming_a_missing_node_aborts_the_server() {
-        let sim = SimDevice::new();
-        let ghost = proto::replace_node("G1", "ghost", "ACD_Fuzz", None);
-        assert!(sim.receive(&ghost).is_empty(), "an abort answers nothing");
-        assert!(
-            sim.events().iter().any(
-                |e| matches!(e, SimEvent::ServerAbort { cause } if cause.contains("G1/ghost"))
-            ),
-            "{:?}",
-            sim.events()
-        );
-        // The narrow model: every later send on this fake fails.
-        let level = proto::set_preset_level(0.5);
-        assert!(sim.transact(&level, 0).is_err());
-        assert!(sim.send(&level).is_err());
-        // A replace of a node the group holds is answered normally.
-        let sim = SimDevice::new();
-        sim.receive(&proto::replace_node("G1", "n2", "ACD_Fuzz", None));
-        assert!(!sim
-            .events()
-            .iter()
-            .any(|e| matches!(e, SimEvent::ServerAbort { .. })));
-        assert!(sim.transact(&level, 0).is_ok());
-    }
-
-    #[test]
     fn a_saved_replace_persists_its_minted_id_across_a_reload() {
         let sim = SimDevice::new();
         sim.receive(&proto::replace_node("G1", "n2", "ACD_Fuzz", None));
@@ -6044,5 +6090,201 @@ mod base_snapshot_tests {
         assert!(s.insert_node("G1", None, "ACD_ChorusCE2").unwrap());
         s.load_scene(BASE_SCENE_SLOT).unwrap();
         assert_eq!(sim.preset_level(), 0.55);
+    }
+}
+
+/// The fw 1.8.58 behaviours the fake once deviated from, one test per fact
+/// (`notes/device/structural-edits.md#confirms`, `notes/device/scenes.md#scene-index-bounds` and
+/// `#footswitch-state-on-recall`, `notes/device/reamp-audio.md#re-amp-toggle`).
+#[cfg(test)]
+mod device_parity_tests {
+    use super::*;
+
+    /// A preset with two scenes, an on-off switch and a scene switch.
+    const SCENES_AND_FTSW: &str = r#"{"info":{"displayName":"Two Scenes"},
+        "audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
+            {"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{"bypass":false}},
+            {"FenderId":"ACD_TubeScreamer","nodeId":"fx","dspUnitParameters":{"bypass":false}}
+        ]}},
+        "ftsw":[[{"func":"onOff","groupId":"G1","nodeId":"fx","isActive":false}],
+                [{"func":"scene","sceneSlot":1,"isActive":false}]],
+        "scenes":[
+            {"sceneName":"A","guitarNodes":{"G1":{"fx":{"dspUnitParameters":{"bypass":true}}}},
+             "ftswStates":[true,false]},
+            {"sceneName":"B","guitarNodes":{},"ftswStates":[false,true]}
+        ]}"#;
+
+    /// The bytes of `field` inside `body`.
+    fn sub(body: &[u8], field: u32) -> Option<Vec<u8>> {
+        proto::first_bytes(&proto::parse(body), field).map(<[u8]>::to_vec)
+    }
+
+    /// The `PresetMessage` field number of every message in `reports`.
+    fn preset_fields(reports: &[Vec<u8>]) -> Vec<u32> {
+        proto::reassemble_streams_final(reports)
+            .iter()
+            .filter_map(|s| sub(&s.body, TMS_PRESET))
+            .filter_map(|pm| proto::parse(&pm).first().map(|(field, _)| *field))
+            .collect()
+    }
+
+    fn preset_error_code(reports: &[Vec<u8>]) -> Option<u64> {
+        proto::reassemble_streams_final(reports)
+            .iter()
+            .find_map(|s| {
+                let err = sub(&sub(&s.body, TMS_PRESET)?, F_PRESET_ERROR)?;
+                Some(proto::first_varint(&proto::parse(&err), 1).unwrap_or(0))
+            })
+    }
+
+    fn dirty(sim: &SimDevice) -> bool {
+        sim.state.lock().expect("sim lock").dirty
+    }
+
+    fn scene(sim: &SimDevice) -> Option<u32> {
+        sim.state.lock().expect("sim lock").current_scene
+    }
+
+    /// The working copy's `isActive` flag of each switch's first function.
+    fn is_active(sim: &SimDevice) -> Vec<bool> {
+        let mut st = sim.state.lock().expect("sim lock");
+        let slot = st.current_slot;
+        let doc: serde_json::Value =
+            serde_json::from_str(&render_json(&mut st, slot, true)).expect("json");
+        doc["ftsw"]
+            .as_array()
+            .expect("ftsw")
+            .iter()
+            .map(|sw| sw[0]["isActive"].as_bool().unwrap_or(false))
+            .collect()
+    }
+
+    fn loaded(json: &str) -> SimDevice {
+        let sim = SimDevice::new().with_preset_json(json);
+        sim.receive(&proto::load_preset(1, 1));
+        assert!(!dirty(&sim), "a real load leaves the working copy clean");
+        sim
+    }
+
+    #[test]
+    fn a_replace_naming_a_missing_node_gets_preset_error_14_and_no_abort() {
+        let sim = loaded(SCENES_AND_FTSW);
+        let reports = sim.receive(&proto::replace_node("G1", "ghost", "ACD_Fuzz", None));
+        assert_eq!(preset_error_code(&reports), Some(14));
+        assert!(
+            !preset_fields(&reports).contains(&F_NODE_REPLACED),
+            "no nodeReplaced for a node the group lacks"
+        );
+        assert!(!dirty(&sim), "a refused replace sets no dirty flag");
+        assert!(!sim
+            .events()
+            .iter()
+            .any(|e| matches!(e, SimEvent::ServerAbort { .. })));
+        // The server is still up: a replace of a node the group holds confirms.
+        let reports = sim.receive(&proto::replace_node("G1", "fx", "ACD_Fuzz", None));
+        assert!(preset_fields(&reports).contains(&F_NODE_REPLACED));
+        assert!(sim.transact(&proto::set_preset_level(0.5), 0).is_ok());
+    }
+
+    #[test]
+    fn a_scene_recall_on_a_sceneless_preset_substitutes_the_template_and_keeps_the_index() {
+        let sim = loaded(
+            r#"{"info":{"displayName":"No Scenes"},"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
+            {"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{"bypass":false}}]}}}"#,
+        );
+        let before = scene(&sim);
+        let reports = sim.receive(&proto::load_scene(2));
+        assert_eq!(
+            preset_error_code(&reports),
+            Some(crate::session::PRESET_ERROR_TEMPLATE)
+        );
+        assert_eq!(scene(&sim), before, "the scene index is unchanged");
+        assert!(dirty(&sim));
+        let mut st = sim.state.lock().expect("sim lock");
+        let doc: serde_json::Value =
+            serde_json::from_str(&render_json(&mut st, 0, true)).expect("json");
+        assert_eq!(doc["info"]["displayName"], "No Scenes");
+        assert_eq!(
+            doc["info"]["preset_id"],
+            crate::library::TEMPLATE_PRESET_ID,
+            "the working copy is the empty template under the preset's name"
+        );
+    }
+
+    #[test]
+    fn footswitch_assignment_setters_echo_to_every_client() {
+        let sim = loaded(SCENES_AND_FTSW);
+        let set = sim.receive(&proto::set_footswitch_assignment(
+            1,
+            0,
+            r#"{"func":"scene","sceneSlot":0}"#,
+            false,
+            None,
+        ));
+        assert_eq!(preset_fields(&set), vec![F_SET_FOOTSWITCH_ASSIGNMENT]);
+        let clear = sim.receive(&proto::clear_footswitch_assignment(1, 0));
+        assert_eq!(preset_fields(&clear), vec![F_CLEAR_FOOTSWITCH_ASSIGNMENT]);
+    }
+
+    #[test]
+    fn the_settings_reamp_toggle_echoes_even_when_nothing_changed() {
+        let sim = SimDevice::new();
+        let echo = |reports: &[Vec<u8>]| -> Option<Vec<u8>> {
+            proto::reassemble_streams_final(reports)
+                .iter()
+                .find_map(|s| sub(&sub(&s.body, TMS_SETTINGS)?, F_REAMP_SETTING))
+        };
+        for _ in 0..2 {
+            let on = echo(&sim.receive(&proto::set_reamp_mode(true))).expect("ON echo");
+            assert_eq!(proto::first_varint(&proto::parse(&on), 1), Some(1));
+        }
+        let off = echo(&sim.receive(&proto::set_reamp_mode(false))).expect("OFF echo");
+        assert_eq!(
+            proto::first_varint(&proto::parse(&off), 1),
+            None,
+            "OFF is the empty flag"
+        );
+    }
+
+    #[test]
+    fn a_scene_recall_pushes_only_when_the_scene_index_changes() {
+        let sim = loaded(SCENES_AND_FTSW);
+        let base = crate::session::BASE_SCENE_SLOT;
+        assert!(preset_fields(&sim.receive(&proto::load_scene(base as u64))).is_empty());
+        let first = preset_fields(&sim.receive(&proto::load_scene(0)));
+        assert!(first.contains(&3) && first.contains(&F_SCENE_LOADED));
+        assert!(
+            preset_fields(&sim.receive(&proto::load_scene(0))).is_empty(),
+            "a recall of the active scene pushes nothing"
+        );
+        let back = preset_fields(&sim.receive(&proto::load_scene(base as u64)));
+        assert!(back.contains(&3) && back.contains(&F_SCENE_LOADED));
+    }
+
+    #[test]
+    fn a_same_name_rename_sends_nothing_and_leaves_dirty_clear() {
+        let sim = loaded(SCENES_AND_FTSW);
+        assert!(sim
+            .receive(&proto::rename_current_preset("Two Scenes"))
+            .is_empty());
+        assert!(!dirty(&sim));
+        sim.receive(&proto::rename_current_preset("Renamed"));
+        assert!(dirty(&sim), "a real rename sets the dirty flag");
+    }
+
+    #[test]
+    fn every_recall_applies_the_scenes_ftsw_states_to_is_active_only() {
+        let sim = loaded(SCENES_AND_FTSW);
+        assert_eq!(is_active(&sim), vec![false, false]);
+        sim.receive(&proto::load_scene(0));
+        assert_eq!(is_active(&sim), vec![true, false]);
+        assert_eq!(
+            sim.rendered_bypass("G1", "fx"),
+            Some(true),
+            "the overlay's bypass governs; ftswStates[0]=true changes no bypass"
+        );
+        sim.receive(&proto::load_scene(1));
+        assert_eq!(is_active(&sim), vec![false, true]);
+        assert_eq!(sim.rendered_bypass("G1", "fx"), Some(false));
     }
 }

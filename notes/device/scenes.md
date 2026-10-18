@@ -87,7 +87,7 @@ A scene renders the base chain's own state for any node its overlay has no entry
 Levelling a footswitch handle on a base-on block therefore moves every scene of the preset by the same dB: cutting a base-on `ACD_TubeScreamer.level` by 2.0 dB moved all three scenes by 2.0 dB [HW].
 Under MAINTAIN, a recall first refreshes the outgoing scene's `ftswStates` from the live footswitch state [RE].
 A scene footswitch ignores its stored `isActive`, which can disagree with its LED ([Panel and footswitch scene changes](#panel-and-footswitch-scene-changes)) [HW].
-`SimDevice` derives footswitch state from bypass instead.
+`SimDevice` models the `isActive` write.
 
 ### Panel and footswitch scene changes
 

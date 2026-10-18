@@ -1266,7 +1266,8 @@ fn scene_knob(param: &str) -> LevelKnob {
 // corruption: scene tone params reseeded to base while the leveled value survived).
 #[test]
 fn set_knobs_omits_the_scene_edit_enable_when_the_overlay_exists() {
-    let sim = crate::sim_device::SimDevice::new();
+    let sim = crate::sim_device::SimDevice::new()
+        .with_preset_json(crate::sim_device::FOUR_SCENES_FIXTURE);
     let mut s = Session::from_transport(Box::new(sim.clone()));
     s.load_preset(ListIndex(0)).expect("load_preset");
     // Base gain 0.7; scene 0 already carries its own gain 0.3 (what the reseed wipes).
