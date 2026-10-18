@@ -1161,6 +1161,7 @@ pub fn scene_contexts_for_switches(preset: &Value) -> Vec<FsSceneContext> {
 /// customLabels of any whose valueType is NOT a JSON number)`. Deliberately does NOT look
 /// at the `exp` block: its entries legitimately carry the STRING `"valueType": "float"`
 /// (verified against a verbatim device export) and must not be gated by this shape.
+#[cfg(test)]
 pub(crate) fn param_entries_missing_value_type(p: &Value) -> (usize, Vec<String>) {
     let params: Vec<&Value> = p["ftsw"]
         .as_array()
@@ -1183,6 +1184,7 @@ pub(crate) fn param_entries_missing_value_type(p: &Value) -> (usize, Vec<String>
 }
 
 /// Indices of the `ftsw` rows stacking more than one entry.
+#[cfg(test)]
 pub(crate) fn stacked_ftsw_rows(p: &Value) -> Vec<usize> {
     p["ftsw"]
         .as_array()
@@ -1196,24 +1198,74 @@ pub(crate) fn stacked_ftsw_rows(p: &Value) -> Vec<usize> {
         .unwrap_or_default()
 }
 
-/// Refuse an import body carrying either footswitch shape the app does not import: a
-/// `func:"param"` entry with no numeric `valueType` (the firmware rejects the whole preset at
-/// its first real load, fw 1.8.58), or a row stacking more than one entry (legal on fw 1.8.58;
-/// refused as a conservative choice). See `danger.md`.
-pub fn validate_import_body(p: &Value) -> Result<(), String> {
-    let (_, missing) = param_entries_missing_value_type(p);
-    if !missing.is_empty() {
-        return Err(format!(
-            "import refused: param footswitches {missing:?} carry no numeric valueType — \
-             the firmware would replace the whole preset with a default body"
-        ));
+/// The most entries one `ftsw` row may carry (fw 1.8.58, static RE).
+const MAX_ROW_ENTRIES: usize = 5;
+
+/// What is wrong with one `func:"param"` `ftsw` entry, per fw 1.8.58's load-time checks
+/// (static RE): every required key present with its JSON type, and `valueA`/`valueB`
+/// matching `valueType` (1 int and 2 float take a number or a boolean, 3 a boolean, 4 a
+/// string; any other number only logs). `None` = the entry loads.
+fn param_entry_fault(e: &Value) -> Option<String> {
+    type Check = (&'static str, fn(&Value) -> bool, &'static str);
+    let typed: [Check; 9] = [
+        ("groupId", Value::is_string, "a string"),
+        ("nodeId", Value::is_string, "a string"),
+        ("parameterId", Value::is_string, "a string"),
+        ("customLabel", Value::is_string, "a string"),
+        ("valueType", Value::is_number, "a number"),
+        ("colorA", Value::is_number, "a number"),
+        ("colorB", Value::is_number, "a number"),
+        ("switchType", Value::is_number, "a number"),
+        ("isActive", Value::is_boolean, "a boolean"),
+    ];
+    if let Some((key, _, want)) = typed.iter().find(|(key, ok, _)| !ok(&e[*key])) {
+        return Some(format!("{key} is not {want}"));
     }
-    let stacked = stacked_ftsw_rows(p);
-    if !stacked.is_empty() {
-        return Err(format!(
-            "import refused: footswitch rows {stacked:?} stack more than one entry — the \
-             app does not import that footswitch shape"
-        ));
+    let value_type = e["valueType"].as_f64().filter(|t| t.fract() == 0.0);
+    let (fits, want): (fn(&Value) -> bool, &str) = match value_type.map(|t| t as i64) {
+        Some(1 | 2) => (|v| v.is_number() || v.is_boolean(), "a number or a boolean"),
+        Some(3) => (Value::is_boolean, "a boolean"),
+        Some(4) => (Value::is_string, "a string"),
+        _ => return None,
+    };
+    ["valueA", "valueB"]
+        .into_iter()
+        .find(|key| !fits(&e[*key]))
+        .map(|key| format!("{key} is not {want} for valueType {}", e["valueType"]))
+}
+
+/// Refuse an import body whose footswitches the firmware would reject at its first real
+/// load, which turns the whole preset into an empty body under its name (fw 1.8.58): a
+/// `func:"param"` entry missing a required key or carrying a wrong-typed one
+/// ([`param_entry_fault`]), or a row over [`MAX_ROW_ENTRIES`]. A row stacking more than
+/// one entry is legal on fw 1.8.58 and refused as a conservative choice. See `danger.md`.
+pub fn validate_import_body(p: &Value) -> Result<(), String> {
+    let rows = p["ftsw"].as_array().map(Vec::as_slice).unwrap_or_default();
+    for (i, row) in rows.iter().enumerate() {
+        let entries = row.as_array().map(Vec::as_slice).unwrap_or_default();
+        for e in entries.iter().filter(|e| e["func"] == "param") {
+            if let Some(why) = param_entry_fault(e) {
+                return Err(format!(
+                    "import refused: param footswitch {:?} on row {i}: {why} — the firmware \
+                     would replace the whole preset with a default body",
+                    e["customLabel"].as_str().unwrap_or("<unlabeled>")
+                ));
+            }
+        }
+        if entries.len() > MAX_ROW_ENTRIES {
+            return Err(format!(
+                "import refused: footswitch row {i} carries {} entries, over the \
+                 firmware's {MAX_ROW_ENTRIES} — it would replace the whole preset with a \
+                 default body",
+                entries.len()
+            ));
+        }
+        if entries.len() > 1 {
+            return Err(format!(
+                "import refused: footswitch row {i} stacks more than one entry — the app \
+                 does not import that footswitch shape"
+            ));
+        }
     }
     Ok(())
 }
@@ -1221,13 +1273,15 @@ pub fn validate_import_body(p: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::full_param;
 
     #[test]
     fn validate_import_body_refuses_only_the_hw_proven_discard_shapes() {
         let param = |vt: Option<Value>| {
-            let mut e = serde_json::json!({"func": "param", "customLabel": "VERB"});
-            if let Some(v) = vt {
-                e["valueType"] = v;
+            let mut e = full_param();
+            match vt {
+                Some(v) => e["valueType"] = v,
+                None => drop(e.as_object_mut().unwrap().remove("valueType")),
             }
             e
         };
@@ -1237,10 +1291,102 @@ mod tests {
         assert!(validate_import_body(&no_vt).unwrap_err().contains("VERB"));
         let on_off = serde_json::json!({"func": "on-off"});
         let stacked = serde_json::json!({"ftsw": [[], [on_off, param(Some(2.into()))]]});
-        assert!(validate_import_body(&stacked).unwrap_err().contains("[1]"));
+        assert!(validate_import_body(&stacked)
+            .unwrap_err()
+            .contains("row 1"));
         // The `exp` block's STRING valueType is device-authored and stays legal.
         let exp = serde_json::json!({"exp": {"exp1": [{"func": "param", "valueType": "float"}]}});
         assert!(validate_import_body(&exp).is_ok());
+    }
+
+    #[test]
+    fn validate_import_body_refuses_every_param_entry_the_firmware_rejects_at_load() {
+        let body = |e: Value| serde_json::json!({"ftsw": [[], [e]]});
+        assert!(validate_import_body(&body(full_param())).is_ok());
+        let mut no_link = full_param();
+        no_link.as_object_mut().unwrap().remove("linkGroup");
+        assert!(
+            validate_import_body(&body(no_link)).is_ok(),
+            "linkGroup is optional"
+        );
+        let required = [
+            "groupId",
+            "nodeId",
+            "parameterId",
+            "valueType",
+            "valueA",
+            "valueB",
+            "colorA",
+            "colorB",
+            "customLabel",
+            "switchType",
+            "isActive",
+        ];
+        for key in required {
+            let mut e = full_param();
+            e.as_object_mut().unwrap().remove(key);
+            assert!(validate_import_body(&body(e)).is_err(), "missing {key}");
+        }
+        for (key, wrong) in [
+            ("groupId", serde_json::json!(1)),
+            ("nodeId", serde_json::json!(null)),
+            ("parameterId", serde_json::json!(true)),
+            ("customLabel", serde_json::json!(7)),
+            ("colorA", serde_json::json!("3")),
+            ("colorB", serde_json::json!(false)),
+            ("switchType", serde_json::json!("1")),
+            ("isActive", serde_json::json!(0)),
+        ] {
+            let mut e = full_param();
+            e[key] = wrong;
+            let err = validate_import_body(&body(e)).unwrap_err();
+            assert!(err.contains(key) && err.contains("row 1"), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn validate_import_body_matches_value_a_and_b_to_the_value_type() {
+        let entry = |vt: Value, a: Value, b: Value| {
+            let mut e = full_param();
+            (e["valueType"], e["valueA"], e["valueB"]) = (vt, a, b);
+            serde_json::json!({"ftsw": [[e]]})
+        };
+        use serde_json::json;
+        let ok = [
+            (json!(1), json!(3), json!(true)),
+            (json!(1), json!(0.5), json!(2)),
+            (json!(2), json!(0.5), json!(1)),
+            (json!(2), json!(false), json!(0.9)),
+            (json!(3), json!(true), json!(false)),
+            (json!(4), json!("a"), json!("b")),
+            // valueType 0 or an unknown value only logs on the unit.
+            (json!(0), json!("x"), json!(null)),
+            (json!(9), json!([]), json!({})),
+        ];
+        for (vt, a, b) in ok {
+            let p = entry(vt, a, b);
+            assert!(validate_import_body(&p).is_ok(), "{p}");
+        }
+        let bad = [
+            (json!(1), json!("3"), json!(1), "valueA"),
+            (json!(2), json!(0.5), json!(null), "valueB"),
+            (json!(3), json!(1), json!(true), "valueA"),
+            (json!(3), json!(true), json!(0), "valueB"),
+            (json!(4), json!(1), json!("b"), "valueA"),
+            (json!(4), json!("a"), json!(false), "valueB"),
+        ];
+        for (vt, a, b, key) in bad {
+            let err = validate_import_body(&entry(vt, a, b)).unwrap_err();
+            assert!(err.contains(key), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn validate_import_body_refuses_a_row_over_five_entries() {
+        let on_off = || serde_json::json!({"func": "on-off"});
+        let six = serde_json::json!({"ftsw": [[], (0..6).map(|_| on_off()).collect::<Vec<_>>()]});
+        let err = validate_import_body(&six).unwrap_err();
+        assert!(err.contains("row 1") && err.contains("6 entries"), "{err}");
     }
 
     /// Static RE names a `ftsw` row count other than 10 or 20 as a load-time reject, but

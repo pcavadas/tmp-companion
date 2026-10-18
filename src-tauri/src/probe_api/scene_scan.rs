@@ -231,17 +231,7 @@ pub fn probe_scene_doc(list_index: ListIndex, scenes: &[u32]) -> Result<String, 
         Err(e) => out += &format!("[post-load] no doc: {e}\n"),
     }
     for &sc in scenes {
-        s.raw.clear();
-        s.send_and_collect(&proto::load_scene(sc as u64), 300)?;
-        let mut doc = None;
-        for _ in 0..4 {
-            s.heartbeat()?;
-            s.pump_silent(150)?;
-            if let Ok(v) = s.current_preset_value() {
-                doc = Some(v);
-                break;
-            }
-        }
+        let doc = s.recall_scene_doc(sc)?;
         match doc {
             Some(d) => out += &fmt_doc(&format!("recall scene {sc}"), &d),
             None => out += &format!("[recall scene {sc}] NO DOC harvested\n"),
@@ -322,17 +312,7 @@ pub fn probe_scene_node_doc(
         Err(e) => out += &format!("[post-load] no doc: {e}\n"),
     }
     for &sc in scenes {
-        s.raw.clear();
-        s.send_and_collect(&proto::load_scene(sc as u64), 300)?;
-        let mut doc = None;
-        for _ in 0..4 {
-            s.heartbeat()?;
-            s.pump_silent(150)?;
-            if let Ok(v) = s.current_preset_value() {
-                doc = Some(v);
-                break;
-            }
-        }
+        let doc = s.recall_scene_doc(sc)?;
         match doc {
             Some(d) => out += &fmt_doc(&format!("recall scene {sc}"), &d, group, node),
             None => out += &format!("[recall scene {sc}] NO DOC harvested\n"),

@@ -130,11 +130,8 @@ pub fn probe_import_reload_check(path: &str) -> Result<String, String> {
 
         // Import with no further load; read the working copy on the same connection.
         let mut s = Session::connect()?;
-        let echo = s.import_preset_echo(&bytes)?;
-        let echo = match echo {
-            Some(e) => Some(e),
-            None => s.await_import_echo(ECHO_LOG_MS)?,
-        };
+        s.import_preset(&bytes)?;
+        let echo = s.await_import_echo(ECHO_LOG_MS)?;
         let same = working_copy(&mut s)?;
         drop(s);
         let fresh = working_copy(&mut Session::connect()?)?;

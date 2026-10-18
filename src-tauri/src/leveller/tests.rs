@@ -1181,9 +1181,7 @@ fn set_knobs_preset_level_only_gets_no_recall() {
 // level.online.spec.ts base idempotency test covers it).
 #[test]
 fn recall_reassert_save_replays_the_unsaved_level_after_the_recall() {
-    let sim = crate::sim_device::SimDevice::new()
-        .with_preset_json(crate::sim_device::SCENED_PRESET_JSON)
-        .with_saved_scene(30, Some(3));
+    let sim = crate::sim_device::SimDevice::scened().with_saved_scene(30, Some(3));
     let mut s = Session::from_transport(Box::new(sim.clone()));
     s.load_preset(ListIndex(30)).expect("load_preset");
     recall_reassert_save(
@@ -1307,7 +1305,7 @@ fn set_knobs_omits_the_scene_edit_enable_when_the_overlay_exists() {
 // MATERIALISES the overlay, so without it the write LEAKS TO BASE. It must be sent.
 #[test]
 fn set_knobs_enables_scene_edit_when_the_overlay_is_absent() {
-    let sim = crate::sim_device::SimDevice::new();
+    let sim = crate::sim_device::SimDevice::scened();
     let mut s = Session::from_transport(Box::new(sim.clone()));
     s.load_preset(ListIndex(0)).expect("load_preset");
     let knob = scene_knob("outputLevel");
@@ -2675,9 +2673,7 @@ fn write_fs_values_assign_composes_a_numeric_value_type() {
 // recalled so the save re-stamps it (HW: the FS save stamped 8 over the user's scene 3).
 #[test]
 fn write_fs_values_mirrors_the_bake_and_restores_the_saved_scene() {
-    let sim = crate::sim_device::SimDevice::new()
-        .with_preset_json(crate::sim_device::SCENED_PRESET_JSON)
-        .with_saved_scene(30, Some(3));
+    let sim = crate::sim_device::SimDevice::scened().with_saved_scene(30, Some(3));
     let mut s = Session::from_transport(Box::new(sim.clone()));
     let pending = vec![FsPendingWrite {
         switch: 1,
@@ -2920,7 +2916,7 @@ fn arm_pair_measurement_does_not_heartbeat_when_writes_are_present() {
 // double-settle gap, so it must never gain the base-arm breaker either.
 #[test]
 fn arm_pair_measurement_scene_arm_never_heartbeats() {
-    let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
+    let sim = crate::sim_device::SimDevice::scened().with_saved_scene(30, Some(3));
     let mut s = Session::from_transport(Box::new(sim.clone()));
     s.load_preset(ListIndex(30)).expect("load_preset");
     arm_pair_measurement(&mut s, Some(2), 0.5, &[]).expect("arm");

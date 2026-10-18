@@ -108,7 +108,7 @@ So a USB `loadScene(0)` stands in for selecting scene 0 from another scene, and 
 A later save persists the empty body, the [rejected-at-load](presets.md#rejected-at-load) data-loss class.
 `loadScene(8)` on such a preset takes the base path and is safe.
 On a preset with scenes, an index at or past the scene count throws out of range with no catch and likely aborts the server [RE, likely].
-`Session::load_scene` does not check the index, so its caller must; never save after a `loadScene` that drew `presetError` 6.
+`Session::load_scene` and `Session::recall_scene_doc` ask the unit for its scene list (`sceneListRequest` (126), answered with `sceneListResponse` (125)) before any recall but 8, and refuse an index at or past its length unsent, or when no reply lands; never save after a `loadScene` that drew `presetError` 6.
 
 ## Batched scene save
 

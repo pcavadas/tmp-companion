@@ -1819,26 +1819,49 @@ fn list_factory_presets_waits_out_a_streaming_reply() {
     assert_eq!(s.list_factory_presets().unwrap().len(), 120);
 }
 
-/// The import echo trails the upload by more than the inactivity drop; the wait keeps
-/// the client alive so the echo is not discarded.
+/// An import returns once its upload is sent, with no wait for an `importPresetResponse`
+/// the unit does not send (fw 1.8.58): nothing goes out after the upload. The probe's
+/// echo log waits on its own, keeping the client alive past the inactivity drop.
 #[test]
-fn import_preset_keeps_the_echo_window_alive() {
+fn import_preset_returns_after_the_upload_and_the_probe_waits_for_the_echo() {
     let bytes = b"{\"info\":{}}".to_vec();
     let body = proto::import_preset_request(&proto::lz4_block_compress_stored(&bytes));
     let echo = crate::test_support::import_echo_frames(1, 7);
     let t = ScriptedTransport::device().with_reply_to(&body, vec![Vec::new(), Vec::new(), echo]);
     let mut s = session_over(&t, Vec::new());
-    assert_eq!(s.import_preset_echo(&bytes).unwrap(), Some((1, 7)));
+    s.import_preset(&bytes).unwrap();
+    let after_upload = t.sent.lock().unwrap().len();
+    assert_eq!(s.import_echo(), None, "no wait ran past the upload");
+    assert_eq!(s.await_import_echo(1500).unwrap(), Some((1, 7)));
+    assert!(
+        t.sent.lock().unwrap().len() > after_upload,
+        "the echo wait heartbeats"
+    );
 }
 
 /// A body carrying a HW-proven discard shape is refused before a single frame leaves.
 #[test]
 fn import_preset_refuses_a_discard_shape_before_sending() {
-    let doc = br#"{"ftsw":[[{"func":"on-off"},{"func":"param","valueType":2}]]}"#;
-    let bytes = crate::backup::xor_jld(doc);
+    let doc =
+        serde_json::json!({"ftsw": [[{"func": "on-off"}, crate::test_support::full_param()]]});
+    let bytes = crate::backup::xor_jld(doc.to_string().as_bytes());
     let t = ScriptedTransport::device();
     let mut s = session_over(&t, Vec::new());
     assert!(s.import_preset(&bytes).unwrap_err().contains("stack"));
+    assert!(t.sent.lock().unwrap().is_empty());
+}
+
+/// A param footswitch the firmware rejects at load (here a string `valueA` on a float
+/// `valueType`) is refused at the import choke point, before a single frame leaves.
+#[test]
+fn import_preset_refuses_a_load_rejected_param_entry_before_sending() {
+    let mut entry = crate::test_support::full_param();
+    entry["valueA"] = "0.2".into();
+    let doc = serde_json::json!({"ftsw": [[entry]]});
+    let bytes = crate::backup::xor_jld(doc.to_string().as_bytes());
+    let t = ScriptedTransport::device();
+    let mut s = session_over(&t, Vec::new());
+    assert!(s.import_preset(&bytes).unwrap_err().contains("valueA"));
     assert!(t.sent.lock().unwrap().is_empty());
 }
 
@@ -1868,14 +1891,33 @@ fn saved_events(sim: &crate::sim_device::SimDevice) -> usize {
 }
 
 /// `loadScene(N≠8)` on a scene-less preset swaps in the unit's empty template (presetError
-/// 6, static RE); the save choke point refuses it and sends nothing.
+/// 6, static RE), so `load_scene` refuses it unsent and the preset stays saveable.
 #[test]
-fn a_scene_recall_on_a_scene_less_preset_blocks_the_save() {
+fn load_scene_refuses_a_scene_on_a_scene_less_preset_unsent() {
     let sim = crate::sim_device::SimDevice::new();
     let mut s = Session::from_transport(Box::new(sim.clone()));
     s.load_preset(ListIndex(0)).expect("load");
+    let err = s.load_scene(0).expect_err("refused");
+    assert!(err.contains("0 scenes"), "{err}");
+    assert!(!sim
+        .events()
+        .iter()
+        .any(|e| matches!(e, crate::sim_device::SimEvent::LoadScene(_))));
     assert!(!s.template_substituted());
-    s.load_scene(0).expect("recall");
+    s.load_scene(BASE_SCENE_SLOT).expect("base is always safe");
+    s.save_current_preset(ListIndex(0)).expect("save");
+    assert_eq!(saved_events(&sim), 1);
+}
+
+/// The save choke point still refuses a working copy the unit swapped for its template
+/// (here a scene recall that reached the fake without the session's bounds check).
+#[test]
+fn a_template_substituted_by_a_scene_recall_blocks_the_save() {
+    let sim = crate::sim_device::SimDevice::new();
+    let mut s = Session::from_transport(Box::new(sim.clone()));
+    s.load_preset(ListIndex(0)).expect("load");
+    s.transact_eager(&proto::load_scene(0), 300)
+        .expect("raw recall");
     assert!(s.template_substituted(), "presetError 6 was answered");
     assert_eq!(
         s.save_current_preset(ListIndex(0)).expect_err("refused"),
@@ -1931,8 +1973,7 @@ fn the_template_guard_survives_a_new_session() {
 /// The base sentinel (8) and an in-range scene leave the guard clear.
 #[test]
 fn a_valid_scene_recall_keeps_saves_open() {
-    let sim =
-        crate::sim_device::SimDevice::new().with_preset_json(crate::sim_device::SCENED_PRESET_JSON);
+    let sim = crate::sim_device::SimDevice::scened();
     let mut s = Session::from_transport(Box::new(sim.clone()));
     s.load_preset(ListIndex(0)).expect("load");
     s.load_scene(BASE_SCENE_SLOT).expect("base");
@@ -1942,20 +1983,49 @@ fn a_valid_scene_recall_keeps_saves_open() {
     assert_eq!(saved_events(&sim), 1);
 }
 
-/// A scene index past the preset's scenes aborts the device server (static RE): the fake
-/// records it, so a caller that sends one is caught offline.
+/// A scene index past the preset's scenes likely aborts the device server (static RE):
+/// `load_scene` refuses it unsent, so the fake never sees the recall.
 #[test]
-fn a_scene_index_past_the_scenes_aborts_the_server() {
+fn load_scene_refuses_an_index_past_the_scenes_unsent() {
     let sim = crate::sim_device::SimDevice::new().with_preset_json(
-        r#"{"audioGraph":{"guitarNodes":{"G1":[]}},"scenes":[{"sceneName":"A"},{"sceneName":"B"}]}"#,
+        r#"{"audioGraph":{"guitarNodes":{"G1":[]}},"scenes":[{"sceneName":"A"},{"sceneName":""}]}"#,
     );
     let mut s = Session::from_transport(Box::new(sim.clone()));
     s.load_preset(ListIndex(0)).expect("load");
-    let _ = s.load_scene(2);
-    assert!(sim
-        .events()
+    s.load_scene(1).expect("an unnamed scene still counts");
+    let err = s.load_scene(2).expect_err("refused");
+    assert!(err.contains("2 scenes"), "{err}");
+    let ev = sim.events();
+    assert!(!ev
         .iter()
         .any(|e| matches!(e, crate::sim_device::SimEvent::ServerAbort { .. })));
+    assert!(!ev
+        .iter()
+        .any(|e| matches!(e, crate::sim_device::SimEvent::LoadScene(2))));
+}
+
+/// No `sceneListResponse` means no known scene count: the recall is refused, never sent
+/// on a guess, and the wait keeps the client alive past the inactivity drop.
+#[test]
+fn load_scene_refuses_when_the_scene_count_never_arrives() {
+    let t = ScriptedTransport::device();
+    let mut s = session_over(&t, Vec::new());
+    let err = s.load_scene(0).expect_err("refused");
+    assert!(err.contains("sceneListRequest"), "{err}");
+    let sent = t.sent.lock().unwrap();
+    assert!(sent.iter().all(|b| !b.ends_with(&proto::load_scene(0))));
+    assert!(sent
+        .iter()
+        .any(|b| b.ends_with(&proto::scene_list_request())));
+}
+
+/// A scene list buffered before the request (an earlier preset's push) never answers it.
+#[test]
+fn load_scene_counts_only_a_scene_list_that_answers_its_request() {
+    let stale = crate::test_support::scene_list_frames(&["A", "B", "C"]);
+    let t = ScriptedTransport::device();
+    let mut s = session_over(&t, stale);
+    assert!(s.load_scene(0).is_err(), "the buffered list is not a reply");
 }
 
 #[test]
