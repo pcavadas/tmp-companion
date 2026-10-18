@@ -79,6 +79,12 @@ A missing 77 means the level change failed on the unit, and a save would then st
 The code still ends a save's connection before any load.
 Never add a preset load before `save_deferred_scene_writes`: its unsaved writes set the dirty flag, so the load would be a real reload that wipes them.
 
+## Parameter ranges
+
+A float `changeParameter` (12) stores its value verbatim, outside the block's control range too: `ACD_Boost.gain` (range 0–10 dB) kept 12 and −2, and Studio Compressor `makeupgaindb` (range −30…+30 dB) kept 35 and −35, read back from the working copy [HW].
+The control ranges live only in the firmware's block definitions [RE], so the app's own bounds (`src/models/param-class.json` through `param_class::ParamInfo.range`, and the leveller's `outputLevel` clamp) are the only guard against an out-of-range write.
+Unknown: whether the DSP clamps the audio of such a value, and what a save or the unit's own UI does with it.
+
 ## Loading
 
 A `loadPreset` sends `presetError` 6 if the body was rejected, `presetChanged` (25) if the row changed, then the full push set (field 3, `presetLoaded` (11), field 22, `sceneListResponse` (125), `sceneLoaded` (102)), even after a no-op load [RE].

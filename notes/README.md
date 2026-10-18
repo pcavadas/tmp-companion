@@ -4,7 +4,7 @@ The one index of `notes/`; each note owns its subject, and module headers (`//!`
 
 - [`architecture.md`](architecture.md): read first, to find where something lives — tabs, data paths, platforms, module map.
 - [`device/session.md`](device/session.md): read when touching `hid.rs`, `session/` or `monitor.rs`, or debugging a connection — transports, the exclusive seize, the 750 ms session lapse, request batching, reply queues, the monitor.
-- [`device/presets.md`](device/presets.md): read before any code that reads, saves, imports or loads a preset — slot addressing, reads, saves, loads, imports, rejected bodies, preset identity, footswitch JSON.
+- [`device/presets.md`](device/presets.md): read before any code that reads, saves, imports or loads a preset — slot addressing, reads, saves, parameter ranges, loads, imports, rejected bodies, preset identity, footswitch JSON.
 - [`device/structural-edits.md`](device/structural-edits.md): read before any code that replaces, inserts or removes a block — edit ops, confirms, node ids, the insert abort, block caps.
 - [`device/scenes.md`](device/scenes.md): read before any scene-context write or measurement — scene context, Scene Change Behavior, where scene writes land, recall behaviour, scene bounds.
 - [`device/reamp-audio.md`](device/reamp-audio.md): read before touching re-amp or capture code — the re-amp toggle, engage and capture accuracy, silent captures, stuck re-amp, sample rate, routing, platform audio.
