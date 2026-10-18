@@ -1,7 +1,7 @@
 # Copy blocks
 
 The Copy tab copies signal-chain blocks from one source preset into one or more target presets, with per-target placement: replace a block, insert one before or after a position, or remove one.
-Device facts it relies on live in [device/presets.md#structural-edits](device/presets.md#structural-edits) and [device/presets.md#insert-abort](device/presets.md#insert-abort).
+Device facts it relies on live in [device/structural-edits.md](device/structural-edits.md) and [device/structural-edits.md#insert-abort](device/structural-edits.md#insert-abort).
 
 ## Flow
 
@@ -28,11 +28,11 @@ Targets that are not the active preset are drawn from `BackupPresetRow.graph` (t
 
 ## Live edits
 
-`copy_apply` runs each target's op list (`replaceNode`, `replaceNodeWithBlock`, `insertNode`, `removeNode`) on one held session, re-armed per preset; the wire shapes, confirms and node-id minting are in [device/presets.md#structural-edits](device/presets.md#structural-edits).
-Every insert is checked with `blockcaps::check_op` first, and its anchor (an original block's `nodeId`, or an earlier insert's key) is resolved to the device's current id through `DeviceIds`, because a missing anchor or an over-budget insert aborts the device server ([device/presets.md#insert-abort](device/presets.md#insert-abort)).
-`diffToOps` emits removes, then replaces, then inserts right to left, so each insert's anchor is still present when it lands ([device/presets.md#node-ids](device/presets.md#node-ids); `copyModel.test.ts` "INV-A").
-Never save on `presetError` or an unconfirmed edit; an unconfirmed edit is read back and re-sent once only when it visibly did not land ([device/presets.md#confirms](device/presets.md#confirms)).
-Block-mutation code touches all three places a block lives and never normalizes ids ([device/presets.md#three-keyed-places](device/presets.md#three-keyed-places)).
+`copy_apply` runs each target's op list (`replaceNode`, `replaceNodeWithBlock`, `insertNode`, `removeNode`) on one held session, re-armed per preset; the wire shapes, confirms and node-id minting are in [device/structural-edits.md](device/structural-edits.md).
+Every insert is checked with `blockcaps::check_op` first, and its anchor (an original block's `nodeId`, or an earlier insert's key) is resolved to the device's current id through `DeviceIds`, because a missing anchor or an over-budget insert aborts the device server ([device/structural-edits.md#insert-abort](device/structural-edits.md#insert-abort)).
+`diffToOps` emits removes, then replaces, then inserts right to left, so each insert's anchor is still present when it lands ([device/structural-edits.md#node-ids](device/structural-edits.md#node-ids); `copyModel.test.ts` "INV-A").
+Never save on `presetError` or an unconfirmed edit; an unconfirmed edit is read back and re-sent once only when it visibly did not land ([device/structural-edits.md#confirms](device/structural-edits.md#confirms)).
+Block-mutation code touches all three places a block lives and never normalizes ids ([device/structural-edits.md#three-keyed-places](device/structural-edits.md#three-keyed-places)).
 Probe entry points: `probe --insert-active` and `--insert-map`; the probe's replace arms use `replace_many_held`.
 
 ## Read-back

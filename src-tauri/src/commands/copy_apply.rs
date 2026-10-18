@@ -477,7 +477,7 @@ fn insert_precheck(
     // An IR/saved INSERT addresses the node it adds by FenderId (a node id is its
     // FenderId only for the first instance of a model in a group: fw 1.8.58 mints
     // `X`, `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
-    // `notes/device/presets.md#node-ids`), so a group that ALREADY holds that model would
+    // `notes/device/structural-edits.md#node-ids`), so a group that ALREADY holds that model would
     // make the follow-up swap ambiguous (it could re-point an existing block). (A cap-legal case:
     // two cabinets in one group.) Refuse, never guess.
     let ambiguous = !matches!(repl, CopyRepl::Model { .. })
@@ -852,7 +852,7 @@ fn apply_copy_replace(
 /// node it just added and apply the IR-file link / saved-block swap to it. A node's id is
 /// its FenderId only for the first instance of a model in a group (fw 1.8.58 mints `X`,
 /// `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
-/// `notes/device/presets.md#node-ids`), so the new node is addressed as
+/// `notes/device/structural-edits.md#node-ids`), so the new node is addressed as
 /// `repl.insert_fender_id()` directly — no before/after roster diff (`insert_node`'s
 /// `clear_raw` empties the session buffer such a diff would read, and a partial "before"
 /// read could diff out an EXISTING node and point the IR/block swap at it).

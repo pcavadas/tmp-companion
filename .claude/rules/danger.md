@@ -26,7 +26,7 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
   [→](../../notes/device/presets.md#footswitch-json)
 - **DANGER: an `insertNode` (field 34) whose anchor is not a node id in its group, or that exceeds the CPU budget, aborts the device server.**
   Never assume a FenderId is a node id: anchor on the id the confirm returned (`copy_apply`'s `DeviceIds`), check every insert with `blockcaps::check_op`, and read an unconfirmed insert back (`Session::insert_landed`) instead of re-sending it.
-  [→](../../notes/device/presets.md#insert-abort)
+  [→](../../notes/device/structural-edits.md#insert-abort)
 - **DANGER: send a `loadScene` only for a scene the preset has.**
   On a preset with no scenes it swaps in the empty template under the preset's name; `Session::load_scene` does not check the index, and only `commands/doctor.rs` calls `session::scene_index_ok`.
   [→](../../notes/device/scenes.md#scene-index-bounds)

@@ -94,7 +94,7 @@ Channel maps for standard vs reamp mode, the reamp/AGC model and the PRE/POST fa
 
 The caps below are **client-side validation only**: enforced by the firmware's **control app**, while the device's audio engine does **not** reject an over-cap edit — it enforces only the CPU budget.
 Any new apply path must call the cap check itself, because nothing downstream will.
-The companion mirrors them in `blockcaps.rs` / `validateBlockEdit.ts`; where its membership sets (`src/models/block-classification.json`) differ from the firmware's is stated in [`notes/device/presets.md#block-caps`](../../../notes/device/presets.md#block-caps).
+The companion mirrors them in `blockcaps.rs` / `validateBlockEdit.ts`; where its membership sets (`src/models/block-classification.json`) differ from the firmware's is stated in [`notes/device/structural-edits.md#block-caps`](../../../notes/device/structural-edits.md#block-caps).
 **Full text in `references/preset-model.md`; the numbering below is cited externally, so never renumber it.**
 
 1. **Convolution reverb — 1 per preset.**
@@ -125,7 +125,7 @@ My-Presets selections (`tabEnum=1`) render the slot number.
 
 ## Why this matters for the companion
 
-- **Copy**: because **all scenes share one block list**, an insert or remove must land in every scene, and the block lives in three keyed places ([three keyed places](../../../notes/device/presets.md#three-keyed-places)).
+- **Copy**: because **all scenes share one block list**, an insert or remove must land in every scene, and the block lives in three keyed places ([three keyed places](../../../notes/device/structural-edits.md#three-keyed-places)).
   Copy applies live structural edits (`commands/copy_apply.rs` → `session::{replace_node,insert_node,remove_node}`) and walks with `audiograph::for_each_node{,_mut}` + `node_id` — never a private traversal.
 - **Leveling**: `presetLevel` is a **global multiplier** over all scenes, so the base scene is levelled first; each footswitch scene is levelled on its **active amp's `outputLevel`**.
   Reamp bypasses the analog Loops 1–2.

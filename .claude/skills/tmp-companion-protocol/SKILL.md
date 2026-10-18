@@ -26,7 +26,7 @@ The shipped implementation is `src-tauri/src/proto.rs` (byte-exact against golde
 
 Live per-node structural edits drive `session::{replace_node,insert_node,remove_node}` and confirm on `nodeReplaced` (40) / `nodeInserted` (33) / `nodeRemoved` (36).
 The exact shapes (`replaceNode` 39, `replaceNodeWithBlock` 100, `insertNode` 34 sent bare, `removeNode` 35, the `nodeJsonRequest` (119) edit-context preamble, 60-byte chunking) are in [`references/replacenode-family.md`](references/replacenode-family.md).
-Confirms, node ids and the insert abort are [structural edits](../../../notes/device/presets.md#structural-edits) and [insert abort](../../../notes/device/presets.md#insert-abort).
+Confirms, node ids and the insert abort are [structural edits](../../../notes/device/structural-edits.md) and [insert abort](../../../notes/device/structural-edits.md#insert-abort).
 
 ## Preset `.preset` codec
 

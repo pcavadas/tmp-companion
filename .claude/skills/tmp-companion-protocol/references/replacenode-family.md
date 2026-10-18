@@ -107,7 +107,7 @@ Omit field 2 to append at the end of the group, or set it to the **LIVE node id*
 The anchor is matched against the group's CURRENT node ids.
 A replace or insert mints the new node's id from its FenderId: the FenderId itself if no node in the group holds it, else the first free `<FenderId>_1`, `_2`… (static RE + HW, fw 1.8.58) — so take the id from the confirm, and never anchor on a pre-edit id.
 A node id often equals its model's FenderId, but a second instance does not.
-`copy_apply` resolves each anchor through its `DeviceIds` and checks every insert with `blockcaps::check_op` first: on fw 1.8.58 an anchor that names no node in the group gets no reply and ABORTS the device server (static RE; [insert abort](../../../../notes/device/presets.md#insert-abort)).
+`copy_apply` resolves each anchor through its `DeviceIds` and checks every insert with `blockcaps::check_op` first: on fw 1.8.58 an anchor that names no node in the group gets no reply and ABORTS the device server (static RE; [insert abort](../../../../notes/device/structural-edits.md#insert-abort)).
 The field-2 anchor MUST name a node in the **SAME group** as the insert — a visual signal-chain series can span device groups (e.g. amp in G1, pedals in G4), and an anchor in another group is a miss that aborts the server.
 So `diffToOps` anchors each insert before the next SAME-group block, else appends.
 

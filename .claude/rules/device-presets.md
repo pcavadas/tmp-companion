@@ -18,7 +18,7 @@ paths:
 
 # Preset write rules
 
-Read [`notes/device/presets.md`](../../notes/device/presets.md) before changing a read, load, save, import, structural edit or block-cap check.
+Read [`notes/device/presets.md`](../../notes/device/presets.md) before changing a read, load, save or import, and [`notes/device/structural-edits.md`](../../notes/device/structural-edits.md) before changing a structural edit or block-cap check.
 Its sections are the authority for slot addressing, complete reads, the save and dirty-flag rules, rejected-at-load bodies, preset identity, footswitch JSON, structural-edit confirms, node ids and the insert abort.
-`blockcaps.rs` is the only enforcement of the block caps, so every apply path calls it ([insert abort](../../notes/device/presets.md#insert-abort)).
+`blockcaps.rs` is the only enforcement of the block caps, so every apply path calls it ([insert abort](../../notes/device/structural-edits.md#insert-abort)).
 The block-copy feature model is [`notes/copy.md`](../../notes/copy.md); the `.preset` codec and the block-mutation wire shapes are the `tmp-companion-protocol` skill; the danger rules are in [`danger.md`](danger.md).

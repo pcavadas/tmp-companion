@@ -95,7 +95,7 @@ A single capture can occasionally misread; repeated runs are the arbiter.
 
 `Rx` derivation is graph-aware (`graph_facts`): fixes prefer an existing carrier block over inserting one, inserts are gated by the `blockcaps` limits, comp-aware rules avoid stacking compressors, and parallel-split placements the wire cannot express are skipped.
 The EQ move (`eq_move`) has three tiers: a drivable EQ-10 stereo already in the chain gets a value-aware one-click; a different EQ already present (`OTHER_EQ_IDS`) gets an advisory to use it; with no EQ, an EQ-10 is inserted right after the cab (`after_cab_anchor`).
-The insert anchor is the neighbour's node id, looked up among the group's current node ids, because an anchor that is not one of them aborts the device server ([device/presets.md#insert-abort](device/presets.md#insert-abort)).
+The insert anchor is the neighbour's node id, looked up among the group's current node ids, because an anchor that is not one of them aborts the device server ([device/structural-edits.md#insert-abort](device/structural-edits.md#insert-abort)).
 Parameter one-clicks are value-aware wherever the current value rides the graph allowlist: a write that would move a known value the wrong way is dropped, and a blind write on an unknown value says so in its `Rx::detail`.
 The muddy and harsh EQ cuts grow with the finding's margin past its gate (`sized_cut_db`: the shipped 3 dB / 2 dB plus the margin, capped at 6 dB), never below the shipped size.
 The app shows each fix's `Rx::title` only, as a bullet under "What to change", in the backend's order; the `ops` stay on the wire (the shared-block line reads which blocks they touch) but the app never applies them.

@@ -10,7 +10,8 @@ paths:
 The `probe` arms drive the real unit and `sim_device.rs` stands in for it offline, so both follow the device facts in [`notes/device/`](../../notes/device/):
 
 - [`session.md`](../../notes/device/session.md): the seize, the 750 ms session lapse, request batching, the handshake and reply queues.
-- [`presets.md`](../../notes/device/presets.md): slot addressing, reads, saves, imports, rejected bodies, structural edits and the insert abort.
+- [`presets.md`](../../notes/device/presets.md): slot addressing, reads, saves, imports, rejected bodies.
+- [`structural-edits.md`](../../notes/device/structural-edits.md): structural edits, the insert abort and block caps.
 - [`scenes.md`](../../notes/device/scenes.md): scene context, scene-write landing and recall behaviour.
 - [`reamp-audio.md`](../../notes/device/reamp-audio.md): the re-amp toggle, engage and capture accuracy, silent captures and stuck re-amp.
 

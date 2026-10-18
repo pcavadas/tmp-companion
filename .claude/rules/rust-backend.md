@@ -26,7 +26,7 @@ Every backend module carries a `//!` header, and for the bulk/offline feature mo
 - **Live per-node structural edits** go through `copy_apply` and the probe's `replace_many_held`, sharing the `nodeReplaced` (40) / `nodeRemoved` (36) / `nodeInserted` (33) confirm gate and never saving after a `presetError` (53).
   `copy_apply` reads an unconfirmed first edit back from the working copy and re-sends only one that visibly did not land; `replace_many_held` never re-sends.
   No handler drops a correctly framed structural edit, so a missing confirm is one still queued, a lapse, a backup freeze or an insert abort, and a blind re-send duplicates it [RE, inferred].
-  [→](../../notes/device/presets.md#confirms)
+  [→](../../notes/device/structural-edits.md#confirms)
 - **The firmware version read is an in-burst `currentFwRequest` with no `batchStatus`**, sent after `userir_field2` and before the batch-3 `current_preset_data_request`; sent after it, its reply queues behind the ~1.2 s handshake drain.
   [→](../../notes/device/session.md#handshake)
 - **Preset-list reassembly needs both stream rules:** `list_my_presets` tries `streams()` and `streams_final()` and keeps the longest decoded record set.
