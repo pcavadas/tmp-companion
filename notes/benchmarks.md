@@ -35,9 +35,12 @@ Each report row must carry a `replay` profile: everything the engine reads from 
 The held-out benchmark runs in `cargo test --lib` (`benchmark::held_out_baseline`).
 
 - **Data:** `src-tauri/src/fixtures/doctor-guitar-factory-2026-10-15.json`, the 248 guitar-family rows of a `probe --doctor-calib-factory` sweep over factory slots 0–254, replay profiles only (floats rounded to 9 significant digits, peaks to 6; the leave-one-out result is identical to the unrounded report's).
-- **Provenance** (inside the file): the owner's Tone Master Pro, fw 1.8.58, macOS host, release `probe`, the production Doctor window with a fresh connection per engage, through the shipped `guitar-humbucker.wav` (sha256 `89cebec6…bfd475`). The shipped guitar constants (`GUITAR_STIM_REF`, `GUITAR_TARGET`, the rank-transferred gates) were derived from this same sweep, so its in-sample column is in-sample by construction.
-- **Labeling:** none by ear. Every factory preset counts as healthy, so every verdict is a false positive.
-- **Acceptance:** `src-tauri/src/fixtures/doctor-guitar-loo-baseline.json` holds every rule's fire count per mode, and the test fails when any count grows. When a change lowers counts, re-bless with `TMP_BLESS_LOO=1 cargo test --lib held_out_baseline` and update the table below.
+- **Provenance** (inside the file): the owner's Tone Master Pro, fw 1.8.58, macOS host, release `probe`, the production Doctor window with a fresh connection per engage, through the shipped `guitar-humbucker.wav` (sha256 `89cebec6…bfd475`).
+  The shipped guitar constants (`GUITAR_STIM_REF`, `GUITAR_TARGET`, the rank-transferred gates) were derived from this same sweep, so its in-sample column is in-sample by construction.
+- **Labeling:** none by ear.
+  Every factory preset counts as healthy, so every verdict is a false positive.
+- **Acceptance:** `src-tauri/src/fixtures/doctor-guitar-loo-baseline.json` holds every rule's fire count per mode, and the test fails when any count grows.
+  When a change lowers counts, re-bless with `TMP_BLESS_LOO=1 cargo test --lib held_out_baseline` and update the table below.
 
 False positives on 248 healthy guitar sounds (count; 95% Wilson upper bound):
 
@@ -57,7 +60,7 @@ False positives on 248 healthy guitar sounds (count; 95% Wilson upper bound):
 | boxy | 4 (≤4.1%) | 4 (≤4.1%) | 4 (≤4.1%) | 4 (≤4.1%) |
 | any rule | 124 (≤56.2%) | 45 (≤23.4%) | 163 (≤71.4%) | 126 (≤57.0%) |
 
-The shipped gates keep the percentile the earlier gates held (rank transfer), and on this population that percentile fires at least one rule on half of the factory guitar presets.
+The shipped gates are rank-transferred: each keeps the percentile its baseline gate held ([doctor-thresholds.md#re-deriving-on-a-new-stimulus](doctor-thresholds.md#re-deriving-on-a-new-stimulus)), and on this population that percentile fires at least one rule on half of the factory guitar presets.
 `washed`, `resonant` and `boxy` are re-derived by no mode, so their counts are the shipped gates' held-out rate.
 Under `maxPlusMargin`, 45 of 248 (18.1%) still draw a verdict, most of them `washed` (36) and the localized `resonant` (7) and `boxy` (4).
 
@@ -109,9 +112,15 @@ It exits 1 when any threshold is violated; the result JSON is deterministic and 
 }
 ```
 
-- **Provenance is mandatory.** A corpus with any empty provenance field is refused.
-- **The split.** Rows marked `tuning` are the data a threshold may be set on; only `validation` rows are scored. A sound never moves from validation to tuning after it has graded a threshold.
-- **Doctor metrics, per diagnosis:** precision, recall, false-positive rate and abstention rate. A rule abstains when the engine could not have fired it on that row, and an abstention is never counted as a negative. The gates come from `doctor::rule_judgeable`, which mirrors the engine: the rule's band was not excited, the tilt rules (and `thin`) have fewer than 3 covered body bands, `thin` on a bass family, or a localized rule with no covered band in its scan range. A replay carries no graph, so `buried` always abstains.
+- **Provenance is mandatory.**
+  A corpus with any empty provenance field is refused.
+- **The split.**
+  Rows marked `tuning` are the data a threshold may be set on; only `validation` rows are scored.
+  A sound never moves from validation to tuning after it has graded a threshold.
+- **Doctor metrics, per diagnosis:** precision, recall, false-positive rate and abstention rate.
+  A rule abstains when the engine could not have fired it on that row, and an abstention is never counted as a negative.
+  The gates come from `doctor::rule_judgeable`, which mirrors the engine: the rule's band was not excited, the tilt rules (and `thin`) have fewer than 3 covered body bands, `thin` on a bass family, or a localized rule with no covered band in its scan range.
+  A replay carries no graph, so `buried` always abstains.
 - **Leveling metrics:** the absolute error distribution (median, p90, max) and the mean signed error over measured, unclamped rows; false clamps (clamped while labeled reachable); persistence mismatches; re-runs that wrote again (a correct run is idempotent); unmeasured rows.
 
 Thresholds are optional per field and are set from a measured baseline, never guessed.
@@ -150,5 +159,6 @@ Repeat a subset of hardware captures to measure run-to-run variance, and record 
 The offline `SimDevice` is not an accuracy oracle, so no benchmark row may come from it:
 
 - Its gain model cannot represent compressors, modulation or any spectral defect.
-- `sim_device::stored_from_preset` takes the first `outputLevel`-bearing node in each sound, not the routed, active amp. The e2e fixtures compensate by keeping every amp in a sound at the same `outputLevel` (pinned by `fixture_gates`), so unequal or muted parallel lanes are never exercised offline; those cases need hardware rows.
+- `sim_device::stored_from_preset` takes the first `outputLevel`-bearing node in each sound, not the routed, active amp.
+  The e2e fixtures compensate by keeping every amp in a sound at the same `outputLevel` (pinned by `fixture_gates`), so unequal or muted parallel lanes are never exercised offline; those cases need hardware rows.
 - Offline Doctor captures are synthetic transfers, not the chain's real response.

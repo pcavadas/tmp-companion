@@ -12,7 +12,7 @@ Cells are separated by single spaces with no padding; keep the `prettier-ignore`
 
 ## The fixtures
 
-| Slot | Name | Template | Scenes | Role |
+| List index | Name | Template | Scenes | Role |
 |---|---|---|---:|---|
 | 400 | `E2E Rig` | `gtrSeries` | 4 | The scene/overlay + footswitch + damage-signature fixture. Two amps with an amp flip across scenes, a post-amp raw-dB boost, a wet-mix block and an all-Other-class block. |
 | 401 | `E2E Pedalboard` | `gtrSeries` | 0 | The SCENE-FREE fixture: copy/import. EXP volume + wah with a toe assign, a param radio link group, a second-bank switch, a tempo-synced block. |
@@ -30,7 +30,7 @@ Cells are separated by single spaces with no padding; keep the `prettier-ignore`
 
 Every guitar amp in every fixture reaches a cabinet ([`notes/e2e-fixtures.md`](../../notes/e2e-fixtures.md#the-cab-rule)); `fixture_gates::every_guitar_amp_in_every_fixture_reaches_a_cab` enforces it.
 
-| Slot | Amp(s) | How the rule is met |
+| List index | Amp(s) | How the rule is met |
 |---|---|---|
 | 400 | `ACD_JC120`, `ACD_TwinReverb65NoFx` | Both heads share one downstream `ACD_CabSimTMS` in `G1`. |
 | 401 | `ACD_MarshallPlexi` | `ACD_CabSimTMS` downstream in `G1`. |

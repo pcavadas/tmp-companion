@@ -21,7 +21,8 @@ Level, Doctor, Copy and Songs show the shared `DeviceState` page until a unit co
 ## Data paths
 
 - **Live**: USB commands to the connected unit (load preset or scene, set levels, rename / move / clear, song and setlist writes, live block edits).
-- **Reads**: a USB read is whole when the session stays alive until its final frame; a session lapse cuts it ([device/presets.md#reading-presets](device/presets.md#reading-presets)). Startup state comes from one device backup scan (`backup_read.rs`).
+- **Reads**: a USB read is whole when the session stays alive until its final frame; a session lapse cuts it ([device/presets.md#reading-presets](device/presets.md#reading-presets)).
+  Startup state comes from one device backup scan (`backup_read.rs`).
 - **Offline**: the `.preset` file codec (`backup::xor_jld`, `library::decode_preset_bytes`) for import and in-place re-import (`replace_inplace::replace_inplace_core`).
 - **Measure**: re-amp capture plus LUFS and spectrum analysis (`audio.rs`, `lufs.rs`, `psd.rs`), used by leveling and the Doctor.
 

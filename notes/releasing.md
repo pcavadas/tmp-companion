@@ -40,7 +40,8 @@ It is the only check that catches a broken bundler config before release time, b
 - The DMG publishes under the stable asset name `TMP-Companion-macOS.dmg`, so the site's download buttons point at `/releases/latest/download/TMP-Companion-macOS.dmg`.
 - The README must not describe an unsigned, `xattr` or Gatekeeper workaround.
 
-**Updater keys.** The Tauri updater looks up `latest.json` by the running slice's arch: `darwin-aarch64` on Apple Silicon, `darwin-x86_64` on Intel, and there is no `darwin-universal` key.
+**Updater keys.**
+The Tauri updater looks up `latest.json` by the running slice's arch: `darwin-aarch64` on Apple Silicon, `darwin-x86_64` on Intel, and there is no `darwin-universal` key.
 `scripts/latest-json.mjs` therefore emits both keys pointing at the same universal tarball; without `darwin-x86_64`, Intel installs run but never auto-update.
 
 ## Windows
@@ -159,9 +160,19 @@ Pages must use the **GitHub Actions** deployment source.
 
 The mark is a flat terracotta (`#d97757`) macOS-squircle tile with three white, bottom-aligned level bars in a 6:11:8 height rhythm.
 
-- **Masters.** The design handoff's two SVG masters (`icon.svg`, the baked squircle, and `icon-square.svg`, full-bleed) are the source of truth; the bundle is regenerated from them. `src-tauri/icons/source.png` is the archival full-bleed master, and the vector sources are `src-tauri/icons/tmp-icon-{master,foreground,background,fullbleed,dark,monochrome}.svg`.
-- **macOS.** `icon.icns` and `dock.png` carry the baked squircle (superellipse n≈5, transparent corners), full-bleed with no inset. A Tauri-bundled `.icns` renders verbatim (the macOS 26 auto-enclosure applies only to Icon Composer `.icon` / `Assets.car`), so the rounding must be in the pixels. `dock.png` is the baked 256 px PNG, because the dev Dock does not round a programmatically set icon (`dock.rs`).
-- **Desktop ladder and Windows.** Baked-squircle PNGs LANCZOS-resized; Windows is square full-bleed. `bundle.icon` is `32x32 / 128x128 / 128x128@2x / icon.icns / icon.ico`.
-- **iOS.** Full-bleed, fully opaque and mask-free: iOS draws the enclosure, so never re-mask the iOS slots.
-- **Android.** The adaptive foreground is the bars inside the safe zone plus a monochrome (themed-icon) layer; `mipmap-anydpi-v26/ic_launcher{,_round}.xml` carry `<monochrome>` with `@mipmap/...` refs and the solid-terracotta `@mipmap/ic_launcher_background`.
-- **Gate.** `src/__tests__/icon-assets.test.ts` pins the shipped assets' sha256s; recompute them whenever the bundle changes.
+- **Masters.**
+  The design handoff's two SVG masters (`icon.svg`, the baked squircle, and `icon-square.svg`, full-bleed) are the source of truth; the bundle is regenerated from them.
+  `src-tauri/icons/source.png` is the archival full-bleed master, and the vector sources are `src-tauri/icons/tmp-icon-{master,foreground,background,fullbleed,dark,monochrome}.svg`.
+- **macOS.**
+  `icon.icns` and `dock.png` carry the baked squircle (superellipse n≈5, transparent corners), full-bleed with no inset.
+  A Tauri-bundled `.icns` renders verbatim (the macOS 26 auto-enclosure applies only to Icon Composer `.icon` / `Assets.car`), so the rounding must be in the pixels.
+  `dock.png` is the baked 256 px PNG, because the dev Dock does not round a programmatically set icon (`dock.rs`).
+- **Desktop ladder and Windows.**
+  Baked-squircle PNGs LANCZOS-resized; Windows is square full-bleed.
+  `bundle.icon` is `32x32 / 128x128 / 128x128@2x / icon.icns / icon.ico`.
+- **iOS.**
+  Full-bleed, fully opaque and mask-free: iOS draws the enclosure, so never re-mask the iOS slots.
+- **Android.**
+  The adaptive foreground is the bars inside the safe zone plus a monochrome (themed-icon) layer; `mipmap-anydpi-v26/ic_launcher{,_round}.xml` carry `<monochrome>` with `@mipmap/...` refs and the solid-terracotta `@mipmap/ic_launcher_background`.
+- **Gate.**
+  `src/__tests__/icon-assets.test.ts` pins the shipped assets' sha256s; recompute them whenever the bundle changes.

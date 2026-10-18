@@ -5,9 +5,17 @@ Device facts it relies on live in [device/presets.md#structural-edits](device/pr
 
 ## Flow
 
-1. **Choose presets.** Pick the source and the targets ("Select all N shown" ticks the rows the search shows).
-2. **Place blocks.** Choose a block on the source strip; it stays chosen. Click a "+" gap in a target's strip to insert it there (before the block to the gap's right, or after the last block of a row), or a target block's menu to replace it with the chosen block or remove it. A gap or a replace that would break a firmware limit (`validateBlockEdit.ts::checkOp`, the same predicates as `blockcaps.rs`) is greyed or left out, with the reason under the strip. Undo and Redo span every target and never touch the unit. `copyModel.ts` diffs each edited target against its current graph into an ordered op list (`diffToOps`).
-3. **Save.** Behind the "I've backed up with Pro Control" tick, only the targets that changed become jobs, and `copy_apply` runs each job's op list over a held USB session. The dialog names the ticked presets it skips as unchanged.
+1. **Choose presets.**
+   Pick the source and the targets ("Select all N shown" ticks the rows the search shows).
+2. **Place blocks.**
+   Choose a block on the source strip; it stays chosen.
+   Click a "+" gap in a target's strip to insert it there (before the block to the gap's right, or after the last block of a row), or a target block's menu to replace it with the chosen block or remove it.
+   A gap or a replace that would break a firmware limit (`validateBlockEdit.ts::checkOp`, the same predicates as `blockcaps.rs`) is greyed or left out, with the reason under the strip.
+   Undo and Redo span every target and never touch the unit.
+   `copyModel.ts` diffs each edited target against its current graph into an ordered op list (`diffToOps`).
+3. **Save.**
+   Behind the "I've backed up with Pro Control" tick, only the targets that changed become jobs, and `copy_apply` runs each job's op list over a held USB session.
+   The dialog names the ticked presets it skips as unchanged.
 
 A run has no cancel: the Copy tab has no Stop button.
 
