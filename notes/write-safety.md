@@ -2,35 +2,30 @@
 
 ## Reading a preset
 
-A complete preset cannot be read back reliably over USB — every USB read is a device-truncated partial:
+A USB read is complete when it ends in its final `0x35` frame (HW + static RE, fw 1.8.58); a lapse cuts it. Write paths still build from the OFFLINE `.preset` file or the device backup; USB reads serve live state (active preset, scene names, footswitch tags).
 
-- The active preset's JSON arrives as `currentPresetDataChanged` (a partial; on a healthy dense-heartbeat session it includes the `ftsw` map and scene names, truncating only at the final scene). The field-3 push is triggered by `currentPresetDataRequest` (PresetMessage **field 2**); `currentPresetInfoRequest` (**field 1**) is a no-op dummy that does NOT trigger it.
-- A slot-addressed read (`presetDataRequest` → `presetDataChanged`, plaintext) is also a per-slot partial.
+- The active preset's JSON arrives as `currentPresetDataChanged` (field 3), the reply to `currentPresetDataRequest` (PresetMessage **field 2**). `currentPresetInfoRequest` (**field 1**) is answered with `presetLoaded` (field 11) then `currentPresetInfoChanged` (field 22, carrying `isDirty`); it does NOT trigger field 3.
+- A slot-addressed read (`presetDataRequest` (field 8) → `presetDataChanged` (field 9), plaintext) returns the stored row, not the working copy.
 
-So the **canonical full-preset source is the OFFLINE `.preset` file**. The USB partials are used for live state (active preset, scene names, footswitch tags).
-
-**Post-edit reads (HW fw 1.8.45):** after a LIVE structural edit (`insertNode` / `replaceNode` / `removeNode`) on a held session the device does NOT auto-push a fresh `currentPresetDataChanged`, so the session's BUFFERED document does not reflect the edit — but a field-2 `currentPresetDataRequest` re-prompt on that same session DOES answer with the post-edit working copy (2026-09-03, `probe --reprompt-map` on Copy's exact held-session shape: 6/6 re-prompts showed the insert/remove in ~520 ms as a ~2.8 KB partial that still parses to a full `ActiveGraph` with its `template`, and both saves issued after a re-prompt persisted on a field-8 read-back). The earlier reading that the re-prompt returns the pre-edit graph came from the `--insert-map` DRY arm, whose re-prompt re-sent `connection_request` on the live session — the field-2 then goes unanswered (`carriers=[]` is what `TMP_PROBE_LEGACY_REPROMPT=1` reproduces today) — and read its buffer without clearing it; a buffer scrape of that shape is consistent with the old pre-edit reading, though the reading itself was not reproduced. A separate 2026-09-03 observation with an unresolved cause: a `list_my_presets` on the live session BEFORE the load left the whole load + re-arm unanswered (`fields=[]` for 10 s); `--insert-map` still carries that list call, Copy never sends it (the name comes from the job). Confirm a live edit landed via its acknowledgement (`nodeInserted` / `nodeReplaced` / `nodeRemoved`); verify placement via the re-prompt (`Session::live_preset_value`, cleared buffer + field 2) or the post-save field-8 read.
+**Post-edit reads.** After a LIVE structural edit (`insertNode` / `replaceNode` / `removeNode`) the device pushes no fresh field 3 (static RE + HW, fw 1.8.58), so a session's BUFFERED document does not reflect the edit. A field-2 re-prompt on that same session (`Session::live_preset_value`: cleared buffer + field 2) answers with the post-edit working copy (HW, `probe --reprompt-map`). Confirm a live edit landed via its acknowledgement (`nodeInserted` / `nodeReplaced` / `nodeRemoved`); verify placement via the re-prompt or the post-save field-8 read.
 
 ## Writing a preset
 
-- LIVE setters are single-packet and carry **no `batchStatus`** (only requests do): `setPresetLevel`, `setReAmpMode`, `loadPreset`, `loadScene`, `renameCurrentPreset`, `saveCurrentPreset`, `moveUserPreset`, `clearUserPreset`, the song/setlist writes, and the live block edits. A setter sent with a `batchStatus` is silently ignored.
-- A full-preset re-import is `importPresetRequest` where the payload is `LZ4(raw .preset bytes)`; multi-packet framing is `0x33` start / `0x34` continue / `0x35` final.
+- LIVE setters are single-packet and carry **no `batchStatus`** (`notes/protocol.md`); the import framing (`importPresetRequest`, `LZ4(raw .preset bytes)`) is in `notes/gotchas.md`'s live-setters entry.
+- An import always lands in the lowest empty user slot, and `importPresetResponse` (118) did not arrive within 5 s (HW, fw 1.8.58) — never wait on it; prove the landing from the stored row (`notes/gotchas.md`'s save-durability entry).
 
 ## Slot addressing
 
-`list_my_presets` is 0-based; the device userSlot is **list index + 1**. `session/preset.rs` owns this translation — callers pass a 0-based list index and the slot-addressed setters (`loadPreset`, `saveCurrentPreset`, `clearUserPreset`, `moveUserPreset`) send `+1`. Before any destructive op keyed on a slot mapping, confirm the mapping with a non-destructive read first, and put the guard in the same address space as the mutation.
+The device userSlot is **list index + 1**, owned by `session/preset.rs`; confirm a slot mapping with a non-destructive read before any destructive op, with the guard in the same address space as the mutation (`danger.md`).
 
 ## Identity safety (song links)
 
-Overwriting a song-bound slot with a **different-identity** preset empties the song row. Link-safe editing must preserve `info.preset_id` and the scene structure — either a LIVE in-place edit (`changeParameter` / live node edit, then `saveCurrentPreset`) or an identity-preserving OFFLINE re-import. An in-place save keeps the song link even if it re-stamps `preset_id`.
+Song rows follow the SLOT. Overwriting a song-bound slot with a **different-identity** preset empties the song row. Link-safe editing must preserve `info.preset_id` and the scene structure — either a LIVE in-place edit (`changeParameter` / live node edit, then `saveCurrentPreset`) or an identity-preserving OFFLINE re-import. An in-place save keeps the song link, though every save re-mints `preset_id` (static RE + HW, fw 1.8.58).
 
-## Block identity (no per-instance node id)
+## Block identity (per-instance node ids)
 
-Node ids, as two sources describe them:
-
-- **fw 1.8.45 HW:** a device group CAN hold **two blocks of the same model** (ONLINE `copy.spec.ts` 2026-09-03: four `ACD_TubeScreamer` in G1 after chained inserts, confirmed by the working-copy re-prompt), and they read back with `nodeId` == FenderId.
-- **fw 1.8.58 static RE:** a group keeps its nodes in a map keyed by node id, so ids are unique. An insert or replace mints the new node's id from its FenderId, or the first free `<FenderId>_1`, `_2`… (a replace frees the old id first, so replacing X with X keeps "X"). A LOAD keeps the stored ids as they are (`cab1` for an `ACD_CabSimTMS` in the scenario fixtures), and a stored duplicate id is not renamed: the second node overwrites the first's map entry, the first stays in the processing list unaddressed, and a field-3 read lists the id once. The `insertNode` anchor (field 2, `nodeIdInsertLocation`) is looked up in that map: a miss gets no reply and aborts the server.
-- The two disagree on duplicates: on 1.8.58 four inserts mint `ACD_TubeScreamer`, `_1`, `_2`, `_3`. 1.8.45 is not in the RE corpus, so the difference is a firmware change or a misread; a HW re-check on 1.8.58 is pending. Copy follows the RE because a miss is fatal: `diffToOps` names each anchor by its original `nodeId` or an earlier insert's key, and `copy_apply` resolves it to the device's current id from the `nodeJson` of the `nodeInserted` / `nodeReplaced` confirms (field 3 of both; `nodeReplaced.replacedNodeId` echoes the OLD id), or from a working-copy read when a confirm carries none. An anchor it cannot resolve is refused before anything is sent.
+- A group keeps its nodes in a map keyed by node id, so ids are unique. Each insert or replace mints the FenderId, then the first free `<FenderId>_1`, `_2` … in the group (a replace frees the old id first, so replacing X with X keeps "X"); two blocks of one model never share an id (static RE + HW, fw 1.8.58). A LOAD keeps the stored ids as they are (`cab1` for an `ACD_CabSimTMS` in the scenario fixtures), and a stored duplicate id is not renamed: the second node overwrites the first's map entry, the first stays in the processing list unaddressed, and a field-3 read lists the id once (static RE, fw 1.8.58). The `insertNode` anchor (field 2, `nodeIdInsertLocation`) is looked up in that map: a miss gets no reply and aborts the server.
+- Copy follows this because a miss is fatal: `diffToOps` names each anchor by its original `nodeId` or an earlier insert's key, and `copy_apply` resolves it to the device's current id from the `nodeJson` of the `nodeInserted` / `nodeReplaced` confirms (field 3 of both; `nodeReplaced.replacedNodeId` echoes the OLD id), or from a working-copy read when a confirm carries none. An anchor it cannot resolve is refused before anything is sent.
 - An IR/saved insert into a group already holding that model is still refused (its follow-up addresses the new node by FenderId when no confirm id is known), and the read-back roster compares per-group MULTISETS.
 - The op-list is emitted `removes → replaces → inserts`, inserts **right-to-left**, so each insert's anchor is still present when it lands. This is what makes "insert A before B, insert C after B, then remove B → exactly `[A, C]`" correct: the inserts anchor on the surviving siblings in the FINAL graph, never on the removed B. (Locked by `copyModel.test.ts` "INV-A".)
 
@@ -40,14 +35,4 @@ Pre-edit backups capture the original preset; restore re-imports it in place. Sa
 
 ## Preset-schema fidelity (the "newer firmware revision" banner)
 
-The unit shows **"this preset was created using a newer firmware revision"** for a preset whose
-JSON is MISSING top-level keys every real preset carries — reproduced 2026-07-19 on the e2e
-scenario fixtures with `info.version` (`5.0`) and every block's `since` matching the connected
-firmware, yet the banner still fired because the hand-built fixtures lack `ftswStates`,
-`lastLoadedScene`, and `presetFootswitchColorActive`/`Inactive` (the plain Targets even lack
-`scenes`). The firmware evidently treats an incomplete key set as "foreign/newer" in this
-reproduced case; this doesn't establish that a version-field mismatch can never also trigger it —
-that's untested here.
-Any write/import path that composes preset JSON (rather than round-tripping a real preset) must
-carry the FULL top-level key set of a real export; the reference set is any real `.preset` decode.
-The 4 e2e fixtures still have this gap (cosmetic offline — SimDevice doesn't check).
+The unit shows **"this preset was created using a newer firmware revision"** for a preset whose JSON is MISSING top-level keys every real preset carries, even when `info.version` and every block's `since` match the connected firmware (HW). Any write/import path that composes preset JSON (rather than round-tripping a real preset) must carry the FULL top-level key set of a real export: `ampControl`, `audioGraph`, `bpm`, `exp`, `expAutoOffTime`, `ftsw`, `fxLoop`, `info`, `inputImpedanceMode`, `lastLoadedScene`, `onLoadMidiMsgs`, `outputMixerSettings`, `presetFootswitchColorActive`, `presetFootswitchColorInactive`, `scenes` (a real preset has no top-level `ftswStates`). The e2e scenario fixtures carry the full key set. Separately, a `version` ahead of the firmware makes the load substitute the EMPTY preset with `presetError` 6 (static RE, fw 1.8.58).

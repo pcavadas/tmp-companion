@@ -1,18 +1,20 @@
 # TMP USB protocol — load-bearing invariants
 
 Facts about driving the Fender Tone Master Pro over exclusive-seize USB HID that are
-**not obvious from the code** and were learned on real hardware. Break one and the device
-goes silent, strands itself input-muted, mis-levels a preset, or (worst case) wedges the
-USB stack. Golden-tested where possible (`proto.rs` vectors); the rest are HW-validated.
+**not obvious from the code** and were learned on real hardware or from the fw 1.8.58
+firmware. Break one and the device goes silent, strands itself input-muted, mis-levels a
+preset, or loses a reply. Golden-tested where possible (`proto.rs` vectors); the rest are
+HW-validated. The danger rules are in `.claude/rules/danger.md`, their evidence in
+`notes/gotchas.md`.
 
 Cross-references: `src-tauri/src/session/` (`handshake.rs` + the command modules; `link.rs`/`timing.rs` hold the transport and every wait), `hid.rs` (the seize +
-open-retry), `leveller.rs` / `audio.rs` (re-amp measurement), `monitor.rs` (the live
+open-retry), `leveller/` / `audio.rs` (re-amp measurement), `monitor.rs` (the live
 session), and `notes/write-safety.md` (the write/read-back story).
 
 ## Handshake `batchStatus` grouping
 
 Requests carry a `batchStatus` field (FenderMessageTMS field 10). On fw 1.8.58 (static RE
-of the server's message processor, HW-confirmed; 1.1.100 is identical):
+of the server's message processor, HW-confirmed):
 
 - `0` or absent → answered at once;
 - `1` / `2` → only **queued**;
@@ -21,118 +23,87 @@ of the server's message processor, HW-confirmed; 1.1.100 is identical):
 
 The queue is device state: it survives the HID inactivity drop and a fresh
 `connectionRequest`, and a later batch 3 sends the stale replies to whoever is on HID
-then. Only a device backup/restore/firmware update clears it.
+then. Only a device backup or restore clears it (static RE, fw 1.8.58). A backup drops
+anything else sent while it runs, and after a restore ends the unit answers only
+connection and restore messages until it restarts.
 
 The handshake mirrors Pro Control: `preset_list_request(1)` = 1; favorite /
 `preset_list(4)` / `preset_list(3)` / `product_profile` / `current_preset_info` /
 `settings66` / `userir` = 2; `current_preset_data_request` = 3, which drains the lot and
 whose own reply (`currentPresetDataChanged`, field 3) comes last. **Every request after
 the handshake uses `proto::BATCH_DRAIN` (3) or none**, so nothing is left queued for the
-next session. The old "increment and the device goes silent" observation is the ≥4 drop;
-the old handshake's field-78 request (batch 4) was a no-op.
+next session.
 
 **Setters and the heartbeat OMIT `batchStatus`** — only _requests_ carry it. A
 `SetReAmpMode` / `SetPresetLevel` / `LoadPreset` / `SaveCurrentPreset` sent _with_ a
 `batchStatus` is silently ignored.
 
 **Firmware version** rides the batch-2 group: `currentFwRequest`, no `batchStatus`, sent
-after `userir_field2` and BEFORE `current_preset_data_request(batch=3)`. Sent after batch-3
-(or standalone after the burst) the reply is dropped.
+after `userir_field2` and BEFORE `current_preset_data_request(batch=3)`. It is answered at
+once, but sent after the batch-3 request its reply queues behind the ~1.2 s handshake
+drain and a short window misses it (static RE, fw 1.8.58; drain timing HW).
+
+**Sessions and pushes.** The unit closes a client after 750 ms with no OUT report; a write
+sent after that reaches a closed client, draws `connectionError` and is dropped (HW, fw
+1.8.58). Pushes are broadcast to every open client, so any heartbeat cadence well under
+750 ms keeps receiving them; ~250 ms is a safety margin, not a subscription (static RE +
+HW, fw 1.8.58). Details: [the 0.75 s client-drop entry](gotchas.md#the-device-drops-the-hid-client-after-075-s-with-no-inbound-frame--and-discards-the-reply-in-flight-fw-1858-static-re--hw-ab).
+
+## Settings and Mixer reads
+
+- Mixer read requests (TMS 5) are answered to the requesting host on a live, heartbeated
+  session, and `reAmpModeRequest` (4) returns the real re-amp state (static RE + HW, fw
+  1.8.58). A silent mixer read means the session had lapsed.
+- `footswitchSettingsRequest` (Settings 47) is answered with `footswitchSettingsResponse`
+  (48) to the requesting host. Its field 12 is `sceneChangeBehavior`: 0 = MAINTAIN CHANGES
+  (left out on the wire), 1 = DISCARD CHANGES (static RE + HW, fw 1.8.58). The unit's own
+  UI sets it with Settings `sceneChangeBehavior` (83), whose echo goes to every host (static
+  RE, fw 1.8.58).
 
 ## Slot addressing: device userSlot = list index + 1
 
-`list_my_presets` is **0-based**. The slot-addressed setters — `loadPreset.presetSlot`,
-`saveCurrentPreset.userSlot`, `clearUserPreset`, `moveUserPreset` — and the Song read's
-`userPresetSlot` are all **1-based**. `session/preset.rs` owns the translation
-(`load_preset`/`save_current_preset`/`clear_user_preset`/`move_user_preset` take a 0-based
-list index and send `+1`); every caller passes list indices. A guard on a destructive op
-(clear / move / save-over) **must live in the same address space as the mutation** — an
-earlier off-by-one deleted a real preset because the guard checked list-index space while
-`clear` acted in 1-based device-slot space.
-
-The empty-slot marker is `--` (also "Empty").
+`list_my_presets` is **0-based**; the slot-addressed setters and the Song read's
+`userPresetSlot` are **1-based**, and `session/preset.rs` owns the `+1`. The rule, and the
+same-address-space guard every destructive op needs, are in `danger.md`; the evidence is
+[the slot-addressing entry](gotchas.md#slot-addressing-device-userslot--list-index--1).
 
 ## Re-amp measurement (loudness leveling)
 
 Re-amp mode replays a synthetic stimulus through a preset's DSP chain and captures the
 processed USB-Out — no guitar plugged in. Toggle = `SettingsMessage(3) → reampModeActive`
-(ON `1a05f201020801`, OFF `1a03f20100`), **not** a MixerMessage.
+(ON `1a05f201020801`, OFF `1a03f20100`), **not** a MixerMessage. The connection shapes
+(three fresh connections per base level, one engage per capture, the guaranteed OFF), the
+latch rules and their fw 1.8.58 status are `danger.md`'s "Re-amp and measurement"; the
+leveling model is `notes/leveling.md`.
 
-Load-bearing latch rules (fw 1.8.45). The code keeps these shapes on fw 1.8.58, unchanged
-and conservative; the fw 1.8.58 notes cite the device checks:
-
-- **Re-amp latches state at engage** — the captured tap reflects only the `presetLevel`
-  set _before_ engaging. Set level → then engage. On fw 1.8.58 a mid-engage
-  `setPresetLevel` reaches the audio within 100 ms on a live session.
-- **`load_preset` + engage in the SAME connection captures silence.** Load in its own
-  connection, drop, settle, then fresh-connect to set + engage (the `measure_knob_at`
-  shape). On fw 1.8.58 an engage after a load on one connection was live in 11
-  captures and 7 runs. The hazard is the 750 ms session lapse: keep OUT traffic flowing
-  through the post-load wait — 1 s of host silence after a load drops the engage.
-- **Re-amp engages reliably only ONCE per connection.** Fresh-connect per engage. On fw
-  1.8.58 this is for accuracy only: the first capture after an engage is within 0.04 LU of
-  an isolated capture, later captures on one engage read up to 0.29 LU low, and a
-  re-engage per capture on a held connection reads 0.06–0.09 LU low. The `ReAmpModeChanged` echo is
-  flaky and is NOT proof of engagement — a finite captured loudness is.
-- **Never re-engage on a held connection** (disengage → settle → re-engage): HW-observed to
-  wedge the device's re-amp AND trigger a USB crash that rebooted the Mac. On fw 1.8.58
-  held, heartbeated re-engages and toggles all applied in one attended 17-min session
-  (10 runs, 4 re-engages, 5 toggles), and the corpus rates the 1.8.45 reboot LIKELY
-  host-side. Only the measurement PREPASS reconnects (one engage/scene); the leveling APPLY
-  (set `presetLevel` + per-scene `outputLevel` + save — all pure sends) runs on ONE
-  persistent session.
-- `changeParameter` IS audible mid-engage (live knob nudges work), but `loadScene`
-  mid-engage is INAUDIBLE (the active scene latches at engage). Per-scene leveling therefore
-  requires one engage per scene. On fw 1.8.58 a mid-engage `loadScene` changes the amp
-  within ~300 ms on a live session; one engage per scene stays, for accuracy.
-- **Re-assert the scene on the connection that engages re-amp.** The fw 1.8.45 reading was
-  that the active scene and the Scene-Edit enables do not survive a reconnect. On fw 1.8.58
-  both survive (static): only the HID open flag and the MessageManager send
-  queue reset. The 1.8.45 symptom fits a same-slot `loadPreset` being a real reload into
-  `lastLoadedScene`, or a lapse-dropped `loadScene` (INFERRED). Any capture/measure path
-  that addresses a scene still re-asserts `loadScene` on the SAME connection that engages
-  re-amp (the Doctor capture, `capture_full_at`; the leveling `set_knob` re-asserts scene +
-  scene-edit per connection). That stays safe, but a repeated enable on an overlay that is
-  already Full reseeds it from base.
-- **`outputLevel = 0` is deep digital silence**; the leveling measurement errors ("no signal
-  captured") on a silent capture — treat that error as a sentinel deep floor, never
-  propagate it (else it aborts the scene).
-- Leveling is **one-shot open-loop**: `captured_LUFS = 20·log10(level) + C`. Measure once,
-  solve `C`, set the exact level. `presetLevel` (linear amplitude) is the global multiplier
-  over all scenes → level the base scene FIRST, then each scene's amp `outputLevel`.
-- **The 6 s stimulus + 0.8 s tail capture window is load-bearing** — TMP presets are not
-  stationary under gated-integrated LUFS (reverb/delay build-up + decay tail), so
-  early-exit / tail-drop / preroll-skip each shift the measured loudness preset-dependently
-  (≤0.3 LU). Validate any measurement change against the full-capture oracle
-  (`probe --measure-adaptive`), never a level→verify round-trip (self-consistent, hides the
-  offset). 48 kHz stimulus required by the host and app convention, not by the device clock (see `danger.md`).
+- **The active scene and the Scene-Edit state survive a reconnect** (static RE, fw 1.8.58).
+  Any capture/measure path that addresses a scene still re-asserts `loadScene` on the SAME
+  connection that engages re-amp (the Doctor capture, `capture_full_at`; the leveling
+  `set_knob` re-asserts scene + scene-edit per connection). That is safe, except that a
+  repeated enable on an overlay that is already Full reseeds it from base.
+- **Working-copy edits survive a reconnect** (HW: a forced `bypass` measured the same on a
+  fresh zero-write connection). Only a real `loadPreset` (a same-slot one only over a DIRTY
+  working copy) or any `loadScene` under DISCARD CHANGES discards them; a save persists them,
+  unsaved scene overlays included. A `loadScene` re-asserts the params that scene overlays,
+  so a capture that recalls a scene must re-send its forced isolation every time.
 
 ## HID seize, and why there is no open lockout
 
-The TMP is single-connection exclusive-HID (`kIOHIDOptionsTypeSeizeDevice`); there is
-exactly ONE seize owner at any instant. `IOHIDDeviceOpen` fails with
-`kIOReturnExclusiveAccess` (`0xe00002c5`) if Pro Control is running — surfaced as a "close
-Pro Control" error.
+The TMP is single-connection exclusive-HID (`kIOHIDOptionsTypeSeizeDevice` on macOS, share
+mode 0 on Windows, `flock` on Linux); there is exactly ONE seize owner at any instant. On
+macOS `IOHIDDeviceOpen` fails with `kIOReturnExclusiveAccess` (`0xe00002c5`) while Pro
+Control holds the unit — surfaced as the `busy` connect error.
 
-- **There is no device-side open lockout.** The old "open-lockout model" (a quick re-open,
-  then tens of seconds locked out, every failed attempt resetting it) was a host-side
-  misdiagnosis, not fw 1.8.45 behaviour: nothing on the device produces such a lockout
-  (the likely cause is macOS releasing its exclusive-open handle late), and
-  1,060 open/close cycles ran with none, 200/200 at a 0 ms gap (fw 1.8.58; the evidence
-  indicates the same on older firmware). `0xe00002c5` means another handle holds the seize —
-  Pro Control, or an overlapping `Session` in this process (the source of the past in-process
-  "lockouts"), which `Hid::open` names in its error.
-  `hid.rs` retries a same-ref fast lane (6×80 ms), then re-enumerates at 3×400 ms. Sessions
-  reopen with no fixed gap; the UI's drop-then-reopen waits on `hid::wait_released`.
+- **There is no device-side open lockout** (HW, fw 1.8.58). `0xe00002c5` means another
+  handle holds the seize — Pro Control, or an overlapping `Session` in this process, which
+  `Hid::open` names in its error. Diagnosis order and the retry constants:
+  [the `0xe00002c5` entry](gotchas.md#0xe00002c5-means-another-handle-holds-the-seize--the-open-lockout-model-was-a-host-side-misdiagnosis).
 - The same `0xe00002c5` also fires on **concurrent** device commands. Every device
-  read/write is serialized process-wide by `DEVICE_OP_LOCK` (acquired inside each command's
-  `spawn_blocking`). Front-end serialization alone is insufficient — the release→work→
-  reconnect churn lets two _operations_ overlap across a tab switch.
-- Boot-window `IOHIDDeviceSetReport failed: 0xe00002d6` (kIOReturnTimeout) is **not an
-  error** — the HID interface enumerates ~20 s before the USB stack accepts reports, so the
-  first cold-boot handshake _send_ times out. Classify by error KIND, not a retry count:
-  `connect_device` returns `{ kind: "not_ready" }` (`error::DeviceError::NotReady`, set when
-  the OS refused a report write during the handshake) and `connectError.ts` gates on it.
+  read/write is serialized process-wide by `DEVICE_OP_LOCK` (`device_gate.rs`, acquired
+  inside each command's `spawn_blocking`).
+- Boot-window `IOHIDDeviceSetReport failed: 0xe00002d6` is **not an error**: classify by
+  error KIND (`not_ready`), never a retry count — see
+  [the boot-window entry](gotchas.md#boot-window-iohiddevicesetreport-failed-0xe00002d6-kioreturntimeout-is-not-an-error--its-device-not-ready-yet).
 
 ## The monitor's pause/ack seize-sharing
 
@@ -143,33 +114,30 @@ monitor drops its `Session`, sets the ack, and parks until the request clears; t
 Drop clears the request and the monitor reconnects. The monitor never acquires the lock, so
 the command's bounded _sleep_ on the ack is not a lock cycle → no deadlock.
 
-## No reliable complete-preset read over USB
+## Complete-preset reads over USB
 
-There is **no** USB path that returns a byte-complete preset:
+- `currentPresetDataChanged` (field 3, LZ4) is the whole working copy as one LZ4 block; a
+  lapse mid-stream cuts it.
+- `presetDataRequest` (field 8) → `presetDataChanged` (field 9, plaintext) returns the whole
+  stored row when the session is kept alive (HW + static RE, fw 1.8.58: no cap below the
+  65,535-byte message limit); a lapse cuts it, `scenes` first. It carries **no**
+  `batchStatus`. On a quiet session `TrackedHid` re-arms the lapsed client with a
+  `connectionRequest` first; on an ALREADY-LIVE (dense-heartbeat) session that re-arm only
+  draws a `connectionError` — use `read_slot_preset_json_live` there.
+- `exportPresetRequest` (field 115) is answered with `exportPresetResponse` (116): complete
+  but encrypted.
 
-- `currentPresetDataChanged` (field 3, LZ4) is a partial that truncates inside the scenes;
-  session-health-dependent (~3.4 KB lean vs ~17 KB on a dense-heartbeat session).
-- `presetDataRequest` (field 8) → `presetDataChanged` (field 9, plaintext) was a
-  partial cut inside the final scene on silent harvests. Kept alive, fw 1.8.58 replies parsed
-  whole (observed, not guaranteed): a read source only, never a complete write source. Must carry **no**
-  `batchStatus`; on a QUIET line re-arm the burst state with a leading `connection_request`,
-  but on an ALREADY-LIVE (dense-heartbeat) session the re-arm draws a `connectionError` —
-  use `read_slot_preset_json_live` there.
-- `exportPresetRequest` (field 115) gets no companion-replayable response.
-
-**Verdict: the canonical full-preset source is the OFFLINE `.preset` file** (see
-`notes/write-safety.md`). The device answers exactly ONE data request per burst state; a
-read fired mid-flood is dropped device-side — fire reads on a quiet line.
+Write paths still build from the OFFLINE `.preset` file or the backup (see
+`notes/write-safety.md`); trust a USB read only when it ends in its final `0x35` frame. A
+read sent during a flood queues behind it; keep the session alive until its final frame.
 
 ## Connection-perf fast paths
 
-The five connection-perf lanes and their HW status (`.claude/rules/rust-backend.md` carries the summary bullet):
+The live fast paths (`.claude/rules/rust-backend.md` carries the summary bullet):
 
-- **Connection-perf fast paths.** Status: path (1) is HW-green (incl. idempotent reconnect + strict list + graph-retry); the metadata lane (3) was exercised live with the caveats below; the live load lane (2) and `transact_eager` (5) remain HW-unmeasured.
-  - **(1) startup snapshot** — `connect_device` does not open HID itself; it enables the app-level monitor and waits for `StartupSnapshot { firmware, presets, graph }`, all from the monitor's single `connect_with_firmware()` handshake. `list_presets` answers from that snapshot with no HID or device-op lock, so list + chain can paint together. The snapshot's `presets` list is STRICT (`list_my_presets_strict`, see `.claude/rules/rust-backend.md`, preset-list reassembly).
-    - **Idempotent vs an already-running monitor:** when `MONITOR_ENABLED` is already set (webview reload re-calls connect), it serves the cached snapshot instead of `reset_startup_state()`-ing it — the live pump never re-runs its one-shot handshake, so an unconditional reset would wait 8 s for a snapshot that can never be re-produced ("monitor startup timed out waiting for TMP handshake"). The cached `graph` is kept CURRENT by `monitor::refresh_snapshot_graph` on every field-3 push, so a reloaded webview paints the device's current preset, not the connect-time one.
-    - **`graph=none` snapshots self-heal:** a flooded handshake can miss BOTH the field-3 push and the PresetLoaded body the field-8 fallback needs (`loaded_slot()` → None, silent), and an IDLE device never pushes field-3 on its own — so the hero would stay "No active preset" forever. The monitor does bounded re-snapshot retries (`GRAPH_RETRY_MAX`=2, 3 s backoff: drop session → re-handshake → fresh field-3 chance), keeps serving the list meanwhile, and refills the retry budget on every graph-ok snapshot + every pause/resume op cycle.
-  - **(2) the live command lane and (3) the metadata read lane are gone.** Both ran a load or a field-8 read on the MONITOR's own session; app-driven preset recall was removed and their only callers (`load_preset_on_amp`, `load_scene_on_amp`, `read_preset_scenes`) were deleted with the other unwired commands. One finding from that lane stays load-bearing: on an ALREADY-LIVE session (the monitor's dense heartbeat) the `connection_request` re-arm makes the device answer the next heartbeat with a `connectionError` (HW: 1/read, ~140 ms slower), so the monitor's `startup_live` graph fallback calls `read_slot_preset_json_live`, which SKIPS the re-arm and keeps the heartbeat alive through the harvest → 0 `connectionError`/read (HW `probe --slotread-live <slot> [rounds]`, 10/10, same field-9 payload). A quiet, dedicated session keeps the re-arm via `read_slot_preset_json`.
-  - **(4) skip-when-N/A** — `with_released_seize` skips the 400 ms settle + `lock_device_op` skips the 1 s pause-ack wait when they don't apply (monitor on / monitor disabled respectively); the hid.rs bounded open-retry absorbs the residual seize-recycle lag.
-  - **(5) `Hid::transact_eager`** (used ONLY by the fire-and-forget `load_preset`/`load_scene`, which discard their reports): pumps in 20 ms slices and exits once framing is complete (0x35-is-final fold) + 60 ms quiet, hard-capped at a 300 ms window — never slower, can't lose data a caller reads.
-  - **Known hotspot:** `read_song_list`/`read_setlist_list`'s fail-closed retries go up to 10×, and EACH retry is a full fresh handshake (~660 ms) — Songs-tab first paint is 5.4–9.4 s worst case.
+- **Startup snapshot** — `connect_device` does not open HID itself; it enables the app-level monitor and waits for `StartupSnapshot { firmware, presets, graph }`, all from the monitor's single `connect_with_firmware()` handshake. `list_presets` answers from that snapshot with no HID or device-op lock, so list + chain can paint together. The snapshot's `presets` list is STRICT (`list_my_presets_strict`, see `.claude/rules/rust-backend.md`, preset-list reassembly).
+  - **Idempotent vs an already-running monitor:** when `MONITOR_ENABLED` is already set (webview reload re-calls connect), it serves the cached snapshot instead of `reset_startup_state()`-ing it — the live pump never re-runs its one-shot handshake, so an unconditional reset would wait 8 s for a snapshot that can never be re-produced ("monitor startup timed out waiting for TMP handshake"). The cached `graph` is kept CURRENT by `monitor::refresh_snapshot_graph` on every field-3 push, so a reloaded webview paints the device's current preset, not the connect-time one.
+  - **`graph=none` snapshots self-heal:** a flooded handshake can miss BOTH the field-3 push and the PresetLoaded body the field-8 fallback needs (`loaded_slot()` → None, silent), and an IDLE device never pushes field-3 on its own — so the hero would stay "No active preset" forever. The monitor does bounded re-snapshot retries (`GRAPH_RETRY_MAX`=2, 3 s backoff: drop session → re-handshake → fresh field-3 chance), keeps serving the list meanwhile, and refills the retry budget on every graph-ok snapshot + every pause/resume op cycle. Its startup graph fallback reads with `read_slot_preset_json_live` (no re-arm on the live session).
+- **Skip-when-N/A** — `with_released_seize` skips its UI reconnect (and the `hid::wait_released` wait, ≤1 s) while the monitor owns the device; `lock_device_op` skips the pause-ack wait when no monitor can answer (live-sync off, or no monitor thread). The hid.rs bounded open-retry absorbs the residual seize-recycle lag.
+- **`Hid::transact_eager`** (used ONLY by the fire-and-forget `load_preset`/`load_scene`, which discard their reports): pumps in 20 ms slices and exits once framing is complete (0x35-is-final fold) + 60 ms quiet, hard-capped at a 300 ms window — never slower, can't lose data a caller reads.
+- **Songs reads are the slow path:** `read_song_list`/`read_setlist_list` fail closed and retry up to 10×, EACH retry a full fresh handshake (~660 ms).

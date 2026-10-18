@@ -4,7 +4,7 @@ Green tests prove state and flow contracts. They do not prove that the Doctor's 
 
 ## The in-sample problem
 
-The guitar constants were first set on the 25-preset R5 factory sweep (2026-07-16): `GUITAR_TARGET` as its median shape and the `GUITAR` gates on the same 25 presets. With n = 25 the population maximum sits near the 96th percentile, so the false-positive rate on an unseen healthy preset was unknown, and about 13 rules at 3 playback levels compound per sound. The shipped constants have since been re-derived from the 248-sound fw 1.8.58 sweep (2026-10-15): the target and stimulus reference directly, the gates rank-transferred from the R5 ones ([The committed baseline](#the-committed-baseline-2026-10-15)). Judged on the sweep they came from, any calibration looks better than it is, which is what leave-one-out corrects.
+The shipped guitar constants come from the 248-sound fw 1.8.58 factory sweep: the target and stimulus reference directly, the gates rank-transferred from an earlier 25-preset calibration ([The committed baseline](#the-committed-baseline)). About 13 rules at 3 playback levels compound per sound, and judged on the sweep they came from, any calibration looks better than it is, which is what leave-one-out corrects.
 
 ## Leave-one-out: `probe --doctor-loo`
 
@@ -14,11 +14,11 @@ probe --doctor-loo <factory_report.json> [--kind synthetic|capture] [--out <loo.
 
 Reads a `probe --doctor-calib-factory` report. Every factory preset counts as healthy, so any verdict on a held-out preset is a false positive. For each preset, the calibration is re-derived from the other presets and the held-out one is diagnosed with it. Three modes re-derive progressively more:
 
-| Mode            | Target curve | Population gates                                                                                                                             |
-| --------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `targetOnly`    | re-derived   | shipped                                                                                                                                      |
-| `maxPlusMargin` | re-derived   | healthy max + the R4 margin (1.2 dB band rules, 0.15 dB/oct tilt), the derivation `GUITAR`'s doc states                                      |
-| `p75Consensus`  | re-derived   | consensus band gates (both spaces) at the 75th percentile, the derivation `Thresholds`' consensus doc states; tilt and fizzy at max + margin |
+| Mode            | Target curve | Population gates                                                                                                         |
+| --------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `targetOnly`    | re-derived   | shipped                                                                                                                  |
+| `maxPlusMargin` | re-derived   | healthy max + a margin (1.2 dB band rules, 0.15 dB/oct tilt), as documented on `GUITAR`                                  |
+| `p75Consensus`  | re-derived   | consensus band gates (both spaces) at the 75th percentile, as documented on `Thresholds`; tilt and fizzy at max + margin |
 
 The target is re-derived the way the shipped one was authored: the per-band median of each preset's mean-removed, stimulus-anchored band dB, rounded to 0.5 dB. No mode re-derives the `washed` gate (ground truth: a verified 90%-wet reverb), the bass-only `buried` gate (it needs a graph) or the localized `resonant`/`boxy` gates (set from a separate injection matrix).
 
@@ -26,7 +26,7 @@ The report gives, per rule and for "any rule", the fire count, the rate and the 
 
 **Data needed.** Each report row must carry a `replay` profile: everything the engine reads from the capture (raw band powers, stimulus band powers, coverage, tail ratio, air flatness, loudness, peaks).
 
-### The committed baseline (2026-10-15)
+### The committed baseline
 
 The held-out benchmark is committed and runs in `cargo test --lib` (`benchmark::held_out_baseline`).
 
@@ -53,7 +53,7 @@ False positives on 248 healthy guitar sounds (count; 95% Wilson upper bound):
 | boxy     | 4 (≤4.1%)           | 4 (≤4.1%)       | 4 (≤4.1%)      | 4 (≤4.1%)    |
 | any rule | 124 (≤56.2%)        | 45 (≤23.4%)     | 163 (≤71.4%)   | 126 (≤57.0%) |
 
-Read it this way: the shipped gates keep the percentile the old gates held (rank transfer), and on this population that percentile fires at least one rule on half of the factory guitar presets. `washed`, `resonant` and `boxy` are not re-derived by any mode, so their counts are the shipped gates' held-out rate. Under `maxPlusMargin`, 45 of 248 (18.1%) still draw a verdict, most of them `washed` (36) and the localized `resonant` (7) and `boxy` (4) rules.
+Read it this way: the shipped gates keep the percentile the earlier gates held (rank transfer), and on this population that percentile fires at least one rule on half of the factory guitar presets. `washed`, `resonant` and `boxy` are not re-derived by any mode, so their counts are the shipped gates' held-out rate. Under `maxPlusMargin`, 45 of 248 (18.1%) still draw a verdict, most of them `washed` (36) and the localized `resonant` (7) and `boxy` (4) rules.
 
 **Not covered yet:** per-diagnosis precision and recall need labeled positives with a `replay` profile (the defects suite's reports carry verdicts, not replays); the leveling error distribution, false clamps and idempotence need validate-log rows from a labeled leveling run; and run-to-run variance and timing need a repeated subset. Those rows go into a `probe --benchmark` corpus below.
 
