@@ -1,6 +1,6 @@
-# MIDI CC Map — TMP firmware v1.7, re-verified unchanged in v1.8
+# MIDI CC Map
 
-Reproduced from the MIDI Implementation Chart in the Owner's Manual (p.43), plus surrounding semantic notes from pp.42-43.
+Reproduced from the MIDI Implementation Chart in the Owner's Manual (p.43), plus surrounding semantic notes from pp.42-43. It matches the fw 1.8.58 CC dispatch (static RE).
 
 ## Contents
 
@@ -22,7 +22,7 @@ Reproduced from the MIDI Implementation Chart in the Owner's Manual (p.43), plus
 | 257–384      | 2                      | 1–128 |
 | 385–504      | 3                      | 1–120 |
 
-(PC values are 1-indexed per Fender's table — the wire value is `PC# - 1` for standard MIDI implementations.)
+(PC values are 1-indexed per Fender's table — the wire value is `PC# - 1` for standard MIDI implementations.) The device resolves preset = wire program + 1 + 128 × bank and rejects numbers above 504. The address is a position: after a reorder, a PC recalls whatever now sits at that number (static RE, fw 1.8.58).
 
 ## Control Change (CC) — Full Table
 

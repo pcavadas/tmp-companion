@@ -30,27 +30,27 @@ A modified preset turns its **number box from blue to red** — the only unsaved
 Two rules that bite:
 
 - **Presets always save to My Presets**, whether they came from My Presets, Factory or Cloud.
-- **There is no save prompt.** Navigating away from an edited preset does not ask you to save. _(The manual states only that it does not prompt — it does not say the edits are discarded, and `Scene Change Behavior: MAINTAIN CHANGES`, the default, argues they persist in some form. See `open-questions.md`.)_
+- **There is no save prompt.** Navigating away from an edited preset does not ask you to save, and loading another preset discards the unsaved edits (HW). A scene change within the preset keeps them under `Scene Change Behavior: MAINTAIN CHANGES`, the default (`global-settings.md` §3).
 
 ### Reorder, favourite, search
 
-- **Reorder:** hold a preset for **one second**, then drag. This **renumbers presets automatically**. (p.9)
+- **Reorder:** hold a preset for **one second**, then drag. This **renumbers presets automatically** (p.9), and the device rewrites Song→preset bindings to follow the moved preset (HW + static RE). MIDI Program Change addresses presets by position, so after a move a PC recalls whatever now sits at that number (static RE, fw 1.8.58).
 - **Favourite:** touch the star by the preset number. It turns blue and the preset is added to the **top** of Favorites. Favorites reorder independently but **keep their original numbers**. Touch again to remove. (p.9)
 - **Search:** the magnifier searches **within the current mode only**. (p.9)
 - Turning the navigation control **loads** the next/previous preset — it does not merely highlight it. (p.9)
 
-### Operating modes — capacity & behavior (moved from `SKILL.md`)
+### Operating modes — capacity & behavior
 
 Six navigation modes via the left-side touchscreen icons:
 
-| Mode            | Capacity | Behavior                                                                                                                                                                                                                                                                                                                           |
-| --------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| My Presets      | 504      | user-editable; drag-and-drop reorderable on touchscreen; reachable via MIDI Bank+PC                                                                                                                                                                                                                                                |
-| Favorites       | subset   | star-marked subset of My Presets; separately reorderable but keeps original preset number                                                                                                                                                                                                                                          |
-| Factory Presets | factory  | unnumbered, not directly editable; load → modify → "Save to My Presets"                                                                                                                                                                                                                                                            |
-| Cloud Presets   | 100      | see `SKILL.md`'s Preset object capacity table (same facts)                                                                                                                                                                                                                                                                         |
-| Songs           | 200      | each = up to 6 presets with labeled sections (intro/verse/chorus/solo/outro/…); per-song BPM available (wire mechanism: no dedicated setter — it's the global `SettingsMessage.tapTempoBpm` applied to the active song; song/setlist CRUD is `SongMessage`/`SetlistMessage` field-numbered setters — see `tmp-companion-protocol`) |
-| Setlists        | 50       | each = an **ordered** list of up to 99 Songs (position matters); a song may belong to **many** setlists; add / remove-from / reorder-within a setlist are all supported (wire: `addSetlistSong` (global slot) / `removeSetlistSong` / `moveSetlistSong` (1-based position) — see `tmp-companion-protocol`)                         |
+| Mode            | Capacity | Behavior                                                                                                                                                                                                 |
+| --------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| My Presets      | 504      | user-editable; drag-and-drop reorderable on touchscreen; reachable via MIDI Bank+PC                                                                                                                      |
+| Favorites       | subset   | star-marked subset of My Presets; separately reorderable but keeps original preset number                                                                                                                |
+| Factory Presets | factory  | unnumbered, not directly editable; load → modify → "Save to My Presets"                                                                                                                                  |
+| Cloud Presets   | 100      | see `SKILL.md`'s Preset object capacity table (same facts)                                                                                                                                               |
+| Songs           | 200      | each = up to 6 presets with labeled sections (intro/verse/chorus/solo/outro/…); per-song BPM available (wire mechanism: `tmp-companion-protocol`)                                                        |
+| Setlists        | 50       | each = an **ordered** list of up to 99 Songs (position matters); a song may belong to **many** setlists; add / remove-from / reorder-within a setlist are all supported (wire: `tmp-companion-protocol`) |
 
 The `tabEnum` wire encoding for these tabs is in `SKILL.md`'s Operating modes section. DAW Mode / Looper mode-entry gestures are in this file's §8 and §10 below.
 
@@ -94,7 +94,7 @@ Drag a block to any available `⊕` node; the drop target renders as a filled bl
 
 Capacity is **500 Block Presets** device-wide. User block presets for **dual cabs** appear at the **top** of the cabinet list.
 
-### Block types (reference, moved from `SKILL.md`)
+### Block types
 
 | Type                 | Notes                                                                                                                                                                                                                                       |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -126,7 +126,7 @@ Control tiles: cabinet · mic model · `AXIS` (value renders as `ON` for on-axis
 
 **External Cabinet** sits at the **bottom of the cabinet select list** — for driving a real (non-FR) cab from a solid-state power amp. It exposes a **Speaker Impedance Curve (SIC)** that changes how the amp model interacts with the connected cab.
 
-### Cabinet sub-model (reference, moved from `SKILL.md`)
+### Cabinet sub-model
 
 Applies per amp block (combo/half-stack/bass) OR per standalone Cabinet block.
 
@@ -159,7 +159,7 @@ The screen is a 5 × 2 virtual grid. Columns 1–4 of both rows are the **eight 
 
 Touching an on-screen footswitch toggles it between active and inactive so you can preview colours.
 
-### Assignment types (reference, moved from `SKILL.md`)
+### Assignment types
 
 8 of 10 physical footswitches are assignable (2 are fixed: FS Mode toggle, Tap/Tuner). Each assignable footswitch can carry up to **5 functions simultaneously**.
 
@@ -181,16 +181,16 @@ Left pane: the footswitch with its LED ring, and a **five-slot stack** — one s
 
 `Type` → e.g. `ON/OFF` · `Block` → e.g. `GREENBOX 8` · `Color (Active/Inactive)` → `RED/DIM` · `Switch` → `LATCHING` · `Custom Label` → _(empty, shows `+`)_ · `Switch Link` → `OFF`. A trash can deletes the assignment.
 
-**Field scope — switch-level vs function-level.** The manual (p.23) marks three rows verbatim "Common to all five footswitch assignments"; the rest are per-function. Getting this backwards produces per-function colour/label writes that the device silently resolves at switch level:
+**Field scope — switch-level vs function-level.** The manual (p.23) marks three rows verbatim "Common to all five footswitch assignments"; the rest are per-function. The firmware stores every one of these fields on each function entry (static RE, fw 1.8.58), so a switch-level field must carry the same value on every function of the switch:
 
-| Field                                 | Scope                  | Note                                                                                  |
-| ------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------- |
-| `Type`                                | **per function**       | the assignment type of that one slot                                                  |
-| `Block` (assigned block(s))           | **per function**       | shows `MULTI` when a slot drives more than one block                                  |
-| `Color (Active)` / `Color (Inactive)` | **switch-level**       | one active/inactive pair per footswitch — rendered as `RED/DIM`, `DEFAULT/DEFAULT`    |
-| `Switch` (latching / momentary)       | **switch-level**       | default `LATCHING`                                                                    |
-| `Custom Label`                        | **switch-level**       | the scribble-strip text; shows `MULTI` by default on a combined switch                |
-| `Switch Link`                         | **scope UNDOCUMENTED** | default `OFF` — see `SKILL.md`'s Footswitch Assign section for the Switch Link gotcha |
+| Field                                 | Scope            | Note                                                                               |
+| ------------------------------------- | ---------------- | ---------------------------------------------------------------------------------- |
+| `Type`                                | **per function** | the assignment type of that one slot                                               |
+| `Block` (assigned block(s))           | **per function** | shows `MULTI` when a slot drives more than one block                               |
+| `Color (Active)` / `Color (Inactive)` | **switch-level** | one active/inactive pair per footswitch — rendered as `RED/DIM`, `DEFAULT/DEFAULT` |
+| `Switch` (latching / momentary)       | **switch-level** | default `LATCHING`                                                                 |
+| `Custom Label`                        | **switch-level** | the scribble-strip text; shows `MULTI` by default on a combined switch             |
+| `Switch Link`                         | **per function** | default `OFF` — stored as `linkGroup`; see `SKILL.md`'s Footswitch Assign section  |
 
 ### Per type
 
@@ -203,7 +203,7 @@ Left pane: the footswitch with its LED ring, and a **five-slot stack** — one s
 
 Combining functions on one switch displays as **`MULTI`** in the scribble strip (renameable via Custom Label).
 
-### Footswitch-gated parameters default to OFF (reference, moved from `SKILL.md`)
+### Footswitch-gated parameters default to OFF
 
 A modulation/tremolo block parameter (e.g. the '65 Deluxe Reverb's tremolo **Intensity**) can store `0` in the block's `dspUnitParameters` and only reach its real value via a footswitch **Parameter Change** function (`func:"param"` in the top-level `ftsw` array, `valueA` = engaged value). With the footswitch **disengaged** (`ftsw[N].isActive=false`, the default), the param stays at its stored 0 — so a "silent" effect in the preset JSON may be _gated off_, not absent. Don't read a block's presence as "it's audibly doing something."
 
@@ -224,7 +224,7 @@ Observed defaults in the assignment editor: `Heel` **0 %**, `Toe` **100 %**, `Ta
 
 Classic wah recipe: toe switch toggles the wah on/off, EXP controls its position.
 
-### EXP Assign — data model (reference, moved from `SKILL.md`)
+### EXP Assign — data model
 
 Five expression sources, each independently configurable:
 
@@ -267,7 +267,7 @@ The **Song BPM** control occupies the **bottom-right cell** of the assignment gr
 1. **Touch the virtual footswitch** to enable Song BPM.
 2. **Touch the virtual scribble strip** to set the value with a gradient slider.
 
-Once enabled it **overrides all saved preset tempos** for every preset in that song, **also responds to the Tap Tempo footswitch**, and appears in the Preset View lower ribbon and on the Tap scribble strip. Default is **off**.
+Once enabled it **overrides all saved preset tempos** for every preset in that song, **also responds to the Tap Tempo footswitch** (a tap writes the song's BPM only while Song BPM is on, and turning it on re-applies the stored BPM — static RE + HW, fw 1.8.58), and appears in the Preset View lower ribbon and on the Tap scribble strip. Default is **off**.
 
 ### Song Notes
 
@@ -275,7 +275,7 @@ Touch **`+ Song Notes`** (centred below the instruction bar) while assigning pre
 
 ### Manage
 
-More Options (`⋯`) → **delete, duplicate or rename** a song. Editing a preset from within Songs mode and saving it **overwrites every use of that preset**.
+More Options (`⋯`) → **delete, duplicate or rename** a song. Deleting a song also removes its preset bindings and every setlist membership, and later songs shift down by one (static RE, fw 1.8.58). Editing a preset from within Songs mode and saving it **overwrites every use of that preset**.
 
 ### Navigate
 
@@ -338,7 +338,7 @@ Enter by **holding the FS Mode and Tap Tempo footswitches together for two secon
 `EXIT` takes the MODE-switch position; the TAP/TUNER switch is unchanged. **DAW Mode does not take over the touchscreen** — the ordinary Preset View stays on screen.
 
 > The PDF's text layer for this page carries non-rendered "ghost" strings describing a different,
-> track-oriented layout — see `open-questions.md` F1 for the full list and the
+> track-oriented layout — see `manual-errata.md` F1 for the full list and the
 > corroboration. Treat the ghost strings as non-authoritative; the **visible** layout above is
 > correct.
 
@@ -348,12 +348,12 @@ Enter by **holding the FS Mode and Tap Tempo footswitches together for two secon
 
 ### Backup (p.33)
 
-**Two routes, and the manual gives no equivalence between them:**
+**Two routes, one archive:**
 
 1. **micro SD** — Global Settings → Preferences → **Backup presets, settings and IRs to SD card**. Up to **25** backups with custom names. **Restore** is a separate menu item beside it. Card not included.
 2. **Tone Master Pro Control desktop app** (Mac/PC, over USB) — does "select, edit, **backup/restore** and share your presets" (p.1).
 
-The manual never enumerates what "settings" covers — in particular whether **Songs and Setlists** are inside a backup. See `open-questions.md`.
+The manual never enumerates what "settings" covers. Both routes build the same archive: the whole user database (presets, **Songs, Setlists** and setlist membership), the global settings JSON, the user IR list and IR files, and the block-preset defaults (static RE, fw 1.8.58).
 
 ### Firmware update (p.44)
 
@@ -383,7 +383,7 @@ Two globals deliberately do **not** persist: **Reamp mode** resets to OFF, and *
 
 ---
 
-## Screen index (moved from `SKILL.md`)
+## Screen index
 
 The firmware exposes the following screens / modals. Each is a _product surface_ — a defined view the user can be inside.
 

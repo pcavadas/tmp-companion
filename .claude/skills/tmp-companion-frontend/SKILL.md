@@ -5,15 +5,15 @@ description: "How to build and change the TMP Companion app's React/TypeScript f
 
 # TMP Companion frontend
 
-TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~90 `invoke` commands and a React + TypeScript frontend that talks to it. This skill is the playbook for changing that frontend without re-deriving the house conventions — the app receives recurring **design handoffs** that would otherwise each re-learn the same token mapping, file layout, test scaffold and lint traps.
+TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~40 `invoke` commands and a React + TypeScript frontend that talks to it. This skill is the playbook for changing that frontend without re-deriving the house conventions — the app receives recurring **design handoffs** that would otherwise each re-learn the same token mapping, file layout, test scaffold and lint traps.
 
 **Orient first.** [`notes/overview.md`](../../../notes/overview.md) is the architecture map (_what is where_) and [`.claude/rules/frontend.md`](../../rules/frontend.md) carries the edit-time lint/contract rules, loading automatically when you open a `src/` file. This skill is the _how-to_. `CLAUDE.md` is the index and wins on any rule it states; tell the user if you spot drift.
 
 ## Layout at a glance
 
-`src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (five feature folders — `level`, `doctor`, `copy`, `songs`, `settings` — plus a flat `CatalogView` and `views/overlays/`, which now holds only the Level flow's stage switch), and `App.tsx` (shell routing). Full file tree: `references/ui-components.md`.
+`src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (five feature folders — `level`, `doctor`, `copy`, `songs`, `settings` — plus a flat `CatalogView` and `views/overlays/`, the Level flow's stage switch `LevelingWizard`), and `App.tsx` (shell routing). Full file tree: `references/ui-components.md`.
 
-The app is **click-only by design** — no keyboard shortcuts, no command palette (the ⌘K palette was deleted on purpose). Enter/Escape inside a focused text input, committing or cancelling that field's own edit, is exempt — see the carve-out in `CLAUDE.md`.
+The app is **click-only by design** — no keyboard shortcuts, no command palette. Enter/Escape inside a focused text input, committing or cancelling that field's own edit, is exempt — see the carve-out in `CLAUDE.md`.
 
 ## When you're handed a Claude-Design handoff
 
@@ -21,7 +21,7 @@ A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prot
 
 1. **Read the whole handoff first**, and enumerate every deliverable it lists.
 2. **Reconcile the design against the codebase before coding.** A handoff may **refine an already-shipped feature**, not add a new one.
-3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/green means GREEN — map it to `good`/`goodFill`, amber→`caution`/`cautionFill` (+ `cautionLine` for an edge), error→`danger`/`dangerFill` (the full table is in `references/theme-tokens.md`). There is no `t.ok`/`t.err`/`t.info` alias; never reintroduce one (an old `ok` alias read terracotta where green was intended).
+3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/green means GREEN — map it to `good`/`goodFill`; the full severity table is in `references/theme-tokens.md`. There is no `t.ok`/`t.err`/`t.info` alias; never add one.
 4. **One component per file.** Split a multi-component prototype into focused files under the right feature folder, each re-exported from the folder's `index.ts`.
 5. **A Catalog-tab handoff that changes catalog DATA must keep the test oracles in sync.**
 
@@ -65,9 +65,7 @@ If a command doesn't exist yet, that's a backend change — coordinate it, don't
 
 ### Shared device data: the `libraryScan` store (App-owned, ONE scan/connection)
 
-Some device data (scenes, blocks, graphs, footswitches, the song↔preset map) is too expensive to read per-tab, so it's read ONCE per connection into a **module-scoped store**, `src/device/libraryScan.ts`, consumed by **Level, Copy, and Songs**. The scan TRIGGER is **App-owned**: `App.tsx` fires `ensureLibraryScan()` once on the connect edge and `resetLibraryScan()` on detach — so every device tab shares ONE scan and a tab switch NEVER re-triggers it. A new tab that needs backup-sourced data **CONSUMES the store** (`useSyncExternalStore(subscribeLibraryScan, getLibraryScan)`); it does NOT add its own trigger — that re-introduces the per-tab-rescan bug this layout prevents.
-
-The SAME module-store pattern (not component `useState`) backs `src/device/useLiveDevice.ts` — the app-global LIVE device state (active preset/scene/graph from the 5 `tmp://` monitor events), for the same tab-switch-remount reason. The hero SLOT badge reads the frontend `activeListIndex`, not `graph.slot`. Deep-dive on both stores: `references/gotchas.md`.
+Device data too expensive to read per-tab (scenes, blocks, graphs, footswitches, the song↔preset map) is read ONCE per connection into the module-scoped store `src/device/libraryScan.ts`, whose scan `App.tsx` triggers; a new tab CONSUMES it and never adds its own trigger. The app-global live device state (`src/device/useLiveDevice.ts`) is the same module-store pattern. Both stores: `references/gotchas.md`.
 
 ## Testing
 
@@ -82,7 +80,7 @@ Tests are **Vitest + React Testing Library**, jsdom environment, rendered throug
 - **Real timers wherever a test awaits `findBy`/`waitFor`.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and hang forever polling a frozen clock. Fake timers fit only a bare timeout with no DOM wait.
 - After adding a test, run the suite (`bun run test`) — a green `tsc` + build does **not** run your test.
 
-**Full UI journeys** (connect → navigate → edit → save) are covered above Vitest by the dual-mode Playwright e2e harness in `e2e/` (`bun run e2e` offline / `bun run e2e online`) — reach for it when a change spans the click→invoke→device round trip.
+**Full UI journeys** are covered by the Playwright e2e harness (`references/gotchas.md`).
 
 ## Lint & typecheck traps
 

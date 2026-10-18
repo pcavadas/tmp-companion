@@ -109,7 +109,13 @@ How a scene reloads **after it has been modified but not saved**:
 - **`MAINTAIN CHANGES` (default)** — reloads the scene in its last modified state. Lets you edit several scenes and save once.
 - **`DISCARD CHANGES`** — reloads exactly as last saved. The manual warns explicitly: when creating or editing scenes under this setting, **the preset must be saved before switching scenes or the changes are lost.**
 
-Any host-side workflow that accumulates unsaved per-scene writes across scene recalls and saves once at the end is only valid under `MAINTAIN CHANGES`.
+What the firmware does (static RE, fw 1.8.58):
+
+- **MAINTAIN:** a recall keeps every unsaved edit — parameters, overlays, footswitch-toggled bypass — with one exception: `loadScene(8)` while base is already current re-applies the base snapshot's `presetLevel` (the level of the last load, scene recall or base structural edit, never a `setPresetLevel` or a save).
+- **DISCARD:** every `loadScene` first rebuilds base and every overlay from the stored preset, losing all unsaved block, overlay and footswitch edits, whatever scene it targets.
+- Loading another preset discards unsaved edits under either setting (HW).
+
+Any host-side workflow that accumulates unsaved per-scene writes across scene recalls and saves once at the end is only valid under `MAINTAIN CHANGES`. Over USB the setting reads as `footswitchSettingsRequest` (Settings 47) → `footswitchSettingsResponse` (48) field 12: 0 = MAINTAIN (left out on the wire), 1 = DISCARD; the backup's `settingsBackup.sceneChangeBehavior` stores the same ordinal (static RE + HW, fw 1.8.58).
 
 > The MODE footswitch toggles Presets ⇄ Effects. With a second assignment page present the strip reads `FS: FX PAGE 1`, and it cycles page 1 → page 2 → back to Preset mode.
 
@@ -157,12 +163,12 @@ Every channel has a fader, a meter, `M` (mute) and `S` (solo). What differs is t
 | `USB 3`, `USB 4`                     | `PRE` / `POST` _(no AUX, no Bluetooth, no MASTER)_ | **1 bar (mono)**    |
 
 - **MASTER assign** exists **only** on the three physical outputs, and each is toggled independently. Assigned faders move in unison with the master volume knob; unassigned ones are independent.
-- **`PRE` / `POST` is per-channel** — USB 3 and USB 4 each have their own pair, both defaulting to `PRE`. (The prose describes it as a single choice "out USB 3/4"; the UI shows two.) `PRE` sends the dry input at 0 dBFS reference, fader-independent; `POST` makes the fader affect it.
+- **`PRE` / `POST` is per-channel** — USB 3 and USB 4 each have their own pair, both defaulting to `PRE`. (The prose describes it as a single choice "out USB 3/4"; the UI shows two.) `PRE` sends the dry input at unity, fader-independent; `POST` makes the fader affect it. The dry instrument send carries a fixed +11.95 dB trim and clamps at 24-bit full scale, so hard picks can clip USB 3 while the A/D and the preset input are intact (static RE + HW, fw 1.8.58).
 - **Solo is additive** — soloing mutes the others, but touching additional solo buttons adds those channels back into the mix.
 - **AUX** and **Bluetooth** buttons inject those sources into the selected channel — including `USB 1/2`.
-- **Meter scale, top → bottom:** `0 / −5 / −10 / −15 / −20 / −30 / −40 / −50 / −60 dB` (screen says `dB`; prose says dBFS). Red at top = clipping, yellow 0 → −20, green below −20.
+- **Meter scale, top → bottom:** `0 / −5 / −10 / −15 / −20 / −30 / −40 / −50 / −60 dB` (screen says `dB`; prose says dBFS). Yellow 0 → −20, green below −20. The bar is RMS over the poll interval and the red top cell lights only when that reads 0 dBFS, so short clips never show: a clean meter does not prove an unclipped USB 3 send (static RE, fw 1.8.58).
 
-> Mixer state is **global and invisible to a preset**. Anything measuring or capturing `USB 1/2` is downstream of that channel's fader, mute and solo — see `open-questions.md` on whether the master volume knob also reaches it.
+> Mixer state is **global and invisible to a preset**. Anything measuring or capturing `USB 1/2` is downstream of that channel's fader, mute and solo (a solo on any other channel silences it) and of any AUX/Bluetooth injection. The master volume knob does not reach it: the knob moves only the strips whose `linkToMasterLvl` flag is set, and `usb12`'s never is (HW). The whole mixer state is readable offline from the backup's `settingsBackup.mixerSaveData`, and live over Mixer reads on a kept-alive session.
 
 ---
 
@@ -190,13 +196,13 @@ Reachable from Global Settings → Tuner, or by holding TAP/TUNER for 2 s.
 
 Where a global setting and a more local one both apply:
 
-| Contest                                                          | Winner                                                                                    |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Global `Tap Tempo: GLOBAL` vs per-preset stored tempo            | **global**                                                                                |
-| **Song BPM** (per song, default off) vs preset tempos            | **Song BPM**, over all presets in that song                                               |
-| **MIDI Clock receive** (global) vs everything                    | **MIDI clock** — tap footswitch disabled, stored preset tempos ignored                    |
-| Global `Tap Tempo: GLOBAL` vs **Song BPM**                       | **UNDOCUMENTED** — both are described as overriding preset tempo; see `open-questions.md` |
-| Global default footswitch colours vs per-preset colours          | **per-preset**                                                                            |
-| Global default footswitch colours vs per-song assignment colours | **per-song assignment**                                                                   |
-| Global EQ vs preset volume                                       | independent — Global EQ is a global output-stage EQ assignable per output                 |
-| Global mixer faders vs Preset Volume                             | independent, and they compound                                                            |
+| Contest                                                          | Winner                                                                                                                                                                   |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Global `Tap Tempo: GLOBAL` vs per-preset stored tempo            | **global**                                                                                                                                                               |
+| **Song BPM** (per song, default off) vs preset tempos            | **Song BPM**, over all presets in that song                                                                                                                              |
+| **MIDI Clock receive** (global) vs everything                    | **MIDI clock** — tap footswitch disabled, stored preset tempos ignored                                                                                                   |
+| Global `Tap Tempo` vs **Song BPM**                               | **Song BPM** while the active song's Song BPM is on: a tap writes that song's BPM; otherwise the `Tap Tempo` setting picks global or preset tempo (static RE, fw 1.8.58) |
+| Global default footswitch colours vs per-preset colours          | **per-preset**                                                                                                                                                           |
+| Global default footswitch colours vs per-song assignment colours | **per-song assignment**                                                                                                                                                  |
+| Global EQ vs preset volume                                       | independent — Global EQ is a global output-stage EQ assignable per output                                                                                                |
+| Global mixer faders vs Preset Volume                             | independent, and they compound                                                                                                                                           |

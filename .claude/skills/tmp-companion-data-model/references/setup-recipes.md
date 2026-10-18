@@ -108,7 +108,7 @@ A workable configuration:
 - If the power amp drives a **real guitar cab**, that path should use the **External Cabinet** option with an appropriate **Speaker Impedance Curve** rather than a modelled cab + IR (p.16) — otherwise you get cab-on-cab.
 - To send _different_ processing to each destination, use a **Split** template (`Instrument Split`) and assign `Upper Path` → Output 1, `Lower Path` → Output 2 in Output Assign.
 
-Two caveats worth stating: `OUTPUT 2` has ~8 dB less headroom than `OUTPUT 1` (§2), and see `open-questions.md` — the manual never disambiguates what `Upper Path` / `Lower Path` mean on a non-parallel template.
+Two caveats worth stating: `OUTPUT 2` has ~8 dB less headroom than `OUTPUT 1` (§2), and the manual never disambiguates what `Upper Path` / `Lower Path` mean — their stored keys (`instrumentOutput`, `comboOutput`; `preset-model.md`, Output Assign) suggest the instrument and mic/line channels rather than a Split's two lanes (inferred).
 
 ---
 
@@ -127,11 +127,11 @@ TMP is a **4-in / 4-out** USB 2.0 interface. Two modes, in Global Settings → I
 
 Re-amp audio enters **at the first processing block** and **does not pass through analog loops 1/2** (they are pre-A/D). Both physical input jacks are muted while re-amp is on.
 
-> **USB out 3 (dry instrument) has no limiter and clips at 0 dBFS** for hot pickups played hard (live-confirmed) — never roll the guitar volume back to avoid it, that just under-drives the amp and darkens the tone. **The re-amp inject is NOT AGC'd** — its amplitude directly drives the block's nonlinearity, so a hotter injected signal genuinely drives the chain harder; do not apply gain processing to the injected track expecting the device to compensate.
+> **USB out 3 (dry instrument) carries a fixed +11.95 dB trim and clamps at 24-bit full scale**, so hot pickups played hard clip it while the A/D and the preset input stay intact, and the unit's mixer meter does not show it (static RE + HW, fw 1.8.58) — never roll the guitar volume back to avoid it, that just under-drives the amp and darkens the tone. **The re-amp inject is NOT AGC'd** — its amplitude directly drives the block's nonlinearity, so a hotter injected signal genuinely drives the chain harder; do not apply gain processing to the injected track expecting the device to compensate.
 >
-> From the Mac's perspective USB out 3 is input channel index 2; useful for measuring a real instrument's output level (the Tier-2 calibration path). Any apparent flattening of input-level changes on the re-amp inject is the amp model's own compression, not normalization (live-confirmed via a re-amp amplitude sweep: a clean preset gave ~1.65 LU output per 6 dB input, linearizing toward −6 LU/6 dB at low drive). This is the foundation of instrument-aware leveling.
+> From the Mac's perspective USB out 3 is input channel index 2; useful for measuring a real instrument's output level (the profile calibration that records the player's DI level). Any apparent flattening of input-level changes on the re-amp inject is the amp model's own compression, not normalization (HW: a clean preset gave ~1.65 LU output per 6 dB input, linearizing toward −6 LU/6 dB at low drive). This is the foundation of instrument-aware leveling.
 
-**Clocks are separate specs (p.46):** internal A/D–D/A conversion is **44.1 kHz / 32-bit**; the USB audio clock is **44.1 / 48 / 88.2 / 96 kHz, DAW-selectable**. The manual states no internal DSP rate and does not relate the two — but measurement does: a **44.1 kHz stage is in the re-amp path** (`open-questions.md` A2, HW fw 1.8.45), so nothing above ~22 kHz in a USB capture is preset tone. The host side still runs at 48 kHz.
+**Clocks are separate specs (p.46):** internal A/D–D/A conversion is **44.1 kHz / 32-bit**; the USB audio clock is **44.1 / 48 / 88.2 / 96 kHz, DAW-selectable**. The manual states no internal DSP rate and does not relate the two: the DSP runs at a fixed 44.1 kHz behind a USB-side SRC (`SKILL.md`, USB audio routing), so nothing above ~22 kHz in a USB capture is preset tone. The host side still runs at 48 kHz.
 
 ---
 
@@ -147,7 +147,7 @@ Re-amp audio enters **at the first processing block** and **does not pass throug
 | In re-amp path?         | **No**                                                     | Yes                                                              |
 | On/off saved per preset | Yes                                                        | Yes                                                              |
 
-Loops 1/2 being pre-conversion is why they suit fuzzes and vintage wahs that want to see pickup impedance directly — and why they are invisible to USB re-amping.
+Loops 1/2 being pre-conversion is why they suit fuzzes and vintage wahs that want to see pickup impedance directly — and why they are invisible to USB re-amping. They are relays switched by the preset's top-level `fxLoop` object (`fxLoop1Enabled` / `fxLoop1Bypassed`, …), not audio-graph nodes. Loops 3/4 are DSP blocks (`ACD_FxLoop3` / `ACD_FxLoop4` / `ACD_FxLoop3_4`) with their own ADC/DAC channels, so gear on them is in the re-amp path (static RE, fw 1.8.58).
 
 Cabling any loop: TMP loop `SEND` → external unit input; external unit output → TMP loop `RETURN`.
 

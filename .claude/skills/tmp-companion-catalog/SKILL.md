@@ -15,7 +15,7 @@ The Catalog tab and the signal-chain strip render from a shipped model catalog. 
 
 2. **`catalog_id = (block_id, form)` — block_id is NOT unique.** The same amp `block_id` is catalogued as **both** a Combo and a Head (identical `block_name`). Dedup/keying by `block_id` alone silently drops rows — this is the "Amp Heads 48→3" regression. Key and dedup by `(block_id, form)`, and thread `form` (combo/head/half_stack) through `BlockArt` so art can tell them apart. `catalog.ts::isComboBid(model)` is the form lookup the strip call sites pass into `nodeTileArt`.
 
-3. **Amp-id suffix parity — keep TS and Rust in lockstep.** A device amp id can carry merged `ConvRvb|CabIR|NoCab|Cab|IR` (+ a `NoFx` re-check) suffixes the catalog's bare id lacks. Matching is **check-first, then strip ONE suffix at a time, re-check** — never greedy, because reverb amps are catalogued _with_ the suffix. This lives in `deviceId.ts::resolveDeviceId` (TS — a zero-import leaf shared by `blockArt`, `cpu`, `catalog`) and `is_amp_model_id` (Rust, now in `src-tauri/src/probe_api/scene_jobs.rs`). A change to the suffix set or the NoFx bridge must edit **both** or amp detection silently diverges. Backend matches by EXACT FenderId, so a frontend-normalized id must never be passed into a backend op (see `notes/write-safety.md`).
+3. **Amp-id suffix parity — keep TS and Rust in lockstep.** A device amp id can carry merged `ConvRvb|CabIR|NoCab|Cab|IR` (+ a `NoFx` re-check) suffixes the catalog's bare id lacks. Matching is **check-first, then strip ONE suffix at a time, re-check** — never greedy, because reverb amps are catalogued _with_ the suffix. This lives in `deviceId.ts::resolveDeviceId` (TS — a zero-import leaf shared by `blockArt`, `cpu`, `catalog`) and `is_amp_model_id` (Rust, `src-tauri/src/scene_jobs.rs`). A change to the suffix set or the NoFx bridge must edit **both** or amp detection silently diverges. Backend matches by EXACT FenderId, so a frontend-normalized id must never be passed into a backend op (see `notes/write-safety.md`).
 
 4. **Null-bid blocks need a name fallback.** `resolveBlockArt(bid)` keys art by FenderId; the 7 Microphones have `block_id=null` (no `bid`) and fall through to a generic glyph unless resolved by NAME via `resolveBlockArtByName` (the `BY_NAME` index). Any new null-bid block needs the name fallback **and** a row in the `models-catalog.test.tsx` coverage test (it checks every catalog row, not spot samples).
 
@@ -33,6 +33,6 @@ The Catalog tab and the signal-chain strip render from a shipped model catalog. 
 
 1. Pick the right `blockArtCatalog/<category>.ts` file for the block's category.
 2. Add the row, keyed by `(block_id, form)` — a null-`bid` block (e.g. a Microphone) also needs a `BY_NAME` fallback entry (see invariant 4 above).
-3. Extend the coverage oracle in `src/__tests__/models-catalog.test.tsx` (verify that file's actual name/oracle first — it may have shifted; adjust rather than assume).
+3. Extend the coverage oracle in `src/__tests__/models-catalog.test.tsx`.
 4. If the row mirrors data in `tmp-model-guide.json`, flag the maintainer to mirror the change into their local generator (invariant 1) — don't rely on a future regen picking it up on its own.
 5. Run `bun run test`.

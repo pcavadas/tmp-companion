@@ -24,18 +24,18 @@ mapping — this skill would drift from it.
 What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on top of a green
 `gates.sh` (each row is cumulative):
 
-| Change class                                                                            | Escalate to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Leveling-math / device-behavior change (solver, capture model, clamp/idempotency logic) | nothing more on the PR: PRs run the offline gates only. The online suite runs at release, on the unit, through `scripts/pre-release.sh`, which lists every merged device-facing change since the last release tag (`scripts/gates.sh --device-changes`) and runs the specs that range requires (`scripts/e2e.sh online release`). To check a risky change on the unit before then, `scripts/e2e.sh online auto` runs exactly the specs `scripts/gates.sh --required-online` names for this diff; any passing run merges the specs it ran into the tree's online stamp, which nothing on a PR requires |
-| Release-risk change to the solve/save/idempotency path                                  | + `scripts/e2e.sh soak <N>` (N ≥ 5) — the attended repeat lane for drift/engage-drop/stochastic device-state bugs a single online run won't catch                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Change class                                                                            | Escalate to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Leveling-math / device-behavior change (solver, capture model, clamp/idempotency logic) | on the PR, the required `remote-lane` status: `.github/workflows/remote-lane.yml` runs the online specs the diff maps to against a remote device (10–45 min), and posts "not needed" at once for any other PR. The full online suite runs at release, on the unit, through `scripts/pre-release.sh`, which lists every merged device-facing change since the last release tag (`scripts/gates.sh --device-changes`) and runs the specs that range requires (`scripts/e2e.sh online release`). To check a risky change on the unit before then, `scripts/e2e.sh online auto` runs exactly the specs `scripts/gates.sh --required-online` names for this diff; any passing run merges the specs it ran into the tree's online stamp, which nothing on a PR checks |
+| Release-risk change to the solve/save/idempotency path                                  | + `scripts/e2e.sh soak <N>` (N ≥ 5) — the attended repeat lane for drift/engage-drop/stochastic device-state bugs a single online run won't catch                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 ## 2. Enforcement reality (why "looks green" isn't optional to prove)
 
 - `scripts/gates.sh --check` gates `.husky/pre-push` — a stale/missing stamp re-runs the gates;
   a red gate aborts the push with the failing gate's own output.
 - `scripts/claude-hooks/gate-pr.sh` (a `PreToolUse(Bash)` hook) blocks `gh pr create`/`gh pr merge`
-  on a stale/missing green stamp. It requires no online stamp: PRs run the offline gates only, and
-  the online suite runs at release (`scripts/pre-release.sh`; the class map is `scripts/gate-map.tsv`,
+  on a stale/missing green stamp. It requires no online stamp: PRs run the offline gates, a device-facing PR
+  also waits on the required `remote-lane` status, and the full online suite runs at release (`scripts/pre-release.sh`; the class map is `scripts/gate-map.tsv`,
   the per-class specs `scripts/gate-policy.tsv`, and a Rust gate fails on any unmapped backend file).
 - `scripts/claude-hooks/block-bypass.sh` blocks `--no-verify`/`HUSKY=0`/`core.hooksPath` on any
   `git commit`/`git push` — there is no sanctioned bypass; fix the red gate instead.
@@ -44,16 +44,11 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
 
 ## 3. Traps that produce a false result
 
-- **Stale bridge server = false-green OR false-online** (CLAUDE.md, "Traps that fire when you run something").
-  `scripts/e2e.sh` kills the port before every run, but a direct `bunx playwright test` invocation
-  can hit a leftover WRONG-mode server via `reuseExistingServer: true`. Kill the REAL port first,
-  always — in a worktree that's the per-worktree DERIVED port. Offline claims an 8-port stride
-  based at 7800 (online: 9400; `scripts/e2e.sh`'s `PORT_BASE`), never a fixed 7600; check `$TMP_E2E_PORT` or
-  the e2e.sh log line before killing a hardcoded port, and prefer letting `scripts/e2e.sh` sweep
-  the range itself.
-- **Fresh worktree needs deps before checks, not just before dev** (CLAUDE.md's "Fresh clone or worktree"
-  trap) — `bun install` before typecheck/lint/test/build, `bun run build`
-  before any `cargo` gate.
+- **Stale bridge server = false-green OR false-online** — run through `scripts/e2e.sh`, which sweeps
+  the worktree's port range; never a direct `bunx playwright test` (CLAUDE.md, "Traps that fire when
+  you run something").
+- **Fresh worktree needs deps before checks** — `bun install`, then `bun run build` before any `cargo`
+  gate (CLAUDE.md, "Fresh clone or worktree").
 - **Online false-green tell:** confirm the server log prints `seeded snapshot from the real
 device` (or `/health` reports `online: true` with `remote` false — a remote server reports `online: true` too) before trusting a pass — a stale offline server
   reused under `TMP_E2E_ONLINE=1` looks identical until you check. A green spec run is not
@@ -61,7 +56,7 @@ device` (or `/health` reports `online: true` with `remote` false — a remote se
   observed number passes on the regression it should catch. The independent read is the ffmpeg
   `level-validate` pass, and its receipt is the runner logging `external validation PASSED`
   followed by the stamp. Read the runner's own exit status, never a pipeline's — `| tail`
-  reports tail's status and buffers a 40-minute run into silence.
+  reports tail's status and buffers a long run into silence.
 - **A restored file keeping its original mtime does not rebuild.** `mv`-ing a source version
   back to A/B two builds leaves cargo's freshness check satisfied, so the "proof" run reuses the
   previous binary. Confirm a compile line appeared, or `touch` the file after any restore.
@@ -73,7 +68,7 @@ device` (or `/health` reports `online: true` with `remote` false — a remote se
 - **A soak/online run needs the unit plugged in and Pro Control closed** — same preconditions as any
   online `e2e.sh` invocation; a handshake failure reports the "close Pro Control" hint.
 - **A docs-only change gets NO automated gate**, so nothing catches a stray non-ASCII character
-  landing in committed prose — a generated CJK glyph reached this public repo that way. Eyeball a
+  landing in committed prose. Eyeball a
   docs diff (or grep it for CJK/Cyrillic) before calling a docs-only change done; a real
   pre-commit check belongs in `scripts/leak-guard.sh` but that script is high-risk to edit.
 
@@ -97,27 +92,22 @@ device` (or `/health` reports `online: true` with `remote` false — a remote se
    re-query the live source immediately before asserting it, never from memory of an earlier check.
 5. **A fix is not done until the module is swept for the same defect shape, and every part of a
    multi-part finding has landed.** A guard added at the cited line usually has an un-cited twin
-   nearby — the same missing check in a sibling branch or fall-through (a `bypass-nodes`
-   empty-list fix shipped while its exact `bypass_all` twin sat 40 lines away in the same
-   function). And a multi-ask finding can be half-applied and still reported fixed (a `Critical`
-   asked for an identity guard AND a scratch-zone restriction; only the guard landed). Grep the
+   nearby — the same missing check in a sibling branch or fall-through. And a multi-ask finding
+   can be half-applied and still reported fixed. Grep the
    module for the shape, and re-read the finding's full body, before calling it done. This is the
    author-side counterpart of `.coderabbit.yaml`'s `Behavioral parity` pre-merge check.
 6. **A check's data must be able to exercise the failure it verifies.** A pagination check run
    against fewer rows than the page size, an edge-case guard tested only on the happy path, or a
-   race check run single-threaded all pass for reasons unrelated to correctness. A documented
-   GraphQL query shipped this way in PR #119: it was run once and "verified", but the fixture had
-   23 items against a page size of 100, so its cursor bug could not manifest. Confirm the fixture
+   race check run single-threaded all pass for reasons unrelated to correctness. Confirm the fixture
    crosses the threshold that would trip the bug before trusting green. For a leveling repro
    that means the stimulus production actually resolves — the profile's captured DI, not the
    bundled synthetic sample: reachable ceilings differ by more than 10 dB between them, so a
    clamp cannot occur under the bundled one.
 
 7. **A verifier covers only what it actually reads — name the address space AND the fields, then
-   prove it can fail.** Three real incidents of the same shape: a read-back checked the base graph
-   while the write landed in a scene overlay (passed falsely); a fixture drift-lock compared a
-   typed struct that omitted the two fields that drifted (stayed green); a device-error cause was
-   asserted from the message text without reproducing it. Before trusting any read-back or
+   prove it can fail.** A read-back of the base graph passes while the write landed in a scene
+   overlay; a drift-lock over a typed struct stays green on the fields the struct omits. Before
+   trusting any read-back or
    drift-lock, state the address space it reads (base vs scene overlay, list-index vs 1-based
    device slot), the data representation it reads (typed struct or raw JSON), and the fields it
    covers — then check that a deliberate mismatch actually turns it red.

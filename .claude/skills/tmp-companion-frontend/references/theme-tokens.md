@@ -7,7 +7,7 @@ The object is two parts, spread together:
 1. **The look B tokens** — six exported groups (`color`, `type`, `space`, `radius`, `size`, `elevation`). Everything outside the signal-path diagram reads ONLY these.
 2. **The frozen signal-path tokens** — read ONLY by the keep-as-is diagram files (below). Do not use them anywhere else.
 
-There are no old aliases any more (`inset`, `rowSel`, `fsName`, `rMd`, `space10`, `lsKicker`, `microLabel()`, … are gone). A name you can't find is a B token to look up here, not one to re-add.
+A name not in `tokens.ts` does not exist — look up the B token here; never add an alias.
 
 Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styled-components, no Tailwind, no className system — that's deliberate.
 

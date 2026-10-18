@@ -29,16 +29,14 @@ date -u +%H:%M:%SZ                                       # for window arithmetic
 
 **Read the walkthrough comment BODY in full — never grep it for a keyword, never truncate it.**
 Its state declarations (rate limit, pause) sit in the body, not in headers, labels, or the first few
-hundred characters. On PR #119, grepping it for rate-limit strings and reading ~150 chars hid a
-self-declared pause for 7 hours. The `[0:400]` slice above is for timestamps only.
+hundred characters. The `[0:400]` slice above is for timestamps only.
 
 **Two `gh pr view --json` fields that do not exist — both fail as hard errors, so a `|| fallback`
 in a poll loop turns each into a silent "no" that never fires:**
 
 - **`merged`** — detect a merge with `state == "MERGED"` (or a non-null `mergedAt`) instead.
 - **`reviewThreads`** — there is no REST/`--json` accessor; threads come only from the GraphQL query
-  above. This one bit twice on PR #119: once in a watcher, once written into this very file three
-  lines under the warning about `merged`.
+  above.
 
 Before trusting any `gh` field in a loop, run it once bare and look at the output.
 
@@ -66,9 +64,8 @@ comments explicitly — do not silently derive `ACTIONABLE_THREADS` from a trunc
 - **`OUTSIDE_DIFF`** — findings that exist ONLY in a review's BODY, under a
   `⚠️ Outside diff range comments (N)` heading, because they sit on lines the diff didn't touch.
   They are NOT threads: they never appear in `reviewThreads`, have no thread id, and cannot be
-  replied to or resolved per-thread. A triage loop keyed on threads is structurally blind to them —
-  on PR #119 there were 20 across 5 review bodies and 5 went unfixed, including a `Critical`
-  destructive-save guard, while the thread view read "no actionable threads". Sweep EVERY review
+  replied to or resolved per-thread. A triage loop keyed on threads is structurally blind to them, and
+  the thread view reads "no actionable threads" while they go unfixed. Sweep EVERY review
   body (they accumulate; a finding raised in review 2 is not repeated in review 5), and treat each
   as a finding of record.
 - **`ACTIONABLE_OUTSIDE_DIFF`** — the `OUTSIDE_DIFF` subset you have not yet dealt with. One becomes
@@ -82,16 +79,14 @@ comments explicitly — do not silently derive `ACTIONABLE_THREADS` from a trunc
   **settled** and is NOT actionable, however long it stays open. `ACTIONABLE_THREADS` drives lane 5a of §4;
   keying the loop on `OPEN_THREADS` instead makes a deliberately-deferred thread re-enter §4
   forever. Some acks carry a `<!-- <review_comment_addressed> -->` or `<!-- <review_comment_withdrawn> -->` marker,
-  which is a useful hint — but it is applied inconsistently (3 of 15 acks on PR #119), so it
+  which is a useful hint — but it is applied inconsistently, so it
   confirms settledness and never establishes actionability.
 
 **`UNTRIAGED_RESOLVED` — a resolved thread is not necessarily an addressed one.** A thread can resolve because the diff
 moved under it (`isOutdated`), not because anyone answered it — so a finding you never triaged can
 leave `OPEN_THREADS` on its own and never reappear. Once per review round, list the RESOLVED threads
 too and check each for a finding that got no fix and no reply from you; judge those on the merits
-regardless of thread state. On PR #119 a `Major` security finding ("do not make repository content an
-unscoped agent-control policy") auto-resolved this way after an edit shifted its lines, and was
-found only by reading the resolved list. Do NOT reopen such a thread (N3) — fix it and say so in the
+regardless of thread state. Do NOT reopen such a thread (N3) — fix it and say so in the
 next round's commit.
 
 ## LIMITED timestamp arithmetic
@@ -102,19 +97,12 @@ it and does NOT clear when the window passes; trusting the label instead of the 
 turn a 3-minute wait into hours of idle babysitting.
 
 **The deadline is absolute; `n` is remaining time recomputed at each render.** An attempt made
-while the window is open does NOT restart it. Measured on PR #119, same comment id: 22:08:21Z said
-"48 minutes" (deadline 22:56:21Z) and 22:17:35Z said "39 minutes" (deadline 22:56:35Z) — a push in
-between re-rendered the notice without moving the deadline by more than render time. So a wasted
-mid-window attempt costs a quota unit but does not push the window out (contrary to the older
-"resets the countdown" belief, which was never vendor-documented). A NEW window is armed only by an
-attempt made after the previous one lapsed: the 21:05Z window expired at 21:45Z, and the next
-attempt at 22:08Z armed a fresh 48-minute one. This is one measured push, not a general proof for
-every command type — still wait, but do not treat an accidental attempt as having reset the clock.
+while the window is open costs a quota unit but does not push the window out; a NEW window is armed
+only by an attempt made after the previous one lapsed (observed once, for a push — still wait, but do
+not treat an accidental attempt as having reset the clock).
 
 **Record `LIMITED(t, n)` the moment you see it — it is not durable.** CodeRabbit reuses ONE
-walkthrough comment, so the limit notice gets EDITED AWAY when that comment is next regenerated (on
-PR #119 the 21:05Z "next review available in 40 minutes" text was gone by 21:27Z, same comment id,
-leaving only walkthrough content). Its later absence proves nothing in either direction: do not
+walkthrough comment, so the limit notice gets EDITED AWAY when that comment is next regenerated. Its later absence proves nothing in either direction: do not
 re-derive the state from the comment you can still see, and do not treat the disappearance as the
 limit lifting. Compute `t + n` from the observation you captured.
 
