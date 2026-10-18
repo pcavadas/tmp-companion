@@ -174,8 +174,7 @@ export function checkOp(
 
   if (!CABINET_EXEMPT.has(candidateModel)) {
     const candCabinet = cand.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
-    // A dual anchor frees 2 even when it is not a member, as the client does.
-    const anchorCabinet = anchor?.dualCab ? 2 : anchorClass?.cabinet ? 1 : 0;
+    const anchorCabinet = anchorClass?.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
     if (counts.cabinet + candCabinet - anchorCabinet > 2) {
       return "ComboHalfStackCabinetsLimit";
     }

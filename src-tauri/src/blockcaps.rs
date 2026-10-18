@@ -322,8 +322,8 @@ pub fn counts(roster: &[RosterEntry]) -> Counts {
 ///
 /// `is_replace` selects whether `replaced_id`'s contribution is subtracted (an
 /// insert/append never frees a slot); `cand_dual_cab`/`replaced_dual_cab` are whether
-/// the candidate/replaced node takes a second cabinet slot (2 on the cabinet cap; the
-/// replaced side's 2 is subtracted even for a non-member, as the client does).
+/// the candidate/replaced node takes a second cabinet slot (2 on the cabinet cap, for a
+/// cabinet member only, matching what [`Counts`] holds).
 ///
 /// Checked in firmware enum order (0..4); returns the FIRST violated reason, matching
 /// the TS `checkOp` sibling so the two guards never disagree on which reason to show.
@@ -336,6 +336,8 @@ pub fn check_op(
     replaced_dual_cab: bool,
 ) -> Result<(), BlockCapError> {
     let s = sets();
+    // A replace with no resolved target frees nothing.
+    let is_replace = is_replace && replaced_id.is_some();
     let replaced = replaced_id.filter(|_| is_replace).unwrap_or("");
     let mut next = counts.clone();
     next.add(candidate_id, cand_dual_cab);
@@ -369,17 +371,13 @@ pub fn check_op(
     }
 
     if !s.cabinet_exempt.contains(candidate_id) {
-        let cand = if cand_dual_cab {
-            2
+        // Members only, as `Counts` holds them: a dual flag on a non-member weighs nothing.
+        let weight = |id: &str, dual: bool| member(&s.cabinet, id) * if dual { 2 } else { 1 };
+        let cand = weight(candidate_id, cand_dual_cab);
+        let gone = if is_replace {
+            weight(replaced, replaced_dual_cab)
         } else {
-            member(&s.cabinet, candidate_id)
-        };
-        let gone = if !is_replace {
             0
-        } else if replaced_dual_cab {
-            2
-        } else {
-            member(&s.cabinet, replaced)
         };
         if counts.cabinet + cand - gone > 2 {
             return Err(BlockCapError::ComboHalfStackCabinetsLimit);
@@ -768,6 +766,38 @@ mod tests {
         assert_eq!(
             check_op(&c, "ACD_FxLoop2", None, false, false, false),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn a_replace_with_no_resolved_target_frees_nothing() {
+        let c = counts(&roster(&[(CAB_A, false), (CAB_B, false)]));
+        assert_eq!(
+            check_op(&c, CAB_C, None, true, false, false),
+            Err(BlockCapError::ComboHalfStackCabinetsLimit)
+        );
+        // 2 × 36 = 72 fits; a third reaches 108 with nothing freed.
+        let full = counts(&roster(&[
+            ("ACD_GuitarSynth", false),
+            ("ACD_GuitarSynth", false),
+        ]));
+        assert_eq!(
+            check_op(&full, "ACD_GuitarSynth", None, true, false, false),
+            Err(BlockCapError::ProcessorUtilization)
+        );
+    }
+
+    #[test]
+    fn a_dual_flag_on_a_non_member_frees_no_cabinet_slot() {
+        let c = counts(&roster(&[
+            (CAB_A, false),
+            (CAB_B, false),
+            (NON_CAPPED, true),
+        ]));
+        assert_eq!(c.cabinet, 2);
+        assert_eq!(
+            check_op(&c, CAB_C, Some(NON_CAPPED), true, false, true),
+            Err(BlockCapError::ComboHalfStackCabinetsLimit)
         );
     }
 }

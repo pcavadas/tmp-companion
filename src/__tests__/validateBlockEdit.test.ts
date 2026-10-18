@@ -300,6 +300,16 @@ describe("fw 1.8.58 cabinet and convolution caps", () => {
     expect(checkOp(full, GLOOPER, "after")).toBe("ComboHalfStackCabinetsLimit");
   });
 
+  it("a dual flag on a non-member anchor frees no cabinet slot", () => {
+    const anchor = { model: GLOOPER, dualCab: true };
+    const counts = baseCounts(
+      graph([block(CAB_1), block(CAB_2), block(GLOOPER)]),
+    );
+    expect(checkOp(counts, CAB_3, "replace", { anchor })).toBe(
+      "ComboHalfStackCabinetsLimit",
+    );
+  });
+
   it("standalone cabinet models count toward the cap", () => {
     const counts = baseCounts(
       graph([block(STANDALONE_CAB_MODEL), block(CAB_1)]),

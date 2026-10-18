@@ -1240,9 +1240,24 @@ fn param_entry_fault(e: &Value) -> Option<String> {
 /// ([`param_entry_fault`]), or a row over [`MAX_ROW_ENTRIES`]. A row stacking more than
 /// one entry is legal on fw 1.8.58 and refused as a conservative choice. See `danger.md`.
 pub fn validate_import_body(p: &Value) -> Result<(), String> {
-    let rows = p["ftsw"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let rows = match p.get("ftsw") {
+        None => &[][..],
+        Some(ftsw) => ftsw
+            .as_array()
+            .map(Vec::as_slice)
+            .ok_or("import refused: ftsw is not an array")?,
+    };
     for (i, row) in rows.iter().enumerate() {
-        let entries = row.as_array().map(Vec::as_slice).unwrap_or_default();
+        let entries = row
+            .as_array()
+            .map(Vec::as_slice)
+            .ok_or_else(|| format!("import refused: footswitch row {i} is not an array"))?;
+        // An entry is an object; an empty `{}` is legal (the factory presets carry them).
+        if entries.iter().any(|e| !e.is_object()) {
+            return Err(format!(
+                "import refused: footswitch row {i} holds an entry that is not an object"
+            ));
+        }
         for e in entries.iter().filter(|e| e["func"] == "param") {
             if let Some(why) = param_entry_fault(e) {
                 return Err(format!(
@@ -1379,6 +1394,22 @@ mod tests {
             let err = validate_import_body(&entry(vt, a, b)).unwrap_err();
             assert!(err.contains(key), "{key}: {err}");
         }
+    }
+
+    #[test]
+    fn validate_import_body_refuses_a_malformed_ftsw_shape_but_keeps_empty_entries() {
+        use serde_json::json;
+        for (body, why) in [
+            (json!({"ftsw": {}}), "ftsw is not an array"),
+            (json!({"ftsw": [[], 3]}), "row 1 is not an array"),
+            (json!({"ftsw": [["on-off"]]}), "not an object"),
+        ] {
+            let err = validate_import_body(&body).unwrap_err();
+            assert!(err.contains(why), "{body}: {err}");
+        }
+        // Factory presets carry `{}` entries (fw 1.8.58), and a body may omit `ftsw`.
+        assert!(validate_import_body(&json!({"ftsw": [[{}], []]})).is_ok());
+        assert!(validate_import_body(&json!({})).is_ok());
     }
 
     #[test]
