@@ -28,7 +28,8 @@ Topologies are read off the p.18 thumbnails: `■` = one element, `[a/b]` = a pa
 
 There is no `Mic/Line Parallel 2` and no 13th/14th template.
 
-> The thumbnails are **schematic, not capacity diagrams** — the squares do not encode a block limit, and they do not distinguish a terminal (`INSTRUMENT`/`OUTPUT`) from a block. Real capacity is the CPU budget (`SKILL.md` constraint 5).
+> The thumbnails are **schematic, not capacity diagrams** — the squares do not encode a block limit, and they do not distinguish a terminal (`INSTRUMENT`/`OUTPUT`) from a block.
+> Real capacity is the CPU budget (`SKILL.md` constraint 5).
 
 **Splitter vs Mixer glyph.**
 The prose implies two distinguishable symbols ("the symbol on the left … the symbol on the right"), but both the p.12 margin art and the p.18 Components diagram render the **same** 3-fader tile for each.
@@ -93,7 +94,7 @@ Detail behind the numbered constraints in `SKILL.md`.
 2. **Cabinet limit — 2 cabinet-category blocks per preset.**
    The control app counts combos, half-stacks, bass amps, Cabinet blocks and IR blocks; heads and `ACD_ExternalCab` don't count, and a block with its second cab or second mic enabled counts 2 (static RE, fw 1.8.58).
    This is the firmware truth behind the Owner's-Manual "max 2 IR blocks" line.
-   `blockcaps.rs` still counts `ACD_ExternalCab` and does not weight an amp with a second mic as 2: its sets were extracted from fw 1.8.45.
+   Where `blockcaps.rs` differs from this count is stated in [`notes/device/presets.md`](../../../../notes/device/presets.md).
 3. **Glooper limit — 2 `ACD_Glooper` blocks per preset**, counted across both signal-chain rows.
 4. **FX-loop coexistence — a rule, not a count.**
    The per-line-type slot-permission mask is: Guitar path → all slots allowed; Mic path → slots 0 and 1 denied; Split/Mix → all denied.

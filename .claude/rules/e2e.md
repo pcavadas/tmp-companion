@@ -70,7 +70,7 @@ The Rust gates in `e2e_server_tests.rs` prove the physics on the return value; t
 - The eleven scenario presets live in the scratch zone at list indices 400–410 and **stay resident between runs by default** — the pristine-checking seed re-imports any drifted or stale-rev slot.
   Teardown unconditionally disables re-amp, sweeps strays and recalls preset 001 (an empty sweep leaves the server's `SCENARIO_VERIFIED` set, so the next spec's `ensureScenario` skips the re-verify unless a structural save cleared it), but clears the scenario slots **only** with `TMP_E2E_CLEAR_SCENARIO=1`, for an on-demand net-zero run.
   **Their shapes are deliberate and the per-use-case map is [`e2e/fixtures/COVERAGE.md`](../../e2e/fixtures/COVERAGE.md)** — read it before changing a fixture, and update it in the same commit.
-  In brief:
+  In brief, by list index (the device slot is list index + 1):
   - `E2E Rig` (400) — the scene-overlay + footswitch + Doctor-damage fixture.
   - `E2E Pedalboard` (401) — the scene-free copy/import + EXP/link-group fixture.
   - `E2E Edge` (402) — the split-output 8-scene fixture; also carries the Doctor's baked 2.6 kHz EQ-ring oracle.

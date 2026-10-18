@@ -4,6 +4,7 @@ paths:
   - "src-tauri/src/scene_jobs*.rs"
   - "src-tauri/src/footswitch.rs"
   - "src-tauri/src/commands/level_*.rs"
+  - "src-tauri/src/session/reamp.rs"
 ---
 
 # Scene and re-amp rules

@@ -131,7 +131,9 @@ The load-bearing wire facts:
 
 - **InsertNode (add a block) is sent BARE:** `insertNode`(34) takes **NO `nodeJsonRequest`(119) preamble** and NO `batchStatus`; confirm on **`nodeInserted`(33)**.
   Add-then-save = `insertNode`×N [+ a string `changeParameter`(12) for a UserIR `file` param] → `renameCurrentPreset`(13) → `saveCurrentPreset`(14).
-  The device does NOT auto-push a fresh field-3 (`currentPresetDataChanged`) after an in-session insert, so VERIFY via `nodeInserted`(33) + a post-save field-8 slot read, not an in-session graph re-read. (If you do want to re-prompt the field-3 working-copy push, the trigger is `current_preset_data_request` — `PresetMessage` field **2**; `current_preset_info_request`, field **1**, is INERT for refresh.) No handler drops a correctly framed structural edit: each confirms or fails loudly, and a missing confirm is one still queued behind the load's pushes, a session lapse, a backup freeze or an insert abort (static RE, fw 1.8.58).
+  The device does NOT auto-push a fresh field-3 (`currentPresetDataChanged`) after an in-session insert, so VERIFY via `nodeInserted`(33) + a post-save field-8 slot read, not an in-session graph re-read.
+  (If you do want to re-prompt the field-3 working-copy push, the trigger is `current_preset_data_request` — `PresetMessage` field **2**; `current_preset_info_request`, field **1**, is INERT for refresh.)
+  No handler drops a correctly framed structural edit: each confirms or fails loudly, and a missing confirm is one still queued behind the load's pushes, a session lapse, a backup freeze or an insert abort (static RE, fw 1.8.58).
   So an unconfirmed insert is read back (`Session::insert_landed`) and re-sent only if it visibly did not land — a blind retry duplicates it.
   Companion entry point: `probe --insert-active <id> [--group][--after][--slot][--commit]` (no `--commit` = dry, inserts then reloads to discard).
 

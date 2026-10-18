@@ -126,7 +126,8 @@ Its cost and the drain are [handshake](../../../../notes/device/session.md#hands
 
 ## Test & Loopback messages
 
-TMS-native diagnostic / factory surface, all under `TestMessage` (the top-level oneof category, `TestMessage.proto`). 51 sub-types in total; the four most general-purpose are below.
+TMS-native diagnostic / factory surface, all under `TestMessage` (the top-level oneof category, `TestMessage.proto`).
+51 sub-types in total; the four most general-purpose are below.
 The rest cover XMOS programming, SD card test, rear-panel pad / phantom / instrument-select / impedance switching, CPU temperature, brightness, MIDI output — see `TestMessage.proto:55-108` for the full catalog.
 
 | Message | Request fields | Response | Use case |

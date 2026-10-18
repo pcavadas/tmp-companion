@@ -20,7 +20,9 @@ Each loop's two jacks are individually lettered `SEND` and `RETURN`.
 Ground lift is silkscreened `GND` / ⏚ / `LIFT`, sited between the OUTPUT 1 LEFT and RIGHT columns.
 Mains plate reads `100-240V ∼ 50/60Hz`, `40W`.
 
-> **Stereo loop channel assignment is panel-printed:** between the `LOOP 3` and `LOOP 4` boxes the panel reads `LEFT ·········· STEREO ·········· RIGHT`. So when configured as one stereo loop, **Loop 3 = LEFT, Loop 4 = RIGHT.** This appears nowhere in the prose.
+> **Stereo loop channel assignment is panel-printed:** between the `LOOP 3` and `LOOP 4` boxes the panel reads `LEFT ·········· STEREO ·········· RIGHT`.
+> So when configured as one stereo loop, **Loop 3 = LEFT, Loop 4 = RIGHT.**
+> This appears nowhere in the prose.
 
 ### The firmware-update button (p.44)
 
@@ -62,7 +64,8 @@ Labels are generic pills (`OUTPUT`, `INSTRUMENT`, `FX LOOP: SEND` …), never nu
 Three cables: guitar → `INSTRUMENT`; microphone → `MIC/LINE`; `OUTPUT` → one FR cabinet.
 Set rear-panel outputs to **LINE**.
 
-> The diagram draws exactly one output cable and one cabinet. It does not state mono vs stereo — _inference_: this is the mono/one-cab illustration.
+> The diagram draws exactly one output cable and one cabinet.
+> It does not state mono vs stereo — _inference_: this is the mono/one-cab illustration.
 
 ### 3.2 Effects pedalboard with an external amplifier (p.40)
 
@@ -95,14 +98,16 @@ Resulting topology: blocks placed **before** the FX-loop block in the signal pat
 3. **Add the FX Loop block to the signal path.**
    The rear-panel jacks are not in circuit until the corresponding loop block is placed — this is the step most often missed.
 
-> Use loops **3/4** for 4CM: loops 1/2 sit before the A/D at a fixed position and cannot be moved, so they cannot be placed mid-chain. The diagram does not say which loop to use; this follows from the loop-placement rules in `SKILL.md`.
+> Use loops **3/4** for 4CM: loops 1/2 sit before the A/D at a fixed position and cannot be moved, so they cannot be placed mid-chain.
+> The diagram does not say which loop to use; this follows from the loop-placement rules in `SKILL.md`.
 
 ### 3.4 Studio monitoring / PA (p.41)
 
 Guitar → `INSTRUMENT`; microphone → `MIC/LINE`; and **two cables from `OUTPUT` to a monitor pair** — the only diagram in the manual drawing more than one output cable.
 Set outputs to **LINE**.
 
-> _Inference:_ two cables into a monitor pair is a stereo L/R connection. The diagram asserts neither stereo nor jack identity.
+> _Inference:_ two cables into a monitor pair is a stereo L/R connection.
+> The diagram asserts neither stereo nor jack identity.
 
 ### 3.5 Stage power amp **and** front-of-house PA simultaneously
 
@@ -140,7 +145,8 @@ Two modes, in Global Settings → I/O → USB.
 Re-amp audio enters **at the first processing block** and **does not pass through analog loops 1/2** (they are pre-A/D).
 Both physical input jacks are muted while re-amp is on.
 
-> **USB out 3 (dry instrument) carries a fixed +11.95 dB trim and clamps at 24-bit full scale**, so hot pickups played hard clip it while the A/D and the preset input stay intact, and the unit's mixer meter does not show it (static RE + HW, fw 1.8.58) — never roll the guitar volume back to avoid it, that just under-drives the amp and darkens the tone. **The re-amp inject is NOT AGC'd** — its amplitude directly drives the block's nonlinearity, so a hotter injected signal genuinely drives the chain harder; do not apply gain processing to the injected track expecting the device to compensate.
+> **USB out 3 (dry instrument) carries a fixed +11.95 dB trim and clamps at 24-bit full scale**, so hot pickups played hard clip it while the A/D and the preset input stay intact, and the unit's mixer meter does not show it (static RE + HW, fw 1.8.58) — never roll the guitar volume back to avoid it, that just under-drives the amp and darkens the tone.
+> **The re-amp inject is NOT AGC'd** — its amplitude directly drives the block's nonlinearity, so a hotter injected signal genuinely drives the chain harder; do not apply gain processing to the injected track expecting the device to compensate.
 >
 > > From the Mac's perspective USB out 3 is input channel index 2; useful for measuring a real instrument's output level (the profile calibration that records the player's DI level).
 > > Any apparent flattening of input-level changes on the re-amp inject is the amp model's own compression, not normalization (HW: a clean preset gave ~1.65 LU output per 6 dB input, linearizing toward −6 LU/6 dB at low drive).

@@ -16,6 +16,7 @@ Coding agents are the main readers; write for a reader who greps and lands mid-f
   Link the owning section instead of restating it; device facts live in `notes/device/`.
 - **Evidence tags** go at the end of a device-fact sentence, exactly: `[HW]`, `[RE]`, `[RE, inferred]`, `[RE, likely]` or `[HW+RE]`.
   A device doc says once near its top which firmware its facts are for; a line names another firmware only when it differs.
+  A static-model result (analysis of the code or the firmware without the unit) is never tagged `[HW]`.
 - **Open questions** live only in [`notes/open-questions.md`](../../notes/open-questions.md); link them as `notes/open-questions.md#<id>`.
 - **Headings are short noun phrases** with no tags, firmware versions or claims, because they are link anchors: keep them stable, and when you rename or move one, update every link to it (code comments included).
 - **Sections are self-contained**: link the target section, never "see above" or "below".

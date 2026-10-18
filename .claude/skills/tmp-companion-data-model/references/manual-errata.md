@@ -38,7 +38,7 @@ The PDF text layer for p.45 contains strings that are **not rendered on the page
 They describe a different, track-oriented DAW layout the published manual does not show.
 
 The **visible** layout is authoritative, and is corroborated three ways: the rendered screenshot, the page's own prose naming exactly those eight transport functions, and the tell that the real equivalent instruction bar on p.27 says "TO **ACTIVATE**".
-See `workflows.md` §10.
+See `device-operation.md` §5.
 
 ### F2. The signal-path thumbnails are schematic
 

@@ -43,7 +43,8 @@ vi.mock("@tauri-apps/api/core", () => {
 
 `resolveCommand` (`src/__tests__/commandMocks.ts`) answers each command from `DEFAULT_HANDLERS`, its **empty** shape (e.g. `list_presets → []`, `get_store → makeStore()`).
 `DEFAULT_HANDLERS` is typed `Handlers` — one handler per `Commands` key, each returning `Commands[K]["ret"]` — so a wrong default is a `tsc` error and a new command can't be left without one.
-A command outside the registry (a plugin's own IPC) resolves `null`. setup.ts also shims `localStorage` (jsdom lacks it), mocks `@tauri-apps/api/event`'s `listen` into a listener registry, and stubs `SVGElement.getBBox` (see Gotchas).
+A command outside the registry (a plugin's own IPC) resolves `null`.
+setup.ts also shims `localStorage` (jsdom lacks it), mocks `@tauri-apps/api/event`'s `listen` into a listener registry, and stubs `SVGElement.getBBox` (see Gotchas).
 
 ## The test kit
 

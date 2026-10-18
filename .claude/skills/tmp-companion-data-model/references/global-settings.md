@@ -124,7 +124,8 @@ What the firmware does (static RE, fw 1.8.58):
 Any host-side workflow that accumulates unsaved per-scene writes across scene recalls and saves once at the end is only valid under `MAINTAIN CHANGES`.
 Over USB the setting reads as `footswitchSettingsRequest` (Settings 47) → `footswitchSettingsResponse` (48) field 12: 0 = MAINTAIN (left out on the wire), 1 = DISCARD; the backup's `settingsBackup.sceneChangeBehavior` stores the same ordinal (static RE + HW, fw 1.8.58).
 
-> The MODE footswitch toggles Presets ⇄ Effects. With a second assignment page present the strip reads `FS: FX PAGE 1`, and it cycles page 1 → page 2 → back to Preset mode.
+> The MODE footswitch toggles Presets ⇄ Effects.
+> With a second assignment page present the strip reads `FS: FX PAGE 1`, and it cycles page 1 → page 2 → back to Preset mode.
 
 ---
 
@@ -174,7 +175,9 @@ What differs is the row above:
 
 - **MASTER assign** exists **only** on the three physical outputs, and each is toggled independently.
   Assigned faders move in unison with the master volume knob; unassigned ones are independent.
-- **`PRE` / `POST` is per-channel** — USB 3 and USB 4 each have their own pair, both defaulting to `PRE`. (The prose describes it as a single choice "out USB 3/4"; the UI shows two.) `PRE` sends the dry input at unity, fader-independent; `POST` makes the fader affect it.
+- **`PRE` / `POST` is per-channel** — USB 3 and USB 4 each have their own pair, both defaulting to `PRE`.
+  (The prose describes it as a single choice "out USB 3/4"; the UI shows two.)
+  `PRE` sends the dry input at unity, fader-independent; `POST` makes the fader affect it.
   The dry instrument send carries a fixed +11.95 dB trim and clamps at 24-bit full scale, so hard picks can clip USB 3 while the A/D and the preset input are intact (static RE + HW, fw 1.8.58).
 - **Solo is additive** — soloing mutes the others, but touching additional solo buttons adds those channels back into the mix.
 - **AUX** and **Bluetooth** buttons inject those sources into the selected channel — including `USB 1/2`.
@@ -182,7 +185,10 @@ What differs is the row above:
   Yellow 0 → −20, green below −20.
   The bar is RMS over the poll interval and the red top cell lights only when that reads 0 dBFS, so short clips never show: a clean meter does not prove an unclipped USB 3 send (static RE, fw 1.8.58).
 
-> Mixer state is **global and invisible to a preset**. Anything measuring or capturing `USB 1/2` is downstream of that channel's fader, mute and solo (a solo on any other channel silences it) and of any AUX/Bluetooth injection. The master volume knob does not reach it: the knob moves only the strips whose `linkToMasterLvl` flag is set, and `usb12`'s never is (HW). The whole mixer state is readable offline from the backup's `settingsBackup.mixerSaveData`, and live over Mixer reads on a kept-alive session.
+> Mixer state is **global and invisible to a preset**.
+> Anything measuring or capturing `USB 1/2` is downstream of that channel's fader, mute and solo (a solo on any other channel silences it) and of any AUX/Bluetooth injection.
+> The master volume knob does not reach it: the knob moves only the strips whose `linkToMasterLvl` flag is set, and `usb12`'s never is (HW).
+> The whole mixer state is readable offline from the backup's `settingsBackup.mixerSaveData`, and live over Mixer reads on a kept-alive session.
 
 ---
 
@@ -202,7 +208,8 @@ Reachable from Global Settings → Tuner, or by holding TAP/TUNER for 2 s.
 | Input select | `INSTRUMENT` / `MIC/LINE` pills at lower right — independently togglable, so either or both |
 | Exit | select any preset, or press EXIT TUNER (subject to `Exit tuner on preset change`) |
 
-> The p.32 screenshot shows yellow bars lit on _both_ sides of centre at `+1` cents — a physically impossible state. It is an illustrative composite; do not infer lit-bar behaviour from it.
+> The p.32 screenshot shows yellow bars lit on _both_ sides of centre at `+1` cents — a physically impossible state.
+> It is an illustrative composite; do not infer lit-bar behaviour from it.
 
 ---
 

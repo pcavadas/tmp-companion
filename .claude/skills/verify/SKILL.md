@@ -12,7 +12,7 @@ This skill exists so any session (fresh context, no memory of this repo's traps)
 ## 1. Pick the change class, run its gates
 
 **Fastest path: just run `/bin/bash scripts/gates.sh`.**
-It detects the scope from the diff (vs the `origin/main` merge-base + untracked files) — docs-only → no gates; `src/`/`e2e/` → lint + typecheck + test + format; `src-tauri/` → clippy + fmt + `cargo test --lib`; anything device/e2e-relevant → + offline `bun run e2e` — and writes a tree-hash green stamp on a full pass so a repeat check (e.g. after a docs-only follow-up commit) is instant.
+It detects the scope from the diff (vs the `origin/main` merge-base + untracked files) — every mode runs the docs link gate (`scripts/check-docs.sh`, also run by the pre-commit hook and CI), and docs-only adds nothing more; `src/`/`e2e/` → lint + typecheck + test + format; `src-tauri/` → clippy + fmt + `cargo test --lib`; anything device/e2e-relevant → + offline `bun run e2e` — and writes a tree-hash green stamp on a full pass so a repeat check (e.g. after a docs-only follow-up commit) is instant.
 Don't re-derive that scope table here; read `scripts/gates.sh`'s own header comment if you need the exact mapping — this skill would drift from it.
 
 What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on top of a green `gates.sh` (each row is cumulative):

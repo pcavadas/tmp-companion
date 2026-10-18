@@ -187,6 +187,9 @@ That is row SV's stale-verdict shape; `approve` is the only working lever, still
   **One open thread = no approval = no merge, full stop.**
 - **Never push while an approval is pending or landed.**
   The ruleset's `require_last_push_approval` dismisses an approval on any push, and a push can re-arm the auto-pause counter, so batch fix commits and push before the review lands.
+- **Auto-merge arms only for `main`-targeted PRs** (`.github/workflows/arm-auto-merge.yml`), with a GitHub App token rather than `GITHUB_TOKEN`, so the merge push still triggers `ci.yml`.
+  The "protect main" ruleset (one approval, `require_last_push_approval`, required checks, no bypass actors) covers only `main`, so a stacked PR merges only by hand.
+  `delete_branch_on_merge` stays on (GitHub retargets a stacked child when its parent branch is deleted); never delete a stacked parent's branch client-side.
 - **Thread replies are free; pushes are not.**
   A reply is answered in ~15-30 s and spends no quota; a push trips a fresh rate-limit window, and the windows lengthen under sustained use.
   When both would work, reply.

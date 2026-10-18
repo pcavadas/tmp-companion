@@ -134,7 +134,8 @@ Then follow the build steps above and sanity-check with `cargo run --bin probe`,
 
 **Windows-only test-harness traps:**
 
-- **The Rust unit-test executable needs an embedded application manifest.** `tauri/test`'s MockRuntime imports comctl32 v6, so without one the `--features e2e` lane dies at load with `STATUS_ENTRYPOINT_NOT_FOUND` (`TaskDialogIndirect`) and `cargo test` prints no `test result:` line.
+- **The Rust unit-test executable needs an embedded application manifest.**
+  `tauri/test`'s MockRuntime imports comctl32 v6, so without one the `--features e2e` lane dies at load with `STATUS_ENTRYPOINT_NOT_FOUND` (`TaskDialogIndirect`) and `cargo test` prints no `test result:` line.
   `build.rs` passes `/MANIFEST:EMBED /MANIFESTINPUT:tests.manifest` to every target and cancels it on the bins with a later `/MANIFEST:NO` (link.exe keeps the last one; a second manifest on a bin is `LNK1123`).
 - **Tauri's local IPC origin is `http://tauri.localhost` on Windows**, not `tauri://localhost`.
   With the wrong form the ACL treats every bridged invoke as remote and the e2e server tests fail with "`<cmd>` not allowed. Plugin not found"; `e2e_server::local_app_url` is the one place that knows the platform form.

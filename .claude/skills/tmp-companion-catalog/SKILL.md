@@ -17,7 +17,9 @@ This skill is the data contract for editing it without introducing a change that
 1. **Generated output — never hand-edit.**
    `src/models/tmp-model-guide.json`, `src/ui/blockart/blockColors.generated.ts`, and `src/models/cabCovering.generated.ts` are produced offline by generator scripts (`pipeline.py`, `expand_catalog.py`, `colorcheck.py`) that live only on the maintainer's machine, not in this repo.
    A taxonomy/row edit to the JSON or a `*.generated.ts` file alone is **silently reverted on the next regen** _and_ breaks the count oracle in `models-catalog.test.tsx`.
-   A JSON-only diff is a review smell: flag the maintainer so the local generator gets mirrored — don't assume you can regenerate it yourself. (Only `scripts/extract_cab_covering.py` — which regenerates `cabCovering.generated.ts` from the extracted client binary passed as `argv[1]` — ships in this repo; the main catalog pipeline does not.) **The frontend does not import the full guide:** `catalog.ts` reads `src/models/tmp-model-guide.slim.json`, which `scripts/slim_model_guide.py` projects from the full guide onto the fields `RawBlock` reads (dropping the vendor `image` tile paths and the provenance fields).
+   A JSON-only diff is a review smell: flag the maintainer so the local generator gets mirrored — don't assume you can regenerate it yourself.
+   (Only `scripts/extract_cab_covering.py` — which regenerates `cabCovering.generated.ts` from the extracted client binary passed as `argv[1]` — ships in this repo; the main catalog pipeline does not.)
+   **The frontend does not import the full guide:** `catalog.ts` reads `src/models/tmp-model-guide.slim.json`, which `scripts/slim_model_guide.py` projects from the full guide onto the fields `RawBlock` reads (dropping the vendor `image` tile paths and the provenance fields).
    Re-run it after ANY change to the full guide (a regen, `extract_strip_names.py`); `models-catalog.test.tsx` fails on drift.
    A new field `catalog.ts` reads must also join the script's `KEEP` list.
    Rust still embeds the FULL guide (`scene_jobs.rs`, `block_id` + `category`).
