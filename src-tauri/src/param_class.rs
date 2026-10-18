@@ -17,8 +17,7 @@
 //!   (which gates on `footswitch::is_levelable_param` → `classify`): the footswitch
 //!   picker (`footswitch::enumerate_block_footswitches`), the scene HANDLE picker
 //!   (`commands/level_scenes.rs`), and the preset block-knob picker
-//! (`session::extract_level_candidates`, behind
-//!   `list_level_blocks`). A control offered in one place is offered in all of them.
+//!   (`session::extract_level_candidates`, behind `list_level_blocks`). A control offered in one place is offered in all of them.
 //! * The SOLVES all refuse through `leveller::FsParamTarget` — one wording from
 //!   `refuse_if_not_a_level_control`, one range from `ParamInfo.range` — in the FS
 //!   solve, the preset block-knob lane (`commands/level_preset.rs`) and the
@@ -39,12 +38,10 @@
 //! Two proven traps drove the `blockOverrides` shape:
 //! - `level` on `ACD_TMRumbleV3` is an amp KNOB, not a level control — sweeping
 //!   it for loudness is wrong even though `level` is a `level_linear` default
-//!   everywhere else (`notes/leveling.md`: "`level` on `ACD_TMRumbleV3` is an amp
-//!   knob but NOT the output leveling control — it must not be changed").
+//!   everywhere else (`notes/leveling.md`).
 //! - Generic names collide across block families: `gain` means drive on most
-//!   amps/pedals, but on `ACD_Boost` it is measured RAW dB (HW): the block's base value 2.5 is +2.5
-//! dB, writes of
-//!   0/2.5/5/7 were all accepted by `changeParameter`, and the captured loudness
+//!   amps/pedals, but on `ACD_Boost` it is measured RAW dB (HW): the block's base
+//!   value 2.5 is +2.5 dB, writes of 0/2.5/5/7 were all accepted by `changeParameter`, and the captured loudness
 //!   tracked the write ~1:1 dB→LUFS. That is why `ACD_Boost.gain` gets its own
 //!   `blockOverrides` entry (`level_db`) instead of falling through to a
 //!   `defaults` guess.
