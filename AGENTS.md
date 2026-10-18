@@ -58,7 +58,7 @@ Never characterize or expected-fail a product bug to keep CI green.
 - **A leveling run must end with re-amp OFF.**
   A dropped OFF strands the unit input-muted; recover with `cargo run --bin probe -- --reamp-off` ([stuck re-amp](notes/device/reamp-audio.md#stuck-re-amp)).
 - **A preset with no blocks re-amps as clean passthrough**, which is not a wedged device.
-  Count the nodes carrying `dspUnitParameters` with `probe --slot-json <1-based slot>` first ([silent captures](notes/device/reamp-audio.md#silent-captures)).
+  Count the nodes carrying `dspUnitParameters` with `probe --slot-json <1-based slot>` first ([→](notes/device/reamp-audio.md#presets-with-no-blocks)).
 - **A probe binary must run from `<worktree>/src-tauri`**: `probe_stimulus_path` resolves `resources/samples/<id>.wav` against the current directory.
 - **commitlint rejects any capitalized first word** after `type(scope):`, acronyms included; check with `echo "<subject>" | bunx commitlint`.
 - **Fresh clone or worktree:** run `bun install` before `bunx tsc --noEmit` or `bun run test`, or every import of `react` fails.
@@ -71,7 +71,7 @@ Read [`.claude/rules/danger.md`](.claude/rules/danger.md) before touching the de
 
 - A save is permanent and a leveling run saves automatically; the Pro Control backup is the only way back ([saving](notes/device/presets.md#saving)).
 - Device `userSlot` = list index + 1; confirm a mapping with a read and guard in the mutation's own address space ([slot addressing](notes/device/presets.md#slot-addressing)).
-- A same-slot `loadPreset` over a clean working copy keeps it; discard edits only with `leveller::restore_saved_preset`, and never load before `save_deferred_scene_writes` ([saving](notes/device/presets.md#saving)).
+- A same-slot `loadPreset` over a clean working copy keeps it; discard edits only with `leveller::restore_saved_preset`, and never load before `save_deferred_scene_writes` ([→](notes/device/presets.md#same-slot-load-short-circuit)).
 - A body rejected at load becomes a silent empty preset that keeps its name; prove it with `replace_inplace::load_and_prove` before any save ([rejected at load](notes/device/presets.md#rejected-at-load)).
 - An `insertNode` with a bad anchor or over the CPU budget aborts the device server; run `blockcaps::check_op` first and never re-send blind ([insert abort](notes/device/presets.md#insert-abort)).
 - After a `presetLevel` save with base active, call `leveller::reload_after_level_save`, or the next base recall plays the old level ([presetLevel on recall](notes/device/scenes.md#presetlevel-on-recall)).

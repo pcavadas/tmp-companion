@@ -11,13 +11,13 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
   [→](../../notes/device/presets.md#slot-addressing)
 - **The first connection after a load can echo the slot loaded before it.**
   The echo is identity and must keep winning over a matching name: confirm through `Session::connect_confirmed`, never by name.
-  [→](../../notes/device/presets.md#loading)
+  [→](../../notes/device/presets.md#echo-of-the-previous-slot)
 - **DANGER: a save is permanent and a leveling run saves automatically.**
   The only gate is the "I've backed up with Pro Control" acknowledgment in Set up; the app has no revert.
   [→](../../notes/device/presets.md#saving)
 - **DANGER: a same-slot `loadPreset` over a clean working copy is a no-op**, including right after a save.
   Discard unsaved edits only through `leveller::restore_saved_preset` (it loads a neighbour slot first), and never add a preset load before `save_deferred_scene_writes`, which would wipe the run's unsaved writes.
-  [→](../../notes/device/presets.md#saving)
+  [→](../../notes/device/presets.md#same-slot-load-short-circuit)
 - **DANGER: a body the firmware rejects at load becomes a silent empty preset that keeps its name.**
   Prove the loaded working copy with `replace_inplace::load_and_prove` before every save; an import nothing saves over proves its landing with `replace_inplace::StoredProof`.
   [→](../../notes/device/presets.md#rejected-at-load)
@@ -46,10 +46,10 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
   [→](../../notes/device/reamp-audio.md#silent-captures)
 - **750 ms of host OUT silence lapses the session** and drops the next message, an engage included.
   Keep every idle gap ≤300 ms: `leveller::capture_on_session` heartbeats between the scene recall and the engage (recall, 150 ms, heartbeat, 100 ms, engage).
-  [→](../../notes/device/session.md#session-lapse)
+  [→](../../notes/device/reamp-audio.md#idle-gap-before-an-engage)
 - **Mid-engage edits reach the audio while OUT traffic flows.**
   The code still sets the level before engaging, engages once per scene, and loads on its own connection (`measure_knob_at`), a conservative shape.
-  [→](../../notes/device/reamp-audio.md#engage-and-capture-accuracy)
+  [→](../../notes/device/reamp-audio.md#edits-during-an-engage)
 - **Toggle re-amp only through `SettingsMessage` `reampModeActive` (field 30)**, never Mixer `setReAmpMode` (15); read the real state with Mixer `reAmpModeRequest` (4) → field 9.
   [→](../../notes/device/reamp-audio.md#re-amp-toggle)
 - **DANGER: every re-amp run ends with a guaranteed OFF on a fresh connection.**
@@ -61,7 +61,7 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
   A USB `loadScene(0)` and a footswitch press of scene 0 reached different amp states; what the panel sends is [RE, inferred].
   [→](../../notes/open-questions.md#scene-0-via-footswitch)
 - **`outputLevel` 0 is digital silence**, and the measurement errors ("no signal captured") rather than invent a loudness.
-  [→](../../notes/device/reamp-audio.md#silent-captures)
+  [→](../../notes/device/reamp-audio.md#outputlevel-0)
 - **The stimulus is 48 kHz**, so `audio::pick_config` needs a 48 kHz host format; the device itself does not.
   [→](../../notes/device/reamp-audio.md#sample-rate)
 
@@ -71,7 +71,7 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
   An unbounded capture buffer OOMs the whole Mac; reuse one stream pair per preset.
 - **`0xe00002c5` means another handle holds the exclusive seize** (Pro Control, or an overlapping `Session` that `Hid::open` names); there is no device open lockout.
   Serialize every device op through `device_gate::DEVICE_OP_LOCK`.
-  [→](../../notes/device/session.md#exclusive-seize)
+  [→](../../notes/device/session.md#diagnosing-0xe00002c5)
 
 ## UI values
 

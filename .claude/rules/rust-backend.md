@@ -25,14 +25,15 @@ Every backend module carries a `//!` header, and for the bulk/offline feature mo
   Setters, commands and the heartbeat are sent without one; after the handshake, a request that needs its reply uses `proto::BATCH_DRAIN` or none (`extra_burst` debug-asserts it).
   [→](../../notes/device/session.md#request-batching)
 - **A Pro Control rename is `renameCurrentPreset` (13) + `saveCurrentPreset` (14)**: send both to persist; the byte-exact setter and import framing is the `tmp-companion-protocol` skill.
+  [→](../../notes/device/session.md#pro-control-framing)
 - **Live per-node structural edits** go through `copy_apply` and the probe's `replace_many_held`, sharing the `nodeReplaced` (40) / `nodeRemoved` (36) / `nodeInserted` (33) confirm gate and never saving after a `presetError` (53).
   `copy_apply` reads an unconfirmed first edit back from the working copy and re-sends only one that visibly did not land; `replace_many_held` never re-sends.
   No handler drops a correctly framed structural edit, so a missing confirm is one still queued, a lapse, a backup freeze or an insert abort, and a blind re-send duplicates it [RE, inferred].
-  [→](../../notes/device/presets.md#structural-edits)
+  [→](../../notes/device/presets.md#confirms)
 - **The firmware version read is an in-burst `currentFwRequest` with no `batchStatus`**, sent after `userir_field2` and before the batch-3 `current_preset_data_request`; sent after it, its reply queues behind the ~1.2 s handshake drain.
   [→](../../notes/device/session.md#handshake)
 - **Preset-list reassembly needs both stream rules:** `list_my_presets` tries `streams()` and `streams_final()` and keeps the longest decoded record set.
-  [→](../../notes/device/presets.md#reading-presets)
+  [→](../../notes/device/presets.md#preset-lists)
 - **`connect_for_discovery` waits out the handshake drain's `currentPresetDataChanged` (field 3)** (~2 s) for block enumeration, keeping OUT traffic flowing.
 - **Boot-window `IOHIDDeviceSetReport failed: 0xe00002d6` is not an error**: the HID interface enumerates ~20 s before the device accepts reports.
   [→](../../notes/device/session.md#boot-window)
@@ -49,9 +50,9 @@ Every backend module carries a `//!` header, and for the bulk/offline feature mo
   [→](../../notes/device/session.md#exclusive-seize)
 - **`connect_device` releases any old HID seize before enabling the monitor**; it does not acquire a UI-owned session.
   `list_presets` answers from the monitor's startup snapshot with no HID access or device-op lock.
-  [→](../../notes/device/session.md#monitor-and-automatic-connection)
+  [→](../../notes/device/session.md#fast-and-slow-paths)
 - **Scene reads are lazy, with no cache and no eager startup sweep.**
-  [→](../../notes/device/presets.md#reading-presets)
+  [→](../../notes/device/presets.md#device-backup)
 - **Logging:** `Builder::new()` already ships the default `[Stdout, LogDir]` targets and `.target()` appends, so call `.clear_targets()` before re-adding or every line double-logs.
   Runtime code uses `log::*`; the `probe` / `gen_samples` CLIs keep `println!` because stdout is their interface.
 - **Platforms:** `hid.rs` and `audio.rs` each carry one `imp` per platform (IOKit / hidraw / Win32 HID; CoreAudio / ALSA `hw:` / WASAPI), and nothing above that seam is platform-gated.
