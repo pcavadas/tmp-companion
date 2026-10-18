@@ -11,11 +11,12 @@ Every operation targets the user's own hardware over USB and the user's own
 preset data:
 
 - read the connected unit's preset list, signal chain, songs, and setlists;
-- level a preset's loudness, copy blocks between presets, and back up / restore
-  presets — all on the user's own device.
+- level a preset's loudness, check its tone, copy blocks between presets, and
+  edit songs and setlists — all on the user's own device.
 
 It performs no preset distribution or sharing. There is no feature that
-publishes, uploads, or redistributes presets or any Fender data.
+publishes or redistributes presets or any Fender data; a bug report sent to the
+maintainer includes a preset only when the user picks one.
 
 ## Legal basis (EU / France)
 

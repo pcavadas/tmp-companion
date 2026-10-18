@@ -1,7 +1,7 @@
 # TMP Companion
 
-A macOS desktop app that interoperates with a Fender Tone Master Pro **you own**,
-over USB, to read, level, copy, and back up **your own** presets. It is an
+A desktop app that interoperates with a Fender Tone Master Pro **you own**, over
+USB, to read, level, check and copy **your own** presets. It is an
 independent, unaffiliated project — see [NOTICE](NOTICE) and [INTEROP.md](INTEROP.md).
 
 Built with [Tauri 2](https://tauri.app) (Rust backend + React/TypeScript frontend).
@@ -14,12 +14,16 @@ Windows (Win32 HID + WASAPI).
 
 ## Features
 
-Click-only five-tab UI:
+Click-only six-tab UI:
 
 - **Level** — even out preset loudness to a LUFS target by re-amping a synthetic
   stimulus through each preset's DSP chain and measuring the processed output, then
-  writing the solved level back (opt-in). Per-instrument profiles and per-scene
-  leveling included.
+  saving the solved level back automatically, once you confirm you've backed up with
+  Pro Control. Per-instrument profiles and per-scene and per-footswitch leveling
+  included.
+- **Doctor** — check selected sounds for tonal problems from the same re-amp
+  captures and describe each fix as a step to make on the unit. It never writes to
+  the unit.
 - **Copy** — copy signal-chain blocks between presets.
 - **Songs** — device-backed song / setlist browsing and editing.
 - **Catalog** — a reference of amp / cab / effect models with original artwork and
@@ -27,8 +31,8 @@ Click-only five-tab UI:
 - **Settings** — loudness targets, instrument profiles, calibration, playback-level
   compensation.
 
-Everything acts on your own device and your own presets. It does not publish,
-upload, or share presets.
+Everything acts on your own device and your own presets. It does not publish or
+share presets; a bug report carries one only if you choose to include it.
 
 ## Download
 
@@ -73,14 +77,11 @@ bun run lint                          # strict eslint (--max-warnings 0)
 cd src-tauri && cargo test --lib      # Rust unit tests
 ```
 
-> Run `bun run build` before the Rust checks in a fresh clone — Tauri's build step
-> needs `dist/` to exist.
-
 ## For contributors & agents
 
 Working in this repo (human or AI agent)? Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) — it links the architecture map, the topic deep-dives, and the legal posture.
 
-Behaviour is firmware-version dependent; validated on Tone Master Pro firmware **1.7.75** and **1.8.45**.
+Behaviour is firmware-version dependent; validated on Tone Master Pro firmware **1.8.58**.
 
 ## License
 

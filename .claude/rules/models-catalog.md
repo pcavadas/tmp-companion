@@ -18,4 +18,3 @@ Applies while editing `src/models/`. The full data contract is the `tmp-companio
 - **The half-stack create decision is DEVICE-DRIVEN** — it keys on `cabsimid` presence; catalog `form` is used only to SUPPRESS the stack for combo-form amps. Keying creation on `form` draws phantom cabs onto bare heads.
 - **`isCombo` is a REQUIRED argument to `nodeTileArt`, with no default** — so a new caller cannot silently re-stack a combo whose modeled built-in speaker is also a `cabsimid`.
 - **Art is chosen by the explicit `variant`, never by caption text.** A per-model treatment is an `ArtVariant` keyed by FenderId in `blockArtCatalog/variants.ts`, threaded through `BlockArt`'s `variant` prop; every BlockArt caller must pass it alongside the other art props.
-- **Block art is original SVG through the BlockArt engine — never an `<img>` photo tile** (Fender IP; the photo PNGs are not bundled).

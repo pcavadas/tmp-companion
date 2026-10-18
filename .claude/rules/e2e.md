@@ -11,9 +11,11 @@ Applies while editing the Playwright harness or its specs. **The stale-server fa
 
 ## Why the harness is shaped this way
 
-Tauri's `tauri-driver`/WebdriverIO cannot drive this app — macOS WKWebView has no WebDriver. So the dual-mode harness drives the **real React UI in headless Chromium** → an HTTP bridge → a windowless Rust backend (`tauri::test::mock_builder` MockRuntime, `bin/e2e_server.rs`) → `SimDevice` offline, or the real device online with `TMP_E2E_ONLINE=1`, or a remote device with `TMP_E2E_REMOTE=<addr>` (`hid::remote`; its re-amp captures go to the remote device's own audio over `remote_audio` with `TMP_E2E_REMOTE_AUDIO=<addr>` beside it (each one engagement-checked by the remote device, a failed engage an error; counters at `/remote/audio`) and are refused without; `/health` reports `online`, `remote` and `remoteAudio`, and every non-remote lane refuses a remote server; its lane is `scripts/e2e-remote.sh`, which never stamps). One spec set under two configs. Vitest owns component-level coverage with the invoke/event bridge mocked; use the `probe` bin for real-HID paths.
+Tauri's `tauri-driver`/WebdriverIO cannot drive this app — macOS WKWebView has no WebDriver. So the harness drives the **real React UI in headless Chromium** → an HTTP bridge → a windowless Rust backend (`tauri::test::mock_builder` MockRuntime, `bin/e2e_server.rs`) → `SimDevice` offline, the real device online (`TMP_E2E_ONLINE=1`), or a remote device (`TMP_E2E_REMOTE=<addr>`, `hid::remote`). One spec set runs under three configs: offline, online and remote. Vitest owns component-level coverage with the invoke/event bridge mocked; use the `probe` bin for real-HID paths.
 
-**Because it is one spec set, the two configs' `timeout:` caps must stay EQUAL.** A spec's per-assertion `timeout:` is written for the slower mode (eleven waits declare 240 s), and a config whose cap is lower silently truncates them — the test dies mid-flight with a bare "Test timeout of Nms exceeded" pointing at whichever assertion was unlucky, never at the assertion that actually failed. An offline cap of 120 s did this to `level-defaults.spec.ts`'s two-run fallback test, which reports as a red `e2e` on unrelated PRs.
+**The remote tier.** Its re-amp captures go to the remote device's own audio over `remote_audio` when `TMP_E2E_REMOTE_AUDIO=<addr>` is set beside `TMP_E2E_REMOTE`, and are refused without it. The remote device checks each capture's engagement (a failed engage is an error; counters at `/remote/audio`). `/health` reports `online`, `remote` and `remoteAudio`, and every non-remote lane refuses a remote server. Its lane is `scripts/e2e-remote.sh`, which never stamps: remote captures are not calibrated against the unit, so they are not device evidence.
+
+**Because it is one spec set, the configs' `timeout:` caps must stay EQUAL** (300 s). A spec's per-assertion `timeout:` is written for the slower mode (the leveling waits declare 240 s), and a config whose cap is lower silently truncates them — the test dies mid-flight with a bare "Test timeout of Nms exceeded" pointing at whichever assertion was unlucky, never at the assertion that actually failed.
 
 ## UI copy is e2e-load-bearing
 
@@ -36,7 +38,7 @@ Two limits: a Channel's end-of-stream notification is not captured, and a spec's
 nowhere. For a raw invoke the observation path stays the command's RETURN value plus the
 SimDevice event log (`/sim/events`, offline-only) for the wire writes, never a re-derivation.
 The Rust gates in `e2e_server_tests.rs` prove the physics on the return value; the Playwright
-specs prove the bridge, the command layer and, now, the rendered rows.
+specs prove the bridge, the command layer and the rendered rows.
 
 ## Seeding and list reads
 
@@ -48,11 +50,11 @@ specs prove the bridge, the command layer and, now, the rendered rows.
   - `E2E Edge` (402) — the split-output 8-scene fixture; also carries the Doctor's baked 2.6 kHz EQ-ring oracle.
   - `E2E Parallel` (403) — the both-lane-amps joint-k fixture.
   - `E2E Hiwatt 3S` (404) — a **verbatim device export** backing the wipe/bake/measurement-context gates (its exact byte length is pinned — do not edit it).
-  - `E2E Preset24` (405) — the preset-24 saturated-pedal footswitch fixture (`e2e_server_tests.rs::the_footswitch_rows_still_converge_after_a_base_boost`, and `level.online.spec.ts`'s T5 online).
-  - `E2E Combined Level` (406) — the new-flow leveling fixture (FS-alone / scene-alone "BASE SCENE" / scene-that-enables-an-FS, parallel both-amps-active, a post-cab compressor).
+  - `E2E Preset24` (405) — the preset-24 saturated-pedal footswitch fixture (`e2e_server_tests.rs::the_footswitch_rows_still_converge_after_a_base_boost`, and `level.online.spec.ts`'s Plumes-shape first-run journey).
+  - `E2E Combined Level` (406) — the combined leveling fixture (FS-alone / scene-alone "BASE SCENE" / scene-that-enables-an-FS, parallel both-amps-active, a post-cab compressor).
   - `E2E Doctor Oracle` (407) — 13 param-shaped footswitches, one per Doctor spectral check, its defect blocks enabled-neutral in base.
   - `E2E Preset24 Min` (408) / `E2E Hiwatt Min` (409) — the smallest presets still reproducing each incident's own bug class.
-  - `E2E Friedman 3S` (410) — the P4 leveling-regression fixture: `ACD_TubeScreamer` (base-ON) → `ACD_MarshallPlexi` (the catalog-verified stand-in for a Friedman HBE-class amp) → `ACD_CabSimTMS`, 3 FULL-overlay scenes (Rhythm/Lead/Base Scene), no `leveledParams` (a plain flat-C/`ol_term` fixture).
+  - `E2E Friedman 3S` (410) — the leveling-regression fixture: `ACD_TubeScreamer` (base-ON) → `ACD_MarshallPlexi` (the catalog-verified stand-in for a Friedman HBE-class amp) → `ACD_CabSimTMS`, 3 FULL-overlay scenes (Rhythm/Lead/Base Scene), no `leveledParams` (a plain flat-C/`ol_term` fixture).
 - **THE CAB RULE (standing user directive):** every guitar amp in every fixture is a combo, an amp+cab-merged model (a cab/IR-suffixed id), or a bare head with a cabinet block DOWNSTREAM IN ITS OWN LANE. Enforced by `fixture_gates::every_guitar_amp_in_every_fixture_reaches_a_cab`, which walks the production routing decoder's signal paths — so a trunk head with a cab in each parallel lane passes and a lane-less cab does not. Offline the `scenario-loudness.json` C table _is_ the model — each entry's `_comment` records what its C folds in; the real unit's own loudness is measured, never read from the table.
 - **Fixtures are generated, not hand-edited in place, and every regen bumps `FIXTURE_SOURCE_STAMP`'s `#rN` suffix** (`e2e_seed.rs`) — a resident copy of an older rev must fail the pristine check and self-migrate. A regen also means rerunning `cargo test build_scenario_fixture -- --ignored` to rebuild `backup-fixture.bin`.
 
@@ -62,7 +64,7 @@ Beyond "plugged in, Pro Control closed": the device's global **Scene Change
 Behavior must be MAINTAIN CHANGES** for any spec set containing `level.online`. That spec
 drives the DEFERRED-WRITE leveling lanes (`level_scenes_apply_batched`,
 `level_footswitches_apply`), which `level_scenes::scene_discard_guard` refuses outright
-under DISCARD — so the run dies ~13 min in, after `doctor.online` has already spent its 8,
+under DISCARD — so the run dies ~13 min in, after `doctor.online` has already spent ~8 minutes,
 and level.online's Plumes journey runs after it on the same misconfigured unit. It is a device
 misconfiguration, not a platform bug: any host fails identically.
 
@@ -84,7 +86,7 @@ it are load-bearing and must not be "simplified":
 
 Runs the full Level + Copy happy paths against the real unit **non-destructively** (dry `--levelpreset` with no save, `--replace-held` with no commit, `--device-backup` read, `--reamp-off`). Override its `LEVEL_SLOT` / `COPY_*` env vars per unit. It is **attended, not a CI gate**, and acquires the machine-global device lock like the online `e2e.sh` path.
 
-## External validation (P5) — ffmpeg is the only trusted meter here
+## External validation — ffmpeg is the only trusted meter here
 
 `scripts/level-validate.sh` judges a leveled-and-saved sound's captured WAV with ffmpeg's `ebur128` filter against the TARGET the leveling run recorded — **never** against that run's own `predicted_lufs`/`verify_lufs`. The point is a meter this repo did not write: a `lufs.rs` regression that fools the Rust unit tests would still fool a self-consistency check, but not an independent BS.1770 implementation.
 
@@ -119,13 +121,13 @@ Footswitch rows are externally validated through `probe --measure-footswitch <sl
 
 ## Run evidence and traces
 
-Online and soak runs archive into dated run folders under the git common dir, and the seed probe and e2e server write wire traces there: layout, the TCT v1 event table, the env vars and the privacy rules are in `notes/e2e-test-plan.md` ("Recording"). Never write lane output under the worktree (it re-keys the stamps), and never commit or upload raw evidence.
+Online and soak runs archive into dated run folders under the git common dir, and the seed probe and e2e server write wire traces there: layout, the TCT v1 event table, the env vars and the privacy rules are in `notes/e2e-test-plan.md` ("Recording"). Never write lane output under the worktree (it re-keys the stamps), and never commit or upload raw evidence. Only derived data is public (the CPU table `model-cpu.json`, the Empty template's observable fields); no descriptor files, factory preset bodies, default parameters, IRs, user content or real device backups are committed. Device evidence that stamps, records or calibrates comes only from a unit presenting its stock USB interfaces.
 
 ## Fixtures
 
 - The offline `backup-fixture.bin` and `scenario-presets.json` **must stay in sync** — regenerate both from one script.
 - **Fixture drift-lock trap:** a drift-lock or round-trip test that compares fixtures **through a typed struct** silently covers only the fields that struct carries. `info.product_id` and `info.preset_id` drifted while the lock test stayed green. Assert fixture invariants against the **RAW JSON** (`fixture_gates.rs`, deliberately OUTSIDE `#[cfg(feature = "e2e")]` — a gate that only compiles in a build nobody makes is not a gate). It pins `product_id == "tmStomp"` (a `"pro"` preset is rejected on the unit as "created using a newer firmware revision") and a unique `preset_id` per fixture preset.
-- The preset XOR key is committed as `const PRESET_XOR_KEY: [u8;3] = *b"JLD"` in `backup.rs`. The runtime `derive_key`/`learn_key`/panic recovery was deleted — **do NOT reintroduce it**.
+- The preset XOR key is committed as `const PRESET_XOR_KEY: [u8;3] = *b"JLD"` in `backup.rs`. **Never derive or learn the key at runtime.**
 
 ## Ports
 
@@ -133,10 +135,10 @@ Online and soak runs archive into dated run folders under the git common dir, an
 
 **Offline claims a RANGE, not one port.** Each Playwright worker runs its own `e2e_server` on `TMP_E2E_PORT + parallelIndex` (`e2e/fixtures/port.ts` reads `TEST_PARALLEL_INDEX`), so the bridge base is `7800 + offset*8` — a fixed stride of 8 per worktree. Two properties are load-bearing and worth preserving:
 
-- **The base is 7800, above the 7600-7799 window the old single-port scheme used.** Disjoint bands mean a worktree still running the old script cannot collide with a strided one during the migration. Two concurrent offline runs must never interfere.
+- **Offline, online and the configs' unset default (7600) use disjoint bands**, so two concurrent runs never interfere.
 - **`kill_port` filters by process name** (`ps -o comm=` matching `e2e_server`) before killing. `lsof -i tcp:N` matches either endpoint and cannot tell whose server it found; sweeping 8 ports unfiltered could kill a sibling worktree's live run or an unrelated dev server.
 
-**The online lane has its own bands** — bridge `9400 + offset*8` (9400–10999) and Vite `1621 + offset` (1621–1820) — disjoint from offline's 7800–9399 / 1421–1620 and from the legacy 7600–7799. Each lane sweeps only its own band and starts and owns its own Vite, which is what lets `gates.sh` and an online `scripts/e2e.sh` run side by side in one worktree: an offline run that finishes first cannot take the online run's Vite down. `TMP_E2E_SWEEP_DRY_RUN=1` prints a lane's swept range and exits.
+**The online lane has its own bands** — bridge `9400 + offset*8` (9400–10999) and Vite `1621 + offset` (1621–1820) — disjoint from offline's 7800–9399 / 1421–1620 and from the 7600 default. Each lane sweeps only its own band and starts and owns its own Vite, which is what lets `gates.sh` and an online `scripts/e2e.sh` run side by side in one worktree: an offline run that finishes first cannot take the online run's Vite down. `TMP_E2E_SWEEP_DRY_RUN=1` prints a lane's swept range and exits.
 
 Still a `% 200` hash with no occupied-port retry, so two worktree paths can collide — it reduces contention, it does not guarantee isolation. The one real device is serialized by a machine-global `mkdir` lock (`scripts/device-lock.sh`).
 

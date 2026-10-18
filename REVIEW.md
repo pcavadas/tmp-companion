@@ -10,17 +10,18 @@ covers what that per-hunk channel structurally cannot see.
 
 ## 1. The bug shape here is OMISSION, not a bad added line
 
-Every recent behavioural regression was a guard present in a sibling path and absent
+Behavioural regressions here are usually a guard present in a sibling path and absent
 from the changed one:
 
-| PR   | Defect                                                                                                                                                               |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #109 | Summary stage lacked the backdrop-click protection Run already had                                                                                                   |
-| #108 | Doctor's run screen lacked Leveling `RunPage`'s stop-requested / stopped / done states                                                                               |
-| #110 | Escape-to-close survived in an app that is click-only by design                                                                                                      |
-| #112 | A bare device write/measure with no preceding `loadScene` omitted the base recall present in a sibling path, landing in whatever scene the connection currently held |
-| #112 | A new footswitch assignment hardcoded 5 switch-owned fields instead of inheriting them from a sibling function on the same switch                                    |
-| #119 | A `bypass-nodes` empty-list guard was added while its twin `bypass_all` fall-through, 40 lines away in the SAME function, kept the omission                          |
+- a Summary stage without the backdrop-click protection Run has;
+- Doctor's run screen without Leveling `RunPage`'s stop-requested / stopped / done states;
+- Escape-to-close surviving in an app that is click-only by design;
+- a bare device write/measure with no preceding `loadScene`, missing the base recall a
+  sibling path has, so it lands in whatever scene the connection currently holds;
+- a new footswitch assignment hardcoding 5 switch-owned fields instead of inheriting them
+  from a sibling function on the same switch;
+- an empty-list guard added to `bypass-nodes` while its twin `bypass_all` fall-through,
+  40 lines away in the SAME function, keeps the omission.
 
 Reading a hunk in isolation cannot catch any of these. So when a diff touches one
 stage, branch, or case, name its siblings and compare. The sets that keep drifting:
@@ -28,7 +29,7 @@ stage, branch, or case, name its siblings and compare. The sets that keep drifti
 - `src/views/level/{SetupPage,RunPage,SummaryPage}` — the Level flow's stages
 - `src/views/doctor/DoctorRun` vs `src/views/level/RunPage` — two run screens, one contract
 - any `useXxxFlow` state machine — a flag added to one case must be consumed by all
-- `leveller.rs`'s device write/measure entry points (`capture_full_at`/`set_knob`/`set_knobs`/`write_footswitch_values`) vs `commands/doctor.rs::apply_ops_under_scene` — each must hoist an explicit scene recall before its first write; the omission is silent (no `presetError`, just the wrong scene)
+- `leveller/`'s device write/measure entry points (`measure.rs::capture_full_at`, `knob.rs::set_knob`/`set_knobs`, `footswitch.rs::write_footswitch_values`) vs `commands/doctor.rs::apply_ops_under_scene` — each must hoist an explicit scene recall before its first write; the omission is silent (no `presetError`, just the wrong scene)
 - any code that constructs a NEW footswitch function assignment — it must inherit `colorA`/`colorB`/`customLabel`/`linkGroup`/`isActive` from a sibling function on the same switch, never hardcode them
 
 Report the gap citing both paths, and say which sibling has it. If the siblings agree,
@@ -41,8 +42,8 @@ nothing about the NONE and PARTIAL rows, so changes touching them deserve
 disproportionate scrutiny:
 
 - Stop mid-run → Summary on hardware (offline e2e and Vitest only)
-- Detach mid-run; relaunch or webview reload mid-operation (no gate)
-- Copy: Back discards staged edits; partial save failure across N targets (no gate)
+- Detach mid-run (Vitest only); relaunch or webview reload mid-operation (no gate)
+- Copy: Back keeps staged edits; partial save failure across N targets (mocked Vitest only)
 - Settings target reorder / slider commit (no gate)
 - "Balance its two amps first" joint-k rebalance (online-only class, no gate)
 
