@@ -69,7 +69,7 @@ The peak-Q estimator and the parametric-cut prescription for `resonant` / `boxy`
 
 - **Why it matters:** the Doctor's `resonant` / `boxy` verdicts and the fix it prescribes.
 - **What would answer it (HW):** `probe --doctor-defects <slot>` (all 7 recipes must hit) and an empty-slot capture (no finding) on the current build; an AFTER capture of the `resonant_peq` / `boxy_peq` recipes with the prescribed cut entered by hand (peak reduced, no octave-wide dip).
-- **Code:** `doctor.rs` (`RESONANT_MIN_Q`, `RESONANT_MAX_Q`, `localized_cut_rx`); [doctor.md#localized-rules](doctor.md#localized-rules).
+- **Code:** `doctor.rs` (`RESONANT_MIN_Q`, `RESONANT_MAX_Q`, `localized_cut_rx`); [doctor-thresholds.md#localized-rule-gates](doctor-thresholds.md#localized-rule-gates).
 
 ## Capture-space Doctor thresholds
 
@@ -78,7 +78,7 @@ A calibrated profile's DI capture is diagnosed against the same per-family thres
 Subtracting the stimulus's band shape is exact on a clean chain and over-corrects a driven one, which reads a spurious `lost` [HW].
 
 - **Why it matters:** every Doctor run on a calibrated instrument.
-- **What would answer it (HW, attended):** a DI sweep over clean and driven presets with `probe --doctor-calib` ([doctor.md#calibrated-di-captures](doctor.md#calibrated-di-captures)), deriving capture-space thresholds from it.
+- **What would answer it (HW, attended):** a DI sweep over clean and driven presets with `probe --doctor-calib` ([doctor-thresholds.md#calibrated-di-captures](doctor-thresholds.md#calibrated-di-captures)), deriving capture-space thresholds from it.
 - **Code:** `Family::thresholds()` in `doctor.rs`.
 
 ## Confirm latency after a load
