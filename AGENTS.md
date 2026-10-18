@@ -4,11 +4,11 @@ TMP Companion is a Tauri 2 desktop app (Rust backend, React/TypeScript frontend)
 It plays a synthetic sample through a preset's DSP chain, measures the USB-Out loudness and saves the `presetLevel` that hits a LUFS target.
 It ships on macOS, with an alpha Linux `.deb`/`.rpm` and an unsigned Windows `setup.exe` ([`notes/releasing.md`](notes/releasing.md)).
 
-**UX north-star:** fewest possible clicks per action, for users who are often not comfortable with computers; every feature ships whole.
+**UX north-star:** fewest possible clicks per action, for users often not comfortable with computers; every feature ships whole.
 The app is **click-only**: no keyboard shortcuts, no command palette, no dialog Escape-to-close.
 The one carve-out is Enter/Escape inside a focused text input, committing or cancelling that field's own edit; in the inline renames that commit on blur, Escape is the only cancel path.
 
-**Where to read:** [`notes/README.md`](notes/README.md) is the doc index, [`notes/architecture.md`](notes/architecture.md) the architecture map, and [Read by path](#read-by-path) routes the rules and skills.
+**Where to read:** [`notes/README.md`](notes/README.md) (doc index), [`notes/architecture.md`](notes/architecture.md) (architecture map), [Read by path](#read-by-path).
 Module headers (`//!` in Rust, `//` in TypeScript) are the authority for their module.
 
 ## Commands
@@ -38,7 +38,7 @@ cargo run --bin probe  # headless device checks (unit plugged in, Pro Control cl
 - **`git push` runs the gates synchronously.**
   The pre-push hook is `gates.sh --check || gates.sh`; the one green stamp is keyed to a content hash of the worktree (gitignored paths excluded), so any non-prose edit orphans it.
   Run `bash scripts/gates.sh` first, in the background (it outruns a 10-minute timeout).
-  A tool timeout (exit 143) on `git push` is the gate being slow: check `git ls-remote origin <branch>` before a retry.
+  A tool timeout (exit 143) on `git push` is the gate being slow: check `git ls-remote origin <branch>` first.
 - **PRs run the offline gates only.**
   A device-facing PR also waits on the required `remote-lane` status (10–45 min on a remote unit); the full online suite runs at release (`scripts/pre-release.sh`).
 - **The online stamp uses the same worktree hash**, so land every non-prose edit before an online run.
@@ -80,6 +80,7 @@ Serialize every device operation through `device_gate::DEVICE_OP_LOCK`; the HID 
 
 `presetLevel` is a linear amplitude control: `captured_LUFS = 20·log10(presetLevel) + C`.
 `leveller::level_preset` measures once, solves `C` (the preset's maximum reachable loudness) and sets the exact value; a louder target clamps ([`notes/leveling.md`](notes/leveling.md)).
+Scenes and footswitches: [`notes/leveling-scenes.md`](notes/leveling-scenes.md); metering: [`notes/leveling-calibration.md`](notes/leveling-calibration.md#metering-convention).
 
 ## Pull requests and review
 

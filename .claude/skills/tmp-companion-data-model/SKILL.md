@@ -94,7 +94,7 @@ Channel maps for standard vs reamp mode, the reamp/AGC model and the PRE/POST fa
 
 The caps below are **client-side validation only**: enforced by the firmware's **control app**, while the device's audio engine does **not** reject an over-cap edit — it enforces only the CPU budget.
 Any new apply path must call the cap check itself, because nothing downstream will.
-The companion mirrors them in `blockcaps.rs` / `validateBlockEdit.ts`; where its membership sets (`src/models/block-classification.json`) differ from the firmware's is stated in [`notes/device/presets.md`](../../../notes/device/presets.md).
+The companion mirrors them in `blockcaps.rs` / `validateBlockEdit.ts`; where its membership sets (`src/models/block-classification.json`) differ from the firmware's is stated in [`notes/device/presets.md#block-caps`](../../../notes/device/presets.md#block-caps).
 **Full text in `references/preset-model.md`; the numbering below is cited externally, so never renumber it.**
 
 1. **Convolution reverb — 1 per preset.**

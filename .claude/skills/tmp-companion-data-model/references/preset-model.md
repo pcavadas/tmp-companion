@@ -94,7 +94,7 @@ Detail behind the numbered constraints in `SKILL.md`.
 2. **Cabinet limit — 2 cabinet-category blocks per preset.**
    The control app counts combos, half-stacks, bass amps, Cabinet blocks and IR blocks; heads and `ACD_ExternalCab` don't count, and a block with its second cab or second mic enabled counts 2 (static RE, fw 1.8.58).
    This is the firmware truth behind the Owner's-Manual "max 2 IR blocks" line.
-   Where `blockcaps.rs` differs from this count is stated in [`notes/device/presets.md`](../../../../notes/device/presets.md).
+   Where `blockcaps.rs` differs from this count is stated in [`notes/device/presets.md#block-caps`](../../../../notes/device/presets.md#block-caps).
 3. **Glooper limit — 2 `ACD_Glooper` blocks per preset**, counted across both signal-chain rows.
 4. **FX-loop coexistence — a rule, not a count.**
    The per-line-type slot-permission mask is: Guitar path → all slots allowed; Mic path → slots 0 and 1 denied; Split/Mix → all denied.

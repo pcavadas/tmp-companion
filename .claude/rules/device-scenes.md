@@ -13,6 +13,6 @@ Read the device sections before changing a scene recall, a scene or footswitch w
 
 - [`notes/device/scenes.md`](../../notes/device/scenes.md): scene context, Scene Change Behavior, scene-write landing, `presetLevel` and footswitch state on recall, scene index bounds, the batched scene save.
 - [`notes/device/reamp-audio.md`](../../notes/device/reamp-audio.md): the re-amp toggle, engage and capture accuracy, silent captures, stuck re-amp, sample rate, output routing, the capture window.
-- [`notes/leveling.md`](../../notes/leveling.md): the leveling model built on them.
+- [`notes/leveling.md`](../../notes/leveling.md): the leveling model built on them; scene and footswitch leveling is [`notes/leveling-scenes.md`](../../notes/leveling-scenes.md).
 
 The danger rules are in [`danger.md`](danger.md).
