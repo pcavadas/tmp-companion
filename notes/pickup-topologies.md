@@ -1,8 +1,8 @@
 # Pickup topologies & aliases — what the templates encode and how to assign a pickup
 
 Reference for `src-tauri/src/topologies.rs` (`TOPOLOGIES` + `ALIASES`). Read this
-before adding an alias or a new topology. Adversarially reviewed against measured
-pickup data (2026-07).
+before adding an alias or a new topology. Reviewed against measured pickup
+data.
 
 ## What a template encodes
 
@@ -11,23 +11,20 @@ pickup model. Every stimulus plays the same musical phrase for its instrument
 (open chords and single-note runs for guitar, an eighth-note line for bass, the
 guitar phrase an octave down for Bass VI) on Karplus–Strong plucked strings,
 then passes it through a resonant 2nd-order low-pass, the pickup's loaded
-resonance (#235). Four parameters matter for assignment:
+resonance. Four parameters matter for assignment:
 
 - **`freq`** — the low-pass corner, the pickup's _loaded_ electrical resonance
   (coil L + cable/pot C): humbucker 2.8 kHz, single-coil 4.5 kHz, bass
   humbucker 2.5 kHz (the hardware-checked rows); active and piezo pickups are
-  low-impedance, so their corner sits high (6–9 kHz) with no hump.
-- **`q`** — resonance height: 2–2.8 for passive coils, ≤0.9 for active and piezo.
+  low-impedance, so their corner sits high (5–9 kHz) with no hump.
+- **`q`** — resonance height: 1.8–2.8 for passive coils, ≤0.9 for active and piezo.
 - **`pick_softness`** — the one-pole pole on each string's excitation; a
   higher value rounds the attack.
 - **`peak`** — output as **amp-input drive** for uncalibrated profiles.
 
-The old recipe band-passed noise around `freq`, which put 50–90 % of the
-stimulus's power above 2.5 kHz where a real DI carries ≲1 %; on hardware that
-mis-levelled bright and high-gain presets against real playing by up to
-6.5/10.6 LU spread (humbucker/single-coil), against 1.8/1.2 LU for the pitched
-plucks. `every_stimulus_has_a_pickup_like_spectrum` keeps every committed WAV
-under 3 % above 2.5 kHz.
+A real DI carries ≲2 % of its power above 2.5 kHz (HW);
+`every_stimulus_has_a_pickup_like_spectrum` keeps every committed WAV under 3 %
+there.
 
 Hum-cancelling appears nowhere. Construction (single-coil vs humbucker) and
 voicing are independent axes; **templates follow voicing**.
@@ -36,10 +33,11 @@ voicing are independent axes; **templates follow voicing**.
 
 Three measured facts from this repo's own probes set the error budget:
 
-1. Synthetic-vs-real floor: a Tele DI vs the LUFS-matched synthetic measured
-   **−5.4…+2.2 LU preset-dependent** error (`probe --stim-ab`). Every
-   intra-family spectral distinction is second-order against this; Tier-2
-   calibration is the real fix.
+1. Synthetic-vs-real floor: the LUFS-matched synthetic stimulus mis-levels
+   presets against a real DI by a **~1.8 LU (humbucker) / ~1.2 LU
+   (single-coil) spread** (`probe --stim-ab`). Intra-family spectral
+   distinctions are second-order against this; Tier-2 calibration is the
+   real fix.
 2. HW noise floor: ~**0.12 LU** run-to-run on non-stationary presets.
 3. Amp compression: ~**1.65 LU per 6 dB** of input drive on a clean Twin
    (`probe --agc-test`), so a 0.05 `peak` delta (~0.9 dB) moves the result
