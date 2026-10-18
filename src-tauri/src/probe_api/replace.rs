@@ -34,8 +34,8 @@ pub fn probe_replace_debug(
     // ── Connection 1: find the target node, then LOAD the preset (make it the
     //    device's active/edit preset) and DROP — the active preset persists across
     //    reconnects, so a fresh session then edits it the way Pro Control does
-    //    (PC never re-loads; it edits whatever is active). TMP_REPLACE_ONECONN keeps
-    //    the old single-connection load+replace for A/B.
+    //    (PC never re-loads; it edits whatever is active). TMP_REPLACE_ONECONN runs
+    //    a single-connection load+replace for A/B.
     let oneconn = std::env::var("TMP_REPLACE_ONECONN").is_ok();
     let (group, node_id, cur_name) = {
         let mut s1 = Session::connect()?;
@@ -217,7 +217,7 @@ pub fn probe_bulk_replace(
         fender_id: to_id.to_string(),
     };
 
-    // Phase 1 — discovery: read every selected slot ONCE and build the target plans.
+    // Discovery: read every selected slot ONCE and build the target plans.
     let plans = discover_replace_plans(device_slots, from_id)?;
     for (plan, &dev_slot) in plans.iter().zip(device_slots) {
         report.push_str(&format!(
@@ -240,7 +240,7 @@ pub fn probe_bulk_replace(
     }
     std::thread::sleep(std::time::Duration::from_millis(600));
 
-    // Phase 2 — commit: the EXACT production path (`replace_many_held`: ONE held
+    // Commit: the EXACT production path (`replace_many_held`: ONE held
     // session, re-armed per preset, with the active-preset + nodeReplaced guards).
     report.push_str("\n  COMMIT (held session):\n");
     let t_commit = std::time::Instant::now();
@@ -258,7 +258,7 @@ pub fn probe_bulk_replace(
     ));
     std::thread::sleep(std::time::Duration::from_millis(600));
 
-    // Phase 3 — verify: one read-only session re-reads each slot and counts ids.
+    // Verify: one read-only session re-reads each slot and counts ids.
     report.push_str("\n  VERIFY (after save):\n");
     {
         let mut s = Session::connect()?;
@@ -279,13 +279,11 @@ pub fn probe_bulk_replace(
     Ok(report)
 }
 
-/// E1 — held-session architecture experiment (`probe --replace-held <FROM> <TO> <slots_csv> [--commit]`).
-/// Tests whether ONE session, re-armed after each load, accepts a CONFIRMED
-/// `replaceNode` — vs the proven two-connection path (conn1 load → drop → conn2
-/// re-attach). If it works, the per-preset cost collapses from ~8 s (two handshakes
-/// plus a settle) to ~2 s (zero reopens). Discovery is done up front on a CLEAN session
-/// (the proven field-8 path) so this isolates the one variable: does a held re-armed
-/// session's edit get `nodeReplaced(40)` and persist? Per-preset timing is printed.
+/// Held-session replace (`probe --replace-held <FROM> <TO> <slots_csv> [--commit]`):
+/// ONE session, re-armed after each load, sends each `replaceNode` and checks for
+/// `nodeReplaced(40)` and persistence — ~2 s per preset vs ~8 s for the two-connection
+/// path (two handshakes plus a settle). Discovery runs up front on a CLEAN session
+/// (field-8). Per-preset timing is printed.
 /// The same safety gate as production: a save only when the active preset matches the
 /// target AND every replace is confirmed — so even a `--commit` run can't corrupt.
 pub fn probe_replace_held(
@@ -373,12 +371,11 @@ pub fn probe_replace_held(
     Ok(report)
 }
 
-/// E6 — replace a block with a saved DUAL-CAB block across slots (`probe
-/// --bulk-replace-saved <FROM> <slots_csv> [--commit]`), via the proven
-/// two-connection `replace_one_live` path with `ReplArg::Saved`
-/// (`replaceNodeWithBlock`, field 100 +index). Auto-picks the first
-/// `dual_cabs_enabled` saved block on the device. Validates the saved-block replace
-/// end-to-end (previously only the stock-model/IR path was HW-validated). FROM should
+/// Replace a block with a saved DUAL-CAB block across slots (`probe
+/// --bulk-replace-saved <FROM> <slots_csv> [--commit]`), via the held-session
+/// `replace_many_held` path with `ReplArg::Saved` (`replaceNodeWithBlock`, field
+/// 100 +index). Auto-picks the first `dual_cabs_enabled` saved block on the device,
+/// validating the saved-block replace end-to-end. FROM should
 /// name a cabinet node currently in the target presets (see `probe --roster`).
 pub fn probe_bulk_replace_saved(
     from_id: &str,

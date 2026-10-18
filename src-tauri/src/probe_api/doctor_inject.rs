@@ -1,4 +1,4 @@
-//! `probe --doctor-inject` — DEFECT-INJECTION validation arm (R5).
+//! `probe --doctor-inject` — DEFECT-INJECTION validation arm.
 //!
 //! Injects a KNOWN spectral defect into a clean preset's LIVE edit buffer (an
 //! `ACD_TenBandEQStereo` insert with explicit band gains — the same op vehicle

@@ -1,8 +1,9 @@
-//! Persistent device monitor: holds a live TMP session with a dense ~250 ms
-//! `ConnectionHeartbeat` so the unit PUSHES its state changes (footswitch taps,
-//! scene recalls, preset changes done ON THE HARDWARE) UNSOLICITED, and mirrors
-//! those pushes to the frontend as Tauri events. This is the backend half of the
-//! R3 "live-sync" Scenes feature — the app moves on its own when the unit moves.
+//! Persistent device monitor: holds a live TMP session, heartbeated every ~250 ms
+//! (well under the device's 750 ms host-silence lapse), so it keeps receiving the
+//! state changes the unit PUSHES UNSOLICITED (footswitch taps, scene recalls, preset
+//! changes done ON THE HARDWARE), and mirrors those pushes to the frontend as Tauri
+//! events. This is the backend half of the "live-sync" Scenes feature — the app
+//! moves on its own when the unit moves.
 //!
 //! Why a dedicated Session loop (not the `watcher.rs` IOHIDManager): the watcher
 //! is a NON-seizing matcher (attach/detach only, zero I/O). The monitor must SEIZE
@@ -28,7 +29,7 @@
 //! While enabled the monitor holds the seize; every command opens its OWN fresh
 //! `Session`. Two open seizes → `0xe00002c5`. They coexist via a PAUSE-THEN-ACK
 //! handshake gated by the SAME `DEVICE_OP_LOCK` the commands serialize on (see
-//! `lib::lock_device_op`):
+//! `device_gate::lock_device_op`):
 //!   1. A command acquires `DEVICE_OP_LOCK`, sets `MONITOR_PAUSE_REQ`, and waits
 //!      (bounded) for `MONITOR_PAUSED_ACK`.
 //!   2. The monitor, polling the flag each pump iteration, drops its `Session`
@@ -59,7 +60,7 @@ use crate::{footswitch, MONITOR_ENABLED, MONITOR_PAUSED_ACK, MONITOR_PAUSE_REQ};
 
 // ─── Startup snapshot ───────────────────────────────────────────────────────
 //
-// App-level `connect_device` no longer opens its own HID session. It enables this
+// App-level `connect_device` does not open its own HID session. It enables this
 // monitor and waits for the monitor's first successful handshake snapshot: firmware,
 // My Presets list, and the active signal graph when available. That keeps list +
 // graph + firmware sourced from one startup session.
@@ -127,12 +128,10 @@ pub(crate) fn startup_graph() -> Option<ActiveGraph> {
 ///
 /// This is the address guard for `slot_read`'s backup fallback, and it must not come off
 /// a live list read issued on a session that has just streamed a large preset body: that
-/// is exactly the back-to-back shape the list reassembly is documented to come back short
-/// on, and an empty name makes the fallback refuse. HW, 2026-08-19: reading the Hiwatt's
-/// scene handles failed with "the preset list did not answer with the slot's name, so a
-/// backup re-read cannot be addressed safely" — the preset was readable off a backup the
-/// whole time; only its NAME was missing. The snapshot is the same list the UI shows,
-/// costs no device I/O and takes no lock on the device.
+/// is exactly the back-to-back shape the list reassembly can come back short on (HW),
+/// and an empty name makes the fallback refuse a preset the backup could read. The
+/// snapshot is the same list the UI shows, costs no device I/O and takes no lock on the
+/// device.
 pub(crate) fn startup_preset_name(slot: ListIndex) -> Option<String> {
     crate::lock_ok(snapshot_slot()).as_ref().and_then(|s| {
         s.presets
@@ -320,8 +319,8 @@ pub fn spawn(app: tauri::AppHandle, session: Arc<Mutex<Option<Session>>>) {
 /// How long to pump each inner iteration (ms). Short enough that the pause flag is
 /// checked ~8×/sec and a ~250 ms heartbeat lands close to Pro Control's 4/sec.
 const PUMP_MS: u64 = 120;
-/// Heartbeat cadence (ms). The proven keepalive that keeps pushes flowing without
-/// the session lapsing into `connectionError` (a 10 s cadence let it lapse).
+/// Heartbeat cadence (ms): well under the 750 ms of host silence after which the
+/// device closes the session and answers `connectionError`.
 const HEARTBEAT_MS: u64 = 250;
 /// Backoff between reconnect attempts when no device is present / the UI session
 /// holds the seize (ms).
@@ -419,12 +418,13 @@ fn run_monitor_iteration(
         sleep(RECONNECT_BACKOFF_MS);
         return;
     }
-    // Hold the device-op gate for the whole connect + startup snapshot (#263). The pause
-    // request is only polled before the connect and inside `pump_loop`, so a command that
-    // arrived just after the check above used to wait out its ack budget and then open the
-    // device while this connect still held it. `try_lock` never blocks, so the monitor still
-    // waits on no lock (the deadlock argument in `device_gate` holds): a command already
-    // running wins, and this iteration parks on its pause at the top of the next one.
+    // Hold the device-op gate for the whole connect + startup snapshot. The pause
+    // request is only polled before the connect and inside `pump_loop`, so without the
+    // gate a command arriving just after the check above would wait out its ack budget
+    // and open the device while this connect still held it. `try_lock` never blocks, so
+    // the monitor still waits on no lock (the deadlock argument in `device_gate` holds):
+    // a command already running wins, and this iteration parks on its pause at the top
+    // of the next one.
     let Some(connect_hold) = crate::device_gate::try_hold_for_monitor_connect() else {
         log_block("command-running");
         sleep(PAUSE_WAIT_STEP);
@@ -546,9 +546,8 @@ fn assemble_startup_snapshot(
     session: &mut Session,
 ) -> Result<(StartupSnapshot, Option<session::CurrentPresetLive>, bool), String> {
     let firmware = session.firmware_version();
-    // Strict (completeness-validated) list: the tolerant harvest silently accepted
-    // a tail-truncated 371-of-504 list when this reconnect ran right after a heavy
-    // sweep left the line flooded.
+    // Strict (completeness-validated) list: a tolerant harvest accepts a tail-truncated
+    // list (HW: 371 of 504 on a reconnect right after a heavy sweep).
     let presets = session.list_my_presets_strict()?;
     let (live, reset_seen) = startup_live(session);
     let graph = live.as_ref().and_then(|l| l.graph.clone());
@@ -635,7 +634,7 @@ fn pump_loop(
     let mut last_hb = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_millis(HEARTBEAT_MS))
         .unwrap_or_else(std::time::Instant::now);
-    // Pushes are decoded as their stream CLOSES and their reports dropped (#262): `raw` is
+    // Pushes are decoded as their stream CLOSES and their reports dropped: `raw` is
     // drained every pass, so it never grows with uptime. `skip` = the streams the handshake
     // decode already emitted (`seen`), which arrive first out of the reassembler.
     let mut pushes = crate::proto::Reassembler::new(crate::proto::SingleFrame::ClosesStream);
@@ -903,8 +902,7 @@ fn decode_and_emit(app: &tauri::AppHandle, body: &[u8], cache: &mut LiveCache) {
         log::warn!("monitor: connectionError (session lapsing?) hex={code}");
         return;
     }
-    // An unhandled body — debug-log its presetMessage(2) inner field numbers (this
-    // is how SetFootswitchAssignment(54)/AllBlockPresetsResponse(136) were identified).
+    // An unhandled body — debug-log its presetMessage(2) inner field numbers.
     let top = crate::proto::parse(body);
     if let Some(pm) = crate::proto::first_bytes(&top, 2) {
         let inner: Vec<u32> = crate::proto::parse(pm).iter().map(|(f, _)| *f).collect();
@@ -993,8 +991,7 @@ mod tests {
     fn base_slot_classifier_uses_the_wire_constant() {
         // Base is the CONSTANT wire slot 8 — even for a 0-FS-scene preset (HW: Cello,
         // 0 scenes, base SceneLoaded sceneSlot=8) and for a full 8-FS-scene preset
-        // (Guitar, lastLoadedScene=8 on base). NOT scene_count+1 (refuted theory —
-        // the old `slot > count` classifier missed base at slot 8 with count 8).
+        // (Guitar, lastLoadedScene=8 on base). NOT scene_count+1.
         assert_eq!(key_str(&classify(8)), "\"base\"");
         assert_eq!(key_str(&classify(7)), "7");
         assert_eq!(key_str(&classify(0)), "0");

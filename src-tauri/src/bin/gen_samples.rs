@@ -7,9 +7,9 @@
 //! played on Karplus–Strong plucked strings and passed through a resonant
 //! 2nd-order low-pass that models the pickup's loaded resonance. Pitched
 //! strings give the stimulus a real guitar's harmonic structure and note-to-note
-//! dynamics, and the low-pass gives it a real pickup's spectral tilt: the old
-//! band-passed-noise recipe carried several times a DI's energy above 2.5 kHz,
-//! so bright and high-gain presets were mis-levelled against real playing.
+//! dynamics, and the low-pass gives it a real pickup's spectral tilt (band-passed
+//! noise carries several times a DI's energy above 2.5 kHz, mis-levelling bright
+//! and high-gain presets against real playing).
 //!
 //! Each topology's `peak` is the output level expressed as **input drive** — the
 //! stimulus is injected pre-amp, so peak amplitude sets how hard the amp model is

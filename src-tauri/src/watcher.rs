@@ -178,8 +178,7 @@ mod imp {
         session: Arc<Mutex<Option<Session>>>,
     }
 
-    // Small CF constructors, self-contained like hid.rs's (each module owns its
-    // copy — same convention as the stub catalog's static-inline client_base.h).
+    // Small CF constructors, self-contained like hid.rs's (each module owns its copy).
     fn cf_number_i32(value: i32) -> CFTypeRef {
         unsafe {
             CFNumberCreate(

@@ -6,7 +6,7 @@ use crate::slot::ListIndex;
 use crate::slot::SCRATCH_SLOTS;
 use crate::song_io::{converge_song_bpm, find_song_slot, read_song_list, read_song_presets};
 
-/// Probe (AC7 verification): read a Song's preset rows over USB. Prints each
+/// Probe: read a Song's preset rows over USB. Prints each
 /// row's `userPresetSlot` (the device slot the Song points at — the positional
 /// binding an in-place edit must preserve) and `presetSceneSlot`. Used as the
 /// baseline before an edit and the check after.
@@ -200,14 +200,11 @@ pub fn probe_set_song_bpm(name: &str, bpm: f32) -> Result<String, String> {
     }
 }
 
-/// `--remove-song <name>` — DELETE a song resolved by exact name (guard: refuses on
-/// no-match / ambiguity, so the slot used for deletion is the one that reads as `name`).
 /// HW PROBE (DEVICE WRITE): bind a user preset to a Song row (`assignSongPreset`, which
 /// confirms the row by reading it back), then print the Song's rows either way.
 ///
-/// `list_index` is the 0-based preset list index — **scratch zone only**, because
-/// the point of this probe is to then reorder that preset and see whether the
-/// binding follows it.
+/// `list_index` is the 0-based preset list index — **`SCRATCH_SLOTS` only** (a
+/// probe write never targets a real preset).
 pub fn probe_assign_song_preset(
     song_name: &str,
     row: u32,
@@ -251,6 +248,8 @@ pub fn probe_assign_song_preset(
     Ok(out)
 }
 
+/// `--remove-song <name>` — DELETE a song resolved by exact name (guard: refuses on
+/// no-match / ambiguity, so the slot used for deletion is the one that reads as `name`).
 pub fn probe_remove_song(name: &str) -> Result<String, String> {
     let songs = read_song_list()?;
     let slot = find_song_slot(&songs, name)?; // guard in the same (read) space we will delete

@@ -5,7 +5,7 @@ use crate::backup;
 use crate::replace_inplace::replace_inplace_core;
 use crate::slot::ListIndex;
 
-/// Probe (AC7 positive case): edit a preset IN PLACE on its original slot and
+/// Probe: edit a preset IN PLACE on its original slot and
 /// report whether the slot, its Song assignment, and scene binding survive.
 /// Compare against `--import` (bare append) as the negative control — that one
 /// lands the edit at a new slot and the Song row then points at the stale copy.
@@ -57,11 +57,11 @@ fn run_replace_inplace(
     ))
 }
 
-/// Probe (AC5): restore a backup snapshot to the device IN PLACE — onto the
+/// Probe: restore a backup snapshot to the device IN PLACE — onto the
 /// snapshot's original slot, preserving its Song link. Reads the snapshot JSON,
 /// validates it is a faithful offline backup (refuses `usb-partial` — re-importing
 /// a partial would overwrite the slot with truncated data), re-XORs it to `.preset`
-/// bytes, and routes through the AC7 in-place path. `snapshot.slot` is the list
+/// bytes, and routes through the in-place path. `snapshot.slot` is the list
 /// index the backup was captured at.
 pub fn probe_restore(snapshot_path: &str) -> Result<String, String> {
     let snap = backup::load_snapshot_from_path(std::path::Path::new(snapshot_path))?;

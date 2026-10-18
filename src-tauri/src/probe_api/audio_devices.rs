@@ -5,9 +5,7 @@
 //! "Developing on Linux" section calls for: it prints what `cpal` actually sees
 //! on the host (device names, the exact ALSA PCM id behind each name on Linux,
 //! channel counts, sample rates, and — the thing `audio::pick_config` cares
-//! about — sample formats), so the Linux re-amp port can be designed from
-//! measurement rather than a CoreAudio-shaped guess. See `audio.rs::enumerate`
-//! and `audio.rs::find_tmp`, which this is the first caller of.
+//! about — sample formats). See `audio::enumerate` and `audio::find_tmp`.
 
 use crate::audio::{self, AudioDevice};
 

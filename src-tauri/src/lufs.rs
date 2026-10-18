@@ -2,21 +2,19 @@
 //! crate. The closed loop levels on the **gated integrated** LUFS; we also
 //! report **short-term max** because the relative gate discards quiet decays
 //! and palm-mute gaps, so integrated alone understates a dynamic clean tone vs
-//! a compressed high-gain one (the clean-vs-distorted mismatch the research
-//! flagged).
+//! a compressed high-gain one.
 //!
-//! **Metering convention (PR2 re-baseline):** the processed USB pair (capture
-//! channels 0/1) is measured as standard 2-channel BS.1770 (energy sum across
-//! channels, [`measure_stereo`]) — dry channel 2+ is never included. On the
-//! TMP's mirrored dual-mono USB output this reads a fixed +3.0103 dB
-//! (10·log10(2), algebraically exact for identical channels regardless of
-//! content) over the single-channel read the app used before this PR —
-//! ground-truthed against an external BS.1770 stereo meter (dual-mono +3.01 LU
-//! over mono on the same clip, agreeing with ffmpeg's independent `ebur128` to
-//! 0.02 LU). The INPUT/stimulus side (self-measurement, dry-DI calibration,
-//! the floor-guard spread) deliberately stays on [`measure_mono`] — those
-//! reads are single-channel by construction (the dry instrument send), not a
-//! metering choice.
+//! **Metering convention:** the processed USB pair (capture channels 0/1) is
+//! measured as standard 2-channel BS.1770 (energy sum across channels,
+//! [`measure_stereo`]) — dry channel 2+ is never included. On the TMP's
+//! mirrored dual-mono USB output this reads a fixed +3.0103 dB (10·log10(2),
+//! algebraically exact for identical channels regardless of content) over a
+//! single-channel read of either channel — ground-truthed against an external
+//! BS.1770 stereo meter (dual-mono +3.01 LU over mono on the same clip,
+//! agreeing with ffmpeg's independent `ebur128` to 0.02 LU). The INPUT/stimulus
+//! side (self-measurement, dry-DI calibration, the floor-guard spread)
+//! deliberately stays on [`measure_mono`] — those reads are single-channel by
+//! construction (the dry instrument send), not a metering choice.
 
 use ebur128::{EbuR128, Mode};
 use serde::Serialize;
@@ -194,8 +192,7 @@ fn measure(interleaved: &[f32], sample_rate: u32, channels: u32) -> Result<Loudn
 
 /// Measure a mono buffer of `f32` samples in [-1, 1]. The INPUT/stimulus-side
 /// convention (self-measurement, dry-DI calibration, the floor-guard spread) —
-/// see the module header. Kept forever regardless of how the output-side
-/// convention evolves.
+/// see the module header. Independent of the output-side convention.
 pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, String> {
     measure(samples, sample_rate, 1)
 }
@@ -419,7 +416,7 @@ mod tests {
 
     #[test]
     fn stereo_true_peak_is_the_max_of_either_channel() {
-        // T3: `EbuR128::true_peak(ch)` is PER-CHANNEL. An asymmetric pair must
+        // `EbuR128::true_peak(ch)` is PER-CHANNEL. An asymmetric pair must
         // report the LOUDER channel's peak, not channel 0's.
         let rate = 48_000;
         let quiet = sine(1000.0, 2.0, rate, 0.2);

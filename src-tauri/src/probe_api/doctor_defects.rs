@@ -59,8 +59,8 @@ fn eq10_insert(group_id: &str, gains: &[(&str, f64)]) -> doctor::DoctorOp {
 }
 
 /// An `ACD_FiveBandParamEQ` insert with explicit per-filter params — the
-/// controlIds (`filterNfrequency`/`filterNgaindb`/`filterNq`, HW-verified
-/// 2026-07-17: an injected 1 kHz/+12 dB/Q8 read back at 1008 Hz/q 7.5) let a
+/// controlIds (`filterNfrequency`/`filterNgaindb`/`filterNq`, HW-verified: an
+/// injected 1 kHz/+12 dB/Q8 read back at 1008 Hz/q 7.5) let a
 /// recipe place an EXACT (freq, height, Q) resonance. Bands 2–4 default to
 /// active peaks; band 1 defaults to a high-pass (never use it for a peak).
 fn peq_insert(group_id: &str, params: &[(&str, f64)]) -> doctor::DoctorOp {
@@ -125,7 +125,7 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
                 fender_id: "ACD_CryBabyGCB95".to_string(),
                 params: Vec::new(),
             }],
-            // Physics regression guard (matrix round, 2026-07-17): a cocked
+            // Physics regression guard (HW): a cocked
             // wah is a WIDE hump — peak-space h ≈ 6.7 while its mid-band
             // local reads +15.7 dB — so it must surface via the BAND rules
             // (thin fires today, an honest co-fire), never as peak-space
@@ -304,8 +304,7 @@ pub fn probe_doctor_defects(slot: ListIndex, out_path: Option<&str>) -> Result<S
     // stable across every recipe since each one restores the stored preset
     // before the next injects (each recipe's AFTER capture re-resolves its
     // own tail off the edited graph — see `run_recipe`'s doc).
-    // Fresh-connection re-amp OFF on EVERY exit path from here down (the
-    // drop-guard form of the old sweep-tail call).
+    // Fresh-connection re-amp OFF on EVERY exit path from here down (drop guard).
     let _reamp_off = super::ReampOffGuard;
     let (group_id, name, before_tail) = last_guitar_group_anchor(slot)?;
     let before_tail = u64::from(before_tail);
@@ -379,11 +378,12 @@ pub fn probe_doctor_defects(slot: ListIndex, out_path: Option<&str>) -> Result<S
 }
 
 /// `probe --doctor-fs <listIdx> <switch>` — capture ONE footswitch SOUND through the
-/// production Doctor seam (`doctor_capture_params`: on-off isolation from
-/// `doctor_force_bypass` PLUS the switch's `param`-function engaged `valueA` writes)
-/// and print the diagnosis verdicts. The FS twin of the defect sweep: proves an
-/// FS-carried defect (the oracle-fixture shape) reaches the Doctor's measured audio.
-/// Read-only — working-copy writes only; re-amp OFF via the drop guard.
+/// production Doctor seam (on-off isolation from
+/// `commands::doctor::doctor_force_bypass` PLUS the switch's `param`-function
+/// engaged `valueA` writes) and print the diagnosis verdicts. The FS twin of the
+/// defect sweep: proves an FS-carried defect (the oracle-fixture shape) reaches the
+/// Doctor's measured audio. Read-only — working-copy writes only; re-amp OFF via the
+/// drop guard.
 pub fn probe_doctor_fs(slot: ListIndex, switch: u32) -> Result<String, String> {
     let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(
         "guitar-humbucker",

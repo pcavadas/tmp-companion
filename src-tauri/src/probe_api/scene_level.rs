@@ -14,8 +14,8 @@ use crate::stimulus::read_stimulus_calibrated;
 // levels off a truncated scene list silently mislevels or drops a scene. The
 // save-bearing `probe_level_preset_scenes` also classifies off the COMPLETE saved doc
 // (`read_saved_preset_complete`, backup fallback) — off the raw partial, every tail
-// scene past the cut refused as `SceneOverlay::Unknown` (HW 2026-09-02, "Friedman HBE"
-// scene 3); the read-only bench/scan entry points keep the tolerant read.
+// scene past the cut refused as `SceneOverlay::Unknown` (HW); the read-only bench/scan
+// entry points keep the tolerant read.
 use crate::commands::presets::read_preset_scenes_complete;
 use crate::scenes;
 use crate::session;
@@ -23,7 +23,7 @@ use crate::session::Session;
 
 // Isolated per-scene re-amp measurement (the proven `measure_knob_at` shape, but
 // with explicit control over scene-edit). Loads the preset in its OWN connection
-// (revert + latch rule), then a fresh connection: load scene → optional scene-edit →
+// (kept conservatively), then a fresh connection: load scene → optional scene-edit →
 // set the knob → engage → capture → measure the loudest channel's integrated LUFS.
 // Fresh stream per call (NOT the BatchedLive shared stream, whose windowed reads
 // mis-measured scenes — Klon read -6.96 LUFS when the knob's true range is -40..-14).
@@ -118,9 +118,9 @@ pub fn probe_measure_scene_levels(
 /// to a target, with optional per-scene-NAME target overrides. Mirrors the app's run:
 ///   • Base → `presetLevel` (one-shot `level_preset`), done FIRST so the FS scenes
 ///     measure under the final preset gain.
-///   • FS scenes → amp `outputLevel` via the BatchedLive runner, GROUPED by resolved
-///     target (so scenes wanting different targets each get their own batched pass).
-/// Reuses the 1.8.45-safe block discovery (`load_then_discover_blocks`). Stimulus comes
+///   • FS scenes → amp `outputLevel`, one isolated measurement + one-shot
+///     `leveller::solve_level` per scene, each against its resolved target.
+/// Reuses the block discovery (`load_then_discover_blocks`). Stimulus comes
 /// from `topology_id`; `save` persists. Returns a human-readable per-scene report.
 pub fn probe_level_preset_scenes(
     list_index: ListIndex,
@@ -154,7 +154,7 @@ pub fn probe_level_preset_scenes(
         default_target,
     );
 
-    // 1) scene names (field-8 read; 1.8.45-safe).
+    // 1) scene names (field-8 read).
     let scenes = read_preset_scenes_complete(list_index)?;
     out += &format!("scenes ({}): {:?}\n", scenes.scenes.len(), scenes.scenes);
 
@@ -175,7 +175,7 @@ pub fn probe_level_preset_scenes(
         ..Default::default()
     };
     // probe = raw benchmark behavior; the setlist/scene-bench base pass stays skip-free
-    // this PR (its common target moves with min(C), so "unchanged" is rarer anyway).
+    // (its common target moves with min(C), so "unchanged" is rarer anyway).
     let br = leveller::level_preset(list_index, &stim, base_target, opts, &force, None, || false)?;
     out += &format!(
         "Base  → target {:.1}  presetLevel={:.4}  verify {:.2} LU (err {:+.2}){}{}\n",
@@ -192,7 +192,7 @@ pub fn probe_level_preset_scenes(
         return Ok(out);
     }
 
-    // 3a) amp candidates via the 1.8.45-safe rich-session discovery.
+    // 3a) amp candidates via the rich-session discovery.
     let candidates = load_and_filter_amp_candidates(list_index)?;
     if candidates.is_empty() {
         return Err("no amp outputLevel controls found — cannot scene-level".to_string());
@@ -357,7 +357,7 @@ pub fn probe_scene_amp_diag(list_index: ListIndex) -> Result<String, String> {
 ///   • GLOBAL  — `change_parameter` only (writes the base/global value).
 ///   • SCENE   — `set_node_scene_edit(true)` then `change_parameter` (scene overlay).
 /// Reads back the BASE scene's outputLevel after the SCENE write to confirm isolation.
-/// Interpretation: GLOBAL Δ large but SCENE Δ ≈ 0 ⇒ scene-edit not isolating on 1.8.45;
+/// Interpretation: GLOBAL Δ large but SCENE Δ ≈ 0 ⇒ scene-edit not isolating;
 /// both Δ ≈ 0 ⇒ genuine no authority (effect-dominated); both large ⇒ authority fine,
 /// the clamp is the loop's noisy-slope bug. NO SAVE (reloads the stored preset each step).
 pub fn probe_scene_knob_authority(
@@ -514,8 +514,8 @@ pub fn probe_bisect_scene(
         std::thread::sleep(Duration::from_millis(1200));
     }
     std::thread::sleep(Duration::from_millis(400));
-    // TMP_BISECT_EDIT_SETTLE overrides the scene-edit→write settle (default 600 =
-    // set_knobs' SETTLE_AFTER_SCENE_EDIT_MS; the potent isolated fn uses 300).
+    // TMP_BISECT_EDIT_SETTLE overrides the scene-edit→write settle (default 600;
+    // `set_knobs`' SETTLE_AFTER_SCENE_EDIT_MS is 300).
     let edit_settle: u64 = std::env::var("TMP_BISECT_EDIT_SETTLE")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -535,7 +535,7 @@ pub fn probe_bisect_scene(
     let written = leveller::engage_measure_disengage(&mut s, &stim)?.integrated_lufs;
     out += &format!("write({value}) settle={edit_settle}ms capture: {written:.2} LUFS\n");
     if with_save {
-        // TMP_BISECT_SAVE_MODE: same (post-engage same connection, the old apply shape)
+        // TMP_BISECT_SAVE_MODE: same (post-engage same connection)
         // | fresh (drop + save on a NEW connection) | rewrite (re-write post-engage on
         // the same connection, then save — the re-assert shape minus load_scene).
         let mode = std::env::var("TMP_BISECT_SAVE_MODE").unwrap_or_else(|_| "same".into());
@@ -675,8 +675,8 @@ pub fn probe_jointk_scenes(
     Ok(out)
 }
 
-/// HW driver for the gain-budget redistribution (PR5,
-/// `probe --redistribute <listIndex> <target> <topology> <worstDeficitDb>`): build the whole
+/// HW driver for the gain-budget redistribution
+/// (`probe --redistribute <listIndex> <target> <topology> <worstDeficitDb>`): build the whole
 /// preset's Base (wire slot 8) + every FS scene as jobs, raise `presetLevel` by the solved
 /// delta, and re-level every sound to `target` via `redistribute_clamped_headroom` — printing
 /// each sound's measured LUFS + clamp + writes. Point at a SCRATCH preset: it SAVES.

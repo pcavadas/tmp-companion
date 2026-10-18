@@ -1,4 +1,4 @@
-//! The device-and-capture seam under every leveling orchestrator (#277): the [`Rig`] is
+//! The device-and-capture seam under every leveling orchestrator: the [`Rig`] is
 //! what a leveling or Doctor run actually touches — the device transport every `Session`
 //! opens, the re-amp capture, the hardware settles, and the Stop flag. Everything above it
 //! (the connection shapes, the re-amp ON/OFF choreography, cancel semantics) is the same
@@ -26,7 +26,7 @@
 //! (`measure_c` → `measure_knob_at` → `arm_measurement` → …), each opening its own fresh
 //! connection by design (`danger.md`'s connection shapes). Threading a `&dyn Rig` through
 //! all of them would touch every leveling signature for no behavioural gain; the scoped
-//! rig keeps every production call site byte-for-byte as it was.
+//! rig keeps the production call sites free of it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -183,7 +183,7 @@ pub(crate) fn capture(stimulus: &[f32], rate: u32, tail_ms: u64) -> Result<Captu
     result
 }
 
-/// The process's running total of HARDWARE WAITS (#198): every settle the code asked for
+/// The process's running total of HARDWARE WAITS: every settle the code asked for
 /// and what this rig applied ([`crate::device_gate::settle_ms`]), and the wall time spent
 /// inside re-amp captures ([`capture`]). On the device a capture is the stimulus playing
 /// through the unit (~6.8 s), so these two are the time a run spends waiting on hardware

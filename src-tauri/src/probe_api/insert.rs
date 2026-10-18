@@ -15,8 +15,8 @@ struct InsertItem {
 }
 
 /// ADD a block to the device's CURRENT ACTIVE preset over USB — the live `insertNode`
-/// (field 34) path, RE'd byte-exact from a Pro Control add-block capture
-/// but never before confirmed on hardware. Mirrors the proven held-session replace
+/// (field 34) path, byte-exact to a Pro Control add-block capture. Mirrors the
+/// held-session replace
 /// architecture (`held_replace_one`): identify the active preset, then on ONE held
 /// session load+re-arm that slot, `insertNode` the new block, and (if `commit`) persist
 /// in-place (`renameCurrentPreset` → `saveCurrentPreset`, song-link-safe). A DRY run
@@ -209,7 +209,7 @@ fn field8_group_order(device_slot: DeviceSlot, group: &str) -> Vec<String> {
 /// the ORDERED group roster, sends ONE insert (field-34 before-anchor when `--before`,
 /// else field-99 `insertNodeAtBlockIndex` when `--at-index`, else a bare append), prints
 /// the ordered roster again, then either COMMITs (saves + field-8 readback) or REVERTs
-/// (reload, live readback). Used to nail down what each wire op does to the in-group ORDER.
+/// (reload, live readback). Shows what each wire op does to the in-group ORDER.
 pub fn probe_insert_map(
     device_slot: DeviceSlot,
     group: &str,
@@ -306,7 +306,7 @@ pub fn probe_insert_map(
 /// `held_replace_one` shape, with `insertNode` instead of `replaceNode`. Load + re-arm +
 /// the same SAFETY gate (only proceed when the held session re-attached to the TARGET
 /// preset). An unconfirmed insert is read back and re-sent once only when it did not land
-/// (the held path's cold first structural edit after a fresh load can be dropped), but
+/// (a confirm can still be queued behind the load's pushes, or lost to a lapse), but
 /// NEVER on a `presetError` (a rejection — never saved). Saves only when the edit is
 /// confirmed (nodeInserted) OR read back as present, and never on a presetError.
 #[allow(clippy::too_many_arguments)]
@@ -468,9 +468,7 @@ pub fn probe_reprompt_map(
     ));
     // The target's name comes from the caller, as it does for Copy (`CopyJob.name`). A
     // `list_my_presets` on the live session BEFORE the load left the whole load + re-arm
-    // unanswered (fields=[] for 10 s, HW 2026-09-03; cause unresolved) — a separate
-    // observation from the old arm's pre-edit reading, which `TMP_PROBE_LEGACY_REPROMPT`
-    // below isolates.
+    // unanswered (fields=[] for 10 s; HW, cause unresolved).
     let name = name.to_string();
     let mut s = Session::connect()?;
     s.begin_live_edit()?;
@@ -536,9 +534,8 @@ pub fn probe_reprompt_map(
     report.push_str(&format!("  CONFIRMED reply_fields={seen:?}\n"));
 
     // `TMP_PROBE_LEGACY_REPROMPT=1`: the `--insert-map` DRY arm's re-prompt shape instead
-    // (`connection_request` re-sent on the live session, buffer read without a clear) —
-    // to isolate which part of that shape produced the recorded pre-edit reading. (It
-    // also sent batch 2, which fw 1.8.58 only queues: no reply on this session.)
+    // (`connection_request` re-sent on the live session, buffer read without a clear).
+    // Its batch-2 request only queues (fw 1.8.58): no reply on this session.
     if std::env::var("TMP_PROBE_LEGACY_REPROMPT").is_ok() {
         let _ = s.send_and_collect(&proto::connection_request(), 80);
         let _ = s.send_and_collect(&proto::current_preset_data_request(proto::BATCH_DRAIN), 200);

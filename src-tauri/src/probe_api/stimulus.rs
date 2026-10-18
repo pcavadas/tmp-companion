@@ -19,9 +19,8 @@ use crate::topologies;
 
 /// Read a WAV file, downmix to mono f32, and measure its loudness. Used by
 /// `probe --lufs <wav>` to validate `lufs.rs` against an external oracle
-/// (pyloudnorm / ffmpeg ebur128) without any device. Kept as the pre-PR2
-/// mono-only entry point; [`measure_wav_auto`] is the stereo-aware successor
-/// `probe --measure-wav` uses.
+/// (pyloudnorm / ffmpeg ebur128) without any device. The mono-only entry point;
+/// [`measure_wav_auto`] is the stereo-aware one `probe --measure-wav` uses.
 pub fn measure_wav_file(path: &str) -> Result<lufs::Loudness, String> {
     let (mono, rate) = read_wav_mono(path)?;
     lufs::measure_mono(&mono, rate)
@@ -75,7 +74,7 @@ pub fn probe_capture_reference(
 /// HW PROBE (WRITE): capture a short stimulus burst plus a long silent `tail_ms`
 /// afterward, so the raw WAV shows a reverb/delay tail's own decay curve directly
 /// — rather than trying to infer contamination risk from the ~1.3 s inter-connection
-/// floor alone (see device-manual-gaps.md gap 6). `scene`, when given, is the
+/// floor alone. `scene`, when given, is the
 /// 0-based `scenes[]` wire index to recall after the load (same convention as
 /// `--measure-scene`) — needed to reach a preset's wet SCENE rather than just its
 /// base/default state.
@@ -143,7 +142,7 @@ pub fn probe_reamp_wav(
     }
     // THIS IS A WRITE PATH, despite reading like a measurement: `capture_full_at`
     // sets `bypass` flags and `PresetLevel` on the target preset's working copy
-    // (`leveller.rs`). Nothing is saved — a reload discards it — but the write is
+    // (`leveller/measure.rs`). Nothing is saved — a reload discards it — but the write is
     // real, so which preset it lands on should be a deliberate choice.
     //
     // Measuring a non-scratch preset is sometimes necessary (the unit may hold only
@@ -213,10 +212,9 @@ pub fn probe_reamp_wav(
     let mut forced: Vec<(String, String, bool)> = Vec::new();
     if bypass_all {
         // Node discovery goes through `load_then_discover_blocks` — the
-        // 1.8.45-safe rich-lean-session path. A plain `connect()` handshake does
-        // NOT reliably carry `currentPresetDataChanged` on this firmware
-        // ("no preset JSON in handshake", HW), so reading the graph directly off
-        // a handshake fails.
+        // rich-lean-session path. A plain `connect()` handshake with no
+        // dense-heartbeat session may carry no `currentPresetDataChanged`
+        // ("no preset JSON in handshake"), so the graph is not read off it.
         //
         // Caveat, reported in the output so it can't be silently over-claimed:
         // this enumerates blocks that expose a LEVEL-type control. A block with
@@ -334,17 +332,17 @@ pub fn probe_measure_converge_replay(
     ))
 }
 
-/// HW A/B for the RE-BASELINE decision: on one preset, measure the captured LUFS
+/// HW A/B of the full vs adaptive capture: on one preset, measure the captured LUFS
 /// the FULL way (production metric: settle → full stimulus + 0.8 s tail → integrate)
 /// and the ADAPTIVE way (`reamp_measure` early-exit), on two fresh connections, and
 /// report both values, their delta, and both wall-clock times. This is the live
 /// counterpart to the offline `--measure-converge-replay`; it keeps the adaptive
 /// `reamp_measure` reachable and lets the operator judge the speed/accuracy trade on real
-/// presets before any decision to wire adaptive into the leveling path. Read-only
+/// presets. Read-only
 /// (no save); ends with a guaranteed re-amp OFF.
 pub fn probe_measure_adaptive(slot: ListIndex, topology_id: &str) -> Result<String, String> {
     let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
-    // Load once in its own connection (the set-after-load override gotcha).
+    // Load once in its own connection (kept conservatively).
     {
         let mut s = session::Session::connect()?;
         s.load_preset(slot)?;
@@ -410,9 +408,7 @@ pub fn probe_doctor(
         Option<Vec<doctor::DoctorNode>>,
         Vec<bool>,
     );
-    // Fresh-connection re-amp OFF on every exit path — this sweep previously
-    // had NO belt-and-braces cleanup at all (a mid-sweep failure left the
-    // device's re-amp state wherever the error found it).
+    // Fresh-connection re-amp OFF on every exit path, a mid-sweep failure included.
     let _reamp_off = super::ReampOffGuard;
     let mut sounds: Vec<Sound> = Vec::new();
     for &(slot, scene) in slots {
@@ -446,8 +442,8 @@ pub fn probe_doctor(
                 "[probe] slot {slot}: preset read failed ({e}) — no graph facts, no isolation"
             ),
         }
-        // Calibration sweep: always the full tail (this is the reference recipe
-        // R4/R5 re-baseline against, not the app's per-sound dry-tail shortcut).
+        // Calibration sweep: always the full tail (the reference recipe, not the
+        // app's per-sound dry-tail shortcut).
         match leveller::doctor_capture(
             slot,
             scene,
@@ -545,10 +541,9 @@ pub fn probe_doctor(
 /// HW A/B of TWO stimuli per preset: for each slot, `measure_c` with stimulus A then
 /// B and report the solved ceilings + dynamics spreads and ΔC. Quantifies how
 /// sensitive each preset's leveling is to the stimulus character (e.g. the shipped
-/// plucked noise vs a real chord DI captured with `--capture-input`) — data for the
-/// playing-style question before any product change. Read-only (no save, no level
-/// write persists); ends with a guaranteed re-amp OFF. Per-slot errors print in-row
-/// and the sweep continues.
+/// synthetic stimulus vs a real chord DI captured with `--capture-input`). Read-only
+/// (no save, no level write persists); ends with a guaranteed re-amp OFF. Per-slot
+/// errors print in-row and the sweep continues.
 pub fn probe_stim_ab(
     slots: &[ListIndex],
     wav_a: &str,
@@ -557,7 +552,7 @@ pub fn probe_stim_ab(
 ) -> Result<String, String> {
     let stim_a = read_stimulus_48k(wav_a)?;
     let stim_b = read_stimulus_48k(wav_b)?;
-    // Floor reads are handled INSIDE measure_c now (the production floor guard:
+    // Floor reads are handled INSIDE measure_c (the production floor guard:
     // stimulus-aware momentary-spread trip → same-ref retry) — a persistent floor read
     // surfaces as error::FLOOR_READ_ERR in the row.
     let mut out = format!(
@@ -565,7 +560,7 @@ pub fn probe_stim_ab(
          \n  slot |      C_A |      C_B |      ΔC | spread_A | spread_B\n"
     );
     for &slot in slots {
-        // measure_c owns its own connection/gap pacing (the level_setlist precedent).
+        // measure_c owns its own connection/gap pacing.
         let row = leveller::measure_c(slot, &stim_a, ref_level, &[])
             .and_then(|a| leveller::measure_c(slot, &stim_b, ref_level, &[]).map(|b| (a, b)));
         match row {

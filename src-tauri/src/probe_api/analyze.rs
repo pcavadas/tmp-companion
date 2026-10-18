@@ -1,15 +1,13 @@
 //! Shared capture→Doctor-read pipeline: onset → body PSD → `SoundProfile` →
-//! `band_db` → `deviations` → `tilt_split` → `diagnose_kind`, off ONE capture.
-//! Extracted from `doctor_window_ab::capture_variant` and
-//! `doctor_inject::measure`, which ran this same sequence independently —
-//! kept as one seam so a metric-pipeline change can't drift between the two
-//! probe arms. `doctor_calib.rs` runs its own (pre-existing, out of scope)
-//! copy of a similar pipeline.
+//! `band_db` → `deviations` → `tilt_split` → `diagnose_kind`, off ONE capture —
+//! one seam for `doctor_window_ab::capture_variant` and `doctor_inject::measure`,
+//! so a metric-pipeline change can't drift between the two probe arms.
+//! `doctor_calib.rs` measures through the production `leveller::analyze_capture`.
 //!
-//! The `pad_aware: true` arm's onset now goes through `leveller::doctor_onset`
+//! The `pad_aware: true` arm's onset goes through `leveller::doctor_onset`
 //! (floor-relative energy step, primary — the correlator's confidence gate
 //! can't detect a peakless correlation curve, HW-measured flat on a 65%-wet
-//! reverb chain, fw 1.8.45); `pad_aware: false` keeps the raw `audio::estimate_onset`
+//! reverb chain); `pad_aware: false` keeps the raw `audio::estimate_onset`
 //! correlator unchanged (it captures on the RAW unpadded stimulus, so the
 //! padded stimulus the energy step needs isn't available there).
 

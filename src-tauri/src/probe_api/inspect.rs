@@ -12,8 +12,8 @@ use crate::{backup_read::read_backup_archive, commands::bulk_replace::discover_r
 /// the user-IR list request inside the handshake burst and dump every saved-block /
 /// IR response the device streams back, so the opaque `blockPresetsMap` blob and the
 /// IR list shape can be decoded. No device writes; nothing persists (optional raw
-/// dumps only when `TMP_RE_OUT=<dir>` is set). Used once to derive the wire schema;
-/// the production readers (`list_saved_blocks` / `list_user_irs`) build on what it finds.
+/// dumps only when `TMP_RE_OUT=<dir>` is set) — the wire schema
+/// `saved_blocks::parse_block_presets_map` decodes.
 pub fn probe_re_blocks() -> Result<String, String> {
     let hexn = |b: &[u8], n: usize| -> String {
         b.iter()
@@ -204,7 +204,7 @@ pub fn probe_slot_json(device_slot: DeviceSlot) -> Result<String, String> {
     }
 }
 
-/// E5 — discovery-source diff (`probe --discover-diff <FROM> <slots_csv>`). Builds the
+/// Discovery-source diff (`probe --discover-diff <FROM> <slots_csv>`). Builds the
 /// replace-target set for each slot from BOTH the per-slot field-8 read
 /// (`discover_replace_plans`) and the whole-library device backup (complete presetJson
 /// roster), then diffs the `(group, node_id)` sets. For large N the backup (~22 s flat,
@@ -302,9 +302,9 @@ fn block_presets_session() -> Result<Session, String> {
     Ok(s)
 }
 
-/// Validate the PRODUCTION saved-block decode path live (`probe --saved-blocks`):
-/// the exact `list_saved_blocks` flow (RequestAllBlockPresets → decode →
-/// `parse_block_presets_map`), printed as a summary. Read-only.
+/// Validate the saved-block decode path live (`probe --saved-blocks`):
+/// RequestAllBlockPresets → decode → `parse_block_presets_map`, printed as a
+/// summary. Read-only.
 pub fn probe_saved_blocks() -> Result<String, String> {
     let bodies = block_presets_bodies()?;
     let blob = find_block_presets_blob(&bodies)

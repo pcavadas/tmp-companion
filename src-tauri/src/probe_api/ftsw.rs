@@ -16,8 +16,8 @@ pub(crate) fn read_slot_ftsw(device_slot: crate::slot::DeviceSlot) -> Option<ser
 }
 
 /// HW validation harness for the footswitch-assignment protocol (`probe --ftsw-validate
-/// [switchIndex] [--commit]`). Answers, on the real unit, the open unknowns for the
-/// block-acting-footswitch feature: (1) does `setFootswitchAssignment`(54) land on the
+/// [switchIndex] [--commit]`). Checks, on the real unit, for the block-acting-footswitch
+/// feature: (1) does `setFootswitchAssignment`(54) land on the
 /// working copy and what (if anything) confirms it, (2) the `footswitchAddress`↔`ftsw`
 /// array-index mapping, (3) the `valueType`/value round-trip, (4) what `swap` does, (5)
 /// that `clearFootswitchAssignment`(55) removes it, and — with `--commit` — that
@@ -59,7 +59,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         ftsw.as_array()?.get(i)?.as_array()?.get(j).cloned()
     };
 
-    // ── Phase 0: resolve the active preset, read & print its ftsw ──
+    // ── Step 0: resolve the active preset, read & print its ftsw ──
     let mut s = Session::connect()?;
     s.begin_live_edit()?;
     let active_name = s.active_preset_name();
@@ -166,7 +166,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
     }))
     .unwrap();
 
-    // ── Phase 1: held session — set / swap / clear on the working copy ──
+    // ── Step 1: held session — set / swap / clear on the working copy ──
     let mut s = Session::connect()?;
     s.begin_live_edit()?;
     s.load_preset(list_index)?;
@@ -176,7 +176,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         ));
     }
 
-    // UNKNOWN 1 — write + confirm gate. Try setter framing (no batchStatus) first.
+    // Check 1 — write + confirm gate. Try setter framing (no batchStatus) first.
     s.set_footswitch_assignment(target as u32, target_index, &func_json, false, None)?;
     report.push_str(&format!(
         "  [set no-batch] PresetMessage fields the device replied with: {:?}\n",
@@ -216,7 +216,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
             .push_str("  ✗ did NOT land via either framing — setFootswitchAssignment had no working-copy effect\n"),
     }
 
-    // UNKNOWN 2 — swap semantics (re-send same fn with swap=true, diff the stored object).
+    // Check 2 — swap semantics (re-send same fn with swap=true, diff the stored object).
     if let Some((si, fi)) = landed {
         let before = func_at(&after.clone().unwrap(), si, fi);
         s.set_footswitch_assignment(target as u32, target_index, &func_json, true, None)?;
@@ -234,7 +234,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         ));
     }
 
-    // UNKNOWN 3 — clear.
+    // Check 3 — clear.
     s.clear_footswitch_assignment(target as u32, target_index)?;
     let after_clear = s.live_ftsw();
     let gone = after_clear.as_ref().and_then(find_probe).is_none();
@@ -252,7 +252,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
             .unwrap_or(0)
     ));
 
-    // ── Phase 2: persistence (commit only), then RESTORE ──
+    // ── Step 2: persistence (commit only), then RESTORE ──
     if commit && landed.is_some() {
         s.set_footswitch_assignment(target as u32, target_index, &func_json, false, None)?;
         s.save_current_preset(list_index)?;

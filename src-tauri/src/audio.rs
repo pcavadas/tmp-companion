@@ -11,8 +11,8 @@
 //! unambiguous on macOS. ALSA carries no such string, and that same substring
 //! match is actively WRONG on Linux — cpal also surfaces a non-functional
 //! `usbstream:` hint device that renders as the identical "Tone Master Pro" name
-//! and sorts first (HW-measured, fw 1.8.58, `probe --audio-devices`), so the naive
-//! port would have picked a 0-channel dead end over the real PCM device. Linux
+//! and sorts first (HW-measured, fw 1.8.58, `probe --audio-devices`), so a name
+//! match opens a 0-channel dead end instead of the real PCM device. Linux
 //! instead resolves deterministically via `/proc/asound` by USB vendor id (the
 //! TMP's HID and audio interfaces sit on DIFFERENT product ids — 0x0044 vs
 //! 0x0047 — so match on "has PCM", not a specific id) and opens the exact
@@ -56,9 +56,10 @@ use serde::Serialize;
 const REAMP_INSTRUMENT_OUT_CH: usize = 2;
 
 /// 0-based input channel carrying the device's USB-Out 3 = dry instrument send
-/// (pre-DSP). Confirmed on hardware: a played guitar lands here at its real
-/// output level while USB-Out 1/2 carry the processed signal. Used by Tier-2
-/// calibration to measure the instrument's actual output.
+/// (pre-DSP) while USB-Out 1/2 carry the processed signal (HW). The send is the
+/// averaged instrument ADC pair × a fixed 3.96 (+11.95 dB), clamped by a
+/// saturating 24-bit conversion (static RE, fw 1.8.58). Used by Tier-2
+/// calibration to measure the instrument's output.
 pub const DRY_INSTRUMENT_IN_CH: usize = 2;
 
 /// Parse a `/proc/asound/cardN/usbid` body (`"1ed8:0047\n"`, lowercase hex,
@@ -271,7 +272,8 @@ impl Capture {
     /// `loudest_channel` has on stereo presets (L/R can trade loudest across
     /// runs, flipping spectral verdicts). Channel 2 (dry instrument send) and
     /// beyond are deliberately excluded. Falls back to channel 0 when the
-    /// capture is mono. Doctor's band/PSD analysis (`leveller::to_stereo`) stays
+    /// capture is mono. Doctor's band/PSD analysis (`DoctorSignal::from_capture`
+    /// in `leveller::doctor_capture`) stays
     /// on this AVERAGE mixdown — see [`Self::processed_stereo`] for the
     /// SUM-convention view the LUFS meter uses instead.
     pub fn stereo_mix(&self) -> Vec<f32> {
@@ -359,10 +361,10 @@ fn metered_frame(l: f32, r: f32, mode: PlaybackChannels) -> [f32; 2] {
 // Which output(s) the user's rig actually plays (Settings → Playback → Output), read by
 // every OUTPUT-side measurement hub: `leveller::measure_processed` and the live-LUFS
 // readout below (plus the adaptive `reamp_measure`). Process-global like the live sink
-// above, for the same reason: the hubs sit under dozens of callers with no store access.
+// below, for the same reason: the hubs sit under dozens of callers with no store access.
 // The persisted value lives in the profiles store; `sync_meter_channels` copies it here at
 // startup and the Settings setter after every successful save. Default Stereo, so an
-// unset process (probe CLI, unit tests) meters exactly as before the setting existed.
+// unset process (probe CLI, unit tests) meters Stereo.
 #[cfg(not(test))]
 static METER_CHANNELS: AtomicU8 = AtomicU8::new(0);
 
@@ -406,14 +408,14 @@ pub fn meter_channels() -> PlaybackChannels {
 }
 
 // ── Advisory live-LUFS sink ──────────────────────────────────────────────────
-// A leveling command installs a closure (via `LiveLufsGuard` in lib.rs) that emits a Tauri
-// event; `reamp_capture_real` calls `emit_live_lufs` on a fixed cadence with the converging
-// integrated loudness so the UI can show a "measuring…" readout. The value is ADVISORY — it
-// never feeds the solve; the authoritative measurement is unchanged.
+// A leveling command installs a closure (via `commands::level_scenes::LiveLufsGuard`) that
+// emits a Tauri event; `reamp_capture_real` calls `emit_live_lufs` on a fixed cadence with
+// the converging integrated loudness so the UI can show a "measuring…" readout. The value
+// is ADVISORY — it never feeds the solve; the authoritative measurement is unchanged.
 //
-// ponytail: global advisory sink — safe only because DEVICE_OP_LOCK serializes all leveling
-// measurement (one capture at a time). If concurrent measurement is ever introduced, switch
-// to a callback threaded through engage_measure_disengage.
+// Known limit: one global sink is safe only because `device_gate`'s DEVICE_OP_LOCK serializes
+// all leveling measurement (one capture at a time). Concurrent measurement would need a
+// callback threaded through `leveller::engage_measure_disengage` instead.
 type LiveLufsSink = Box<dyn Fn(f64, f64) + Send>;
 static LIVE_LUFS_SINK: Mutex<Option<LiveLufsSink>> = Mutex::new(None);
 
@@ -579,13 +581,8 @@ mod imp {
     use super::{pick_match_index, Device};
 
     /// CoreAudio names devices for cpal by their USB product string, so a "tone
-    /// master" substring is the match — but a "Tone Master Pro + mic" AGGREGATE
-    /// matches the same substring and can precede the physical unit in CoreAudio's
-    /// unspecified enumeration order, concatenating its sub-devices' channels so
-    /// absolute indices (the dry-DI tap) land on the wrong lane. Prefer the match
-    /// whose channel count is the native 4 (`channels_of` counts in the caller's
-    /// direction); a TMP-only aggregate keeps the native count, so it's still
-    /// admitted, and with no native match we fall back to the first name hit.
+    /// master" substring is the match; [`pick_match_index`] breaks a tie with an
+    /// aggregate that contains the unit.
     pub(super) fn find_device<I, F>(devs: I, channels_of: F) -> Option<Device>
     where
         I: Iterator<Item = Device>,
@@ -604,24 +601,10 @@ mod imp {
     use super::{parse_asound_usbid, Device};
     use cpal::traits::DeviceTrait;
 
-    /// ALSA carries no USB product string, and cpal enumerates a name-substring
-    /// match ambiguously on Linux: a non-functional `usbstream:` hint (0 channels)
-    /// also renders as "Tone Master Pro" and sorts before the real `hw:`/`plughw:`
-    /// PCM device (HW-measured via `probe --audio-devices`, fw 1.8.58 — the
-    /// production `find_device` picked the hint, not the audio interface, before
-    /// this port). Resolve deterministically instead: walk `/proc/asound` for the
-    /// Fender-VID card that carries PCM (the TMP's HID and audio interfaces are on
-    /// DIFFERENT USB product ids — 0x0044 vs 0x0047 — so match by vendor id + "has
-    /// a pcm device", not a specific product id), then pick the cpal device whose
-    /// exact ALSA pcm_id (`description().driver()`) is that card's `hw:` PCM. `hw:`
-    /// (not `plughw:`) deliberately: `plughw:`'s `plug` layer converts channel
-    /// COUNT as well as format/rate, and `pick_config`'s "smallest channel count
-    /// that fits" would ask it for 3 channels — not the physical 4 — inviting an
-    /// unverified channel remix of the precise USB-In-3 routing re-amp depends on.
-    /// `hw:` only ever advertises the physical count, so `pick_config` can only
-    /// ever land on exactly 4 there. The resulting I32-only format is handled at
-    /// the stream-callback boundary (`pick_config`, `fill_output_frames_f32`,
-    /// `read_input_frames_f32`). `_channels_of` is unused here — the `/proc/asound`
+    /// Resolve deterministically through `/proc/asound` (why: the module header):
+    /// find the Fender-VID card that carries PCM, then pick the cpal device whose
+    /// exact ALSA pcm_id (`description().driver()`) is that card's `hw:` PCM.
+    /// `_channels_of` is unused here — the `/proc/asound`
     /// PCM-id resolution is already unambiguous, so the macOS native-count tiebreak
     /// doesn't apply — but the parameter keeps `find_device`'s signature uniform.
     pub(super) fn find_device<I, F>(mut devs: I, _channels_of: F) -> Option<Device>
@@ -725,18 +708,16 @@ mod endpoint_unity;
 /// for "Speakers (Fender Tone Master Pro)") to everything a client plays into
 /// it — and the capture side's level to what it records — so a nudged slider
 /// silently attenuates the injected stimulus and every measurement derived
-/// from it. HW 2026-08-31: the render endpoint sat at 8% (-38 dB); the clean
-/// scene of a two-amp preset measured -34.6 LUFS through the inject while the
-/// identical live input produced -14.3, and only the driven scenes' compression
-/// masked the loss elsewhere. macOS/Linux have no such layer (`hw:`/CoreAudio
+/// from it (HW: a render endpoint at 8% read a clean scene ~20 LU low; a
+/// driven scene's compression masks the loss). macOS/Linux have no such layer (`hw:`/CoreAudio
 /// bypass the desktop mixer), so this is a Windows-only seam.
 ///
 /// RESTORE, not pin: the same slider can be the only thing keeping a Windows
 /// monitoring loop ("Listen to this device", a DAW echo) quiet in the player's
-/// rig — pinning 100% permanently doubled the user's live guitar the moment it
-/// landed. The hold touches ONLY endpoints whose friendly name matches the
-/// unit — never the user's speakers. Setup is transactional: a COM failure
-/// restores every touched endpoint and rejects the measurement.
+/// rig, and pinning 100% permanently doubles the user's live guitar. The hold
+/// touches ONLY endpoints whose friendly name matches the unit — never the
+/// user's speakers. Setup is transactional: a COM failure restores every
+/// touched endpoint and rejects the measurement.
 #[cfg(windows)]
 mod endpoint_volume {
     use windows::core::{GUID, PCWSTR};
@@ -886,9 +867,7 @@ fn pick_config(
                 && r.max_sample_rate() >= target_rate
         })
         // Smallest channel count that fits, F32 breaking a tie over I32 — ties only
-        // arise on hosts that offer both at the same channel count (not the TMP on
-        // either platform today, but keeps macOS's exact prior behavior explicit
-        // rather than accidental).
+        // arise on hosts that offer both at the same channel count (not the TMP).
         .min_by_key(|r| (r.channels(), r.sample_format() != SampleFormat::F32))
         .map(|r| r.with_sample_rate(target_rate))
 }
@@ -908,7 +887,7 @@ fn i32_to_f32(s: i32) -> f32 {
 /// Fill a format-agnostic output buffer one frame at a time: `next_sample()` is
 /// called once per frame and written to `inject_ch`, every other channel gets
 /// silence. The format-agnostic counterpart to a typed `build_output_stream::<f32,
-/// _, _>` callback — needed because `pick_config` can now hand back an I32 config
+/// _, _>` callback — needed because `pick_config` can hand back an I32 config
 /// (Linux `hw:`), and cpal's typed callback API requires the Rust type to match the
 /// negotiated format at compile time. Logs and no-ops on a format `pick_config`
 /// cannot produce (defensive; not reachable in practice).
@@ -1057,7 +1036,7 @@ fn refuse_under_remote() -> Result<(), String> {
     Ok(())
 }
 
-/// Find the TMP and pick a 48 kHz output config (≥3 ch for USB-In 3) + input
+/// Find the TMP and pick an output config at `sample_rate` (≥3 ch for USB-In 3) + input
 /// config. Errors describe exactly which half is missing.
 fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
     refuse_under_remote()?;
@@ -1154,9 +1133,8 @@ fn build_oneshot_output_stream(
 /// single-consumer (the calling thread).
 ///
 /// The input callback runs on the host's real-time audio thread, so it must never
-/// block or allocate: a `Mutex<Vec>` shared with the 200 ms live-LUFS readout made
-/// the callback wait on the main thread, a `Vec::push` past its reserve reallocated
-/// inside it, and a poisoned lock silently dropped samples. Here the callback writes
+/// block or allocate (a shared `Mutex<Vec>` would make it wait on the live-LUFS
+/// readout, reallocate past its reserve, or drop samples on a poisoned lock). The callback writes
 /// samples (f32 bits in `AtomicU32`s — no `unsafe`) into `[len, capacity)`, then
 /// publishes the new `len` with `Release`; the reader loads `len` with `Acquire` and
 /// only ever reads `[0, len)`, which the producer never touches again. cpal never
@@ -1253,8 +1231,7 @@ fn take_capture(buf: Arc<CaptureBuf>) -> Vec<f32> {
 
 /// Samples to reserve for a fixed capture window: the expected window plus a 1 s
 /// margin for stream start-up and the final partial period, so a full-length capture
-/// never reaches [`CaptureBuf`]'s overflow guard. (The old stimulus + 1 s reserve
-/// was overrun by the Doctor's 1.5 s tail.)
+/// never reaches [`CaptureBuf`]'s overflow guard.
 fn capture_capacity(window_ms: u64, sample_rate: u32, channels: usize) -> usize {
     (window_ms as usize + 1000) * sample_rate as usize / 1000 * channels
 }
@@ -1357,9 +1334,9 @@ fn build_capture_input_stream(
 /// the stimulus at `sample_rate` (the device rate). cpal streams are !Send, so
 /// everything stays on the calling thread.
 ///
-/// This is the FULL-CLIP capture (the whole waveform is returned) — used by the
-/// spectrum/audit/calibration paths that need the samples. Leveling MEASUREMENTS
-/// use [`reamp_measure`], which exits as soon as integrated LUFS converges.
+/// This is the FULL-CLIP capture (the whole waveform is returned) — the one
+/// leveling measures through (after the caller's post-engage settle), and the one
+/// the spectrum/audit/calibration paths use. The adaptive [`reamp_measure`] is probe-only.
 ///
 /// Runs on this thread's rig (`crate::rig`): the real device audio I/O in
 /// production and on the ONLINE e2e tier; the e2e server's physics model offline; a test's
@@ -1386,7 +1363,7 @@ pub(crate) fn reamp_capture_real(
     if crate::device_gate::op_aborted() {
         return Err(LevelError::Cancelled);
     }
-    // ponytail: TMP_AUDIO_TIMING is throwaway probe instrumentation (stream cost breakdown).
+    // TMP_AUDIO_TIMING: probe instrumentation (stream cost breakdown).
     let timing = std::env::var("TMP_AUDIO_TIMING").is_ok();
     let t0 = Instant::now();
     let streams = resolve_reamp_streams(sample_rate)?;
@@ -1421,7 +1398,7 @@ pub(crate) fn reamp_capture_real(
         // Advisory live-LUFS: emit the converging integrated loudness on a fixed cadence
         // while the SAME buffer fills. DEADLINE-bounded so total wall-clock stays exactly
         // `total_ms` regardless of hop count / emit latency — the authoritative buffer and
-        // the final measurement (leveller.rs's stereo-or-mono-fallback hub) are
+        // the final measurement (`leveller::measure_processed`) are
         // byte-identical to a blind `sleep(total_ms)` (the meter is parallel, fed from
         // COPIES of the new frames; meter errors are swallowed so a bad reading never
         // aborts a real capture). PICK_MS mirrors `reamp_measure`'s settle before the
@@ -1535,22 +1512,21 @@ pub(crate) fn reamp_capture_real(
     })
 }
 
-/// Tuning for the [`reamp_measure`] capture.
+/// Tuning for the probe-only [`reamp_measure`] capture and its offline twin
+/// [`replay_measure`]. Production leveling measures through [`reamp_capture`].
 ///
 /// Two presets:
-/// - [`MeasureOpts::full`] (the leveling DEFAULT): integrate the whole stimulus +
-///   decay tail, NO early exit — reproduces the legacy full-capture metric (its only
-///   win over the old path is the settle-overlap: the pre-roll replaces the fixed
-///   post-engage sleep). USE THIS for anything that writes to a preset.
-/// - [`MeasureOpts::adaptive`] (opt-in / harness): early-exit on convergence. FASTER,
-///   but the offline harness (`probe --measure-converge-replay`) proved it diverges up
-///   to ~0.25 LU from the full metric on time-effect/reverb presets — the post-stimulus
-///   decay tail pulls the full integrated down and an early exit omits it. Adopting it
-///   is a measurement RE-BASELINE, not a drop-in speedup; gated on a product decision.
+/// - [`MeasureOpts::full`] (the `Default`): integrate the whole stimulus + decay
+///   tail, NO early exit — the same window as the production full capture, with the
+///   pre-roll standing in for the post-engage settle.
+/// - [`MeasureOpts::adaptive`]: early-exit on convergence. FASTER, but it diverges up
+///   to ~0.25 LU from the full metric on time-effect/reverb presets (`probe
+///   --measure-converge-replay`) — the post-stimulus decay tail pulls the full
+///   integrated down and an early exit omits it.
 #[derive(Debug, Clone, Copy)]
 pub struct MeasureOpts {
     /// Capture discarded before measuring — absorbs the re-amp routing settle and
-    /// the stimulus attack, so callers no longer sleep a fixed post-engage settle.
+    /// the stimulus attack, so callers sleep no post-engage settle.
     pub preroll_ms: u64,
     /// Poll/measure cadence: how often the integrated value is recomputed.
     pub hop_ms: u64,
@@ -1565,15 +1541,14 @@ pub struct MeasureOpts {
     /// `early_exit` is false.
     pub max_capture_ms: u64,
     /// When false (default), never exit on convergence — run the full window so the
-    /// metric matches the legacy full capture.
+    /// metric matches the full capture.
     pub early_exit: bool,
 }
 
 impl MeasureOpts {
     /// Accuracy-preserving default: full stimulus + ~0.8 s tail, no early exit.
     /// `max_capture_ms` = (6.0 s stimulus − 0.5 s preroll) + 0.8 s tail = 6.3 s of
-    /// post-preroll capture, matching the legacy 6.0 s + 0.8 s window minus the
-    /// settle now folded into the pre-roll.
+    /// post-preroll capture: the 6.0 s + 0.8 s window minus the pre-roll.
     pub fn full() -> Self {
         MeasureOpts {
             preroll_ms: 500,
@@ -1586,8 +1561,8 @@ impl MeasureOpts {
         }
     }
 
-    /// Experimental adaptive early-exit (RE-BASELINE — see the type docs). Tuned by
-    /// the offline harness; not for write paths without sign-off.
+    /// Adaptive early-exit (see the type docs). Tuned by the offline harness; not
+    /// for write paths.
     pub fn adaptive() -> Self {
         MeasureOpts {
             preroll_ms: 500,
@@ -1643,7 +1618,7 @@ impl ConvergenceTracker {
     }
 }
 
-/// Adaptive re-amp loudness measurement: same isolated fresh stream pair as
+/// Adaptive re-amp loudness measurement (probe-only): same isolated fresh stream pair as
 /// [`reamp_capture`] (NOT the shared `LiveReamp` ring buffer, which mis-measured on
 /// HW), but it discards a pre-roll, feeds the processed pair (or the mono fallback
 /// for a genuinely 1-channel capture) into an incremental ITU-R BS.1770 meter, and
@@ -1652,10 +1627,8 @@ impl ConvergenceTracker {
 /// did not route), or a retryable `Err` on a stream error or a short full window
 /// ([`check_capture`]). Requires re-amp mode already ON.
 ///
-/// The pre-roll skip folds in what used to be a fixed post-engage settle: callers
-/// engage re-amp and call this directly — the discarded pre-roll covers the routing
-/// transient. No tail: the integrated relative gate discards quiet decay, so a tail
-/// only costs wall-clock.
+/// Callers engage re-amp and call this directly — the discarded pre-roll covers
+/// the routing transient.
 pub fn reamp_measure(
     stimulus_mono: &[f32],
     sample_rate: u32,
@@ -1665,8 +1638,7 @@ pub fn reamp_measure(
         return Err("empty re-amp stimulus".to_string());
     }
     // ~400 ms of post-preroll audio before the meter starts (and, separately, the
-    // momentary-VU loudest-channel pick fixes) — plenty for a stable RMS pick on
-    // the stationary shaped-noise stimulus.
+    // momentary-VU loudest-channel pick fixes) — enough for a stable RMS pick.
     const PICK_MS: u64 = 400;
 
     let streams = resolve_reamp_streams(sample_rate)?;
@@ -1853,10 +1825,9 @@ pub fn replay_measure(
 const LIVE_RING_SECS: usize = 8;
 
 /// Append `data` to the capture ring, trimming the FRONT so the buffer never exceeds
-/// `cap` samples. The OOM guard behind the `LiveReamp` ring: unbounded capture growth
-/// (multi-channel 48 kHz × minutes × dozens of rows) once locked up the whole machine.
-/// Extracted from the realtime input callback so the invariant is unit-testable without
-/// CoreAudio hardware. `VecDeque` so the trim is a head-pointer advance, not a re-base.
+/// `cap` samples — the `LiveReamp` OOM guard (danger.md). Extracted from the realtime
+/// input callback so the invariant is unit-testable without CoreAudio hardware.
+/// `VecDeque` so the trim is a head-pointer advance, not a re-base.
 fn ring_append(buf: &mut std::collections::VecDeque<f32>, data: &[f32], cap: usize) {
     buf.extend(data.iter().copied());
     if buf.len() > cap {
@@ -1866,7 +1837,7 @@ fn ring_append(buf: &mut std::collections::VecDeque<f32>, data: &[f32], cap: usi
 }
 
 /// Format-agnostic counterpart to [`ring_append`] for the raw stream callback: F32
-/// is a zero-copy passthrough (byte-identical to the original always-f32 path); I32
+/// is a zero-copy passthrough; I32
 /// (Linux `hw:`) converts sample-by-sample straight into the ring, so the realtime
 /// callback never allocates on either format.
 fn ring_append_raw(buf: &mut std::collections::VecDeque<f32>, data: &Data, cap: usize) {
@@ -1956,11 +1927,9 @@ impl LiveReamp {
                 )
             })?;
 
-        // Ring-buffer the capture: keep only the recent tail the callers can ask
-        // for. Unbounded growth here OOM'd the whole machine on a long benchmark
-        // run (multi-channel 48 kHz × minutes of stream × dozens of
-        // rows). VecDeque so the front-trim is a head-pointer advance — a Vec
-        // drain re-based multiple MB on the realtime callback in the worst case.
+        // Ring-buffer the capture (see `ring_append`): keep only the recent tail the
+        // callers can ask for. VecDeque so the front-trim is a head-pointer advance,
+        // not a multi-MB re-base on the realtime callback.
         let cap_samples = sample_rate as usize * LIVE_RING_SECS * in_ch;
         let cap_cb = captured.clone();
         let in_fmt = in_cfg.sample_format();
@@ -2100,11 +2069,11 @@ const ONSET_MAX_LAG_MS: usize = 250;
 /// Envelope hop — sets the estimate's resolution (well inside the ±5 ms goal).
 const ONSET_HOP_MS: usize = 2;
 /// Normalized-correlation floor below which the estimate is not trusted.
-/// HW-calibrated (2026-07-16, 15 captures × 5 presets): chains that preserve
+/// HW-calibrated (15 captures × 5 presets): chains that preserve
 /// ANY envelope find the true ~32 ms latency with corr 0.24–0.48 (fuzz
 /// compression floors it near 0.24), while envelope-DESTROYING chains (reverse
 /// delay, shoegaze wash) sit ≤ 0.08 — 0.15 splits the clusters with margin
-/// both ways. The original 0.5 rejected every real capture.
+/// both ways.
 const ONSET_MIN_CORR: f64 = 0.15;
 /// Latency plausibility ceiling: the rig's true inject latency measured a tight
 /// 30–34 ms across every preset/run, while envelope-destroyed chains produced
@@ -2116,15 +2085,14 @@ pub(crate) const ONSET_MAX_PLAUSIBLE_LAG_MS: usize = 120;
 
 // ───────────────────── Floor-relative energy onset step ─────────────────────
 //
-// HW evidence (fs13 `ACD_TMLargePlate` 65%-wet, `probe --doctor-fs 407 13`,
-// 2026-08-24): the correlation curve above is FLAT on a wash chain (0.27–0.37
-// across every lag 0–250 ms, no peak) — its confidence gate can't detect a
-// peakless curve, so a wash preset's tail split rides on whichever lag the
-// noise floor happens to land on. The Doctor stimulus always carries a played
-// silent pad (`leveller::DOCTOR_PAD_MS`) ahead of the body, so a floor-relative
-// energy step is deterministic (±2 ms) on every chain observed, wet or dry —
-// see `leveller::doctor_onset`, which tries this FIRST and falls back to the
-// correlator above.
+// HW (a 65%-wet `ACD_TMLargePlate` chain): the correlation curve above is FLAT
+// on a wash chain (0.27–0.37 across every lag 0–250 ms, no peak) — its
+// confidence gate can't detect a peakless curve, so a wash preset's tail split
+// rides on whichever lag the noise floor happens to land on. The Doctor
+// stimulus always carries a played silent pad (`leveller::DOCTOR_PAD_MS`) ahead
+// of the body, so a floor-relative energy step is deterministic (±2 ms) on every
+// chain observed, wet or dry — see `leveller::doctor_onset`, which tries this
+// FIRST and falls back to the correlator above.
 
 /// Hop width (ms) for the coarse pre-signal floor estimate — wider than
 /// `ONSET_HOP_MS`'s 2 ms search resolution so a single engage-click doesn't
@@ -2237,7 +2205,7 @@ pub(crate) fn estimate_signal_start(capture: &[f32], rate: u32) -> Option<usize>
 /// confident)`; low confidence returns `(0, false)` — the caller keeps the
 /// un-aligned behavior.
 ///
-/// Doctor callers no longer use this as their primary onset estimate — its
+/// Doctor callers do not use this as their primary onset estimate — its
 /// confidence gate is a corr floor + lag ceiling, neither of which detects a
 /// PEAKLESS correlation curve (measured flat, 0.27–0.37 over every lag 0–250 ms,
 /// on a 65%-wet reverb chain). [`leveller::doctor_onset`] tries
@@ -2376,8 +2344,8 @@ mod onset_tests {
     #[test]
     fn heavily_compressed_envelope_still_confident_at_a_plausible_lag() {
         // Fuzz-style crush: hard clipping flattens the envelope so the
-        // correlation lands well under the old 0.5 bar (HW measured 0.24 on a
-        // fuzz preset) — the recalibrated floor must still accept the true lag.
+        // correlation lands near 0.24 (HW, a fuzz preset) — the floor must
+        // still accept the true lag.
         let stim = plucky(2.0);
         let lag = (SR as usize) * 32 / 1000; // the measured rig latency
         let mut cap = vec![0.0f32; lag];
@@ -2476,9 +2444,8 @@ mod tests {
         }
     }
 
-    // Issue #240: the capture buffer hands back exactly the samples the callback
-    // wrote (so leveling sees the same samples as the old Mutex<Vec>), published
-    // in order, and the take does not change them.
+    // The capture buffer hands back exactly the samples the callback wrote,
+    // published in order, and the take does not change them.
     #[test]
     fn capture_buf_round_trips_the_callback_samples() {
         let buf = CaptureBuf::with_capacity(4 * 1000);
@@ -2496,7 +2463,7 @@ mod tests {
         assert_eq!(take_capture(Arc::new(buf)), want);
     }
 
-    // Issue #240 (a): a stream error reported through the error callback fails the
+    // A stream error reported through the error callback fails the
     // capture with a retryable Err, even on an otherwise full-length window.
     #[test]
     fn a_stream_error_fails_the_capture() {
@@ -2517,7 +2484,7 @@ mod tests {
         assert!(failed.load(Ordering::Acquire));
     }
 
-    // Issue #240 (b): a capture that comes up short of `window × rate` by more than
+    // A capture that comes up short of `window × rate` by more than
     // the tolerance fails; one short by under a period passes; an adaptive window
     // (`None`) is never frame-checked.
     #[test]
@@ -2540,10 +2507,9 @@ mod tests {
         assert_eq!(capture_tolerance_frames(rate, 4096), 8192);
     }
 
-    // Issue #240 (c): a Doctor-length capture (3.2 s padded stimulus + 1.5 s tail,
+    // A Doctor-length capture (3.2 s padded stimulus + 1.5 s tail,
     // 4 channels) — plus start-up slack — stays inside the reserved capacity, so the
-    // callback never reaches the overflow guard (the old stimulus + 1 s reserve was
-    // overrun by the 1.5 s tail). Past the capacity it flags an overflow instead of
+    // callback never reaches the overflow guard. Past the capacity it flags an overflow instead of
     // growing, and the capture fails.
     #[test]
     fn a_doctor_length_capture_stays_within_its_reserve() {
@@ -2566,10 +2532,10 @@ mod tests {
         assert!(err.contains("overflow"), "{err}");
     }
 
-    // The "locked up my machine" gate: the LiveReamp capture ring stays bounded at
-    // `cap` samples no matter how much sustained input is pushed (unbounded growth once
-    // OOM'd the whole Mac). Feeds many chunks totalling far more than `cap` and asserts
-    // the length never exceeds it, and that the RETAINED tail is the most recent samples.
+    // The "locked up my machine" gate: the LiveReamp capture ring stays bounded at `cap`
+    // samples no matter how much sustained input is pushed. Feeds many chunks totalling
+    // far more than `cap` and asserts the length never exceeds it, and that the RETAINED
+    // tail is the most recent samples.
     #[test]
     fn ring_append_stays_bounded_under_sustained_pushes() {
         let cap = 1000usize;
@@ -2705,7 +2671,7 @@ mod tests {
 
     #[test]
     fn processed_stereo_is_none_for_a_genuinely_mono_capture() {
-        // T2/D-fallback: a true 1-channel capture must NOT be duplicated into fake
+        // A true 1-channel capture must NOT be duplicated into fake
         // dual-mono (that would invent the +3.01 dB the hardware never produced) —
         // the caller falls back to `lufs::measure_mono` instead.
         let cap = Capture {
@@ -2890,7 +2856,7 @@ mod tests {
 
     #[test]
     fn full_opts_never_early_exit() {
-        // The leveling default integrates the whole window — even a dead-stationary
+        // `MeasureOpts::full` integrates the whole window — even a dead-stationary
         // tone must not converge-exit (that's the accuracy-preserving contract).
         let rate = 48_000;
         let clip = sine(1000.0, 6.0, rate, 0.5);

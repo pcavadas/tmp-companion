@@ -153,8 +153,8 @@ pub(crate) fn read_stimulus_calibrated_with_shortfall(
 
     // The gain to apply before the shared peak cap below: solved from the
     // calibration target when the stimulus's own loudness is finite (a
-    // non-finite reading — e.g. a silent stimulus — means NO scaling at all,
-    // matching the old calibrated branch's short-circuit); `1.0` (a no-op
+    // non-finite reading — e.g. a silent stimulus — means NO scaling at all);
+    // `1.0` (a no-op
     // multiply) when uncalibrated, so the cap-to-0.99 logic is the ONE shared
     // path for both branches — the stimulus passes VERBATIM into the re-amp
     // inject otherwise, which has NO limiter, so an explicit/env-var WAV (or,
@@ -220,9 +220,7 @@ pub(crate) fn capture_dry_di(
     // Force normal mode (re-amp OFF) so the front instrument input flows to
     // USB-Out 3 — VERIFIED, not best-effort. In re-amp mode both input jacks are
     // muted and USB-Out 3/4 are disabled, so an OFF that never reached the unit
-    // reads as "no instrument signal" with the real cause invisible (a real run:
-    // the monitor's pause-ack came late, this connect raced the still-seized
-    // device, and the swallowed failure left a silent take). A failed connect is
+    // reads as "no instrument signal" with the real cause invisible. A failed connect is
     // reported, NOT retried: another handle holds the seize, and a retry cannot free it.
     //
     // `connect_lean` (not `connect`): the OFF is a single setter needing no handshake
@@ -262,17 +260,13 @@ pub(crate) fn capture_dry_di(
 ///
 /// `measurable` is the load-bearing field, and it is deliberately NOT an amplitude
 /// threshold. A tuned peak floor cannot separate "no signal" from "quiet signal"
-/// across units: the dev unit (fw 1.8.45) idles at −74.6 dBFS on the dry lane and
-/// −71.5 on the processed pair, BOTH above the −80 dBFS floor this replaced — so a
-/// not-playing take there cleared the gate entirely and surfaced as the terse
-/// non-finite-LUFS error, never reaching [`silent_dry_diagnosis`]. Moving that same
-/// peak test later would have been worse than leaving it: the processed pair's own
-/// floor clears the threshold too, so the lane hint would have blamed a MUTED USB 3
-/// on a perfectly clean unit. Integrated loudness settles both with no tunable at
-/// all: BS.1770's −70 LUFS ABSOLUTE gate makes any floor below it non-finite, and
-/// both measured floors sit well under it (a floor loud enough to integrate ABOVE
-/// −70 LUFS is signal to any silence gate; the downstream active-window and
-/// spread checks own that case). That is why no constant is retuned here.
+/// across units: a unit can idle at −74.6 dBFS on the dry lane and −71.5 on the
+/// processed pair (HW), above any useful peak floor — so a peak-keyed guard passes a
+/// not-playing take, and a peak-keyed lane hint blames a MUTED USB 3 on a clean unit.
+/// Integrated loudness settles both with no tunable at all: BS.1770's −70 LUFS
+/// ABSOLUTE gate makes any floor below it non-finite, and both measured floors sit
+/// well under it (a floor loud enough to integrate ABOVE −70 LUFS is signal to any
+/// silence gate; the downstream active-window and spread checks own that case).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct DryLane {
     /// Peak absolute amplitude (linear, 0..1). Display only.
@@ -298,9 +292,8 @@ impl DryLane {
 /// — [`capture_dry_di`] only builds the lanes and propagates.
 ///
 /// Shared by BOTH callers on purpose (`calibrate_profile` and `probe --capture-wav`)
-/// so their silence guards can't drift. That does tighten `--capture-wav`: it now
-/// refuses an unmeasurable take instead of writing a WAV that later reads `-inf`
-/// LUFS. Deliberate — that WAV was never usable.
+/// so their silence guards can't drift: `--capture-wav` refuses an unmeasurable
+/// take rather than write a WAV that reads `-inf` LUFS.
 pub(crate) fn dry_take_fault(lanes: &[DryLane], strip: Option<&Usb3Strip>) -> Option<String> {
     let carried = lanes
         .get(audio::DRY_INSTRUMENT_IN_CH)
@@ -321,9 +314,9 @@ pub(crate) fn dry_take_fault(lanes: &[DryLane], strip: Option<&Usb3Strip>) -> Op
 /// A `strip` whose state makes silence CERTAIN ([`usb3_silent_cause`]) outranks all
 /// three lane guesses — it is a fact about the send, not an inference from what the
 /// other lanes carried. It is consulted only on this silent path: the snapshot can be
-/// stale, and prepending it to EVERY `capture_dry_di` failure (the shape this
-/// replaced) turned unrelated faults — a mid-capture unplug, a channel-count
-/// mismatch — into a confident "USB 3 is MUTED" misdiagnosis.
+/// stale, and prepending it to EVERY `capture_dry_di` failure would turn unrelated
+/// faults — a mid-capture unplug, a channel-count mismatch — into a confident
+/// "USB 3 is MUTED" misdiagnosis.
 pub(crate) fn silent_dry_diagnosis(lanes: &[DryLane], strip: Option<&Usb3Strip>) -> String {
     let lane = |i: usize| {
         lanes.get(i).copied().unwrap_or(DryLane {
@@ -373,7 +366,7 @@ pub(crate) fn silent_dry_diagnosis(lanes: &[DryLane], strip: Option<&Usb3Strip>)
     )
 }
 
-/// #124 pre-flight, mute half: a muted `USB 3` strip is no dry send at all — the
+/// Pre-flight, mute half: a muted `USB 3` strip is no dry send at all — the
 /// DEFINITE cause of a silent take, so it outranks [`silent_dry_diagnosis`]'s lane
 /// hint. No live mixer write is confirmed on this hardware, so the fix is the
 /// user's, on the unit.
@@ -405,14 +398,14 @@ pub(crate) fn usb3_silent_cause(strip: &Usb3Strip) -> Option<String> {
     })
 }
 
-/// #124 pre-flight, gain half: on `POST` the fader scales the dry send, so an
+/// Pre-flight, gain half: on `POST` the fader scales the dry send, so an
 /// off-unity fader yields a DI whose loudness is NOT the instrument's. Refused
-/// rather than compensated: the fader's dB law is unmeasured. `PRE` at any
-/// fader, or `POST` at unity, is clean.
+/// rather than compensated: the fader's dB law is measured at one point only
+/// (−30 dB on screen cut ~19–20 dB; HW, fw 1.8.58). `PRE` ignores the fader, so
+/// `PRE` at any fader, or `POST` at unity, is clean.
 ///
-/// THIS ONE DOES VETO A TAKE THAT LANDED, deliberately — the asymmetry with
-/// [`usb3_muted_hint`] is the whole point, and mistaking it for a bug is a
-/// well-trodden path (both a review pass and CodeRabbit filed it as one). The reason
+/// THIS ONE DOES VETO A TAKE THAT LANDED, unlike [`usb3_muted_hint`]; this
+/// asymmetry is intended. The reason
 /// is that a successful take persists TWO things, not just the scalar: `store_capture`
 /// writes the capture, and `resolve_stimulus_for_leveling` then injects that WAV
 /// **verbatim at gain 1** as the profile's stimulus. A fader-scaled capture therefore
@@ -441,9 +434,8 @@ mod usb3_strip_tests {
     use super::{usb3_fader_fault, usb3_muted_hint};
     use crate::backup_read::{usb3_strip, Usb3Strip};
 
-    // The bug's third report (fw 1.8.58, 2026-08-21): the take read
-    // `[USB-Out 1/2 -14 dBFS · 3 silent · 4 silent]` and the unit's own settings
-    // snapshot held this strip — verbatim from its `support/device-settings.json`.
+    // A real unit's settings snapshot (fw 1.8.58) whose take read
+    // `[USB-Out 1/2 -14 dBFS · 3 silent · 4 silent]`.
     const UNIT_1_8_58: &str = r#"{"mixerSaveData":{"usb3":{"faderLevel":1.0,"linkToMasterLvl":false,"muteActive":true,"preEnabled":true,"soloActive":false},"usb4":{"faderLevel":1.0,"linkToMasterLvl":false,"muteActive":true,"preEnabled":true,"soloActive":false}}}"#;
 
     #[test]
@@ -498,7 +490,7 @@ mod dry_diagnosis_tests {
     }
 
     /// A lane with nothing measurable on it — `peak` is its NOISE FLOOR, which on a
-    /// real unit is emphatically not zero (see the floor incident below).
+    /// real unit is emphatically not zero (see the idle floors below).
     fn floor(peak: f32) -> DryLane {
         DryLane {
             peak,
@@ -506,9 +498,8 @@ mod dry_diagnosis_tests {
         }
     }
 
-    // The "calibration can't see the guitar" bug class, second report (fw 1.8.58):
-    // the take read silent on USB-Out 3 and the old error only said "play louder".
-    // The diagnosis must name the lane that DID carry signal.
+    // The "calibration can't see the guitar" bug class: a take silent on USB-Out 3
+    // must name the lane that DID carry signal, not just say "play louder".
 
     #[test]
     fn signal_on_the_mic_line_lane_points_at_the_wrong_jack() {
@@ -542,9 +533,7 @@ mod dry_diagnosis_tests {
     }
 
     // ── the snapshot is a TIE-BREAKER on the silent path, nothing more ────────
-    // Review found the mute hint prepended to EVERY `capture_dry_di` failure, so a
-    // mid-capture unplug reported "USB 3 is MUTED … [could not reach the device]".
-    // The strip now reaches only this function, and only outranks the lane guesses
+    // The strip reaches only this function, and only outranks the lane guesses
     // when it makes silence CERTAIN.
 
     #[test]
@@ -596,17 +585,9 @@ mod dry_diagnosis_tests {
         assert!(usb3_silent_cause(&clean).is_none());
     }
 
-    // ── the noise-floor incident (fw 1.8.45, probe --capture-input, 2026-08-24) ──
-    // The dev unit idles at −74.6 dBFS on the dry lane and −71.5 on the processed
-    // pair. BOTH clear the −80 dBFS peak floor the guard used to key on, so a
-    // not-playing take there was classed as GOOD: it returned Ok and surfaced much
-    // later as the terse "too quiet to measure", never running this diagnosis.
-    // Guarding on integrated loudness instead fixes it with no tunable — and the
-    // second assertion is the reason the LANE test had to move too: the processed
-    // pair's floor clears the very same threshold, so a peak-keyed lane hint would
-    // have told a user on a spotless unit that USB 3 was muted.
+    // ── idle noise floors (HW) — why the guard keys on loudness: see `DryLane` ──
 
-    /// −74.6 dBFS, the dev unit's idle dry lane.
+    /// −74.6 dBFS, a unit's idle dry lane.
     const IDLE_DRY_PEAK: f32 = 1.86e-4;
     /// −71.5 dBFS, the same unit's idle processed pair.
     const IDLE_PROCESSED_PEAK: f32 = 2.66e-4;
@@ -619,7 +600,7 @@ mod dry_diagnosis_tests {
             floor(IDLE_DRY_PEAK),
             floor(IDLE_DRY_PEAK),
         ];
-        // It must be a fault at all — this is what the peak floor let through.
+        // It must be a fault at all — a peak floor lets this through.
         let d = dry_take_fault(&lanes, None).expect("an unmeasurable dry lane must fault");
         assert!(d.contains("play continuously"), "{d}");
         assert!(
@@ -687,18 +668,18 @@ pub(crate) fn is_clipped_capture(samples: &[f32]) -> bool {
     lufs::is_clipped(samples, 1)
 }
 
-/// #361 severity rule: the most of a calibration take that may sit at full scale
-/// and still be stored. The unit's dry USB 3 send is the instrument ADC pair times
-/// a fixed +5.9 dB trim, converted to 24 bit with saturation, so hard picks from a
-/// normal passive guitar pin it at ±2²³ (fw 1.8.58: firmware static analysis plus
-/// four 8 s takes on the owner's unit — 0.015–0.112% of samples clipped, longest
-/// run 23 samples ≈ 0.5 ms). The limits sit about 4× above that measured spread.
+/// Severity rule: the most of a calibration take that may sit at full scale
+/// and still be stored. The unit's dry USB 3 send is 3.96 × the averaged instrument
+/// ADC pair (+11.95 dB), converted to 24 bit with saturation, so hard picks from a
+/// normal passive guitar pin it at ±2²³ (static RE + HW, fw 1.8.58: four 8 s takes
+/// — 0.015–0.112% of samples clipped, longest run 23 samples ≈ 0.5 ms). The limits
+/// sit about 4× above that measured spread.
 pub(crate) const MILD_CLIP_MAX_FRACTION: f64 = 0.005;
 /// The longest full-scale run (seconds) a stored take may carry — see
 /// [`MILD_CLIP_MAX_FRACTION`].
 pub(crate) const MILD_CLIP_MAX_RUN_SECS: f64 = 0.002;
 
-/// How badly a dry calibration take flat-topped (#361). Mirrored in
+/// How badly a dry calibration take flat-topped. Mirrored in
 /// `src/lib/types.ts` (`ClipVerdict`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -711,7 +692,7 @@ pub(crate) enum ClipVerdict {
     Severe,
 }
 
-/// Judge a mono take against the #361 severity rule. Only a take that
+/// Judge a mono take against the severity rule. Only a take that
 /// [`is_clipped_capture`] flags can be `Mild` or `Severe`; every full-scale
 /// sample counts toward the fraction, and the longest full-scale run is checked
 /// against [`MILD_CLIP_MAX_RUN_SECS`].
@@ -828,8 +809,8 @@ mod clip_gate_tests {
     #[test]
     fn isolated_transient_apexes_are_not_clipping() {
         // A clean take: low sustained level with occasional single-sample full-scale
-        // pick-attack apexes — never a sustained flat top. The old `peak >= 0.99`
-        // gate rejected exactly this; the run-length gate must accept it.
+        // pick-attack apexes — never a sustained flat top. A `peak >= 0.99`
+        // gate would reject exactly this; the run-length gate must accept it.
         let mut s = vec![0.2f32; 48_000];
         for i in (0..s.len()).step_by(4000) {
             s[i] = 1.0;
@@ -849,7 +830,7 @@ mod clip_gate_tests {
 
 #[cfg(test)]
 mod clip_severity_tests {
-    //! #361: the severity rule pinned on takes shaped like the measured ones —
+    //! The severity rule pinned on takes shaped like the measured ones —
     //! picks whose tops are pinned at exactly ±2²³ on the 24-bit grid, in both
     //! polarities, on an 8 s 48 kHz take.
     use super::{clip_verdict, ClipVerdict};

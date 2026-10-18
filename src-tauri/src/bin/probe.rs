@@ -1,144 +1,7 @@
-//! Headless re-validation kit for the TMP Companion (run with the device
-//! plugged in and Pro Control closed — exclusive HID seize). Three commands:
-//!
-//!   probe                          connect (seize) + handshake → list My Presets
-//!   probe --fw                     print the firmware version the device reports
-//!   probe --scenes                  scene names for every preset (LoadPreset loop, ~0.5s each —
-//!                                  DESTRUCTIVE: steps the unit through every preset; benchmark only)
-//!   probe --scenes-full         full details (scenes+ftsw+graph) via LoadPreset → field-3 (DESTRUCTIVE)
-//!   probe --scenes-passive      scene names for every preset via field-8 slot reads
-//!                                  (retained validation kit — NO LoadPreset)
-//!   probe --overlay-ab <slot|all> [--contexts N]
-//!                                  EVIDENCE: SAVED per-scene overlay {bypass,outputLevel} vs
-//!                                  the LIVE prepass state, per scene-amp, plus saved-vs-saved
-//!                                  across N read contexts (before/after the prepass). slot is
-//!                                  1-based (as --slot-json); 'all' = every non-empty preset.
-//!                                  NON-DESTRUCTIVE (no writes/saves, no re-amp)
-//!   probe --device-backup       FAST full-library read: BackupRequest streams a
-//!                                  tar.lz4 of /data → extract normalDb.db3 → every
-//!                                  preset + scene count via sqlite3 (one stream, no
-//!                                  per-preset round-trips; archive RAM-only, temp DB
-//!                                  deleted — no backup persisted)
-//!   probe --slotread-x [slot…]  field-8 slot-read experiment matrix (NO LoadPreset —
-//!                                  never changes the unit's selected preset); slots are
-//!                                  1-based device slots, default first 3 non-empty
-//!   probe --songs                  list every Song on the device (name / notes / BPM)
-//!   probe --setlists               list every Setlist on the device (names)
-//!   probe --setlist-songs          list the songs each Setlist contains (slots → names)
-//!   probe --activegraph            print the current preset's live signal-chain graph
-//!   probe --audio-devices          NO-DEVICE (HID): enumerate host audio devices (cpal) —
-//!                                  names, exact ALSA PCM id (Linux), channels, rates,
-//!                                  sample formats, and which one find_tmp() would pick.
-//!                                  Linux also prints the /proc/asound Fender-VID card table.
-//!   probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <NODE_ID>] [--slot N] [--commit]
-//!                                  ADD a block to the device's CURRENT ACTIVE preset via
-//!                                  live insertNode (field 34). No --commit = DRY RUN
-//!                                  (insert + verify, then revert); --commit = save in-place
-//!   probe --lufs <wav>             measure a WAV's loudness, mono-downmix convention
-//!                                  (validate lufs.rs vs an oracle)
-//!   probe --measure-wav <wav>      NO-DEVICE: measure a WAV through the PRODUCTION output-side
-//!                                  convention (stereo for ≥2-ch, mono for 1-ch) — the Companion
-//!                                  side of `scripts/meter-parity.sh` (ffmpeg ebur128 ground truth)
-//!   probe --measure-footswitch <slot> <switch> <topology> [--lev <group>:<node>:<param>]
-//!                                  [--target <lufs>] [--dump-wav <dir>]
-//!                                  READ-ONLY footswitch twin of --measure-scene: re-measure ONE
-//!                                  switch's ENGAGED sound through the production capture path
-//!                                  (shared isolation derivation, ASSIGN valueA replay, ONE
-//!                                  engage, guaranteed re-amp OFF). --target + --dump-wav arm the
-//!                                  P5 validation row consumed by `scripts/level-validate.sh`.
-//!   probe --dump-wav <dir>         (ADD-ON flag on --measure-current/--measure-scene/
-//!                                  --measure-footswitch) also writes the captured processed pair
-//!                                  to a 32-bit-float WAV in <dir>, named from slot/scene (or the
-//!                                  validation row's label) — feeds real captures into
-//!                                  `scripts/meter-parity.sh` and `scripts/level-validate.sh`.
-//!                                  No effect on any other flag.
-//!   probe --capture-reference <slot> <topology> <out.wav>
-//!                                  OFFLINE-HARNESS: capture one full ~6.8s re-amp clip
-//!                                  to build the adaptive-tuning corpus (DEVICE OP)
-//!   probe --measure-adaptive <slot> <topology>
-//!                                  DEVICE A/B: full-capture vs adaptive-capture LUFS +
-//!                                  timings on one preset (the RE-BASELINE decision aid)
-//!   probe --doctor <slots_csv> <topology>
-//!                                  Doctor calibration sweep: capture each 0-based list
-//!                                  index's BASE sound (Doctor tail) — or one scene via a
-//!                                  `slot:scene` entry (0-based wire index) — print band
-//!                                  profiles + metrics + fired diagnoses (JSON + table).
-//!                                  READ-ONLY: loads + captures, never saves
-//!   probe --doctor-calib <slots_csv> --stim <wav> --family <guitar|bass|bass-vi> [--labels <rules.json>] --out <report.json>
-//!                                  CAPTURE-space Doctor recal: sweep each BASE sound through a
-//!                                  REAL DI stimulus, measure profile + pre-onset noise floor +
-//!                                  band coverage, and (with --labels {"rule":[slots]}) DERIVE
-//!                                  proposed *_CAPTURE thresholds → a DETERMINISTIC JSON report.
-//!                                  READ-ONLY: loads + captures, never saves
-//!   probe --doctor-inject <slot> <gains_csv|none>   R5 defect-injection A/B (live EQ-10 insert,
-//!                                   never saves; loads the slot)
-//!   probe --doctor-defects <slot> [--out <report.json>]
-//!                                  Versioned KNOWN-DEFECT fixture sweep: injects a committed
-//!                                  table of named recipes (control/muddy/lost/washed/
-//!                                  resonant_wah/resonant_peq/boxy_peq)
-//!                                  one at a time into a clean preset's live edit buffer, checks
-//!                                  each after-capture's fired verdicts against the recipe's
-//!                                  must_fire/must_not_fire, prints a HIT/MISS/VIOLATION
-//!                                  table. Never saves; loads the slot; ends re-amp OFF.
-//!   probe --doctor-fs <listIdx> <switch>
-//!                                  ONE footswitch SOUND through the production Doctor seam
-//!                                  (on-off isolation + the switch's param-func valueA writes),
-//!                                  printing the diagnosis verdicts — the FS twin of the defect
-//!                                  sweep. Read-only; ends re-amp OFF.
-//!   probe --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]
-//!                                  CAPTURE-WINDOW A/B evidence arm: per slot, captures the
-//!                                  oracle (full 6s stim + the pinned 2.5s oracle tail —
-//!                                  ORACLE_TAIL_MS, deliberately NOT the production
-//!                                  DOCTOR_TAIL_MS) vs a 3s-stim/1.5s-tail
-//!                                  and a 4s-stim/1.5s-tail variant, reports band-dB/tilt/tail
-//!                                  deltas + whether the fired-verdict set changed (the
-//!                                  re-baseline decision aid — never self-consistent).
-//!                                  LOADS the probed slots (LoadPreset via doctor_capture);
-//!                                  never saves; ends re-amp OFF
-//!   probe --stim-ab <slots_csv> <wavA> <wavB> [ref_level=0.5]
-//!                                  DEVICE A/B: measure_c per preset with two stimuli →
-//!                                  C/spread/ΔC table (playing-style sensitivity; capture
-//!                                  a real DI clip for one side via --capture-input)
-//!   probe --capture-wav <out.wav> [secs=12]
-//!                                  DEVICE: save the dry instrument (USB-Out 3) to a
-//!                                  48 kHz WAV while you play (the --stim-ab DI side)
-//!   probe --scale-wav <in.wav> <out.wav> <target_lufs>
-//!                                  NO-DEVICE: LUFS-match a WAV via the Tier-2
-//!                                  calibration transform (0.99 peak cap)
-//!   probe --measure-prefix-sweep <wav>
-//!                                  NO-DEVICE: integrated LUFS over 0.5..6s prefixes vs full
-//!   probe --measure-converge-replay <wav> <eps_lu> <stable_k> <preroll_ms>
-//!                                  NO-DEVICE: replay a clip through reamp_measure's
-//!                                  convergence state machine → exit time + Δ vs full
-//!   probe --levelpreset <slot> <target_lufs> [save] [noverify]
-//!                                  full one-shot leveling on the real device
-//!                                  (stimulus via TMP_LEVELLER_STIMULUS). Base isolation
-//!                                  is production's (every footswitch-owned block off).
-//!                                  NEVER BOOSTS: this calls the public
-//!                                  `leveller::level_preset`, which passes
-//!                                  `BoostContext::default()`, so `ctx.base_amp` is always
-//!                                  None and the amp-fader raise cannot fire. Only
-//!                                  `commands::level_preset` builds a real context. A
-//!                                  preset whose pedals-off ceiling sits below target
-//!                                  therefore CLAMPS here and levels cleanly in the app —
-//!                                  that difference is this arm's scope, not a regression.
-//!   probe --measure-current <topology> [sceneSlot] [calibrationLUFS]
-//!                                  measure current live state without changing levels
-//!   probe --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…
-//!                                  one isolated capture at an explicit presetLevel ×
-//!                                  block-param point, optionally in a scene context —
-//!                                  headroom-trade physics instrumentation. Read-only.
-//!   probe --measure-scene <slot> <sceneSlot> <topology> [calibrationLUFS]
-//!                                  [--target <lufs>] [--dump-wav <dir>]
-//!                                  load preset+scene, then measure without changing levels
-//!                                  (slot = 0-BASED list index, same convention as
-//!                                  --levelpreset — NOT the 1-based device userSlot).
-//!                                  --target + --dump-wav also append a P5 validation row
-//!                                  to TMP_E2E_VALIDATE_LOG (scripts/level-validate.sh).
-//!   probe --capture-input [secs]   GATE 1: report USB-Out per-channel levels while
-//!                                  you play (identifies the dry-instrument channel)
-//!   probe --agc-test <slot>        GATE 2: full vs half re-amp inject on a CLEAN
-//!                                  preset → is the inject AGC'd? (TMP_LEVELLER_STIMULUS)
+//! Headless re-validation kit for the TMP Companion. Device arms need the unit
+//! plugged in and Pro Control closed (exclusive HID seize); NO-DEVICE arms need
+//! neither. Run from `src-tauri/` so the bundled stimulus WAVs resolve. Bare
+//! `probe` connects and lists My Presets.
 //!
 //! Exits non-zero on failure so it can gate dev scripts. `probe --help` lists every command
 //! flag (the `ARMS` dispatch table, in dispatch order) and every modifier flag
@@ -167,7 +30,7 @@ fn flag_arg(args: &[String], name: &str) -> Option<String> {
 /// A required slot argument at `args[at]`, parsed as whatever the call takes (a 0-based
 /// `ListIndex`, a 1-based `DeviceSlot`, or a plain number). Missing or unparseable is a
 /// usage error, exit 2, before any device I/O — never a silent `0` / `u32::MAX` sentinel
-/// that a later guard has to catch (a `--replace-debug abc …` once ran on slot 0).
+/// that a later guard has to catch.
 fn slot_at<T: std::str::FromStr>(args: &[String], at: usize) -> T
 where
     T::Err: std::fmt::Display,
@@ -247,8 +110,8 @@ impl log::Log for StderrLog {
 }
 
 /// `Name=Target` tail-args parser for the scene-leveling arms. Out-of-range `from`
-/// (every optional arg omitted) is an empty list, NOT a panic — `args[from..]` sliced
-/// past the end aborted `--level-preset-scenes <idx> <target> <topology>` (no save arg).
+/// (every optional arg omitted) is an empty list, NOT a panic (`args[from..]` sliced
+/// past the end).
 fn parse_target_overrides(args: &[String], from: usize) -> Vec<(String, f64)> {
     args.get(from..)
         .unwrap_or(&[])
@@ -1026,7 +889,7 @@ const OPTION_FLAGS: &[&str] = &[
 ];
 
 /// The first `--flag` in `args` that neither selects a command nor modifies one — a typo,
-/// which used to fall through to the default connect-and-list.
+/// which must not fall through to the default connect-and-list.
 fn unknown_flag(args: &[String]) -> Option<&str> {
     args.iter().skip(1).map(String::as_str).find(|a| {
         a.starts_with("--")
@@ -1058,13 +921,13 @@ fn main() {
     }
 
     // An `--features e2e` build makes `audio::reamp_capture` substitute a FAKE capture
-    // whenever TMP_E2E_ONLINE is unset, and with no SimDevice installed (as in this
-    // binary) that fake is `sim_device::passthrough` — the stimulus handed straight back.
-    // Every LUFS this binary printed would then be fabricated but perfectly plausible.
-    // `scripts/e2e.sh` builds probe with that feature INTO THE SAME target dir, clobbering
-    // the production binary; this has silently invalidated hardware measurements twice.
-    // Fail loudly instead. `--seed-scenario` is the one arm e2e.sh needs and never measures;
-    // `--audio-devices` only enumerates the host's audio devices, so no capture can be faked.
+    // whenever TMP_E2E_ONLINE is unset, and with no SimDevice installed (as in this binary)
+    // that fake is `sim_device::passthrough` — the stimulus handed straight back. Every LUFS
+    // this binary printed would then be fabricated but perfectly plausible. `scripts/e2e.sh`
+    // builds probe with that feature INTO THE SAME target dir, clobbering the production
+    // binary. Fail loudly instead. `--seed-scenario` is the one arm e2e.sh needs and never
+    // measures; `--audio-devices` only enumerates the host's audio devices, so no capture can
+    // be faked.
     #[cfg(feature = "e2e")]
     let capture_free_only = args.len() == 2
         && args
@@ -1292,10 +1155,10 @@ fn arm_knob_sweep(args: &[String]) -> bool {
 
 fn arm_measure_pair(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--measure-pair") {
-        // --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…  — P0
-        // repro instrumentation: one isolated capture at an explicit presetLevel ×
+        // --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…  —
+        // one isolated capture at an explicit presetLevel ×
         // block-param point (headroom-trade physics), optionally in a SCENE context
-        // (loadScene before the writes, scene latches at engage). Bundled stimulus;
+        // (loadScene before the writes). Bundled stimulus;
         // read-only (working copy).
         let idx = slot_at(args, i + 1);
         let topology = args.get(i + 2).cloned().unwrap_or_default();
@@ -1359,7 +1222,7 @@ fn arm_measure_pair(args: &[String]) -> bool {
 
 fn arm_dump_currentpresetdata(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--dump-currentpresetdata") {
-        // --dump-currentpresetdata [slot]  — Tier-4: capture the live field-3
+        // --dump-currentpresetdata [slot]  — capture the live field-3
         // currentPresetDataChanged on a dense-heartbeat session, dump the full
         // decompressed JSON, and report whether scenes[] + ftsw are complete.
         // Optional `slot` (0-based list index) loads that preset first to trigger a
@@ -1406,11 +1269,11 @@ fn arm_device_backup(args: &[String]) -> bool {
 fn arm_doctor_inject(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--doctor-inject") {
         // --doctor-inject <slot> <gains_csv|none> [--block <fender_id>]
-        // (R5 defect-injection A/B; --block overrides the EQ-10 insert vehicle —
+        // (defect-injection A/B; --block overrides the EQ-10 insert vehicle —
         // e.g. a wah at its default cocked position for a resonant positive.)
         // Strict parsing: a typo'd slot or gain pair must not silently run a
         // DIFFERENT experiment (slot 0 / an empty control injection) that still
-        // reports success — the same silent-wrong-arm class the calib matrix hit.
+        // reports success.
         let usage = || -> ! {
             eprintln!("usage: probe --doctor-inject <slot> <gains_csv|none> [--block <fender_id>]");
             std::process::exit(2);
@@ -1538,7 +1401,7 @@ fn arm_roster(args: &[String]) -> bool {
 
 fn arm_discover_diff(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--discover-diff") {
-        // E5: --discover-diff FROM SLOTS   (field-8 vs backup discovery; read-only)
+        // --discover-diff FROM SLOTS   (field-8 vs backup discovery; read-only)
         let from = args.get(i + 1).cloned().unwrap_or_default();
         let slots = slots_at(args, i + 2);
         if from.is_empty() || slots.is_empty() {
@@ -1564,7 +1427,7 @@ fn arm_slot_json(args: &[String]) -> bool {
 
 fn arm_replace_held(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--replace-held") {
-        // E1: --replace-held FROM TO SLOTS [--commit]   (held-session decider)
+        // --replace-held FROM TO SLOTS [--commit]   (held-session decider)
         let from = args.get(i + 1).cloned().unwrap_or_default();
         let to = args.get(i + 2).cloned().unwrap_or_default();
         let slots = slots_at(args, i + 3);
@@ -1625,7 +1488,7 @@ fn arm_measure_footswitch(args: &[String]) -> bool {
         // READ-ONLY: the footswitch twin of --measure-scene. slot = 0-based list index.
         // --lev is the ASSIGN switch's leveled param triple (the same one
         // --level-footswitch drove); omit it for a BAKED switch, whose engaged sound IS
-        // the base value. --target + --dump-wav together arm the P5 validation row (a
+        // the base value. --target + --dump-wav together arm the external-validation row (a
         // WAV plus one TMP_E2E_VALIDATE_LOG line) — see scripts/level-validate.sh.
         let slot = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
         let switch = args.get(i + 2).and_then(|s| s.parse::<u32>().ok());
@@ -2024,7 +1887,7 @@ fn arm_insert_map(args: &[String]) -> bool {
 
 fn arm_bulk_replace_saved(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--bulk-replace-saved") {
-        // E6: --bulk-replace-saved FROM SLOTS [--commit]   (auto-picks first dual-cab)
+        // --bulk-replace-saved FROM SLOTS [--commit]   (auto-picks first dual-cab)
         let from = args.get(i + 1).cloned().unwrap_or_default();
         let slots = slots_at(args, i + 2);
         let commit = args.iter().any(|a| a == "--commit");
@@ -2139,9 +2002,8 @@ fn arm_scenes(args: &[String]) -> bool {
 
 fn arm_seed_scenario(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--seed-scenario") {
-        // Online-e2e seeding in a FRESH process (device work from a long-lived
-        // process degrades — truncated list harvests + capricious opens); sweeps
-        // stray scenario imports first. The e2e runner calls this per spec.
+        // Online-e2e seeding in its own process; sweeps stray scenario imports
+        // first. The e2e runner calls this per spec.
         eprintln!("[probe] seeding the e2e scenario presets (sweep + import)…");
         return report(tmp_companion_lib::probe_api::probe_seed_scenario());
     }
@@ -2239,9 +2101,9 @@ fn arm_scene_write_cell(args: &[String]) -> bool {
             .and_then(|j| args.get(j + 1))
             .and_then(|s| s.parse().ok())
             .unwrap_or(150);
-        // The device silently DROPS a scene write past ~700-750 ms after `loadScene`
-        // (leveller.rs `SETTLE_AFTER_SCENE_EDIT_MS`), with no `presetError` and nothing
-        // persisted. A `--recall-settle` at or beyond that cliff can only produce a
+        // A write sent after 750 ms of host OUT silence reaches a lapsed session and is
+        // DROPPED (see `leveller::SETTLE_AFTER_SCENE_EDIT_MS`), with no `presetError` and
+        // nothing persisted. A `--recall-settle` at or beyond that cliff can only produce a
         // misleading "wrote but nothing changed" cell, so refuse it instead of running
         // the matrix arm and reporting a result the cliff, not the hypothesis, explains.
         const RECALL_SETTLE_MAX_MS: u64 = 700;
@@ -2397,8 +2259,8 @@ fn arm_listen(args: &[String]) -> bool {
         // --listen [seconds] [heartbeatMs] [pollSecs]  — push-listener discovery:
         // park on the post-handshake connection and print every inbound push (drive
         // the unit by hand meanwhile). heartbeatMs 0 = no heartbeat; 250 ≈ Pro
-        // Control's 4/sec keepalive that holds the live-controller session (our old
-        // 10 000 ms let it lapse → connectionError). pollSecs > 0 also re-requests
+        // Control's 4/sec keepalive, well under the 750 ms host-silence lapse
+        // (→ connectionError). pollSecs > 0 also re-requests
         // current-preset state each tick. Default: 120s, hb 250ms, poll OFF.
         let seconds: u64 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(120);
         let hb: u64 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(250);
@@ -2533,7 +2395,7 @@ fn arm_reamp_off(args: &[String]) -> bool {
 
 fn arm_set_param(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--set-param") {
-        // C2 step: set ONE block parameter on the working copy. One step per
+        // Set ONE block parameter on the working copy. One step per
         // invocation, so each verifying read rides its own fresh handshake.
         let slot = match args.get(i + 1).and_then(|v| v.parse().ok()) {
             Some(v) => v,
@@ -2618,8 +2480,8 @@ fn arm_switch_template(args: &[String]) -> bool {
 
 fn arm_set_master(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--set-master") {
-        // WRITE to a GLOBAL setting. Settles A1 (is the master control in the USB
-        // 1/2 path?) without a hand on the physical knob. The caller MUST restore
+        // WRITE to a GLOBAL setting (the master level), without a hand on the
+        // physical knob. The caller MUST restore
         // the original value afterwards — read it from a backup's
         // settingsBackup.mixerSaveData.masterVolume BEFORE changing anything.
         let level: f32 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
@@ -2714,7 +2576,7 @@ fn arm_reamp_wav(args: &[String]) -> bool {
 fn arm_tail_decay(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--tail-decay") {
         // --tail-decay <slot> <stimulus.wav> <tail_ms> <out.wav> [scene]
-        // One-off diagnostic (gap 6, spillover): capture a short burst + a long
+        // One-off diagnostic (spillover): capture a short burst + a long
         // silent tail so the raw WAV shows a reverb/delay tail's own decay curve.
         // scene (optional): 0-based scenes[] wire index to recall after the load
         // (same convention as --measure-scene) — omit to test the base preset state.
@@ -2764,9 +2626,9 @@ fn arm_tail_decay(args: &[String]) -> bool {
 fn arm_move_preset(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--move-preset") {
         // --move-preset <from> <to>   (0-based list indices; DEVICE WRITE — reorders)
-        // Reordering renumbers presets; whether Song/Setlist bindings follow is the
-        // open question. SCRATCH ZONE ONLY (400/401/402) — a reorder outside it
-        // shifts real presets.
+        // A reorder updates only the preset's slot; Song rows join presets by row id,
+        // so Song bindings follow it (static RE, fw 1.8.58). `SCRATCH_SLOTS` only — a
+        // reorder outside it shifts real presets.
         let from = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
         let to = args.get(i + 2).and_then(|s| s.parse::<ListIndex>().ok());
         let (Some(from), Some(to)) = (from, to) else {
@@ -2856,7 +2718,7 @@ fn arm_measure_scene(args: &[String]) -> bool {
         // Optional ADD-ON flag, unrelated to the positional args above: also write
         // the captured processed pair to a WAV in <dir> for `scripts/meter-parity.sh`.
         let dump_dir = flag_arg(args, "--dump-wav");
-        // `--target <lufs>` + `--dump-wav <dir>` also append a P5 validation row to
+        // `--target <lufs>` + `--dump-wav <dir>` also append an external-validation row to
         // TMP_E2E_VALIDATE_LOG for `scripts/level-validate.sh` (see probe_api/level.rs).
         let target = flag_arg(args, "--target").and_then(|s| s.parse::<f64>().ok());
         eprintln!(
@@ -2880,8 +2742,8 @@ fn arm_measure_scene(args: &[String]) -> bool {
 fn arm_held_reengage(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--held-reengage") {
         // --held-reengage <slot> <topology_id> <sceneA,sceneB,...> [calibrationLUFS]
-        // HW probe: can re-amp disengage→re-engage on ONE held connection? Compares
-        // held-session per-scene loudness vs the proven fresh-connection control.
+        // HW probe: disengage→re-engage on ONE held connection, per-scene loudness vs
+        // the fresh-connection control (fw 1.8.58: safe, reads 0.06–0.09 LU low; HW).
         let slot = args.get(i + 1).and_then(|s| s.parse::<ListIndex>().ok());
         let topology = args.get(i + 2).cloned().unwrap_or_default();
         let scenes: Vec<u32> = args
@@ -2916,8 +2778,8 @@ fn arm_held_reengage(args: &[String]) -> bool {
 
 fn arm_export(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--export") {
-        // --export <listEnum> <slot>  — AC1 spike. Always no-batch (the
-        // device gives no reply to a batched slot-read — the resolved AC1 finding).
+        // --export <listEnum> <slot>. Always no-batch (a batch 1/2 request queues
+        // until a batch 3 arrives, so alone it gets no reply).
         let list_enum: u32 = args
             .get(i + 1)
             .and_then(|s| s.parse().ok())
@@ -2977,7 +2839,7 @@ fn arm_load_probe(args: &[String]) -> bool {
 
 fn arm_import(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--import") {
-        // --import <file.preset>  — AC3: re-import a preset over USB (additive).
+        // --import <file.preset>  — re-import a preset over USB (additive).
         let path = match args.get(i + 1) {
             Some(p) => p.clone(),
             None => {
@@ -3031,7 +2893,7 @@ fn arm_redistribute_persist_check(args: &[String]) -> bool {
         .position(|a| a == "--redistribute-persist-check")
     {
         // --redistribute-persist-check <scratchSlot> <expectedName>
-        // PR5 go/no-go: do presetLevel + base amp outputLevel + scene overlay all
+        // Do presetLevel + base amp outputLevel + scene overlay all
         // persist through ONE save? Point at a prepared scratch preset with an amp +
         // ≥1 scene (e.g. E2E Rig at 400 after --seed-scenario). 0-based list index;
         // name-guarded; restores the slot afterward.
@@ -3073,7 +2935,7 @@ fn arm_clear(args: &[String]) -> bool {
 
 fn arm_map_slots(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--map-slots") {
-        // Resolve the list-index ↔ device-userSlot offset (AC7 prerequisite).
+        // Resolve the list-index ↔ device-userSlot offset.
         eprintln!("[probe] resolving list↔device slot mapping…");
         return report(tmp_companion_lib::probe_api::probe_map_slots());
     }
@@ -3234,8 +3096,7 @@ fn arm_song_bpm(args: &[String]) -> bool {
 fn arm_assign_song_preset(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--assign-song-preset") {
         // --assign-song-preset <song-name> <row> <list-index>   (DEVICE WRITE)
-        // Bind a scratch preset to a Song row, then read the rows back. Feeds the
-        // "does reordering a preset break slot-keyed Song bindings?" experiment.
+        // Bind a scratch preset to a Song row, then read the rows back.
         let name = args.get(i + 1).cloned().unwrap_or_default();
         let row: u32 = args
             .get(i + 2)
@@ -3380,7 +3241,7 @@ fn arm_replace_inplace(args: &[String]) -> bool {
 
 fn arm_restore(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--restore") {
-        // --restore <snapshot.json>  — AC5: restore a backup in place (orig slot + Song link).
+        // --restore <snapshot.json>  — restore a backup in place (orig slot + Song link).
         let path = args.get(i + 1).cloned().unwrap_or_default();
         if path.is_empty() {
             eprintln!("usage: probe --restore <snapshot.json>");
@@ -4083,7 +3944,7 @@ fn arm_jointk_scenes(args: &[String]) -> bool {
 
 fn arm_redistribute(args: &[String]) -> bool {
     if let Some(i) = args.iter().position(|a| a == "--redistribute") {
-        // --redistribute <listIndex> <target> <topology> <worstDeficitDb>  (PR5; SAVES — scratch)
+        // --redistribute <listIndex> <target> <topology> <worstDeficitDb>  (SAVES — scratch)
         let list_index = slot_at(args, i + 1);
         let target: f64 = args
             .get(i + 2)
@@ -4273,7 +4134,7 @@ mod tests {
         assert_eq!(unknown_flag(&args), None);
     }
 
-    // The regression that aborted the probe arm: `from` past the end of `args` must be
+    // Regression gate: `from` past the end of `args` must be
     // an empty override list, not a slice panic.
     #[test]
     fn overrides_from_past_end_is_empty() {

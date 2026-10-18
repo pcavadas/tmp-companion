@@ -103,24 +103,18 @@ fn channels_in(body: &[u8]) -> Vec<ChannelState> {
 /// HW PROBE (WRITE): set the global master level — `MixerMessage.SetMasterLevel`,
 /// TMS 5 field 16.
 ///
-/// Exists to settle A1 — is the master volume control in the USB 1/2 path? —
-/// WITHOUT a hand on the physical knob. Set the level over USB, re-capture USB
-/// 1/2, compare against a null control.
+/// Sets the master level WITHOUT a hand on the physical knob: set it over USB,
+/// re-capture USB 1/2, compare against a null control.
 ///
-/// **This does not confirm its own write.** TMS-5 reads went unanswered on fw 1.8.45
-/// (`probe_mixer_state` got silence from all five requests); on fw 1.8.58 they are served
-/// on a kept-alive session, but this probe still waits for nothing. Verify OUT OF BAND: take a
-/// `--device-backup` and read `settingsBackup.mixerSaveData.masterVolume`.
-/// Treating "no error" as "it landed" is exactly the false positive this
-/// experiment exists to avoid.
+/// **This does not confirm its own write**: it waits for no reply. Verify OUT OF
+/// BAND: take a `--device-backup` and read `settingsBackup.mixerSaveData.masterVolume`.
+/// Treating "no error" as "it landed" is exactly the false positive to avoid.
 ///
 /// `masterVolume` is a GLOBAL setting: the caller MUST restore the original value,
 /// or the unit is left quieter than its owner set it.
 ///
-/// Calls [`Session::begin_live_edit`] before writing, closing the confound a past
-/// attempt on an unwarmed (merely-`drain_until_quiet`d) line left open. Retested
-/// 2026-07-26 on a warmed session: still no observable change (see open-questions.md
-/// A1) — narrows but does not close whether TMS 5 is write-dead.
+/// Calls [`Session::begin_live_edit`] before writing. Whether a USB `SetMasterLevel`
+/// lands is unconfirmed (HW: no observable change on a warmed session).
 pub fn probe_set_master_level(level: f32) -> Result<String, String> {
     // Guard a fat-fingered magnitude (`5` for `0.5`). The field is a 0..1
     // normalised float; >0.75 is REFUSED rather than clamped, because silently
@@ -134,8 +128,7 @@ pub fn probe_set_master_level(level: f32) -> Result<String, String> {
     }
     let mut s = Session::connect()?;
     s.drain_until_quiet(300, 20)?;
-    // Warm the live-controller heartbeat before writing — closes the confound
-    // documented above (this write used to ride a merely-drained line).
+    // Warm the live-controller heartbeat before writing.
     s.begin_live_edit()?;
     // Dump whatever comes back purely for the record — a reply is NOT expected and
     // its absence is NOT a failure, so the result is never derived from it.
@@ -153,22 +146,19 @@ pub fn probe_set_master_level(level: f32) -> Result<String, String> {
 /// distinguishable from an error reply from a real answer) and then the decoded
 /// rows if any arrived, both from one device visit.
 ///
-/// A reply with no TMS-5 stream is a genuine negative for the fw 1.7.75 schema
-/// this was built from; it is NOT proof the mixer is unreadable on the unit's
-/// firmware. Record the firmware version alongside the result.
+/// Mixer reads are answered to the requesting host on a live, heartbeated session
+/// (static RE + HW, fw 1.8.58); a silent read means the session had lapsed.
 pub fn probe_mixer_state() -> Result<String, String> {
     let mut s = Session::connect()?;
     // MANDATORY: fire reads only on a QUIET line. The device DROPS a request that
     // rides behind the handshake's ~480-frame preset-list/ProductProfile flood
     // (same rule as `read_slot_preset_json`), so an undrained probe produces a
-    // false negative — it did on the first run of this experiment.
+    // false negative.
     s.drain_until_quiet(300, 20)?;
 
     let mut out = String::new();
-    // Sweep every read request in the schema. `reAmpModeRequest` (4) is itself a
-    // TMS-5 request like the other four, NOT an independent control on a
-    // different, known-working branch — a silent answer here is one more
-    // untested instance of this branch, not proof the branch is unserved.
+    // Sweep every read request in the schema; `reAmpModeRequest` (4) returns the
+    // real re-amp state (field 9).
     let requests: [(u32, &str); 5] = [
         (1, "allChannelsDisplayDataRequest"),
         (2, "allChannelsDisplayStateRequest"),

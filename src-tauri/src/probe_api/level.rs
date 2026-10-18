@@ -88,19 +88,15 @@ pub fn probe_reamp_toggle_test(idle_ms: u64, heartbeat: bool) -> Result<String, 
     ))
 }
 
-/// DIAGNOSTIC (re-test of the "re-amp engages reliably only ONCE per connection"
-/// gotcha): run `cycles` × (engage → capture → disengage) on ONE session, judging
+/// DIAGNOSTIC: run `cycles` × (engage → capture → disengage) on ONE session, judging
 /// each engage by the only trustworthy signal — a finite captured loudness (the
-/// `ReAmpModeChanged` echo is documented flaky). Each cycle's engage+capture is
-/// PRODUCTION-IDENTICAL (`engage_measure_disengage`'s shape: quiet engage,
-/// `SETTLE_AFTER_REAMP_MS`, fully idle capture — a v1 of this arm that
-/// heartbeat-paced the capture and pre-toggled a heartbeat read FLOOR from cycle 1
-/// while the production path measured perfectly back-to-back, so extra HID traffic
-/// around the engage is itself inject-hostile). Only the post-capture OFF gets a
-/// heartbeat burst first (the post-idle command-drop rescue), and inter-cycle gaps
-/// stay under the idle cliff. NB an all-cycles-ENGAGED result transfers to
-/// production ONLY for this exact quiet shape; a later-cycle floor confirms the
-/// once-per-connection rule under the best-known-safe pacing.
+/// `ReAmpModeChanged` echo is not proof). Each cycle's engage+capture is
+/// PRODUCTION-IDENTICAL (`engage_measure_disengage`'s shape: quiet engage, settle,
+/// fully idle capture — extra HID traffic
+/// around the engage is inject-hostile, HW). Only the post-capture OFF gets a
+/// heartbeat burst first. On fw 1.8.58 a held re-engage is safe but reads
+/// 0.06–0.09 LU low (HW); an all-cycles-ENGAGED result transfers to production ONLY
+/// for this exact quiet shape.
 pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String, String> {
     let stim_path = probe_stimulus_path(topology_id)?;
     let stim = read_stimulus_48k(&stim_path)?;
@@ -110,11 +106,7 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
 
     let run = || -> Result<String, String> {
         // Fresh preset load in its OWN connection before the multi-engage session —
-        // the arm-per-load hypothesis: every working production engage follows a
-        // fresh `load_preset` on a prior connection (v4 without this floored from
-        // cycle 1 even with the production setter+engage pair, while the setter
-        // observably landed — the floor scaled with it). If the load re-arms
-        // exactly one engage, cycle 1 ENGAGES and later cycles floor.
+        // the shape every production engage follows.
         {
             // The verdict below compares loudness ACROSS cycles, so it only means
             // anything on the known scenario preset — a unit without the seeded
@@ -131,12 +123,9 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
         let mut engaged_cycles = 0u32;
         for cycle in 1..=cycles {
             // Each cycle re-plays `arm_measurement`'s EXACT pre-engage triple —
-            // recall base → set level → settle → engage. Nothing weaker armed the
-            // engage on this arm's session shape: a bare engage (v2), heartbeat+
-            // engage (v1), recall+engage (v3), and setter+engage (v4/v5, where the
-            // floor SCALED with the setter, proving the write landed) ALL read
-            // floor from cycle 1 while `--levelpreset` measured perfectly in the
-            // same minutes. The 0.5 ref is a working-copy write, never saved.
+            // recall base → set level → settle → engage (HW: a weaker pre-engage
+            // shape on this session read floor). The 0.5 ref is a working-copy
+            // write, never saved.
             s.load_scene(session::BASE_SCENE_SLOT)?;
             std::thread::sleep(std::time::Duration::from_millis(300));
             s.set_preset_level(0.5)?;
@@ -165,9 +154,9 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
             };
             report.push_str(&format!("cycle {cycle}/{cycles}: {verdict}\n"));
 
-            // The OFF follows a capture-length idle, which drops bare commands —
-            // burst heartbeats first (the documented post-idle rescue), then
-            // disengage and give the DSP a beat before the next cycle's engage.
+            // The OFF follows a capture-length idle, past the 750 ms lapse — burst
+            // heartbeats first, then disengage and give the DSP a beat before the
+            // next cycle's engage.
             for _ in 0..3 {
                 let _ = s.heartbeat();
                 std::thread::sleep(std::time::Duration::from_millis(200));
@@ -206,11 +195,11 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
 /// stationary output floor, so the headline is stamped FLOOR/SILENT when the capture
 /// fails `probe_reamp_state`'s engaged criterion instead of being retried.
 ///
-/// `target_lufs` + `dump_dir` together arm the P5 external-validation row: the capture
+/// `target_lufs` + `dump_dir` together arm the external-validation row: the capture
 /// is written to a WAV and one expectation line is appended to `TMP_E2E_VALIDATE_LOG`
 /// (`crate::validate_log`) so `scripts/level-validate.sh` can judge the SAME audio with
-/// ffmpeg's `ebur128`. Without `target_lufs` the `--dump-wav` add-on behaves exactly as
-/// before (a bare WAV, no row) — there is nothing to validate a capture against.
+/// ffmpeg's `ebur128`. Without `target_lufs` the `--dump-wav` add-on writes a bare WAV,
+/// no row — there is nothing to validate a capture against.
 pub fn probe_measure_current_lufs(
     topology_id: &str,
     slot: Option<ListIndex>,
@@ -225,15 +214,16 @@ pub fn probe_measure_current_lufs(
     // (2-ch BS.1770 over the processed pair, matching PRODUCTION's own convention —
     // `leveller::measure_processed`) PLUS every channel's own mono loudness, so the
     // argmax (broadband RMS across ALL channels incl. the ch2 dry DI tap) stays
-    // observable per measurement even though it no longer drives the headline.
+    // observable per measurement though it does not drive the headline.
     // No floor-guard retry (diagnostic seam).
     let capture = leveller::capture_asis_full(slot, scene_slot, &stim);
-    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the device DROPS
-    // an in-session OFF sent on a session that has idled >~1 s, and this ~7 s capture
-    // always has). Fired HERE, immediately after the one engage, rather than at the tail:
-    // every path below this line — the `?`, the `--target`-without-slot refusal, a
-    // `measure_processed` failure — is an early return that would otherwise leave the unit
-    // input-muted. Same shape as `probe --levelpreset` below: bind, back off, then `?`.
+    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: an in-session OFF
+    // to a session lapsed by 750 ms of host silence is discarded, and this ~7 s capture
+    // always idles that long). Fired HERE, immediately after the one engage, rather than
+    // at the tail: every path below this line — the `?`, the `--target`-without-slot
+    // refusal, a `measure_processed` failure — is an early return that would otherwise
+    // leave the unit input-muted. Same shape as `probe --levelpreset` below: bind, back
+    // off, then `?`.
     leveller::reamp_off_guaranteed("probe --measure-current");
     let cap = capture?;
     let (win, _) = cap.loudest_channel();
@@ -260,10 +250,9 @@ pub fn probe_measure_current_lufs(
     // `--dump-wav <dir>` ADD-ON (pure add-on: `dump_dir` is `None` on every call
     // site that doesn't pass `--dump-wav`, so behaviour is byte-identical then).
     // Both this and `measure_processed` below only BORROW `cap`. Feeds
-    // `scripts/level-validate.sh` / `scripts/meter-parity.sh` real device captures
-    // once the device is back online; this write path itself is untested on real
-    // hardware (device unavailable at implementation time).
-    // The P5 validation row (below) does its OWN dump into the row's directory, so the
+    // `scripts/level-validate.sh` / `scripts/meter-parity.sh` real device captures;
+    // this write path itself is untested on real hardware.
+    // The validation row (below) does its OWN dump into the row's directory, so the
     // two never both write: `--target` upgrades `--dump-wav` from a bare file to a file
     // plus an expectation an external meter can judge it against.
     let validate =
@@ -332,12 +321,10 @@ pub fn probe_measure_current_lufs(
     ))
 }
 
-/// HW probe: does re-amp survive a DISENGAGE → settle → RE-ENGAGE on ONE held HID
-/// connection? The whole leveling speed story hinges on this. If a single held
-/// session can do N `[load_scene → engage → capture → disengage]` cycles and read
-/// the SAME loudness a fresh connection reads, we can keep Pro Control's one
-/// persistent session (instant scene changes). If not, the proven once-engage-per-
-/// connection rule stands. Non-destructive: loads + scene recalls + captures, NO
+/// HW probe: N `[load_scene → engage → capture → disengage]` cycles on ONE held HID
+/// connection vs a fresh connection per scene. On fw 1.8.58 a held re-engage is safe
+/// but reads 0.06–0.09 LU low (HW), so leveling keeps one engage per fresh
+/// connection. Non-destructive: loads + scene recalls + captures, NO
 /// parameter writes. Measures each scene twice — once on a HELD session, once via
 /// the proven FRESH-connection control — and compares.
 pub fn probe_held_reengage(
@@ -362,7 +349,7 @@ pub fn probe_held_reengage(
         }
     };
 
-    // Load the preset in its OWN throwaway connection (the load+engage→silence rule).
+    // Load the preset in its OWN throwaway connection (kept conservatively).
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
@@ -437,7 +424,7 @@ pub fn probe_held_reengage(
     Ok(out)
 }
 
-/// M3 one-shot leveling (the real path): fresh-connect, load `slot`, measure at
+/// One-shot leveling (the real path): fresh-connect, load `slot`, measure at
 /// a reference level, solve the linear model for the exact `presetLevel` that
 /// hits `target_lufs`, set it, and (if `save`) persist. Optionally re-measures
 /// on a second fresh connection to confirm. Re-amp is always restored OFF.
@@ -445,9 +432,7 @@ pub fn probe_held_reengage(
 /// Base isolation matches production's Base leveling arm — every footswitch-owned on-off
 /// block forced OFF via the shared `base_isolation_or_refuse`, so an unreadable/truncated
 /// `ftsw` REFUSES rather than measuring a guess. Measuring base as SAVED instead diverges by
-/// whatever the preset's engaged pedals add (2026-08-31 bisect: C=-11.95 vs production's
-/// C≈-28.2 on "Plumes+BD2+OCD"), which is what made this arm useless for cross-checking a
-/// base-clamp regression against production.
+/// whatever the preset's engaged pedals add, so it cannot cross-check production.
 pub fn probe_level_preset(
     slot: ListIndex,
     target_lufs: f64,
@@ -467,16 +452,15 @@ pub fn probe_level_preset(
         verify,
         ..Default::default()
     };
-    // `read_base_isolation` owns the read, the refusal and the HID gap the leveller's first
-    // connect needs.
+    // `read_base_isolation` owns the read and the refusal.
     let (_, _, force, restore_scene) = crate::commands::doctor::read_base_isolation(slot)?;
     opts.restore_scene = restore_scene;
     // probe stays skip-free: NO `previous_level` idempotency skip (production treats a
     // matching saved level as a no-op and reloads without writing) — don't cargo-cult that
     // skip in here. This is a raw benchmark: always measure+apply+save.
     let result = leveller::level_preset(slot, &stim, target_lufs, opts, &force, None, || false);
-    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the
-    // device drops an in-session OFF sent after ~1 s of idle — every capture).
+    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: an
+    // in-session OFF after a capture-length idle reaches a lapsed session).
     leveller::reamp_off_guaranteed("probe --levelpreset");
     let r = result?;
 
@@ -527,7 +511,7 @@ pub fn probe_live_lufs(
     r
 }
 
-/// Run the 1.8.45-safe block discovery (`load_then_discover_blocks`) and filter it to
+/// Run the block discovery (`load_then_discover_blocks`) and filter it to
 /// amp `outputLevel` leveling candidates.
 pub(crate) fn load_and_filter_amp_candidates(
     list_index: ListIndex,
@@ -607,11 +591,9 @@ pub fn probe_level_block(
     Ok(out)
 }
 
-/// N1 diagnostic (read-only): re-amp `slot` at `presetLevel = 0.5` and report
-/// PER-CHANNEL integrated LUFS + RMS for every captured USB-Out channel. Tells us
-/// whether a mono preset is MIRRORED onto both USB-Out 1&2 (ch0 ≈ ch1 → the
-/// single-channel measure's +3 offset is uniform and cancels across presets) or
-/// sits on ONE channel (ch1 ≪ ch0 → cross-preset variance for a stereo rig).
+/// Diagnostic (read-only): re-amp `slot` at `presetLevel = 0.5` and report
+/// PER-CHANNEL integrated LUFS + RMS for every captured USB-Out channel (a mono
+/// preset is MIRRORED onto USB-Out 1&2: ch0 ≈ ch1, HW).
 /// Loads + re-amps only; never writes/saves/clears. Stimulus = humbucker sample
 /// (override with `TMP_LEVELLER_STIMULUS`).
 pub fn probe_channels(slot: ListIndex) -> Result<String, String> {
@@ -647,7 +629,7 @@ pub fn probe_channels(slot: ListIndex) -> Result<String, String> {
     Ok(out)
 }
 
-/// Phase-4 GATE 1 spike: capture the device's USB-Out for `secs` seconds in
+/// GATE 1: capture the device's USB-Out for `secs` seconds in
 /// normal mode (no playback) while the user plays their real guitar, and report
 /// each input channel's peak/RMS in dBFS. Validates that the dry instrument
 /// (USB-Out 3 → input channel index 2) is capturable for Tier-2 calibration.
@@ -706,7 +688,7 @@ pub fn probe_capture_input(secs: f32) -> Result<String, String> {
     Ok(out)
 }
 
-/// Phase-4 GATE 2 spike: map the re-amp inject's input→output transfer by sweeping
+/// GATE 2: map the re-amp inject's input→output transfer by sweeping
 /// the injected stimulus amplitude (same `presetLevel`) and measuring captured
 /// loudness at each. Each −6 dB amplitude step should drop output ~6 LU IF the
 /// path is linear there. A clean preset that stays linear at low drive but

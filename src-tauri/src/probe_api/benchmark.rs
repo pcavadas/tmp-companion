@@ -1,5 +1,5 @@
 //! `probe --doctor-loo` and `probe --benchmark` — the file I/O around the pure
-//! held-out benchmarks in `benchmark.rs` (#200). OFFLINE: neither arm touches
+//! held-out benchmarks in `benchmark.rs`. OFFLINE: neither arm touches
 //! the device; both read JSON a sweep or a labeling pass already produced and
 //! write a deterministic JSON result (the operator names `--out`).
 //!
@@ -70,7 +70,7 @@ fn read_sweep(report_path: &str) -> Result<Sweep, String> {
 }
 
 /// Re-derive the Doctor's shipped constants from a factory sweep taken through
-/// a new reference stimulus (#235): prints `GUITAR_STIM_REF`, the target,
+/// a new reference stimulus: prints `GUITAR_STIM_REF`, the target,
 /// `FACTORY_CONTRAST_DB`, the cut-through advisory and the gates. Each gate is
 /// rank-transferred from the shipped one through `baseline_path`, a sweep of
 /// the same presets through the stimulus the shipped constants came from

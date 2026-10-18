@@ -1,4 +1,4 @@
-//! External-validation log (P5): the ONE JSON-lines contract between this app's
+//! External-validation log: the ONE JSON-lines contract between this app's
 //! measurement seams and `scripts/level-validate.sh`, whose ffmpeg `ebur128` read is
 //! the only meter in the loop this repo did not write.
 //!
@@ -20,11 +20,10 @@
 //! `--dump-wav` add-on pattern in `probe_api/level.rs`.
 //!
 //! THE ROW CARRIES IDENTITY, NEVER A POSITION. `scene_slot`/`switch` are stamped by
-//! the caller that measured that exact sound. An earlier design zipped a scene batch's
-//! results positionally against its request; the batched runner FILTERS failed scenes
-//! out of the returned vec (`commands/level_scenes.rs`), so any mid-batch failure
-//! either mislabels every later row or (with a length guard) drops the whole batch
-//! silently — both of which read as a green run with nothing checked.
+//! the caller that measured that exact sound. The batched runner FILTERS failed scenes
+//! out of the returned vec (`commands/level_scenes.rs`), so zipping results positionally
+//! against the request would mislabel every later row (or, with a length guard, drop the
+//! whole batch silently) — a green run with nothing checked.
 //!
 //! FAILURE IS EMITTED, NEVER SWALLOWED. A row whose WAV dump failed still lands, with
 //! `wav: null` + `wav_error`, so the shell FAILs it by name. Emitting nothing would
@@ -227,8 +226,7 @@ const FLOOR_SUSPECT_FLOOR_LUFS: f64 = -55.0;
 /// keeps the shell from ever having to grep a probe log.
 ///
 /// FOUR verdicts, not three. `is_engaged` reads the MOMENTARY spread (a plucked stimulus
-/// through any chain swings ≳ 0.7 LU at 400 ms; a stationary floor ≈ 0.1), which no longer
-/// stamps FLOOR on every healthy row the way the old short-term `spread > 0.5` arm did. The
+/// through any chain swings ≳ 0.7 LU at 400 ms; a stationary floor ≈ 0.1). The
 /// flat cases stay SPLIT by absolute level so the consumer can grade a loud one with
 /// ffmpeg rather than sink a long online run on one row:
 ///
@@ -459,8 +457,8 @@ mod tests {
         // Finite but flat and DOWN AT THE FLOOR: the failed-inject signature, hard FAIL.
         assert_eq!(engaged_verdict(&flat(-70.0)), "floor");
         assert_eq!(engaged_verdict(&loud(-17.0, -12.0)), "engaged");
-        // BUG→GATE (#175): a healthy capture of the stationary stimulus has a short-term
-        // spread under 0.5 LU; it is still ENGAGED (the old arm stamped it floor_suspect).
+        // BUG→GATE: a healthy capture can have a short-term spread under 0.5 LU; it is
+        // still ENGAGED, never floor_suspect.
         assert_eq!(engaged_verdict(&loud(-17.0, -16.8)), "engaged");
         // Flat but LOUD: a floor read at leveling loudness (the floor scales with
         // presetLevel), which the consumer WARNs on.
@@ -579,7 +577,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ITEM 7 — THE DOCTOR PREMISE-CHECK SEAM. A Doctor sound is captured so an independent
+    // THE DOCTOR PREMISE-CHECK SEAM. A Doctor sound is captured so an independent
     // tool can re-judge the audio a diagnosis rests on. Three things must hold:
     //
     // 1. the row carries IDENTITY (slot + scene/switch), never a position;
