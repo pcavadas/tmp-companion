@@ -612,20 +612,9 @@ if [ "$want_rust" -eq 1 ]; then
   ensure_dist
   run_gate "clippy (e2e feature)" sh -c 'cd src-tauri && cargo clippy --all-targets --features e2e -- -D warnings'
   run_gate "rustfmt --check"      sh -c 'cd src-tauri && cargo fmt --check'
-  # Rustdoc intra-doc links, REPORT-ONLY while the tree still has broken ones: the crate's
-  # `[lints.rust] warnings = "deny"` would fail the doc build, so `--cap-lints warn` holds
-  # it to warnings and this step only prints the count. Make it a run_gate on
-  # `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc …` once the count is 0.
-  printf '\ngates: ── rustdoc links (report-only) ──\n'
-  doc_rc=0
-  doc_out="$(cd src-tauri && RUSTDOCFLAGS='--cap-lints warn' cargo doc --no-deps \
-    --document-private-items --lib 2>&1)" || doc_rc=$?
-  if [ "$doc_rc" -ne 0 ]; then
-    printf 'gates: rustdoc: cargo doc exited %s (report-only)\n' "$doc_rc"
-  else
-    doc_warnings="$(printf '%s\n' "$doc_out" | sed -n 's/.*generated \([0-9][0-9]*\) warning.*/\1/p')"
-    printf 'gates: rustdoc: %s warning(s)\n' "${doc_warnings:-0}"
-  fi
+  # Rustdoc over private items too (almost everything is pub(crate)): a broken intra-doc
+  # link is a stale pointer in a comment, so it fails the gate like any other warning.
+  run_gate "rustdoc links"        sh -c 'cd src-tauri && RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --lib'
   run_gate "rust tests"           sh -c 'cd src-tauri && cargo test --lib'
   # ALSO under `--features e2e`: some guards only COMPILE there. `settle_ms`'s offline-collapse
   # branch is the one that matters — regress its predicate to `!e2e_online()` and the settles

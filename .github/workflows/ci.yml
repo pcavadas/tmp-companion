@@ -97,6 +97,12 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --check
 
+      - name: Rustdoc links (private items included)
+        working-directory: src-tauri
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --document-private-items --lib
+
   e2e:
     # The offline suite needs no device — it drives the real UI in headless Chromium
     # through the HTTP bridge into a windowless Rust backend against SimDevice. That
