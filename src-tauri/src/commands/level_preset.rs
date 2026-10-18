@@ -476,14 +476,14 @@ fn level_base_arm(
 ) -> Result<PresetArm, LevelError> {
     // Isolate the Base measurement: force EVERY footswitch on/off block OFF so we
     // measure the clean base sound, not "base + whatever pedals are saved on".
-    // ponytail: costs one ~1 s preset read per Base run (even presets with no FS
+    // Costs one ~1 s preset read per Base run (even presets with no FS
     // blocks) — and, on a preset whose field-8 tail is CUT, a whole device backup
     // (`slot_read`'s complete-or-fail re-read, 60 s cap) before the run starts.
     // Optimization path: thread an all-on/off force-list hint from the frontend
     // backup scan onto LevelJob (NOT footswitchesPerIndex — that's filtered to
     // levelable-param switches, while isolation needs ALL on-off blocks). That hint
     // would remove BOTH costs at once: the startup backup scan is complete by
-    // construction, so it needs no truncation fallback at all.
+    // construction, so it needs no cut-read fallback at all.
     if preset_level_cancelled() {
         // `previous_level` is None here (the isolation read below hasn't run yet) —
         // fine, since `level_preset` bails at the pre-measure cancel checkpoint and
@@ -501,12 +501,11 @@ fn level_base_arm(
     // BASE MEANS BASE — every footswitch-owned on-off block is forced OFF, so the
     // measurement describes the preset with nothing switched on. A preset saved
     // with a pedal engaged does NOT measure that pedal here; that sound is its own
-    // footswitch row's job (user directive, 2026-08-20; the HW evidence behind it
-    // is in `notes/leveling.md`).
+    // footswitch row's job (product rule; `notes/leveling.md`).
     //
-    // `ftsw` sits at the field-8 truncation cliff, so a short read yields a short
-    // force list — pedals left on, and the wrong `presetLevel` SAVED. The shared
-    // read REFUSES on a truncated `ftsw` rather than leveling a guess. Refusing
+    // A field-8 read cut inside `ftsw` yields a short force list — pedals left on, and
+    // the wrong `presetLevel` SAVED. The shared read REFUSES on a cut `ftsw` rather than
+    // leveling a guess. Refusing
     // here returns BEFORE the run-end `reamp_off_guaranteed` backstop, safe only
     // because every step above is a pure read: nothing has engaged re-amp yet.
     //
@@ -517,7 +516,7 @@ fn level_base_arm(
         crate::commands::doctor::read_base_isolation(slot).map_err(LevelError::Refused)?;
     // The original `lastLoadedScene` must be re-stamped by the save: the
     // base-context measurement leaves base active, and saving there would
-    // rewrite the preset's on-load scene to base (HW, Hiwatt slot 31).
+    // rewrite the preset's on-load scene to base (HW).
     let previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
     opts.restore_scene = restore_scene;
     crate::scene_jobs::warn_missing_restore_scene(
@@ -572,7 +571,7 @@ pub(crate) struct CalibrateResult {
     /// Measured K-weighted loudness of the dry capture (stored on the profile unless
     /// a refused take left an earlier capture in place — see `kept_previous_capture`).
     lufs: f32,
-    /// How far the dry tap (USB-Out 3) flat-topped at full scale (#361). The unit's
+    /// How far the dry tap (USB-Out 3) flat-topped at full scale. The unit's
     /// dry send clips on hard picks; a `Mild` take is stored, a `Severe` one is not.
     clip: crate::stimulus::ClipVerdict,
     /// This take was stored as the profile's DI capture, so leveling re-amps it.
@@ -597,7 +596,7 @@ pub(crate) struct CalibrateResult {
 
 /// Fraction of 500 ms windows whose RMS is within 30 dB of the loudest window's —
 /// a coarse "did the player actually keep playing?" gate for a calibration capture.
-/// ponytail: crude broadband-energy heuristic — a sustained hum or one held note
+/// Crude broadband-energy heuristic — a sustained hum or one held note
 /// reads as fully active. Upgrade to per-window spectral/hum discrimination only if
 /// false accepts show up in the field.
 fn active_window_fraction(samples: &[f32], sample_rate: u32) -> f64 {
@@ -670,7 +669,7 @@ pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
     let app2 = app.clone();
     let settings_path = crate::commands::presets::device_settings_path(&app);
     with_released_seize(state.session.clone(), move || {
-        // #124 pre-flight: the device mixer's USB 3 strip, from the settings snapshot
+        // Pre-flight: the device mixer's USB 3 strip, from the settings snapshot
         // the startup backup read persisted (`support/device-settings.json`). The
         // snapshot can be STALE — the mixer may have been touched since connecting —
         // and the two halves treat that risk DIFFERENTLY on purpose:
@@ -707,7 +706,7 @@ pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
         let spread_lu = loudness.spread_lu();
         // Flat-top clip check, not a bare sample-peak: a lone hot pick transient is
         // not clipping (see is_clipped_capture). The unit's dry USB 3 send clips on
-        // hard picks (#361), so a take within the severity rule is kept; only a
+        // hard picks, so a take within the severity rule is kept; only a
         // `Severe` one is refused.
         let clip = crate::stimulus::clip_verdict(&mono, 48_000);
         let refused = clip == crate::stimulus::ClipVerdict::Severe;
@@ -745,8 +744,8 @@ pub(crate) async fn calibrate_profile<R: tauri::Runtime>(
         let band_labels = family.labels_owned();
 
         // With a stored capture the stimulus IS the capture (gain 1) — a synthetic
-        // shortfall is impossible, so skip the computation (the old warning would be
-        // false). Otherwise report the best-effort synthetic-scaling shortfall.
+        // shortfall is impossible, so skip the computation (a warning would be false).
+        // Otherwise report the best-effort synthetic-scaling shortfall.
         let stimulus_shortfall_lu = if capture_stored || kept_previous_capture {
             None
         } else {

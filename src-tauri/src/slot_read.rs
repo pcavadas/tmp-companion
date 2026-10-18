@@ -1,11 +1,11 @@
-//! The truncation-aware saved-preset read seam: field-8 first, falling back to a
+//! The cut-aware saved-preset read seam: `presetDataRequest` (field 8) first, falling back to a
 //! name-guarded device-backup transport when a caller's REQUIRED tail sections are cut off
 //! the field-8 read. Shared by the footswitch/scene leveling commands and ~20 `probe_api`
 //! call sites.
 use crate::{backup_read, error::SkipKind, session, ListIndex, Session};
 
 /// Read a slot's field-8 preset JSON on a fresh quiet session and return the parsed preset, a
-/// DIAGNOSTIC "has FS scenes" flag (`Some(empty)` = definitely no FS scenes; truncated/unknown or
+/// DIAGNOSTIC "has FS scenes" flag (`Some(empty)` = definitely no FS scenes; cut/unknown or
 /// non-empty → conservative `true`) and the raw byte length. Shared by the footswitch leveling
 /// command + probes (the connect→drain→read→parse→scene-check boilerplate). The flag is NOT a
 /// gate: `footswitch::plan_footswitch_jobs`'s assign gate decides bake-vs-assign purely off
@@ -22,12 +22,11 @@ pub(crate) fn read_slot_preset_parsed(
 /// deliver whole (`session::json_section_complete`), and the occupant's name from the
 /// same session's preset list.
 ///
-/// A large preset's field-8 read comes back TAIL-TRUNCATED and `tolerant_parse_json`
-/// salvages the prefix — so the document parses and a tail section (`ftsw`, `scenes`) is
-/// simply absent or a short prefix. A caller that reads one of those to decide what to
-/// DO then acts on "this preset has no footswitches" for a preset that has ten. On fw
-/// 1.8.58 the cuts were the device's inactivity drop on a silent harvest — kept alive, a
-/// large preset reads whole — so a partial is now unexpected; it still falls back to the
+/// A lapse mid-stream can cut a field-8 reply (the device sends it whole, fw 1.8.58, and
+/// the kept-alive read does not lapse), and `tolerant_parse_json` salvages the prefix — so
+/// the document parses and a tail section (`ftsw`, `scenes`) is simply absent or a short
+/// prefix. A caller that reads one of those to decide what to DO would then act on "this
+/// preset has no footswitches" for a preset that has ten, so a cut still falls back to the
 /// device backup or refuses.
 ///
 /// SOFT form: it reports and does not decide. Use it where the answer is best-effort
@@ -59,10 +58,7 @@ pub(crate) fn read_slot_preset_sections(
     // a large preset body, is precisely the back-to-back shape the list reassembly is
     // documented to come back short on, and a short list means no entry for this slot, an
     // empty name, and a hard refusal from `read_slot_preset_complete` even though the
-    // backup carries the preset perfectly. That is the reported "couldn't read this
-    // preset's controls" on the Hiwatt (HW, 2026-08-19: "the preset list did not answer
-    // with the slot's name") — and the probe's Friedman scene run (HW, 2026-09-02), which
-    // has NO startup snapshot and hit the same refusal off the same-session list.
+    // backup carries the preset perfectly (HW: "couldn't read this preset's controls").
     let name = if truncated.is_empty() {
         String::new() // nothing to address a fallback with — not read at all
     } else {
@@ -155,7 +151,7 @@ impl From<SlotReadError> for String {
 /// returns a document that carries every `required` section whole, or it fails, typed by
 /// cause ([`SlotReadError`]).
 ///
-/// On a truncated tail it re-reads the preset off a DEVICE BACKUP — the only transport
+/// On a cut tail it re-reads the preset off a DEVICE BACKUP — the only transport
 /// that carries the complete document (`backup_read::preset_json_from_backup`,
 /// name-guarded against the preset list) — and replaces the WHOLE document with it
 /// rather than grafting the missing section on: the same read is also the caller's

@@ -7,10 +7,10 @@ use super::*;
 /// Doctor-only capture tail: Doctor diagnostic captures (reverb/delay wash analysis)
 /// keep a longer post-stimulus tail than the leveling capture, whose 800 ms tail is
 /// HW-baselined and load-bearing (see `CAPTURE_TAIL_MS`) and must NOT change.
-/// 1.5 s (down from the original 2.5 s) was HW-A/B'd against the 6 s + 2.5 s
-/// full-capture oracle (`probe --doctor-window-ab`, 2026-07-16, 6 diverse presets
-/// incl. two wet ones): 0 verdict flips, Δtilt ≤ 0.08 dB/oct, band deltas within
-/// wash-preset run variance, `washed` still fires on both wet presets.
+/// 1.5 s matches the 6 s + 2.5 s full-capture oracle (HW A/B, `probe
+/// --doctor-window-ab`, 6 presets incl. two wet ones): 0 verdict flips, Δtilt ≤
+/// 0.08 dB/oct, band deltas within wash-preset run variance, `washed` still fires on both
+/// wet presets.
 pub const DOCTOR_TAIL_MS: u32 = 1500;
 /// Doctor stimulus window: diagnosis captures re-amp only the first 3 s of the
 /// stimulus ([`doctor_stim_slice`]) — the leveling window (full stimulus + its
@@ -26,10 +26,10 @@ pub const DOCTOR_STIM_MS: usize = 3000;
 /// [`crate::doctor::has_time_effect`]): a bare settle guard, not a wash window —
 /// `washed` cannot fire without a time-based block in the chain, so the full tail
 /// buys nothing there. Shrinking the tail also shrinks `tail_ratio_db`'s window
-/// (an empty/near-empty tail floors it at −80, `doctor::tail_energy_ratio`) and
+/// (an empty/near-empty tail floors it at −80, `doctor::tail_energy_ratio_ch`) and
 /// marginally shifts `spread_lu` on these dry captures — expected and harmless
-/// since `washed` is inapplicable by construction; the R4/R5 hardware sweeps
-/// re-baseline the OTHER thresholds against this shorter recipe.
+/// since `washed` is inapplicable by construction; the OTHER thresholds are
+/// HW-baselined against this shorter recipe.
 pub const DOCTOR_TAIL_DRY_MS: u32 = 300;
 
 /// [`DOCTOR_STIM_MS`] at the required host Core Audio rate ([`RATE`]), in samples.
@@ -73,7 +73,7 @@ pub enum OnsetSource {
     /// Envelope cross-correlation (`audio::estimate_onset`) — the energy step
     /// didn't fire, or its implied latency was outside the plausible band.
     Correlator,
-    /// Neither found a trustworthy split — legacy whole-buffer/un-aligned.
+    /// Neither found a trustworthy split — whole-buffer/un-aligned.
     UnAligned,
 }
 
@@ -85,11 +85,11 @@ pub struct DoctorOnset {
     pub signal_start: usize,
     /// Where the body window starts: [`Self::signal_start`] on a confident split,
     /// so the played pad's silence stays OUT of the body RMS that
-    /// [`crate::doctor::tail_energy_ratio`] reads (#259 — it used to sit inside
-    /// and read the body 0.28 dB low); 0 on the un-aligned fallback.
+    /// [`crate::doctor::tail_energy_ratio_ch`] reads (inside it, the body reads
+    /// 0.28 dB low); 0 on the un-aligned fallback.
     pub body_start: usize,
     /// Body length in samples: `body_start + body_len` is the tail split point
-    /// ([`crate::doctor::tail_energy_ratio`]'s `body_start`/`body_len`).
+    /// ([`crate::doctor::tail_energy_ratio_ch`]'s `body_start`/`body_len`).
     pub body_len: usize,
     pub source: OnsetSource,
 }
@@ -102,7 +102,7 @@ impl DoctorOnset {
     }
 
     /// The tail split point: `body_start + body_len`
-    /// ([`crate::doctor::tail_energy_ratio`]'s `body_start`/`body_len` summed).
+    /// ([`crate::doctor::tail_energy_ratio_ch`]'s `body_start`/`body_len` summed).
     pub fn body_end(&self) -> usize {
         self.body_start + self.body_len
     }
@@ -137,7 +137,7 @@ const _: () = assert!(DOCTOR_ONSET_MIN_LATENCY_MS < 0);
 /// on every wet/dry chain because the Doctor stimulus always carries a played
 /// silent pad, see [`DOCTOR_PAD_MS`]), falling back to the envelope correlator
 /// (`audio::estimate_onset`) when the step doesn't fire or its implied latency
-/// is implausible, falling back to the legacy un-aligned split when neither
+/// is implausible, falling back to the un-aligned split when neither
 /// does. `stim_padded` is the padded Doctor stimulus ([`doctor_stim_slice`]);
 /// `samples` is the raw capture. WARNs with the source on every fallback, so a
 /// wash-cohort verdict flip is traceable to which path fired.
@@ -218,7 +218,7 @@ pub fn doctor_capture(
     )?))
 }
 
-/// [`doctor_capture`] without the mixdown: the raw multi-channel capture.
+/// [`doctor_capture()`] without the mixdown: the raw multi-channel capture.
 #[allow(clippy::too_many_arguments)]
 pub fn doctor_capture_raw(
     slot: ListIndex,
@@ -242,16 +242,16 @@ pub fn doctor_capture_raw(
     )
 }
 
-/// Like [`doctor_capture`], but ALSO returns the capture's stereo-measured
-/// `Loudness` (D4, PR2): bands/PSD keep the `stereo_mix` AVERAGE mixdown
-/// unchanged (`samples`/`rate` below are byte-identical to `doctor_capture`'s),
+/// Like [`doctor_capture()`], but ALSO returns the capture's stereo-measured
+/// `Loudness`: bands/PSD keep the `stereo_mix` AVERAGE mixdown
+/// (`samples`/`rate` below are byte-identical to `doctor_capture`'s),
 /// but the REPORTED `integrated_lufs` a Doctor sound displays must come from the
-/// same 2-ch BS.1770 sum every other output-side measurement uses now —
+/// same 2-ch BS.1770 sum every other output-side measurement uses —
 /// `stereo_mix`'s average can't be un-mixed back into a correct 2-ch measure, so
 /// this measures the loudness from the UN-MIXED capture before mixing it down.
 /// The one production Doctor capture site (`commands/doctor.rs`) uses this; every
-/// dev probe harness keeps the plain `doctor_capture` seam (and its legacy
-/// mono-on-mixdown `SoundProfile::integrated_lufs`) unchanged — see
+/// dev probe harness keeps the plain `doctor_capture` seam (and its
+/// mono-on-mixdown `SoundProfile::integrated_lufs`) — see
 /// `SoundProfile::from_capture_with_psd_loudness`'s doc.
 /// `fs_params`: the measured footswitch's `param`-function `(group, node, param, valueA)`
 /// writes — empty for base/scene sounds. See `capture_full_at_params`.
@@ -293,14 +293,14 @@ pub fn doctor_capture_with_loudness(
     Ok((samples, sample_rate, loudness))
 }
 
-/// The processed pair one Doctor capture is analysed from (#250).
+/// The processed pair one Doctor capture is analysed from.
 ///
 /// - `channels`: USB-Out 1/2 (or the one channel of a mono capture). Spectra
 ///   and energies combine these in the POWER domain
 ///   ([`crate::doctor::body_psd_span`], [`crate::doctor::tail_energy_ratio_ch`],
 ///   [`crate::doctor::output_coverage_ch`]): a mono chain reads exactly as
-///   before, a decorrelated stereo tail keeps its full power, and partly
-///   correlated stereo no longer comb-filters into notches the player never
+///   the mono form, a decorrelated stereo tail keeps its full power, and partly
+///   correlated stereo does not comb-filter into notches the player never
 ///   hears.
 /// - `mix`: the deterministic sample average (`Capture::stereo_mix`), kept for
 ///   the onset detector and the single-signal dev harnesses. An argmax pick
@@ -352,7 +352,7 @@ pub(super) fn to_signal(cap: audio::Capture) -> (DoctorSignal, u32) {
 }
 
 /// The stimulus PSD a Doctor capture's transfer is taken against: the padded
-/// Doctor stimulus WITHOUT its pad (#249), so it spans exactly the body window
+/// Doctor stimulus WITHOUT its pad, so it spans exactly the body window
 /// [`crate::doctor::body_psd_span`] reads (`[signal_start, body_end)`) and both
 /// sit on one Welch grid — the stimulus's fine structure then cancels in
 /// [`crate::psd::Psd::transfer_db`] instead of leaving up to ~2 dB of ripple.
@@ -455,10 +455,8 @@ pub fn doctor_capture_current(
 
 /// The Doctor onset seam — see `doctor_onset`'s doc and the fixture's header
 /// for the HW evidence (`fs13` `ACD_TMLargePlate` 65%-wet, `probe --doctor-fs
-/// 407 13`, fw 1.8.45, 2026-08-24). `G0` composes whatever the PRODUCTION
-/// pipeline actually calls, so it's rewritten (not just re-run) the moment the
-/// production seam changes from the raw correlator to `doctor_onset` — see its
-/// own doc for why that's intentional here.
+/// 407 13`). `G0` composes whatever the PRODUCTION pipeline actually calls, so it
+/// must be rewritten (not just re-run) whenever the production seam changes.
 #[cfg(test)]
 mod onset_gate {
     use super::*;
@@ -666,7 +664,7 @@ mod onset_gate {
             DOCTOR_TAIL_MS,
         );
         // The fixture's pinned-tail ground truth (-9.54 dB) averaged the body
-        // over the played pad too; with the pad out of the body (#259) the body
+        // over the played pad too; with the pad out of the body the body
         // reads 10·log10(3.2/3.0) = 0.28 dB hotter and the ratio that much drier.
         assert!(
             (ratio - (-9.82)).abs() < 0.2,

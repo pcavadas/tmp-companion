@@ -7,12 +7,10 @@
 //!   slot read, the backup DB's `slot` column). HW-confirmed: device `userSlot` = list
 //!   index + 1.
 //!
-//! A `clear` once deleted a real preset because its guard checked list-index space while
-//! the clear acted in device-slot space (`danger.md`). With both spaces a bare `u32`, only
-//! hand-written `+ 1` / `- 1` arithmetic at every call site kept them apart. Here the
-//! conversion lives in exactly one place ([`From`] both ways), every Session method states
-//! its space in its signature, and a guard and the mutation it protects are checked in the
-//! same space by the type system.
+//! A guard and the mutation it protects must be checked in the same space (`danger.md`).
+//! Here the conversion lives in exactly one place ([`From`] both ways), every Session
+//! method states its space in its signature, and the type system keeps a guard and its
+//! mutation in one space.
 //!
 //! The wire and IPC shapes are unchanged: both types serialize as a plain number
 //! (`ListIndex` transparently; `DeviceSlot` through `u32`, refusing 0 on the way in).
@@ -194,9 +192,9 @@ pub(crate) fn ds(n: u32) -> DeviceSlot {
 /// List indices the e2e scenario fixtures own and the only slots a destructive
 /// or working-copy-writing probe experiment may target. Shared by every guard
 /// that gates a probe write — a single declaration so widening or shifting the
-/// scratch zone is one edit, not four. 406-409 are the P3 leveling-doctor-fixtures
-/// additions (combined leveling / doctor oracle / two minimal-incident-repro slots).
-/// 410 is the P4 Friedman-HBE-class 3-scene addition (leveling regression coverage).
+/// scratch zone is one edit, not four. 406-409 are the leveling/Doctor fixtures (combined
+/// leveling / doctor oracle / two minimal repro slots); 410 is a 3-scene leveling
+/// regression preset.
 pub(crate) const SCRATCH_SLOTS: [ListIndex; 11] = {
     use ListIndex as L;
     [

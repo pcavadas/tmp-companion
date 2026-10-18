@@ -120,13 +120,12 @@ impl<T> BatchLevelRun<T> {
 
 /// GUARANTEED re-amp OFF on a fresh connection — the run-end backstop every
 /// command that engages re-amp must call, success or failure. The in-session
-/// disengage after each capture cannot be trusted: on fw 1.8.45 an OFF sent after more
-/// than ~1 s of idle was silently dropped (HW-bisected: 300 ms lands, 1 s+ drops), and on
-/// fw 1.8.58 an OFF to a lapsed session draws ConnectionError(0) and is discarded
-/// (device-confirmed). `TrackedHid` reopens a client after 600 ms of silence, which
-/// covers the known lapse shapes. A unit stranded re-amp-ON is input-muted; a developer
-/// recovers it with `probe --reamp-off`, a user by restarting the unit — a USB
-/// unplug/replug does not clear it (`danger.md`, `notes/gotchas.md`). `tag` names the
+/// disengage after each capture cannot be trusted: an OFF to a lapsed session draws
+/// ConnectionError(0) and is discarded (HW, fw 1.8.58). `TrackedHid` reopens a client
+/// after 600 ms of silence, which covers the known lapse shapes. A unit stranded re-amp-ON
+/// is input-muted; a developer recovers it with `probe --reamp-off`, a user by restarting
+/// the unit — a USB unplug/replug does not clear it (`danger.md`, `notes/gotchas.md`). `tag`
+/// names the
 /// calling lane in the log lines.
 ///
 /// The OFF is read back: after it, the Mixer store is read on the same session
@@ -395,7 +394,7 @@ mod reamp_off_ladder_tests {
             out.annotate_err("boom".into()).to_string(),
             format!("boom — {REAMP_STILL_ON_WARNING}")
         );
-        // A cancel stays a cancel — also one whose restore failed (#269).
+        // A cancel stays a cancel — also one whose restore failed.
         assert_eq!(
             out.annotate_err(LevelError::Cancelled),
             LevelError::Cancelled
@@ -527,7 +526,7 @@ mod reamp_off_ladder_tests {
         assert!(!REAMP_STILL_ON_WARNING.to_lowercase().contains("plug"));
     }
 
-    /// #261: a panic after an engage unwinds through the guard, which sends the OFF ladder
+    /// A panic after an engage unwinds through the guard, which sends the OFF ladder
     /// on a FRESH connection (the run's own session dropped first) — the shipped app's
     /// equivalent of `probe`'s `ReampOffGuard`.
     #[test]

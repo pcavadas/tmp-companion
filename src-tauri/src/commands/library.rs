@@ -1,9 +1,8 @@
 //! OFFLINE-library bulk-run helpers for the `probe` bulk arms (the app has no bulk tab).
 use crate::{bulk_cmd, bulkrun, library, preset_io, search, ListIndex};
 
-/// Block-category map for facet indexing. TODO: derive amp/cab categories
-/// from the firmware `product_profile.json`; until then facets index blocks/IRs/SICs
-/// /name/level/template (everything except the amp/cab classification).
+/// Block-category map for facet indexing: facets index blocks/IRs/SICs/name/level/template
+/// (no amp/cab classification).
 pub(crate) fn library_categories() -> search::CategoryMap {
     search::CategoryMap::new()
 }

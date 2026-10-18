@@ -23,12 +23,12 @@ static DEVICE_OP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Cooperative abort for the in-flight device op's long WAITS. The per-lane cancel flags
 /// (`PRESET_LEVEL_CANCEL`, `SCENE_LEVEL_CANCEL`, `FOOTSWITCH_LEVEL_CANCEL`, `DOCTOR_CANCEL`)
 /// decide which *step* bails; they are only read at step seams, so a Stop pressed during
-/// the ~6 s re-amp capture (or the settles around it) used to sit out the whole thing —
-/// 10 s of dead time, ~22 s when the floor guard's 5 s retry gap fired. This flag makes
+/// the ~6 s re-amp capture (or the settles around it) would sit out the whole thing —
+/// 10 s of dead time, ~22 s when the floor guard's 5 s retry gap fires. This flag makes
 /// those waits interruptible: every sleep on a leveling/Doctor path polls it and bails
 /// with [`LevelError::Cancelled`].
 ///
-/// ponytail: ONE process-global flag, not one per lane — [`DEVICE_OP_LOCK`] serializes
+/// ONE process-global flag, not one per lane — [`DEVICE_OP_LOCK`] serializes
 /// device work, so exactly one operation can ever observe it. Per-lane abort flags if a
 /// second concurrent device op ever becomes a thing.
 static OP_ABORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -68,7 +68,7 @@ pub(crate) fn op_abort_requested() -> bool {
 /// single place to reintroduce a small non-zero floor.
 ///
 /// Each call is a trace `settle` event (requested and applied ms) when the recorder is on,
-/// and joins the process's hardware-wait totals (`rig::WAITS`, #198) in every tier.
+/// and joins the process's hardware-wait totals (`rig::WAITS`) in every tier.
 pub(crate) fn settle_ms(ms: u64) -> u64 {
     let applied = applied_settle_ms(ms);
     crate::trace::settle(ms, applied);
@@ -146,10 +146,10 @@ pub(crate) fn settle_or_cancel(ms: u64) -> Result<(), LevelError> {
 /// monitor pumps in ~120 ms windows, so it checks the flag ~8×/sec, and an idle
 /// monitor acks well inside 1 s. The budget is 4 s because the monitor can't ack
 /// while it is mid-HANDSHAKE: a `graph=none` re-snapshot cycle (drop → 3 s backoff
-/// → re-handshake, `monitor.rs`) held the ack ~1 s past the old 1 s budget on a
-/// real run, and the calibration's own `Session::connect` then raced the still-
-/// seized device — its re-amp OFF never reached the unit and the take read as
-/// "no instrument signal". Waiting costs nothing when the monitor is idle (the
+/// → re-handshake, `monitor.rs`) can hold the ack ~2 s (HW), and a command that opens
+/// early races the still-seized device — a re-amp OFF that never reaches the unit and a
+/// take that reads as "no instrument signal". Waiting costs nothing when the monitor is
+/// idle (the
 /// loop exits on the ack) and is exactly right when it is busy. If the budget is
 /// still exceeded (wedged monitor), the command proceeds anyway — `hid.rs`'s
 /// bounded `IOHIDDeviceOpen` retry (≤0.48 s on `0xe00002c5`) absorbs the residual
@@ -203,9 +203,7 @@ pub(crate) fn lock_device_op() -> MonitorPauseGuard {
     //
     // - `MONITOR_ENABLED` — a disabled monitor idles in its disabled branch and never acks,
     //   so waiting would burn the full `PAUSE_WAIT_TRIES × PAUSE_WAIT_STEP_MS` budget on
-    //   every command whenever live-sync is off. The one transition where the flag is
-    //   already false while the monitor still holds its seize for ≤1 pump (`stop_live_sync`
-    //   clears it before locking) is absorbed by hid.rs's bounded open-retry.
+    //   every command whenever live-sync is off.
     // - `MONITOR_SPAWNED` — a monitor THREAD exists at all. `e2e_server` sets
     //   `MONITOR_ENABLED` in BOTH tiers (it wants the reconnect skip in
     //   `with_released_seize_blocking`) but never calls `monitor::spawn`, so the ack could
@@ -225,7 +223,7 @@ pub(crate) fn lock_device_op() -> MonitorPauseGuard {
         }
         if !acked {
             // No ack: the monitor is mid-op inside its pump loop (a long live op or metadata
-            // read), or wedged. Don't open over a handle it still holds (#263): wait, bounded,
+            // read), or wedged. Don't open over a handle it still holds: wait, bounded,
             // for every handle in this process to close. A monitor between connects holds
             // none and cannot start one while this gate is held
             // ([`try_hold_for_monitor_connect`]), so this returns at once there.
@@ -245,7 +243,7 @@ pub(crate) fn lock_device_op() -> MonitorPauseGuard {
 
 /// The monitor's share of [`DEVICE_OP_LOCK`]: taken with `try_lock` (never blocking) for
 /// its connect + startup-snapshot window, the one stretch where it holds the device without
-/// polling `MONITOR_PAUSE_REQ` (#263). `None` = a command holds the gate; the monitor then
+/// polling `MONITOR_PAUSE_REQ`. `None` = a command holds the gate; the monitor then
 /// skips the connect and parks on that command's pause instead. While the monitor holds it,
 /// commands queue on [`lock_device_op`] behind the connect rather than racing its seize.
 /// Unlike `lock_device_op` it leaves the abort flag and the pause request alone.
@@ -278,9 +276,8 @@ where
         .map_err(|e| E::from(format!("device task failed: {e}")))?
 }
 
-/// Blocking core of [`with_released_seize`] — split out so commands that try the
-/// monitor's live command lane first (`monitor::try_live_op`) can fall back to the
-/// release→work→reconnect bookend inside their own `spawn_blocking`.
+/// Blocking core of [`with_released_seize`], for callers already inside
+/// `spawn_blocking`.
 pub(crate) fn with_released_seize_blocking<T, E, F>(
     arc: Arc<Mutex<Option<Session>>>,
     work: F,
@@ -291,7 +288,7 @@ where
     let _op = lock_device_op(); // serialize the whole release→work→reconnect
     *lock_ok(&arc) = None;
     // The re-amp backstop for every device command: a no-op unless `work` engaged re-amp and
-    // left without its own run-end OFF — a panic unwinding out of it included (#261). Dropped
+    // left without its own run-end OFF — a panic unwinding out of it included. Dropped
     // after `work`'s own sessions and before the UI reconnect below, so its fresh connection
     // never meets another seize from this process.
     let reamp = crate::leveller::ReampRunGuard::new("device command");
@@ -319,7 +316,7 @@ where
 mod tests {
     use super::*;
 
-    /// #263: while the monitor holds the gate for its connect + snapshot, a command QUEUES
+    /// While the monitor holds the gate for its connect + snapshot, a command QUEUES
     /// behind it — it never runs (opens the transport) inside that window — and a monitor
     /// that finds a command running gets `None` instead of blocking.
     #[test]
@@ -383,8 +380,8 @@ mod tests {
     /// process. Every other build and tier — the shipped app, and the ONLINE e2e tier
     /// driving a real Tone Master Pro — must get the settle back unchanged, because those
     /// sleeps are what let the unit's IOKit seize and DSP state catch up. A regression
-    /// here is silent and expensive: writes drop with no `presetError` (the ~400-450 ms
-    /// idle-gap cliff), so it surfaces as corrupt levels on a real unit, not a red test.
+    /// here is silent and expensive: writes drop with no `presetError` (the 750 ms session
+    /// lapse), so it surfaces as corrupt levels on a real unit, not a red test.
     ///
     /// Asserted for the DEFAULT process state, which is what makes it meaningful in both
     /// build modes. Under `--features e2e` it holds `e2e_server::TEST_SERIAL`, outside which

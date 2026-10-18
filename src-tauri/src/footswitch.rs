@@ -29,11 +29,11 @@ pub struct FootswitchFn {
     pub is_active: bool,
 }
 
-/// A continuous block parameter the leveler can solve on (a numeric `dspUnitParameter` that
-/// [`crate::param_class::classify`] recognises as a LEVEL or WET/MIX control), surfaced so
-/// the UI can offer a block+parameter picker per footswitch. `current` and the solve run in
-/// the param's OWN units and range — no longer assumed `[0,1]`: `ACD_Boost.gain` is raw dB
-/// over `[0, 12]` (HW-verified fw 1.8.45).
+/// A continuous block parameter the leveler can solve on (a numeric `dspUnitParameter` of an
+/// acted-on block, class-annotated by [`crate::param_class::classify`] — never `WetMix`;
+/// `Other` only in `all_params`), surfaced so the UI can offer a block+parameter picker per
+/// footswitch. `current` and the solve use the param's own units and range
+/// (`ParamInfo.range`): `ACD_Boost.gain` is raw dB (HW).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LevelParamCandidate {
     pub group_id: String,
@@ -65,28 +65,26 @@ pub struct FootswitchInfo {
     pub all_params: Vec<LevelParamCandidate>,
 }
 
-/// Is `key` on block `fender_id` a leveling candidate? The gate is
-/// [`crate::param_class::classify`]: a param is a candidate iff it classifies as something
-/// OTHER than [`crate::param_class::ParamClass::Other`] — i.e. the table recognises it as a
-/// level or wet/mix control. That table ANNOTATES rather than guesses, so an unlisted param
-/// is silently excluded, which is the safe default.
-///
-/// No belt over the classifier: the per-scene state keys (`bypass`, `clipState`, …) are
-/// absent from the table (⇒ `Other`) AND carry bool/string values (`as_f64` fails) — a
-/// name list here could never change the answer. What is GONE is the old `(0.0..=1.0)`
-/// value filter: it silently dropped `ACD_Boost.gain`, whose base value 2.5 is raw dB
-/// (HW-verified fw 1.8.45, accepted by `changeParameter`, ~1:1 dB→LUFS) — params are no
-/// longer all `[0,1]`, so the RANGE now comes from `ParamInfo.range`, never from the
-/// observed value.
-///
-/// Product rule: Mix is never offered as a leveling control (issue 3: "hide Mix
-/// everywhere"). The ONE predicate both [`is_levelable_param`] (the safe-default source) and
+/// Product rule: Mix is never offered as a leveling control. The ONE predicate both
+/// [`is_levelable_param`] (the safe-default source) and
 /// [`all_numeric_candidates_for_node`] (the combined-picker source) gate on, so the two can
 /// never disagree about Mix.
 fn class_is_offerable(class: crate::param_class::ParamClass) -> bool {
     !matches!(class, crate::param_class::ParamClass::WetMix)
 }
 
+/// Is `key` on block `fender_id` a leveling candidate? The gate is
+/// [`crate::param_class::classify`]: a param is a candidate iff it classifies as neither
+/// [`crate::param_class::ParamClass::Other`] nor `WetMix` — i.e. the table recognises it as
+/// a level control. That table ANNOTATES rather than guesses, so an unlisted param is
+/// silently excluded, which is the safe default.
+///
+/// No belt over the classifier: the per-scene state keys (`bypass`, `clipState`, …) are
+/// absent from the table (⇒ `Other`) AND carry bool/string values (`as_f64` fails) — a
+/// name list here could never change the answer. No value-range filter either: params are
+/// not all `[0,1]` (`ACD_Boost.gain` base 2.5 is raw dB, ~1:1 dB→LUFS, HW), so the RANGE
+/// comes from `ParamInfo.range`, never from the observed value.
+///
 /// Returns the classifier's verdict on a hit (`Some(class)`, never `Other`, never `WetMix`)
 /// rather than a bare bool, so [`level_candidates_for_node`] classifies each key exactly
 /// ONCE and reuses the verdict for the candidate's `class` field instead of calling
@@ -398,10 +396,9 @@ pub fn onoff_switches_for(ftsw: &Value, node_id: &str) -> Vec<u32> {
 /// functions reference, in the state the block holds WHILE THE SWITCH IS ACTIVE. An on-off is
 /// a latching toggle, so the saved base bypass is the engaged state only when the preset was
 /// saved WITH the switch active — that's exactly what the assignment's `isActive` records
-/// (HW: preset "TR+BD2+BMP" saved with its BD2 switch engaged stores BD2 ON + `isActive:true`).
-/// So per assignment: engaged bypass = saved bypass when `isActive`, else the flip. The old
-/// unconditional flip inverted saved-engaged switches — the Doctor forced BD2 OFF during its
-/// own switch's capture and diagnosed the base sound instead. Empty when the switch has no
+/// (HW: a preset saved with a drive switch engaged stores the block ON + `isActive:true`).
+/// So per assignment: engaged bypass = saved bypass when `isActive`, else the flip (an
+/// unconditional flip would invert saved-engaged switches). Empty when the switch has no
 /// on-off — then measurement uses the base state.
 pub fn engaged_bypass_for_switch(
     ftsw: &Value,
@@ -869,9 +866,9 @@ pub enum FsLevelPlan {
     },
     /// Same `(node, param, target)` as job index `rep`, which bakes — no extra device work.
     BakeShared { rep: usize },
-    /// Write a `param`-change assignment. `engaged` empty = measure the base state (block ON in
-    /// base, today's path); non-empty = engaged measurement (the off-in-base fallback, when a
-    /// scene or a second footswitch also activates the block so baking would be unsafe).
+    /// Edit the switch's EXISTING `param`-change function for the leveled `(node, param)`
+    /// (`valueA` = solved). `engaged` is the row's engaged isolation (every other switch's
+    /// block off plus this switch's own on-off blocks at their engaged state).
     Assign {
         engaged: Vec<(String, String, bool)>,
     },
@@ -915,14 +912,15 @@ fn push_bake<'j>(
 }
 
 /// Decide bake-vs-assign for every job in a batch (PURE — no device I/O). `preset` is the SAVED
-/// (field-8) document — the scene gate reads its per-node overlays, so pass the read straight
-/// through, never a live field-3 graph. Returns one plan per job, aligned to `jobs`.
+/// (field-8) document — the base-bypass check and the bake's scene mirror read its per-node
+/// overlays, so pass the read straight through, never a live field-3 graph. Returns one plan
+/// per job, aligned to `jobs`.
 pub fn plan_footswitch_jobs(ftsw: &Value, preset: &Value, jobs: &[FsJobKey]) -> Vec<FsLevelPlan> {
     let mut plans = Vec::with_capacity(jobs.len());
     let mut bake_rep: std::collections::HashMap<(&str, &str, u64), usize> =
         std::collections::HashMap::new();
     for (idx, job) in jobs.iter().enumerate() {
-        // THE ASSIGN GATE (user directive, 2026-08-19) — the ONE thing that decides Assign vs
+        // THE ASSIGN GATE (product rule) — the ONE thing that decides Assign vs
         // Bake, checked before every other consideration:
         //
         //   · the switch ALREADY changes the user-selected control → edit THAT function's
@@ -930,13 +928,10 @@ pub fn plan_footswitch_jobs(ftsw: &Value, preset: &Value, jobs: &[FsJobKey]) -> 
         //   · it does not → NEVER add a new function to the switch. Write the user-selected
         //     control's value directly (`Bake`).
         //
-        // Leveling therefore never CREATES a footswitch function. It used to, whenever baking
-        // looked unsafe, and that appended a second entry to a row that already carried an
-        // on-off — the shape `danger.md` forbids outright: HW bisect (fw 1.8.45, 2026-08-18)
-        // proved a two-entry row makes the firmware silently replace an IMPORTED preset with
-        // an EMPTY body, under the imported display name, so the list looks right indefinitely.
-        // It also relabels the switch "MULTI" on the unit. Observed in the wild on the reported
-        // run: switch 5 of "Plumes+BD2+OCD" gained a `param` entry (valueA 0.25) it never had.
+        // Leveling therefore never CREATES a footswitch function (product rule): a second
+        // entry on a row that already carries an on-off relabels the switch "MULTI" on the
+        // unit and adds a function the user never authored. A two-entry row is legal on
+        // fw 1.8.58 but refused at import as a conservative choice (danger.md).
         //
         // The gate is `existing_param_fn_index`, i.e. exactly "is there already a param function
         // on this switch for this (node, param)" — the same lookup `resolve_footswitch_job` then
@@ -961,18 +956,13 @@ pub fn plan_footswitch_jobs(ftsw: &Value, preset: &Value, jobs: &[FsJobKey]) -> 
         // a plan that describes a different sound than the prepass is a solver that
         // contradicts its own feasibility check.
         //
-        // A block ON in the base used to skip the second half here, on the reasoning that it
-        // is part of the base sound and so needs no assertion. That is only true in a
-        // one-row batch. A SIBLING row's isolation writes this block's `bypass = true` into
-        // the device's working copy, and every capture's `recall_base` re-asserts that
-        // mutated copy — so the row inherited the sibling's write and measured with the very
-        // block it was levelling switched OFF, where its handle has no authority over
-        // loudness. HW, 2026-08-19, slot 26 "Plumes+BD2+OCD": `ACD_Plumes` (the only block on
-        // in base) converged when solved alone (level 0.3634 → -22.95 LUFS) and clamped in
-        // every batch containing any other row, in either order, with all captures pinned at
-        // -26.96 LUFS. Its prepass ceiling read -21.13 LUFS throughout.
+        // A block ON in the base still needs the second half: a SIBLING row's isolation
+        // writes this block's `bypass = true` into the device's working copy, and every
+        // capture's `recall_base` re-asserts that mutated copy — so without it the row
+        // inherits the sibling's write and measures with the very block it is levelling
+        // switched OFF, where its handle has no authority over loudness (HW).
         //
-        // ponytail: accepted edge case — an always-on `param`-target block that some OTHER
+        // Accepted edge case — an always-on `param`-target block that some OTHER
         // switch's on-off also toggles gets forced off by that sibling entry while being the
         // leveled block. Exotic layout, not the reported bug; acknowledged not handled.
         let mut engaged = siblings_off_excluding(ftsw, job.switch);
@@ -983,18 +973,15 @@ pub fn plan_footswitch_jobs(ftsw: &Value, preset: &Value, jobs: &[FsJobKey]) -> 
         }
         // Everything else BAKES — writes the user-selected control directly.
         //
-        // This lane used to consult two extra gates and fall back to `Assign` when either
-        // tripped: sole-ownership (another switch also activates this node) and a scene that
-        // FLIPS the node's bypass (which renders the baked value in a state the leveler never
-        // measured). Both are real caveats about the RESULT, but neither justifies the cure —
-        // that fallback is precisely what created the forbidden second function, and it fired
-        // broadly (it once sent every switch of every scened preset down the Assign path).
-        // Per the directive above the value now goes to the control itself in these cases too.
+        // Sole-ownership (another switch also activates this node) and a scene that FLIPS the
+        // node's bypass (which renders the baked value in a state the leveler never measured)
+        // are real caveats about the RESULT, but neither creates a function: the value goes
+        // to the control itself in these cases too.
         //
         // What still protects the result: `BakeShared` collapses jobs that share
         // `(node, param, target)` so co-owners resolve to ONE write rather than fighting, and
         // `mirror_scenes` carries the solved value into the scenes whose overlay RESTATES base
-        // — a scene that overlays the leveled param MASKS base (HW, Hiwatt slot 31), so a bake
+        // — a scene that overlays the leveled param MASKS base (HW), so a bake
         // never leaks into an authored per-scene divergence.
         push_bake(&mut plans, &mut bake_rep, idx, job, ftsw, preset, engaged);
     }
@@ -1003,7 +990,7 @@ pub fn plan_footswitch_jobs(ftsw: &Value, preset: &Value, jobs: &[FsJobKey]) -> 
 
 /// Build `sceneSlot` (0-based) → footswitch index (0-based) from a preset's `ftsw`,
 /// for the live-sync scene rows' data-driven FS tags. `ftsw` is the array of switches
-/// (the enumerate index IS the switch number, as in [`flag_unbindable`]); a scene
+/// (the enumerate index IS the switch number); a scene
 /// assignment is `{func:"scene", sceneSlot, isActive}`. Only `isActive` assignments
 /// map (a disabled assignment → no tag, the row shows an em-dash); first switch wins
 /// on a `sceneSlot` collision (deterministic). The caller displays the human
@@ -1043,13 +1030,13 @@ pub fn scene_fs_map(ftsw: &Value) -> std::collections::HashMap<u32, u32> {
 
 /// The highest `scenes[]` index the document REFERENCES elsewhere: `lastLoadedScene` plus
 /// every footswitch scene assignment (base — `session::BASE_SCENE_SLOT` — is not an index and
-/// is excluded). A `scenes` array shorter than this is a TRUNCATED read, not a preset with
+/// is excluded). A `scenes` array shorter than this is a cut-short read, not a preset with
 /// fewer scenes: the tolerant parse drops the cut entries and the array length alone can't
 /// tell the two apart. Both references sit BEFORE `scenes` in the document (HW field-8 order:
 /// `ftsw`, `lastLoadedScene`, `scenes`), so a tail cut that shortens `scenes` always leaves
 /// this evidence intact.
 ///
-/// ponytail: a scene bound to NO footswitch and not the last-loaded one is unreferenced, so a
+/// A scene bound to NO footswitch and not the last-loaded one is unreferenced, so a
 /// cut that takes only such scenes is undetectable. Upgrade path if that matters: thread
 /// `session::scene_names_from_slot_json`'s count (it recovers names from a cut document) out
 /// of `read_slot_preset_parsed`, which already computes and discards it.
@@ -1098,14 +1085,14 @@ impl crate::bulkrun::Operation for FootswitchLayoutOp {
     }
 }
 
-// ───────────────────── Scene context for a footswitch sound (D3) ─────────────────────
+// ───────────────────── Scene context for a footswitch sound ─────────────────────
 
 /// One switch's SCENE-CONTEXT answer for the leveling picker: which FS scenes turn this switch
 /// on, and which one (if any) the UI should preselect.
 ///
 /// PICKER-PRESELECT ONLY — the caveat travels with the shape that crosses the wire, because
-/// this is what a consumer reads: both fields are derived from a DERIVED CACHE the real device
-/// ignores on recall, so neither may ever decide what to WRITE (full rationale:
+/// this is what a consumer reads: both fields are derived from `ftswStates`, which sets
+/// nothing audible on recall, so neither may ever decide what to WRITE (full rationale:
 /// [`scene_contexts_for_switches`]'s doc).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1115,10 +1102,9 @@ pub struct FsSceneContext {
     pub enabling_scenes: Vec<u32>,
     /// What to preselect: `Some(first)` — the first scene (ascending order) that enables this
     /// switch — whenever at least one scene enables it; `None` = level it in the BASE context,
-    /// the only defensible answer when zero scenes enable it (nothing to infer). Issue 4: a
-    /// switch enabled by SEVERAL scenes previously fell back to `None` ("no single right one"),
-    /// but leaving a multi-scene switch unsuggested is worse than picking its earliest scene —
-    /// the player's most common path to it. The user may still override to any scene, including
+    /// the only defensible answer when zero scenes enable it (nothing to infer). A switch
+    /// enabled by SEVERAL scenes is preselected to its earliest one — the player's most
+    /// common path to it. The user may still override to any scene, including
     /// a non-enabling one; the picker flags that.
     pub suggested: Option<u32>,
 }
@@ -1126,13 +1112,14 @@ pub struct FsSceneContext {
 /// Which scenes enable each footswitch, read off `scenes[].ftswStates` — one bool per switch,
 /// positionally aligned with `ftsw` (an invariant the fixture gates already assert).
 ///
-/// PURE, and PICKER-PRESELECT ONLY. `ftswStates` is a DERIVED CACHE: the real device ignores it
-/// on recall and re-derives the switch state from the scene's own block overlays
-/// (`sim_device.rs` documents the same), so it must never be used to decide what to WRITE or
-/// what a capture will sound like. As the source for "which scene did the player mean when they
-/// wrote this switch", it is exactly right — it is what the authoring app recorded.
+/// PURE, and PICKER-PRESELECT ONLY. On a recall the unit copies `ftswStates` into the
+/// switches' `isActive` flags (LED and next-press state) and nothing audible; what a scene
+/// sounds like comes from its block overlays (static RE, fw 1.8.58), so it must never be used
+/// to decide what to WRITE or what a capture will sound like. As the source for "which scene
+/// did the player mean when they wrote this switch", it is exactly right — it is what the
+/// authoring app recorded.
 ///
-/// A scene with no readable `ftswStates` (a truncated field-8 tail takes `scenes` first)
+/// A scene with no readable `ftswStates` (a cut field-8 tail loses `scenes` first)
 /// contributes nothing, so a preset that cannot be read simply falls back to base — the
 /// conservative side.
 pub fn scene_contexts_for_switches(preset: &Value) -> Vec<FsSceneContext> {
@@ -1209,9 +1196,10 @@ pub(crate) fn stacked_ftsw_rows(p: &Value) -> Vec<usize> {
         .unwrap_or_default()
 }
 
-/// Refuse an import body carrying either footswitch shape a HW bisect (fw 1.8.45) proved
-/// makes the firmware silently replace the WHOLE imported preset: a `func:"param"` entry
-/// with no numeric `valueType`, or a row stacking more than one entry (see `danger.md`).
+/// Refuse an import body carrying either footswitch shape the app does not import: a
+/// `func:"param"` entry with no numeric `valueType` (the firmware rejects the whole preset at
+/// its first real load, fw 1.8.58), or a row stacking more than one entry (legal on fw 1.8.58;
+/// refused as a conservative choice). See `danger.md`.
 pub fn validate_import_body(p: &Value) -> Result<(), String> {
     let (_, missing) = param_entries_missing_value_type(p);
     if !missing.is_empty() {
@@ -1290,8 +1278,8 @@ mod tests {
         })
     }
 
-    // (D3, revised for issue 4) A switch enabled by ONE scene auto-detects that scene; a
-    // switch enabled by SEVERAL scenes now preselects the FIRST (ascending) rather than
+    // A switch enabled by ONE scene auto-detects that scene; a
+    // switch enabled by SEVERAL scenes preselects the FIRST (ascending) rather than
     // falling back to base — only zero enabling scenes falls back.
     #[test]
     fn a_switch_enabled_by_a_scene_preselects_the_first_enabling_scene() {
@@ -1406,7 +1394,7 @@ mod tests {
         serde_json::json!({ "func": "scene", "sceneSlot": slot, "customLabel": label, "isActive": true })
     }
 
-    // AC1 — build + apply ftsw/exp structures.
+    // Build + apply ftsw/exp structures.
     #[test]
     fn build_ftsw_exp_structures() {
         let mut p =
@@ -1637,9 +1625,8 @@ mod tests {
         assert_eq!(sw1.functions[0].fender_id, "ACD_OD");
         // `level` is levelable; bypass/bypassType are not — and neither is `gain`, which on
         // a generic drive block is DRIVE, not a level control (the classifier annotates only
-        // what it knows: `gain` is `level_db` on `ACD_Boost` alone, everything else `Other`).
-        // Before the param-class gate this list was `["gain", "level"]`, i.e. the picker
-        // offered a distortion knob as a loudness control.
+        // what it knows: `gain` is `level_db` on `ACD_Boost` alone, everything else `Other`),
+        // so the picker never offers a distortion knob as a loudness control.
         let params: Vec<&str> = sw1
             .level_params
             .iter()
@@ -1656,7 +1643,7 @@ mod tests {
         assert_eq!(sw2.functions[0].value_b, Some(0.4));
     }
 
-    // Regression fixture for the reported bug: preset 28 (the e2e `E2E Hiwatt 3S` fixture)'s full
+    // Regression fixture: the e2e `E2E Hiwatt 3S` fixture's full
     // real 20-slot `ftsw` + real block params — 4 `func:"scene"` entries (one of them
     // literally named "Base Scene", at switch 1; the enumerator skips it by `func`, never by
     // name — no code path here reads scene names at all) interleaved with 4 block-acting
@@ -1731,7 +1718,7 @@ mod tests {
         // `["gain", "output", "treble"]` when any numeric [0,1] param qualified.
         assert_eq!(mythic_params, vec!["output"]);
 
-        // G1 side: switch 3 (ACD_Lightspeed) — the B3 bracketing-fix subject.
+        // G1 side: switch 3 (ACD_Lightspeed) — the bracketing-secant subject.
         let lightspeed = infos.iter().find(|i| i.switch == 3).expect("switch 3");
         assert_eq!(lightspeed.functions[0].fender_id, "ACD_Lightspeed");
         let lightspeed_params: Vec<&str> = lightspeed
@@ -1739,16 +1726,14 @@ mod tests {
             .iter()
             .map(|p| p.parameter_id.as_str())
             .collect();
-        // `loudness` is a `level_linear` default (it's this pedal's output-level knob —
-        // the B3 bracketing fix leveled it on hardware), so it survives the class gate.
-        // `drive` and `freq` stay TABLE GAPS deliberately: the classifier answers `Other`
-        // for both (they shaped tone, not loudness, and were only ever offered under the
-        // old any-numeric-[0,1] rule, which listed `["drive", "freq", "loudness"]`).
+        // `loudness` is a `level_linear` default (it's this pedal's output-level knob,
+        // leveled on hardware), so it survives the class gate. `drive` and `freq` stay
+        // TABLE GAPS deliberately: the classifier answers `Other` for both (they shape tone,
+        // not loudness).
         assert_eq!(lightspeed_params, vec!["loudness"]);
 
         // G1 side: switch 11 (ACD_TremoloBias) — `intensity` is a depth control, not a level
-        // one, so only `level` survives (`ratehz=6.0` was already excluded before, by the old
-        // [0,1] value filter; the classifier now excludes it on class alone).
+        // one, so only `level` survives (the classifier excludes `ratehz` on class alone).
         let tremolo = infos.iter().find(|i| i.switch == 11).expect("switch 11");
         assert_eq!(tremolo.functions[0].fender_id, "ACD_TremoloBias");
         let tremolo_params: Vec<&str> = tremolo
@@ -1778,17 +1763,17 @@ mod tests {
         );
     }
 
-    // Candidate enumeration is now `param_class::classify`, block-scoped: the SAME param
-    // name qualifies on one block and not another, and a value outside [0,1] no longer
-    // disqualifies anything. Drives the picker, so each of the three interesting shapes is
+    // Candidate enumeration is `param_class::classify`, block-scoped: the SAME param
+    // name qualifies on one block and not another, and a value outside [0,1]
+    // disqualifies nothing. Drives the picker, so each of the three interesting shapes is
     // pinned end-to-end through `enumerate_block_footswitches`, not just on the predicate.
     #[test]
     fn level_param_candidates_follow_the_param_class_table_not_a_0_1_value_range() {
         let preset = serde_json::json!({
             "audioGraph": { "guitarNodes": { "G1": [
-                // Raw dB, HW-verified fw 1.8.45: base 2.5 IS +2.5 dB, so the old
-                // `(0.0..=1.0)` value filter silently dropped this block's only level
-                // control. `gain` is `Other` on every OTHER block (it means drive).
+                // Raw dB (HW): base 2.5 IS +2.5 dB, so a `(0.0..=1.0)` value filter would
+                // drop this block's only level control. `gain` is `Other` on every OTHER
+                // block (it means drive).
                 { "nodeId": "boost", "FenderId": "ACD_Boost", "dspUnitParameters": {
                     "gain": 2.5, "level": 0.5, "bypass": false }},
                 // The documented trap: `level` is a level_linear DEFAULT everywhere, but on
@@ -1855,7 +1840,7 @@ mod tests {
     /// A preset graph with one guitar block `N` and an optional sibling `M`, each with a
     /// `bypass` flag; `ftsw` is supplied by the caller per case. `scenes: []` is the DEVICE
     /// shape for a scene-less preset (`session/tests.rs`'s `{"scenes":[]}` case) — a MISSING key
-    /// means a truncated read, which the bake gate must treat as unknown.
+    /// means a cut-short read, which the bake gate must treat as unknown.
     fn preset_with(n_bypass: bool, m: Option<bool>, ftsw: Value) -> Value {
         let mut nodes = vec![serde_json::json!({
             "nodeId": "N", "FenderId": "N",
@@ -1933,17 +1918,15 @@ mod tests {
     #[test]
     fn plan_bakes_when_block_on_in_base() {
         // N ON in base, switch 0 has only an on-off for N (no `param` fn on it) → under the
-        // assign gate (2026-08-19) this BAKES: the switch doesn't already change (N, gain), so
+        // assign gate this BAKES: the switch doesn't already change (N, gain), so
         // leveling never adds a function to it — it writes the block directly instead. A
         // SIBLING switch's block M is still forced off (isolation) so N is measured against the
-        // clean base, not base + M. This used to Assign under an "always-assign a base-on
-        // block" rule; that rule is gone, the gate is the sole decider now.
+        // clean base, not base + M.
         //
-        // The isolation also asserts N's OWN bypass. It used to stop at the sibling entry, on
-        // the reasoning that a base-on block needs no assertion — hardware disproved that
-        // (2026-08-19, slot 26): a sibling row's isolation writes N's `bypass = true` into the
-        // working copy and `recall_base` re-asserts it, so the row measured with N switched
-        // off. See `plan_on_in_base_still_asserts_its_own_block_bypass`.
+        // The isolation also asserts N's OWN bypass: a sibling row's isolation writes N's
+        // `bypass = true` into the working copy and `recall_base` re-asserts it, so without it
+        // the row measures with N switched off (HW). See
+        // `plan_on_in_base_still_asserts_its_own_block_bypass`.
         let p = preset_with(
             false,
             None,
@@ -1991,10 +1974,8 @@ mod tests {
     #[test]
     fn plan_bakes_when_second_footswitch_also_enables_n() {
         // Switch 0 levels N; switch 1 ALSO has an on-off for N, but neither switch already
-        // carries a `param` fn on (N, gain) → the assign gate says Bake for both, sharing no
-        // longer forces Assign. The old "not sole owner → Assign" fallback is gone — it was
-        // exactly the mechanism that appended a second function to a switch's row (the shape
-        // `danger.md` forbids), so co-ownership is no longer treated as an assign trigger.
+        // carries a `param` fn on (N, gain) → the assign gate says Bake for both; co-ownership
+        // is not an assign trigger (an Assign fallback would add a second function to a row).
         // N off in base ⇒ both switches saved inactive (the HW correlation).
         let p = preset_with(
             true,
@@ -2019,10 +2000,9 @@ mod tests {
         }
     }
 
-    /// The reported bug: a preset WITH scenes whose overlays never CHANGE the leveled node
-    /// must still BAKE. The old whole-preset `has_fs_scenes` gate routed EVERY switch
-    /// of ANY scened preset to Assign, which adds a second function to the switch — and a
-    /// multi-function switch with an empty `customLabel` displays "MULTI" on the unit.
+    /// A preset WITH scenes whose overlays never CHANGE the leveled node must still BAKE:
+    /// routing it to Assign would add a second function to the switch — and a multi-function
+    /// switch with an empty `customLabel` displays "MULTI" on the unit.
     #[test]
     fn plan_bakes_when_scenes_do_not_touch_the_node_bypass() {
         let p = with_scene_overlay_on_n(
@@ -2078,9 +2058,9 @@ mod tests {
     }
 
     /// A scene that overlays the leveled param with its OWN value still BAKES — the overlay
-    /// MASKS base (HW, Hiwatt slot 31), so the bake cannot leak into it, while an Assign's
-    /// single `valueA` would trample exactly that authored per-scene mix (the user's Hiwatt
-    /// mutes its trem in one scene with `level: 0.0`). The divergent scene is simply NOT
+    /// MASKS base (HW), so the bake cannot leak into it, while an Assign's single `valueA`
+    /// would trample exactly that authored per-scene mix (e.g. a trem muted in one scene with
+    /// `level: 0.0`). The divergent scene is simply NOT
     /// mirrored: it keeps its authored value, unleveled by design.
     #[test]
     fn plan_bakes_but_never_mirrors_a_scene_that_authored_its_own_value() {
@@ -2101,13 +2081,10 @@ mod tests {
 
     #[test]
     fn plan_bakes_even_when_a_scene_overlay_touches_the_node_bypass() {
-        // The old hazard this fixture pinned: a scene flips this block ON, so a bake would
-        // render the solved value in a state the leveler never measured — that used to force
-        // Assign. Under the assign gate that consideration is GONE: the switch has no `param`
-        // fn on (N, gain), so it BAKES regardless of what any scene overlay does to the node's
-        // bypass. The old fallback (consulting `scene_overlays_change_param`) was exactly the
-        // mechanism that appended a second function to the row — danger.md's forbidden shape —
-        // so it no longer has a say in bake-vs-assign at all.
+        // A scene flips this block ON, so a bake renders the solved value in a state the
+        // leveler never measured. The assign gate ignores that: the switch has no `param` fn
+        // on (N, gain), so it BAKES regardless of what any scene overlay does to the node's
+        // bypass — scene overlays have no say in bake-vs-assign.
         let p = with_scene_overlay_on_n(
             preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]])),
             serde_json::json!({ "bypass": false, "gain": 0.7 }),
@@ -2120,9 +2097,8 @@ mod tests {
 
     #[test]
     fn plan_bakes_a_shared_block_even_when_scenes_are_clean() {
-        // Sharing no longer matters either: switch 1 also enables N, but since NEITHER switch
-        // already carries a `param` fn on (N, gain), both bake — the old sole-ownership
-        // fallback to Assign is gone along with the scene-overlay one.
+        // Sharing does not matter either: switch 1 also enables N, but since NEITHER switch
+        // already carries a `param` fn on (N, gain), both bake.
         let p = with_scene_overlay_on_n(
             preset_with(
                 true,
@@ -2137,12 +2113,10 @@ mod tests {
 
     #[test]
     fn plan_bakes_even_when_the_saved_scene_data_is_unreadable() {
-        // No `scenes` key = a truncated field-8 read (`scenes` sits at the document tail), NOT
-        // a scene-less preset (which reads `"scenes":[]`). This used to be treated as "unknown,
-        // so never bake" and forced Assign; the bake gate no longer reads scene data at all
-        // (that consultation is gone with the old fallback), so an unreadable `scenes` no
-        // longer changes the answer — the switch still has no `param` fn on (N, gain), so it
-        // still bakes.
+        // No `scenes` key = a cut-short field-8 read (`scenes` sits at the document tail), NOT
+        // a scene-less preset (which reads `"scenes":[]`). The bake gate reads no scene data,
+        // so an unreadable `scenes` does not change the answer — the switch still has no
+        // `param` fn on (N, gain), so it still bakes.
         let mut p = preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]]));
         p.as_object_mut().expect("preset object").remove("scenes");
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
@@ -2151,19 +2125,17 @@ mod tests {
 
     #[test]
     fn plan_on_in_base_still_asserts_its_own_block_bypass() {
-        // HW, 2026-08-19, slot 26 "Plumes+BD2+OCD". `ACD_Plumes` is the only block ON in the
-        // base, and its row is the only one that failed: solved ALONE it converges
-        // (level 0.3634 → -22.95 LUFS), but in ANY batch containing another row — either
-        // order — all of its captures read the same -26.96 LUFS, the secant's flat-response
-        // branch fires and the row reports a spurious `clamped scene_ceiling`.
+        // HW: a block ON in the base, solved ALONE, converges; in a batch containing another
+        // row its captures read flat and the row reports a spurious `clamped scene_ceiling`
+        // — unless its plan asserts its own block's bypass.
         //
         // The cause is here, not in the solver. A SIBLING row's isolation
         // (`siblings_off_excluding`) writes THIS block's `bypass = true` into the device's
         // working copy, and every capture's `recall_base` re-asserts that mutated copy — so a
         // plan that omits its own block's bypass inherits the sibling's write and measures
         // with the block it is levelling switched OFF, where its handle has no authority.
-        // The ceiling prepass was right throughout (-21.13 LUFS) precisely because it goes
-        // through `switch_states`, which DOES assert it.
+        // The ceiling prepass reads right because it goes through `switch_states`, which
+        // DOES assert it.
         //
         // So the plan's isolation must equal `switch_states(..).engaged_bypass` — asserted
         // against that function directly, so the two can never drift apart again.
@@ -2204,10 +2176,8 @@ mod tests {
 
     #[test]
     fn plan_case2_different_targets_bake_independently_not_shared() {
-        // NOT in the original failing-test list, but broken by the same rule change — the old
-        // comment's reasoning ("a single block value can't satisfy both → both Assign") no
-        // longer applies: the assign gate doesn't look at target sharing at all, only at
-        // whether the switch already carries a `param` fn on (N, gain). Neither does here, so
+        // The assign gate doesn't look at target sharing at all, only at whether the switch
+        // already carries a `param` fn on (N, gain). Neither does here, so
         // BOTH bake. They are NOT `BakeShared` (that requires an identical `target_bits`, and
         // these differ), so this plans two independent writes to the SAME block N with two
         // DIFFERENT target values — whichever job's write lands last on the device wins, and
@@ -2230,13 +2200,10 @@ mod tests {
         );
     }
 
-    // NOT in the original failing-test list, but broken by the same rule change, and it is
-    // exactly the POSITIVE half of the new rule (item 3): a switch that ALREADY carries a
-    // `param` fn on the selected (node, param) must plan `Assign`, editing that function in
-    // place — never bake-and-clear. This used to pin the opposite: a stale param fn got
-    // cleared and the value baked onto the block instead ("consolidate to one write"). That
-    // consolidation is gone — per the directive, an existing function on the selected control
-    // is the ONE thing that routes a job to `Assign` at all, and it is edited, not removed.
+    // The POSITIVE half of the assign gate: a switch that ALREADY carries a `param` fn on the
+    // selected (node, param) must plan `Assign`, editing that function in place — never
+    // bake-and-clear. An existing function on the selected control is the ONE thing that
+    // routes a job to `Assign` at all, and it is edited, not removed.
     #[test]
     fn plan_assigns_when_the_switch_already_carries_a_param_fn_for_the_node() {
         // Switch 0 carries BOTH an on-off on N and a `param` fn on (N, gain) — the existing
@@ -2324,9 +2291,8 @@ mod tests {
         assert!(!node_targeted_by_assign(&serde_json::json!({}), "anything"));
     }
 
-    // The old `scene_jobs::node_targeted_by_ftsw_or_exp` copy this function replaces only
-    // scanned `exp1`/`exp2`, only accepted an array-shaped jack body, and only matched
-    // `func:"param"` — missing every one of these three shapes. Each must be caught now.
+    // Each of these three shapes must be caught: a toe-jack assign, an object-shaped `exp1`
+    // body, and a `wah` func binding.
     #[test]
     fn node_targeted_by_assign_catches_a_toe_jack_assign() {
         let preset = serde_json::json!({

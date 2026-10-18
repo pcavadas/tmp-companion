@@ -424,7 +424,7 @@ fn skip_load_only_for_a_clean_ok_same_preset_scene_chain() {
     ));
 }
 
-// --- capture_suspect: what a Doctor capture must pass before it is diagnosed (#246) ---
+// --- capture_suspect: what a Doctor capture must pass before it is diagnosed ---
 
 #[test]
 fn capture_suspect_flags_a_flat_capture_against_a_lively_stimulus() {
@@ -481,7 +481,7 @@ fn capture_suspect_refuses_a_capture_with_no_tail() {
     );
 }
 
-// #246 end to end on real stimulus data: a stationary floor captured where the
+// End to end on real stimulus data: a stationary floor captured where the
 // shipped stimulus should be has no energy step, so the onset seam reports it
 // un-aligned, and the capture is refused rather than diagnosed.
 #[test]
@@ -764,7 +764,7 @@ fn doctor_refuses_inserts_on_a_read_cut_inside_the_audio_graph() {
     assert_eq!(inserts, 0, "inserted on a cut read");
 }
 
-// --- #190: a stopped run never fabricates a measurement ---
+// --- A stopped run never fabricates a measurement ---
 
 fn item(
     key: &str,
@@ -935,7 +935,7 @@ fn consistency_steps_use_the_on_screen_name_and_rows_keep_the_label() {
     }
 }
 
-// --- #191: one effective graph per sound ---
+// --- One effective graph per sound ---
 
 /// A preset whose plate reverb is SAVED BYPASSED (its `level` makes its switches offer a
 /// level param — the UI's selectable gate; Mix alone is never offered): footswitch 1 turns it on, footswitch 2

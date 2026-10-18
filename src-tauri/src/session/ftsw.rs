@@ -50,8 +50,8 @@ impl Session {
 
     /// Re-prompt and read the live WORKING-COPY `ftsw` array (`currentPresetDataRequest`
     /// → fresh field-3 push). Reflects UNSAVED edits, so it's how a footswitch set/clear is
-    /// confirmed (no dedicated echo). `ftsw` sits at byte ~4330 of field-3, before the
-    /// scene-tail truncation, so it survives the partial. `None` if no field-3 lands.
+    /// confirmed (no dedicated echo). `ftsw` sits at byte ~4330 of field-3, ahead of the
+    /// `scenes` tail. `None` if no field-3 lands.
     pub fn live_ftsw(&mut self) -> Option<serde_json::Value> {
         self.live_preset_value(|v| v.get("ftsw").is_some())
             .ok()

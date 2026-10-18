@@ -88,13 +88,13 @@ pub struct TradeFailure {
 /// that moved every one of them.
 #[derive(Debug, Clone)]
 pub struct TradeHold {
-    /// The raised `presetLevel` to re-assert at the save (the pre-save scene recall runs the
-    /// device's own level-apply and would otherwise revert it — see `recall_reassert_save`).
+    /// The raised `presetLevel` to re-assert at the save (a pre-save base recall would
+    /// otherwise revert it to the base snapshot — see `recall_reassert_save`).
     pub preset_level: f32,
     /// The solved base amp `outputLevel` writes, in `PersistedWrite` form (scene slot
     /// `BASE_SCENE_SLOT` — `persisted_value` reads those straight off the base graph).
     pub writes: Vec<PersistedWrite>,
-    /// A5/F2 DETECTION: `(group_id, node_id, expected_bypass)` for every node the hold's own
+    /// DETECTION: `(group_id, node_id, expected_bypass)` for every node the hold's own
     /// base job isolated — `expected_bypass` is what the SAVED document held for that node
     /// BEFORE isolation (`footswitch::block_bypassed_in_base`), i.e. what `undo_base_isolation`
     /// already wrote back. Empty when the base job carried no isolation. Threaded to
@@ -205,8 +205,8 @@ pub fn apply_headroom_trade(
         // below.
         crate::headroom_trade::BASE_FADER_FLOOR,
         // The raise above is UNSAVED, and every capture the hold takes recalls base first —
-        // which runs the device's own level-apply and would revert it. Re-assert it on each
-        // one, or the hold solves the base fader against the PRE-raise sound.
+        // which can revert it to the base snapshot. Re-assert it on each one, or the hold
+        // solves the base fader against the PRE-raise sound.
         Some(raised),
     ) {
         Ok(s) => s,
@@ -233,7 +233,7 @@ pub fn apply_headroom_trade(
         }
         return Err(failure);
     }
-    // A5/F2: the hold landed with base's isolation still forced live in the device's working
+    // The hold landed with base's isolation still forced live in the device's working
     // copy (every capture above re-asserted it via `base_job.force_bypass`). A preset load is
     // FORBIDDEN from here on — the raise and the solved fader are UNSAVED deferred writes, and
     // "never load before `save_deferred_scene_writes`" applies literally: a reload would wipe
@@ -258,7 +258,8 @@ pub fn apply_headroom_trade(
     })
 }
 
-/// A5/F2's SHARED WRITER: push a precomputed `(group, node, ORIGINAL saved bypass)` list back
+/// The SHARED isolation-restore WRITER: push a precomputed `(group, node, ORIGINAL saved
+/// bypass)` list back
 /// onto the device, on its OWN fresh connection, without ever loading the preset (either
 /// caller may be holding UNSAVED deferred writes — the trade's raise/fader, or the batch's own
 /// solved scene values — that a load would discard).
@@ -281,14 +282,14 @@ pub(super) fn write_isolation_restore(
     Ok(())
 }
 
-/// A5/F2's SHARED DERIVATION: `(group, node, ORIGINAL saved bypass)` for a set of forced-bypass
+/// The SHARED isolation-restore DERIVATION: `(group, node, ORIGINAL saved bypass)` for a set
+/// of forced-bypass
 /// nodes, read straight off the SAVED document (`footswitch::block_bypassed_in_base`) — the
 /// value the batch found there before isolation ever touched it, so the pedal ends up exactly
 /// where the user's preset already had it, never a guessed inverse of the forced flag. This is
 /// the ONE derivation shared by `undo_base_isolation` (the trade hold's own cleanup),
 /// `commands::level_scenes::isolation_restore_for_batch` (the base-requested job's PHASE-3
-/// cleanup) and `trade_for_batch`'s landed-trade detection — previously three independent
-/// copies that had drifted on the `saved == None` case.
+/// cleanup) and `trade_for_batch`'s landed-trade detection.
 ///
 /// `saved == None` returns EMPTY, never a guessed `false` for every node: there is nothing to
 /// restore TO, and a blind `false` would risk actively un-bypassing a pedal the player had
@@ -322,7 +323,7 @@ pub(crate) fn isolation_restore_list(
         .collect()
 }
 
-/// A5/F2: reverse a base job's isolation bypass writes after a landed headroom trade hold. Thin
+/// Reverse a base job's isolation bypass writes after a landed headroom trade hold. Thin
 /// wrapper over `isolation_restore_list` (the derivation) + `write_isolation_restore` (the
 /// writer) — see the former's doc for the `saved == None` policy.
 pub(super) fn undo_base_isolation(
@@ -397,7 +398,7 @@ pub fn retarget_prepass_after_trade(
 /// warns + flags for the UI's Restore, it doesn't undo.
 pub(crate) const REDIST_POST_VERIFY_TOL_LU: f64 = 1.5;
 
-/// Gain-budget redistribution runner (loud-preset clamp class, single-amp v1). Raises
+/// Gain-budget redistribution runner (loud-preset clamp class, single amp). Raises
 /// `presetLevel` to `new_preset_level` (UNSAVED) FIRST — a pure linear multiplier, so every
 /// clamped scene inherits the rise as headroom — then re-levels EVERY sound in `jobs`
 /// (base at slot 8 + all FS scenes) back to its target at the new pl via `jointk_one_scene`
@@ -421,7 +422,7 @@ pub fn redistribute_clamped_headroom(
     restore_scene: Option<u32>,
     saved: Option<&serde_json::Value>,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
-    // B6 (F10): "the redistribute runner shares the seam" — this runner doesn't go through
+    // This runner doesn't go through
     // `run_scene_jobs` (its own hand-rolled save + audio spot-verify below), so it takes the
     // same tail-emitter shape directly rather than inheriting it.
     mut on_tail: impl FnMut(&str),
@@ -564,7 +565,7 @@ pub fn redistribute_clamped_headroom(
     Ok(outcomes)
 }
 
-/// A5/F2 DETECTION: union two `(group, node, expected_bypass)` isolation-restore lists, deduped
+/// DETECTION: union two `(group, node, expected_bypass)` isolation-restore lists, deduped
 /// by node — `base_restore` (already-derived, e.g. the trade hold's own expectations) wins ties,
 /// since a base row carries exactly one isolation set and both sources describe the SAME nodes
 /// when they overlap. Pure so the union rule is unit-testable without a device: `verify_

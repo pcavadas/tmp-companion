@@ -60,7 +60,7 @@ pub fn mute_floor_report(
     cur_b: f32,
     stimulus: &[f32],
 ) -> Result<String, LevelError> {
-    // Before the load: the field-8 read this diagnostic's scene writes need (see
+    // Before the load: the saved-preset read this diagnostic's scene writes need (see
     // `saved_for_scene_knobs`) — `read_saved_preset` sleeps after itself, so the load
     // session that follows still gets a spaced boundary.
     let saved = saved_for_scene_knobs(slot, [a, b]);
@@ -122,12 +122,9 @@ pub(super) fn balanced_solo_levels(c_a: f64, c_b: f64) -> (f32, f32) {
 /// scenes (series / single / split-output) fall through to the plain joint-k (`jointk_one_scene`).
 /// Same signature + outcome shape as `level_scenes_oneshot`, so the command path swaps in.
 ///
-/// HW-validated (2026-07-20, preset "Bass Dual Amps", 2-amp merge): `probe --rebalance-scenes`
-/// Base @ −26 achieved −25.79 (+0.21, level 0.91); @ −23 honest clamp at −25.16/level 1.0.
-/// `probe --mute-floor` confirmed the muting assumption: both lanes muted = digital silence
-/// (ideal mute, zero bleed → trustworthy equal-solo balance; lane solos −31.3/−24.6), and
-/// `probe --mute-floor` correctly refuses a single-amp split-output preset ("needs a 2-amp
-/// merged parallel scene") — the leveller itself falls back to `jointk_one_scene` there.
+/// HW-validated on a 2-amp merge (`probe --rebalance-scenes`): both lanes muted read digital
+/// silence (`probe --mute-floor`: ideal mute, zero bleed → trustworthy equal-solo balance). A
+/// single-amp split-output preset falls back to `jointk_one_scene`.
 /// Restores via preset reload on no-save; ends with a guaranteed re-amp OFF.
 #[allow(clippy::too_many_arguments)]
 pub fn level_scenes_rebalance(
@@ -138,11 +135,11 @@ pub fn level_scenes_rebalance(
     restore_scene: Option<u32>,
     saved: Option<&serde_json::Value>,
     hold: Option<&TradeHold>,
-    // A5/F2: `(group, node, ORIGINAL saved bypass)` for a base-requested job's own isolation
+    // `(group, node, ORIGINAL saved bypass)` for a base-requested job's own isolation
     // (empty on every run that never isolated anything) — see `run_scene_jobs`'s param doc.
     isolation_restore: &[(String, String, bool)],
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
-    // B6: forwarded to `run_scene_jobs` verbatim — see its own doc.
+    // Forwarded to `run_scene_jobs` verbatim — see its own doc.
     on_tail: impl FnMut(&str),
     cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, LevelError> {

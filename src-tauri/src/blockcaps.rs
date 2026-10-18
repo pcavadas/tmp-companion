@@ -3,13 +3,14 @@
 //!
 //! **This is the SOLE enforcement of the 4 count caps.** The device audio engine
 //! (`tm-stomp-server`) does NOT enforce them and cannot reject an over-cap edit with a
-//! `presetError` — two independent decompile passes confirmed the count-cap code path
-//! is entirely client-side (UI-only) in `tone-master-stomp-client`. The CPU budget is
-//! different: the server does check it (fw 1.8.58 static RE), but an over-budget
-//! INSERT gets no reply and its exception aborts the server process (a replace gets
-//! `presetError` 14). So the Rust apply path (`lib.rs`'s `copy_apply_one` /
-//! `held_replace_one` / `replace_one_live`) is the primary, fail-closed guard for all
-//! 5 rules: it must catch every over-cap edit BEFORE it reaches the device.
+//! `presetError` — the count-cap code path is entirely client-side (UI-only) in
+//! `tone-master-stomp-client` (static RE, fw 1.8.58). The CPU budget is different: the
+//! server does check it (static RE, fw 1.8.58), but an over-budget INSERT gets no reply
+//! and its exception aborts the server process (a replace gets `presetError` 14). So the
+//! Rust apply path (`commands::copy_apply::copy_apply_one`,
+//! `commands::held_edit::held_replace_one` / `replace_many_held`) is the primary,
+//! fail-closed guard for all 5 rules: it must catch every over-cap edit BEFORE it reaches
+//! the device.
 //!
 //! The 5 rules, in firmware enum order (the order `check_op` reports the first
 //! violation in):
@@ -27,9 +28,9 @@
 //! device's ids arrive verbatim with their suffix (e.g.
 //! `ACD_DeluxeReverb68CustomCabIRConvRvb`), and the sets already enumerate every
 //! runtime variant. NEVER normalize / strip a suffix before a set lookup: that would
-//! silently misclassify a real device id (see the module's RE plan for the load-bearing
-//! `ConRvb` typo id and the empty-`acdCategory` standalone cab/IR that a derived filter
-//! would miss).
+//! silently misclassify a real device id (`block-classification.json` carries the
+//! load-bearing `ConRvb` typo id and the empty-`acdCategory` standalone cab/IR that a
+//! derived filter would miss).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -117,7 +118,7 @@ fn cost(id: &str) -> f64 {
 /// The CPU budget + per-block cost table, parsed once from `model-cpu.json`.
 struct Costs {
     budget: f64,
-    /// What the firmware charges a FenderId missing from its table (`FUN_00cacd90`).
+    /// What the firmware charges a FenderId missing from its table (static RE).
     unknown_cost: f64,
     cpu_by_bid: HashMap<String, f64>,
 }
@@ -160,10 +161,9 @@ pub struct RosterEntry {
 /// re-assigns them, an insert mints one); groups are keyed because the device lists nodes
 /// in sorted-group order while the frontend's optimistic graph lists them in signal
 /// order; and WITHIN a group the order is dropped because the unit accepts several blocks
-/// of one model in a group (ONLINE `copy.spec.ts` 2026-09-03: four `ACD_TubeScreamer` in
-/// G1 after chained inserts) and, with a node id being its FenderId, an insert anchored on
-/// a duplicated model lands where the device decides, not where `expected_roster`
-/// projects. A multiset match still proves the post-edit document: a partial has fewer
+/// of one model in a group (HW), and an insert anchored on a duplicated model lands where
+/// the device decides, not where `expected_roster` projects. A multiset match still proves
+/// the post-edit document: a partial has fewer
 /// nodes and a stale one a different multiset — and the adopted read then carries the
 /// device's real order.
 pub(crate) type Roster = std::collections::BTreeMap<String, Vec<String>>;

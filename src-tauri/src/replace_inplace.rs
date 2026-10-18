@@ -7,7 +7,7 @@ use crate::song_io::read_song_presets;
 
 /// The tolerant list read, retried on a fresh reconnect until `pred` is satisfied (or a
 /// reconnect stops helping). A single short read is the common case; the retry only
-/// engages for the high-index tail-truncation class documented on `replace_inplace_with`.
+/// engages for the high-index short-list class documented on `replace_inplace_with`.
 fn read_list_until(
     pred: impl Fn(&[session::PresetEntry]) -> bool,
 ) -> Result<Vec<session::PresetEntry>, String> {
@@ -31,10 +31,11 @@ fn read_list_reaching(orig_list_index: ListIndex) -> Result<Vec<session::PresetE
     read_list_until(|list| list.iter().any(|p| p.slot == orig_list_index))
 }
 
-/// Shared in-place-edit core (used by `--replace-inplace` and AC5 `--restore`).
+/// Shared in-place-edit core (used by `--replace-inplace` and `--restore`).
 ///
-/// Sequence: import (appends a scratch copy) → locate the scratch by re-listing
-/// (`requestNextEmptyPresetSlot` is dead, so we OBSERVE where it landed) →
+/// Sequence: import (appends a scratch copy) → locate the scratch by re-listing (an
+/// import lands in the lowest empty slot, static RE; `requestNextEmptyPresetSlot` is
+/// unused, so we OBSERVE where it landed) →
 /// `load_preset(scratch)` → `save_current_preset(orig)` to overwrite the original
 /// slot in place → **guarded** `clear_user_preset(scratch)`. All addresses are
 /// 0-based list indices; `session/preset.rs` translates each to the 1-based device
@@ -56,7 +57,7 @@ pub(crate) struct ReplaceOutcome {
     pub songs_after: Vec<session::SongPresetRecord>,
 }
 
-/// Reusable in-place-edit core (AC7): import a scratch copy → locate it by observing
+/// Reusable in-place-edit core: import a scratch copy → locate it by observing
 /// which previously-empty slot filled → `load(scratch)` → prove the loaded body carries the
 /// file's blocks → `save_current_preset(orig)` to overwrite the original slot →
 /// **guarded** `clear(scratch)` → re-read to confirm
@@ -88,20 +89,16 @@ pub(crate) fn replace_inplace_with(
     // TOLERANT reads for both landing-detection lists — strict decodes only
     // terminal-frame streams and fails/garbles on the interleaved responses that
     // back-to-back lean sessions produce (HW-observed: tolerant 504/504 on a healthy
-    // device while strict truncated or returned nothing). Tail-truncation is SAFE
+    // device while strict came back short or empty). A short list is SAFE
     // here in both directions: a slot past the cut is ABSENT from the list (so it
     // never enters `empty_before` — landing detection misses it and aborts, it can
     // never mis-clear), and the fail-closed `confirm_active` below still gates the
     // save before any damage.
     //
-    // A high scratch-zone target (the e2e seed's slots 400+) makes tail-truncation the
-    // COMMON case rather than a rare tail: several fresh connects in quick succession
-    // (this function's own multi-step sequence, on top of the caller's own reads) can
-    // reliably chop the tolerant read well short of a high index (HW-observed 2026-07-27:
-    // ~310-350/504 across many back-to-back attempts, independent of the gap between
-    // them — the documented interleave/pump-window chop, so waiting doesn't help but a
-    // bounded reconnect-retry does). Retry a few times before giving up, rather than
-    // erroring on the first short read.
+    // A high scratch-zone target (the e2e seed's slots 400+) makes a short list the
+    // COMMON case rather than a rare tail (HW: back-to-back connects can cut a list read
+    // short; a bounded reconnect-retry recovers, waiting does not). Retry a few times
+    // before giving up, rather than erroring on the first short read.
     let before = read_list_reaching(orig_list_index)?;
     let orig_name_before = before
         .iter()
@@ -136,7 +133,7 @@ pub(crate) fn replace_inplace_with(
     // baseline list can't misidentify a *real* pre-existing preset as the scratch
     // and get it cleared in step 3. Same retry as the baseline read above — the scratch
     // itself lands at a high, previously-empty index, so it's exposed to the identical
-    // tail-truncation chop; a single-attempt read here would burn the run's import on
+    // short-list cut; a single-attempt read here would burn the run's import on
     // the first short response instead of giving the reconnect-retry a chance to land it.
     let after_import = read_list_until(|list| {
         list.iter()
@@ -198,10 +195,9 @@ pub(crate) fn replace_inplace_with(
     // A dropped load leaves a DIFFERENT preset current, and a body rejected at load an EMPTY
     // one under the scratch's name; saving either over orig_list_index is silent data loss.
     // On failure ABORT before the save, and take the scratch back off the unit only through
-    // its stored-row proof (#177): a scratch left behind shares the file's name and id with
+    // its stored-row proof: a scratch left behind shares the file's name and id with
     // the original, so the next import of that preset would land next to it. The session
-    // layer translates these 0-based list indices to the device's 1-based userSlot
-    // (HW-confirmed 1.7.75).
+    // layer translates these 0-based list indices to the device's 1-based userSlot (HW).
     let mut save_conn = load_and_prove(scratch_slot, &scratch_name, &proof).map_err(|e| {
         let cleanup = match rollback_scratch(&stored, scratch_slot, &scratch_name) {
             Ok(()) => "the scratch import was cleared".to_string(),
@@ -437,7 +433,7 @@ impl ProofError {
 /// ([`Session::connect_confirmed`]) and that its working copy passes `proof`. Returns that
 /// confirmed session, so a save can follow on the SAME connection as its guards. The lapse
 /// lets the unit discard the load connection's queued replies, which a session opened
-/// inside its 0.75 s drop would otherwise receive ahead of its own (#177). A load of the
+/// inside its 0.75 s drop would otherwise receive ahead of its own. A load of the
 /// already-current slot is skipped device-side unless dirty; the working copy then still
 /// comes from a real load, since an import over the current slot reloads it (fw 1.8.58
 /// static RE).
@@ -476,7 +472,7 @@ fn import_roster(file: &serde_json::Value) -> Result<crate::blockcaps::Roster, S
 
 /// The loaded working copy may be saved over the original only if it holds the file's
 /// blocks, is not the template substitute (which a block-less file's roster passes), and
-/// carries the file's `preset_id` — an import keeps it (fw 1.8.58, HW 2026-10-10) and only
+/// carries the file's `preset_id` — an import keeps it (HW, fw 1.8.58) and only
 /// the save below re-mints it. Ids repeat across copies, so this proves the body loaded
 /// intact, not which slot is loaded (`confirm_active` covers that). A working copy cut
 /// before `info` has no id to compare and falls back to the block check.
@@ -523,10 +519,10 @@ fn rollback_scratch(
 /// Clear the user preset at LIST index `list_index`, but only if that list entry
 /// reads `expect_name`. The guard and the clear both take a [`ListIndex`] (the session
 /// derives the device userSlot), so the compiler keeps the verification
-/// and the mutation address the *same* preset (the earlier guard bug checked the
-/// list index but cleared a same-numbered device slot = a different preset).
+/// and the mutation address the *same* preset (a guard in list-index space over a clear
+/// in device-slot space would clear a different preset).
 pub(crate) fn guarded_clear(list_index: ListIndex, expect_name: &str) -> Result<(), String> {
-    // Tolerant read: a tail-truncated list leaves the slot ABSENT → cur = None →
+    // Tolerant read: a tail-cut list leaves the slot ABSENT → cur = None →
     // the guard refuses (fail-closed). Strict fails outright on interleaved
     // responses from back-to-back sessions (see replace_inplace_with).
     let list = Session::connect()?.list_my_presets()?;

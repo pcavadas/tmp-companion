@@ -6,7 +6,7 @@ use super::*;
 /// One entry in the device's "My Presets" list. `slot` is the **0-based list
 /// index** ([`ListIndex`], what `Session::load_preset` and friends take — the
 /// device's 1-based `userSlot` is [`DeviceSlot::from`] it); `name` is the display name.
-/// NOTE: the list-index → userSlot mapping is confirmed on real hardware in M3
+/// NOTE: the list-index → userSlot mapping is confirmed on real hardware
 /// by loading a slot and reading back the current-preset info. Do NOT print
 /// this field labeled "slot" without the index/userSlot distinction — that
 /// ambiguity once steered a probe run at the wrong preset.
@@ -18,7 +18,7 @@ pub struct PresetEntry {
 }
 
 /// True if a "My Presets" display name marks an EMPTY slot. The device shows
-/// `--` at cleared positions (observed on 1.7.75); also treat a blank/`Empty`
+/// `--` at cleared positions (HW); also treat a blank/`Empty`
 /// name as empty defensively. Used to pick a scratch slot and to skip empties
 /// when locating an imported preset.
 pub fn is_empty_slot_name(name: &str) -> bool {
@@ -64,7 +64,7 @@ pub(super) fn unique_preset_slot_by_name(presets: &[PresetEntry], name: &str) ->
 
 impl Session {
     /// Resolve the active graph to a 0-based My Presets list index when the
-    /// truncated live JSON and handshake events did not carry a slot. The
+    /// live JSON and handshake events did not carry a slot. The
     /// CurrentPresetInfoChanged display name is still available, so a unique
     /// name match is addressable. Duplicate names deliberately stay unresolved.
     pub fn resolve_unique_my_preset_slot(&mut self, name: Option<&str>) -> Option<ListIndex> {

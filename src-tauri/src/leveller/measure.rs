@@ -30,11 +30,11 @@ pub(super) fn measure_at_level(
 // is finite LUFS and solves into a plausible-looking level (HW: 19/20 floor reads in
 // one sweep; a full solve+verify landed 0.00 LU error on pure floor). The tell is the
 // MOMENTARY-loudness spread (P95 − P10 of the 400 ms momentary loudness): the plucked
-// stimulus (10 notes 0.6 s apart) swings ~6 LU at that window on every shipped WAV and
-// still ~0.7–1.4 LU after 40 dB of hard saturation, while a stationary floor reads
-// ≈ 0.1. The 3 s short-term window this guard used to read averages ~5 plucks, so the
-// shipped stimuli measured only 0.26–0.32 LU there and the guard disarmed itself on 7 of
-// 8 of them (and on all 8 Doctor slices, whose 3 s stimulus IS one short-term window).
+// stimulus (10 notes 0.6 s apart) swings 7.3–10.6 LU at that window on every shipped WAV
+// and still ~0.7–1.4 LU after 40 dB of hard saturation, while a stationary floor reads
+// ≈ 0.1. The 3 s short-term window averages ~5 plucks: the shipped stimuli measure only
+// 0.26–0.32 LU there, so a guard on it would disarm itself on 7 of 8 of them (and on all
+// 8 Doctor slices, whose 3 s stimulus IS one short-term window).
 // The guard is still stimulus-aware: a stimulus with no momentary dynamics of its own
 // (a near-stationary DI capture) can't discriminate, so it DISARMS the trip.
 //
@@ -221,8 +221,8 @@ pub fn measure_c(
 /// afterwards (the base row of a footswitch preset, where the verify is impossible — see
 /// `level_preset_impl`): a second capture at [`cross_check_level`] must solve the same `C`
 /// within [`C_AGREE_TOL_LU`], otherwise a third capture at the reference takes the median.
-/// A single silently-wrong capture (the 2.9 LU-low outliers on record) can then no longer
-/// set the saved level on its own.
+/// A single silently-wrong capture (2.9 LU-low outliers occur, HW) can then no longer set
+/// the saved level on its own.
 ///
 /// CLIP RESCUE: a reference capture that clipped ([`LevelError::Clipped`]) is re-taken
 /// ONCE at half the reference level, on its own fresh connection like every capture here
@@ -295,15 +295,12 @@ pub(crate) fn predicted_true_peak_dbtp(ref_tp_dbtp: f64, ref_level: f32, final_l
 /// CAPTURE CONNECTION → set the reference level → engage re-amp once →
 /// `audio::reamp_capture(.., tail_ms)` → guaranteed re-amp off.
 ///
-/// The scene MUST be loaded on the capture connection, not the load connection:
-/// the preset survives the load→capture reconnect but **the active scene does
-/// not** (see `set_knob`'s "scene + scene-edit don't survive the leveller's
-/// reconnects" — HW). Loading it only in the dropped load connection measured
-/// whatever scene the unit was already on, so every scene read the same signal.
+/// The scene is recalled on the capture connection — the conservative shape (the active
+/// scene survives a reconnect on fw 1.8.58, static RE).
 ///
 /// `scene`/`skip_load` interact: when this call just freshly loaded the preset
 /// (`!skip_load`), nothing unsaved is at risk, so `scene: None` means "recall
-/// BASE explicitly" — omitting the recall used to silently measure whatever
+/// BASE explicitly" — omitting the recall would silently measure whatever
 /// scene the connection defaulted to (the preset's saved `lastLoadedScene`), not
 /// base. When `skip_load` is set, the caller is asserting the device ALREADY
 /// holds exactly the state to measure (Doctor's consecutive-scene chain, or a
@@ -415,8 +412,7 @@ pub(crate) fn capture_on_session(
     // ~600 ms idle gap after the caller's `load_scene` recall and read the device's
     // stationary output floor instead of the stimulus. `Session::heartbeat` is the
     // designed keep-alive and writes nothing: with the default settles, recall → 150 → hb →
-    // 100 → engage keeps every idle gap ≤300 ms (the old cadence was recall → 300 → hb →
-    // 300 → hb → 300 → engage; see `notes/perf.md`).
+    // 100 → engage keeps every idle gap ≤300 ms (see `notes/perf.md`).
     // HW evidence, the two candidate mechanisms, and why the timing is two-sided:
     // gotchas.md "An engage after a naked scene recall latches silence".
     //
@@ -453,7 +449,7 @@ pub(crate) fn capture_on_session(
 /// MEASURE seam returning the FULL multi-channel capture: load `slot`, re-amp
 /// `stimulus` at `ref_level`, return every captured channel. Validated own-conn
 /// load → fresh-connect set → engage re-amp once → capture → off. `capture_samples`
-/// and the per-channel N1 diagnostic (`probe --channels`) share this.
+/// and the per-channel diagnostic (`probe --channels`) share this.
 pub fn capture_full(
     slot: ListIndex,
     stimulus: &[f32],
@@ -507,7 +503,7 @@ pub fn capture_samples(
 /// measure the re-amp PATH rather than a preset's tone.
 ///
 /// Why this is needed: a bandwidth test through a normal preset measures the
-/// AMP's HF rolloff, not the transport's. Measured on fw 1.8.45, a
+/// AMP's HF rolloff, not the transport's. Measured (HW), a
 /// TubeScreamer→Plexi chain puts the capture 49 dB down by 16 kHz and at the
 /// float floor by 22 kHz — which mimics a band-limit cliff that may not be there.
 /// Bypassing every block makes the chain approximately a wire, so whatever
@@ -549,12 +545,12 @@ pub fn capture_samples_bypassed(
 ///   `valueA` onto the leveled param (a BAKED switch needs no write — its engaged
 ///   sound IS the base value).
 ///
-/// `validate` is the P5 EXTERNAL-VALIDATION add-on (`crate::validate_log`): when it is
+/// `validate` is the EXTERNAL-VALIDATION add-on (`crate::validate_log`): when it is
 /// `Some` AND `TMP_E2E_VALIDATE_LOG` is set, the capture behind the returned loudness
 /// is ALSO written to a WAV and one expectation row is appended to the log, so an
 /// ffmpeg `ebur128` read this repo did not write can judge the same audio. Pure add-on
-/// — `None` (every production call) is byte-identical to the previous behaviour, and
-/// the env check happens before any extra work. Deliberately emitted HERE rather than
+/// — `None` (every production call) does no extra work, and the env check happens
+/// before any extra work. Deliberately emitted HERE rather than
 /// at the solve: the solve captures at its REFERENCE level, so its PCM is not the saved
 /// preset's output.
 pub fn measure_sound_asis_strict(
@@ -626,11 +622,9 @@ pub fn measure_sound_asis_strict(
 /// The integrated LUFS of a re-amp capture's PROCESSED pair, erroring on silence.
 /// The shared tail of every isolated measurement (load/engage/capture/disengage
 /// differ per caller; this `capture → stereo-or-mono measure → finite-check` is
-/// identical). `pub(crate)` so the `lib.rs` probe measure paths share it too.
-/// Renamed from `loudest_lufs` (PR2): the metric is a 2-ch BS.1770 sum over
-/// USB-Out 1/2, not an argmax-picked single channel — `loudest_channel` is still
-/// used elsewhere (advisory VU pick, per-channel probe diagnostics) but no longer
-/// describes this hub.
+/// identical). `pub(crate)` so the `lib.rs` probe measure paths share it too. The
+/// metric is a 2-ch BS.1770 sum over USB-Out 1/2, not an argmax-picked single channel
+/// (`loudest_channel` serves the advisory VU pick and per-channel probe diagnostics).
 pub(crate) fn processed_lufs(cap: Result<audio::Capture, LevelError>) -> Result<f64, LevelError> {
     processed_loudness(cap).map(|l| l.integrated_lufs)
 }
@@ -690,7 +684,7 @@ pub(crate) fn is_engaged(l: &lufs::Loudness) -> bool {
 /// `audio::meter_channels` — stereo by default), falling back to
 /// [`lufs::measure_mono`] on channel 0 for a genuinely 1-channel capture (never
 /// duplicating it into fake dual-mono — see `processed_stereo`'s doc). The
-/// INPUT/stimulus side (`stimulus_spread_lu`, calibration, etc.) never calls this —
+/// INPUT/stimulus side (the stimulus spread, calibration, etc.) never calls this —
 /// it stays on `measure_mono` directly. `pub(crate)` so a probe diagnostic headline
 /// can share the exact production convention instead of a parallel per-channel
 /// re-check (`probe_api::level::probe_measure_current_lufs`).
@@ -860,7 +854,7 @@ pub(crate) fn engage_measure_disengage_in(
 /// leveling metric (the whole stimulus plus the decay tail). `Short` plays only the first
 /// [`SHORT_SKIP_MS`] + [`SHORT_MEASURE_MS`] of the stimulus and measures the
 /// [`SHORT_MEASURE_MS`] after the skip: it reads up to ~0.5 LU off the full metric (offline
-/// replay of 155 HW footswitch captures, fw 1.8.58, 2026-10-17), so only the footswitch
+/// replay of 155 HW footswitch captures, fw 1.8.58), so only the footswitch
 /// solve's FAR steps use it, and no short reading is ever accepted (`footswitch::CoarseFs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureWindow {
@@ -942,29 +936,21 @@ fn breaker(s: &mut Session) -> Result<(), LevelError> {
 /// own copy of the breaker: with the default settles, recall → 150 → hb → 100 → engage,
 /// every idle gap ≤300 ms.
 ///
-/// HARDENING, NOT A FIX FOR AN OBSERVED FAILURE — be precise about this, because the
-/// evidence cuts the other way. gotchas.md "An engage after a naked scene recall latches
-/// silence" records THIS seam's old `load_scene → 300 → engage` shape measuring the same
-/// heavy amp-flip scenes LOUD, and cites that as the wrinkle favouring the idle-gap
-/// mechanism over the DSP-mute one; the shapes that died were `probe --measure-scene`,
-/// which reaches the engage through `capture_on_session`. So this is defence in depth:
-/// the seam sat one un-analysed 300 ms gap away from the failing shape while the
-/// mechanism is only partly understood, and `require_live` turns a floor read here into a
-/// hard "couldn't read this sound" error. It costs 600 ms per as-is reading and moves the
-/// timing onto the HW-proven-green cadence. Do NOT cite it as the cause of a scene-read
-/// failure without new evidence.
+/// HARDENING, NOT A FIX FOR AN OBSERVED FAILURE on this seam: defence in depth, because
+/// `require_live` turns a floor read here into a hard "couldn't read this sound" error.
+/// Do NOT cite it as the cause of a scene-read failure without new evidence.
 ///
 /// `intended_preset_level` is the run's OWN `presetLevel` — the value it solved or is
-/// holding UNSAVED in the working copy — re-asserted right after the recall. The recall runs
-/// the device's own level-apply (`recall_reassert_save`'s doc carries the HW evidence), so
-/// without this the capture renders at the level the DEVICE HAS SAVED, which is stale by the
-/// whole raise while a headroom trade holds an unsaved `presetLevel`. `None` = assert nothing (capture at the preset's own
-/// stored level) — the reading every caller that has no run-owned value still wants.
+/// holding UNSAVED in the working copy — re-asserted right after the recall. A base recall
+/// while base is current re-applies the base snapshot's level (see `recall_reassert_save`),
+/// so without this the capture can render at a stale level — off by the whole raise while a
+/// headroom trade holds an unsaved `presetLevel`. `None` = assert nothing (capture at the
+/// preset's own level) — the reading every caller that has no run-owned value still wants.
 ///
 /// The assert is INSERTED into the breaker, never spliced over it: recall → 150 → set → 300 →
 /// hb → 100 → engage. Every idle gap stays ≤300 ms and the cadence above survives intact; the
 /// engage simply lands 300 ms later.
-// A4/F11: this seam does NOT route through `arm_measurement` — it recalls a SCENE, not a
+// This seam does NOT route through `arm_measurement` — it recalls a SCENE, not a
 // single `LevelKnob`, so there is no knob to hand that seam's `LevelKnob`-shaped API. The same
 // ordering rule applies by hand instead: SCENE CONTEXT FIRST (the `load_scene` recall), THE
 // INTENDED `presetLevel` next (between the recall and isolation — a `presetLevel` set before
@@ -998,8 +984,8 @@ pub(super) fn measure_scene_asis(
 ///
 /// 1. SCENE CONTEXT FIRST. A preset loads into its SAVED `lastLoadedScene`, never base
 ///    (HW), so a measurement that recalls nothing measures whatever scene the connection
-///    happened to hold — the reported bug where a base/footswitch job was measured in
-///    scene 3. `set_knobs` recalls the knob's own context (the scene for a scene knob,
+///    happened to hold (a base/footswitch job measured in some scene). `set_knobs`
+///    recalls the knob's own context (the scene for a scene knob,
 ///    base for a base block); `PresetLevel` is a global multiplier it deliberately does
 ///    NOT recall for, so the base recall is issued here.
 /// 2. ISOLATION LAST. `load_scene` re-asserts that scene's own bypass state
@@ -1008,15 +994,14 @@ pub(super) fn measure_scene_asis(
 ///
 /// 1b. THE INTENDED `presetLevel`, BETWEEN 1 and 2 — never before `set_knob`. A BLOCK knob's
 ///    own scene recall happens INSIDE `set_knobs` (its `has_base_block` / scene branch), and
-///    that recall runs the device's own level-apply, so a `presetLevel` written above the
-///    `set_knob` call is silently reverted by it and the capture renders at whatever level
-///    the device HAS SAVED — stale by the whole raise while a headroom trade holds an unsaved
-///    `presetLevel`
-///    (`recall_reassert_save`'s doc carries the HW evidence). Written as a plain
+///    a base recall can re-apply the base snapshot's level (see `recall_reassert_save`), so
+///    a `presetLevel` written above the `set_knob` call can be silently reverted by it —
+///    stale by the whole raise while a headroom trade holds an unsaved `presetLevel`.
+///    Written as a plain
 ///    `setPresetLevel` (no recall of its own — `set_knobs`' `PresetLevel`-only branch), so it
 ///    cannot revert the knob write that precedes it, and no settle is added: the isolation
 ///    writes and the single settle below already bracket it exactly as they bracket the knob
-///    write. `None` = assert nothing (today's behaviour) — and a `PresetLevel` CALLER must
+///    write. `None` = assert nothing — and a `PresetLevel` CALLER must
 ///    pass `None`, since `value` is already the level under measurement.
 pub(super) fn arm_measurement(
     s: &mut Session,
@@ -1037,7 +1022,7 @@ pub(super) fn arm_measurement(
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
     // Cancellable: nothing is engaged yet and the connection is throwaway, so a Stop
-    // here bails cleanly (the same settle #128 made interruptible pre-refactor).
+    // here bails cleanly.
     settle_or_cancel(pre_engage_settle_ms())?;
     Ok(())
 }
@@ -1047,7 +1032,7 @@ pub(super) fn arm_measurement(
 ///
 /// BASE ARM ONLY: with `writes` empty, interleave `heartbeat → settle → heartbeat` before the
 /// final settle, or the trailing settles leave a ~600 ms idle gap that latches the floor.
-/// [→ evidence](../../notes/gotchas.md#an-engage-after-a-naked-scene-recall-latches-silence--break-the-idle-with-heartbeats)
+/// [→ evidence](../../../notes/gotchas.md#an-engage-after-a-naked-scene-recall-latches-silence--break-the-idle-with-heartbeats)
 pub(super) fn arm_pair_measurement(
     s: &mut Session,
     scene: Option<u32>,
@@ -1065,9 +1050,8 @@ pub(super) fn arm_pair_measurement(
     for (g, n, p, v) in writes {
         s.change_parameter(g, n, p, *v)?;
     }
-    // NAKED-GAP breaker — base arm, zero writes only. See this fn's doc for the bisect
-    // that pins the shape and why it must not spread to the scene arm or a write-bearing
-    // base run.
+    // NAKED-GAP breaker — base arm, zero writes only (see this fn's doc); it must not
+    // spread to the scene arm or a write-bearing base run.
     if scene.is_none() && writes.is_empty() {
         breaker(s)?;
     }
@@ -1077,7 +1061,7 @@ pub(super) fn arm_pair_measurement(
 
 /// One fresh-connection measurement at an explicit (`presetLevel` × block-param) POINT:
 /// base recall + presetLevel via `arm_measurement`, then each block write live on the same
-/// armed connection, one engage, measure. P0 instrumentation seam for the headroom-trade
+/// armed connection, one engage, measure. Instrumentation seam for the headroom-trade
 /// physics (presetLevel↑ / outputLevel↓ product invariance) — writes stay on the throwaway
 /// working copy; the caller reloads to discard. See [`arm_pair_measurement`] for the
 /// pre-engage choreography (and its zero-write naked-gap fix).
@@ -1442,7 +1426,7 @@ mod floor_guard_tests {
         assert_eq!(median3(-20.1, -20.0, -22.9), -20.1);
     }
 
-    // #243: the base lane measures the preset at its SAVED level, clamped away from the
+    // The base lane measures the preset at its SAVED level, clamped away from the
     // floor; with no saved level it keeps the caller's reference.
     #[test]
     fn base_ref_level_uses_the_saved_level() {

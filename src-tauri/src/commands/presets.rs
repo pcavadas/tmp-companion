@@ -10,7 +10,7 @@ use crate::{
 
 // ── Active-preset signal chain: live reads + deliberate writes ──────────────────
 // The connected device is the single source of truth.
-// Reads parse the field-3 partial (block strip) and the songListResponse.
+// Reads parse the field-3 document (block strip) and the songListResponse.
 // Writes are DELIBERATE — every one fires only on an explicit human click in the
 // ritual UI (confirm → write → read-back verify); none ever runs unattended.
 
@@ -62,8 +62,8 @@ pub(crate) fn decode_preset_scenes(json: &[u8]) -> Result<PresetScenes, String> 
         })
         .collect();
     // Block-acting footswitches need the FULL preset (dspUnitParameters), which the
-    // ActiveGraph drops — re-parse the raw field-8 JSON (tolerant: it survives the
-    // scene-tail truncation; ftsw + audioGraph are well before it).
+    // ActiveGraph drops — re-parse the raw field-8 JSON (tolerant: ftsw + audioGraph sit
+    // well before the `scenes` tail a cut read loses).
     let footswitches = match (
         session::tolerant_parse_json(&String::from_utf8_lossy(json)),
         live.ftsw.as_ref(),
@@ -78,7 +78,7 @@ pub(crate) fn decode_preset_scenes(json: &[u8]) -> Result<PresetScenes, String> 
     })
 }
 
-/// One fresh field-8 read returning BOTH the raw bytes (for truncation detection) and
+/// One fresh field-8 read returning BOTH the raw bytes (for cut detection) and
 /// the decoded scenes — the connect/drain/read incantation lives here once so the
 /// fresh and complete-read paths cannot drift.
 fn read_slot_scenes_raw(list_index: ListIndex) -> Result<(Vec<u8>, PresetScenes), String> {
@@ -96,10 +96,10 @@ fn read_slot_scenes_raw(list_index: ListIndex) -> Result<(Vec<u8>, PresetScenes)
     Ok((json, scenes))
 }
 
-/// Does a field-8 [`PresetScenes`] read look like it landed on the scene-tail cut
-/// (notes/gotchas.md's field-8 slot-addressed-read entry — on fw 1.8.58 the cut was the
-/// device's inactivity drop, which the kept-alive read no longer hits)? Either
-/// tell fires:
+/// Does a `presetDataRequest` (field 8) [`PresetScenes`] read look cut short in its
+/// `scenes` tail? A lapse mid-stream can cut the reply (the device sends it whole,
+/// fw 1.8.58, and the kept-alive read does not lapse); this stays as a defensive check.
+/// Either tell fires:
 /// - a repaired scene name is empty — the tolerant unwind lands mid-object, so the
 ///   scene survives but its `sceneName` sits past the cut, or
 /// - `scenes.scenes.len()` doesn't cover every scene the doc itself REFERENCES
@@ -107,7 +107,7 @@ fn read_slot_scenes_raw(list_index: ListIndex) -> Result<(Vec<u8>, PresetScenes)
 ///   is `len() <= max_ref` — a doc referencing index 3 needs >= 4 scenes.
 ///
 /// Conservative in the other direction: an unparseable doc (`doc: None`) reads as NOT
-/// truncated (nothing left to compare `scenes` against) rather than forcing every
+/// cut (nothing left to compare `scenes` against) rather than forcing every
 /// caller through the backup fallback. `doc` is the tolerant parse of the SAME raw
 /// bytes `scenes` was decoded from — parsed once by the caller and threaded through.
 pub(crate) fn preset_scenes_look_truncated(
@@ -128,9 +128,9 @@ pub(crate) fn preset_scenes_look_truncated(
 /// why (`probe_api/slot_write.rs`'s `preset_id`-over-`displayName` precedent REFUSES
 /// outright on an absent id; this fallback instead warns-and-accepts on slot+name
 /// alone — a deliberate divergence, not an oversight to "restore consistency").
-/// `field8_name` is the field-8 partial's own `info.displayName` (read from the
-/// TRUNCATION-PROOF prefix, well before the scene-tail cut); `field8_id` is the same
-/// partial's `info.preset_id`. When the field-8 partial carries no id (older presets,
+/// `field8_name` is the field-8 reply's own `info.displayName` (it sits well before the
+/// `scenes` tail a cut loses); `field8_id` is the same reply's `info.preset_id`. When the
+/// field-8 reply carries no id (older presets,
 /// or a parse miss), the id check is skipped and the row is accepted on slot+name alone
 /// — logged, never a silent empty-string compare. Pure (no device I/O), so it's testable
 /// without hardware.
@@ -201,9 +201,8 @@ pub(crate) fn scenes_from_backup_row(
     })
 }
 
-/// Complete-JSON fallback for [`read_preset_scenes_fresh`]. The field-8 partial's scene
-/// tail truncates at a per-slot-deterministic size — retrying the same read cannot help
-/// (notes/gotchas.md's field-8 entry). When [`preset_scenes_look_truncated`] fires, this
+/// Complete-JSON fallback for [`read_slot_scenes_raw`]'s field-8 read, whose `scenes` tail
+/// a lapse can cut. When [`preset_scenes_look_truncated`] fires, this
 /// instead reads the preset's COMPLETE `presetJson` off the device backup
 /// ([`Session::device_backup`] + [`read_backup_archive`], the same decode
 /// `read_library_via_backup` uses) — a fresh connection, since the backup is its own
@@ -214,7 +213,7 @@ pub(crate) fn scenes_from_backup_row(
 /// replacement preset landing on the same slot could otherwise pass a slot+name check
 /// alone (a duplicate or renamed-back `displayName` on a different preset). The backup
 /// row is accepted only when its slot, name, AND `info.preset_id` all match the field-8
-/// partial's own — falling back to slot+name when the field-8 partial carries no id. A
+/// reply's own — falling back to slot+name when the field-8 reply carries no id. A
 /// scene list silently read from the WRONG preset would level the wrong sounds.
 pub(crate) fn read_preset_scenes_complete(list_index: ListIndex) -> Result<PresetScenes, String> {
     let (json, scenes) = read_slot_scenes_raw(list_index)?;
@@ -266,7 +265,7 @@ pub(crate) fn read_preset_scenes_complete(list_index: ListIndex) -> Result<Prese
 
 /// Read the full preset/scene library via the device backup (one `BackupRequest` →
 /// tar.lz4 stream → in-memory decode). Emits `tmp://backup-progress`
-/// ([`session::BackupProgress`]) as the transfer advances so the UI can drive a
+/// (`BackupProgress`) as the transfer advances so the UI can drive a
 /// determinate progress bar (the chunk percentage is exact). Read-only on the
 /// device; nothing persists (archive in RAM, temp DB deleted). Routed through
 /// `with_released_seize` so it serializes via `DEVICE_OP_LOCK` (pausing the monitor)

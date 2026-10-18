@@ -1,4 +1,4 @@
-//! Device connect/status/list + sample enumeration Tauri commands.
+//! App info, device connect and My Presets list Tauri commands.
 use crate::error::{AppError, DeviceError};
 use crate::{
     device_gate::lock_device_op, lock_ok, monitor, session, AppState, PresetEntry, SeqCst,
@@ -34,7 +34,7 @@ pub(crate) fn app_info<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> AppInfo {
 
 /// Result of a combined connect+discover handshake. The frontend receives both
 /// the firmware version AND the active signal graph in one shot, eliminating the
-/// separate `read_active_preset` round-trip that previously doubled the connect time.
+/// separate `read_active_preset` round-trip.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ConnectResult {

@@ -2,12 +2,12 @@
 //! window, the handshake windows and one named const per command's pump window.
 //! Transport set: a change here is a timing change and runs the full online suite.
 
-/// fw 1.8.58 drops the HID client after this long with no INBOUND frame (static RE,
-/// `ClientManager` timeout `0x0065e490`): the reply in flight and the whole send queue
+/// fw 1.8.58 drops the HID client after this long with no INBOUND frame (static RE + HW):
+/// the reply in flight and the whole send queue
 /// are discarded, and the LAPSED client answers and applies nothing — a heartbeat does
 /// not revive it — until a `connectionRequest` reopens it. A heartbeat on a live client
 /// refreshes the timer without drawing a reply frame. Waits for a reply therefore keep
-/// the client alive ([`Session::pump_collect_alive`]); writes after a silence reopen it
+/// the client alive ([`super::Session::pump_collect_alive`]); writes after a silence reopen it
 /// first (`TrackedHid`).
 pub(crate) const HID_INACTIVITY_DROP_MS: u64 = 750;
 
@@ -88,35 +88,34 @@ pub(super) const SLOTREAD_DRAIN_MS: u64 = 300;
 /// The backup request's own window, before its wall-clock stream loop.
 pub(super) const BACKUP_REQUEST_MS: u64 = 120;
 
-/// How long [`Session::read_reamp_state`] collects, kept alive, for both stores' replies.
+/// How long [`super::Session::read_reamp_state`] collects, kept alive, for both stores'
+/// replies.
 /// A read opened right after a session that requested a preset dump gets that dump's
 /// continuation frames first, and the Mixer reply arrived ~2.4 s late behind them (fw
 /// 1.8.58, device-confirmed), so the window covers that with room to spare.
 pub(super) const REAMP_STATE_WAIT_MS: u64 = 5_000;
 
 // ─── Command windows ─────────────────────────────────────────────────────────
-// One const per purpose. Each is the pump window (or round cap) its call site passed
-// as a literal before the split; the wire golden pins the values.
+// One const per purpose: each is its call site's pump window (or round cap); the wire
+// golden pins the values.
 
 /// One beat of the live heartbeat cadence: `heartbeat` then this pump (live edits,
 /// structural confirms, footswitch edits, node-JSON reads, the rich load).
 pub(super) const LIVE_BEAT_MS: u64 = 200;
 /// `loadPreset` and `loadScene` echo window (also the rich load's `LoadPreset`).
 pub(super) const LOAD_ECHO_MS: u64 = 300;
-/// `setPresetLevel` echo window (`PresetLevelChanged`). 50 (was 250): leveling ignores the
-/// echo, and the 405/410 leveling bench lost nothing at 50 (HW 2026-10-17, fw 1.8.58: every
-/// judge row passed, same iteration counts, no floor reads). The one reader of the echo,
-/// `probe`'s slot write, treats it as advisory: its read-back confirms the level.
+/// `setPresetLevel` echo window (`PresetLevelChanged`): leveling ignores the echo (HW,
+/// fw 1.8.58: the leveling bench lost no echo-dependent step at this window). The one
+/// reader of the echo, `probe`'s slot write, treats it as advisory: its read-back confirms
+/// the level.
 pub(super) const SET_LEVEL_ECHO_MS: u64 = 50;
-/// `changeParameter` (float and bool) window. 50 (was 250): the setter is fire-and-forget
-/// and the same bench lost nothing at 50 (−24 s on preset 405's footswitch lane, which sends
-/// six writes per capture).
+/// `changeParameter` (float and bool) window: the setter is fire-and-forget (HW, fw 1.8.58:
+/// the leveling bench lost no echo-dependent step at this window).
 pub(super) const CHANGE_PARAMETER_MS: u64 = 50;
 /// Save, clear, rename and move of a user preset.
 pub(super) const PRESET_WRITE_ECHO_MS: u64 = 300;
-/// Re-amp setter echo window. 100 (was 400): nothing waits on the echo, and the
-/// leveling bench lost no engage and no OFF at 100 (HW 2026-10-17, fw 1.8.58: −8.2 s on
-/// preset 410, every capture unchanged; the OFF is still read back by
+/// Re-amp setter echo window: nothing waits on the echo (HW, fw 1.8.58: the leveling bench
+/// lost no engage and no OFF at this window; the OFF is still read back by
 /// `reamp_off_guaranteed`).
 pub(super) const REAMP_ECHO_MS: u64 = 100;
 /// The held-edit re-arm: its `connectionRequest`, then its `currentPresetInfoRequest`.
@@ -157,7 +156,7 @@ pub(super) const SLOT_READ_REQUEST_MS: u64 = 200;
 pub(super) const SLOT_READ_MAX_WINDOWS: u32 = 24;
 pub(super) const SLOT_READ_WINDOW_MS: u64 = 150;
 /// Round cap of the field-3 slot harvest.
-#[cfg(test)] // the in-burst slot-read spike; only the wire golden runs it
+#[cfg(test)] // the in-burst slot read; only the wire golden runs it
 pub(super) const SLOT_HARVEST_MAX_WINDOWS: u32 = 28;
 /// One beat of the rich-harvest warm-up.
 pub(super) const RICH_WARMUP_BEAT_MS: u64 = 120;

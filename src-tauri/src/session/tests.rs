@@ -1993,7 +1993,7 @@ fn a_scene_less_preset_has_no_scene_to_restore() {
     );
 }
 
-/// #262: the live-sync monitor's receive path. N pushes pumped one tick at a time leave
+/// The live-sync monitor's receive path. N pushes pumped one tick at a time leave
 /// `raw` empty after every drain (no growth with uptime, no re-parse), each push decodes
 /// on the tick its stream closes — the newest included, with no later stream to unblock
 /// it — and a stream still open across ticks is held, not lost.

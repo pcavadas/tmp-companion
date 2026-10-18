@@ -266,7 +266,7 @@ mod copy_level_e2e_tests {
         // The first structural edit after a fresh load is silently DROPPED; the read-back
         // shows `n2` still there with its old model, so the held path re-sends it once and
         // then confirms + saves. The shape is `drop-first-structural`, tagged `unreachable`:
-        // fw 1.8.58 has no silent-drop path for a correctly framed edit (INFERRED). It stays
+        // fw 1.8.58 has no silent-drop path for a correctly framed edit (static RE). It stays
         // as coverage of the not-landed branch of the read-back.
         let (item, ev) = run_copy(
             SimDevice::new()
@@ -552,10 +552,10 @@ mod copy_level_e2e_tests {
 
     #[test]
     fn copy_a_stale_post_save_push_cannot_poison_the_read_back() {
-        // HW 2026-09-02 (fw 1.8.45): the buffer-scraped "read-back" after the save was the
-        // LOAD-TIME document and the Copy view patched its cache back to the original
-        // blocks. The read now happens BEFORE the save, so whatever the device pushes
-        // afterwards — here the pre-edit graph — is never what the item carries.
+        // A buffer-scraped "read-back" after the save can be the LOAD-TIME document and
+        // patch the Copy view's cache back to the original blocks (HW). The read happens
+        // BEFORE the save, so whatever the device pushes afterwards — here the pre-edit
+        // graph — is never what the item carries.
         let sim = SimDevice::new()
             .with_preset_json(&padded_two_node_doc())
             .with_stale_push_after_save();
@@ -928,7 +928,7 @@ mod copy_level_e2e_tests {
         // The fake's field-2 re-prompt renders the working copy: confirmed structural edits
         // in order (a dropped send never lands), group-scoped, `nodeId == FenderId` for a
         // minted node; a load discards them. This is the offline stand-in for the HW fact
-        // the Copy read rests on (6/6 re-prompts showed the edit, fw 1.8.45, 2026-09-03).
+        // the Copy read rests on (HW: the re-prompt shows the edit).
         let sim = SimDevice::new()
             .with_preset_json(&padded_two_node_doc())
             .with_drop_first();

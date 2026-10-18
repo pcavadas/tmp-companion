@@ -13,7 +13,7 @@ pub(super) const SCENE_LOADED: u32 = 102; // SceneLoaded { sceneSlot, sceneJson 
 
 pub(super) const SCENE_LIST_RESPONSE: u32 = 125; // sceneListResponse { dummy, sceneList[] }
 
-/// Decoded `PresetLoaded` (TMS[2] → [11]) addressing fields. All slots are the
+/// Decoded `PresetLoaded` (`TMS[2] → [11]`) addressing fields. All slots are the
 /// device's own (1-based where applicable); the caller applies the list-index
 /// translation. The full set the unit pushes on a preset change.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -44,13 +44,13 @@ pub(crate) fn scene_index_ok(doc: &serde_json::Value, n: u32) -> bool {
 /// scene-less preset, static RE).
 pub(crate) const PRESET_ERROR_TEMPLATE: u64 = 6;
 
-/// Whether `body` is a `presetError` (TMS[2] → [53]) with [`PRESET_ERROR_TEMPLATE`].
+/// Whether `body` is a `presetError` (`TMS[2] → [53]`) with [`PRESET_ERROR_TEMPLATE`].
 pub(crate) fn is_template_substitution(body: &[u8]) -> bool {
     dig(body, TMS_PRESET, PRESET_ERROR)
         .is_some_and(|err| proto::first_varint(&err, 1) == Some(PRESET_ERROR_TEMPLATE))
 }
 
-/// Decode a `PresetLoaded` push (TMS[2] → [11]). `None` if this body is not one.
+/// Decode a `PresetLoaded` push (`TMS[2] → [11]`). `None` if this body is not one.
 pub(crate) fn decode_preset_loaded(body: &[u8]) -> Option<PresetLoadedFields> {
     let f = dig(body, TMS_PRESET, PRESET_LOADED_PUSH)?;
     let g = |n| field_n(&f, n).and_then(Val::as_u64).unwrap_or(0);
@@ -65,7 +65,7 @@ pub(crate) fn decode_preset_loaded(body: &[u8]) -> Option<PresetLoadedFields> {
     })
 }
 
-/// Decode a `CurrentPresetInfoChanged` push (TMS[2] → [22]) into
+/// Decode a `CurrentPresetInfoChanged` push (`TMS[2] → [22]`) into
 /// `(displayName, isDirty, isFavorite)`. `None` if this body is not one.
 /// Per `CurrentPresetInfoChanged.proto`: displayName(1) bytes, isDirty(2) bool,
 /// isFavorite(3) bool.
@@ -80,9 +80,9 @@ pub(crate) fn decode_info_changed(body: &[u8]) -> Option<(String, bool, bool)> {
     Some((name, is_dirty, is_favorite))
 }
 
-/// Decode a `SceneLoaded` push (TMS[2] → [102]) into `(sceneSlot, sceneName)`.
+/// Decode a `SceneLoaded` push (`TMS[2] → [102]`) into `(sceneSlot, sceneName)`.
 /// `sceneName` is parsed from the LZ4-block `sceneJson` (field 2) — `None` when
-/// the payload is absent, not LZ4, or truncated before the `sceneName` property.
+/// the payload is absent, not LZ4, or cut short before the `sceneName` property.
 /// `None` for the whole tuple if this body is not a `SceneLoaded`.
 pub(crate) fn decode_scene_loaded(body: &[u8]) -> Option<(u32, Option<String>)> {
     let f = dig(body, TMS_PRESET, SCENE_LOADED)?;
@@ -93,7 +93,7 @@ pub(crate) fn decode_scene_loaded(body: &[u8]) -> Option<(u32, Option<String>)> 
     Some((slot, name))
 }
 
-/// Decode a `sceneListResponse` push (TMS[2] → [125]) into the live scene NAMES
+/// Decode a `sceneListResponse` push (`TMS[2] → [125]`) into the live scene NAMES
 /// of the ACTIVE preset (repeated string `sceneList`, field 2). `None` if this
 /// body is not a `sceneListResponse`. An empty Vec is a valid result (a preset
 /// with no FS scenes).
@@ -107,11 +107,11 @@ pub(crate) fn decode_scene_list(body: &[u8]) -> Option<Vec<String>> {
     )
 }
 
-/// Decode a `currentPresetDataChanged` push (TMS[2] → [3]) into an [`ActiveGraph`]
+/// Decode a `currentPresetDataChanged` push (`TMS[2] → [3]`) into an [`ActiveGraph`]
 /// — the same decode pipeline `current_audio_graph` runs (LZ4 → tolerant JSON →
 /// `extract_active_graph`), with the SAME known-routing-template guard so a
-/// too-truncated partial yields `None` rather than a garbage chain. `None` if
-/// this body is not a `currentPresetDataChanged`, or the partial truncated before
+/// cut-short document yields `None` rather than a garbage chain. `None` if
+/// this body is not a `currentPresetDataChanged`, or the document ends before
 /// a complete `audioGraph.template`. Thin wrapper over [`decode_current_preset_live`]
 /// so a body is parsed ONCE when both the scene trio and the graph are wanted.
 #[cfg(test)]
@@ -121,7 +121,7 @@ pub(crate) fn decode_current_preset_data(body: &[u8]) -> Option<ActiveGraph> {
 
 /// Extract the [`ActiveGraph`] from an already-parsed field-3 preset JSON, applying
 /// the known-routing-template guard (mirrors `current_audio_graph`). `text` supplies
-/// the truncation-tolerant `template` hint.
+/// the cut-tolerant `template` hint.
 pub(super) fn active_graph_guarded(v: &serde_json::Value, text: &str) -> Option<ActiveGraph> {
     let template_hint = extract_partial_json_string(text, "template");
     let graph = extract_active_graph(v, template_hint.as_deref());
@@ -137,11 +137,11 @@ pub(super) fn active_graph_guarded(v: &serde_json::Value, text: &str) -> Option<
 /// address FS scenes as 0-based `scenes[]` indices (0..=7) and the base scene as the
 /// CONSTANT `8` — even for a preset with zero FS scenes (HW-observed: Cello, 0 scenes,
 /// base SceneLoaded sceneSlot=8; Guitar dump `lastLoadedScene: 8` while on base). NOT
-/// `scene_count + 1` — that old theory is refuted by the Cello observation.
+/// `scene_count + 1`.
 pub(crate) const BASE_SCENE_SLOT: u32 = 8;
 
 /// The live scene metadata harvested from ONE `currentPresetDataChanged` push
-/// (TMS[2] → [3], LZ4) — the same field-3 body as [`decode_current_preset_data`], but
+/// (`TMS[2] → [3]`, LZ4) — the same field-3 body as `decode_current_preset_data`, but
 /// surfacing the scene-facing trio instead of the graph (the monitor parses both from
 /// one push). All three come from a SINGLE coherent preset-JSON document, so their
 /// index spaces agree by construction:
@@ -150,15 +150,14 @@ pub(crate) const BASE_SCENE_SLOT: u32 = 8;
 ///   [`BASE_SCENE_SLOT`] = base), present in every push,
 /// - `ftsw` — the footswitch assignments (`sceneSlot` indexes `scenes[]`).
 ///
-/// Each half is `None` when the tolerant parse of a truncated partial lost it; on a
-/// healthy dense-heartbeat session the payload carries all three (HW-verified: a 17 KB live field-3 truncates only inside the FINAL scene's `uuid`,
-/// after every `sceneName`).
+/// Each half is `None` when the tolerant parse of a cut-short document lost it; the device
+/// sends the push whole, so a live session's payload carries all three (fw 1.8.58).
 pub(crate) struct CurrentPresetLive {
     pub scene_names: Option<Vec<String>>,
     pub last_loaded_scene: Option<u32>,
     pub ftsw: Option<serde_json::Value>,
     /// The signal-chain graph from the SAME parse (template-guarded; `None` when the
-    /// partial truncated before a complete `audioGraph.template`). The monitor reads
+    /// document ends before a complete `audioGraph.template`). The monitor reads
     /// both halves from one decode rather than parsing the ~17 KB body twice per push.
     pub graph: Option<ActiveGraph>,
 }
@@ -174,7 +173,7 @@ pub(crate) fn decode_current_preset_live(body: &[u8]) -> Option<CurrentPresetLiv
 }
 
 /// Decode the scene-facing trio + signal-chain graph from plaintext preset JSON
-/// bytes, such as a slot-addressed field-9 `presetDataChanged` partial. This is the
+/// bytes, such as a slot-addressed field-9 `presetDataChanged` reply. This is the
 /// same tolerant parse used for live field-3, minus the TMS/LZ4 wrapper step.
 pub(crate) fn decode_plain_preset_live(json: &[u8]) -> Option<CurrentPresetLive> {
     let text = String::from_utf8_lossy(json);
@@ -207,11 +206,10 @@ pub(super) fn decode_preset_live_text(text: &str) -> Option<CurrentPresetLive> {
 }
 
 /// Scene names (slot order) from a slot-addressed field-9 **plaintext**
-/// preset-JSON partial ([`Session::read_slot_preset_json`]). Same tolerant
-/// parse as the live field-3 decode — large presets device-truncate inside the
-/// FINAL scene's `uuid`, after every `sceneName` (HW: slot 1 = 17264 B, all 8
-/// names present). `None` = the partial truncated before the `scenes` key
-/// (scene presence unknown), distinct from `Some(vec![])` (no scenes).
+/// preset-JSON reply ([`Session::read_slot_preset_json`]). Same tolerant parse as the
+/// live field-3 decode — a lapse mid-stream can cut the reply (the device sends it whole,
+/// fw 1.8.58). `None` = the reply ended before the `scenes` key (scene presence
+/// unknown), distinct from `Some(vec![])` (no scenes).
 pub(crate) fn scene_names_from_slot_json(json: &[u8]) -> Option<Vec<String>> {
     decode_plain_preset_live(json)?.scene_names
 }
@@ -233,17 +231,16 @@ pub(super) fn field1(fields: &[(u32, Val)]) -> Option<&Val> {
 
 /// One-line human description of an inbound stream for the push-listener
 /// experiment (`listen_dump`). Generic field-path summary like `send_and_dump`,
-/// with the known push messages decoded: PresetLoaded 2[11], SceneLoaded 2[102]
-/// (sceneSlot + a sceneJson size/prefix peek), currentPresetDataChanged 2[3],
-/// CurrentPresetInfoChanged 2[22].
+/// with the known push messages decoded: PresetLoaded `2[11]`, SceneLoaded `2[102]`
+/// (sceneSlot + a sceneJson size/prefix peek), currentPresetDataChanged `2[3]`,
+/// CurrentPresetInfoChanged `2[22]`.
 pub(super) fn describe_push(body: &[u8]) -> String {
     let top = proto::parse(body);
     // presetMessage pushes get the detailed treatment.
     if let Some(pm) = proto::first_bytes(&top, TMS_PRESET) {
         let inner = proto::parse(pm);
         if let Some(pl) = decode_preset_loaded(body) {
-            // Byte-identical to the previous inline decode (now via the shared
-            // `decode_preset_loaded`, so the monitor and the listener agree).
+            // Via the shared `decode_preset_loaded`, so the monitor and the listener agree.
             return format!(
                 "PresetLoaded 2[11]: tab={} setlist={} setlistSong={} song={} songPreset={} presetSlot={} sync={}",
                 pl.tab_enum, pl.setlist_slot, pl.setlist_song_slot, pl.song_slot, pl.song_preset_slot, pl.preset_slot, pl.sync
@@ -342,9 +339,8 @@ pub(super) fn field_n(fields: &[(u32, Val)], field_no: u32) -> Option<&Val> {
 
 /// Decode a `presetJson` payload to text: try LZ4-block decompress (the field-3
 /// `currentPresetDataChanged` wire form), else treat as literal UTF-8 (the
-/// field-79 raw form). Lossy UTF-8 so a stream truncated mid-multibyte still
-/// yields the valid prefix (the device sends a partial preset in the change
-/// event — `audioGraph` lives in the first ~1.5 KB and survives).
+/// field-79 raw form). Lossy UTF-8 so a stream cut mid-multibyte still yields the
+/// valid prefix (`audioGraph` lives in the first ~1.5 KB).
 pub(super) fn decode_preset_json(payload: &[u8]) -> Option<String> {
     if payload.is_empty() {
         return None;
@@ -363,13 +359,11 @@ pub(super) fn parse_preset_text(text: &str) -> Result<serde_json::Value, String>
         .ok_or_else(|| "could not parse preset JSON, even tolerantly".to_string())
 }
 
-/// Parse possibly-TRUNCATED preset JSON. Tries a strict parse first; on failure
-/// (the preset-data stream is routinely truncated mid-object), rewinds to the
+/// Parse possibly-CUT preset JSON. Tries a strict parse first; on failure (a lapse
+/// mid-stream can cut the reply; the device sends it whole, fw 1.8.58), rewinds to the
 /// last `,` outside a string and closes all open `[`/`{` containers in reverse
-/// nesting order,
-/// recovering everything up to that boundary. Port of `drive_replace_node.py`'s
-/// `_tolerant_parse_partial_json` — `audioGraph.guitarNodes` sits early enough to
-/// always survive this for our enumeration purposes.
+/// nesting order, recovering everything up to that boundary — `audioGraph.guitarNodes`
+/// sits early enough to always survive this for our enumeration purposes.
 pub(crate) fn tolerant_parse_json(text: &str) -> Option<serde_json::Value> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
         return Some(v);
@@ -407,8 +401,9 @@ pub(crate) fn tolerant_parse_json(text: &str) -> Option<serde_json::Value> {
 /// Did the read deliver `key`'s section WHOLE — i.e. did the bytes reach its closing
 /// bracket?
 ///
-/// A slot-addressed field-8 read returns a device-TRUNCATED partial on a large preset,
-/// and [`tolerant_parse_json`] salvages the prefix: the document parses, a tail section
+/// A lapse mid-stream can cut a slot-addressed `presetDataRequest` (field 8) reply (the
+/// device sends it whole, fw 1.8.58), and [`tolerant_parse_json`] salvages the prefix:
+/// the document parses, a tail section
 /// is simply gone, and a caller reading it sees "this preset has no footswitches" on a
 /// preset that has ten. The parsed value cannot tell those apart — a section that never
 /// arrived and a section the preset genuinely does not carry both read as an absent key,
@@ -418,7 +413,7 @@ pub(crate) fn tolerant_parse_json(text: &str) -> Option<serde_json::Value> {
 /// Order-free on purpose: it neither assumes where `key` sits in the document nor how
 /// many entries the section should hold (a real device export has been seen with 9
 /// `ftsw` rows, not 20). A body that strict-parses is complete by construction, so an
-/// absent or empty section in one is GENUINE, not a truncation.
+/// absent or empty section in one is GENUINE, not a cut.
 pub(crate) fn json_section_complete(text: &str, key: &str) -> bool {
     if serde_json::from_str::<serde_json::Value>(text).is_ok() {
         return true;
@@ -470,8 +465,8 @@ pub(super) fn section_closes(tail: &str) -> bool {
     false
 }
 
-/// Recover a JSON string value from a truncated payload. The live active-preset
-/// stream can end in the middle of `"template":"gtrParallel2"`, after enough
+/// Recover a JSON string value from a cut-short payload. A cut stream can end in the
+/// middle of `"template":"gtrParallel2"`, after enough
 /// bytes to identify the routing template but before strict/tolerant parsing can
 /// retain that final property.
 pub(super) fn extract_partial_json_string(text: &str, key: &str) -> Option<String> {

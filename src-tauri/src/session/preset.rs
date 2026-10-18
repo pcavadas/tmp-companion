@@ -66,7 +66,7 @@ impl Session {
 
     /// LoadPreset on the My Presets tab (tabEnum = 1) at **list index** `slot`
     /// (`list_my_presets` position); the device addresses presets by a 1-based userSlot,
-    /// which [`DeviceSlot::from`] derives. HW-confirmed on 1.7.75: the Song read reports
+    /// which [`DeviceSlot::from`] derives. HW-confirmed: the Song read reports
     /// `userPresetSlot=2` for the preset at list index 1, and a device `loadPreset(28)`
     /// loads list index 27 — i.e. device userSlot = list + 1.
     pub fn load_preset(&mut self, slot: ListIndex) -> Result<(), String> {
@@ -134,7 +134,7 @@ impl Session {
 
     /// Set one block BOOL control (e.g. `bypass`) via `ChangeParameter.boolVal`
     /// (field 7, always emitted). Same fire-and-forget setter rule as the float
-    /// [`change_parameter`]. Used to force a block active/bypassed while measuring
+    /// [`Self::change_parameter`]. Used to force a block active/bypassed while measuring
     /// an off-in-base footswitch block for the bake path.
     pub fn change_parameter_bool(
         &mut self,
@@ -151,14 +151,12 @@ impl Session {
     }
 
     /// Establish/refresh **live-controller status** with a dense ~200 ms heartbeat.
-    /// fw 1.8.45 only accepts structural edits (`replaceNode`/`replaceNodeWithBlock`)
-    /// from a live controller; a lapsed session (e.g. after a silent
-    /// `drain_until_quiet`) gets EVERY structural request answered with an empty
-    /// `connectionError` and silently dropped. Call this AFTER the load and BEFORE
-    /// the first edit — and keep editing without long quiet gaps. (HW-confirmed via
-    /// a Pro Control USB capture; same reason `device_backup` heartbeats.)
+    /// A session lapses after 750 ms of host OUT silence and answers nothing but
+    /// `connectionError` until re-armed (fw 1.8.58); the dense heartbeat keeps it live
+    /// through the edits. Call this AFTER the load and BEFORE the first edit — and keep
+    /// editing without long quiet gaps (same reason `device_backup` heartbeats).
     pub fn begin_live_edit(&mut self) -> Result<(), String> {
-        // Warmup count is env-tunable for the perf experiments (E2); 8×200 ms = 1.6 s
+        // Warmup count is env-tunable for perf experiments; 8×200 ms = 1.6 s
         // is the validated default. The held-session architecture pays this ONCE, so
         // it is amortized across a whole bulk run.
         let n = std::env::var("TMP_WARMUP_N")
@@ -173,7 +171,7 @@ impl Session {
         Ok(())
     }
 
-    /// Echo-gated wait (E3): pump (heartbeat) until `active_preset_name()` equals
+    /// Echo-gated wait: pump (heartbeat) until `active_preset_name()` equals
     /// `name`, or the iteration budget runs out — exits the moment the device's
     /// `currentPresetInfoChanged` (field 22) for the just-loaded preset lands instead
     /// of burning a fixed window. Returns whether it matched. Used by the held-session
@@ -269,7 +267,7 @@ impl Session {
             return Ok(());
         }
         let why = match self.loaded_slot() {
-            // The echo is identity, so it wins over a name that matches (#177).
+            // The echo is identity, so it wins over a name that matches.
             Some(other) => format!("the unit reports list index {other} as loaded"),
             None => format!(
                 "no slot echo arrived, and the active name {:?} does not prove it (the \
@@ -288,7 +286,7 @@ impl Session {
     /// path. The caller ends the load's own connection with [`Self::lapse`].
     ///
     /// The first connection opened after a load can still report the slot loaded BEFORE it
-    /// in its `PresetLoaded` echo (#177; HW fw 1.8.58: a load that landed read stale on the
+    /// in its `PresetLoaded` echo (HW, fw 1.8.58: a load that landed reads stale on the
     /// next connection, and right on one 16 s later). A session opened inside the unit's
     /// 0.75 s drop inherits the last one's queued replies ahead of its own, so a refused
     /// confirm lapses its connection and retries on a new one, [`LOAD_CONFIRM_ATTEMPTS`]
@@ -365,10 +363,10 @@ impl Session {
     /// → a fresh field-3 push) and return the first parse `done` accepts, pumping the reply
     /// in ≤8 × 200 ms slices under the live-controller heartbeat. This is the ONE re-prompt
     /// seam: the buffer is cleared first, so nothing buffered before the request can pass
-    /// as the reply — the difference between a read and the buffer scrape the 2026-09-02
-    /// Copy stale-cache incident came from. `Err` names the carriers that landed when no
-    /// accepted parse arrived within the budget. Keep the wire shape as is: it is the
-    /// HW-proven footswitch confirm channel ([`Self::live_ftsw`], fw 1.8.45).
+    /// as the reply — a read, not a buffer scrape that can return a stale copy. `Err` names
+    /// the carriers that landed when no accepted parse arrived within the budget. Keep the
+    /// wire shape as is: it is the HW-proven footswitch confirm channel
+    /// ([`Self::live_ftsw`]).
     pub(crate) fn live_preset_value(
         &mut self,
         done: impl Fn(&serde_json::Value) -> bool,
@@ -398,8 +396,8 @@ impl Session {
     /// accepts a parse, then hold until no new report lands for two 200 ms slices (bounded
     /// at 6, a heartbeat per slice — `read_slot_preset_json_inner`'s growth-stability
     /// pattern on the raw report count, which needs no reassembly), re-check `done` on
-    /// what landed, then [`Self::current_audio_graph`] with its truncation guard. The Copy read and the
-    /// `probe --reprompt-map` COMMIT arm share this exact seam, so the probe's
+    /// what landed, then [`Self::current_audio_graph`] with its cut-short guard. The Copy
+    /// read and the `probe --reprompt-map` COMMIT arm share this exact seam, so the probe's
     /// "save persists after a re-prompt" sample is taken with the product's own timing.
     pub(crate) fn live_audio_graph(
         &mut self,

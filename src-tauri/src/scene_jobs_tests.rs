@@ -442,7 +442,7 @@ fn scene_docs_restore_scene_is_the_guarded_saved_on_load_scene() {
     assert_eq!(restore, Some(session::BASE_SCENE_SLOT));
 }
 
-// ── #176: the production saved-overlay prepass (`prepass_scene_docs_with`) ───────────────
+// ── the production saved-overlay prepass (`prepass_scene_docs_with`) ───────────────
 
 /// What one `prepass_scene_docs_with` call did on the device — the loads it issued — and its
 /// answer. There is no other device seam: no live walk, no read.
@@ -737,7 +737,7 @@ fn bake_gate_preset() -> serde_json::Value {
     p
 }
 
-// ── three-state overlay split: Full vs BypassOnly (HW-verified fw 1.8.45) ───────────────
+// ── three-state overlay split: Full vs BypassOnly (HW) ───────────────
 //
 // A scene's per-node overlay can be BYPASS-ONLY — the block's Scene Edit flag is DISABLED,
 // so the scene carries only the bypass family and SHARES the node's knobs with base. A

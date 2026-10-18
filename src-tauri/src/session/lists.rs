@@ -80,11 +80,10 @@ impl Session {
     /// large and multi-packet, so we accumulate raw reports across pump windows
     /// and reassemble cumulatively until the harvest stops GROWING — a mid-flood
     /// partial reassembly DECODES under the tolerant rule, so the first decodable
-    /// harvest can be a tail-cut of a response still arriving (HW: 277–328 of 504
-    /// records after back-to-back lean sessions, while the same device answered
-    /// Pro Control's single long session in full — the flood streams slower under
-    /// session churn; accepting the first decode was the truncation, not the
-    /// device). Two consecutive no-growth pump windows = complete.
+    /// harvest can be a tail-cut of a response still arriving (HW: the flood streams
+    /// slower under session churn, and a first decode after back-to-back lean sessions
+    /// can be ~200 records short of 504). Two consecutive no-growth pump windows =
+    /// complete.
     ///
     /// KEEPALIVE ([`HID_INACTIVITY_DROP_MS`]): every window is kept alive while the list is
     /// unproven, and a harvest that ends on such a window then [`Self::lapse`]s — callers
@@ -129,7 +128,7 @@ impl Session {
                 // A list that was already complete before this call (the common
                 // case — the handshake's reply fully accumulated) needs only ONE
                 // quiet confirm window; the two-window rule applies when this
-                // call actually watched the flood grow. Keeps the truncation fix
+                // call actually watched the flood grow. Keeps the growth check
                 // without taxing every tolerant read a flat 1.4 s — the read sits
                 // in a 3×-per-preset loop under bulk runs (`replace_inplace_with`).
                 // The fast path needs PROOF: a decodable list is not a complete one.
@@ -185,7 +184,7 @@ impl Session {
     }
 
     /// Re-read the My-Presets list on this HELD session (no reopen). `raw` MUST be cleared:
-    /// a stale truncated list left in it out-weighs the fresh reply's mid-flood partials in
+    /// a stale cut-short list left in it out-weighs the fresh reply's mid-flood partials in
     /// the tolerant harvest.
     /// Quiet sessions only — a re-arm on a live one draws a `connectionError`.
     pub fn reread_my_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
@@ -195,7 +194,7 @@ impl Session {
         self.list_my_presets()
     }
 
-    /// Enumerate the FACTORY list (listEnum = 4). Mirrors [`list_my_presets`]: the
+    /// Enumerate the FACTORY list (listEnum = 4). Mirrors [`Self::list_my_presets`]: the
     /// handshake already issued `preset_list_request(4)` and accumulated its reply,
     /// so harvest from the shared accumulator first and only re-query if absent.
     pub fn list_factory_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
@@ -205,7 +204,7 @@ impl Session {
                 KEEPALIVE_WINDOW_MS,
             )?;
         }
-        // A decodable list is not a complete one (the My-Presets truncation class).
+        // A decodable list is not a complete one (the My-Presets short-list class).
         self.pump_until_stable(FACTORY_LIST_MAX_WINDOWS, KEEPALIVE_WINDOW_MS, |s| {
             best_factory_list_from_reports(&s.raw).map_or(0, |n| n.len())
         })?;
@@ -216,14 +215,14 @@ impl Session {
     }
 
     /// Completeness-validated My-Presets list for the snapshot path: completeness is
-    /// proven by the terminal 0x35 frame, not judged by time (the tolerant harvest once
-    /// served 371 of 504 here, after a heavy field-8 sweep left the line flooded).
+    /// proven by the terminal 0x35 frame, not judged by time (the tolerant harvest can
+    /// serve a short list here after a heavy slot-read sweep floods the line, HW).
     /// 1. strict harvest of the handshake reports, waiting out a reply still in flight;
     /// 2. retries by RE-ARMING the open session — WITHOUT clearing `raw`, because
     ///    `assemble_startup_snapshot` harvests the startup graph from these same reports
-    ///    (appending is safe: strict rejects the old truncated streams);
+    ///    (appending is safe: strict rejects the old cut-short streams);
     /// 3. falls back to the tolerant list with a warning — a warned short list beats a
-    ///    failed connect (truncation is tail-only, and the next reconnect re-reads).
+    ///    failed connect (a cut is tail-only, and the next reconnect re-reads).
     ///
     /// Every wait is kept alive ([`HID_INACTIVITY_DROP_MS`])
     /// and none ends in a lapse: the monitor keeps this session live straight after.
@@ -273,7 +272,7 @@ impl Session {
     }
 
     /// Strict, completeness-validated My-Presets list: `streams_final()` only
-    /// (terminal-0x35 rule) + strict parsing at every level, so a tail-truncated
+    /// (terminal-0x35 rule) + strict parsing at every level, so a tail-cut
     /// multi-packet response is rejected rather than clipped. Records missing a
     /// displayName map to "" (NOT dropped) so list indices — and therefore the
     /// `userSlot = index + 1` invariant — are preserved. Longest COMPLETE wins.

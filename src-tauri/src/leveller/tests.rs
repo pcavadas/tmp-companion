@@ -57,7 +57,7 @@ fn cancel_before_measure_short_circuits_without_device() {
     );
 }
 
-// #269: a cancel whose stored-preset restore ALSO fails used to come back as
+// A cancel whose stored-preset restore ALSO fails used to come back as
 // "cancelled; also failed to restore …", which no longer equalled the sentinel, so every
 // `== CANCELLED` caller treated the Stop as an ordinary failure. Typed, it stays a cancel.
 #[test]
@@ -702,7 +702,7 @@ fn gain(levels: &[f32], base: &[f32]) -> f64 {
     20.0 * (lv / b).log10()
 }
 
-// #186: a dropped probe capture leaves the probe levels on the device; a later flat-slope
+// A dropped probe capture leaves the probe levels on the device; a later flat-slope
 // stop must not report levels0 while the device holds the probe.
 #[test]
 fn correct_iter_dropped_probe_capture_keeps_device_honest() {
@@ -713,7 +713,7 @@ fn correct_iter_dropped_probe_capture_keeps_device_honest() {
     assert!(c.clamp_reason.is_none());
 }
 
-// #189: an adverse first response must not beat the original base point.
+// An adverse first response must not beat the original base point.
 #[test]
 fn correct_iter_adverse_first_response_falls_back_to_base() {
     let base = [0.1_f32];
@@ -735,7 +735,7 @@ fn correct_iter_restores_base_at_low_output_level() {
     assert_eq!(writes.last().unwrap().0, base.to_vec());
 }
 
-// #189b: a measured probe point closer to target than levels0/base can win.
+// A measured probe point closer to target than levels0/base can win.
 #[test]
 fn correct_iter_probe_point_can_be_best() {
     let base = [0.1_f32];
@@ -752,7 +752,7 @@ fn correct_iter_probe_point_can_be_best() {
     assert!((c.levels[0] - probe_lv).abs() < 1e-6);
 }
 
-// #188: a muted lane 0 must not zero the shared gain (and fake a no-authority verdict).
+// A muted lane 0 must not zero the shared gain (and fake a no-authority verdict).
 #[test]
 fn correct_iter_muted_lane_zero_still_corrects() {
     for (base, levels0) in [
@@ -776,7 +776,7 @@ fn correct_iter_muted_lane_zero_still_corrects() {
     }
 }
 
-// #188b: every lane muted → nothing to scale: keep levels0, no writes, no verdict.
+// Every lane muted → nothing to scale: keep levels0, no writes, no verdict.
 #[test]
 fn correct_iter_all_lanes_muted_is_a_noop() {
     let (c, writes) = run_core(&[0.0, 0.0], &[0.0, 0.0], (-30.0, -30.0, -26.0), |_| None);
@@ -909,8 +909,8 @@ fn scene_at_target_rejects_when_clamped_even_at_zero_delta() {
 }
 
 // switch_at_target is the footswitch mirror of scene_at_target — the re-run
-// idempotency band (the PR #74 follow-up gap). The same ACCEPT_TOL_LU band as scenes:
-// "on target" means one thing in every lane (#236).
+// idempotency band. The same ACCEPT_TOL_LU band as scenes:
+// "on target" means one thing in every lane.
 #[test]
 fn switch_at_target_accepts_within_the_band() {
     assert!(
@@ -1176,11 +1176,10 @@ fn set_knobs_preset_level_only_gets_no_recall() {
     );
 }
 
-// The pre-save recall reverts an UNSAVED `presetLevel` to the saved value (the
-// load-level-apply gotcha), so every recalling save must replay it between the
-// recall and the save — the exact op order is the invariant (HW: a solved
-// 0.3096 "[SAVED]" persisted the prior 0.32 until this re-assert existed;
-// caught live by the online level.online.spec.ts base idempotency test).
+// A base pre-save recall while base is current reverts an UNSAVED `presetLevel` to the
+// base snapshot (see `recall_reassert_save`), so every recalling save must replay it
+// between the recall and the save — the exact op order is the invariant (HW; the online
+// level.online.spec.ts base idempotency test covers it).
 #[test]
 fn recall_reassert_save_replays_the_unsaved_level_after_the_recall() {
     let sim = crate::sim_device::SimDevice::new()
@@ -1261,7 +1260,7 @@ fn scene_knob(param: &str) -> LevelKnob {
     }
 }
 
-// B1: `SetNodeSceneEdit(node, true)` RESEEDS the node's scene overlay from base (HW
+// `SetNodeSceneEdit(node, true)` RESEEDS the node's scene overlay from base (HW
 // 3-cell matrix, `probe_api/slot_write.rs`), so a scene that ALREADY has an overlay for
 // the node must be written with the enable DROPPED — the write lands on the overlay
 // regardless, and the enable would wipe the scene's other stored params (the reported
@@ -1325,7 +1324,7 @@ fn set_knobs_enables_scene_edit_when_the_overlay_is_absent() {
     );
 }
 
-// Neither write shape is safe when overlay presence is UNKNOWN (truncated field-8 read)
+// Neither write shape is safe when overlay presence is UNKNOWN (a cut-short saved-preset read)
 // or no saved doc was read at all — both mistakes corrupt the preset, so refuse before
 // touching the device rather than guess.
 #[test]
@@ -1361,11 +1360,11 @@ fn set_knobs_refuses_a_scene_write_without_known_overlay_presence() {
     }
 }
 
-// The BYPASS-ONLY branch (HW-verified fw 1.8.45): the node's Scene Edit flag is OFF, so
-// the scene carries only the bypass family and SHARES the node's knobs with base. Both
-// write shapes are wrong — the enable reseeds, the enable-dropped write lands on BASE and
-// changes every sharing scene (measured: base gain 2.5 → 7.0, the bypass-only overlay
-// unchanged). Refuse, with the SHARING named so the user can act on it, and touch nothing.
+// The BYPASS-ONLY branch: the node's Scene Edit is OFF, so the scene carries only the
+// bypass family and SHARES the node's knobs with base. Both write shapes are wrong — the
+// enable reseeds, the enable-dropped write lands on BASE and changes every sharing scene
+// (static RE + HW). Refuse, with the SHARING named so the user can act on it, and touch
+// nothing.
 #[test]
 fn set_knobs_refuses_a_scene_write_on_a_bypass_only_overlay() {
     for (label, overlay) in [
@@ -1560,7 +1559,7 @@ fn solve_footswitch_flat_response_reports_clamped_not_unconverged() {
 }
 
 // --- Regression coverage for the "silence past the first seed aborts the whole solve"
-// bug (HW-reproduced, fw 1.8.45, preset "TR+BD2+BMP" — 4 drive pedals into a '65 Twin).
+// bug (HW: 4 drive pedals into a '65 Twin).
 // A pedal `level`/`volume` knob at 0 reads genuinely SILENT on the real unit — that
 // silence is the quiet EXTREME of the response curve (DATA), not a routing error, for
 // every measurement AFTER the first seed. See `FS_SILENT_GEOMETRY_LUFS`'s doc for why
@@ -1568,7 +1567,7 @@ fn solve_footswitch_flat_response_reports_clamped_not_unconverged() {
 // floor `MUTE_FLOOR_SILENT_LUFS`. The first-seed routing-clamp arm has its own test just
 // below, now that its disengage is injected rather than a real connection.
 
-/// #239 follow-up: a CLIPPED probe past the first seed is the knob's loud end, not a
+/// A CLIPPED probe past the first seed is the knob's loud end, not a
 /// fatal error. Before, the hub's clip refusal aborted the whole row even though a lower
 /// value reaches the target. Here everything above 0.40 clips and the target sits at
 /// about 0.36: the solve must step back down and land in band on a real capture.
@@ -1607,7 +1606,7 @@ fn solve_footswitch_steps_back_down_from_a_clipped_probe() {
     assert!((r.predicted_lufs - -24.0).abs() <= ACCEPT_TOL_LU, "{r:?}");
 }
 
-/// #261: the solve owns no connection. A silent FIRST seed is the routing clamp; it
+/// The solve owns no connection. A silent FIRST seed is the routing clamp; it
 /// disengages through the caller's hook exactly once, and opens nothing itself.
 #[test]
 fn solve_footswitch_routing_clamp_disengages_through_the_callers_hook() {
@@ -1629,8 +1628,8 @@ fn solve_footswitch_routing_clamp_disengages_through_the_callers_hook() {
     assert_eq!(offs, 1, "one mid-solve OFF, through the hook");
 }
 
-/// HW-measured Plumes-pedal `level` knob curve (`probe --fs-sweep`, preset
-/// "TR+BD2+BMP", fw 1.8.45): 0.11→−66.9, 0.20→−24.2, 0.30→−20.1, 0.50→−18.1,
+/// HW-measured Plumes-pedal `level` knob curve (`probe --fs-sweep`): 0.11→−66.9,
+/// 0.20→−24.2, 0.30→−20.1, 0.50→−18.1,
 /// 0.75→−17.2, 1.00→−16.9 LUFS — the cliff shifted 0.01 up from the HW-measured
 /// 0.10 so the fixed seed pair (0.25/0.75) reads a genuinely SLOPED, non-flat pair
 /// (`fs_bracket_expansion` must NOT fire) while the correction loop's FIRST
@@ -2275,7 +2274,7 @@ fn solve_footswitch_accepted_flat_pair_is_rescued_by_bracket_expansion() {
     );
 }
 
-/// The original Plumes incident (HW-reproduced, fw 1.8.45, preset "TR+BD2+BMP") AT ITS
+/// The Plumes case (HW-reproduced) AT ITS
 /// REAL in-UI-range target: the re-pinned mid-loop-silence test above had to move to
 /// −40.0 (outside any real target range) to keep exercising that specific arm once the
 /// law-predicted seed 2 started landing for real — but that leaves the ORIGINAL −26.0
@@ -2796,10 +2795,9 @@ fn arm_measurement_writes_isolation_bypasses_after_the_scene_recall() {
 }
 
 // The intended `presetLevel` must land AFTER the knob write (whose own recall — base or
-// scene, inside `set_knobs` — runs the device's level-apply and would revert an earlier
-// one) and BEFORE the engage. Written above the `set_knob` call it is silently reverted
-// and the capture renders at the level the DEVICE HAS SAVED: the footswitch/scene lanes'
-// measured 10.2 dB error. `None` must stay byte-identical to the old behaviour.
+// scene, inside `set_knobs` — can re-apply a stale base-snapshot level and revert an earlier
+// one) and BEFORE the engage. Written above the `set_knob` call it can be silently reverted
+// and the capture renders at a stale level (10.2 dB off on HW). `None` must assert nothing.
 #[test]
 fn arm_measurement_asserts_the_intended_preset_level_after_the_knobs_recall() {
     let knob = LevelKnob::Block {

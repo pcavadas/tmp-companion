@@ -167,11 +167,11 @@ pub(crate) fn plan_identity_verdict(
 
 // ─── blockcaps guard plumbing ──────────────────────────────────────────────────
 //
-// Shared by every LIVE structural-edit writer (`replace_one_live`, `held_replace_one`,
-// `copy_apply_one`): the device does NOT enforce the 5 firmware block-count caps (see
-// `blockcaps.rs`'s module docs — two RE passes confirmed the cap logic is entirely
-// client-side in `tone-master-stomp-client` and can never emit a `presetError` for an
-// over-cap edit), so this Rust guard is the SOLE enforcement before a save. Every
+// Shared by every LIVE structural-edit writer (`held_replace_one`, `replace_many_held`,
+// `copy_apply_one`): the device enforces none of the 4 block-count caps, and its CPU-budget
+// check answers a replace with `presetError` 14 and aborts the server on an insert (static
+// RE, fw 1.8.58; see `blockcaps.rs`'s module docs), so this Rust guard is the SOLE
+// enforcement before a save. Every
 // writer: (1) reads the PRE-edit roster right after load+attach-confirm (before its
 // first structural edit), fail-closed if it can't be read; (2) checks each op's delta
 // against the running counts BEFORE emitting it; (3) on a violation, aborts the WHOLE
@@ -179,7 +179,7 @@ pub(crate) fn plan_identity_verdict(
 // save.
 
 /// Read the just-loaded preset's pre-edit node roster (+ its cap counts) off the held
-/// session, retrying (mirrors [`ordered_group`]'s pattern — the post-load field-3 push
+/// session, retrying (mirrors `probe_api::insert`'s `ordered_group` — the post-load field-3 push
 /// can lag a heartbeat window). Fail-closed: `Err` propagates as the caller's `error`
 /// outcome rather than ever letting an edit through unvalidated.
 pub(crate) fn blockcaps_pre_edit_roster(

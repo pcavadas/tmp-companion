@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn os_description_names_the_running_host() {
         // Whatever the host, the description always LEADS with the OS name — the
-        // property triage depends on (the old "macos" key lied off macOS).
+        // property triage depends on.
         let d = os_description();
         assert!(
             d.starts_with(std::env::consts::OS),

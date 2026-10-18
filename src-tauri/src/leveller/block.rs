@@ -1,5 +1,5 @@
 //! Block-control leveling ([`level_preset_block`]): the closed-loop single-knob seam the
-//! probe and legacy callers use.
+//! `level_preset` command's block-knob path and the probe use.
 
 use super::*;
 
@@ -30,13 +30,13 @@ pub fn level_preset_block(
                 "invalid knob bounds [{lo}, {hi}]"
             )));
         }
-        // ONE field-8 read up front for a SCENE knob — every measure and the final apply
+        // ONE saved-preset read up front for a SCENE knob — every measure and the final apply
         // write through `set_knobs`, whose Scene Edit decision needs it (see
         // `saved_for_scene_knobs`). Read before the load session, never per capture.
         let overlays = saved_for_scene_knobs(slot, [knob]);
         let overlays = overlays.as_ref();
-        // Load the preset in its own connection (the set-after-load-in-same-conn
-        // override applies to any setter, so isolate the load).
+        // Load the preset in its own connection (the conservative load-then-set shape;
+        // see `load_preset_isolated`).
         load_preset_isolated(slot, CancelMode::Cleanup)?;
 
         // Search in a coordinate where the knob is ~linear in LUFS so the secant

@@ -110,9 +110,7 @@ pub(crate) fn doctor_force_bypass(
 /// read's own typed `Err`), either derive the base force-bypass list (`doctor_force_bypass`'s
 /// `None` arm) plus the preset's `restore_scene`, or refuse with the SAME text production's
 /// base arm has always shown. ONE definition of "base isolation" for every arm
-/// that levels base — the paths disagreeing about what "base" means cost a ~16 LU divergence
-/// (2026-08-31 bisect: an empty `&[]` force list solved C=-11.95 where production's isolated
-/// base measured C≈-28.2).
+/// that levels base (an unisolated base can read ~16 LU off, HW).
 ///
 /// The refusal's kind is the read's CAUSE ([`SlotReadError::skip_kind`]): a cut or missing
 /// `ftsw` is [`crate::error::SkipKind::FootswitchesUnreadable`], and a read that failed, came
@@ -120,7 +118,7 @@ pub(crate) fn doctor_force_bypass(
 /// lane reports the same read.
 ///
 /// Pure over the read's `Result` rather than doing the read itself, so the refusal is
-/// testable at all: `SimDevice` always serves whole bodies, so a truncated field-8 read can
+/// testable at all: `SimDevice` always serves whole bodies, so a cut field-8 read can
 /// never be driven from an offline fixture — a test hands this fn a synthetic `Err` instead.
 pub(crate) fn base_isolation_or_refuse(
     read: Result<serde_json::Value, SlotReadError>,
@@ -266,15 +264,15 @@ fn isolation_writes(
             graph: Vec::new(),
         }
     } else {
-        // Base/footswitch sounds fall back to the legacy live field-8 read
+        // Base/footswitch sounds fall back to the live field-8 read
         // (cached per list index across that preset's base + footswitch
         // sounds) only when the backup scan missed this preset's graph (rare
         // — its presetJson failed to parse). A read hiccup on that fallback
         // degrades to no isolation (best-effort, like `level_preset`), never
         // fails the run.
         if let std::collections::hash_map::Entry::Vacant(e) = preset_cache.entry(list_index) {
-            // `ftsw` is required of this read: a large preset's field-8 body is cut
-            // before it, and a partial one derives a partial isolation — which for a
+            // `ftsw` is required of this read: a field-8 body cut before it derives a
+            // partial isolation — which for a
             // footswitch sound means capturing something the switch does not make.
             let preset = match read_slot_preset_complete(list_index, &["ftsw"]) {
                 Ok((p, _, _)) => p,
@@ -342,7 +340,7 @@ fn doctor_skip_load(prev: Option<&PrevSound>, list_index: ListIndex, is_scene: b
             .unwrap_or(false)
 }
 
-/// Why a just-captured Doctor sound can't be diagnosed as captured (#246). Each one
+/// Why a just-captured Doctor sound can't be diagnosed as captured. Each one
 /// is retried once with a fresh preset recall, then surfaced as an error — never a
 /// diagnosis of something that isn't the preset's sound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,7 +402,7 @@ fn capture_suspect(
 
 /// How many bands a coverage vector (`doctor::output_coverage_with_body`'s
 /// output) marks NOT covered — the count `sound_result` stamps onto
-/// `DoctorSoundResult.skippedBandCount` (D4, SNR-gate transparency; `> 0` IS
+/// `DoctorSoundResult.skippedBandCount` (SNR-gate transparency; `> 0` IS
 /// "gated", no separate bool). `None` (no coverage computed at all — an
 /// errored or showcase sound) reads as 0, same as an all-covered vector: this
 /// can under-report "gated" in that case, never over-report. Split out for a
@@ -587,7 +585,7 @@ fn sound_result(
             r.tail_ratio_db = Some(p.tail_ratio_db);
             r.balance_db = doctor::balance(&p.bands);
             r.cut_through = doctor::cut_through(p, instrument);
-            // SNR-gate transparency (D4) — see `skipped_band_count`'s doc.
+            // SNR-gate transparency — see `skipped_band_count`'s doc.
             r.skipped_band_count = skipped_band_count(coverage.as_deref());
         }
     }
@@ -641,7 +639,7 @@ fn assemble_results(
                 list_index: item.list_index,
                 sounds: vec![sound],
                 scene_consistency: None,
-                // Leveling-damage advisories (fix P3-5): pure backup-scan data, so this
+                // Leveling-damage advisories: pure backup-scan data, so this
                 // runs regardless of whether any sound's capture succeeded. Every item of
                 // a preset carries the SAME `footswitches`, so its first item's serve.
                 leveling_damage: doctor::leveling_damage_hints(&item.footswitches),
@@ -767,8 +765,8 @@ fn run_doctor_check(
         }
         // Marketing-screenshot showcase: the offline fake re-amp is a stimulus
         // passthrough (every sound measures identically, the same flat-chain cards
-        // on each, #247), so inject
-        // curated profiles instead and let the real `diagnose` engine render cards.
+        // on each), so inject curated profiles instead and let the real `diagnose`
+        // engine render cards.
         // Skips the device reads + reconnect sleeps for this item entirely.
         #[cfg(feature = "e2e")]
         if crate::e2e_showcase() {
@@ -831,7 +829,7 @@ fn run_doctor_check(
 
     let presets = assemble_results(resolved, &outcomes);
     // Never leave the unit in re-amp after a run: the verified run-end OFF ladder, on
-    // its own fresh connection (#261). Then put it back on the pre-run active preset
+    // its own fresh connection. Then put it back on the pre-run active preset
     // (fallback: the last-scanned slot) — the reload also clears the 0.5 reference
     // presetLevel from the edit buffer.
     let _ = leveller::reamp_off_guaranteed("doctor_check");
@@ -848,7 +846,7 @@ fn run_doctor_check(
 /// at the device clock (the transfer reference for the localized rules and the
 /// stimulus-transfer anchor). Both are pure functions of the samples, so one
 /// computation per (path, calibration) cache entry serves every sound and every
-/// floor-guard retry (#197).
+/// floor-guard retry.
 struct DoctorStim {
     samples: Vec<f32>,
     spread: f64,
@@ -1069,10 +1067,10 @@ fn doctor_capture_profile(
     let tail_ms_u32 = doctor::doctor_tail_ms(&iso.graph);
     let tail_ms = u64::from(tail_ms_u32);
     // `_with_loudness`: the production Doctor path REPORTS `integrated_lufs`
-    // to the user (D4), so it needs the un-mixed capture's stereo-measured
+    // to the user, so it needs the un-mixed capture's stereo-measured
     // Loudness alongside the average-mixdown `samples` bands/PSD run on —
     // see `doctor_capture_with_loudness`'s doc.
-    // ⟦P1/P4⟧ PREMISE-CHECK SEAM — see `validate_log::emit_doctor`'s doc.
+    // PREMISE-CHECK SEAM — see `validate_log::emit_doctor`'s doc.
     let validate = crate::validate_log::doctor_log_path().map(|_| {
         crate::validate_log::ValidationRow::doctor(
             item.list_index.get(),

@@ -10,7 +10,7 @@ pub(crate) async fn list_songs(
     state: State<'_, AppState>,
 ) -> Result<Vec<session::SongRecord>, String> {
     // Strict, fail-closed read (retry-until-complete): a read immediately after a
-    // write is the worst case for the multi-packet truncation, and the Songs page
+    // write is the worst case for a cut-short multi-packet reply, and the Songs page
     // re-reads after every mutation, so accept only a strictly-complete response.
     with_released_seize(state.session.clone(), read_song_list).await
 }
@@ -84,7 +84,7 @@ pub(crate) async fn remove_song(
 
 // ─── Batched song/setlist transactions ────────────────────────────────────────
 // The granular commands above pay one full `with_released_seize` bookend + one
-// strict fail-closed read PER FIELD (a song create with notes + BPM was 3 bookends
+// strict fail-closed read PER FIELD (a song create with notes + BPM would be 3 bookends
 // + 3 reads ≈ 10 s+). These transactions run every write and read on ONE
 // connection, skipping the intermediate read-backs: only the final authoritative
 // read(s) remain. Slot
@@ -94,9 +94,8 @@ pub(crate) async fn remove_song(
 /// Result of a batched song save: the fresh authoritative song list, the fresh
 /// membership of `add_to_setlist` (when requested), whether a create landed on a name
 /// another song already had, and the best-effort BPM warning (BPM is the active-song tap
-/// tempo on the unit; when it doesn't land the song itself is kept, mirroring the UI's
-/// previous per-call behavior). The two outcomes are separate fields so the UI words
-/// each by kind, never by the warning's text.
+/// tempo on the unit; when it doesn't land the song itself is kept). The two outcomes are
+/// separate fields so the UI words each by kind, never by the warning's text.
 #[derive(serde::Serialize)]
 pub(crate) struct SongSaveOutcome {
     songs: Vec<session::SongRecord>,
