@@ -1,0 +1,3 @@
+disallowed-methods = [
+  { path = "tmp_companion_lib::proto::load_scene", reason = "send a scene recall through Session::load_scene or Session::recall_scene_doc, which bound the index (danger.md)" },
+]

@@ -1,6 +1,9 @@
 //! Session unit tests: the decoders, the handshake, keepalive and reopen behaviour, the
 //! list and slot reads, and the structural-edit confirm gate, over scripted transports.
 
+// Several tests send a raw `loadScene` to reach the fake past the session's bound.
+#![allow(clippy::disallowed_methods)]
+
 /// Device-shaped re-amp replies: proto3 omits a false flag, so a present reply without it
 /// is OFF, and a missing reply is no reading at all.
 #[test]
@@ -1852,6 +1855,28 @@ fn import_preset_refuses_a_discard_shape_before_sending() {
     let mut s = session_over(&t, Vec::new());
     assert!(s.import_preset(&bytes).unwrap_err().contains("stack"));
     assert!(t.sent.lock().unwrap().is_empty());
+}
+
+/// A malformed `param` functionJson installs a default entry with no presetError (static RE),
+/// so `set_footswitch_assignment` refuses it before a single frame leaves; a well-formed one
+/// and a non-param one still go out.
+#[test]
+fn set_footswitch_assignment_refuses_a_malformed_param_entry_unsent() {
+    let t = ScriptedTransport::device();
+    let mut s = session_over(&t, Vec::new());
+    let mut bad = crate::test_support::full_param();
+    bad.as_object_mut().unwrap().remove("colorB");
+    let err = s
+        .set_footswitch_assignment(2, 0, &bad.to_string(), false, None)
+        .unwrap_err();
+    assert!(err.contains("colorB"), "{err}");
+    assert!(t.sent.lock().unwrap().is_empty());
+    let good = crate::test_support::full_param().to_string();
+    s.set_footswitch_assignment(2, 0, &good, false, None)
+        .unwrap();
+    s.set_footswitch_assignment(2, 1, r#"{"func":"on-off"}"#, false, None)
+        .unwrap();
+    assert!(!t.sent.lock().unwrap().is_empty());
 }
 
 /// A param footswitch the firmware rejects at load (here a string `valueA` on a float
