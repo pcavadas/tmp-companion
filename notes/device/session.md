@@ -123,6 +123,7 @@ Treat a stream without its final `0x35` frame as incomplete.
 ### Inheritance across sessions
 
 A session opened within 750 ms of the last one's final OUT report inherits the rest of this queue, ahead of its own replies [HW].
+Its `connectionRequest` draws `connectionError` (1) instead of a `connectionResponse`, because the old session is still open ([Session lapse](#session-lapse)) [HW+RE].
 Reports sent while nothing is open are lost: a session closed right after its lean handshake and reopened G ms later lost about 1 + 0.48·G reports as one contiguous run, and the old flood's tail, its field-3 copy included, arrived before the new session's connection reply [HW].
 A gap of 750 ms or more gives the next session a clean flood [HW].
 A reader that keeps the longest carrier then adopts the stale inherited copy.

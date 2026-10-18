@@ -92,7 +92,7 @@ Detail behind the numbered constraints in `SKILL.md`.
    The shipped set (`block-classification.json`) has **19** members.
    That is why those amps ship `NoFx` / `Normal` (reverb-free) variants — to free the one convolution slot.
 2. **Cabinet limit — 2 cabinet-category blocks per preset.**
-   The control app counts combos, half-stacks, bass amps, Cabinet blocks and IR blocks; heads and `ACD_ExternalCab` don't count, and a node with a per-node flag set counts 2 [RE], likely its second cab or second mic [RE, likely] ([open question](../../../../notes/open-questions.md#cabinet-cap-weights)).
+   The control app counts combos, half-stacks, bass amps, Cabinet blocks and IR blocks; heads and `ACD_ExternalCab` don't count, and a node with a per-node flag set counts 2 [RE]; an amp with its second mic on is such a node [HW].
    This is the firmware truth behind the Owner's-Manual "max 2 IR blocks" line.
    Where `blockcaps.rs` differs from this count is stated in [`notes/device/presets.md#block-caps`](../../../../notes/device/presets.md#block-caps).
 3. **Glooper limit — 2 `ACD_Glooper` blocks per preset**, counted across both signal-chain rows.

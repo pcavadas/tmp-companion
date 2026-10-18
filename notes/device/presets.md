@@ -28,7 +28,6 @@ Write paths build from the offline `.preset` file or the device backup; USB read
 - `presetDataRequest` (field 8, no `batchStatus`) is answered with `presetDataChanged` (field 9, plaintext): the stored row, not the working copy, whole when the session is kept alive [HW+RE].
 - `currentPresetInfoRequest` (field 1) is answered with `presetLoaded` (field 11), then `currentPresetInfoChanged` (field 22, carrying `isDirty`); it does not trigger field 3 [RE].
 - `exportPresetRequest` (115) is answered with `exportPresetResponse` (116): the slot JSON encrypted, then LZ4, complete but opaque [RE].
-  A hardware test on older firmware drew no reply, and it has not been re-run on fw 1.8.58.
 
 A message over 65,535 bytes is dropped whole; there is no smaller cap [RE].
 A stored row's keys are emitted sorted, so a cut loses `scenes` first, and `ftsw`, which sorts ahead of it, can survive as a scene-count oracle [RE].
@@ -76,20 +75,21 @@ A `loadPreset` of another slot sent after a `saveCurrentPreset` on the same conn
 A failed save answers `presetError` 15 to the sender [RE].
 A save sent right after `setPresetLevel`, before the `presetLevelChanged` (77) echo arrives, still stores the new level, because the unit processes messages in order on one thread [HW+RE].
 A missing 77 means the level change failed on the unit, and a save would then store the old level [RE].
-The code still ends a save's connection before any load, a conservative shape.
+The code still ends a save's connection before any load.
 Never add a preset load before `save_deferred_scene_writes`: its unsaved writes set the dirty flag, so the load would be a real reload that wipes them.
 
 ## Loading
 
 A `loadPreset` sends `presetError` 6 if the body was rejected, `presetChanged` (25) if the row changed, then the full push set (field 3, `presetLoaded` (11), field 22, `sceneListResponse` (125), `sceneLoaded` (102)), even after a no-op load [RE].
 Field 3 arrives 0.1–0.45 s after a load [HW].
-A `setPresetLevel` after a load on the same connection held every time [HW] (within ~1 s untested); the code still loads on its own connection, a conservative choice.
+A `setPresetLevel` after a load on the same connection held every time [HW]; the code still loads on its own connection.
 
 ### Echo of the previous slot
 
-The first connection after a load can echo the slot loaded before it in its `presetLoaded` (11), although the load landed [HW]; why is open ([open question](../open-questions.md#stale-load-echo)).
+A connection opened within 750 ms of the load connection's last OUT report first gets that connection's queued handshake `presetLoaded` (11) for the slot current before the load, although the load landed ([Inheritance across sessions](session.md#inheritance-across-sessions)) [HW+RE].
+After `Session::lapse` (850 ms of OUT silence) the only 11 names the new slot, so a refused confirm means the load did not land [HW].
 The echo is identity: `Session::active_matches` lets it win over a matching name, and must keep doing so.
-Every load → reconnect → confirm path ends the load's connection with `Session::lapse` and confirms through `Session::connect_confirmed`, which retries a refused confirm on fresh connections.
+Every load → reconnect → confirm path ends the load's connection with `Session::lapse` and confirms through `Session::connect_confirmed`, which still retries a refused confirm on fresh connections.
 A refused save-over removes its scratch only after the stored row re-proves the landing (`replace_inplace::rollback_scratch`), never by name.
 Gates: `session::tests::{a_stale_load_echo_is_retried_on_a_fresh_connection, an_echo_that_keeps_naming_another_slot_still_refuses}`.
 
@@ -217,4 +217,5 @@ The exception escapes the message thread and `std::terminate` aborts the server;
 ### Block caps
 
 The four count caps (convolution reverb, cabinets, Glooper, FX-loop coexistence) live only in the unit's own UI; the server checks the CPU budget alone [RE].
-`blockcaps.rs` copies them with membership sets from older firmware (`src/models/block-classification.json`), a known gap on the cabinet cap: it counts `ACD_ExternalCab`, which fw 1.8.58 exempts [RE], and under-counts an amp with a second mic [RE, likely] ([open question](../open-questions.md#cabinet-cap-weights)).
+On the cabinet cap, an amp with its second mic on counts 2 and `ACD_ExternalCab` counts 0 [HW+RE].
+`blockcaps.rs` copies the caps with membership sets from older firmware (`src/models/block-classification.json`), so it counts `ACD_ExternalCab` and counts an amp with a second mic once.

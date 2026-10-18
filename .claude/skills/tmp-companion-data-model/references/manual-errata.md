@@ -4,7 +4,7 @@ Source: Owner's Manual v1.8 (rev. J), read end to end (text layer + every page r
 Page refs are **printed** pages.
 
 Where the manual contradicts itself or its own artwork.
-Device behaviour the manual leaves open is stated in the other references; device questions still open are in [`notes/open-questions.md`](../../../../notes/open-questions.md).
+Device behaviour the manual leaves open is stated in the other references and in [`notes/device/`](../../../../notes/device/).
 
 ---
 

@@ -133,7 +133,7 @@ for f in src-tauri/src/session/tests.rs src-tauri/src/session/boundary_tests.rs 
 done
 diff_of src-tauri/src/bin/probe.rs
 check "bin/probe.rs → ANY" "ANY" "$(required)"
-for f in notes/open-questions.md scripts/gate-map.tsv scripts/gates.sh .github/workflows/ci.yml \
+for f in notes/README.md scripts/gate-map.tsv scripts/gates.sh .github/workflows/ci.yml \
   src/App.tsx src-tauri/src/sim_device.rs e2e/specs/level.spec.ts src-tauri/src/probe_api/inspect.rs; do
   diff_of "$f"
   check "$f → nothing" "" "$(required)"

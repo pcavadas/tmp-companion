@@ -9,7 +9,7 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
 - **DANGER: device `userSlot` = list index + 1.**
   Before any destructive op keyed on a slot mapping (`clear`, `move`, save-over), confirm the mapping with a non-destructive read and put the guard in the mutation's own address space; a list-index guard on a 1-based `clear` deletes a real preset.
   [→](../../notes/device/presets.md#slot-addressing)
-- **The first connection after a load can echo the slot loaded before it.**
+- **A connection opened within 750 ms of a load's connection echoes the slot loaded before it.**
   The echo is identity and must keep winning over a matching name: confirm through `Session::connect_confirmed`, never by name.
   [→](../../notes/device/presets.md#echo-of-the-previous-slot)
 - **DANGER: a save is permanent and a leveling run saves automatically.**

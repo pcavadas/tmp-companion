@@ -141,7 +141,7 @@ My-Presets selections (`tabEnum=1`) render the slot number.
 - `workflows.md` — editing on the unit: presets, blocks, the **cabinet sub-model** (mic models, the 32-slot position grid, axis/filters, dual-cab/dual-mic Blend+Pan, External Cabinet/SIC — §3), footswitch and EXP assignments, the operating-modes capacity table.
 - `device-operation.md` — playing and maintaining the unit: songs (incl. song BPM), setlists, Looper, tap tempo and tuner, DAW Mode, backup and firmware update, power-up, the screen index.
 - `manual-errata.md` — where the manual contradicts itself or its artwork.
-  Device questions still open: [`notes/open-questions.md`](../../../notes/open-questions.md) — **read it before asserting a device behaviour this skill does not state.**
+  Device behaviour this skill does not state is in [`notes/device/`](../../../notes/device/) — **read it before asserting one.**
 
 Sources: the Interactive Owner's Manual (structural facts verified against **firmware v1.8**, rev. J) and the Model Guide (v1.7).
 The inventory stays v1.7-pinned — 1.8 ships 31 models the guide doesn't cover.

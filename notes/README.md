@@ -19,4 +19,3 @@ The one index of `notes/`; each note owns its subject, and module headers (`//!`
 - [`e2e-fixtures.md`](e2e-fixtures.md): read before changing a fixture or writing an e2e spec — the scenario fixtures' tiers, cab rule, authoring constraints and deviations (the matrix is `e2e/fixtures/COVERAGE.md`).
 - [`e2e-recording.md`](e2e-recording.md): read when reading run evidence or arming a trace — online run folders, the wire recorder and the TCT v1 trace format.
 - [`releasing.md`](releasing.md): read when touching `release.yml`, packaging, `docs/` or icons — the release pipeline, macOS signing, Windows and Linux packages, the marketing site, the app icon.
-- [`open-questions.md`](open-questions.md): read when code depends on an unknown, or before a hardware session — device questions still open, with stable ids.
