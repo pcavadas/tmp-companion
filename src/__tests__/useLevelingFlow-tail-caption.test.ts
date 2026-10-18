@@ -64,7 +64,7 @@ function holdSceneBatch() {
   return held;
 }
 
-describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
+describe("useLevelingFlow — batch tail caption", () => {
   it("a tail-only item sets tailMessage and touches no row", () => {
     // Held open — never returns, mirrors an in-flight batch.
     const batch = holdSceneBatch();

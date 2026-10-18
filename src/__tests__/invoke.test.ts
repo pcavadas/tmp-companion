@@ -606,7 +606,7 @@ describe("invoke rejections are normalized to CommandError", () => {
     expect((err as CommandError).kind).toBe("other");
   });
 
-  it("keeps a typed { kind, message } rejection's kind and message (#269)", async () => {
+  it("keeps a typed { kind, message } rejection's kind and message", async () => {
     // `connect_device` returns the typed `error::AppError`, serialized as
     // `{ kind, message }` — the frontend classifies by `kind`, not by the text.
     invokeMock.mockRejectedValueOnce({

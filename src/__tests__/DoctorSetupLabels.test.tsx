@@ -74,7 +74,7 @@ const rowOf = (key: string) => {
   return within(row);
 };
 
-describe("Doctor — main sound label (issue 2)", () => {
+describe("Doctor — main sound label", () => {
   it('renders the sound\'s own name verbatim (`chosenFrom` names it "Main sound")', () => {
     renderCheck([base()]);
     expect(rowOf("p0").getByText("Main sound")).toBeInTheDocument();

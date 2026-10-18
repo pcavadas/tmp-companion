@@ -347,7 +347,7 @@ describe("useUpdater — manual check()", () => {
 
 // With auto-install on, a manual Check while the startup check is still
 // pending must not reach start() twice (two concurrent downloads).
-describe("useUpdater — overlapping checks with auto-install (#311)", () => {
+describe("useUpdater — overlapping checks with auto-install", () => {
   it("two checks resolving together start ONE download", async () => {
     const u = mkUpdate("1.1.0", null);
     h.getStore.mockResolvedValue(storeWith(true));

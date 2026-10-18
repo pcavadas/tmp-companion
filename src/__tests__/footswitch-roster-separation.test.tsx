@@ -85,7 +85,7 @@ function freshConnection() {
   resetLiveDevice();
 }
 
-describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression guard)", () => {
+describe("footswitch roster separation — Level vs. Doctor", () => {
   it("Level's list shows the no-level-control switch too — disabled, with a reason", async () => {
     freshConnection();
     mockPresetWithBothFootswitches();

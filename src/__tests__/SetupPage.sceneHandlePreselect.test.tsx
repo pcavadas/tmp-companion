@@ -71,7 +71,7 @@ const sceneOpt: SetupOption = makeSceneOption(0, {
 const blockOf = () => selectTrigger("block:s0:0");
 const knobOf = () => selectTrigger("knob:s0:0");
 
-describe("SetupPage — scene handle preselect (issue 5)", () => {
+describe("SetupPage — scene handle preselect", () => {
   beforeEach(() => {
     resetLibraryScan();
     vi.mocked(invoke).mockReset();

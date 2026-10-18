@@ -65,7 +65,7 @@ describe("footswitchLevelable", () => {
   });
 });
 
-describe("childKeys — footswitch selectability (BUG 1)", () => {
+describe("childKeys — footswitch selectability", () => {
   it("excludes a footswitch with no level-class parameter from the selectable set", () => {
     const keys = childKeys(0, [], [LEVELABLE, NO_LEVEL_CONTROL]);
     // Only the Base key + the ONE levelable footswitch's key (by its ORIGINAL array
@@ -83,7 +83,7 @@ describe("childKeys — footswitch selectability (BUG 1)", () => {
   });
 });
 
-describe("chosenFrom — the row builder must agree with childKeys (BUG 1)", () => {
+describe("chosenFrom — the row builder must agree with childKeys", () => {
   const rows: PresetRow[] = [{ slot: 0, name: "Friedman HBE", empty: false }];
   const footswitchInfo = new Map([[0, [LEVELABLE, NO_LEVEL_CONTROL]]]);
 

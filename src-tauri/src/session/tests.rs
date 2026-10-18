@@ -1298,7 +1298,7 @@ fn extract_level_candidates_uses_the_classifier_not_the_name_rule() {
     // `footswitch::is_levelable_param`'s doc.
     assert!(
         !got.iter().any(|(n, p)| n == "chorus" && p == "mix"),
-        "issue 3: Mix is never a default/pickable candidate: {got:?}"
+        "Mix is never a default/pickable candidate: {got:?}"
     );
     assert_eq!(
         crate::param_class::classify("ACD_Chorus", "mix").class,

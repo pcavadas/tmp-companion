@@ -233,7 +233,7 @@ describe("buildResults — order and groups", () => {
   });
 });
 
-describe("buildResults — titles (#190)", () => {
+describe("buildResults — titles", () => {
   it("all clear: every sound checked, nothing to change", () => {
     const three = buildResults(
       result([preset(0, [sound("a", 0), sound("b", 0), sound("c", 0)])]),

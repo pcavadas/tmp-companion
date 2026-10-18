@@ -199,7 +199,7 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe("Copy save outcome (#291)", () => {
+describe("Copy save outcome", () => {
   it("every preset errors → no success state, and Done keeps every staged edit", async () => {
     installInvoke({ outcome: { 1: "error", 2: "error" } });
     const user = userEvent.setup();
@@ -293,7 +293,7 @@ describe("Copy save outcome (#291)", () => {
   });
 });
 
-describe("Copy Back keeps staged edits (#292)", () => {
+describe("Copy Back keeps staged edits", () => {
   it("Back → Choose blocks with the same selection keeps the edit and its undo", async () => {
     installInvoke();
     const user = userEvent.setup();
@@ -327,7 +327,7 @@ describe("Copy Back keeps staged edits (#292)", () => {
   });
 });
 
-describe("Copy bypass state (#293)", () => {
+describe("Copy bypass state", () => {
   it("draws a bypassed block bypassed, and a save keeps it in the cache patch", async () => {
     installInvoke({ bypassHall: [1] });
     const user = userEvent.setup();
@@ -350,7 +350,7 @@ describe("Copy bypass state (#293)", () => {
   });
 });
 
-describe("Copy acts on the block you open (#294)", () => {
+describe("Copy acts on the block you open", () => {
   it("opening another block's menu replaces THAT block, never the one opened before", async () => {
     installInvoke();
     const user = userEvent.setup();

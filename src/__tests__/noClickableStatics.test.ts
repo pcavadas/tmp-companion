@@ -81,7 +81,7 @@ function clickableStatics(file: string, src: string): Hit[] {
   return hits;
 }
 
-describe("no onClick on non-interactive elements (#307)", () => {
+describe("no onClick on non-interactive elements", () => {
   const files = tsxFiles(SRC);
 
   it("scans the source tree", () => {

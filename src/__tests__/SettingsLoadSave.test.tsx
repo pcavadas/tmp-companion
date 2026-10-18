@@ -48,7 +48,7 @@ function renderView() {
 
 const savedTargets = () => callsOf("save_targets").map((a) => a.targets);
 
-describe("SettingsView — load and save are never silent (#300)", () => {
+describe("SettingsView — load and save are never silent", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
   });
@@ -200,7 +200,7 @@ describe("SettingsView — load and save are never silent (#300)", () => {
   });
 });
 
-describe("Settings — click-only reorder and slider cancel (#302)", () => {
+describe("Settings — click-only reorder and slider cancel", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
   });

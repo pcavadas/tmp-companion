@@ -1,7 +1,6 @@
-//! Probe entry points: footswitch-scene leveling (list / bake-validate / level / repro / forced measure).
+//! Probe entry points: footswitch-scene leveling (list / bake-validate / level / forced measure / clear).
 
 use super::ftsw::read_slot_ftsw;
-use crate::audio;
 use crate::audiograph::node_param_f64;
 use crate::commands::level_footswitch::run_footswitch_batch;
 use crate::commands::ProgressStatus;
@@ -9,80 +8,11 @@ use crate::footswitch;
 use crate::leveller;
 use crate::session::Session;
 use crate::slot::ListIndex;
-use crate::stimulus::read_stimulus_48k;
 use crate::stimulus::read_stimulus_calibrated;
 use crate::{
     commands::level_footswitch::resolve_footswitch_job,
     commands::level_footswitch::FootswitchLevelJob, slot_read::read_slot_preset_parsed,
 };
-
-/// Probe entry: sends a chunked `set_footswitch_assignment` (1) BEFORE any audio, (2) after
-/// ONE re-amp CoreAudio capture, (3) after a SECOND capture — reporting the device's reply
-/// fields each time (`[54]` = landed, [] = dropped). Known limit: hard-wired to slot 23 / FS6,
-/// outside `SCRATCH_SLOTS`; restores after each set.
-pub fn probe_repro_chunked() -> Result<String, String> {
-    let slot = ListIndex(23);
-    let switch = 6u32;
-    let json = r#"{"func":"param","groupId":"G1","nodeId":"ACD_BluesDriver","parameterId":"gain","valueA":0.5,"valueB":0.35,"valueType":2,"colorA":3,"colorB":0,"customLabel":"REPRO","switchType":0,"isActive":true,"linkGroup":0}"#;
-    let mut out = String::from("[probe --repro-chunked]\n");
-
-    let try_set = |label: &str, out: &mut String| {
-        let r = (|| -> Result<Vec<u32>, String> {
-            let mut s = Session::connect()?;
-            s.begin_live_edit()?;
-            s.load_preset(slot)?;
-            // Pump heartbeats (NOT a passive sleep) to keep the session live up to the set.
-            for _ in 0..8 {
-                let _ = s.heartbeat();
-                let _ = s.pump_silent(150);
-            }
-            s.set_footswitch_assignment(switch, 1, json, false, None)?;
-            let seen = s.seen_preset_fields();
-            let _ = s.clear_footswitch_assignment(switch, 1);
-            let _ = s.save_current_preset(slot);
-            Ok(seen)
-        })();
-        match r {
-            Ok(seen) => out.push_str(&format!(
-                "  [{label}] chunked set → device fields {seen:?}  ({})\n",
-                if seen.contains(&54) {
-                    "LANDED"
-                } else {
-                    "DROPPED"
-                }
-            )),
-            Err(e) => out.push_str(&format!("  [{label}] error: {e}\n")),
-        }
-    };
-
-    let capture_once = || -> Result<(), String> {
-        let stim_path = std::env::var("TMP_LEVELLER_STIMULUS")
-            .map_err(|_| "set TMP_LEVELLER_STIMULUS".to_string())?;
-        let stim = read_stimulus_48k(&stim_path)?;
-        {
-            let mut s = Session::connect()?;
-            s.load_preset(slot)?;
-            std::thread::sleep(std::time::Duration::from_millis(1200));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        let mut s = Session::connect()?;
-        s.set_reamp_mode(true)?;
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let _ = audio::reamp_capture(&stim, 48_000, 800);
-        let _ = s.set_reamp_mode(false);
-        Ok(())
-    };
-
-    try_set("A: before any audio", &mut out);
-    out.push_str("  … one re-amp CoreAudio capture …\n");
-    capture_once()?;
-    try_set("B: after 1 capture", &mut out);
-    out.push_str("  … second re-amp CoreAudio capture …\n");
-    capture_once()?;
-    try_set("C: after 2 captures", &mut out);
-    let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
-    Ok(out)
-}
 
 /// Probe entry: clear one footswitch function (restore/cleanup after a `--level-footswitch
 /// --commit`). Loads `slot`, clears `(switch, index)`, saves, and field-8 verifies.

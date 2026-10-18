@@ -194,7 +194,7 @@ describe("CatalogView — sidebar, search, Sound, count", () => {
 
 // Stereo on → a category with no stereo models must not lock the grid on
 // "No models match" with the active filter disabled (it could never be turned off).
-describe("regression: an active Stereo filter stays changeable in a mono-only category (#303)", () => {
+describe("an active Stereo filter stays changeable in a mono-only category", () => {
   it("keeps the chosen Stereo segment enabled, and All clears it", async () => {
     const user = userEvent.setup();
     renderCatalog();
@@ -380,7 +380,7 @@ describe("CatalogView — details", () => {
   });
 });
 
-describe("regression: picking a model tile re-renders only the affected tiles (#315)", () => {
+describe("picking a model tile re-renders only the affected tiles", () => {
   // Two plain (non-half-stack) models whose block_id appears on ONE row only, so a
   // resolver call names exactly one tile.
   const once = (r: ModelRecord) =>

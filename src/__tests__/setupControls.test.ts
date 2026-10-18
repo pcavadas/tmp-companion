@@ -192,7 +192,7 @@ describe("knob notes", () => {
     expect(m.pickKnob("gain")).toBeUndefined();
   });
 
-  it("a block whose every knob is disabled is offered disabled and can't be picked (was recommendedBlock's BUG FIX)", () => {
+  it("a block whose every knob is disabled is offered disabled and can't be picked", () => {
     const m = controlModel(read(sharedBoost, twinOutput), null, {
       kind: "preset",
     });

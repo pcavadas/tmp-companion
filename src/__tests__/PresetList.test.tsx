@@ -369,7 +369,7 @@ describe("PresetList (look B scene tree)", () => {
   });
 
   // ── a footswitch with no level-class parameter — shown, disabled, reasoned ──
-  describe("a footswitch with no volume knob (BUG 1)", () => {
+  describe("a footswitch with no volume knob", () => {
     const FSW_WITH_UNLEVELABLE = new Map<number, FootswitchInfo[]>([
       [0, [fsw(4, "Solo"), fswNoLevel(1, "PHASER")]],
     ]);

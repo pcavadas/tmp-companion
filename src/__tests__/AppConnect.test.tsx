@@ -43,7 +43,7 @@ beforeEach(() => {
   vi.mocked(invoke).mockReset();
 });
 
-describe("App — the 3 s poll shares the single-flight guard (#305)", () => {
+describe("App — the 3 s poll shares the single-flight guard", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -74,7 +74,7 @@ describe("App — the 3 s poll shares the single-flight guard (#305)", () => {
   });
 });
 
-describe("App — the hotplug attach shares the single-flight guard (#305)", () => {
+describe("App — the hotplug attach shares the single-flight guard", () => {
   let undoTauri: () => void = () => undefined;
   beforeEach(() => {
     undoTauri = forceTauri();

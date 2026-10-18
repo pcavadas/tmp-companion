@@ -153,7 +153,7 @@ function Harness() {
   );
 }
 
-describe("regression: one preset tick re-renders only that row (#315)", () => {
+describe("one preset tick re-renders only that row", () => {
   beforeEach(() => {
     slotRenders.length = 0;
   });

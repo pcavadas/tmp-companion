@@ -89,7 +89,7 @@ beforeEach(() => {
   mockCommands();
 });
 
-describe("a footswitch row's scene context comes from data (#286)", () => {
+describe("a footswitch row's scene context comes from data", () => {
   it("shows and submits the suggested scene without the dropdown ever being opened", async () => {
     await seedScan([{ switch: 2, enablingScenes: [1], suggested: 1 }]);
     vi.mocked(invoke).mockClear();

@@ -137,7 +137,7 @@ async function settle(result: { current: ReturnType<typeof useLevelingFlow> }) {
   });
 }
 
-describe("Try again (#284)", () => {
+describe("Try again", () => {
   it("runs the sounds again straight away with the first run's settings, and updates the same Summary", async () => {
     // First run: the main sound fails, the scene and the footswitch level.
     mockCommands({
@@ -285,7 +285,7 @@ describe("Try again (#284)", () => {
     expect(result.current.results[0].footswitch?.sceneContext).toBe(2);
   });
 
-  it("Done deselects every sound any run of the flow resolved (BUG-4)", async () => {
+  it("Done deselects every sound any run of the flow resolved", async () => {
     mockCommands({
       level_preset: () => rejectWith(new Error("capture failed")),
       level_scenes_apply_batched: scenes("done"),

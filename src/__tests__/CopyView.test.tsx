@@ -270,7 +270,7 @@ describe("copyModel — edits → device ops", () => {
   });
 });
 
-describe("copyModel — retargetHistory (#292)", () => {
+describe("copyModel — retargetHistory", () => {
   const g0 = seriesGraph();
   const g1 = { ...seriesGraph(), slot: 1 };
   const graphs = new Map<number, ActiveGraph>([
@@ -326,7 +326,7 @@ describe("copyModel — retargetHistory (#292)", () => {
   });
 });
 
-describe("copyModel — bypass state (#293)", () => {
+describe("copyModel — bypass state", () => {
   it("carries bypass through the edit graph; replaced and inserted blocks are active", () => {
     const g = seriesGraph();
     const nodes = g.nodes.map((n) => ({ ...n, bypassed: true }));
@@ -387,7 +387,7 @@ describe("CopyView — live device", () => {
     return forceTauri();
   });
 
-  describe("regression: BUG-7 the Loaded badge follows the live preset", () => {
+  describe("the Loaded badge follows the live preset", () => {
     it("moves the badge from the connect-time slot to the live one on a tmp://live-preset push", async () => {
       mockCommands({
         list_presets: () => [
@@ -445,7 +445,7 @@ describe("CopyView — live device", () => {
   // (driven by useLiveDevice's graph) would stay stale until the monitor reconnects.
   // CopyView must patch the live graph optimistically when the edited target IS the active
   // preset — no device re-read.
-  describe("regression: BUG-2 saving to the active preset optimistically repaints the hero", () => {
+  describe("saving to the active preset optimistically repaints the hero", () => {
     // The post-save read-back the device returns on the item's `graph` field: the EDITED
     // roster (Twin → DynaComp) under a distinct name so the hero assertion is unambiguous.
     // It must show the acked edit — CopyView adopts a read-back only when its blocks match

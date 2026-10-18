@@ -1,4 +1,4 @@
-// Regression: the top-level ErrorBoundary must catch a render crash and show the
+// The top-level ErrorBoundary must catch a render crash and show the
 // "Something went wrong" page (not a blank tree), and log what was thrown — an uncaught
 // render error (e.g. a Rules-of-Hooks violation) would unmount the whole React root →
 // blank window with no on-disk trace. Look B draws no raw message:

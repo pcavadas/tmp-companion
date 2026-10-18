@@ -170,7 +170,7 @@ describe("DoctorRun — stop and finish", () => {
     expect(onComplete).toHaveBeenCalledOnce();
   });
 
-  it("failed: says the check couldn't finish (not stopped), shows no backend text, and offers Back and Try again (#290)", async () => {
+  it("failed: says the check couldn't finish (not stopped), shows no backend text, and offers Back and Try again", async () => {
     const onRetry = vi.fn();
     const onBack = vi.fn();
     const onComplete = vi.fn();

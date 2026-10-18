@@ -59,7 +59,7 @@ function mockBackup(impl: Handler<"read_library_via_backup">) {
   mockCommands({ read_library_via_backup: impl });
 }
 
-describe("libraryScan — failure paths (#310)", () => {
+describe("libraryScan — failure paths", () => {
   beforeEach(() => {
     resetLibraryScan();
     vi.mocked(invoke).mockReset();

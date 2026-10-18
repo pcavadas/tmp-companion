@@ -229,7 +229,7 @@ describe("RunPage: the run list", () => {
 // Instrument "None" stores the `"none"` sentinel, which must never show raw. Look B shows no instrument on the run at all; the only place an
 // instrument is shown is its Select (Level's Set up, Doctor's Instrument page), whose
 // options come from `instrumentOptions`, which names the sentinel "None".
-describe("RunPage row label for the no-instrument choice (#287)", () => {
+describe("RunPage row label for the no-instrument choice", () => {
   it("shows no raw id for a sound leveled with instrument None", () => {
     renderWithTheme(runPage([sound({ instId: NO_INSTRUMENT })]));
     expect(screen.queryByText(/\bnone\b/)).toBeNull();

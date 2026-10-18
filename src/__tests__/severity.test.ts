@@ -113,7 +113,7 @@ describe("sceneLoudnessTone", () => {
   });
 });
 
-describe("hedging and ranking across rule units (#253)", () => {
+describe("hedging and ranking across rule units", () => {
   // A 0.8 dB/oct tilt is 16σ (σ 0.05 dB/oct); a 0.9 dB band margin is 2.25σ
   // (σ 0.4 dB). Raw severity would rank and hedge them the other way round.
   const tilt: DoctorDiag = {

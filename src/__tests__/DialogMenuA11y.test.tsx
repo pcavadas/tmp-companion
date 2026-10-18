@@ -37,7 +37,7 @@ function renderInRoot(ui: React.ReactNode) {
   return render(<ThemeProvider>{ui}</ThemeProvider>, { container: appRoot });
 }
 
-describe("Dialog — modal for AT and Tab, named, focus-safe (#308)", () => {
+describe("Dialog — modal for AT and Tab, named, focus-safe", () => {
   it("portals into document.body (outside the app root) with an accessible name", () => {
     renderInRoot(
       <Dialog label="Test sheet">
@@ -169,7 +169,7 @@ describe("Dialog — modal for AT and Tab, named, focus-safe (#308)", () => {
   });
 });
 
-describe("Menu — portaled, flipping, caller-owned role, non-eating dismiss (#308)", () => {
+describe("Menu — portaled, flipping, caller-owned role, non-eating dismiss", () => {
   function MenuHarness({
     role,
     onOther,
@@ -263,7 +263,7 @@ describe("Menu — portaled, flipping, caller-owned role, non-eating dismiss (#3
   });
 });
 
-describe("Toast — stays clickable over an open dialog (#308)", () => {
+describe("Toast — stays clickable over an open dialog", () => {
   it("portals outside the inert app root, and its dismiss fires without closing the dialog", async () => {
     const onDismiss = vi.fn();
     const onClose = vi.fn();

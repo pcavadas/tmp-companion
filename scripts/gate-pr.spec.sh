@@ -103,19 +103,19 @@ for f in scripts/e2e.sh scripts/level-validate.sh scripts/device-lock.sh scripts
   e2e/playwright.online.config.ts; do
   diff_of "$f"
   check "$f → all four on the unit" "$ALL" "$(required)"
-  check "$f → nothing on the twin" "" "$(required_remote)"
+  check "$f → nothing on the remote lane" "" "$(required_remote)"
 done
 # The remote lane's own runner: every spec on the remote lane, nothing on the unit.
 for f in scripts/e2e-remote.sh e2e/playwright.remote.config.ts; do
   diff_of "$f"
   check "$f → nothing on the unit" "" "$(required)"
-  check "$f → all four on the twin" "$ALL" "$(required_remote)"
+  check "$f → all four on the remote lane" "$ALL" "$(required_remote)"
 done
 # Shared harness: both lanes run it.
 diff_of e2e/fixtures/scenario.ts
-check "scenario.ts → all four on the twin too" "$ALL" "$(required_remote)"
+check "scenario.ts → all four on the remote lane too" "$ALL" "$(required_remote)"
 diff_of src-tauri/src/commands/songs.rs
-check "a class with no @remote row reads the same on the twin" "songs" "$(required_remote)"
+check "a class with no @remote row reads the same on the remote lane" "songs" "$(required_remote)"
 diff_of src-tauri/Cargo.lock
 check "Cargo.lock → ANY, with an advisory" "ANY|1" "$(required)|$(required_err | grep -c 'advisory (deps)')"
 diff_of src-tauri/src/session/structural.rs
