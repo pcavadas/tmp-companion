@@ -1,5 +1,5 @@
 //! Captured-audio verdict coverage for the Doctor rules the online oracle preset
-//! (407) cannot fire on the real device (#199).
+//! (407) cannot fire on the real device.
 //!
 //! Each test runs the SHIPPED guitar stimulus through a real filter (an RBJ
 //! biquad, the textbook defect shape) and then through the PRODUCTION analysis

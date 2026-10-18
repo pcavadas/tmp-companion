@@ -36,9 +36,8 @@ pub(crate) fn scenario_spec() -> Result<Vec<ScenarioPreset>, String> {
 
 /// Entries holding a scenario NAME at the wrong slot — leftovers of a seed aborted
 /// between its import and its guarded scratch-clear (the import lands at the first
-/// EMPTY slot, so each aborted run strands one copy in the user's bank; HW-observed:
-/// 13 stray "E2E Reference" copies accumulated at list indices 27–39 across failed
-/// runs, and the duplicates then broke the next seed's landing detection). Pure.
+/// EMPTY slot, so each aborted run strands one copy in the user's bank, and the
+/// duplicates break the next seed's landing detection; HW). Pure.
 fn scenario_strays(
     list: &[session::PresetEntry],
     spec: &[ScenarioPreset],
@@ -54,9 +53,8 @@ fn scenario_strays(
 
 /// Seed-owned ownership markers that SURVIVE the seed's import → load → save —
 /// `info.preset_id` cannot serve (an import keeps it, but every save re-mints it;
-/// fw 1.8.58, HW 2026-10-10):
-/// the fixture's `info.source_id` stamp + the Reference's scene-uuid prefix
-/// (the latter also covers pre-stamp legacy copies).
+/// HW, fw 1.8.58): the fixture's `info.source_id` stamp + the fixtures'
+/// `e2e00000-` scene-uuid prefix.
 const FIXTURE_MARKERS: [&str; 2] = ["tmp-companion-e2e-fixture", "e2e00000-"];
 
 /// The CURRENT fixture revision (`info.source_id`, which survives a device import).
@@ -68,7 +66,7 @@ const FIXTURE_MARKERS: [&str; 2] = ["tmp-companion-e2e-fixture", "e2e00000-"];
 /// pins every committed fixture to this exact stamp.
 pub(crate) const FIXTURE_SOURCE_STAMP: &str = "tmp-companion-e2e-fixture#r12";
 
-/// Substring probe (truncation-proof vs the field-8 partial). Pure.
+/// Substring probe (truncation-proof vs a partial `presetDataRequest` (field 8) body). Pure.
 fn is_fixture_body(bytes: &[u8]) -> bool {
     let body = String::from_utf8_lossy(bytes);
     FIXTURE_MARKERS.iter().any(|m| body.contains(m))
@@ -77,19 +75,15 @@ fn is_fixture_body(bytes: &[u8]) -> bool {
 // ── Seed manifest: the ownership signal that survives a spec's save ──────────
 //
 // A CONTENT marker cannot carry ownership on its own. `info.source_id` and the
-// `e2e00000-` scene uuids are fixture-INJECTED fields: the device rewrites the
-// preset body on `saveCurrentPreset`, dropping the unknown `source_id` and
-// regenerating scene uuids. So the moment a spec legitimately writes and saves a
-// fixture — `level.spec.ts` levels and saves "E2E Reference" at slot 400 — that
-// fixture reads as un-owned forever after. Both guards then refuse it: the
-// re-seed won't overwrite it AND teardown's guarded clear won't clean it, so it
-// strands and hard-blocks every later run at the seed step.
+// `e2e00000-` scene uuids are fixture-INJECTED fields, and a spec that
+// legitimately writes and saves a fixture (`level.online` levels and saves
+// "E2E Rig" at slot 400) can leave it reading as un-owned. Whether a fw 1.8.58
+// save keeps `source_id` is not HW-checked (static RE says it does). Un-owned,
+// both guards refuse it: the re-seed won't overwrite it AND teardown's guarded
+// clear won't clean it, so it strands and hard-blocks every later run at the
+// seed step.
 //
-// HW-isolated 2026-07-25 (fw 1.8.45): seed → seed skips cleanly (`imported slots
-// []`, markers intact through IMPORT), while seed → level.spec.ts → seed refuses
-// on slot 400 ONLY — the single fixture the specs save. 401/402/403 stay owned.
-//
-// The fix is provenance recorded by the WRITER at import time. Machine-local file,
+// So ownership is provenance recorded by the WRITER at import time. Machine-local file,
 // keyed slot → name; ownership is manifest-hit AND current-name match, so a slot
 // whose name has since changed is NOT blessed (still fail-closed).
 //
@@ -97,9 +91,9 @@ fn is_fixture_body(bytes: &[u8]) -> bool {
 // is verifiably cleared, so it never outlives what it describes. That matters — an
 // immortal claim would bless whatever occupies a scratch slot next (e.g. a Pro
 // Control backup restore putting a levelled, marker-free fixture back), letting the
-// harness overwrite and delete content the marker-only guard used to protect. With
+// harness overwrite and delete content the marker-only guard protects. With
 // the lease, ownership is claimed and released inside exactly the window the harness
-// genuinely owns the slot, and the residual risk really is the pre-marker one: a
+// genuinely owns the slot, and the residual risk is: a
 // preset placed at a scratch slot, under the exact fixture name, WHILE a run holds
 // the lease. The scratch zone is documented as harness-owned — an accepted trade.
 
@@ -154,14 +148,10 @@ fn record_seeded(list_index: ListIndex, name: &str) {
     write_manifest(&map);
 }
 
-/// Release the claim on `list_index` — called ONLY after a VERIFIED successful clear.
-/// The claim is a LEASE, not a deed: it must not outlive the fixture it describes.
-/// Left immortal, a stale entry would bless whatever later occupies a scratch slot —
-/// e.g. a Pro Control backup restore putting a levelled (marker-free) fixture back —
-/// and the harness would then overwrite and delete content the marker-only guard used
-/// to protect. Pruning only on SUCCESS matters: dropping the claim before/despite a
-/// failed clear would strand the slot with neither manifest nor marker, which is the
-/// original bug.
+/// Release the claim on `list_index` — called ONLY after a VERIFIED successful clear
+/// (the claim is a LEASE; see the manifest section above). Pruning only on SUCCESS
+/// matters: dropping the claim before/despite a failed clear would strand the slot with
+/// neither manifest nor marker.
 // Its one production caller (`e2e_server::e2e_clear_preset`) is behind `--features e2e`,
 // so a plain lib build sees no user; the unit test below is the other caller.
 #[cfg(any(test, feature = "e2e"))]
@@ -221,21 +211,21 @@ fn manifest_owns(list_index: ListIndex, name: &str) -> bool {
 /// `list_index` is 0-BASED, the same space as the clears and imports this gates — as is
 /// [`slot_is_pristine_fixture`]. ONE index convention across both probes: this repo has
 /// already lost a real preset to a guard that read one space while the mutation acted in
-/// another. Callers must be on a QUIET line (`drain_until_quiet` first) — a field-8 read
-/// fired mid-flood is dropped device-side.
+/// another. Callers must be on a QUIET line (`drain_until_quiet` first) — a
+/// `presetDataRequest` (field 8) read fired mid-flood is dropped device-side.
 pub(crate) fn slot_is_ours(s: &mut Session, list_index: ListIndex, name: &str) -> bool {
     manifest_owns(list_index, name) || slot_is_pristine_fixture(s, list_index)
 }
 
 /// Does the body still carry an injected marker — i.e. NO spec has saved over it since
 /// the import? Answers "is this untouched", NOT "did we put it here"; conflating the two
-/// is what stranded fixtures. `list_index` is 0-BASED (the field-8 read takes +1).
+/// strands fixtures. `list_index` is 0-BASED (the stored-row read takes +1).
 pub(crate) fn slot_is_pristine_fixture(s: &mut Session, list_index: ListIndex) -> bool {
     matches!(s.read_slot_preset_json(list_index.device_slot()), Ok(Some(bytes)) if is_fixture_body(&bytes))
 }
 
 /// Substring-extract `audioGraph.presetLevel` (the one `presetLevel` key a
-/// preset body carries). Substring, not serde: the field-8 read can return a
+/// preset body carries). Substring, not serde: the stored-row read can return a
 /// TAIL-TRUNCATED partial, and a full parse would fail on it even though the
 /// early `audioGraph` object made it through. `None` on a body the level
 /// never reached.
@@ -251,7 +241,7 @@ fn extract_preset_level(body: &[u8]) -> Option<f64> {
 /// Substring-extract the ORDERED sequence of every `"FenderId":"<value>"` occurrence —
 /// the base `audioGraph` block chain (`guitarNodes`/`micNodes` arrays-of-objects, each
 /// carrying its own `"FenderId"` field). Same truncation-tolerant philosophy as
-/// [`extract_preset_level`]: a serde parse would fail on a tail-truncated field-8
+/// [`extract_preset_level`]: a serde parse would fail on a tail-truncated stored-row
 /// partial, and on the fixture-json side would not guarantee the same left-to-right
 /// ordering this byte scan gets for free on both sides — which is what makes the
 /// device-vs-fixture compare sound. Scene overlays key nodes by id
@@ -289,8 +279,7 @@ fn body_is_pristine(body: &[u8], fixture_json: &str) -> bool {
 /// (level, chain, params) fail independently (a level-drifted-only body still has a
 /// matching chain, and vice versa — see `pristine_check_flags_a_structural_block_delete`),
 /// so a caller that hardcodes one reason string regardless of which check actually
-/// tripped is silently wrong half the time; that was the bug here before this type
-/// existed (see `pristine_check`'s doc comment for the full incident).
+/// tripped is silently wrong half the time.
 #[derive(Debug, PartialEq, Eq)]
 enum PristineMiss {
     /// The resident body predates the fixture's `FIXTURE_SOURCE_STAMP` revision.
@@ -335,10 +324,10 @@ const PRISTINE_TOL: f64 = 1e-3;
 /// marker-only skip hands the NEXT run pre-leveled state; HW: the Hiwatt at 404
 /// carried presetLevel 0.37495 vs the fixture's 0.5999 → the base lane skipped as
 /// "already at target" and the spec fast-failed) but is BLIND to a structural edit
-/// that never touches `presetLevel` — HW-reproduced 2026-08-01: `copy.spec.ts`
-/// deleted E2E Target 2's trailing `ACD_FiveBandParamEQ` block and saved, the marker
-/// AND presetLevel both survived that save, and the presetLevel-only check classified
-/// the mutilated body pristine, skipping the re-import doctor's oracle then relied on.
+/// that never touches `presetLevel` — HW: `copy.spec.ts` deletes E2E Edge's trailing
+/// `ACD_FiveBandParamEQ` block and saves; the marker AND presetLevel both survive that
+/// save, so a presetLevel-only check would call the mutilated body pristine and skip
+/// the re-import the doctor oracle relies on.
 /// The chain compare closes that gap without disturbing the level-drift case: leveling
 /// and doctor-param saves never touch a `"FenderId"` occurrence, so the chain still
 /// matches even though presetLevel legitimately drifted (the level check is still the
@@ -479,7 +468,7 @@ fn leveled_values(doc: &serde_json::Value) -> std::collections::HashMap<String, 
 // before it returns.
 
 /// Where the empty-body substitution is written up — quoted in the hard error so the
-/// next encounter starts at the HW bisect instead of repeating it. Section TITLE, not
+/// next encounter starts from the written-up evidence. Section TITLE, not
 /// the anchor slug: the title is what survives a heading reflow.
 const DISCARD_GOTCHA: &str = "notes/gotchas.md — \"A body rejected at load becomes a \
                               silent empty preset that keeps its name\"";
@@ -501,11 +490,11 @@ fn body_was_discarded(body: &[u8], fixture_json: &str) -> bool {
             && !extract_fender_chain(fixture_json).is_empty())
 }
 
-/// Read `list_index`'s (0-based) field-8 body, paced and retried ONCE on a no-answer.
+/// Read `list_index`'s (0-based) stored-row body, paced and retried ONCE on a no-answer.
 /// `Ok(None)` from `read_slot_preset_json` means "the device did not answer this read",
 /// not "the slot is empty" (the documented back-to-back read unreliability; see
 /// `body_names`) — settling 300 ms and re-reading once resolves that. A SHORT/truncated
-/// body is a DIFFERENT class and is NOT retried here: the field-8 partial truncates at a
+/// body is a DIFFERENT class and is NOT retried here: the stored-row partial truncates at a
 /// per-slot-deterministic size, so a re-read cannot lengthen it. Shared by
 /// `verify_landed_imports` and `seed_scenario_core`'s per-target classify pass.
 fn paced_retry_read(s: &mut Session, list_index: ListIndex) -> Option<Vec<u8>> {
@@ -523,11 +512,11 @@ fn paced_retry_read(s: &mut Session, list_index: ListIndex) -> Option<Vec<u8>> {
         .flatten()
 }
 
-/// Read every slot imported THIS run back over field-8 and prove the LANDED body is
-/// the fixture.
+/// Read every slot imported THIS run back over `presetDataRequest` (field 8) and prove the LANDED
+/// body is the fixture.
 ///
 /// `seeded` / `list_index` are 0-BASED list indices, the same space the imports above
-/// act in; the field-8 read takes +1 (device `userSlot`). Runs on ONE fresh session,
+/// act in; the stored-row read takes +1 (device `userSlot`). Runs on ONE fresh session,
 /// drained first (a read fired mid-flood is dropped device-side). Offline nothing is
 /// imported (the sim's scenario slots are always present), so `seeded` is empty and this
 /// returns at once.
@@ -587,7 +576,7 @@ fn verify_landed_imports(spec: &[ScenarioPreset], seeded: &[ListIndex]) -> Resul
     Ok(())
 }
 
-/// Does the field-8 body identify itself as `name`? Back-to-back slot reads on one
+/// Does the stored-row body identify itself as `name`? Back-to-back slot reads on one
 /// session can deliver the PREVIOUS request's body (HW: the unpaced classify loop
 /// re-imported 400/401/402 on every seed from false `presetLevel` mismatches while a
 /// genuinely drifted 404 once read "pristine" — wrong-slot bodies both ways). The
@@ -598,8 +587,8 @@ fn body_names(body: &[u8], name: &str) -> bool {
 }
 
 /// Clear every stray on the GIVEN session — but only after a per-candidate
-/// field-8 read finds a [`FIXTURE_MARKERS`] hit (a name is not ownership; a
-/// user preset coincidentally named "E2E Reference" is skipped, fail-closed).
+/// stored-row read finds a [`FIXTURE_MARKERS`] hit (a name is not ownership; a
+/// user preset coincidentally named "E2E Rig" is skipped, fail-closed).
 /// One session for reads+clears; settles after the last clear (the device's list lags
 /// its own writes).
 fn sweep_on(
@@ -611,7 +600,7 @@ fn sweep_on(
     if strays.is_empty() {
         return Ok(Vec::new());
     }
-    // Field-8 reads on a mid-flood line are dropped device-side — drain first.
+    // Stored-row reads on a mid-flood line are dropped device-side — drain first.
     s.drain_until_quiet(250, 20)?;
     let mut swept = Vec::new();
     for (slot, name) in strays {
@@ -646,9 +635,9 @@ pub(crate) fn sweep_strays_core() -> Result<Vec<ListIndex>, String> {
 /// real safety — a partial view must never drive clears or imports (truncation is
 /// tail-only, so a length check IS the completeness check), and a LARGER bank means a
 /// fw rev moved the slot layout out from under our destructive slot assumptions.
-const MY_PRESETS_BANK_SIZE: usize = 504; // fw 1.8.45; fail-loud if a fw rev resizes the bank
-/// Held-session re-reads of a SHORT list before the size gate fails the run (online e2e
-/// 2026-10-05/06: one-off 473 / 496 / 459 reads; a read right after returned 504). A LARGER
+const MY_PRESETS_BANK_SIZE: usize = 504; // fw 1.8.58; fail-loud if a fw rev resizes the bank
+/// Held-session re-reads of a SHORT list before the size gate fails the run (HW: one-off
+/// 473 / 496 / 459 reads; a read right after returned 504). A LARGER
 /// list is never re-read — that is a bank resize, not a truncation.
 const LIST_REREADS: u32 = 2;
 
@@ -712,7 +701,7 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
             continue;
         }
         let e = entry.expect("occupied entries exist in the floored list");
-        // Paced apart — an immediate follow-on field-8 read can answer with the
+        // Paced apart — an immediate follow-on stored-row read can answer with the
         // PREVIOUS slot's body (see `body_names`); `paced_retry_read` covers that.
         let body = if e.name == p.name {
             paced_retry_read(&mut s, p.list_index)
@@ -752,9 +741,8 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
         // save (the marker survives). Re-import a drifted body over itself; the
         // per-target `still_safe` recheck below already licenses that write. Only a
         // body that IDENTIFIES as this preset may drive the decision — a wrong-slot
-        // body falls back to the marker-skip (the pre-pristine-check behavior)
-        // instead of churning a redundant ~30 s re-import every seed.
-        // Trace the resident fixture's body (inert unless recording). Only a body that
+        // body falls back to the marker-skip instead of churning a redundant ~30 s re-import every
+        // seed. Trace the resident fixture's body (inert unless recording). Only a body that
         // names this preset gets a verdict.
         let verdict = (check_pristine && body_names(&body, &p.name))
             .then(|| pristine_label(&pristine_check(&body, &p.preset_json)));
@@ -842,12 +830,11 @@ mod tests {
         );
     }
 
-    /// The stranding bug (HW 2026-07-25): once `level.spec.ts` levels and SAVES
-    /// "E2E Reference", the device rewrites the body and the fixture's injected
-    /// markers are gone — so a content-only ownership probe reports un-owned, the
-    /// re-seed refuses to overwrite it AND teardown refuses to clear it, and every
-    /// later online run dies at the seed step. The manifest is what survives that
-    /// save, so it must bless the slot with NO readable marker in the body at all.
+    /// The stranding bug: once a spec levels and SAVES a fixture and its injected
+    /// markers are gone, a content-only ownership probe reports un-owned, the re-seed
+    /// refuses to overwrite it AND teardown refuses to clear it, and every later online
+    /// run dies at the seed step. The manifest survives that save, so it must bless
+    /// the slot with NO readable marker in the body at all.
     /// Name-keyed, so a slot whose name has since changed stays fail-closed.
     /// Restores `TMP_E2E_SEED_MANIFEST` to whatever it held before (not just unset)
     /// and removes the temp dir on drop, so a panic mid-test (an assert failing)
@@ -904,8 +891,8 @@ mod tests {
     }
 
     /// The stray classifier flags scenario names at the WRONG slot only — the
-    /// legitimate scenario slots and real user presets are never candidates (the HW
-    /// incident: 13 stray "E2E Reference" copies stranded at 27–39 by aborted seeds).
+    /// legitimate scenario slots and real user presets are never candidates (aborted
+    /// seeds strand stray copies at low slots; HW).
     #[test]
     fn scenario_strays_flags_wrong_slot_copies_only() {
         let spec: Vec<ScenarioPreset> = serde_json::from_str(
@@ -940,7 +927,7 @@ mod tests {
         assert!(scenario_strays(&list, &[]).is_empty());
     }
 
-    /// The pristine probe must survive tail-truncated field-8 partials and flag
+    /// The pristine probe must survive tail-truncated stored-row partials and flag
     /// a leveled (drifted-presetLevel) body — the HW incident: a prior strict
     /// run left the Hiwatt at 0.37495 vs the fixture's 0.5999 and the marker-only
     /// skip handed the next run pre-leveled state.
@@ -968,7 +955,7 @@ mod tests {
         assert!(!body_names(named, "E2E Hiwatt 3S"));
     }
 
-    /// BUG→GATE (online e2e, 2026-10-10): fixture 404's UniVibe `volume` drifted from 0.49
+    /// BUG→GATE (online e2e): fixture 404's UniVibe `volume` drifted from 0.49
     /// to its 0.001 floor across runs (each run's footswitch bake lowers it 2 dB and never
     /// touches `presetLevel`), so the seed kept it resident until its row could only clamp.
     /// A leveled-value drift must fail the pristine check; the device's own import
@@ -1033,11 +1020,11 @@ mod tests {
         }
     }
 
-    /// Non-regression gate for the 2026-08-01 incident: `copy.spec.ts` deletes E2E
-    /// Target 2's trailing `ACD_FiveBandParamEQ` block and saves; the fixture marker
-    /// AND `presetLevel` both survive that save (only the block list changed), so the
-    /// presetLevel-only check used to classify the mutilated body pristine and skip
-    /// the re-import doctor's diagnosis oracle relied on. A two-block fixture with its
+    /// Non-regression gate: `copy.spec.ts` deletes E2E Edge's trailing
+    /// `ACD_FiveBandParamEQ` block and saves; the fixture marker AND `presetLevel` both
+    /// survive that save (only the block list changed), so a presetLevel-only check
+    /// would call the mutilated body pristine and skip the re-import the doctor oracle
+    /// relies on. A two-block fixture with its
     /// LAST `FenderId` occurrence removed (the exact shape of that delete) must fail
     /// `body_is_pristine` even though the stamp and `presetLevel` are both intact —
     /// only the new chain compare can catch this.
@@ -1059,9 +1046,7 @@ mod tests {
             "the mutilated body's chain is a proper prefix of the fixture's"
         );
         // The reason the caller logs must actually discriminate: a structural delete
-        // is rejected by the CHAIN gate, not mislabeled as a level drift (the
-        // pre-fix log string was hardcoded to "presetLevel drifted" regardless of
-        // which sub-check tripped, which misled a real online investigation).
+        // is rejected by the CHAIN gate, not mislabeled as a level drift.
         assert_eq!(
             pristine_check(mutilated.as_bytes(), fixture),
             Err(PristineMiss::ChainDrift)
@@ -1124,7 +1109,7 @@ mod tests {
         )
     }
 
-    /// The field-8 classifier must call an empty stored body a DISCARD, without misfiring
+    /// The stored-row classifier must call an empty stored body a DISCARD, without misfiring
     /// on a healthy import or a fixture with no blocks.
     #[test]
     fn landed_verify_flags_the_firmware_empty_body_substitution() {
@@ -1166,7 +1151,7 @@ mod tests {
     }
 
     /// BUG→GATE (fw 1.8.58): a rejected import's stored row is the fixture
-    /// VERBATIM, so every field-8 check passes it; only its first real load shows the
+    /// VERBATIM, so every stored-row check passes it; only its first real load shows the
     /// substitute (template `preset_id`, zero blocks, name kept). For every committed
     /// fixture, the load proof must pass the fixture's own working copy and refuse that
     /// substitute — and a fixture with no blocks or no id would leave it nothing to refuse.
@@ -1236,7 +1221,7 @@ mod tests {
         }
     }
 
-    // `read_full_list` gates (online e2e 2026-10-05/06): a short read re-reads on the HELD
+    // `read_full_list` gates (online e2e, HW): a short read re-reads on the HELD
     // session; the exact-bank-size gate stays.
     use crate::test_support::{my_presets_list_frames, session_over, streamed, ScriptedTransport};
 

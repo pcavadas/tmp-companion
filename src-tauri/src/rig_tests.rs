@@ -1,4 +1,4 @@
-//! Leveling orchestration over a PRIVATE rig (#277): each test drives a real orchestrator —
+//! Leveling orchestration over a PRIVATE rig: each test drives a real orchestrator —
 //! `level_preset_impl`, the scene batch (`level_scenes_oneshot`) and the footswitch batch
 //! (`run_footswitch_batch`) — against its own `SimDevice` and capture model, installed on its
 //! own thread with `rig::scoped`. No transport factory, no `LIVE` fake, no `SERIAL` lock: they
@@ -74,8 +74,8 @@ fn stim() -> Vec<f32> {
 }
 
 /// `danger.md`'s run-end contract, read off the wire: the run engaged at least once, never
-/// engaged more often than it disengaged, and its LAST re-amp write was an OFF. Plus the #279
-/// gate: the run sent nothing the fake does not model.
+/// engaged more often than it disengaged, and its LAST re-amp write was an OFF. Plus the
+/// unmodelled-request gate: the run sent nothing the fake does not model.
 fn assert_run_ended_clean(dev: &SimDevice) {
     let ev = dev.events();
     let on = ev.iter().filter(|e| **e == SimEvent::ReAmp(true)).count();
@@ -269,7 +269,7 @@ fn the_scene_batch_levels_each_scene_and_saves_once_on_a_private_rig() {
 ///
 /// A stopped run that saved returns the scenes it leveled, with the save's verdict on them
 /// (the Summary must hear when the save after a Stop did not hold) — never a
-/// bare cancel, whose outcomes the command used to drop.
+/// bare cancel that drops its outcomes.
 #[test]
 fn a_stopped_scene_is_rolled_back_before_the_batch_save() {
     let dev = SimDevice::new().with_saved_preset_json(&rig_preset_json());
@@ -366,7 +366,7 @@ fn a_stopped_scene_is_rolled_back_before_the_batch_save() {
 /// isolation read. Only a cut or missing `ftsw` section is the footswitches.
 #[test]
 fn a_preset_read_that_fails_is_the_preset_not_its_footswitches() {
-    // No saved body: the field-8 read answers nothing ("no preset data for slot").
+    // No saved body: the stored-row read answers nothing ("no preset data for slot").
     let dev = SimDevice::new();
     let rig = Rc::new(SimRig::new(dev.clone(), model));
     let jobs = [FootswitchLevelJob {
@@ -548,14 +548,13 @@ fn live_chain() -> Vec<String> {
         .collect()
 }
 
-/// BUG→GATE (online e2e `doctor-apply.online.spec.ts`, since removed with the Doctor write
-/// path; the post-discard read; HW 2026-10-14, fw 1.8.58, 3/3 at a 100 ms settle): a Doctor
-/// discard read back the block it had just thrown away. The unit keeps sending a session's
+/// BUG→GATE (HW, fw 1.8.58, 3/3 at a 100 ms settle): a discard read back the block it had
+/// just thrown away. The unit keeps sending a session's
 /// queued replies after the host closes it and hands what is left to the next session
 /// inside the 0.75 s drop, ahead of that session's own; the restore's lean session closed
 /// before its handshake copy of the DIRTY working copy was sent, so the next read got it
 /// first and longest-wins kept it. Both fixes are pinned: every restore and isolated load
-/// now ends with a lapse, so the unit discards that queue (`queued_flood_reports` is
+/// ends with a lapse, so the unit discards that queue (`queued_flood_reports` is
 /// empty), and the read takes the latest copy
 /// (`latest_json_payload_reads_past_a_longer_inherited_copy`).
 #[test]

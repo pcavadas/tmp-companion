@@ -1,11 +1,12 @@
-//! Held-out accuracy benchmarks for the Doctor and for leveling (#200). PURE:
+//! Held-out accuracy benchmarks for the Doctor and for leveling. PURE:
 //! no device, no audio, no filesystem — `probe_api/benchmark.rs` does the file
 //! I/O and the `probe` arms call it.
 //!
 //! WHY: green tests prove state and flow contracts, not population accuracy. The
 //! Doctor's [`doctor::GUITAR`] gates and its guitar target curve were both
-//! derived from the same 25-preset factory sweep they would be judged on, so
-//! their false-positive rate on sounds they have never seen is unknown. Two
+//! derived from the same 248-sound factory sweep (fw 1.8.58) they would be
+//! judged on, so their false-positive rate on sounds they have never seen is
+//! unknown. Two
 //! tools here answer that without new captures where possible:
 //!
 //! 1. **Leave-one-out** ([`doctor_leave_one_out`]) over a factory sweep report
@@ -16,15 +17,15 @@
 //!    - `targetOnly`: the target curve only (median shape, rounded to 0.5 dB),
 //!      shipped gates — isolates the target's in-sample bias;
 //!    - `maxPlusMargin`: target plus every population-derived gate at the
-//!      healthy population's max + the R4 repeatability margin (the derivation
-//!      `doctor::GUITAR`'s doc states);
+//!      healthy population's max + the 3σ repeatability margin
+//!      ([`BAND_MARGIN_DB`], σ from `doctor::rule_sigma`);
 //!    - `p75Consensus`: target plus the two-space consensus band gates at the
 //!      population's 75th percentile (the derivation `doctor::Thresholds`'s
 //!      consensus doc states), tilt and fizzy still max + margin.
 //!
-//!    The washed gate is ground truth (a verified 90%-wet reverb), the bass-only
-//!    `buried` gate needs a graph, and the localized resonant/boxy gates came
-//!    from a separate injection matrix, so no mode re-derives those.
+//!    No mode re-derives the washed gate (rank-transferred, see
+//!    `doctor::GUITAR`), the bass-only `buried` gate (it needs a graph) or the
+//!    localized resonant/boxy gates (a separate injection matrix).
 //!
 //! 2. **Labeled corpus scoring** ([`score_corpus`]): a held-out corpus of
 //!    labeled Doctor captures and leveling results, each row tagged `tuning`
@@ -47,10 +48,10 @@ use serde::{Deserialize, Serialize};
 use crate::doctor::{self, Calibration, Diag, Family, SoundProfile, StimulusKind};
 use crate::psd::SpectralPeak;
 
-/// The R4 repeatability margin for the band rules (3σ ≈ 1.2 dB), as
-/// `doctor::GUITAR`'s doc records it.
+/// The repeatability margin for the band rules (3σ, σ =
+/// `doctor::BAND_SIGMA_DB`).
 pub const BAND_MARGIN_DB: f64 = 1.2;
-/// The R4 repeatability margin for the broadband tilt (3σ, σ ≈ 0.05 dB/oct).
+/// The repeatability margin for the broadband tilt (3σ, σ ≈ 0.05 dB/oct).
 pub const TILT_MARGIN_DB_PER_OCT: f64 = 0.15;
 /// The consensus gates' percentile ("~p75 of the healthy factory population",
 /// `doctor::Thresholds`'s doc).
@@ -216,7 +217,7 @@ fn round_half(x: f64) -> f64 {
 pub enum GatePolicy {
     /// Keep the shipped gates; re-derive the target curve only.
     TargetOnly,
-    /// Every population gate at max + its R4 margin.
+    /// Every population gate at max + its 3σ margin.
     MaxPlusMargin,
     /// The consensus band gates (both spaces) at [`CONSENSUS_PERCENTILE`];
     /// tilt and fizzy at max + margin.
@@ -372,7 +373,7 @@ pub fn derive_calibration(
 
 /// Every constant a factory sweep through a NEW reference stimulus re-derives
 /// at once: the stimulus reference, the target curve, the transferred gates and
-/// the factory presence-contrast population (#235, #247).
+/// the factory presence-contrast population.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DerivedConstants {
     /// The sweep's own stimulus band dB — the new `GUITAR_STIM_REF`.
@@ -381,8 +382,8 @@ pub struct DerivedConstants {
     pub calibration: Calibration,
     /// Sorted presence contrasts (dB, 0.01 dB) — the new `FACTORY_CONTRAST_DB`.
     pub contrasts: Vec<f64>,
-    /// The cut-through advisory threshold at its old rank — the new
-    /// `CUT_THROUGH_ADVISORY_DB`.
+    /// The cut-through advisory threshold transferred at its rank in the
+    /// baseline population — the new `CUT_THROUGH_ADVISORY_DB`.
     pub advisory_db: f64,
 }
 
@@ -1614,8 +1615,8 @@ mod tests {
 
 #[cfg(test)]
 mod held_out_baseline {
-    //! #200: the committed held-out Doctor benchmark. The fixture is the 248-sound
-    //! guitar factory sweep (fw 1.8.58, 2026-10-15, through the shipped
+    //! The committed held-out Doctor benchmark. The fixture is the 248-sound
+    //! guitar factory sweep (fw 1.8.58, through the shipped
     //! `guitar-humbucker.wav`; provenance inside the file) that the shipped guitar
     //! constants were derived from. Leave-one-out re-derives the calibration
     //! without each sound before diagnosing it, so its counts are the held-out

@@ -1,4 +1,4 @@
-//! The webview's command surface, pinned (#267, #268, #270).
+//! The webview's command surface, pinned.
 //!
 //! Three files must agree, and nothing else would notice when they drift:
 //! - `app_commands.rs`: every command the app registers;
@@ -8,8 +8,7 @@
 //!
 //! The rule: a command is registered exactly when the frontend calls it, and granted
 //! exactly then. A command no screen calls is deleted rather than kept registered and
-//! denied: the unwired surface was dropped, so a new one fails here instead of quietly
-//! growing IPC surface.
+//! denied, so an unwired command fails here instead of quietly growing IPC surface.
 
 use std::collections::BTreeSet;
 

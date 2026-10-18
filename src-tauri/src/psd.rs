@@ -1,15 +1,13 @@
 //! Windowed Welch power-spectral-density estimator.
 //!
-//! The tone-diagnosis foundation: a LOW-VARIANCE spectral estimate that replaced the
-//! noisy single-bin Goertzel probes formerly in [`crate::spectrum::band_energies`] (4
-//! un-windowed probes per band → ~±2.5 dB variance + heavy HF spectral leakage). This
-//! computes a Hann-windowed, 50%-overlap Welch periodogram average — the variance drops
-//! with the segment count and the Hann taper kills the leakage that made a pure tone
-//! bleed across bands.
+//! The tone-diagnosis foundation: a LOW-VARIANCE spectral estimate. This computes a
+//! Hann-windowed, 50%-overlap Welch periodogram average — the variance drops with the
+//! segment count and the Hann taper kills the leakage that makes a pure tone bleed
+//! across bands.
 //!
-//! Production consumers: `doctor::body_psd` + `SoundProfile::from_capture_with_psd`
-//! (the Doctor), and [`crate::spectrum::band_energies`] (the spectrum-report/EQ-match/
-//! best-SIC feature — the Goertzel probes it used are gone, see that module's doc).
+//! Consumers: `doctor::body_psd` + `SoundProfile::from_capture_with_psd` (the Doctor),
+//! `leveller::stim_body_psd`, `topologies` and the probe analyzers
+//! (`probe_api/analyze.rs`).
 
 use realfft::RealFftPlanner;
 
@@ -159,7 +157,7 @@ impl Psd {
     /// The `(freq, psd)` pairs whose bin centre frequency falls in the half-open
     /// `[lo, hi)` range — the one range-walk shared by [`Psd::band_power`] and
     /// [`Psd::flatness`]. Half-open so adjacent bands sharing an edge that lands
-    /// exactly on a bin (3 and 6 kHz at 48 kHz / 8192 points) count it once (#259).
+    /// exactly on a bin (3 and 6 kHz at 48 kHz / 8192 points) count it once.
     fn bins_in(&self, lo: f64, hi: f64) -> impl Iterator<Item = (f64, f64)> + '_ {
         self.psd.iter().enumerate().filter_map(move |(k, &p)| {
             let f = self.freq(k);
@@ -168,7 +166,7 @@ impl Psd {
     }
 
     /// The power-domain mean of PSDs on one grid — how the Doctor combines the
-    /// channels of a capture (#250). One PSD comes back unchanged; an empty list
+    /// channels of a capture. One PSD comes back unchanged; an empty list
     /// gives an empty PSD. Every PSD must share the first one's grid (the
     /// channels of one capture always do); a mismatched one is skipped.
     pub fn power_mean(mut psds: Vec<Psd>) -> Psd {
@@ -271,11 +269,11 @@ impl Psd {
     /// the median of `log_psd` over `[f/2^(1/2), f·2^(1/2)]` (± 1/2 octave =
     /// 1 octave total). Median (not mean) so the envelope doesn't follow a
     /// peak into its own window — and the window must be ~2× WIDER than the
-    /// widest peak the detector should see: the original ±1/6-octave window
-    /// tracked a real cocked-wah resonance (≈1/3–1/2 octave wide, +15.7 dB of
-    /// band-local prominence on HW) so closely that its excess read ≈0 and
-    /// the peak was INVISIBLE (HW `probe --doctor-inject --block
-    /// ACD_CryBabyGCB95`, 2026-07-16). A median over a monotonic stretch is
+    /// widest peak the detector should see: a ±1/6-octave window tracks a
+    /// real cocked-wah resonance (≈1/3–1/2 octave wide, +15.7 dB of
+    /// band-local prominence) so closely that its excess reads ≈0 and the
+    /// peak is INVISIBLE (HW, `probe --doctor-inject --block
+    /// ACD_CryBabyGCB95`). A median over a monotonic stretch is
     /// ~the centre value, so broad rolloffs (the cab knee) still null out —
     /// only convex bumps gain excess. Bin 0 (DC, freq 0) borrows bin 1's
     /// frequency for its window so it isn't a degenerate single-bin "median".
@@ -306,7 +304,7 @@ impl Psd {
 
     /// Quality factor of the peak at `series[peak_bin]`: center frequency over
     /// the width between the two frequencies where the peak falls to HALF its
-    /// height in dB (#251). That is the RBJ definition of a peaking filter's
+    /// height in dB. That is the RBJ definition of a peaking filter's
     /// bandwidth (between the `gain/2` dB points), for which
     /// `f0 / (f_hi − f_lo)` is exactly its Q, so the reading tracks true Q at
     /// any centre frequency and any peak height.
@@ -317,12 +315,6 @@ impl Psd {
     /// envelope rides a wide bump's own skirt, so it would read a Q 2 bump
     /// narrow. The reported `height_db` stays the envelope excess the gates
     /// were calibrated on.
-    ///
-    /// The old estimator read Q from a parabola fit over a FIXED ±20 bins
-    /// (half an octave at 300 Hz, a twentieth at 3.5 kHz) and from the run
-    /// width above the ABSOLUTE 3 dB detection floor: true Q 2–12 all read
-    /// 4.6–7.5 at 300 Hz, Q 8 read 15.5 at 3.5 kHz, and a Q 2 bump read 6
-    /// everywhere.
     ///
     /// The walk stops at the first of TWO consecutive bins at or below half
     /// height, so one bin of Welch scatter can't end it early, and the
@@ -422,12 +414,11 @@ impl Psd {
 
     /// The chain's TRANSFER magnitude in dB per bin: this capture's log-PSD
     /// minus the STIMULUS's (`10·log10(capture/stimulus)`). The stimulus's own
-    /// fine structure (the deterministic shaped-noise ridges) is present in
+    /// fine structure (its own deterministic spectral shape) is present in
     /// both and cancels exactly, so a localized peak OF THE TRANSFER is a
     /// chain resonance, never a stimulus artifact — raw capture-space peak
-    /// detection tripped on those ridges (HW 2026-07-16: `resonant` fired on
-    /// 25/25 clean factory presets under a one-octave envelope; the ridges
-    /// measured h≈12 dB on a CLEAN chain). `None` when the two grids differ
+    /// detection trips on the stimulus's ridges (HW: `resonant` fired on
+    /// 25/25 clean factory presets under a one-octave envelope). `None` when the two grids differ
     /// (segment length / bin spacing) — callers treat that as "no
     /// localization".
     pub fn transfer_db(&self, stimulus: &Psd) -> Option<Vec<f64>> {
@@ -443,20 +434,20 @@ impl Psd {
         )
     }
 
-    /// [`Psd::transfer_db`] read only where the stimulus EXCITES the chain
-    /// (#235). A pitched stimulus puts its energy in harmonic lines; between
+    /// [`Psd::transfer_db`] read only where the stimulus EXCITES the chain.
+    /// A pitched stimulus puts its energy in harmonic lines; between
     /// them the capture holds the chain's own noise, reverb and intermodulation
     /// products, so `capture − stimulus` there reads tall, narrow fake peaks
-    /// that no chain owns (HW 2026-10-15: they fired `resonant` and `boxy` on
+    /// that no chain owns (HW, fw 1.8.58: they fired `resonant` and `boxy` on
     /// healthy factory presets, at the same frequencies in every capture). A
     /// bin is observable when the stimulus's level there reaches its own
     /// one-octave median; every other bin's transfer is interpolated linearly
     /// between the nearest observable bins on each side. Only
     /// `lo_hz..=hi_hz`, widened by the flanks [`Psd::peak_q`] reads, is
-    /// bridged; the rest is the plain transfer. On the 2026-10-15 raw
-    /// captures this removed 5 of the 6 healthy `resonant` fires and 2 of the
-    /// 5 `boxy` ones while both injected defects kept their height within
-    /// 1.2 dB. `None` exactly when [`Psd::transfer_db`] is.
+    /// bridged; the rest is the plain transfer. On the factory-sweep raw
+    /// captures this removes 5 of the 6 healthy `resonant` fires and 2 of the
+    /// 5 `boxy` ones while both injected defects keep their height within
+    /// 1.2 dB (HW, fw 1.8.58). `None` exactly when [`Psd::transfer_db`] is.
     pub fn observable_transfer_db(
         &self,
         stimulus: &Psd,
@@ -504,7 +495,7 @@ impl Psd {
     /// follow the peak itself), contiguous bins whose excess clears
     /// `min_height_db` become ONE peak (center = the run's maximum bin,
     /// height = its excess, Q = [`Psd::peak_q`]'s half-height width; the
-    /// envelope is computed only over the scan range plus that walk's reach). Sorted
+    /// envelope is computed only over the scan range). Sorted
     /// highest-first. Empty on a degenerate PSD, an
     /// empty/inverted range, or a `series` that doesn't match the bin grid.
     pub fn find_peaks_in_db(
@@ -567,7 +558,7 @@ impl Psd {
                 // The half-height width reads a one-bin comb line as a
                 // needle (one or two bins wide → Q in the tens to hundreds)
                 // and a smooth bump at its own bandwidth, so no second,
-                // floor-relative run width is combined in any more (#251).
+                // floor-relative run width is combined.
                 peaks.push(SpectralPeak {
                     freq_hz: self.freq(peak_bin),
                     height_db: excess[peak_bin],
@@ -594,17 +585,16 @@ impl Psd {
 
 /// The envelope range [`Psd::find_peaks_in_db`] computes for scan bins
 /// `lo_bin..=hi_bin` of `n`: the scan range itself. Only the detection reads
-/// the envelope (`peak_q` measures against its own flanks on the raw series,
-/// #251), and each bin's envelope depends only on the input series, so
-/// computing more changes no output (#197 trimmed a one-octave apron for the
-/// same reason).
+/// the envelope (`peak_q` measures against its own flanks on the raw series),
+/// and each bin's envelope depends only on the input series, so computing more
+/// changes no output.
 fn fit_apron(lo_bin: usize, hi_bin: usize, _n: usize) -> (usize, usize) {
     (lo_bin, hi_bin)
 }
 
 /// A localized spectral peak found by [`Psd::find_peaks`]: center frequency,
 /// height above the smoothed spectral envelope (dB), and quality factor
-/// (center / the −3 dB-from-peak width).
+/// (center / half-height width, [`Psd::peak_q`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpectralPeak {
     pub freq_hz: f64,
@@ -643,9 +633,9 @@ mod tests {
         (0..n).map(|_| rng.next_bipolar()).collect()
     }
 
-    // BUG→GATE (#259): band edges that land exactly on a bin (3 and 6 kHz at
+    // BUG→GATE: band edges that land exactly on a bin (3 and 6 kHz at
     // 48 kHz / 8192 points) were counted in both adjacent bands. Contiguous
-    // half-open bands now sum to the full-range power, every bin once.
+    // half-open bands must sum to the full-range power, every bin once.
     #[test]
     fn contiguous_bands_count_every_bin_once() {
         let p = welch_psd(&white_noise(48_000, 9), RATE);
@@ -662,7 +652,7 @@ mod tests {
         assert_eq!(p.freq(512), 3000.0, "3 kHz must sit exactly on a bin");
     }
 
-    // #250: the power mean keeps one PSD unchanged and leaves dual mono
+    // The power mean keeps one PSD unchanged and leaves dual mono
     // bit-identical; it averages two different channels bin by bin.
     #[test]
     fn power_mean_is_exact_on_one_or_identical_channels() {
@@ -900,7 +890,7 @@ mod tests {
             .collect()
     }
 
-    // #251: 3 s of white noise through a +12 dB peaking filter, against the
+    // 3 s of white noise through a +12 dB peaking filter, against the
     // clean noise (the production transfer path). The strongest peak's Q must
     // track the true Q within ±30% across the band the localized rules judge.
     #[test]
@@ -937,7 +927,7 @@ mod tests {
             .collect()
     }
 
-    // BUG→GATE (#235): where the stimulus dips, the capture holds mostly the
+    // BUG→GATE: where the stimulus dips, the capture holds mostly the
     // chain's own noise, so the plain transfer reads tall fake peaks there.
     // The observable transfer bridges those bins; a real peaking EQ survives.
     #[test]
@@ -989,7 +979,7 @@ mod tests {
         assert!(p.q > 85.0, "needle read q {:.1}", p.q);
     }
 
-    // #197 / #251: the envelope is computed over the scan range only. Each bin's
+    // The envelope is computed over the scan range only. Each bin's
     // envelope depends only on the input series, so the peaks must be
     // bit-identical to a one-octave apron's — including a peak at each edge of
     // the scan range.
@@ -1012,7 +1002,7 @@ mod tests {
         }
     }
 
-    // #258: on one grid the mean-density ratio equals the band-power ratio, so
+    // On one grid the mean-density ratio equals the band-power ratio, so
     // switching the coverage gate to it changes nothing when the grids match.
     #[test]
     fn band_mean_density_ratio_matches_band_power_ratio_on_one_grid() {
@@ -1029,7 +1019,7 @@ mod tests {
         assert_eq!(a.band_mean_density(30_000.0, 40_000.0), 0.0);
     }
 
-    // #258: the floor estimator averages several short segments, and its density
+    // The floor estimator averages several short segments, and its density
     // stays unbiased: white noise reads the same mean density on both grids.
     #[test]
     fn floor_psd_is_unbiased_against_the_full_grid() {
