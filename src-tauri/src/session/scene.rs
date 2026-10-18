@@ -41,12 +41,16 @@ impl Session {
     }
 
     /// Refuse a `loadScene` index the loaded preset lacks: [`BASE_SCENE_SLOT`] always
-    /// passes, any other index must be under [`Self::live_scene_count`].
+    /// passes, any other index must be under the scene count proven on this connection
+    /// ([`Self::reported_scene_count`]), else under [`Self::live_scene_count`].
     fn check_scene_index(&mut self, scene_slot: u32) -> Result<(), String> {
         if scene_slot == BASE_SCENE_SLOT {
             return Ok(());
         }
-        let count = self.live_scene_count()?;
+        let count = match self.reported_scene_count() {
+            Some(count) => count,
+            None => self.live_scene_count()?,
+        };
         if scene_slot as usize >= count {
             return Err(format!(
                 "scene {} isn't on the loaded preset ({count} scenes) — loadScene not sent",

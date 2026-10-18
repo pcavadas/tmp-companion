@@ -129,8 +129,9 @@ pub(super) const SCENE_EDIT_ECHO_MS: u64 = 300;
 pub(super) const RECALL_DOC_BEAT_MS: u64 = 150;
 /// One poll window of [`super::Session::live_scene_count`]'s `sceneListResponse` wait…
 pub(super) const SCENE_LIST_POLL_MS: u64 = 100;
-/// …and how many windows it pumps, kept alive, before giving up (~1 s).
-pub(super) const SCENE_LIST_POLLS: u32 = 10;
+/// …and how many windows it pumps, kept alive, before giving up (~3 s): on a fresh
+/// connection the reply lands 1.1–1.3 s after the request, behind the handshake drain (HW).
+pub(super) const SCENE_LIST_POLLS: u32 = 30;
 /// Replace, remove, insert, node-JSON and string-parameter sends.
 pub(super) const STRUCTURAL_EDIT_ECHO_MS: u64 = 200;
 /// The settle after an IR file write, before its read-back.

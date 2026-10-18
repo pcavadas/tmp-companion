@@ -2022,6 +2022,79 @@ fn load_scene_refuses_when_the_scene_count_never_arrives() {
         .any(|b| b.ends_with(&proto::scene_list_request())));
 }
 
+/// On a fresh connection the reply lands 1.1–1.3 s after the request, behind the
+/// handshake drain (HW): the wait outlasts it, kept alive.
+#[test]
+fn load_scene_waits_out_the_handshake_drain_for_the_scene_list() {
+    let mut batches = vec![Vec::new(); 13];
+    batches.push(crate::test_support::scene_list_frames(&["A", "B"]));
+    let t = ScriptedTransport::device().with_reply_to(&proto::scene_list_request(), batches);
+    let mut s = session_over(&t, Vec::new());
+    s.load_scene(1).expect("in range");
+    assert_eq!(t.dropped_writes(), 0, "the wait keeps the client alive");
+}
+
+/// A count proven on one connection serves that connection's later recalls with no round
+/// trip, but never a fresh connection: the preset may have changed on the unit's own
+/// screen in between, so the new connection asks again (and refuses when unanswered).
+#[test]
+fn a_scene_count_serves_its_own_connection_only() {
+    let list = crate::test_support::scene_list_frames(&["A", "B"]);
+    let t = ScriptedTransport::device().with_reply_to(&proto::scene_list_request(), vec![list]);
+    let asks = |t: &ScriptedTransport| {
+        let sent = t.sent.lock().unwrap();
+        sent.iter()
+            .filter(|b| b.ends_with(&proto::scene_list_request()))
+            .count()
+    };
+    let mut s = session_over(&t, Vec::new());
+    s.load_scene(1).expect("asked");
+    s.load_scene(0)
+        .expect("served from this connection's count");
+    assert!(s.load_scene(2).is_err(), "still bounded by it");
+    assert_eq!(asks(&t), 1, "no second round trip on one connection");
+    let mut fresh = session_over(&t, Vec::new());
+    assert!(
+        fresh.load_scene(1).is_err(),
+        "a fresh connection re-proves; no reply now"
+    );
+    assert_eq!(asks(&t), 2);
+    let recalls = t
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|b| b.ends_with(&proto::load_scene(1)))
+        .count();
+    assert_eq!(recalls, 1, "the fresh connection's recall was never sent");
+}
+
+/// A preset change on the open connection forgets the count: a host load or import, or
+/// a `presetLoaded` push (a load from the unit's own screen).
+#[test]
+fn a_preset_change_on_the_connection_forgets_the_scene_count() {
+    let list = || crate::test_support::scene_list_frames(&["A", "B"]);
+    let mut loaded = Vec::new();
+    proto::field_varint(&mut loaded, 6, 4);
+    let pushed = crate::sim_device::frame_multi(&crate::sim_device::preset_message(11, &loaded));
+    let t = ScriptedTransport::device()
+        .with_reply_to(&proto::scene_list_request(), vec![list()])
+        .with_reply_to(&proto::scene_list_request(), vec![list()])
+        .with_reply_to(&proto::heartbeat(), vec![pushed]);
+    let mut s = session_over(&t, Vec::new());
+    s.load_scene(1).expect("asked");
+    s.transact_eager(&proto::load_my_preset(ListIndex(3).device_slot()), 50)
+        .unwrap();
+    assert_eq!(s.reported_scene_count(), None, "a host load forgets it");
+    s.load_scene(1).expect("asked again");
+    s.transact_eager(&proto::heartbeat(), 50).unwrap();
+    assert_eq!(
+        s.reported_scene_count(),
+        None,
+        "a presetLoaded push forgets it"
+    );
+}
+
 /// A scene list buffered before the request (an earlier preset's push) never answers it.
 #[test]
 fn load_scene_counts_only_a_scene_list_that_answers_its_request() {
