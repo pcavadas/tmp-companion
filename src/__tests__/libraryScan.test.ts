@@ -175,7 +175,7 @@ describe("libraryScan — songs↔presets axis data", () => {
     expect(lib.presets).toHaveLength(2);
   });
 
-  it("patchLibrarySongs replaces the Songs-tab lists once the scan has settled (#295)", async () => {
+  it("patchLibrarySongs replaces the Songs-tab lists once the scan has settled", async () => {
     mockCommands({ read_library_via_backup: () => BACKUP });
     await ensureLibraryScan();
     patchLibrarySongs({

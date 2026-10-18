@@ -403,7 +403,7 @@ describe("DoctorResults — the list", () => {
   });
 });
 
-describe("DoctorResults — all clear and stopped checks (#190)", () => {
+describe("DoctorResults — all clear and stopped checks", () => {
   it("all clear: says there is nothing to change, offers only Check other sounds", async () => {
     const { onCheckMore } = renderResults(
       {

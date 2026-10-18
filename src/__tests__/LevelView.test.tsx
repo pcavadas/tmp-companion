@@ -1010,7 +1010,7 @@ describe("LevelView — full leveling wizard e2e", () => {
   // cancel check never sees it; the final publish must still read the cancel flag and
   // report "stopped", not mislabel a finished run. Look B: a stopped run lands on the
   // Summary straight away, and the Summary says it stopped.
-  it("Stop during the last (only) item marks the run stopped, not finished (BUG-3)", async () => {
+  it("Stop during the last (only) item marks the run stopped, not finished", async () => {
     let resolveLevel!: () => void;
     const gate = new Promise<void>((res) => {
       resolveLevel = res;
@@ -1066,7 +1066,7 @@ describe("LevelView — full leveling wizard e2e", () => {
   // ── closing the flow after a run deselects the leveled sounds ──────────
   // Done prunes exactly the keys the runs leveled (so the next Level does not re-run
   // everything), accumulating across Try again rounds; a sound left over stays chosen.
-  it("Done after a run deselects the already-leveled sounds (BUG-4)", async () => {
+  it("Done after a run deselects the already-leveled sounds", async () => {
     mockLevelingFixture({ clamped: true });
     renderView(true);
     const user = userEvent.setup();

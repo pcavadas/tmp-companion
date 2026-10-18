@@ -11,7 +11,7 @@ import { DeviceState } from "../views/DeviceState";
 import type { SetlistRecord, SongRecord } from "../lib/types";
 import { renderWithTheme } from "./testKit";
 
-describe("SetlistDetail — click-only reorder (#302)", () => {
+describe("SetlistDetail — click-only reorder", () => {
   const a: SongRecord = { slot: 1, name: "Song A", notes: "", bpm: 0 };
   const b: SongRecord = { slot: 2, name: "Song B", notes: "", bpm: 0 };
   const setlist: SetlistRecord = { slot: 1, name: "Set 1" };
@@ -69,7 +69,7 @@ describe("SetlistDetail — click-only reorder (#302)", () => {
   });
 });
 
-describe("DeviceState — Connection help works (#304)", () => {
+describe("DeviceState — Connection help works", () => {
   it.each(["off", "failed"] as const)(
     "the %s page opens the connection help sheet, and Done closes it",
     async (state) => {

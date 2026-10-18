@@ -61,7 +61,7 @@ Linux is a hardware-validated development platform (Level and Doctor re-amp end 
 An AppImage cannot run a post-install step, so it cannot install the udev rule or reload udev.
 `/dev/hidraw*` is root-only by default, so without `packaging/udev/70-fender-tone-master-pro.rules` in `/usr/lib/udev/rules.d/` the app finds no device (`EACCES` in `hid.rs`'s `open_device()`).
 The `.deb` and `.rpm` declare the rule, the hooks and the runtime libraries in their metadata: `bundle.linux.deb/rpm.files` ships the rule, `postInstallScript` reloads udev and `postRemoveScript` updates device access after removal.
-Backup reads use `rusqlite`'s bundled SQLite; the packages still declare `sqlite3` / `sqlite` dependencies, which nothing uses.
+Backup reads use `rusqlite`'s bundled SQLite, so the packages declare no SQLite dependency.
 Arch, NixOS and other non-deb/rpm distros build from source (`CONTRIBUTING.md`).
 
 ### udev rule and install hooks
@@ -74,7 +74,7 @@ The same rule file is the manual-install path for a source build (`CONTRIBUTING.
 
 ### RPM build container
 
-GitHub offers no Fedora runner, but `container: fedora:<N>` on an `ubuntu-latest` host is a genuine Fedora build: the binary links Fedora's libraries and the `depends` names (`sqlite`, `alsa-lib`, `webkit2gtk4.1`, …) resolve natively.
+GitHub offers no Fedora runner, but `container: fedora:<N>` on an `ubuntu-latest` host is a genuine Fedora build: the binary links Fedora's libraries and the `depends` names (`alsa-lib`, `webkit2gtk4.1`, …) resolve natively.
 Tauri's rpm bundler is the pure-Rust `rpm` crate, so the host needs no `rpm` or `rpmbuild`.
 `build-deb` runs on `ubuntu-22.04`, the oldest image GitHub offers, for the lowest glibc floor.
 

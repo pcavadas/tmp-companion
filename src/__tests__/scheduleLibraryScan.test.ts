@@ -1,11 +1,11 @@
-// src/__tests__/scheduleLibraryScan.test.ts — ordering contract for the startup
-// signal-path-before-backup fix.
+// src/__tests__/scheduleLibraryScan.test.ts — ordering contract: the startup
+// signal path paints before the library backup scan.
 //
-// Regression: when the connect snapshot arrives with NO active graph (graph=none),
+// When the connect snapshot arrives with NO active graph (graph=none),
 // the monitor schedules a graph-retry ~3 s out — but the ~22 s library backup scan
 // pauses the monitor the instant it starts, preempting that retry, so the hero
-// signal path stays blank for the WHOLE backup (~26 s observed on HW). The fix:
-// hold the backup scan until the active graph is in hand (bounded), so the path
+// signal path would stay blank for the WHOLE backup (~26 s observed on HW). So the
+// startup holds the backup scan until the active graph is in hand (bounded) and the path
 // paints first. This pins that ordering with an injected clock (no real timers).
 
 import { describe, it, expect, vi } from "vitest";

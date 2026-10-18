@@ -87,7 +87,7 @@ describe("SignalChainView — lane bracket geometry", () => {
   });
 });
 
-describe("regression: #313 same-count bracket re-measure", () => {
+describe("a same-count lane change re-measures the bracket", () => {
   it("re-measures on a same-count change, not only a count change", () => {
     const graph = (name: string) => ({
       stages: [{ kind: "series" as const, blocks: [b("G1")] }],
@@ -119,7 +119,7 @@ describe("regression: #313 same-count bracket re-measure", () => {
   });
 });
 
-describe("regression: a scaled-down diagram draws its bracket to the lower lane", () => {
+describe("a scaled-down diagram draws its bracket to the lower lane", () => {
   it("divides the ancestor's CSS scale back out of the measured rects", () => {
     // The Level list fits a long chain to the window with a transform, so the screen
     // rects are half size here while the bracket is placed in layout px. The column

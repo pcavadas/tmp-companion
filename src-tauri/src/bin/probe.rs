@@ -261,7 +261,7 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--replace-debug"],
-        usage: r#"--replace-debug"#,
+        usage: r#"--replace-debug <deviceSlot> <FROM_ID> <TO_ID>"#,
         run: arm_replace_debug,
     },
     Arm {
@@ -281,7 +281,7 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--slot-json"],
-        usage: r#"--slot-json"#,
+        usage: r#"--slot-json <deviceSlot>"#,
         run: arm_slot_json,
     },
     Arm {
@@ -296,7 +296,7 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--measure-footswitch"],
-        usage: r#"--measure-footswitch <slot(0-based list index)> <switch> <topology_id> \"#,
+        usage: r#"--measure-footswitch <slot(0-based list index)> <switch> <topology_id> [--lev <group>:<node>:<param>] [--target <lufs>] [--dump-wav <dir>]"#,
         run: arm_measure_footswitch,
     },
     Arm {
@@ -333,11 +333,6 @@ const ARMS: &[Arm] = &[
         flags: &["--measure-forced"],
         usage: r#"--measure-forced <slot> <group> <node>  (TMP_LEVELLER_STIMULUS=<wav>)"#,
         run: arm_measure_forced,
-    },
-    Arm {
-        flags: &["--repro-chunked"],
-        usage: r#"--repro-chunked"#,
-        run: arm_repro_chunked,
     },
     Arm {
         flags: &["--clear-ftsw"],
@@ -396,12 +391,12 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--slotread-x"],
-        usage: r#"--slotread-x"#,
+        usage: r#"--slotread-x [deviceSlot…]"#,
         run: arm_slotread_x,
     },
     Arm {
         flags: &["--slotread-live"],
-        usage: r#"--slotread-live"#,
+        usage: r#"--slotread-live <deviceSlot> [rounds=4]"#,
         run: arm_slotread_live,
     },
     Arm {
@@ -431,17 +426,17 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--capture-input"],
-        usage: r#"--capture-input"#,
+        usage: r#"--capture-input [secs=5]"#,
         run: arm_capture_input,
     },
     Arm {
         flags: &["--agc-test"],
-        usage: r#"--agc-test"#,
+        usage: r#"--agc-test <listIdx>  (TMP_LEVELLER_STIMULUS=<wav>)"#,
         run: arm_agc_test,
     },
     Arm {
         flags: &["--channels"],
-        usage: r#"--channels"#,
+        usage: r#"--channels <listIdx>  (optional TMP_LEVELLER_STIMULUS=<wav>; default guitar-humbucker)"#,
         run: arm_channels,
     },
     Arm {
@@ -466,7 +461,7 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--blocks"],
-        usage: r#"--blocks"#,
+        usage: r#"--blocks <listIdx>"#,
         run: arm_blocks,
     },
     Arm {
@@ -481,7 +476,7 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--level-scenes", "--rebalance-scenes"],
-        usage: r#"--level-scenes|--rebalance-scenes <listIdx> <targetLUFS> <topology> [scene…]"#,
+        usage: r#"--level-scenes|--rebalance-scenes <listIdx> <targetLUFS> <topology> [scene…] [--commit]"#,
         run: arm_level_scenes,
     },
     Arm {
@@ -491,12 +486,12 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--reamp-multi-engage"],
-        usage: r#"--reamp-multi-engage <cycles ≥ 1> [topology]"#,
+        usage: r#"--reamp-multi-engage [cycles=4] [topology=guitar-humbucker]   (cycles ≥ 1)"#,
         run: arm_reamp_multi_engage,
     },
     Arm {
         flags: &["--reamp-toggle-test"],
-        usage: r#"--reamp-toggle-test"#,
+        usage: r#"--reamp-toggle-test [idle_ms=0] [hb]"#,
         run: arm_reamp_toggle_test,
     },
     Arm {
@@ -506,27 +501,27 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--set-param"],
-        usage: r#"--set-param"#,
+        usage: r#"--set-param <slot 400..410> <group> <node> <param> <value>"#,
         run: arm_set_param,
     },
     Arm {
         flags: &["--settings-read"],
-        usage: r#"--settings-read"#,
+        usage: r#"--settings-read <field>  (47=footswitchSettings)"#,
         run: arm_settings_read,
     },
     Arm {
         flags: &["--set-scene-behavior"],
-        usage: r#"--set-scene-behavior"#,
+        usage: r#"--set-scene-behavior <0=Retain|1=Revert>"#,
         run: arm_set_scene_behavior,
     },
     Arm {
         flags: &["--switch-template"],
-        usage: r#"--switch-template"#,
+        usage: r#"--switch-template <slot 400..410> <templateType>"#,
         run: arm_switch_template,
     },
     Arm {
         flags: &["--set-master"],
-        usage: r#"--set-master"#,
+        usage: r#"--set-master <level 0.0..=0.75>"#,
         run: arm_set_master,
     },
     Arm {
@@ -556,7 +551,7 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--measure-current"],
-        usage: r#"--measure-current <topology_id> [sceneSlot] [calibrationLUFS]"#,
+        usage: r#"--measure-current <topology_id> [sceneSlot] [calibrationLUFS] [--dump-wav <dir>]"#,
         run: arm_measure_current,
     },
     Arm {
@@ -826,7 +821,7 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--defer-scenes"],
-        usage: r#"--defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>"#,
+        usage: r#"--defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>  (TMP_DEFER_FINAL=asis|return|base)"#,
         run: arm_defer_scenes,
     },
     Arm {
@@ -856,7 +851,7 @@ const ARMS: &[Arm] = &[
     },
     Arm {
         flags: &["--scene-amp-diag"],
-        usage: r#"--scene-amp-diag <listIndex> : per-scene amp bypass + level-control dump (read-only)."#,
+        usage: r#"--scene-amp-diag <listIndex>   (read-only: per-scene amp bypass + level-control dump)"#,
         run: arm_scene_amp_diag,
     },
     Arm {
@@ -1739,14 +1734,6 @@ fn arm_measure_forced(args: &[String]) -> bool {
         return report(tmp_companion_lib::probe_api::probe_measure_forced(
             slot, &group, &node,
         ));
-    }
-
-    false
-}
-
-fn arm_repro_chunked(args: &[String]) -> bool {
-    if args.iter().any(|a| a == "--repro-chunked") {
-        return report(tmp_companion_lib::probe_api::probe_repro_chunked());
     }
 
     false

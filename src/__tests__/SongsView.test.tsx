@@ -1053,13 +1053,13 @@ const railRow = (name: string): HTMLElement => {
   return row;
 };
 
-describe("SongsView — stale slots after edits (#295–#299)", () => {
+describe("SongsView — stale slots after edits", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     resetLibraryScan();
   });
 
-  it("#295: after a rename and a delete, leaving and returning repaints the post-edit setlists", async () => {
+  it("after a rename and a delete, leaving and returning repaints the post-edit setlists", async () => {
     const unit: FakeUnit = {
       songs: [song(1, "Song A")],
       setlists: [
@@ -1112,7 +1112,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     expect(screen.getByText("Set C")).toBeInTheDocument();
   });
 
-  it("#296: a second setlist click during the first one's read still loads the second", async () => {
+  it("a second setlist click during the first one's read still loads the second", async () => {
     const unit: FakeUnit = {
       songs: [song(1, "Alpha"), song(2, "Beta")],
       setlists: [
@@ -1143,7 +1143,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     expect(lastArgsTo("list_setlist_songs")).toEqual({ setlistSlot: 2 });
   });
 
-  it("#296: a setlist rename committed while another op runs is applied, not lost", async () => {
+  it("a setlist rename committed while another op runs is applied, not lost", async () => {
     const unit: FakeUnit = {
       songs: [],
       setlists: [{ slot: 1, name: "Set A" }],
@@ -1220,7 +1220,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     expect(getLibraryScan().songs).toEqual([]);
   });
 
-  it("#297: deleting a middle setlist keeps each remaining rail row on its own count", async () => {
+  it("deleting a middle setlist keeps each remaining rail row on its own count", async () => {
     const unit: FakeUnit = {
       songs: [song(1, "S1"), song(2, "S2"), song(3, "S3"), song(4, "S4")],
       setlists: [
@@ -1255,7 +1255,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     expect(within(railRow("Set D")).getByText("4")).toBeInTheDocument();
   });
 
-  it("#297: a setlist below a deleted one keeps its own songs under its new slot", async () => {
+  it("a setlist below a deleted one keeps its own songs under its new slot", async () => {
     const unit: FakeUnit = {
       songs: [song(1, "Only Song")],
       setlists: [
@@ -1283,7 +1283,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     expect(lastArgsTo("list_setlist_songs")).toEqual({ setlistSlot: 1 });
   });
 
-  it("#297: a setlist picked while an earlier delete runs is read at its shifted slot", async () => {
+  it("a setlist picked while an earlier delete runs is read at its shifted slot", async () => {
     const unit: FakeUnit = {
       songs: [song(1, "Only Song")],
       setlists: [
@@ -1321,7 +1321,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     expect(within(railRow("Set C")).getByText("1")).toBeInTheDocument();
   });
 
-  it("#298: an unresolvable member is shown, and a later row is removed at its real device position", async () => {
+  it("an unresolvable member is shown, and a later row is removed at its real device position", async () => {
     const unit: FakeUnit = {
       songs: [song(3, "Song C"), song(5, "Song E")],
       setlists: [{ slot: 1, name: "Set A" }],
@@ -1353,7 +1353,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     });
   });
 
-  it("#299: after a song add, the Presets axis shows the song counts as unknown, not 0", async () => {
+  it("after a song add, the Presets axis shows the song counts as unknown, not 0", async () => {
     const unit: FakeUnit = {
       songs: [song(1, "Song A"), song(2, "Song B")],
       setlists: [],

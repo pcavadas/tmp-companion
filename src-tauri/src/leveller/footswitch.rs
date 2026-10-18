@@ -1546,7 +1546,7 @@ pub struct FsPendingWrite {
 /// then load (discarding ALL the measurement pollution the batch's sweeps accumulated),
 /// then keep the session live with heartbeat bursts right up to each chunked `ftsw`
 /// edit (chunked edits are silently DROPPED if the session lapses — a passive sleep
-/// lets it lapse; HW `probe --repro-chunked`). Each write keeps its confirm gate
+/// lets it lapse; HW-confirmed). Each write keeps its confirm gate
 /// (`setFootswitchAssignment` (54) echo / read-back, retry-once, never save on
 /// `presetError`); ANY
 /// unconfirmed write aborts BEFORE the save, so nothing half-applied persists.

@@ -65,7 +65,7 @@ const RESULT: CalibrateResult = {
   band_labels: [],
 };
 
-describe("InstrumentRow — a cancelled capture can't hijack the next attempt (#301)", () => {
+describe("InstrumentRow — a cancelled capture can't hijack the next attempt", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
   });
@@ -124,7 +124,7 @@ describe("InstrumentRow — a cancelled capture can't hijack the next attempt (#
   );
 });
 
-describe("regression: BUG-6 calibration abort on unmount", () => {
+describe("a calibration that settles after unmount is dropped", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockClear();
   });
@@ -165,7 +165,7 @@ describe("regression: BUG-6 calibration abort on unmount", () => {
   );
 
   it(
-    "a severe clip + stimulus-ceiling caveats surface as two note lines, no LU (#361)",
+    "a severe clip + stimulus-ceiling caveats surface as two note lines, no LU",
     { timeout: 10000 },
     async () => {
       mockCommands({
@@ -201,7 +201,7 @@ describe("regression: BUG-6 calibration abort on unmount", () => {
   );
 });
 
-describe("InstrumentRow — clipped calibration takes (#361)", () => {
+describe("InstrumentRow — clipped calibration takes", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
   });

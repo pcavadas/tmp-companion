@@ -183,7 +183,7 @@ function findCycles(graph: Map<string, string[]>): string[][] {
   return cycles;
 }
 
-describe("src/views module shape (#313)", () => {
+describe("src/views module shape", () => {
   const files = sources(VIEWS);
   const parsed = new Map(files.map((f) => [f, parse(f)]));
   const rel = (f: string) => relative(VIEWS, f);

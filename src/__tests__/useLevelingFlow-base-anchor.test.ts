@@ -61,7 +61,7 @@ const sceneChoice: SetupChoice = {
   targetName: "SceneTarget",
 };
 
-describe("useLevelingFlow — scene-group dispatch carries baseAnchor (issue 1 / A7/A8)", () => {
+describe("useLevelingFlow — scene-group dispatch carries baseAnchor", () => {
   it("includes baseAnchor with the base row's own target when the run has a base row", async () => {
     const { result } = renderHook(() => useLevelingFlow(deps));
 

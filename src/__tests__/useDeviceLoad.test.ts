@@ -23,7 +23,7 @@ function deferredLoad(commit: (v: string) => void) {
   return { body, resolve, reject };
 }
 
-describe("useDeviceLoad — only the newest load commits (#311)", () => {
+describe("useDeviceLoad — only the newest load commits", () => {
   it("an older load resolving LAST doesn't overwrite the newer result", async () => {
     const committed: string[] = [];
     const { result } = renderHook(() => useDeviceLoad());

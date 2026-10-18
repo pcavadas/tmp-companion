@@ -28,7 +28,7 @@ const sceneInfo = new Map<number, SceneInfo[]>([
 ]);
 const noSwitches = new Map<number, FootswitchInfo[]>();
 
-describe("Set up — the main sound's name (issue 2)", () => {
+describe("Set up — the main sound's name", () => {
   it('chosenFrom names the main sound "Main sound", with or without scenes', () => {
     const out = chosenFrom(
       new Set([baseKey(0), baseKey(1)]),

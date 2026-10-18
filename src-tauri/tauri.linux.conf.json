@@ -11,7 +11,7 @@
     "createUpdaterArtifacts": false,
     "linux": {
       "deb": {
-        "depends": ["sqlite3", "libasound2"],
+        "depends": ["libasound2"],
         "files": {
           "/usr/lib/udev/rules.d/70-fender-tone-master-pro.rules": "../packaging/udev/70-fender-tone-master-pro.rules"
         },
@@ -19,7 +19,7 @@
         "postRemoveScript": "../packaging/linux/postrm.sh"
       },
       "rpm": {
-        "depends": ["sqlite", "alsa-lib"],
+        "depends": ["alsa-lib"],
         "files": {
           "/usr/lib/udev/rules.d/70-fender-tone-master-pro.rules": "../packaging/udev/70-fender-tone-master-pro.rules"
         },

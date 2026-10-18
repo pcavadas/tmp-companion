@@ -182,7 +182,7 @@ test.describe("Doctor — select, check, results", () => {
   // `e2e_is_side_lane`); queued behind the run it would land minutes later. The sounds
   // the check never reached must then read as not checked, never as a 0.0 LUFS
   // measurement, and the page must never claim there is nothing to change in them.
-  test("a mid-run Stop reports the unreached sounds as not checked (#190)", async ({
+  test("a mid-run Stop reports the unreached sounds as not checked", async ({
     page,
   }) => {
     test.skip(

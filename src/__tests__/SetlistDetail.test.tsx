@@ -15,7 +15,7 @@ function ancestor(el: HTMLElement, sel: string): HTMLElement {
   return found as HTMLElement;
 }
 
-describe("regression: BUG-5 a setlist row's reorder + remove are gated while a device write is busy", () => {
+describe("a setlist row's reorder + remove are gated while a device write is busy", () => {
   const song: SongRecord = { slot: 1, name: "Song A", notes: "", bpm: 0 };
   const setlist: SetlistRecord = { slot: 1, name: "Set 1" };
   const baseProps = {

@@ -35,13 +35,13 @@ describe("firmwareSupported", () => {
   });
   it("tracks the FW_MIN floor", () => {
     expect(firmwareSupported(FW_MIN)).toBe(true);
-    expect(firmwareSupported("1.7.75")).toBe(true);
-    expect(firmwareSupported("1.6.3")).toBe(false);
+    expect(firmwareSupported("1.8.60")).toBe(true);
+    expect(firmwareSupported("1.8.45")).toBe(false);
   });
 });
 
 describe("firmwareGateActive", () => {
-  const below = { firmware: "1.6.3", proceeded: false };
+  const below = { firmware: "1.8.45", proceeded: false };
 
   it("gates the unit-driven tabs on below-floor firmware", () => {
     for (const tab of ["level", "copy", "songs"]) {
@@ -60,7 +60,7 @@ describe("firmwareGateActive", () => {
     ).toBe(false);
     expect(
       firmwareGateActive({
-        firmware: "1.7.75",
+        firmware: "1.8.58",
         tab: "level",
         proceeded: false,
       }),

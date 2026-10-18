@@ -1351,7 +1351,7 @@ mod tests {
         assert_eq!(
             names,
             vec!["level", "tone"],
-            "every NUMERIC param except WetMix (issue 3: Mix is hidden everywhere), \
+            "every NUMERIC param except WetMix (Mix is hidden everywhere), \
              level-class first then the rest: {all:?}"
         );
         assert!(
@@ -1780,8 +1780,8 @@ mod tests {
                 // the TM Rumble it is an amp knob that must never be swept for loudness.
                 { "nodeId": "rumble", "FenderId": "ACD_TMRumbleV3", "dspUnitParameters": {
                     "level": 0.5, "bypass": false }},
-                // A wet/mix control is EXCLUDED from the candidate list (issue 3: "hide
-                // Mix everywhere") even though it moves loudness — it still carries the
+                // A wet/mix control is EXCLUDED from the candidate list (Mix is hidden
+                // everywhere) even though it moves loudness — it still carries the
                 // WetMix class when explicitly named, which is what arms the solver's floor.
                 { "nodeId": "chorus", "FenderId": "ACD_Chorus", "dspUnitParameters": {
                     "mix": 0.8, "rate": 0.3, "bypass": false }}
@@ -1824,7 +1824,7 @@ mod tests {
 
         assert!(
             params_of(2).is_empty(),
-            "issue 3: Mix is hidden everywhere — a wet/mix control is no longer a candidate \
+            "Mix is hidden everywhere — a wet/mix control is not a candidate \
              ('rate' still is not, for the usual unrecognised-param reason)"
         );
         assert_eq!(

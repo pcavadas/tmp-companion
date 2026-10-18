@@ -72,7 +72,7 @@ beforeEach(() => {
   mockCommands();
 });
 
-describe("a leveling run outlives the Level tab (#283)", () => {
+describe("a leveling run outlives the Level tab", () => {
   it("shows the same run after a remount, and its Stop ends it", async () => {
     const held = holdLevelPreset();
 
@@ -140,7 +140,7 @@ describe("a leveling run outlives the Level tab (#283)", () => {
   });
 });
 
-describe("a throwing live block read ends the run (#285)", () => {
+describe("a throwing live block read ends the run", () => {
   it("skips the scene group with the error and releases the run", async () => {
     mockCommands({
       list_level_blocks: () => rejectWith(new Error("Device not connected")),

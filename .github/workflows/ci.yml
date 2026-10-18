@@ -236,7 +236,7 @@ jobs:
           deb=$(readlink -f "$(find src-tauri/target/release/bundle/deb -name '*.deb' | head -1)")
           name=$(dpkg-deb -f "$deb" Package)
           echo "installing $name from $deb"
-          # `apt-get install ./file.deb` resolves `depends` (sqlite3, libasound2)
+          # `apt-get install ./file.deb` resolves `depends` (libasound2, …)
           # rather than leaving the package half-configured the way `dpkg -i` does.
           sudo apt-get install -y "$deb"
           bash .github/scripts/check-linux-payload.sh

@@ -32,7 +32,7 @@ beforeEach(() => {
 const sceneOption = (sceneSlot: number, name: string) =>
   makeSceneOption(sceneSlot, { presetName: "Plexi", sceneName: name });
 
-describe("useLevelingFlow — at most one active row at a time (BUG 2)", () => {
+describe("useLevelingFlow — at most one active row at a time", () => {
   it("clears the previous active row when the channel names a new one active", () => {
     let onResult: ((item: SceneLevelProgressItem) => void) | undefined;
     mockCommands({

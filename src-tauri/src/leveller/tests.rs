@@ -2374,16 +2374,15 @@ fn solve_footswitch_solves_in_the_params_own_db_range() {
     // LAW-PREDICTED point, not the fixed three-quarters mark: `LevelDb` is ~1:1
     // dB→LUFS (identity `to_coord`/`coord_to_value`), so predicting from seed 1's -27.0 dB
     // reading toward the -22.0 target lands EXACTLY on 3.0 + (-22.0 - (-27.0)) =
-    // 8.0 — a deliberate behavior change (the prediction is exact here), not a
-    // weakened gate.
+    // 8.0 (the prediction is exact here).
     assert_eq!(
         seen.borrow()[..2],
         [3.0, 8.0],
-        "seed 1 stays the fixed quarter-range point; seed 2 is now law-predicted"
+        "seed 1 is the fixed quarter-range point; seed 2 is law-predicted"
     );
     assert!(
         (r.final_value - 8.0).abs() < 0.05,
-        "target -22 needs +8 dB, a value the old [0,1] clamp could never return: {r:?}"
+        "target -22 needs +8 dB, a value above the [0,1] range: {r:?}"
     );
     assert!(!r.clamped && !r.unconverged, "8 dB is well inside [0,12]");
 }

@@ -4440,10 +4440,10 @@ mod tests {
     }
 
     #[test]
-    fn inject_muddy_250hz_fires_exactly_muddy_not_the_old_false_thin() {
-        // +12 dB @250 Hz post-chain boost, HW-measured. The tilt-split-only
-        // metric fired a false "thin" here (locals[lows] read ≈ −7.3 under the
-        // smeared slope) while muddy (the real defect) read only +2.2 local —
+    fn inject_muddy_250hz_fires_exactly_muddy_not_thin() {
+        // +12 dB @250 Hz post-chain boost, HW-measured. A tilt-split-only
+        // metric fires a false "thin" here (locals[lows] read ≈ −7.3 under the
+        // smeared slope) while muddy (the real defect) reads only +2.2 local —
         // exactly backwards. Consensus fires ONLY muddy.
         let dev = [-51.3, -43.0, -45.4, -48.6, -49.2, -50.0];
         let bdb: Vec<f64> = GUITAR_TARGET.iter().zip(dev).map(|(t, d)| t + d).collect();
@@ -4456,7 +4456,7 @@ mod tests {
         assert_eq!(keys(&diags), vec!["muddy"], "{diags:?}");
         assert!(
             !keys(&diags).contains(&"thin"),
-            "the old false-thin verdict"
+            "a +250 Hz mud boost must not read as thin"
         );
         // Boundary-adjacent: a "Possible" fire (severity.ts::POSSIBLE_MAX_SEVERITY
         // == 1.0, mirrored here since this crate has no frontend dependency).

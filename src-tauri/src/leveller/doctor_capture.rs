@@ -643,7 +643,7 @@ mod onset_gate {
     /// `tail_energy_ratio`) must land on the pinned-tail aligned ground truth
     /// the fixture's header records (`fixtures/fs13_wash_envelope_2ms.txt`),
     /// not the un-aligned or unpinned numbers the same header documents as
-    /// the failure modes this fix replaces — this test's stimulus is a
+    /// the failure modes the pinned-tail alignment avoids — this test's stimulus is a
     /// synthetic stand-in (see `synthetic_padded_stim`), not the real
     /// guitar-humbucker capture the fixture itself came from, so it targets
     /// the pinned-tail row, not the fixture's own correlator-run numbers.
@@ -705,7 +705,7 @@ mod onset_gate {
             !confident || err_ms > 5.0,
             "correlator unexpectedly aligned the wash capture confidently \
              (onset={onset} vs expected {expected}, err {err_ms:.1} ms) — the flat-curve \
-             premise this fix relies on no longer holds for this fixture"
+             premise the pinned-tail alignment relies on does not hold for this fixture"
         );
     }
 

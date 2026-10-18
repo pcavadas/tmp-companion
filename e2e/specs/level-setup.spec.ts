@@ -427,7 +427,7 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
   });
 });
 
-test.describe("Level — shared_write_is_scene_local (Boost/Solo, raw invoke, BUG→GATE)", () => {
+test.describe("Level — shared_write_is_scene_local (Boost/Solo, raw invoke)", () => {
   test.afterEach(async ({ page }) => {
     await reampOff(page);
   });

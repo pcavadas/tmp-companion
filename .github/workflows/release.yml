@@ -161,7 +161,7 @@ jobs:
     runs-on: ubuntu-latest
     # GitHub offers no Fedora RUNNER, but a container on an Ubuntu host gives a
     # genuine Fedora build: the binary links Fedora's libraries and the rpm's
-    # `depends` names (sqlite, alsa-lib, webkit2gtk4.1, …) resolve natively there,
+    # `depends` names (alsa-lib, webkit2gtk4.1, …) resolve natively there,
     # instead of an Ubuntu-linked binary carrying hand-written Fedora dependency
     # names with no compiler/linker to catch a mismatch. fedora:43 is the oldest
     # still-supported Fedora release as of this writing (Fedora 42 reached EOL in
