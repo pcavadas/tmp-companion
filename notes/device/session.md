@@ -38,12 +38,12 @@ The Windows `imp` strips exactly one leading byte, keyed on the descriptor lengt
 ## Exclusive seize
 
 The unit serves one HID host at a time, and the app holds an exclusive handle: the macOS seize, share mode 0 on Windows, `flock` on Linux.
-On macOS `IOHIDDeviceOpen` fails `kIOReturnExclusiveAccess` (`0xe00002c5`) only while another handle holds the seize, and it clears the moment that handle closes [HW].
+On macOS `IOHIDDeviceOpen` fails `kIOReturnExclusiveAccess` (`0xe00002c5`) only while another handle holds the seize, and it clears once that handle closes [HW].
 There is no device-side open lockout: 1,060 open → request → close cycles at gaps of 0 ms to 3 s, and an open after a 42.6-minute idle, all opened first try [HW+RE].
 The two holders are Pro Control (the `busy` connect error, "Another app is using your Tone Master Pro") and an overlapping `Session` in this process, which `Hid::open`'s error names.
 A `connect_device` that acquired before releasing would collide with its own stale handle, so it clears `AppState.session` first, then sets `MONITOR_ENABLED` and waits for the monitor's startup snapshot.
 Two device commands run at once also collide, so every device command takes the process-global `DEVICE_OP_LOCK` (`device_gate.rs`) inside its `spawn_blocking`; front-end serialization alone is not enough, because `with_released_seize`'s release → work → reconnect lets two operations overlap.
-`hid.rs` retries the same device reference 6 × 80 ms, then re-enumerates 3 × 400 ms (`ENUM_RETRY_DELAY_MS`), because a stale macOS IOHIDDevice reference once kept failing `0xe00002c5` while a fresh enumeration opened at once (HW, before fw 1.8.58).
+`hid.rs` retries the same device reference 6 × 80 ms, then re-enumerates 3 × 400 ms (`ENUM_RETRY_DELAY_MS`), because a stale macOS IOHIDDevice reference can keep failing `0xe00002c5` while a fresh enumeration opens at once [HW].
 Sessions reopen with no fixed gap; the UI's drop-then-reopen waits on `hid::wait_released`.
 
 ### Diagnosing `0xe00002c5`
@@ -81,7 +81,7 @@ List harvests heartbeat until the list is proven, then pause past the timeout so
 
 Requests carry `batchStatus` (FenderMessageTMS field 10), and the unit treats it as follows [HW+RE]:
 
-- `0`, `3` or absent: the message is dispatched at once.
+- `0` or absent: the message is dispatched at once.
 - `1` or `2`: the message is queued until a later batch `3` arrives.
 - `3`: the message is queued, then the whole queue is dispatched in order, each item answering its stored originator.
 - `4` and above: the message is dropped with no reply.
@@ -124,7 +124,7 @@ Treat a stream without its final `0x35` frame as incomplete.
 
 A session opened within 750 ms of the last one's final OUT report inherits the rest of this queue, ahead of its own replies [HW].
 Reports sent while nothing is open are lost: a session closed right after its lean handshake and reopened G ms later lost about 1 + 0.48·G reports as one contiguous run, and the old flood's tail, its field-3 copy included, arrived before the new session's connection reply [HW].
-A gap of 750 ms or more gives the next session a clean flood.
+A gap of 750 ms or more gives the next session a clean flood [HW].
 A reader that keeps the longest carrier then adopts the stale inherited copy.
 So `leveller::restore_saved_preset` and `load_preset_isolated` (behind `make_current`) end with `Session::lapse`, and `Session::latest_json_payload` takes the latest preset-JSON carrier, not the longest.
 The offline fake models the queue as the `queued-handshake-flood` injection (`rig_tests.rs`).

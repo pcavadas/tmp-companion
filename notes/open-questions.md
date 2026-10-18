@@ -10,14 +10,7 @@ Facts are for firmware 1.8.58 unless a line says otherwise.
 
 Does a footswitch press of scene 0 reach the same state as a USB `loadScene(0)`?
 On the 2-amp Guitar preset, a USB `loadScene(0)` materializes a different amp state than the physical footswitch press [HW].
-The server handles every source as the same `loadScene` message, and scene 0 takes no special path [RE].
-The differences are in what the panel sends:
-
-- A scene-switch press toggles its entry's `isActive` before executing it: with the flag clear it loads the switch's scene, with the flag set it loads base (`loadScene(8)`) [RE].
-- The active scene's switch has `isActive` set only after an earlier press, or after a recall whose `ftswStates` set it; otherwise a press re-loads the scene [RE].
-- A linked active scene switch is cleared and sends 8 before the pressed one sends its slot [RE, inferred].
-- A touch on the already-active scene in the unit's UI sends nothing, while a USB `loadScene(0)` on an active scene 0 always runs the scene-change policy [RE, inferred].
-- Every recall writes the target scene's `ftswStates` into the switches' `isActive` flags only, with no audible change at the recall ([device/scenes.md#footswitch-state-on-recall](device/scenes.md#footswitch-state-on-recall)).
+The server handles every source as the same `loadScene` message, and scene 0 takes no special path; the candidates are in what the panel sends ([device/scenes.md#panel-and-footswitch-scene-changes](device/scenes.md#panel-and-footswitch-scene-changes)) [RE].
 
 - **Why it matters:** every scene-0 reading. Level and Doctor do not trust it: the Doctor's first-scene advisory ("the first scene's USB reading can differ from its footswitch"), and `fixture_gates.rs` leaves scene 0 of the 2-amp fixtures unjudged.
 - **What would answer it (HW, attended, no save):** from another scene, press scene 0's switch once and read `lastLoadedScene`, the amps' bypass and the footswitch states with `currentPresetDataRequest` (field 2) on a fresh connection; press it again and check whether `lastLoadedScene` becomes 8; then send USB `loadScene(0)` from the same start and compare.
@@ -26,8 +19,8 @@ The differences are in what the panel sends:
 ## Batched save revert
 
 What reverted the scene a batched leveling save had just leveled?
-A batched scene-leveling save stored the old value of the one scene it had just leveled when that scene was also `restore_scene`, the preset's on-load scene recalled right before the save [HW]: `probe --level-scenes 404 -17 guitar-humbucker 0 --commit` on `E2E Hiwatt 3S` (stored `lastLoadedScene` 0) solved scene 0's `outputLevel` to 1.0 and saved 0.96, twice.
-The solve is correct; only the persisted value is wrong, and `persist_mismatches` flags it, so it is never silent.
+The symptom is in [device/scenes.md#batched-scene-save](device/scenes.md#batched-scene-save): `probe --level-scenes 404 -17 guitar-humbucker 0 --commit` on `E2E Hiwatt 3S` (stored `lastLoadedScene` 0) solved scene 0's `outputLevel` to 1.0 and saved 0.96, in both runs [HW].
+The solve is correct; only the persisted value is wrong, and `leveller::persist_mismatches` flags it.
 Under MAINTAIN CHANGES a recall keeps the scene's unsaved edits, a re-recall of the active scene included [RE].
 Two causes fit:
 
@@ -43,8 +36,8 @@ Two causes fit:
 Does the device decide a scene write's landing by the overlay entry's key count at every shape?
 The device rule is that a `bypass` write, or any write to an overlay entry with more than one key, lands in the scene overlay, and a write to an absent or one-key entry lands on base; at recall a `{bypass}`-only overlay merges key by key, and any other overlay replaces the node's whole parameter object [RE] ([device/scenes.md#scene-write-landing](device/scenes.md#scene-write-landing)).
 Two shapes are hardware-checked: a write to a multi-key overlay that lacks the parameter extends that overlay, with its siblings kept and base untouched [HW]; a write against a `{bypass}`-only overlay lands on base [HW].
-Open: `{bypass, bypassType}`, a one-key non-bypass overlay such as `{outputLevel}`, a partial multi-key overlay, and the merge-or-replace behaviour at recall.
-The app's classifier differs at exactly those shapes: `scene_jobs::scene_overlay` tests for the bypass family (`BYPASS_ONLY_KEYS`), not the key count, so `{bypass, bypassType}` classifies `BypassOnly` and `{outputLevel}` classifies `Full`, and `overlay_scene_onto_graph` shallow-merges.
+Open: where a write lands on `{bypass, bypassType}` and on a one-key non-bypass overlay such as `{outputLevel}`, and what the unit renders at recall for a parameter a multi-key overlay omits.
+The app's classifier differs from the device rule at exactly those shapes ([device/scenes.md#the-apps-classifier](device/scenes.md#the-apps-classifier)).
 
 - **Why it matters:** a misclassified overlay sends a leveling write to the wrong side (scene vs base), and offline graphs (SimDevice, the Doctor's per-sound graphs) render the wrong parameters.
 - **What would answer it (HW, scratch slot, no save):** craft `{bypass}`, `{bypass, bypassType}`, `{outputLevel}` and a partial multi-key overlay; `loadScene(N)`, send a `changeParameter`, read the working copy with `currentPresetDataRequest` (field 2); then recall from a scene where the omitted parameter differs and read again.
@@ -71,7 +64,7 @@ The pad sits on the analog input, ahead of that send.
 
 ## Doctor recipes on the shipped stimulus
 
-Do the Doctor's defect recipes still hit, and its localized-cut prescription still work, on the shipped pitched-pluck stimulus?
+Do the Doctor's defect recipes hit, and does its localized-cut prescription work, on the shipped pitched-pluck stimulus?
 The peak-Q estimator and the parametric-cut prescription for `resonant` / `boxy` have not run on the unit with that stimulus and the current constants.
 
 - **Why it matters:** the Doctor's `resonant` / `boxy` verdicts and the fix it prescribes.
@@ -91,6 +84,7 @@ Subtracting the stimulus's band shape is exact on a clean chain and over-correct
 ## Confirm latency after a load
 
 How late do the save reply and the structural-edit confirms arrive after a load?
+Static analysis predicts a confirm queues in the one HID reply FIFO behind the load's full push set, so it arrives after the load's `sceneLoaded` (102) [RE, inferred]; the field-3 push alone arrives 0.1–0.45 s after a load [HW].
 
 - **Why it matters:** it sizes the confirm windows. A confirm still queued behind the load's pushes reads as missing and sends the edit into read-back recovery ([copy.md#read-back](copy.md#read-back)).
 - **What would answer it (HW):** a recorded trace (`TMP_TRACE_DIR`, [e2e-recording.md](e2e-recording.md)) of a load followed by `replaceNode`, `insertNode` (field 34) and `saveCurrentPreset` (field 14).
@@ -100,8 +94,8 @@ How late do the save reply and the structural-edit confirms arrive after a load?
 
 Does a `saveCurrentPreset` chained before a `loadPreset` on the same connection land?
 The save chain is synchronous: `saveCurrentPreset` commits the stored row before its handler returns, on the one thread that processes messages in order, so a load queued behind it runs after it [RE].
-A hardware test on firmware older than 1.8.58 (`probe --save-load-test`) saw the load land and the save dropped, with no `presetError`; it has not been re-run on fw 1.8.58.
-The code keeps the conservative shape: a save ends its connection, and no load follows it on the same one ([device/presets.md#saving](device/presets.md#saving)).
+On older firmware `probe --save-load-test` landed the load and dropped the save with no `presetError` [HW]; it has not run on fw 1.8.58.
+Until it does, a save ends its connection and no load follows it on the same one ([device/presets.md#save-then-load-on-one-connection](device/presets.md#save-then-load-on-one-connection)).
 
 - **Why it matters:** a load sharing the save's connection would save a reconnect on every leveled and copied preset.
 - **What would answer it (HW):** `probe --save-load-test`.
@@ -123,9 +117,29 @@ The master knob is not in the USB 1/2 path ([device/reamp-audio.md#output-routin
 
 Can the Companion measure presets the instrument stimulus does not reach?
 
-- **Mic/Line templates.** The stimulus goes only to USB-In 3, the instrument channel (`REAMP_INSTRUMENT_OUT_CH`); re-amp USB-In 4 feeds the mic/line channel. A preset on a `Mic/Line Series`, `Mic/Line Parallel 1` or `Mic/Line Split` template captures silence. Open: does a stimulus on USB-In 4 reach those chains?
+- **Mic/Line templates.** In re-amp, USB-In 4 replaces Input 2 ([device/reamp-audio.md#re-amp-toggle](device/reamp-audio.md#re-amp-toggle)) [RE], and the app drives only USB-In 3 (`REAMP_INSTRUMENT_OUT_CH`), so a preset on a `Mic/Line Series`, `Mic/Line Parallel 1` or `Mic/Line Split` template gets no stimulus [RE, inferred]. Open: does a stimulus on USB-In 4 reach and measure those chains?
 - **Loops 1 and 2.** They are relay loops switched by the preset's top-level `fxLoop` object (`fxLoop1Enabled` / `fxLoop1Bypassed`, …), not audio-graph nodes, and re-amp bypasses them [RE]; their position ahead of the instrument A/D is [RE, inferred]. Gear in loop 1 or 2 is missing from every capture. Open: does a re-amp capture of a preset with loop 1 engaged and a pedal in it equal the same preset with the loop off?
 
 - **Why it matters:** both cases read as "no signal", or as a confident number for a chain that was never fully measured.
 - **What would answer it (HW):** a capture with a stimulus on USB-In 4 through a Mic/Line template; captures of one preset with loop 1 engaged (a pedal in it) and off.
 - **Code:** both cases are detectable offline from the backup scan (`micNodes` vs `guitarNodes` in `audiograph.rs`; the `fxLoop` object), and nothing detects them.
+
+## Stale load echo
+
+Why can the first connection after a load echo the slot loaded before it?
+A fresh connection opened ~0.3–1 s after `load_and_prove`'s load got a `presetLoaded` (field 11) echo naming the previous slot, although the load had landed; a connection 16 s later named the new slot [HW] ([device/presets.md#echo-of-the-previous-slot](device/presets.md#echo-of-the-previous-slot)).
+Two causes fit: the load is still running when the next connection handshakes, or the handshake echo reports state the unit has not updated yet.
+
+- **Why it matters:** it sizes the retry in `Session::connect_confirmed` and decides whether a wait after the load could replace the lapse-and-retry.
+- **What would answer it (HW, scratch slot, no save):** a timing sweep of load → lapse → reconnect at several gaps, logging the echo and the field-3 `info.displayName` each time.
+- **Code:** `Session::connect_confirmed`, `Session::active_matches`, `replace_inplace::load_and_prove`.
+
+## Cabinet cap weights
+
+Which blocks does fw 1.8.58's cabinet cap count as 2?
+The unit's UI counts combos, half-stacks, bass amps, cabinets and IR blocks, exempts heads and `ACD_ExternalCab`, and adds 1 for a node with a per-node flag set [RE], likely its second cab or second mic [RE, likely].
+`blockcaps.rs` counts `ACD_ExternalCab` and weights 2 only a standalone `ACD_CabSimTMS` with `cabsim2enabled` ([device/presets.md#block-caps](device/presets.md#block-caps)).
+
+- **Why it matters:** `blockcaps.rs` is the only cap enforcement, so a wrong weight lets a third cab through or refuses a legal edit.
+- **What would answer it (HW, Pro Control closed, no save):** on the unit's own screen, try to add a second cab block to a preset holding an amp with its second mic on, and to one holding `ACD_ExternalCab` and one cab block; note which add the UI refuses.
+- **Code:** `blockcaps.rs` (`Counts`, `roster_from_preset`), `src/models/block-classification.json`, `validateBlockEdit.ts`.

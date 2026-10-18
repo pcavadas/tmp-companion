@@ -10,11 +10,12 @@ Facts are for firmware 1.8.58 unless a line says otherwise.
 Toggle re-amp only with `SettingsMessage` (3) → `reampModeActive` (30): ON is `1a05f201020801`, OFF is `1a03f20100` [HW].
 That is the route the unit's own UI and Pro Control use [RE].
 Never send Mixer `setReAmpMode` (15): both routes reach the mixer, but 15 skips the Settings flag, and a later Settings ON is then acknowledged with value 1 and does nothing [HW+RE].
-The Settings echo (`ReAmpModeChanged`) is sent to every host even when nothing changed, so it is not proof of engagement; a finite captured loudness is [HW+RE].
-Read the real state with Mixer `reAmpModeRequest` (4) → field 9, answered to the requester on a live, heartbeated session; a silent Mixer read means the session had lapsed [HW+RE].
+The Settings echo (`reampModeActive`) is sent to every host even when nothing changed, so it is not proof of engagement, and neither is a finite captured loudness ([Silent captures](#silent-captures)) [HW+RE].
+The proof is a Mixer `reAmpModeRequest` (4) → field 9 read or a capture that passes `leveller::measure_floor_guarded`.
+The Mixer read is answered to the requester on a live, heartbeated session; a silent Mixer read means the session had lapsed [HW+RE].
 `Session::read_reamp_state` reads both stores (Mixer field 9 and the Settings flag through `usbSettingsRequest` (55) → field 56), and a store that never answered reads `None`, never OFF.
-Setters carry no `batchStatus`: an engage with batch 4 or more is dropped with no reply, and one with batch 1 or 2 waits for a batch 3 ([Request batching](session.md#request-batching)).
-Re-amp replaces Inputs 1 and 2 with the USB re-amp feed, so a unit left re-amp ON plays no guitar [RE].
+Setters carry no `batchStatus`: an engage with batch 4 or more is dropped with no reply, and one with batch 1 or 2 waits for a batch 3 ([Request batching](session.md#request-batching)) [HW+RE].
+Re-amp replaces Input 1 with USB-In 3 and Input 2 with USB-In 4, so a unit left re-amp ON plays no guitar [RE].
 A preset load never touches the re-amp state, and nothing resets it when a connection closes [RE].
 
 ## Engage and capture accuracy
@@ -23,13 +24,14 @@ Re-engaging on a held, heartbeated connection is safe: in one attended session, 
 Only the first capture after an engage is accurate: it reads within 0.04 LU of an isolated capture [HW].
 Later captures on the same engage read 0.00–0.29 LU low, worse the longer re-amp sits engaged without stimulus, and a re-engage per capture on a held connection reads 0.06–0.09 LU low [HW].
 So the code keeps one engage per capture on a fresh connection, for accuracy.
-`leveller::level_preset` levels base over three fresh connections (load, measure, apply), a conservative shape kept from older firmware.
+`leveller::level_preset` levels base over three fresh connections (load, measure, apply), a conservative shape.
 For scene and footswitch leveling only the measurement prepass reconnects, one engage per scene; the apply (per-scene `outputLevel` and the save, all plain sends with no engage) runs on one persistent session.
 Every run ends with a guaranteed re-amp OFF on its own fresh connection ([Stuck re-amp](#stuck-re-amp)).
 
 ### Edits during an engage
 
-A `setPresetLevel`, a `changeParameter` or a `loadScene` sent during an engage reaches the audio on a live session: a level step showed within 100 ms and a scene change moved the amp within ~300 ms [HW+RE].
+A `setPresetLevel` or a `loadScene` sent during an engage reaches the audio on a live session: a level step showed within 100 ms and a scene change moved the amp within ~300 ms [HW+RE].
+Re-amp gates only the input selection and the dry USB 3/4 returns, so a `changeParameter` reaches the audio the same way [RE].
 After 1.2 s of host silence the same messages draw `connectionError` and are dropped, re-amp staying on [HW].
 An engage after a `loadPreset` on the same connection was live in every trial while OUT traffic kept flowing, and failed only after 1 s of host silence following the load [HW].
 The code still loads on its own connection and sets the level before engaging, a conservative shape.
@@ -45,19 +47,20 @@ Write-bearing shapes skip the heartbeat, because their writes already break the 
 ## Silent captures
 
 A failed or dropped engage does not return silence: it returns the unit's stationary post-DSP output floor, a finite, plausible LUFS [HW].
-Its tells are a momentary-loudness spread near 0.01 LU (a plucked stimulus through any chain spreads far wider) and a `C` that is the same across very different presets.
+Its tells are a momentary-loudness spread near 0.1 LU (a plucked stimulus through any chain spreads far wider) and a `C` that is the same across very different presets.
 The floor is post-DSP, so `presetLevel` scales it and the `20·log10` model still fits: a full `--levelpreset` solve and verify landed 0.00 LU error while measuring only the floor, so solve/verify self-consistency proves nothing about the inject [HW].
 The production leveller guards every measurement (`leveller::measure_floor_guarded`, `require_live`): `FLOOR_TRIP_LU` = 0.4 on the 400 ms momentary spread, a stimulus-aware disarm for near-stationary EBow captures, a quiet-gap retry, and refusal of a read that stays flat.
 `leveller::is_engaged` keys on that spread, so a stationary stimulus can still read `FLOOR/SILENT`; do not retune the threshold without captures that separate a failed inject from a stationary stimulus.
 `probe --stim-ab` is the diagnostic sweep.
-A capture of true digital silence ("no signal captured", peak ≈ −93 dBFS) is a dropped engage too, never a wedged device; a power cycle is never the cure [HW].
+A capture of true digital silence ("no signal captured") is a muted path, not a dropped engage: `outputLevel` 0 ([outputLevel 0](#outputlevel-0)) or a USB 1/2 strip muted or soloed away ([open question](../open-questions.md#usb-12-pre-flight)); `probe --channels <list index>` shows which USB channels carry signal, and a power cycle is never the cure.
+Right after a preset load a capture carries a residual of about −97 to −116 dBFS whatever preceded the load, measured on older firmware [HW].
+It is not Preset Spillover surviving the reload, and its cause is unmeasured, so allow for it in any near-silence check right after a load.
 
 ### outputLevel 0
 
-An amp's `outputLevel` multiplies its linear gain unchanged, so 0 is exact digital silence on the unit [HW+RE].
+An amp's `outputLevel` multiplies its linear gain unchanged, so 0 is exact digital silence at that amp's output; other mixer paths and running reverb or delay tails are not silenced [HW+RE].
 A finite LUFS is not recoverable from silence, and the measurement errors with "no signal captured".
 Code that measures a deliberately muted state (`probe --mute-floor`) treats that error as a sentinel floor (`leveller::MUTE_FLOOR_SILENT_LUFS`) instead of aborting.
-A `gtrSplit` amp can sit in the pre-split trunk, so it always reaches USB 1/2 and never trips the no-authority clamp.
 
 ### Presets with no blocks
 
@@ -92,8 +95,9 @@ So capture content above ~22.05 kHz is anti-alias skirt, not preset tone: flat-n
 The re-amp inject goes out on USB channel 3 (`REAMP_INSTRUMENT_OUT_CH`, 0-based 2), and the processed signal returns on USB 1/2.
 A preset load overwrites the unit's output-assign matrix from that preset's `outputMixerSettings` (`USB12Input` → `usb12Active`, `instrumentOutput` → `instrumentActive`, `comboOutput` → `micActive`; all 9 cells checked) [HW].
 So the measurement tap's routing is not stable across a batch, and a pre-flight that checks it must re-check per preset.
+A `gtrSplit` amp can sit in the pre-split trunk, where it reaches USB 1/2 whatever the lane routing, so it never trips the no-authority clamp.
 The unit's master volume knob is not in the USB 1/2 path: 0.001 LU across 50 % → 80 %, and −23.8 against −23.6 LUFS at zero and up [HW].
-The USB 1/2 channel fader is in the path: −6.48 LU at its −10 dB mark (HW, before fw 1.8.58).
+The USB 1/2 channel fader is in the path: −6.48 LU at its −10 dB mark, measured on older firmware [HW] ([open question](../open-questions.md#usb-12-pre-flight)).
 So quiet leveling is the master knob down on the unit; on Windows the app also handles the endpoint volume ([Platform audio](#platform-audio)).
 
 ## Platform audio
@@ -128,4 +132,4 @@ A leveling capture integrates a 6 s stimulus plus a 0.8 s tail, and that window 
 Presets are not stationary under gated integrated LUFS: delay and reverb presets build up at the start and decay in the tail, so an early exit, a dropped tail or a skipped preroll each shift the reading preset-dependently (clean +0.30, delay +0.16, reverb −0.02 LU) [HW].
 The adaptive early-exit capture is opt-in (`audio::MeasureOpts::adaptive`); leveling uses `MeasureOpts::full`, and how to validate a change against the full-capture oracle is in [Leveling](../leveling.md).
 HW LUFS varies ~0.12 LU run to run on these presets, so a bias needs a many-sample A/B, never 2–3 captures [HW].
-`audio::LiveReamp` keeps a bounded ring (`LIVE_RING_SECS`): an unbounded capture buffer once exhausted the Mac's memory, so never accumulate captures without a bound, and reuse one stream pair per preset rather than one per scene.
+`audio::LiveReamp` keeps a bounded ring (`LIVE_RING_SECS`): an unbounded capture buffer exhausts the Mac's memory, so never accumulate captures without a bound, and reuse one stream pair per preset rather than one per scene.

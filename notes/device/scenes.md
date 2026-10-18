@@ -51,7 +51,8 @@ A scene-context `changeParameter` changes the live DSP at once and is recorded i
 - On base otherwise (no entry, or a one-key entry and a non-bypass param), which changes every scene that shares the node's knobs.
 
 There is no separate Scene-Edit flag: the Scene-Edit state is the overlay's shape, more than one key meaning ON [RE].
-`setNodeSceneEdit` (107) enable reseeds the node's whole overlay from base, wiping any other scene-edited param on it; disable shrinks it to `{bypass}`; both are refused on base [RE].
+`setNodeSceneEdit` (107) enable reseeds the node's whole overlay from base, wiping any other scene-edited param on it; disable shrinks it to `{bypass}` and restores the node from base; both are refused on base [RE].
+So never "restore" Scene Edit by disabling it after a write: that reverts the scene's values for the node to base.
 The overlay is keyed by the request's instance `nodeId`, not the FenderId, so for duplicate blocks the keys differ [RE].
 At recall, a `{bypass}`-only overlay merges key by key, and any other overlay replaces the node's whole `dspUnitParameters` [RE].
 Hardware-checked shapes: a write against a `{bypass}`-only overlay landed on base (base gain 2.5 → 7.0), and a write to a Full overlay lacking the param was inserted into the overlay with base untouched [HW].
@@ -68,7 +69,7 @@ Every pre-write gap stays at 300 ms or less (`SETTLE_AFTER_SCENE_RECALL_MS` 150,
 
 A scene recall carries the working copy's unsaved `presetLevel` forward, in both Scene Change Behavior modes, with one exception [RE].
 Under MAINTAIN CHANGES, `loadScene(8)` while base is already current re-applies the base snapshot's level [HW+RE].
-That snapshot's level is the one of the last real load, scene recall or base structural edit, not the saved row; `setPresetLevel` and a save never refresh it [RE].
+That snapshot's level is the one of the last real load, scene recall or base structural edit, not the saved row; a save never refreshes it [HW+RE], nor does `setPresetLevel` [RE, inferred].
 A preset levelled to −20 and saved with base active played −27.5 on the next base recall until it was reloaded [HW].
 So a run that saves a new `presetLevel` with base active ends with a real reload (`leveller::reload_after_level_save`), or the user's next base tap plays the old level and a save from there stores it again.
 Every capture re-asserts the run's own level after its recall (`leveller::recall_reassert_save` and the capture arms), so an unsaved level the run holds survives a base recall.
@@ -78,9 +79,10 @@ Footswitch runs dirty the working copy with their isolation writes, so their nex
 
 Every recall applies the target scene's `ftswStates` to the footswitches' `isActive` flags only: each switch's LED and what its next press does [RE].
 It changes no block bypass and nothing audible at the recall [RE, inferred].
-A scene renders the base chain's own state for anything its overlay does not carry, so an all-false `ftswStates` does not bypass a block the base leaves ON [HW+RE].
+A scene renders the base chain's own state for any node its overlay has no entry for, so an all-false `ftswStates` does not bypass a block the base leaves ON [HW+RE].
 Levelling a footswitch handle on a base-on block therefore moves every scene of the preset by the same dB: cutting a base-on `ACD_TubeScreamer.level` by 2.0 dB moved all three scenes by 2.0 dB [HW].
 Under MAINTAIN, a recall first refreshes the outgoing scene's `ftswStates` from the live footswitch state [RE].
+A hardware note from older firmware read `ftswStates` as ignored on recall; that matches the audio, but no hardware read has checked the `isActive` write, and `SimDevice` derives footswitch state from bypass instead.
 
 ### Panel and footswitch scene changes
 
@@ -104,14 +106,5 @@ On a preset with scenes, an index at or past the scene count throws out of range
 
 ## Batched scene save
 
-A batched scene-leveling save reverted the one scene it had just levelled when that scene was also `restore_scene`, the preset's on-load scene [HW].
-`level_scenes_oneshot`'s final save (`save_deferred_scene_writes` → `recall_reassert_save` → `recall_original_scene`) recalls `restore_scene` right before `saveCurrentPreset`.
-`probe --level-scenes 404 -17 guitar-humbucker 0 --commit` on "E2E Hiwatt 3S" (stored `lastLoadedScene` 0) solved scene 0's `outputLevel` to 1.0 and saved 0.96, deterministically [HW].
-It is not silent: `leveller::persist_mismatches` / `verify_persisted_writes` stamp `persist_mismatch`, and the online re-measure reads it as a miss.
-Under MAINTAIN CHANGES a re-recall of the active scene keeps its unsaved edits [RE], so two causes remain:
-
-- The unit was set to DISCARD CHANGES, where every recall rebuilds from the stored preset; the probe path skips `scene_discard_guard`.
-- The write's overlay entry had one key, so the write landed on base and the recall re-applied the overlay's old value ([Scene-write landing](#scene-write-landing)).
-
-A post-save `presetDataRequest` (field 8) read separates them: under the second, base holds 1.0 next to the overlay's 0.96 ([open question](../open-questions.md#batched-save-revert)).
-A fix must cover three save paths: `recall_original_scene` is shared by `apply_levels`, `save_deferred_scene_writes` and `write_fs_values_on_session`; `recall_reassert_save` re-applies `presetLevel` after the recall, and nothing re-applies a per-scene block write.
+A batched scene-leveling save stored the old value of the one scene it had just levelled, in both runs, when that scene was also `restore_scene`, the preset's on-load scene recalled right before `saveCurrentPreset` [HW].
+It is not silent: `leveller::persist_mismatches` stamps `persist_mismatch` and the online re-measure reads it as a miss; the cause is open ([open question](../open-questions.md#batched-save-revert)).

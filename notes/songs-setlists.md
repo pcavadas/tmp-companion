@@ -6,7 +6,7 @@ Facts are for firmware 1.8.58 unless a line says otherwise.
 
 ## Reads
 
-- Song and setlist list reads reply in-burst with a top-level `batchStatus` 3 (`song_io.rs`); setters carry no `batchStatus` ([device/session.md#request-batching](device/session.md#request-batching)).
+- Song and setlist list reads carry `batchStatus` 3 (`proto::BATCH_DRAIN`, `song_io.rs`) and are answered at once; setters carry none, and replies carry none ([device/session.md#request-batching](device/session.md#request-batching)).
 - Song and setlist list rows are positional: the 1-based index in the read list.
 
 ## Writes
@@ -14,26 +14,26 @@ Facts are for firmware 1.8.58 unless a line says otherwise.
 - Songs: add, rename, remove, set notes, and per-song BPM.
 - Setlists: add, rename, remove, and add / remove / move a song within a setlist.
 - `addSetlistSong` takes the global song slot of the song to add; `removeSetlistSong` and `moveSetlistSong` address a 1-based position within the setlist, and `moveSetlistSong` is an array splice (`commands/setlists.rs`).
-- `assignSongPreset`'s `presetSceneSlot` must be a scene the preset has, or 8 (`BASE_SCENE_SLOT`, the whole preset); the unit refuses any other with SongError 5 and writes no row. `Session::assign_song_preset` reads the row back, so a refusal is an error.
+- `assignSongPreset`'s `presetSceneSlot` must be a scene the preset has, or 8 (`BASE_SCENE_SLOT`, the whole preset); the unit refuses any other with SongError 5 and writes no row [RE]. `Session::assign_song_preset` reads the row back, so a refusal is an error.
 
 **Per-song BPM.**
 There is no dedicated setter: the BPM is `SettingsMessage.tapTempoBpm{value, originatorId=1}` applied to the active song.
 The song must have a footswitch (`assignSongPreset`) and be activated with `loadPreset{tabEnum=5, songSlot, songPresetSlot, presetSlot}`.
-The tap lands only when that song's `bpmActive` is already on, so the order is load → `setSongBpmActive(true)` → `tapTempoBpm` → one read-back, on one connection (`song_io::set_song_bpm_on`).
+The tap lands only when that song's `bpmActive` is already on [HW+RE], so the order is load → `setSongBpmActive(true)` → `tapTempoBpm` → one read-back, on one connection (`song_io::set_song_bpm_on`).
 The batched saves (`create_song_full`, `update_song_full`) run every write, the BPM step and the read-backs on that one connection.
 The preset active at connect (`Session::active_slot_live`: the `PresetLoaded` echo, else a name unique in the My Presets list) is reloaded afterwards.
 
 ## Slot shifts
 
-A new song inserts at protocol list slot 1 and shifts every other song +1, and it shows second-to-last on the unit's screen (protocol order is not display order).
+A new song inserts at protocol list slot 1 and shifts every other song +1, and it shows second-to-last on the unit's screen (protocol order is not display order) [HW].
 So a just-created song is resolved by name, and any cached song-slot membership is invalid after a song add or remove.
-A new setlist appends at the end.
+A new setlist appends at the end [HW].
 
-The unit accepts a duplicate song name, so only a unique match is the new song.
+The unit accepts a duplicate song name, so only a unique match is the new song [HW].
 When the name was already taken, `create_song_full` keeps the created song but skips its notes, BPM and setlist (they could land on the older song), and reports it in its typed `duplicate_name` field, apart from `bpm_warning`.
 The Songs tab picks its message from those fields, never from the warning text: "You already have a song called {name}." for the first, "Song saved, but its tempo didn't. Set it again." for the second; the warning text goes to the log.
 
-A setlist delete shifts every later setlist down one slot.
+A setlist delete shifts every later setlist down one slot [HW].
 So every slot-keyed write carries the name the user acted on, and the backend re-reads the list in the same slot space and refuses on a mismatch rather than writing to whatever now sits at that slot: `rename_setlist`, `remove_setlist`, `add_setlist_songs` (setlist and each song), `create_song_full`'s `add_to_setlist`, `update_song_full` and `remove_song`.
 Each also carries the whole list the UI saw (its names, in order), and refuses when the unit's list reads differently, because names can repeat and a delete plus an add can leave a same-named row at a stale slot in a list of the same size.
 The unit exposes no stable song or setlist id, so a change that restores the same names in the same order stays invisible.
