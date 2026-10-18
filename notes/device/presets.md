@@ -82,7 +82,8 @@ Never add a preset load before `save_deferred_scene_writes`: its unsaved writes 
 ## Parameter ranges
 
 A float `changeParameter` (12) stores its value verbatim, outside the block's control range too: `ACD_Boost.gain` (range 0–10 dB) kept 12 and −2, and Studio Compressor `makeupgaindb` (range −30…+30 dB) kept 35 and −35, read back from the working copy [HW].
-The control ranges live only in the firmware's block definitions [RE], so the app's own bounds (`src/models/param-class.json` through `param_class::ParamInfo.range`, and the leveller's `outputLevel` clamp) are the only guard against an out-of-range write.
+The control ranges live only in the firmware's block definitions [RE], so a write stays in range only where the app bounds it: the leveling solves clamp to `param_class::ParamInfo.range` (from `src/models/param-class.json`) and the amp `outputLevel` writes to `LEVEL_MIN`/`LEVEL_MAX`.
+The probe's `probe_set_param` checks only that the value is finite, so it can store an out-of-range value.
 Unknown: whether the DSP clamps the audio of such a value, and what a save or the unit's own UI does with it.
 
 ## Loading

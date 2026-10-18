@@ -2355,8 +2355,8 @@ fn solve_footswitch_refuses_a_param_that_is_not_a_level_control() {
     );
 }
 
-// BOUNDS: params are not all `[0,1]`. On a raw-dB `[0, 10]` control the seeds land
-// at a quarter/three quarters of THAT range (2.5 / 7.5), the secant clamps to it, and a
+// BOUNDS: params are not all `[0,1]`. On a raw-dB `[0, 10]` control seed 1 lands at a
+// quarter of THAT range (2.5), seed 2 is law-predicted, the secant clamps to it, and a
 // solved value above 1.0 survives instead of being silently pinned.
 #[test]
 fn solve_footswitch_solves_in_the_params_own_db_range() {
