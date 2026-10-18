@@ -72,8 +72,11 @@ Never discard through a bare same-slot load: `leveller::restore_saved_preset` lo
 
 ### Save then load on one connection
 
-The save handler is synchronous and messages run in order, so static analysis expects a `loadPreset` chained after a save on the same connection to run after the save lands [RE].
-The hardware check is pending, so the code ends a save's connection before any load ([open question](../open-questions.md#save-then-load-on-one-connection)).
+A `loadPreset` of another slot sent after a `saveCurrentPreset` on the same connection lands both: the save commits the stored row before its handler returns, and the load never writes the saved row [HW+RE].
+A failed save answers `presetError` 15 to the sender [RE].
+A save sent right after `setPresetLevel`, before the `presetLevelChanged` (77) echo arrives, still stores the new level, because the unit processes messages in order on one thread [HW+RE].
+A missing 77 means the level change failed on the unit, and a save would then store the old level [RE].
+The code still ends a save's connection before any load, a conservative shape.
 Never add a preset load before `save_deferred_scene_writes`: its unsaved writes set the dirty flag, so the load would be a real reload that wipes them.
 
 ## Loading
@@ -178,6 +181,8 @@ Stock models are filtered to `since` ≤ the connected firmware; saved blocks ar
 A replace over the CPU budget or naming an unknown node gets `presetError` (field 53) code 14 and no `nodeReplaced`; an insert never gets a `presetError` [RE].
 Never save on a `presetError` or an unconfirmed edit: a wrong-content save corrupts the slot.
 No traced handler drops a correctly framed structural edit, so a missing confirm is one still queued behind the load's pushes, a lapse, a backup freeze or an insert abort [RE, inferred].
+A confirm sent right after a load waits behind the load's field-3 push in the [HID reply queue](session.md#hid-reply-queue): a `nodeReplaced` took about 0.17 s on a 3-block preset, and more on a larger one [HW+RE].
+Sent after `presetLoaded` (11), `nodeReplaced` arrived in about 30 ms, `nodeInserted` in about 20 ms and the save's `presetChanged` (25) in 40–65 ms [HW].
 Read an unconfirmed edit back (`Session::insert_landed`, `read_working_copy`) and re-send it only when it visibly did not land; a blind re-send duplicates an insert or names a replaced node that is gone.
 The unit pushes no field 3 after a structural edit; a field-2 re-prompt on the same session (`Session::live_preset_value`) answers with the post-edit working copy [HW+RE], and [Copy](../copy.md) builds its read-back on it.
 

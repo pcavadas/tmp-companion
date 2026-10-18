@@ -1030,9 +1030,9 @@ pub(crate) fn prepass_scene_docs(
 /// carries `<graph>.<group>.<nodeId>.dspUnitParameters`, those keys win over the
 /// cloned node's `dspUnitParameters` (base keys the overlay omits survive). A `splitMix`
 /// overlay merges key-level onto the cloned `audioGraph.splitMix`. On a recall the device
-/// merges only a `{bypass}` overlay key by key and replaces the node's whole param object
-/// with any other overlay (static RE, fw 1.8.58); this merge keeps base keys either way
-/// (open: notes/open-questions.md#scene-write-landing-shapes).
+/// merges only a `{bypass}` overlay key by key and rebuilds the node from any other overlay
+/// alone, with block defaults for the keys it lacks; this merge keeps base keys either way
+/// (notes/device/scenes.md#the-apps-classifier).
 pub(crate) fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::Value) {
     for key in crate::audiograph::GRAPHS {
         let overlay_groups = scene.get(key).and_then(|g| g.as_object());
@@ -1098,13 +1098,14 @@ pub(crate) fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &se
 ///
 /// FOUR states, not three. The device keys a scene write's landing on the overlay entry,
 /// not on a separate flag: a `bypass` write, or a write to an entry with more than one key,
-/// lands in the overlay; a write to an absent or one-key entry lands on base. A Scene Edit
+/// lands in the overlay; a write to an absent or one-key entry lands on base (a `bypass`
+/// write into an entry with no `bypass` key lands nowhere). A Scene Edit
 /// disable shrinks the entry to `{bypass}`, so the node's knobs are SHARED with base (static
 /// RE, fw 1.8.58; HW). That is [`SceneOverlay::BypassOnly`], and it must never collapse into
 /// `Full`. The classifier here tests for the bypass family ([`BYPASS_ONLY_KEYS`]), not the
 /// key count, so it differs from the device at edge shapes — a one-key non-bypass entry
-/// classifies `Full`, a `{bypass, bypassType}` entry `BypassOnly` (open:
-/// notes/open-questions.md#scene-write-landing-shapes).
+/// classifies `Full`, a `{bypass, bypassType}` entry `BypassOnly`
+/// (notes/device/scenes.md#the-apps-classifier).
 ///
 /// A BYPASS-ONLY overlay's whole permitted key set — the block's per-scene STATE keys;
 /// NONE of these is a knob, so an overlay whose keys are a subset of these carries no

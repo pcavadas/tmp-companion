@@ -29,7 +29,8 @@ Peak is pick-transient-dominated and barely tracks output; flat RMS under-counts
 K-weighting matches perceived drive and puts input and output on one metric.
 
 **Clipping is a user-facing instruction.**
-The dry USB 3 send is the instrument ADC pair, averaged, times a fixed 3.96 (+11.95 dB) trim, saturated to 24 bit [RE], so hard picks from a normal passive guitar pin it while the guitar, the ADC and the preset input are not overloaded; the unit's USB 3 meter is windowed RMS and does not show it ([open](open-questions.md#instrument-pad-and-the-dry-clamp)).
+The dry USB 3 send is the instrument ADC pair, averaged, times a fixed 3.96 (+11.95 dB) trim, saturated to 24 bit [RE], so hard picks from a normal passive guitar pin it while the guitar, the ADC and the preset input are not overloaded; the unit's USB 3 meter is windowed RMS and does not show it.
+The −6 dB instrument pad (I/O settings) attenuates the input by 6.0 dB ahead of the A/D, which keeps hard picks under that clamp, and nothing compensates it digitally, so it also lowers the signal into every preset by 6 dB [HW+RE].
 `calibrate_profile` flags a take with a flat-top run-length detector (≥ 4 consecutive full-scale samples, `lufs::is_clipped`; a lone transient at full scale is not clipping), and storage follows `stimulus::clip_verdict`: Mild (≤ 0.5% of samples at full scale, longest run ≤ 2 ms) is stored, Severe is not.
 Play exactly as you really play and never roll the guitar volume back: that under-drives the amp and darkens the tone (volume-pot HF rolloff), corrupting the brightness K-weighting exists to capture.
 The too-quiet case is guarded separately.

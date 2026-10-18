@@ -18,8 +18,6 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
 - **DANGER: a same-slot `loadPreset` over a clean working copy is a no-op**, including right after a save.
   Discard unsaved edits only through `leveller::restore_saved_preset` (it loads a neighbour slot first), and never add a preset load before `save_deferred_scene_writes`, which would wipe the run's unsaved writes.
   [→](../../notes/device/presets.md#same-slot-load-short-circuit)
-- **Keep a save on its own connection** until `probe --save-load-test` passes on fw 1.8.58: no `loadPreset` follows a `saveCurrentPreset` on the same connection.
-  [→](../../notes/open-questions.md#save-then-load-on-one-connection)
 - **DANGER: a body the firmware rejects at load becomes a silent empty preset that keeps its name.**
   Prove the loaded working copy with `replace_inplace::load_and_prove` before every save; an import nothing saves over proves its landing with `replace_inplace::StoredProof`.
   [→](../../notes/device/presets.md#rejected-at-load)
@@ -35,8 +33,9 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
 - **DANGER: a base recall after a `presetLevel` save plays the old level** until a real reload.
   Any path that saves `presetLevel` with base active must end with `leveller::reload_after_level_save`.
   [→](../../notes/device/scenes.md#presetlevel-on-recall)
-- **OPEN: a batched scene-leveling save can revert the scene it leveled when that scene is `restore_scene`**; `leveller::persist_mismatches` flags it.
-  [→](../../notes/open-questions.md#batched-save-revert)
+- **DANGER: a batched scene-leveling save keeps the leveled value only under MAINTAIN CHANGES and an overlay entry of two or more keys.**
+  Under DISCARD the `restore_scene` recall before the save throws the write away, and with a one-key entry the write lands on base and the recall restores the old value; only the DISCARD case is refused (`scene_discard_guard`), and `leveller::persist_mismatches` flags both.
+  [→](../../notes/device/scenes.md#batched-scene-save)
 
 ## Re-amp and measurement
 
@@ -54,14 +53,11 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
 - **Toggle re-amp only through `SettingsMessage` `reampModeActive` (field 30)**, never Mixer `setReAmpMode` (15); read the real state with Mixer `reAmpModeRequest` (4) → field 9.
   [→](../../notes/device/reamp-audio.md#re-amp-toggle)
 - **DANGER: every re-amp run ends with a guaranteed OFF on a fresh connection.**
-  A dropped OFF leaves the unit input-muted, and the user's recovery is a restart of the unit ([open question](../../notes/open-questions.md#re-amp-across-a-usb-unplug)).
+  A dropped OFF leaves the unit input-muted, a USB unplug does not clear it, and the user's recovery is a restart of the unit.
   `leveller::ReampRunGuard` (held by `device_gate::with_released_seize_blocking`) is the backstop, cancel never skips it, and the user-facing error keys on `reamp_still_on`.
   [→](../../notes/device/reamp-audio.md#stuck-re-amp)
 - **A write with no preceding `loadScene` lands in whatever scene the connection holds**, never base by default; a preset loads into its saved `lastLoadedScene`.
   [→](../../notes/device/scenes.md#scene-context)
-- **OPEN: do not trust scene-0 leveling.**
-  A USB `loadScene(0)` and a footswitch press of scene 0 reached different amp states; a scene footswitch toggles and can send base (8) [RE], while the link-group and touch paths are [RE, inferred].
-  [→](../../notes/open-questions.md#scene-0-via-footswitch)
 - **`outputLevel` 0 is digital silence**, and the measurement errors ("no signal captured") rather than invent a loudness.
   [→](../../notes/device/reamp-audio.md#outputlevel-0)
 - **The stimulus is 48 kHz**, so `audio::pick_config` needs a 48 kHz host format; the device itself does not.

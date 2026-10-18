@@ -713,10 +713,7 @@ fn base_node_bypass(p: &serde_json::Value, node_id: &str) -> Option<bool> {
 /// lane (the trade/correction physics case), an FS acting on a block no scene ever
 /// overlays ("FS alone"), a scene literally named "BASE SCENE" that enables no
 /// footswitch ("scene alone"), and a distinct scene that DOES enable one ("Lead")
-/// — both judged rows sitting at wire index ≥ 1 (index 0 stays an unjudged filler:
-/// scene 0 of a 2-amp preset is never judged, since USB `loadScene(0)` can
-/// materialize a different amp state than the physical footswitch press — open:
-/// notes/open-questions.md#scene-0-via-footswitch).
+/// — both judged rows sitting at wire index ≥ 1 (index 0 stays an unjudged filler).
 #[test]
 fn fx_combined_level_carries_the_leveling_use_cases() {
     let cabs = cab_model_ids();
@@ -1475,10 +1472,7 @@ fn e2e_fixture_scenes_are_device_conformant() {
     // Per-fixture expected scene count (listIndex → count), so a failure names the
     // culprit fixture. A slot absent here (401, 405, 408) is expected to carry NO
     // scenes. 406 "E2E Combined Level" carries 3 (SCRATCH filler at wire index
-    // 0 + BASE SCENE + LEAD, both judged rows at index ≥1 — scene 0 of a 2-amp
-    // preset is never judged, since USB `loadScene(0)` can materialize a
-    // different amp state than the physical footswitch press; open:
-    // notes/open-questions.md#scene-0-via-footswitch); 407 "E2E Doctor Oracle" carries 2 (SCRATCH
+    // 0 + BASE SCENE + LEAD, both judged rows at index ≥1); 407 "E2E Doctor Oracle" carries 2 (SCRATCH
     // filler + the scene-consistency oracle's own big-outputLevel-jump scene); 409 "E2E Hiwatt
     // Min" carries 2 (the minimal scene/overlay-conformance repro). 410 "E2E Friedman 3S" carries
     // 3, all judged FULL-overlay rows: Rhythm/Lead/Base Scene, each carrying only its own amp

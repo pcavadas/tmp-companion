@@ -81,8 +81,10 @@ It tries a floor-relative energy step first, falls back to the envelope correlat
 
 The stimulus is profile-aware (`resolve_stimulus_with_capture`): a calibrated profile's DI capture is injected verbatim and diagnosed against the same per-family threshold table as a synthetic stimulus; `Family::thresholds()` does not branch on `StimulusKind`.
 A real DI shifts band balance systematically (+8..12 dB Lows, −8..10 dB Highs) [HW].
-Subtracting the stimulus's own band shape is exact on a clean chain and over-corrects a driven one, which passes only about half of a DI's Mids skew and so reads a spurious `lost` [HW].
-Capture-space thresholds are therefore [open](open-questions.md#capture-space-doctor-thresholds).
+On a factory sweep through one real DI take, driven chains read `lost` no more often than clean ones with the shipped constants: 13% of 62 driven against 11% of 186 clean guitar presets, with the same Mids balance [HW].
+Band thresholds re-derived from that sweep keep every band rule at or under 0.4% held-out false alarms [HW].
+No derivation mode re-derives `washed`, `resonant` or `boxy`, which fire on 24%, 2.7% and 1.2% of that sweep and need capture-space rules of their own [HW].
+The app still diagnoses a DI capture against the synthetic-stimulus table.
 An attended sweep derives them: `probe --doctor-calib <slots_csv> --stim <capture.wav> --family <fam> [--labels labels.json] --out report.json` writes deterministic JSON and markdown (clean-population stats, labeled positives, midpoint and p95+margin proposals, separation margins, the pre-onset noise floor, stimulus band coverage).
 A DI-specific recalibration would edit `GUITAR` / `BASS` / `BASS_VI` in `doctor.rs`.
 

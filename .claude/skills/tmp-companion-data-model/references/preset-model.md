@@ -78,7 +78,7 @@ Each `scenes[N]` carries per-node overlays keyed by group and `nodeId`, plus `ft
 - **Defaults (HW):** a scene added after the blocks exist leaves them unflagged in it; a block added after scenes exist is flagged in every existing scene, snapshotting its add-time values — which is why a scene can show a block's defaults while base was tuned later.
 - **`ftswStates`:** every recall writes the target scene's `ftswStates` into the footswitches' `isActive` flags.
   That sets each switch's LED and what its next press does; what is heard at the recall comes only from the node overlays.
-  A scene footswitch's `isActive` toggles on each press, and a press while it is set loads base (scene 8).
+  A scene footswitch ignores its stored `isActive`: it counts as active while its scene is current, and a press of it then loads base (scene 8).
 
 ---
 

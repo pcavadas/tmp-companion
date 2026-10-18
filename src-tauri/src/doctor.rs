@@ -79,8 +79,8 @@ const LABELS_7: [&str; 7] = [
 /// ONE table per family (no synthetic/capture split): the diagnosis metric
 /// itself is deterministic per sound, and capture-space is discriminated by the
 /// `fizzy` rule's [`FIZZY_MIN_FLATNESS`] gate, not a second threshold table.
-/// These values are not calibrated on DI captures (open:
-/// notes/open-questions.md#capture-space-doctor-thresholds). Any recalibration pass edits values
+/// These values are not calibrated on DI captures
+/// (notes/doctor-thresholds.md#calibrated-di-captures). Any recalibration pass edits values
 /// here and nowhere else. (`benchmark.rs`'s leave-one-out re-derives a held-out copy in memory to
 /// estimate these values' false-positive rate; it never ships one.)
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -3597,9 +3597,9 @@ pub fn scene_consistency(
                 ),
                 &gap,
             )],
-            // Scene 0 is open (notes/open-questions.md#scene-0-via-footswitch): a USB
-            // loadScene(0) can materialize a different amp state than the physical footswitch
-            // press, so its reading isn't trustworthy enough to act on — ask for ears instead.
+            // Wire scene 0 asks for ears instead of a leveling step, although a USB
+            // loadScene(0) reaches the same state as selecting scene 0 on the unit
+            // (notes/device/scenes.md#panel-and-footswitch-scene-changes).
             Some(0) => vec![advisory(
                 &format!(
                     "Couldn't confirm the reading for {worst_name}. Check it by ear before you change it."
@@ -5469,8 +5469,8 @@ mod tests {
 
     #[test]
     fn scene_zero_worst_gets_verify_by_ear_advisory() {
-        // Scene 0 is open (notes/open-questions.md#scene-0-via-footswitch): a worst scene at wire
-        // index 0 gets a verify-by-ear advisory (distinct copy from the plain louder advisory).
+        // A worst scene at wire index 0 gets a verify-by-ear advisory (distinct copy from the
+        // plain louder advisory).
         let scenes = vec![other("Lead", Some("FS1"), -14.0, Some(0))];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("6 dB jump flags");

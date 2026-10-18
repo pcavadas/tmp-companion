@@ -23,7 +23,7 @@ Verify these are still accurate after firmware/app updates — the re-verify rec
 - **Key messages**: `ChangeParameter`, `LoadScene` (PresetMessage field 101, addresses the current preset only; encoder golden-tested in `proto.rs`), `SetNodeSceneEdit`, `SetPresetLevel`, `SaveCurrentPreset`, `CurrentPresetDataRequest` (field 2 → the field-3 working copy).
 - **Scene addressing**: `LoadScene.sceneSlot`, `SceneLoaded.sceneSlot` and `lastLoadedScene` are 0-based `scenes[]` indices; base is the constant wire slot 8, even for a preset with no scenes.
   The encoder must emit `sceneSlot` explicitly even for 0, because the device ignores an empty `LoadScene{}`.
-  Which indices a preset accepts is [scene index bounds](../../../../notes/device/scenes.md#scene-index-bounds); scene 0 carries an [open question](../../../../notes/open-questions.md#scene-0-via-footswitch).
+  Which indices a preset accepts is [scene index bounds](../../../../notes/device/scenes.md#scene-index-bounds).
 - **Firmware version**: `currentFwRequest` (SettingsMessage field 1, `dummy=true`, no `batchStatus`) → `currentFwResponse` (SettingsMessage field 2), `data` (field 1) = e.g. `"1.8.58"`; where it sits in the burst is [handshake](../../../../notes/device/session.md#handshake).
 - **Working copy**: `currentPresetDataChanged` (PresetMessage field 3, one LZ4 block) answers `currentPresetDataRequest` (field 2) and is broadcast on every load, save or edit.
   `currentPresetDataJsonRequest` (field 78) is answered with field 79; the app does not send it.

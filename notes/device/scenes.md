@@ -44,25 +44,28 @@ Under MAINTAIN, unsaved scene-overlay writes survive scene recalls and reconnect
 
 ## Scene-write landing
 
-A scene-context `changeParameter` changes the live DSP at once and is recorded in exactly one place [RE]:
+A scene-context `changeParameter` changes the live DSP at once and is recorded in at most one place [HW+RE]:
 
-- In the scene's overlay, when the overlay has an entry for that `nodeId` and the param is `bypass`.
-- In the scene's overlay, when the entry has more than one key: insert-or-assign, so a Full overlay that lacks the param gains it, its siblings survive and base is untouched.
-- On base otherwise (no entry, or a one-key entry and a non-bypass param), which changes every scene that shares the node's knobs.
+- In the scene's overlay, when the param is `bypass` and the overlay entry for that `nodeId` has a `bypass` key.
+- In the scene's overlay, when the entry has more than one key (`bypass` and `bypassType` count): insert-or-assign, so an entry that lacks the param gains it, its siblings survive and base is untouched.
+- On base otherwise (no entry, or a one-key entry such as `{outputLevel}`), which changes every scene that shares the node's knobs.
+- Nowhere, for a `bypass` write into an entry with no `bypass` key: the unit sounds changed until the next recall or save, which loses it.
 
 There is no separate Scene-Edit flag: the Scene-Edit state is the overlay's shape, more than one key meaning ON [RE].
 `setNodeSceneEdit` (107) enable reseeds the node's whole overlay from base, wiping any other scene-edited param on it; disable shrinks it to `{bypass}` and restores the node from base; both are refused on base [RE].
 So never "restore" Scene Edit by disabling it after a write: that reverts the scene's values for the node to base.
 The overlay is keyed by the request's instance `nodeId`, not the FenderId, so for duplicate blocks the keys differ [RE].
-At recall, a `{bypass}`-only overlay merges key by key, and any other overlay replaces the node's whole `dspUnitParameters` [RE].
-Hardware-checked shapes: a write against a `{bypass}`-only overlay landed on base (base gain 2.5 → 7.0), and a write to a Full overlay lacking the param was inserted into the overlay with base untouched [HW].
-Open shapes: a `{bypass, bypassType}` overlay, a one-key non-bypass overlay such as `{outputLevel}`, and how a partial Full overlay renders at recall ([open question](../open-questions.md#scene-write-landing-shapes)).
+At recall, a `{bypass}`-only overlay merges onto base key by key [HW+RE].
+Any other overlay rebuilds the node from the overlay alone, and every param it lacks takes the block's built-in default, not base: amp knobs 0.5, amp `outputLevel` 0.25 [HW+RE].
+So a `{bypass, bypassType}` overlay plays every other param of its node at the default.
+The `audioGraph` in `currentPresetDataRequest` (field 2) and in the field-3 push is the running unit, so it shows base's stored values only while base is current [HW+RE].
 
 ### The app's classifier
 
 `scene_jobs::scene_overlay` (`SceneOverlay::{Full, BypassOnly, Absent, Unknown}`) calls an overlay OFF when every key is in the bypass family (`BYPASS_ONLY_KEYS`), not when it has one key.
 `Unknown` is a cut or missing read (or a base slot, which has no overlay), and a write against it is refused, since either guess can corrupt the preset.
-So a `{bypass, bypassType}` overlay and a one-key `{outputLevel}` overlay classify opposite to the device rule; `scene_jobs::scene_write_verdict_for_param`, `overlay_scene_onto_graph`, `leveller::set_knobs`' write shape and `SimDevice` all follow the classifier.
+So a `{bypass, bypassType}` overlay (`BypassOnly`, where the unit takes writes into it) and a one-key `{outputLevel}` overlay (`Full`, where the unit lands writes on base) classify opposite to the device rule; `scene_jobs::scene_write_verdict_for_param`, `leveller::set_knobs`' write shape and `SimDevice` all follow the classifier.
+`scene_jobs::overlay_scene_onto_graph` merges every overlay onto base, so an offline graph keeps base values where the unit plays block defaults.
 `set_knobs` sends the Scene-Edit enable only for a node with no overlay in the target scene, where the reseed has nothing to lose, and refuses a scene-scoped knob write against a `BypassOnly` or `Unknown` overlay, since enabling reseeds and omitting the enable leaks to base.
 Every pre-write gap stays at 300 ms or less (`SETTLE_AFTER_SCENE_RECALL_MS` 150, plus `SETTLE_AFTER_SCENE_EDIT_MS` 300 only when an enable was sent), because a write after 750 ms of host silence is dropped with no `presetError` ([Session lapse](session.md#session-lapse)).
 
@@ -78,24 +81,26 @@ Footswitch runs dirty the working copy with their isolation writes, so their nex
 
 ## Footswitch state on recall
 
-Every recall applies the target scene's `ftswStates` to the footswitches' `isActive` flags only: each switch's LED and what its next press does [RE].
+Every recall applies the target scene's `ftswStates` to the footswitches' stored `isActive` flags only [RE].
 It changes no block bypass and nothing audible at the recall [RE, inferred].
 A scene renders the base chain's own state for any node its overlay has no entry for, so an all-false `ftswStates` does not bypass a block the base leaves ON [HW+RE].
 Levelling a footswitch handle on a base-on block therefore moves every scene of the preset by the same dB: cutting a base-on `ACD_TubeScreamer.level` by 2.0 dB moved all three scenes by 2.0 dB [HW].
 Under MAINTAIN, a recall first refreshes the outgoing scene's `ftswStates` from the live footswitch state [RE].
-A hardware note from older firmware read `ftswStates` as ignored on recall; that matches the audio, but no hardware read has checked the `isActive` write, and `SimDevice` derives footswitch state from bypass instead.
+A scene footswitch ignores its stored `isActive`, which can disagree with its LED ([Panel and footswitch scene changes](#panel-and-footswitch-scene-changes)) [HW].
+`SimDevice` derives footswitch state from bypass instead.
 
 ### Panel and footswitch scene changes
 
 The touch screen, the footswitches and USB all send the same `loadScene`, and the server treats scene 0 like any other scene [RE].
 The differences are in what the unit's client sends:
 
-- A scene footswitch toggles its `isActive` flag on each press, then sends its scene when the flag turned on and `loadScene(8)` (base) when it turned off [RE].
-- The active scene's switch has its flag set only after an earlier press or a recall whose `ftswStates` set it; otherwise a press re-loads that scene [RE].
-- A touch on the active scene sends nothing, so no policy step runs [RE, inferred].
+- A scene footswitch counts as active only while its scene is the current scene, which only `sceneLoaded` (102) updates; the stored `isActive` and `ftswStates` play no part [HW+RE].
+- A press of another scene's switch sends a `setFootswitchAssignment` (54) update, then that scene's `loadScene`, and reaches the same state as a USB `loadScene` of it [HW].
+- A press of the current scene's switch sends the 54 update, then `loadScene(8)`, and returns to base [HW].
+- A touch on the active scene sends nothing [HW]; a touch on another scene sends only its `loadScene` [RE].
 - A linked, active scene switch in the pressed switch's `linkGroup` sends base before the pressed one sends its slot [RE, inferred].
 
-On the 2-amp Guitar preset a USB `loadScene(0)` reached a different amp state than a physical press, and the cause is open; do not trust scene-0 leveling until it is resolved ([open question](../open-questions.md#scene-0-via-footswitch)).
+So a USB `loadScene(0)` stands in for selecting scene 0 from another scene, and scene 0 measures like any other scene [HW+RE].
 
 ## Scene index bounds
 
@@ -107,5 +112,12 @@ On a preset with scenes, an index at or past the scene count throws out of range
 
 ## Batched scene save
 
-A batched scene-leveling save stored the old value of the one scene it had just levelled, in both runs, when that scene was also `restore_scene`, the preset's on-load scene recalled right before `saveCurrentPreset` [HW].
-It is not silent: `leveller::persist_mismatches` stamps `persist_mismatch` and the online re-measure reads it as a miss; the cause is open ([open question](../open-questions.md#batched-save-revert)).
+A batched scene-leveling save recalls `restore_scene`, the preset's on-load scene, right before `saveCurrentPreset`.
+Two cases store a leveled scene's old value [HW+RE]:
+
+- Under DISCARD CHANGES, that recall rebuilds every overlay from the stored preset and throws the write away.
+- With a one-key overlay entry, the write lands on base, and the recall puts the overlay's old value back.
+
+The stored row tells them apart: DISCARD leaves base unchanged, while a one-key overlay leaves base holding the solved value [HW].
+Under MAINTAIN CHANGES with an overlay entry of two or more keys the leveled value is kept, even when the leveled scene is the one recalled before the save [HW].
+`commands::level_scenes::scene_discard_guard` refuses the DISCARD case in the app and nothing refuses the one-key case; `leveller::persist_mismatches` stamps `persist_mismatch` on either, and the online re-measure reads it as a miss.

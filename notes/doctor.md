@@ -52,7 +52,8 @@ A cocked wah is a wide hump: peak-space height ≈ 6.7 with a mid local of +15.7
 
 The prescription (`localized_cut_rx`) is a parametric cut at the measured frequency: depth `min(height/2, 6 dB)` for resonant, 4 dB for boxy, the measured Q clamped to 2–12.
 It goes on a free band of an existing `ACD_FiveBandParamEQ`, is an advisory when that EQ has no free band, and is otherwise an `ACD_FiveBandParamEQ` insert after the cab, falling back to the log-nearest EQ-10 band when the insert fails the caps.
-Whether the defect recipes and this cut hold on the shipped stimulus is [open](open-questions.md#doctor-recipes-on-the-shipped-stimulus).
+On a clean preset with the shipped stimulus, `probe --doctor-defects` hits the control, muddy, lost, `resonant_peq` and `boxy_peq` recipes; `washed` reads `dark` and `resonant_wah` reads `harsh` and `bright` instead [HW].
+The prescribed resonant cut (−6 dB, Q 12) clears the ring without an octave-wide dip; the boxy cut, capped at 4 dB, leaves the stacked +24 dB recipe still reading `boxy` [HW].
 
 The gates and the device facts behind them are in [doctor-thresholds.md#localized-rule-gates](doctor-thresholds.md#localized-rule-gates).
 
@@ -145,7 +146,7 @@ The voice tests in `doctor.rs` pin all of this: `every_fix_reads_simplest_first_
 
 Separate from the tonal rules, a scene whose loudness jumps ≥ `scene_delta_db` = 3 dB from base is flagged as an advisory-only `SceneConsistency`.
 The Doctor has no in-app scene trim (the wire cannot set a scene's loudness relative to base, and Level-tab leveling targets an absolute LUFS), so every branch advises a step on the unit: a louder scene turns its amp's Level down until the jump is within the gate (or raises the Middle to stand out instead), a louder footswitch sound turns down the block it turns on, and a quieter one is turned up if it is not on purpose.
-The app adds the Level-tab step itself, except when the louder sound is the first scene (wire scene 0): its USB reading is not trusted ([open](open-questions.md#scene-0-via-footswitch)), so the opened row says the reading is not certain and adds no leveling step.
+The app adds the Level-tab step itself, except when the louder sound is the first scene (wire scene 0): the opened row says the reading is not certain and adds no leveling step, although a USB `loadScene(0)` reaches the same state as selecting scene 0 on the unit ([device/scenes.md#panel-and-footswitch-scene-changes](device/scenes.md#panel-and-footswitch-scene-changes)).
 `DoctorOp` carries no `SceneTrim` variant.
 
 The steps name each sound as the screen does: `DoctorInput.sound_name` ("Lead", "footswitch 3"), which the frontend sends beside the wire `label`.

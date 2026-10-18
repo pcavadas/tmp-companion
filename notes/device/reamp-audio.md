@@ -16,6 +16,7 @@ The Mixer read is answered to the requester on a live, heartbeated session; a si
 `Session::read_reamp_state` reads both stores (Mixer field 9 and the Settings flag through `usbSettingsRequest` (55) → field 56), and a store that never answered reads `None`, never OFF.
 Setters carry no `batchStatus`: an engage with batch 4 or more is dropped with no reply, and one with batch 1 or 2 waits for a batch 3 ([Request batching](session.md#request-batching)) [HW+RE].
 Re-amp replaces Input 1 with USB-In 3 and Input 2 with USB-In 4, so a unit left re-amp ON plays no guitar [RE].
+During re-amp the dry USB 3 and USB 4 sends repeat the last 32-sample block they carried before the engage, so they carry neither the guitar nor the stimulus, and a non-silent USB 3 says nothing about the engage [HW+RE].
 A preset load never touches the re-amp state, and nothing resets it when a connection closes [RE].
 
 ## Engage and capture accuracy
@@ -52,9 +53,16 @@ The floor is post-DSP, so `presetLevel` scales it and the `20·log10` model stil
 The production leveller guards every measurement (`leveller::measure_floor_guarded`, `require_live`): `FLOOR_TRIP_LU` = 0.4 on the 400 ms momentary spread, a disarm when the stimulus's own spread is at or below `STATIONARY_STIM_LU` = 2.0 or unmeasurable (near-stationary EBow captures), a quiet-gap retry, and refusal of a read that stays flat.
 `leveller::is_engaged` keys on that spread, so a stationary stimulus can still read `FLOOR/SILENT`; do not retune the threshold without captures that separate a failed inject from a stationary stimulus.
 `probe --stim-ab` is the diagnostic sweep.
-A capture of true digital silence ("no signal captured") is a muted path, not a dropped engage: `outputLevel` 0 ([outputLevel 0](#outputlevel-0)) or a USB 1/2 strip muted or soloed away ([open question](../open-questions.md#usb-12-pre-flight)); `probe --channels <list index>` shows which USB channels carry signal, and a power cycle is never the cure.
+A capture of true digital silence ("no signal captured") is a muted path, not a dropped engage: `outputLevel` 0 ([outputLevel 0](#outputlevel-0)) or a USB 1/2 strip muted or soloed away ([Output routing](#output-routing)); `probe --channels <list index>` shows which USB channels carry signal, and a power cycle is never the cure.
 Right after a preset load a capture carries a residual of about −97 to −116 dBFS whatever preceded the load, measured on older firmware [HW].
 It is not Preset Spillover surviving the reload, and its cause is unmeasured, so allow for it in any near-silence check right after a load.
+
+### Inputs the stimulus misses
+
+In re-amp, USB-In 4 feeds the mic/line input, so a preset on a Mic/Line template captures silence from a stimulus on USB-In 3 and processes one sent to USB-In 4 [HW+RE].
+The app sends only to USB-In 3 (`REAMP_INSTRUMENT_OUT_CH`).
+Loops 1 and 2 sit in the analogue instrument path ahead of the A/D, so gear in them never reaches a re-amp capture [HW+RE].
+Both cases are detectable offline from the backup scan (`micNodes` against `guitarNodes` in `audiograph.rs`; the preset's `fxLoop` object), and nothing detects them.
 
 ### outputLevel 0
 
@@ -75,8 +83,8 @@ The shipped Doctor calibration reads that flat chain as `fizzy` and `lost` (humb
 ## Stuck re-amp
 
 A run-end OFF that never reads back OFF leaves the unit input-muted (`leveller::reamp_off_guaranteed`, its ladder exhausted).
-Nothing on the unit resets re-amp when a connection closes, and the firmware forces it off at boot, so a USB unplug does not clear it and a restart of the unit does [RE].
-Neither half is checked on a unit ([open question](../open-questions.md#re-amp-across-a-usb-unplug)).
+Re-amp stays on across a USB unplug and replug, with the guitar still muted, and a power cycle turns it off [HW].
+It is saved nowhere and forced off at every boot [RE].
 The user's recovery is "Restart your Tone Master Pro" (`leveller::REAMP_STILL_ON_WARNING` and the Summary); the developer's is `cargo run --bin probe -- --reamp-off`, which sends the Settings OFF without a restart.
 Every leveling result carries the typed `reamp_still_on` (a failed command's typed error `reampStillOn`) beside the `reamp_warning` text, and the frontend reads the flag, never the text; a batched command returns it beside its rows, so a batch with no rows still carries it.
 Cancel never returns early past an engage, and the post-cancel restore and deferred-save cleanup always run to completion.
@@ -97,7 +105,12 @@ A preset load overwrites the unit's output-assign matrix from that preset's `out
 So the measurement tap's routing is not stable across a batch, and a pre-flight that checks it must re-check per preset.
 A `gtrSplit` amp can sit in the pre-split trunk, where it reaches USB 1/2 whatever the lane routing, so it never trips the no-authority clamp.
 The unit's master volume knob is not in the USB 1/2 path: 0.001 LU across 50 % → 80 %, and −23.8 against −23.6 LUFS at zero and up [HW].
-The USB 1/2 channel fader is in the path: −6.48 LU at its −10 dB mark, measured on older firmware [HW] ([open question](../open-questions.md#usb-12-pre-flight)).
+The USB 1/2 strip is in the path, and `settingsBackup.mixerSaveData.usb12` carries it; the app does not check it before a capture:
+
+- A USB 1/2 mute, or a solo on any other mixer channel, makes every capture silent, and a solo elsewhere does not set USB 1/2's own `soloActive` [HW].
+- The fader scales the capture by (81^x − 1)/80, so the screen's "−6.0 dB" (x = 0.9) is a real −3.9 dB [HW+RE]; every boot resets the USB 1/2, 3 and 4 faders to 1.0 [RE].
+- AUX and Bluetooth reach the capture only when the strip's own AUX or BT source is on (`auxActive`, `btActive`) [HW+RE].
+
 So quiet leveling is the master knob down on the unit; on Windows the app also handles the endpoint volume ([Platform audio](#platform-audio)).
 
 ## Platform audio
