@@ -135,8 +135,13 @@ const warn = (file, line, msg) => warnings.push(`${file}:${line}: ${msg}`);
 
 // ── headings → anchors ────────────────────────────────────────────────────
 function slugBase(text) {
-  return text
-    .replace(/<[^>]+>/g, "")
+  // Strip tags to a fixed point: one pass can leave a tag spliced from the remains.
+  let s = text;
+  for (let prev; prev !== s;) {
+    prev = s;
+    s = s.replace(/<[^>]+>/g, "");
+  }
+  return s
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/`/g, "")
     .replace(/\*\*|__|\*/g, "")

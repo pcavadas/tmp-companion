@@ -667,7 +667,7 @@ mod imp {
 mod imp {
     use super::{pick_match_index, Device};
 
-    /// WASAPI names an endpoint "<jack> (<USB product string>)" — e.g. "Line (Tone
+    /// WASAPI names an endpoint `<jack> (<USB product string>)` — e.g. "Line (Tone
     /// Master Pro)" — so the same "tone master" substring match as macOS applies, and
     /// the native-4 tiebreak keeps a hypothetical virtual/aggregate endpoint from
     /// shadowing the physical one. With Fender's own (Thesycon) driver installed the
