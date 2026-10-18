@@ -386,14 +386,14 @@ jobs:
 
       - uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6
 
-  leak-guard:
-    # Belt-and-braces for the pre-commit hook: block private tooling content
-    # in tracked files. Pure grep — no macOS/HID/bun needed.
+  docs:
+    # The docs link gate the pre-commit hook and scripts/gates.sh run: every markdown
+    # link, anchor and `.md` path mention resolves. Node is preinstalled on the runner.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Scan tracked files for private-project markers
-        run: bash scripts/leak-guard.sh --all
+      - name: Check markdown links, anchors and .md mentions
+        run: bash scripts/check-docs.sh

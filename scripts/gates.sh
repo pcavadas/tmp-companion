@@ -50,11 +50,15 @@
 # ── Scope detection ────────────────────────────────────────────────────────
 # Changed files = the working tree vs origin/main (merge-base) + untracked. The
 # union is classified:
-#   docs-only (*.md, docs/, notes/)     → no gates (near-instant)
+#   always (every run and --check)      → docs links (scripts/check-docs.sh), ~1 s;
+#                                          prose is outside the stamp key, so a
+#                                          stamp cannot vouch for it
+#   docs-only (*.md, docs/, notes/)     → nothing more
 #   frontend  (src/, e2e/, *.ts, *.tsx, → bun lint + typecheck + test + fmt-check
 #              *.config.*, tsconfig*.json,
 #              package.json, index.html)
-#   rust      (src-tauri/)              → cargo clippy (e2e feat) + fmt + test --lib
+#   rust      (src-tauri/)              → cargo clippy (e2e feat) + fmt + rustdoc
+#                                          links (report-only) + test --lib
 #                                          (default and e2e feature) + ffmpeg meter
 #                                          parity (only where ffmpeg is on PATH)
 #   e2e-relev (any code side, e2e/,      → offline e2e (bun run e2e)
@@ -324,8 +328,21 @@ EOF
   printf '%s device-facing change(s) since %s\n' "$n" "$1"
 }
 
+# The docs link gate: quiet on success, the failures and exit 1 otherwise. Absent in the
+# shell specs' scratch repos, which copy gates.sh alone.
+docs_gate() {
+  local out
+  if [ ! -f scripts/check-docs.sh ]; then return 0; fi
+  if ! out="$(/bin/bash scripts/check-docs.sh 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    printf '\ngates: FAILED at docs links — fix them, then re-run scripts/gates.sh\n' >&2
+    exit 1
+  fi
+}
+
 case "$MODE" in
   --check)
+    docs_gate
     if [ -f "$green_stamp" ]; then exit 0; fi
     printf 'gates: no fresh green stamp for this tree — run scripts/gates.sh\n' >&2
     exit 1
@@ -437,6 +454,9 @@ SPECS
 esac
 
 # ── run mode ───────────────────────────────────────────────────────────────
+docs_gate
+printf 'gates: docs links clean\n'
+
 if [ -f "$green_stamp" ]; then
   printf 'gates: already green for this tree\n'
   exit 0
@@ -592,6 +612,20 @@ if [ "$want_rust" -eq 1 ]; then
   ensure_dist
   run_gate "clippy (e2e feature)" sh -c 'cd src-tauri && cargo clippy --all-targets --features e2e -- -D warnings'
   run_gate "rustfmt --check"      sh -c 'cd src-tauri && cargo fmt --check'
+  # Rustdoc intra-doc links, REPORT-ONLY while the tree still has broken ones: the crate's
+  # `[lints.rust] warnings = "deny"` would fail the doc build, so `--cap-lints warn` holds
+  # it to warnings and this step only prints the count. Make it a run_gate on
+  # `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc …` once the count is 0.
+  printf '\ngates: ── rustdoc links (report-only) ──\n'
+  doc_rc=0
+  doc_out="$(cd src-tauri && RUSTDOCFLAGS='--cap-lints warn' cargo doc --no-deps \
+    --document-private-items --lib 2>&1)" || doc_rc=$?
+  if [ "$doc_rc" -ne 0 ]; then
+    printf 'gates: rustdoc: cargo doc exited %s (report-only)\n' "$doc_rc"
+  else
+    doc_warnings="$(printf '%s\n' "$doc_out" | sed -n 's/.*generated \([0-9][0-9]*\) warning.*/\1/p')"
+    printf 'gates: rustdoc: %s warning(s)\n' "${doc_warnings:-0}"
+  fi
   run_gate "rust tests"           sh -c 'cd src-tauri && cargo test --lib'
   # ALSO under `--features e2e`: some guards only COMPILE there. `settle_ms`'s offline-collapse
   # branch is the one that matters — regress its predicate to `!e2e_online()` and the settles

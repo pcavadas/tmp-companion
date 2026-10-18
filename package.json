@@ -20,6 +20,7 @@
     "format": "prettier --write 'src/**/*.{ts,tsx}' 'e2e/**/*.ts' '*.config.{js,ts}' .prettierrc index.html",
     "format:check": "prettier --check 'src/**/*.{ts,tsx}' 'e2e/**/*.ts' '*.config.{js,ts}' .prettierrc index.html",
     "leak-guard": "bash scripts/leak-guard.sh --all",
+    "docs:check": "bash scripts/check-docs.sh",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -27,7 +28,7 @@
       "prettier --write",
       "eslint --max-warnings 0"
     ],
-    "*.{js,json,md,css,html}": "prettier --write"
+    "*.{js,json,css,html}": "prettier --write"
   },
   "dependencies": {
     "@fontsource/inter": "~5.3.0",

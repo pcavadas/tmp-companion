@@ -1,18 +1,28 @@
 #!/bin/bash
 #
-# leak-guard.sh — keep PRIVATE tooling content out of this PUBLIC repo.
+# leak-guard.sh — keep PRIVATE content out of this PUBLIC repo (local pre-commit hook).
 #
-# tmp-companion is public; separate private tooling shares its Claude skills
-# folder with it locally via a symlink, so it is easy to accidentally stage
-# private content. This guard scans for unambiguous markers of that private
-# tooling — its infrastructure, private skill names, the private RE corpus and
-# sibling project names, names this repo has retired, and local-only Claude
-# paths — and refuses the commit / fails CI if any appears in tracked content.
+# tmp-companion is public; private tooling shares its Claude skills folder with it
+# locally, so private content is easy to stage by accident. This guard refuses a
+# commit that adds markers of that content. It runs LOCALLY only (the pre-commit
+# hook): a CI check would fire after the push, when the content is already public.
 #
 #   scripts/leak-guard.sh          scan STAGED content    (git pre-commit hook)
-#   scripts/leak-guard.sh --all    scan ALL tracked files (CI, belt-and-braces)
+#   scripts/leak-guard.sh --all    scan ALL tracked files (manual audit)
 #
-# Exits non-zero and prints the offending file:line on any match.
+# Patterns (POSIX ERE, combined with '|'):
+#   - PUBLIC, below: generic markers that name nothing private.
+#   - PRIVATE: every project-specific marker, kept out of this public file. Read from
+#     the untracked file $(git rev-parse --git-common-dir)/info/leak-guard-private
+#     (one ERE per line; '#' comments and blank lines ignored; LEAK_GUARD_PRIVATE_FILE
+#     overrides the path) and from the env var LEAK_GUARD_PRIVATE (one alternation).
+#     Without either, only the public markers are checked and a warning is printed.
+#
+# The deployed report endpoint host (ALLOW_HOST) is functional public config: it is
+# stripped from each line before matching, so no pattern can trip on it.
+#
+# Exits non-zero and prints the offending file:line on any match; exits 2 if the
+# combined pattern is not a valid ERE (a broken pattern must never pass silently).
 # Portable to macOS /bin/bash 3.2.57 + BSD grep: no arrays, no GNU-only flags,
 # no `&& cmd` statements (set -e unsafe); here-docs (not pipes) keep `status` in
 # scope. Test under /bin/bash explicitly, not a newer PATH bash.
@@ -21,17 +31,36 @@ set -euo pipefail
 
 self="scripts/leak-guard.sh"
 
-# Fingerprints of the PRIVATE tooling (POSIX extended regex, '|').
-# Targets that project's own infrastructure, skill names, repo paths, the private
-# RE corpus (its repo, report and evidence paths) and sibling projects — NOT the
-# device firmware-binary names (`tm-stomp-server`, `tone-master-stomp-client`) or
-# the Ghidra RE provenance, which are this repo's ESTABLISHED public data-lineage
-# (see Cargo.toml, proto.rs, model-cpu.json, block-classification.md, …). Matching
-# those would false-positive on ~12 legitimately-public files. The retired names
-# are the remote e2e tier's retired `twin` identifiers. The deployed report
-# endpoint host (`tmp-companion-reports.` + workers.dev) and `pcavadas/tmp-companion`
-# are public config and must NOT match.
-pattern='LD_PRELOAD|qt_metacall|vtable\+0x|populator_stub|populator-gap|harness/stubs|nam-patcher|unsquashfs|microVM|firmware/[0-9][A-Za-z0-9._-]*/recon|Documents/Personal/tmp|tmp-binary-re|tmp-firmware-pipeline|tmp-vm-runtime|tmp-stub-catalog|tmp-device-platform|TMP_E2E_TWIN|twin_audio|TwinRig|TwinHid|TwinAddr|e2e-twin|playwright\.twin|hid/twin\.rs|/twin/audio|offline_twin|\.claude/plans|\.claude/projects/.+/memory|tmp-audit|tmp-emulator|COMPANION_QUESTIONS|VirtualTMP|versions/1\.8\.[0-9]+/(reports|evidence|analysis|decompiled)|pcavadas/tmp([^-A-Za-z0-9_]|$)|tmp-companion-reports([^.]|$)'
+# PUBLIC markers: Ghidra function labels and local-only Claude paths.
+pattern='FUN_[0-9a-f]{8}|\.claude/plans|\.claude/projects/.+/memory'
+
+# PRIVATE patterns: env var, then the untracked local file.
+private="${LEAK_GUARD_PRIVATE:-}"
+private_file="${LEAK_GUARD_PRIVATE_FILE:-$(git rev-parse --git-common-dir)/info/leak-guard-private}"
+if [ -f "$private_file" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    case "$line" in '' | '#'*) continue ;; esac
+    if [ -n "$private" ]; then private="$private|$line"; else private="$line"; fi
+  done <"$private_file"
+fi
+if [ -n "$private" ]; then
+  pattern="$pattern|$private"
+else
+  printf 'leak-guard: WARNING no private pattern file (%s); only generic markers checked\n' "$private_file" >&2
+fi
+
+rc=0
+printf '' | grep -E "$pattern" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  printf 'LEAK-GUARD: the combined pattern is not a valid ERE — fix the private pattern file or LEAK_GUARD_PRIVATE\n' >&2
+  exit 2
+fi
+
+ALLOW_HOST='tmp-companion-reports\.pcavadas\.workers\.dev'
+
+# <grep-input on stdin> — matching lines (numbered) once ALLOW_HOST is stripped.
+scan() { LC_ALL=C sed -e "s/$ALLOW_HOST//g" | grep -nIE "$pattern" 2>/dev/null || true; }
 
 mode="${1:-staged}"
 status=0
@@ -48,7 +77,9 @@ if [ "$mode" = "--all" ] || [ "$mode" = "all" ]; then
     if [ -z "$f" ]; then continue; fi
     if [ "$f" = "$self" ]; then continue; fi
     if [ ! -f "$f" ]; then continue; fi
-    out="$(grep -nIE "$pattern" -- "$f" 2>/dev/null || true)"
+    # Plain grep first (fast, skips binaries); re-scan a hit with the allowlist applied.
+    out="$(grep -lIE "$pattern" -- "$f" 2>/dev/null || true)"
+    if [ -n "$out" ]; then out="$(scan <"$f")"; fi
     if [ -n "$out" ]; then report "$f" "$out"; fi
   done <<EOF
 $(git ls-files)
@@ -59,7 +90,7 @@ else
   while IFS= read -r f; do
     if [ -z "$f" ]; then continue; fi
     if [ "$f" = "$self" ]; then continue; fi
-    out="$(git show ":$f" 2>/dev/null | grep -nIE "$pattern" 2>/dev/null || true)"
+    out="$(git show ":$f" 2>/dev/null | scan)"
     if [ -n "$out" ]; then report "$f (staged)" "$out"; fi
   done <<EOF
 $(git diff --cached --name-only --diff-filter=ACM)
@@ -68,7 +99,7 @@ fi
 
 if [ "$status" -ne 0 ]; then
   printf '\nRefusing: private tooling content must not enter the public repo.\n' >&2
-  printf 'If this is a genuine false positive, tighten the pattern in %s.\n' "$self" >&2
+  printf 'If this is a genuine false positive, tighten the public pattern in %s or the private pattern source.\n' "$self" >&2
   exit 1
 fi
 
