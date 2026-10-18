@@ -393,7 +393,7 @@ describe("ampCabHalfStack / nodeTileArt — device-driven half-stack", () => {
     const cab = "G1265Creamback";
     expect(
       nodeTileArt("ACD_TwinReverb65BlondeNoFx", cab, false).halfStack,
-    ).toBeDefined(); // cabsimid alone still stacks — the old (buggy) behavior
+    ).toBeDefined(); // cabsimid alone (no isCombo) still stacks
     expect(
       nodeTileArt("ACD_TwinReverb65BlondeNoFx", cab, true).halfStack,
     ).toBeUndefined(); // isCombo → single combo tile, no synthesized cab

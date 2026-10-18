@@ -8,7 +8,7 @@
 # hook): a CI check would fire after the push, when the content is already public.
 #
 #   scripts/leak-guard.sh          scan STAGED content    (git pre-commit hook)
-#   scripts/leak-guard.sh --all    scan ALL tracked files (manual audit)
+#   scripts/leak-guard.sh --all    scan ALL tracked files (manual audit), from any directory
 #
 # Patterns (POSIX ERE, combined with '|'):
 #   - PUBLIC, below: generic markers that name nothing private.
@@ -20,6 +20,8 @@
 #
 # The deployed report endpoint host (ALLOW_HOST) is functional public config: it is
 # stripped from each line before matching, so no pattern can trip on it.
+# This file is scanned like any other, so its own patterns are written not to match
+# themselves (`[.]` for a literal dot; ALLOW_HOST unescaped, so its line strips itself).
 #
 # Exits non-zero and prints the offending file:line on any match; exits 2 if the
 # combined pattern is not a valid ERE (a broken pattern must never pass silently).
@@ -30,9 +32,10 @@
 set -euo pipefail
 
 self="scripts/leak-guard.sh"
+cd "$(git rev-parse --show-toplevel)"
 
 # PUBLIC markers: Ghidra function labels and local-only Claude paths.
-pattern='FUN_[0-9a-f]{8}|\.claude/plans|\.claude/projects/.+/memory'
+pattern='FUN_[0-9a-f]{8}|[.]claude/plans|[.]claude/projects/.+/memory'
 
 # PRIVATE patterns: env var, then the untracked local file.
 private="${LEAK_GUARD_PRIVATE:-}"
@@ -57,7 +60,7 @@ if [ "$rc" -eq 2 ]; then
   exit 2
 fi
 
-ALLOW_HOST='tmp-companion-reports\.pcavadas\.workers\.dev'
+ALLOW_HOST='tmp-companion-reports.pcavadas.workers.dev'
 
 # <grep-input on stdin> — matching lines (numbered) once ALLOW_HOST is stripped.
 scan() { LC_ALL=C sed -e "s/$ALLOW_HOST//g" | grep -nIE "$pattern" 2>/dev/null || true; }
@@ -75,25 +78,27 @@ if [ "$mode" = "--all" ] || [ "$mode" = "all" ]; then
   # All tracked files, scanned in the working tree.
   while IFS= read -r f; do
     if [ -z "$f" ]; then continue; fi
-    if [ "$f" = "$self" ]; then continue; fi
     if [ ! -f "$f" ]; then continue; fi
     # Plain grep first (fast, skips binaries); re-scan a hit with the allowlist applied.
     out="$(grep -lIE "$pattern" -- "$f" 2>/dev/null || true)"
     if [ -n "$out" ]; then out="$(scan <"$f")"; fi
     if [ -n "$out" ]; then report "$f" "$out"; fi
   done <<EOF
-$(git ls-files)
+$(git -c core.quotepath=off ls-files)
 EOF
 else
   # Staged additions/modifications, scanned from the index (the exact bytes that
   # would be committed), not the working tree.
   while IFS= read -r f; do
     if [ -z "$f" ]; then continue; fi
-    if [ "$f" = "$self" ]; then continue; fi
-    out="$(git show ":$f" 2>/dev/null | scan)"
+    if ! git cat-file -e ":$f" 2>/dev/null; then
+      printf 'LEAK-GUARD: cannot read the staged copy of %s — refusing rather than skipping it\n' "$f" >&2
+      exit 2
+    fi
+    out="$(git show ":$f" | scan)"
     if [ -n "$out" ]; then report "$f (staged)" "$out"; fi
   done <<EOF
-$(git diff --cached --name-only --diff-filter=ACM)
+$(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR)
 EOF
 fi
 

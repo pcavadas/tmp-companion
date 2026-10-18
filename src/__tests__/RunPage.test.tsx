@@ -226,8 +226,7 @@ describe("RunPage: the run list", () => {
   });
 });
 
-// BUG→GATE #287: picking instrument "None" stored the `"none"` sentinel, and a run row
-// showed it raw. Look B shows no instrument on the run at all; the only place an
+// Instrument "None" stores the `"none"` sentinel, which must never show raw. Look B shows no instrument on the run at all; the only place an
 // instrument is shown is its Select (Level's Set up, Doctor's Instrument page), whose
 // options come from `instrumentOptions`, which names the sentinel "None".
 describe("RunPage row label for the no-instrument choice (#287)", () => {

@@ -635,7 +635,7 @@ pub(super) fn run_scene_jobs(
             },
         );
     }
-    // ⟦3b⟧ CANCELLED BEFORE THE FIRST SOLVE. Nothing was deferred, so `save && attempted` above
+    // CANCELLED BEFORE THE FIRST SOLVE. Nothing was deferred, so `save && attempted` above
     // is false and NO `save_deferred_scene_writes` ran — which makes this reload safe under
     // danger.md's "never a load in front of the deferred save": there are no deferred writes
     // to wipe. What there CAN be is a landed headroom trade's raised `presetLevel` + solved
@@ -647,7 +647,7 @@ pub(super) fn run_scene_jobs(
         }
     }
     if stopped {
-        // ⟦3a⟧ A STOPPED RUN THAT SAVED RETURNS ITS OUTCOMES — never a bare cancel, whose
+        // A STOPPED RUN THAT SAVED RETURNS ITS OUTCOMES — never a bare cancel, whose
         // results the command drops. The save above persisted every scene this run already
         // reported, and its verdict (`persist_mismatch`) is on those outcomes: dropping them
         // would hide a save that did not hold behind "Everything matched so far stays saved."
@@ -1203,7 +1203,7 @@ pub enum PinnedBound {
 /// [`rebalance_one_scene`]) need exactly this pair, and forking the four lines twice is how
 /// the two lanes drift about when a cause may be named at all.
 ///
-/// ⟦8⟧ Only name a cause when a bound ACTUALLY pinned the solve (or a routing failure fired).
+/// Only name a cause when a bound ACTUALLY pinned the solve (or a routing failure fired).
 /// An amp-`outputLevel` lane has no wet floor, so the only causes here are routing and the
 /// ordinary headroom clamp — but a row that merely ran out of secant captures MID-RANGE has
 /// neither. Telling the user "its level control is already maxed out" about a fader sitting

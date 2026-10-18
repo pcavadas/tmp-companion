@@ -1,4 +1,4 @@
-// useDeviceLoad — #311: overlapping loads (the `connected` flag flipping twice
+// useDeviceLoad — overlapping loads (the `connected` flag flipping twice
 // during a multi-second live read) must let only the NEWEST load commit, whatever
 // order they settle in. REAL timers (repo gotcha).
 

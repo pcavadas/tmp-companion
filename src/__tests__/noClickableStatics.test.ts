@@ -1,4 +1,4 @@
-// src/__tests__/noClickableStatics.test.ts — non-regression gate for #307: every
+// src/__tests__/noClickableStatics.test.ts — every
 // clickable control is a real <button> (keyboard- and VoiceOver-reachable, Space/Enter
 // activation for free), never a div/span/li/label with an onClick.
 //

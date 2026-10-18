@@ -4,7 +4,7 @@
 // click); (2) a natural finish shows no clickable action competing with the
 // auto-advance; (3) a check whose command REJECTS reads as a failure with Back and Try
 // again — never as a Stop — shows no backend text, and no row keeps its "Listening" mark
-// (#290). Stop asks first, in a dialog only its own buttons close.
+// Stop asks first, in a dialog only its own buttons close.
 
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, screen, within } from "@testing-library/react";

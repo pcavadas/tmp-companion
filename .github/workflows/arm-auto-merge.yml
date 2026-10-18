@@ -1,8 +1,9 @@
 name: Arm auto-merge
 
 # Decides WHETHER to arm GitHub's native auto-merge, per author. GitHub's "protect main"
-# ruleset (1 approval + build-test/commitlint/e2e green) is the floor; this workflow adds the
-# one thing a ruleset can't express — "require a human review only for external authors":
+# ruleset (1 approval + build-test/commitlint/e2e/docs/remote-lane green) is the floor; this
+# workflow adds the one thing a ruleset can't express — "require a human review only for
+# external authors":
 #
 #   - Trusted author (OWNER/MEMBER/COLLABORATOR, or dependabot[bot]) → arm auto-merge now.
 #     GitHub merges once the ruleset clears (CodeRabbit's approval counts).

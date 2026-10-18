@@ -1,13 +1,12 @@
 // src/__tests__/CopyStagedEdits.test.tsx — the Copy flow keeps staged work it has not
 // written, against a mocked invoke bridge (the CopyHappyPath harness):
-//   #291  the done dialog reports a partial or total failure as one (never "Saved to your
-//         Tone Master Pro"), and Done keeps the unsaved presets' edits on Place blocks;
-//   #292  Back → "Choose blocks" with the same selection keeps the edits + undo;
-//   #293  a bypassed block renders bypassed in Copy's strip, and a save's cache patch
-//         keeps the untouched blocks' bypass state;
-//   #294  opening another block acts on THAT block: its menu replaces it, never the
-//         block opened before, and each "+" gap places at its own spot (the B port of
-//         "the editor kept Insert after when another block was opened").
+//   - the done dialog reports a partial or total failure as one (never "Saved to your
+//     Tone Master Pro"), and Done keeps the unsaved presets' edits on Place blocks;
+//   - Back → "Choose blocks" with the same selection keeps the edits + undo;
+//   - a bypassed block renders bypassed in Copy's strip, and a save's cache patch
+//     keeps the untouched blocks' bypass state;
+//   - opening another block acts on THAT block: its menu replaces it, never the
+//     block opened before, and each "+" gap places at its own spot.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, act, waitFor, within } from "@testing-library/react";

@@ -152,7 +152,7 @@ mod base_anchor_plan_tests {
         }
     }
 
-    // #3 (leveling speed): base's PHASE 1 reading comes from the base row only when that
+    // Base's PHASE 1 reading comes from the base row only when that
     // reading was taken at the level this batch reads as saved.
     #[test]
     fn a_base_reading_is_reused_only_at_the_saved_level() {
@@ -420,7 +420,7 @@ mod scene_discard_guard_tests {
         Snapshot(path)
     }
 
-    // THE gate for gap 2: a snapshot that positively reads DISCARD refuses, and the
+    // THE gate for the DISCARD guard: a snapshot that positively reads DISCARD refuses, and the
     // message carries the two things the user needs — the touchscreen setting to
     // change (by its on-unit name) and the replug that refreshes the stale snapshot.
     #[test]
@@ -495,7 +495,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     if jobs.is_empty() {
         return Err(AppError::Other("no scenes selected".to_string()));
     }
-    // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
+    // Pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
     // before anything touches the device — see `scene_discard_guard`'s doc.
     scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())
         .map_err(|e| Refusal::new(SkipKind::SceneChangeDiscards, e))?;
@@ -1696,9 +1696,9 @@ pub(crate) async fn list_scene_level_handles(
     .await
 }
 
-/// PHASE 2's pure decision seam, exercised with NO device in the loop. Items ⟦1⟧ (a
-/// handle-carrying base row disables the trade), ⟦2⟧ (a no-save run plans but never applies)
-/// and ⟦4b⟧ (the QUIETEST lane binds a joint scale-down) all land here.
+/// PHASE 2's pure decision seam, exercised with NO device in the loop: a handle-carrying base
+/// row disables the trade, a no-save run plans but never applies, and the QUIETEST lane binds
+/// a joint scale-down.
 #[cfg(test)]
 mod trade_planner_tests {
     use super::*;
@@ -1842,7 +1842,7 @@ mod trade_planner_tests {
         );
     }
 
-    // ⟦1⟧ THE BLOCKING ONE. When the user picked base's OWN control, the hold would solve THAT
+    // When the user picked base's OWN control, the hold would solve THAT
     // control down to pay for the raise — a wet mix has a preservation floor precisely so a run
     // never guts an effect to make a number, and the only knob the trade may lower is the
     // base amp fader. So a handle-carrying base row disables the trade outright; the row
@@ -1880,7 +1880,7 @@ mod trade_planner_tests {
         ));
     }
 
-    // ⟦2⟧ A NO-SAVE run must plan the trade and write NOTHING: phase 3 runs `defer = save`, so
+    // A NO-SAVE run must plan the trade and write NOTHING: PHASE 3 runs `defer = save`, so
     // with `save = false` every scene apply reloads the stored preset and destroys an unsaved
     // raise + hold — while the benefiting rows' prepass readings would already have been
     // shifted `+raise_db` to describe a device state that no longer exists.
@@ -1912,7 +1912,7 @@ mod trade_planner_tests {
         }
     }
 
-    // ⟦4b⟧ see `min_audible_above`'s doc for why the QUIETEST lane binds the room.
+    // See `min_audible_above`'s doc for why the QUIETEST lane binds the room.
     #[test]
     fn the_quietest_base_lane_binds_the_fader_room() {
         // presetLevel 0.05 leaves ~26 dB of its own room, so the FADER is what binds.
@@ -1976,7 +1976,7 @@ mod trade_planner_tests {
         );
     }
 
-    // ⟦7⟧ The trade's solved base faders become the jobs' new anchors — but only where the
+    // The trade's solved base faders become the jobs' new anchors — but only where the
     // scene actually READS base's value. Scene 0 pins its own `outputLevel` overlay (that is
     // why it benefits), so its anchor must be left alone.
     #[test]
@@ -2141,7 +2141,7 @@ mod scene_handle_tests {
         assert!(jobs[0].knobs.is_empty());
     }
 
-    // BUG→GATE (the mixed-batch class): the amp prerequisites — an `outputLevel` candidate
+    // In a mixed batch, the amp prerequisites — an `outputLevel` candidate
     // and a readable routing template — are inputs a HANDLE row does not need. The fixture
     // carries no `audioGraph.template`, so the amp classifier fails preset-wide; that must
     // skip only the row that needed the amp, never the row whose control the user named.
@@ -2268,10 +2268,10 @@ mod scene_handle_tests {
         assert!(base_handle_candidates(&preset).is_empty());
     }
 
-    // BUG: `base_handle_candidates` must not walk BOTH graphs (`audiograph::roster`), or a
+    // `base_handle_candidates` must not walk BOTH graphs (`audiograph::roster`), or a
     // mic-node candidate surfaces in the Base picker. Only the guitar chain reaches the
     // USB-Out the leveler measures (`session::extract_level_candidates`'s own rationale) —
-    // Base must be guitar-only. `scene_handle_rows` keeps its pre-existing both-graphs walk.
+    // Base must be guitar-only. `scene_handle_rows` keeps its both-graphs walk.
     #[test]
     fn base_handle_candidates_is_guitar_only_but_scene_handle_rows_still_walks_both_graphs() {
         let preset = serde_json::json!({

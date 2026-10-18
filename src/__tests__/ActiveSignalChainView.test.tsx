@@ -112,7 +112,7 @@ describe("ActiveSignalChainView — dual-split via shared BlockArt engine", () =
 
   it("renders the human-facing one-based preset slot (badge)", () => {
     // The slot is a mono badge ("015" = one-based of the 0-based index 14),
-    // no longer a "slot NNN · template" sub-line.
+    // never a "slot NNN · template" sub-line.
     const txt = renderStrip(DUAL_SPLIT).container.textContent;
     expect(txt).toContain("015");
     expect(txt).not.toContain("slot 015");
@@ -139,7 +139,7 @@ describe("ActiveSignalChainView — dual-split via shared BlockArt engine", () =
     expect(screen.getByText("015")).toBeInTheDocument();
   });
 
-  // ── R3 live-sync additions: sceneTag + diagram-fail overlay ─────────────────
+  // ── live sync: sceneTag + diagram-fail overlay ──────────────────────────────
   it("renders the live-scene tag (› SCENE) next to the name", () => {
     const { container } = renderWithTheme(
       <ActiveSignalChainView
@@ -256,8 +256,7 @@ describe("ActiveSignalChainView — cab tiles match Pro Control", () => {
 
   it("preset 003: a half-stack amp (head + its own cab) renders as ONE tile, NOT a dual-cab split", () => {
     // The amp carries cabsimid (its built-in British 4×12) → a head-over-cab
-    // half-stack, NOT two parallel cabs. This is the exact case the old code wrongly
-    // split into "M4 V30 ‖ M4 V30"; it must now be one tile, no split.
+    // half-stack, NOT two parallel cabs: one tile, never split into "M4 V30 ‖ M4 V30".
     const txt = renderStrip(
       seriesGraph([ampWithCab("ACD_HiwattDR103CanModCabIR", "Mar1960aV30Alt")]),
     ).container.textContent;

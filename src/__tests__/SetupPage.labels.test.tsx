@@ -1,10 +1,9 @@
-// src/__tests__/SetupPage.labels.test.tsx — BUG→GATE (issue 2): Set up once hardcoded
-// "Whole preset" for EVERY main sound, silently relabeling a multi-scene preset's row
-// that `chosenFrom` had named differently. The fix: `chosenFrom` is the one place that
-// names a row, and Set up renders `o.sceneName` verbatim, never re-deriving it.
+// src/__tests__/SetupPage.labels.test.tsx — Set up never relabels a main sound (a
+// hardcoded "Whole preset" silently relabels a multi-scene preset's row): `chosenFrom` is
+// the one place that names a row, and Set up renders `o.sceneName` verbatim.
 //
 // Look B gives the main sound ONE name everywhere, "Main sound" (never "Base Preset" or
-// "Whole preset"), with or without scenes — so the gate now pins that
+// "Whole preset"), with or without scenes — so the gate pins that
 // one name at its source and the verbatim render.
 
 import { describe, it, expect } from "vitest";

@@ -362,7 +362,7 @@ describe("DoctorView — select → instrument → check → results", () => {
     );
   });
 
-  // BUG→GATE: DoctorInput.footswitches must carry the FULL per-preset roster (incl. a
+  // DoctorInput.footswitches must carry the FULL per-preset roster (incl. a
   // switch with zero level candidates), not `footswitchesPerIndex`'s levelable-only
   // subset — else the damage detector's offline force-bypass derivation can't see a
   // toggle-only switch at all. The SELECT list still shows only the levelable switch

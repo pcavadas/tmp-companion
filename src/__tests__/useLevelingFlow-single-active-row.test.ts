@@ -1,4 +1,4 @@
-// src/__tests__/useLevelingFlow-single-active-row.test.ts — BUG→GATE: at most ONE
+// src/__tests__/useLevelingFlow-single-active-row.test.ts — at most ONE
 // run row is ever "active" at a time.
 //
 // A batch measuring several scenes/footswitches streams per-row `active` progress over

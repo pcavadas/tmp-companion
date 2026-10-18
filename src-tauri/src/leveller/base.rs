@@ -241,7 +241,7 @@ pub(crate) struct BoostContext<'a> {
     pub has_fs_scenes: bool,
 }
 
-/// The boost-routing gate's "is this preset scene-bearing?" signal (BUG→GATE). THE HOLE: a
+/// The boost-routing gate's "is this preset scene-bearing?" signal. THE HOLE: a
 /// saved-preset read cut before the alphabetically-last `scenes` key yields a doc with no `scenes`
 /// at all — indistinguishable, by a bare doc check, from a genuinely scene-less preset — and
 /// the base arm only requires `ftsw` complete, so a scene-bearing preset would take the
@@ -410,7 +410,7 @@ pub(crate) fn level_preset_impl(
             apply_opts.verify = false;
         }
 
-        // ⟦BOOST⟧ Plan the base pair off the SAME measurement, before any write (physics in
+        // BOOST: plan the base pair off the SAME measurement, before any write (physics in
         // `headroom_trade.rs`'s module header). `sounds` is empty: base has no OTHER sound's
         // clamp to redistribute against here (that is `redistribute_clamped_headroom`'s lane)
         // — this planner only asks "can base's OWN gap be closed by moving both its own

@@ -12,7 +12,7 @@ fn loads_sent(t: &crate::test_support::ScriptedTransport) -> Vec<u32> {
         .collect()
 }
 
-/// BUG→GATE: fw 1.8.58 skips a same-slot `loadPreset` while the dirty flag is clear,
+/// fw 1.8.58 skips a same-slot `loadPreset` while the dirty flag is clear,
 /// so the restore — the one "discard unsaved edits" path — must never
 /// rely on it: it loads a neighbour first, and the target LAST.
 #[test]
@@ -57,9 +57,8 @@ fn cancel_before_measure_short_circuits_without_device() {
     );
 }
 
-// A cancel whose stored-preset restore ALSO fails used to come back as
-// "cancelled; also failed to restore …", which no longer equalled the sentinel, so every
-// `== CANCELLED` caller treated the Stop as an ordinary failure. Typed, it stays a cancel.
+// A cancel whose stored-preset restore ALSO fails stays a typed cancel — never an error
+// string that every `== CANCELLED` caller would treat as an ordinary failure.
 #[test]
 fn a_cancelled_run_whose_restore_fails_is_still_a_cancel() {
     let mut restored = Vec::new();
@@ -328,7 +327,7 @@ fn redistribute_delta_is_min_of_deficit_headroom_and_downroom() {
     assert_eq!(redistribute_delta_db(0.5, 3.0, 0.05), 0.0);
     // No clamp deficit → 0 (the margin never fires without a real deficit).
     assert_eq!(redistribute_delta_db(0.5, 0.0, 0.5), 0.0);
-    // pl at ceiling (1.0) → no headroom → 0 (the quiet class PR6 owns).
+    // pl at ceiling (1.0) → no headroom → 0.
     assert_eq!(redistribute_delta_db(1.0, 3.0, 0.5), 0.0);
 }
 
@@ -425,7 +424,7 @@ fn joint_k_unequal_clamp_preserves_ratio() {
 }
 
 // At target already → k_eff ≈ 1, not clamped. `jointk_one_scene`'s caller-side
-// skip no longer keys off k_eff though — it compares `measured` vs `target_lufs`
+// skip does not key off k_eff though — it compares `measured` vs `target_lufs`
 // directly via `scene_at_target` (the KNOB_TOL_LU band), which a unity k_eff implies.
 #[test]
 fn joint_k_at_target_is_unity_unclamped() {
@@ -440,7 +439,7 @@ fn joint_k_at_target_is_unity_unclamped() {
     assert!((j.k_eff - 1.0).abs() < 1e-6, "k_eff={}", j.k_eff);
 }
 
-// ⟦4a⟧ THE HOLD'S FLOOR (danger.md: outputLevel = 0 is deep digital silence) — the trade's
+// THE HOLD'S FLOOR (danger.md: outputLevel = 0 is deep digital silence) — the trade's
 // base hold may not solve there. The floor bounds **k**, ratio-preserving, and the pin is
 // REPORTED.
 #[test]
@@ -471,7 +470,7 @@ fn joint_k_honours_the_base_fader_floor_on_a_scale_down() {
         j.achieved
     );
 
-    // LEVEL_MIN (every other lane) is byte-identical to the pre-floor behaviour.
+    // LEVEL_MIN (every other lane) pays the whole cut, unclamped.
     let free = super::solve_joint_k_at(
         &[amp_knob(0.8), amp_knob(0.02)],
         -56.0,
@@ -500,7 +499,7 @@ fn the_fader_floor_never_unmutes_an_author_muted_lane() {
     assert!((j.achieved - (-32.0)).abs() < 1e-6);
 }
 
-// ⟦8⟧ Only a DIRECTION-BLOCKING pin names a cause. A row that merely ran out of secant
+// Only a DIRECTION-BLOCKING pin names a cause. A row that merely ran out of secant
 // captures mid-range is clamped with no false "already maxed out" claim.
 #[test]
 fn only_a_direction_blocking_pin_counts_as_a_ceiling() {
@@ -956,7 +955,7 @@ fn level_unchanged_false_on_negative_previous() {
     assert!(!super::level_unchanged(0.5, -1.0));
 }
 
-// BUG→GATE (the boosted-preset re-run coin flip). After a BOOST run `presetLevel` sits at
+// The boosted-preset re-run coin flip. After a BOOST run `presetLevel` sits at
 // LEVEL_MAX with C solved onto target, so run 2's C round-trips through f32 storage + f64
 // log10 a few float units PAST exact (observed offline: -23.000000488 against -23.0) and
 // `solve_level` reports `clamped` for a target already reached. `already_on_target` is the
@@ -974,7 +973,7 @@ fn a_hairline_float_overshoot_still_counts_as_on_target() {
 }
 
 // The honest clamp this band must NOT weaken: 3 LU short at presetLevel max is genuinely
-// unreachable, so the skip must not fire and the run must go on to report today's clamp.
+// unreachable, so the skip must not fire and the run must go on to report the clamp.
 #[test]
 fn a_genuinely_unreachable_target_is_not_on_target() {
     assert!(!super::already_on_target(-26.0, 1.0, -23.0));
@@ -1001,12 +1000,12 @@ fn already_on_target_accepts_inside_and_rejects_outside_the_band() {
     assert!(!super::already_on_target(c, 1.0, -23.0 - outside));
 }
 
-// The band is PINNED at ACCEPT_TOL_LU, not at the flatness threshold KNOB_TOL_LU (0.3).
-// This is the only offline check that can fail on a silent re-widening: the SimDevice's
-// residual for the boosted fixture is float-round-trip small (~1e-7 LU), so E8 passes at
-// either value and cannot tell them apart. A 0.28 LU shortfall at `presetLevel`'s ceiling
-// must fall through, write and report `clamped`, never be absorbed as `done` with no
-// re-level affordance (`SummaryPage`'s clamped bucket).
+// The band is PINNED at ACCEPT_TOL_LU, not at the flatness threshold KNOB_TOL_LU (0.3). This is the
+// only offline check that can fail on a silent re-widening: the SimDevice's residual for the
+// boosted fixture is float-round-trip small (~1e-7 LU), so the e2e boosted re-run gate passes at
+// either value and cannot tell them apart. A 0.28 LU shortfall at `presetLevel`'s ceiling must fall
+// through, write and report `clamped`, never be absorbed as `done` with no re-level affordance
+// (`SummaryPage`'s clamped bucket).
 #[test]
 fn a_shortfall_above_the_band_is_not_absorbed_even_though_knob_tol_would_have() {
     let (_lvl, clamped, _predicted) = super::solve_level(-23.28, -23.0);
@@ -1046,7 +1045,7 @@ fn lufs_at_level_is_solve_levels_own_predicted() {
 // the naming collision that made the symptom read as "leveling wrote into
 // the base preset" when it actually wrote into scene 3's overlay. The
 // engine only ever addresses scenes by numeric slot (no name field exists
-// at this layer), so the fix is immune to the name regardless.
+// at this layer), so the name can never matter.
 #[test]
 fn set_knob_base_block_recalls_base_explicitly() {
     let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
@@ -1565,7 +1564,7 @@ fn solve_footswitch_flat_response_reports_clamped_not_unconverged() {
 // every measurement AFTER the first seed. See `FS_SILENT_GEOMETRY_LUFS`'s doc for why
 // the synthesized pseudo point is pinned there rather than at the true digital-silence
 // floor `MUTE_FLOOR_SILENT_LUFS`. The first-seed routing-clamp arm has its own test just
-// below, now that its disengage is injected rather than a real connection.
+// below, with its disengage injected rather than a real connection.
 
 /// A CLIPPED probe past the first seed is the knob's loud end, not a
 /// fatal error. Before, the hub's clip refusal aborted the whole row even though a lower
@@ -1653,25 +1652,20 @@ fn plumes_level_curve(v: f32) -> Result<lufs::Loudness, LevelError> {
     Ok(fs_loud(piecewise_lufs(&ANCHORS, v)))
 }
 
-/// Re-pinned to the MID-LOOP silence arm (a `LevelError::NoSignal` on the bracket-aware
-/// secant's OWN extrapolated point, not on either seed) — the law-predicted seed 2
-/// reroutes this fixture off the arm it was originally built to cover, and the
-/// `FS_MIN_SEED_GAP_LU` fix (the law-predicted seed 2's acceptance gate is now the
-/// EXPECTED LUFS separation, not the raw v-space span) reroutes it AGAIN: at the old
-/// -26.0 target the prediction is now ACCEPTED (a real, ≈0.16 knob value — the gap-gate
-/// fix's whole point), so the mid-loop-silence arm needs a target far enough from seed
-/// 1's -22.15 LUFS reading to fail the CENTRAL-5%-95%-of-range frac gate instead
-/// (rather than the gap gate, which a target this far away trivially clears) — -40.0
-/// pushes the raw prediction below v=0.05, rejecting it and falling seed 2 back to the
-/// fixed 0.75 exactly as before. Seed 1 (0.25, real) and seed 2 (0.75, real) are both
-/// proven-real captures with real slope (`fs_bracket_expansion` never fires — the pair
-/// isn't flat), and the correction loop's own extrapolation from that (comparatively
-/// shallow, real-region-only) pair wildly undershoots into the silent zone before
-/// climbing back — several consecutive captures land silent before the secant recovers
-/// (mirroring the ORIGINAL reported pathology more faithfully than a single-dip case
-/// would: a shallow seed pair genuinely can take more than one correction to walk back
-/// off a cliff it undershot). Provably reaches the arm: `seen[2]` (the first
-/// correction-loop capture, neither seed) is asserted silent.
+/// Pins the MID-LOOP silence arm (a `LevelError::NoSignal` on the bracket-aware secant's OWN
+/// extrapolated point, not on either seed). The law-predicted seed 2's acceptance gate is the
+/// EXPECTED LUFS separation (`FS_MIN_SEED_GAP_LU`), not the raw v-space span, so a nearby target
+/// ACCEPTS the prediction; the target must sit far enough from seed 1's -22.15 LUFS reading to fail
+/// the CENTRAL-5%-95%-of-range frac gate instead (the gap gate a target this far away trivially
+/// clears) — -40.0 pushes the raw prediction below v=0.05, rejecting it and falling seed 2 back to
+/// the fixed 0.75. Seed 1 (0.25, real) and seed 2 (0.75, real) are both proven-real captures with
+/// real slope (`fs_bracket_expansion` never fires — the pair isn't flat), and the correction loop's
+/// own extrapolation from that (comparatively shallow, real-region-only) pair wildly undershoots
+/// into the silent zone before climbing back — several consecutive captures land silent before the
+/// secant recovers (more faithful to the reported pathology than a single-dip case: a shallow seed
+/// pair genuinely can take more than one correction to walk back off a cliff it undershot).
+/// Provably reaches the arm: `seen[2]` (the first correction-loop capture, neither seed) is
+/// asserted silent.
 #[test]
 fn solve_footswitch_treats_post_seed_silence_as_the_quiet_extreme_not_a_routing_error() {
     let seen: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
@@ -1730,13 +1724,12 @@ fn solve_footswitch_treats_post_seed_silence_as_the_quiet_extreme_not_a_routing_
 }
 
 /// A knob whose useful range is a narrow slice near the TOP of `[0, 1]`: the fixed
-/// 0.25/0.75 seeds land on an identical flat −17.0 plateau (the ORIGINAL false
-/// "no authority" trigger — `fs_bracket_expansion` fires), but the expansion probe
-/// toward 0.0 is genuinely SILENT below 0.12 rather than merely quiet. Before the fix
-/// this silence was swallowed whole by the bracket-expansion probe's `if let Ok`,
-/// leaving the flat pair undisturbed → the false reason-less clamp. After the fix the
-/// probe's silence becomes a pseudo point, giving the pair real slope so the secant
-/// reaches the target sitting in the 0.12–0.25 ramp.
+/// 0.25/0.75 seeds land on an identical flat −17.0 plateau (the false "no authority"
+/// trigger — `fs_bracket_expansion` fires), but the expansion probe toward 0.0 is
+/// genuinely SILENT below 0.12 rather than merely quiet. The probe's silence must become a
+/// pseudo point, giving the pair real slope so the secant reaches the target sitting in
+/// the 0.12–0.25 ramp — swallowed by the probe's `if let Ok`, it leaves the flat pair
+/// undisturbed → a false reason-less clamp.
 fn flat_plateau_curve(v: f32) -> Result<lufs::Loudness, LevelError> {
     let v = f64::from(v);
     if v < 0.12 {
@@ -1894,21 +1887,18 @@ fn deep_quiet_pedal_curve(v: f32) -> Result<lufs::Loudness, LevelError> {
     Ok(fs_loud(piecewise_lufs(&ANCHORS, v)))
 }
 
-/// Retargeted from the original −68.0 to −72.0 LUFS: the law-predicted seed 2 is what
-/// now drives this fixture into the silent zone in the first place — at −68.0 the
-/// prediction (0.127, computed from seed 1's −62.15 LUFS reading) stayed just above the
-/// 0.10 cliff, so NO capture ever went silent and the fixture stopped exercising
-/// `fs_silent_geometry` at all. At −72.0 the same prediction formula lands at ≈0.080
-/// (silent), and the correction loop that follows keeps re-probing the silent zone at
-/// slightly different `v` for several iterates BEFORE crossing back into real territory
-/// — a direct exercise of `min_real`'s running-floor property (every real capture on
-/// this curve sits below −50, so a pseudo point anchored at the FIXED
-/// `FS_SILENT_GEOMETRY_LUFS` sentinel rather than `min_real - FS_SILENT_MARGIN_LU` would
-/// sit ABOVE the real points and invert the secant's slope). UNCHANGED by the
-/// `FS_MIN_SEED_GAP_LU` fix: both gates agree here (the 9.85 LU expected gap clears
-/// `FS_MIN_SEED_GAP_LU`, and 0.080 sits inside the central 5%-95% frac window), so this
-/// fixture's target and behavior needed no retune. Provably reaches the arm: at least
-/// two DISTINCT probed values sit in the silent zone.
+/// The −72.0 LUFS target drives this fixture into the silent zone through the law-predicted seed 2
+/// (from seed 1's −62.15 LUFS reading): at −68.0 the prediction (0.127) stays just above the 0.10
+/// cliff, so NO capture goes silent and `fs_silent_geometry` goes unexercised. At −72.0 the same
+/// prediction formula lands at ≈0.080 (silent), and the correction loop that follows keeps
+/// re-probing the silent zone at slightly different `v` for several iterates BEFORE crossing back
+/// into real territory — a direct exercise of `min_real`'s running-floor property (every real
+/// capture on this curve sits below −50, so a pseudo point anchored at the FIXED
+/// `FS_SILENT_GEOMETRY_LUFS` sentinel rather than `min_real - FS_SILENT_MARGIN_LU` would sit ABOVE
+/// the real points and invert the secant's slope). Both seed-2 gates accept the prediction here
+/// (the 9.85 LU expected gap clears `FS_MIN_SEED_GAP_LU`, and 0.080 sits inside the central 5%-95%
+/// frac window). Provably reaches the arm: at least two DISTINCT probed values sit in the silent
+/// zone.
 #[test]
 fn solve_footswitch_silence_sentinel_stays_below_real_captures_on_quiet_chains() {
     let seen: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
@@ -1960,7 +1950,7 @@ fn solve_footswitch_silence_sentinel_stays_below_real_captures_on_quiet_chains()
 }
 
 // Regression: an HONESTLY flat response (never silent anywhere) must keep the
-// reason-less headroom/no-authority clamp — the fix must not turn a genuine flat
+// reason-less headroom/no-authority clamp — silence handling must not turn a genuine flat
 // response into a spurious silence-driven convergence.
 #[test]
 fn solve_footswitch_flat_response_without_silence_keeps_honest_clamp() {
@@ -2364,7 +2354,7 @@ fn solve_footswitch_refuses_a_param_that_is_not_a_level_control() {
     );
 }
 
-// BOUNDS: params are no longer all `[0,1]`. On a raw-dB `[0, 12]` control the seeds land
+// BOUNDS: params are not all `[0,1]`. On a raw-dB `[0, 12]` control the seeds land
 // at a quarter/three quarters of THAT range (3.0 / 9.0), the secant clamps to it, and a
 // solved value above 1.0 survives instead of being silently pinned.
 #[test]
@@ -2379,7 +2369,7 @@ fn solve_footswitch_solves_in_the_params_own_db_range() {
         Ok(fs_loud(-30.0 + f64::from(v)))
     })
     .expect("solve");
-    // Seed 1 is still the fixed quarter across the range (3.0). Seed 2 is now the
+    // Seed 1 is the fixed quarter across the range (3.0). Seed 2 is the
     // LAW-PREDICTED point, not the fixed three-quarters mark: `LevelDb` is ~1:1
     // dB→LUFS (identity `to_coord`/`coord_to_value`), so predicting from seed 1's -27.0 dB
     // reading toward the -22.0 target lands EXACTLY on 3.0 + (-22.0 - (-27.0)) =
@@ -2528,7 +2518,7 @@ fn wet_floor_anchor_is_a_noop_with_no_existing_assign() {
     assert_eq!(param.anchored(None).authored, 0.05);
 }
 
-// The WRITE path must carry a raw-dB solved value VERBATIM: with params no longer all
+// The WRITE path must carry a raw-dB solved value VERBATIM: with params not all
 // `[0,1]`, a stray clamp anywhere between the solve and the wire would silently pin a
 // `+8 dB` boost at `1.0`. Pinned on the BAKE write, which goes out as `changeParameter`
 // (`proto::change_parameter`'s `field_f32`, no clamp — the only `clamp(0.0, 1.0)` in

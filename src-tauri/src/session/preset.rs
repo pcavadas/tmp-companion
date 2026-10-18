@@ -116,8 +116,8 @@ impl Session {
     /// reply — like `load_preset`). `group_id`/`node_id`/`parameter_id` name the
     /// `dspUnitParameters` entry (see `current_preset_blocks`); `value` is in the
     /// parameter's own units (often 0..1, but e.g. an IR `outputlevel` is in dB).
-    /// HW-proven to move loudness; needs no SetNodeSceneEdit and is latched by
-    /// re-amp engage, so set it BEFORE engaging (same rule as `set_preset_level`).
+    /// HW-proven to move loudness; needs no SetNodeSceneEdit. It reaches the audio
+    /// mid-engage on a live session (notes/device/reamp-audio.md#edits-during-an-engage).
     pub fn change_parameter(
         &mut self,
         group_id: &str,

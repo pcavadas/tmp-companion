@@ -108,7 +108,7 @@ describe("chosenFrom run-order", () => {
     });
   });
 
-  // BUG→GATE (HW, 410): a footswitch pass run AFTER the scenes moves every scene it had
+  // (HW, 410) A footswitch pass run AFTER the scenes moves every scene it had
   // just leveled. 410's ACD_TubeScreamer is ON in the preset's base state and each of its
   // three scenes overlays only the amp, so all three render the screamer — cutting that
   // switch's own handle 2.0 dB put all three already-leveled scenes 2.0 dB under target
@@ -153,7 +153,7 @@ describe("chosenFrom run-order", () => {
     // A footswitch the player never named → the name the UNIT prints under that switch,
     // not a blank row. `ACD_TubeScreamer` reads "Greenbox 8" on the hardware, never
     // "Tube Screamer", which is the pedal Fender EMULATES — a name the device never shows
-    // anywhere (BUG→GATE, see the strip-name gate below).
+    // anywhere (see the strip-name gate below).
     const blank: FootswitchInfo = { ...fsw(4, ""), label: "" };
     blank.level_params = [
       { ...blank.level_params[0], fender_id: "ACD_TubeScreamer" },
@@ -163,7 +163,7 @@ describe("chosenFrom run-order", () => {
     expect(footswitchName(fsw(4, "Solo"))).toBe("Solo");
   });
 
-  // BUG→GATE (HW, "Plumes+BD2+OCD"): all four of that preset's switches carry an empty
+  // (HW, "Plumes+BD2+OCD") All four of that preset's switches carry an empty
   // `customLabel`; a de-camel-cased FenderId fallback — "Blues Driver", "Obsessive Drive",
   // "Rat" — does not match the unit's scribble strips ("Sapphire OD", "CSD", "Rodent"), so
   // the player cannot match a row to the switch under their foot. These are the blocks with
@@ -184,7 +184,7 @@ describe("chosenFrom run-order", () => {
   );
 
   // The name is not "any candidate" — it follows the same tone-safe RANKED pick Set up
-  // recommends (item 1: `defaultParamIndex` off the wire `class`), never the first
+  // recommends (`defaultParamIndex` off the wire `class`), never the first
   // entry in array order. Load-bearing: this string is written on-device as the
   // switch's `customLabel`, so naming the wrong block is a wire write, not cosmetic.
   it("footswitchName names the rank-0 (level) block, not an earlier rank-1 (wet_mix) one", () => {
@@ -281,7 +281,7 @@ describe("chosenFrom run-order", () => {
 
   // The only remaining -1 case: an EMPTY candidate list. A non-empty list always has a
   // valid default now — every candidate the backend offers already carries a real
-  // (never "other") class (item 1: `class` ships on the wire, gated by
+  // (never "other") class (`class` ships on the wire, gated by
   // `footswitch::level_candidates_for_node`), so there is no "unclassifiable-only" list
   // left to construct.
   it("defaultParamIndex returns -1 for an empty candidate list", () => {
@@ -366,7 +366,7 @@ describe("chosenFrom run-order", () => {
 // `chosenFrom` emitting the right order is not enough on its own: `useLevelingFlow` sorts
 // its work list through `sortRunItems` so the run holds however the items were assembled
 // (a resumed run, a re-ordered selection, a future caller that builds items itself). These
-// pin that sort and the rank it reads — the same BUG→GATE as the emission test above.
+// pin that sort and the rank it reads — the same rule as the emission test above.
 describe("runRank / sortRunItems — the run's dependency order", () => {
   const base = { slot: 1, isBase: true };
   const footswitch = { slot: 1, isBase: false, footswitch: { switchIndex: 4 } };
@@ -394,7 +394,7 @@ describe("runRank / sortRunItems — the run's dependency order", () => {
     expect(work).toEqual([scene, footswitch, base]);
   });
 
-  // BUG→GATE, and the split is PER-ROW because each half is separately HW-measured.
+  // The split is PER-ROW because each half is separately HW-measured.
   // Ranking every footswitch LATE was tried on hardware and reproduced the 410 regression
   // (3 scenes 2.011 LU under target by independent ffmpeg read) even though 410's scenes
   // enable no switches — `ftswStates` means ENGAGED, not ACTIVE, and a base-ON block is
@@ -422,8 +422,8 @@ describe("runRank / sortRunItems — the run's dependency order", () => {
     ]);
   });
 
-  // BUG→GATE: the old inline comparator returned 0 across slots, which is not a consistent
-  // order — on this input it left slot 1's scene running before slot 1's base.
+  // A comparator that returns 0 across slots is not a consistent order — on this input
+  // it runs slot 1's scene before slot 1's base.
   it("runs a preset's base before its scene when another preset sits between them", () => {
     const base2 = { slot: 2, isBase: true };
     expect(sortRunItems([scene, base2, base])).toEqual([base, scene, base2]);

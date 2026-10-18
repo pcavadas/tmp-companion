@@ -3267,8 +3267,8 @@ pub(crate) fn wet_mix_gain_db(v: f64, authored: f64) -> f64 {
 
 /// Preset-024-class ("TR+BD2+BMP") saturated-amp response for a drive pedal's OWN
 /// level/volume knob: silent (no signal) at or below the noise floor, a steep ~42 LU
-/// cliff, then a heavily compressed plateau — see notes/leveling.md §"Saturated-amp
-/// response shape (preset 024…)". Pure and EXACT (no HW noise, no stimulus-scaling
+/// cliff, then a heavily compressed plateau — see
+/// notes/leveling-scenes.md#saturated-amp-response. Pure and EXACT (no HW noise, no stimulus-scaling
 /// slack) so the FS solver's `ACCEPT_TOL_LU` = 0.25 acceptance is meaningful
 /// offline. `None` below the floor is genuine silence (the leveller's no-signal path),
 /// matching the HW note that the bracket-expansion probe down there reads NO_SIGNAL, not
@@ -4399,7 +4399,7 @@ mod physics_tests {
         );
     }
 
-    // ── saturated-pedal response shape (notes/leveling.md#saturated-amp-response) ──────────────
+    // ── saturated-pedal response shape (notes/leveling-scenes.md#saturated-amp-response) ───────
 
     #[test]
     fn saturated_pedal_response_is_silent_at_and_below_the_noise_floor() {

@@ -6,8 +6,8 @@
 // Three shapes, one bug class each:
 //  - a "ready but failed" scan (every map empty — key ABSENT for every slot) must not make
 //    Set-up's render fire a single `list_level_blocks`/`list_scene_level_handles` call —
-//    the old effect called `prefetch` unconditionally per group, which WOULD have reached
-//    the device for every row of a failed scan.
+//    an unconditional per-group `prefetch` would reach the device for every row of a
+//    failed scan.
 //  - a slot whose map entry is a present but EMPTY array (a genuinely blockless/scene-less
 //    preset) still renders an empty picker with no device call — the warm effect's own
 //    `hasBackupData` check is satisfied, `prefetch` runs, and the fetchFn resolves purely

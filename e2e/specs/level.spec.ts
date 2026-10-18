@@ -113,7 +113,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   });
 
   // COVERAGE row 37 — scene wipe / bake / conformance oracle.
-  // BUG→GATE (the corruption-class preset's SHAPE). SCENARIO[4] "E2E Hiwatt 3S" is a real
+  // The corruption-class preset's SHAPE. SCENARIO[4] "E2E Hiwatt 3S" is a real
   // unit's preset: 3 tone scenes + a 4th literally named "Base Scene" (a real overlay, NOT
   // the base sentinel) and 4 block-acting footswitches, saved `lastLoadedScene = 3`. Its
   // outcomes are command-level gates (see level-defaults.spec.ts's header); what ONLY the
@@ -296,7 +296,7 @@ test.describe("Level list — choosing, scenario by scenario", () => {
     await page.getByRole("checkbox", { name: "Select all 2 shown" }).click(); // 2
     actions++;
     // Only the two shown presets were chosen (the caption counts every chosen preset,
-    // hidden ones included) — the old Select all chose all eleven.
+    // hidden ones included) — never all eleven.
     await expect(page.getByText("2 presets", { exact: true })).toBeVisible();
     await levelButton(page, "any").click(); // 3 Level N sounds
     actions++;

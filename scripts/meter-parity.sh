@@ -84,7 +84,7 @@ else
 
   # sine dual-mono — same tone duplicated onto both channels: the TMP's own
   # mirrored USB-Out shape. dual-mono minus mono should read +3.0103 dB exactly
-  # (10*log10(2)) — the whole PR2 re-baseline in one comparison.
+  # (10*log10(2)) — the stereo-vs-mono metering offset in one comparison.
   ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "sine=frequency=1000:duration=5:sample_rate=48000,volume=0.5,pan=stereo|c0=c0|c1=c0" \
     -ar 48000 -c:a pcm_f32le "$FIXTURE_DIR/sine_dual_mono.wav"

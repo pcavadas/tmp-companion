@@ -1,4 +1,4 @@
-// src/__tests__/footswitch-roster-separation.test.tsx — BUG→GATE: pins the
+// src/__tests__/footswitch-roster-separation.test.tsx — pins the
 // Level/Doctor footswitch-roster SEPARATION through the REAL wiring (backup mock →
 // `libraryScan` → `usePresetData` → the view), not via directly-injected props.
 //

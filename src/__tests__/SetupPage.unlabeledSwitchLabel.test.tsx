@@ -1,9 +1,9 @@
 // src/__tests__/SetupPage.unlabeledSwitchLabel.test.tsx — label provenance for an
 // UNLABELED footswitch.
 //
-// BUG→GATE. A footswitch row's `sceneName` is the Level list's displayed row name (never
+// A footswitch row's `sceneName` is the Level list's displayed row name (never
 // sent to the backend — the assign gate only ever edits an EXISTING `param` fn or refuses,
-// so there is no on-device `customLabel` write to keep in sync any more). Even so, a wrong
+// so there is no on-device `customLabel` write to keep in sync). Even so, a wrong
 // name here misleads the player reading their own Level list about what is being leveled.
 //
 // `chosenFrom` picks that name when the LIST is built, and at that moment the only

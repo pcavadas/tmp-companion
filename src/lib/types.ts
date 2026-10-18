@@ -187,9 +187,8 @@ export interface FootswitchLevelProgressItem {
 /** One `level_footswitches_apply` job: a switch + the block param to solve. */
 export interface FootswitchLevelJobWire {
   switch: number;
-  /** The leveling handle — every row levels now (the old verify-only "no handle" row is
-   *  gone backend-side; an empty/missing handle is a per-row error, not a measure-only
-   *  mode). */
+  /** The leveling handle — every row levels; an empty/missing handle is a per-row
+   *  error, not a measure-only mode. */
   levGroupId: string;
   levNodeId: string;
   levParameterId: string;

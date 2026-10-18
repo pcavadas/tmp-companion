@@ -1,7 +1,6 @@
-// App — #305: every connect goes through ONE single-flight guard, so no two attempts ever
-// overlap. The manual "Scan for device" that bug was found on is gone (look B: connection
-// is automatic); the guard still serves the two paths left — the 3 s poll and the
-// hotplug attach event — and this gate drives both.
+// App — every connect goes through ONE single-flight guard, so no two attempts ever
+// overlap. The guard serves both connect paths — the 3 s poll and the hotplug attach
+// event — and this gate drives both.
 //
 // Also locks how a failed connect reaches the screen: its typed KIND (never its message
 // text) picks the device tab's page and the toolbar's words.
@@ -64,7 +63,7 @@ describe("App — the 3 s poll shares the single-flight guard (#305)", () => {
 
     // Once that attempt settles (no unit), the next tick connects again.
     await act(async () => {
-      // The typed `connect_device` rejection (#269): nothing plugged in.
+      // The typed `connect_device` rejection: nothing plugged in.
       held.fail({ kind: "not_connected", message: "no TMP found" });
       await Promise.resolve();
     });

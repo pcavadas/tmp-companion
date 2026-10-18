@@ -1,4 +1,4 @@
-// The app-wide notice for a failed library scan (look B; #310's surface): a caution
+// The app-wide notice for a failed library scan (look B): a caution
 // Notice under the toolbar in plain words — never the failure's own text, which goes to
 // the log — whose "Try again" re-runs the scan, and which hides while that retry runs.
 

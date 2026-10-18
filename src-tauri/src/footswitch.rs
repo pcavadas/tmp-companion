@@ -1243,9 +1243,9 @@ mod tests {
         assert!(validate_import_body(&exp).is_ok());
     }
 
-    /// Static RE names more load-time rejects (row count ≠ 10/20, a non-integer
-    /// `version`), but the unit contradicts both: these fixtures seed and verify on
-    /// the unit. Pin that the validator does not enforce them.
+    /// Static RE names a `ftsw` row count other than 10 or 20 as a load-time reject, but
+    /// the unit loads the 9- and 5-row fixtures (HW). Their `version` "5.0" parses as 5,
+    /// so it is not the non-integer reject. Pin that the validator enforces neither.
     #[test]
     fn validate_import_body_accepts_short_ftsw_and_float_version_fixtures() {
         let raw = include_str!("../../e2e/fixtures/scenario-presets.json");

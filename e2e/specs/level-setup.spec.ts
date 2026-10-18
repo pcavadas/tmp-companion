@@ -74,8 +74,8 @@ test.describe("Level Setup — Other-class filtering, unlabeled naming (list-lev
   // COVERAGE rows 22, 19 — unlabeled switch rendering, plus the UI manifestation of the
   // Other-class case.
   //
-  // BUG→GATE (user-reported, "Friedman HBE"): a footswitch with no level-class parameter
-  // must not vanish from the Level tab (the user's "Phaser" switch, with nothing saying why).
+  // A footswitch with no level-class parameter ("Friedman HBE"'s "Phaser") must not
+  // vanish from the Level tab with nothing saying why.
   // The roster shows every block-acting switch, and a switch that cannot be leveled SAYS SO.
   //
   // So the tree renders the FULL roster (`usePresetData`'s `footswitchRoster: "all"`,
@@ -221,7 +221,7 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     await closeList(page);
   });
 
-  // Two BUG→GATEs on one row, 402 "E2E Edge" scene 3 "Solo": `ACD_Boost` is bypassed
+  // Two gates on one row, 402 "E2E Edge" scene 3 "Solo": `ACD_Boost` is bypassed
   // in BASE, un-bypassed ONLY by Solo's bypass-only overlay, targeted by no footswitch or
   // EXP assign, and bypassed (or overlay-absent, inheriting base) in every OTHER scene — see
   // `scene_jobs::shared_write_is_scene_local` and `fixture_gates.rs`'s

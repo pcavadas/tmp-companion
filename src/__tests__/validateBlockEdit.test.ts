@@ -1,6 +1,6 @@
 // Tests for the Copy tab's firmware-faithful block-cap pre-flight (up-front UX
 // only — the Rust `copy_apply` guard is the real enforcement). Sync, no fake
-// timers; ids are the real fw 1.8.45 members from `block-classification.json`.
+// timers; ids are the real members from `block-classification.json`.
 
 import { describe, expect, it } from "vitest";
 import type { EditGraph, PresetEdit } from "../views/copy/copyModel";

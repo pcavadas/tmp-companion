@@ -1,4 +1,4 @@
-// src/__tests__/useLevelingFlow-tail-caption.test.ts — issue 6b: a batched scene
+// src/__tests__/useLevelingFlow-tail-caption.test.ts — a batched scene
 // channel item can carry a `tail` caption ("Saving…" / "Verifying…") for the
 // deferred-save / persist-verify phase AFTER every scene in the group already
 // resolved — at that point the item carries no valid row key of its own. `batchResolve`

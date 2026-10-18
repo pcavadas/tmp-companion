@@ -530,7 +530,7 @@ fn level_base_arm(
          block(s) off",
         force.len()
     );
-    // ⟦BOOST⟧ Derive the base amp candidate for the plan-then-apply routing.
+    // BOOST: derive the base amp candidate for the plan-then-apply routing.
     let base_amp = base_boost_candidate(&preset, target_lufs, &force);
     log::info!(
         "level_preset slot={slot}: base boost candidate {:?}",

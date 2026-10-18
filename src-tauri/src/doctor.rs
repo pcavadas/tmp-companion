@@ -126,7 +126,7 @@ pub struct Thresholds {
     /// trustworthy — the false-positive control lives in the INTERSECTION, so
     /// each space's gate is set independently at ~p75 of the healthy factory
     /// population (looser than a single combined max+margin gate would need,
-    /// because consensus itself is the safety margin). See `notes/doctor.md`
+    /// because consensus itself is the safety margin). See `notes/doctor-thresholds.md#metric`
     /// for the injection sweep this pair was derived from.
     pub muddy_centered_db: f64,
     pub boomy_centered_db: f64,
@@ -147,7 +147,7 @@ pub struct Thresholds {
 /// rank-transferred the same way. The tilt-space gates are deliberately loose:
 /// they fire only in CONSENSUS with `*_centered_db` (see [`Thresholds`]'s
 /// doc); `buried_db` stays `INFINITY` (bass-only). The derivation lives in
-/// `notes/doctor.md`.
+/// `notes/doctor-thresholds.md#re-deriving-on-a-new-stimulus`.
 pub const GUITAR: Thresholds = Thresholds {
     muddy_db: 0.8,
     boomy_db: 4.1,
@@ -295,7 +295,7 @@ impl PlaybackOffsets {
 ///
 /// The dark/bright tilt rules stay SPL-blind too, though the same contour
 /// change tilts a tone −0.67 dB/oct darker at Stage; see
-/// notes/doctor.md. The anchor (Rehearsal = the calibration
+/// notes/doctor-thresholds.md#playback-level-offsets. The anchor (Rehearsal = the calibration
 /// monitoring level) is still an assumption until a sweep records monitor SPL.
 const STAGE_OFFSETS: PlaybackOffsets = PlaybackOffsets {
     boomy_db: -0.7,
@@ -1779,7 +1779,7 @@ const OTHER_EQ_IDS: [&str; 4] = [
 const HIGH_LOW_PASS: &str = "ACD_HighLowPass";
 /// The five-band parametric EQ the narrow-ring notch uses. Live controlIds
 /// `filterN{frequency,gaindb,q}` are HW write-verified (1 kHz/+12 dB/Q8 in →
-/// 1008 Hz/q 7.5 measured, `notes/doctor.md`); band
+/// 1008 Hz/q 7.5 measured, `notes/doctor-thresholds.md#localized-rule-gates`); band
 /// 1 defaults to a high-pass, bands 2–4 to peaks, so only 2–4 carry a notch.
 const PARAM_EQ: &str = "ACD_FiveBandParamEQ";
 const COMPRESSOR: &str = "ACD_DynaComp"; // classic 2-knob pedal comp, schema-verified
@@ -4398,7 +4398,7 @@ mod tests {
     //    tilt. Only the intersection gets both right. Vectors are already
     //    target-subtracted (`dev[i]`, i.e. what `deviations()` returns) — built
     //    into a `band_db` via `GUITAR_TARGET[i] + dev[i]` so they exercise the
-    //    real `deviations()` too, per `notes/doctor.md`.
+    //    real `deviations()` too, per `notes/doctor-thresholds.md#metric`.
 
     /// The gates these HW fixtures were measured against (the band-passed-noise
     /// stimulus). They pin the CONSENSUS logic, so they keep those gates; the

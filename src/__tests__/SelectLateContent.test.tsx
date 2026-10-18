@@ -2,7 +2,7 @@
 // when its rows arrive after the open (the look B `Select`, whose list is the DS `Menu`,
 // placed from the trigger's rect).
 //
-// BUG→GATE: a placement effect that depends only on values fixed at open time, while what
+// A placement effect that depends only on values fixed at open time, while what
 // it measures is the list's height, keeps a LATE list (a lazy per-preset read paints one
 // "Reading…" line, the real rows a moment later) placed for the one-line list: the tall list
 // renders straight off the bottom of the window, never clamped and never flipped above its

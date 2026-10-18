@@ -1,4 +1,4 @@
-// src/__tests__/libraryScanFailure.test.ts — #310: the library scan's failure paths
+// src/__tests__/libraryScanFailure.test.ts — the library scan's failure paths
 // and its progress store. A progress-listen failure must not strand the scan, a
 // failed backup read must say so (`error`) instead of reading as an empty library
 // and must be retryable (Copy shows it and its Retry re-runs the scan), a reset

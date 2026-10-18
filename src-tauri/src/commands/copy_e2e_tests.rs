@@ -118,11 +118,10 @@ mod audition_copy_tests {
 }
 
 /// End-to-end tests of the held-session Copy/Level orchestration over the in-memory
-/// `sim_device::SimDevice` fake — NO hardware. These exercise the real command-layer
-/// state machine (`copy_apply_one`'s load → re-arm → confirm-gated edits → identity-
-/// preserving save) and the two safety invariants that previously only ever ran on the
-/// device: a `presetError` is NEVER followed by a save, and an unconfirmed edit is read
-/// back before any re-send. The pure edit→op diff is unit-tested elsewhere (`copyModel` in
+/// `sim_device::SimDevice` fake — NO hardware. These exercise the real command-layer state machine
+/// (`copy_apply_one`'s load → re-arm → confirm-gated edits → identity- preserving save) and the two
+/// safety invariants, offline: a `presetError` is NEVER followed by a save, and an unconfirmed edit
+/// is read back before any re-send. The pure edit→op diff is unit-tested elsewhere (`copyModel` in
 /// Vitest, `bulk_cmd` in Rust); this is the wire-driving the diff feeds.
 #[cfg(test)]
 mod copy_level_e2e_tests {
@@ -1029,7 +1028,7 @@ mod copy_level_e2e_tests {
         assert!(expected_roster(&pre, &ghost).is_none());
     }
 
-    // ── PR2: confirm-before-save write safety (Session::confirm_active) ──
+    // ── Confirm-before-save write safety (Session::confirm_active) ──
 
     #[test]
     fn confirm_active_ok_when_slot_echo_matches() {

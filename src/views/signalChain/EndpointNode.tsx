@@ -14,7 +14,7 @@ import {
 // Endpoint glyphs come from the DS icon catalog (`<Icon>`), never hand-rolled SVG:
 // the instrument input is the canonical `cable` plug, the mic is `mic`, the output is the
 // `wave` meter. Keeps these nodes in the design system (one source of truth) instead of a
-// private inline drawing that drifts (the old guitar SVG rendered as a paintbrush).
+// private inline drawing that drifts.
 const ENDPOINT_ICON: Record<SourceType | "out", IconName> = {
   guitar: "cable",
   mic: "mic",

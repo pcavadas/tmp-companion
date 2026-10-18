@@ -1,5 +1,5 @@
-// src/__tests__/DialogMenuA11y.test.tsx — non-regression gate for #308 (the DS Dialog and
-// Menu shells' modality, naming, focus and clipping bugs).
+// src/__tests__/DialogMenuA11y.test.tsx — the DS Dialog and Menu shells' modality,
+// naming, focus and clipping.
 //
 // Dialog: portals to document.body with an accessible name; the app root (`#root`) is
 // `inert` while any dialog is open and only loses it when the LAST stacked dialog closes;

@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(plan.capped, None);
     }
 
-    // ⟦R2⟧ THE CENTRAL RULE. A clamp on a sound the trade cannot help must be reported
+    // THE CENTRAL RULE. A clamp on a sound the trade cannot help must be reported
     // honestly and must NOT move the base pair — the raise buys it nothing while making
     // every other sound's fader drop for free.
     #[test]
@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(plan.capped, Some(TradeCap::BaseFaderFloor));
     }
 
-    // ⟦4c⟧ THE ONE BOUNDED RE-PLAN (see fn doc above for the arithmetic and why it lives here).
+    // THE ONE BOUNDED RE-PLAN (`replan_after_floor_pin`'s doc has the arithmetic and why).
     #[test]
     fn a_replan_after_a_floor_pin_asks_for_the_measured_affordable_raise() {
         let plan = replan_after_floor_pin(6.0, 3.5).expect("3.5 LU of room is worth a retry");
@@ -695,7 +695,7 @@ mod tests {
         );
     }
 
-    // ⟦4b⟧ THE SHARED FOLD (see min_audible_above's doc for why the quietest lane binds).
+    // THE SHARED FOLD (see `min_audible_above`'s doc for why the quietest lane binds).
     #[test]
     fn the_audible_fold_takes_the_quietest_lane_and_ignores_the_parked_ones() {
         assert_eq!(
@@ -796,7 +796,7 @@ mod tests {
         assert!(seen.iter().all(|m| !m.is_empty()));
     }
 
-    // ⟦6⟧ THE TRADE ON THE WIRE. `danger.md`: a save cannot be undone from the app, so a
+    // THE TRADE ON THE WIRE. `danger.md`: a save cannot be undone from the app, so a
     // landed trade must be disclosable — and an ADVISORY must be tellable apart from it
     // without the consumer guessing (an advisory never solved a fader, so it says so).
     #[test]

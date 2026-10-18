@@ -2,8 +2,7 @@
 // sections, one plain sentence per sound with no loudness numbers, at most one badge, one
 // Notice, "Try again (N)" before "Done", and the footswitch scene choice. What each row
 // says is pinned in `summaryModel.test.ts`; this suite pins what reaches the screen and
-// what the buttons do. It replaces the Summary* suites of the old wizard (unconverged vs
-// clamped, true peak, wet floor, base boost, re-amp warning), ported to look B.
+// what the buttons do, unconverged vs clamped and the re-amp warning included.
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, within } from "@testing-library/react";
@@ -68,7 +67,7 @@ describe("Summary page", () => {
         "Already at full volume, so it can't reach Lead. Choose a quieter target for it.",
       ),
     ).toBeInTheDocument();
-    // No per-row buttons of the old wizard.
+    // No per-row buttons.
     for (const old of [
       /Run again/,
       /Level lower/,

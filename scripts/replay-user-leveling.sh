@@ -122,7 +122,8 @@ ok()   { printf '\033[32m✓ %s\033[0m\n' "$*"; }
 err()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; }
 # shellcheck disable=SC2329,SC2317  # only called from cleanup(), itself invoked via `trap`
 warn() { printf '\033[33m⚠ %s\033[0m\n' "$*"; }
-# A gap so the previous session's handle closes (0xe00002c5 = another handle holds the seize).
+# A settle gap between device processes: macOS can release an exited process's exclusive
+# HID handle late, and the next open then fails 0xe00002c5 (another handle holds the seize).
 gap()  { sleep 5; }
 
 usage() {

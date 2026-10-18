@@ -1,4 +1,4 @@
-// src/__tests__/viewsModuleShape.test.ts — non-regression gate for #313: the views tree
+// src/__tests__/viewsModuleShape.test.ts — the views tree
 // keeps ONE exported component per file and NO import cycles between its modules.
 //
 // Both checks parse every non-test `src/views/**/*.{ts,tsx}` source with the TypeScript

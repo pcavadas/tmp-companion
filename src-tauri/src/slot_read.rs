@@ -256,7 +256,7 @@ mod tests {
         ] {
             assert_eq!(unread.skip_kind(), SkipKind::PresetUnreadable, "{unread:?}");
         }
-        // The text stays for the log, and the old `String` callers still get it.
+        // The text stays for the log, and `String` callers still get it.
         assert_eq!(String::from(cut(&["ftsw"])), "cut");
     }
 

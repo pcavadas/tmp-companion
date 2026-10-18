@@ -1,21 +1,25 @@
 #!/usr/bin/env node
 // check-docs.mjs — the docs link gate behind scripts/check-docs.sh (run it through that wrapper).
 //
-// Checks every tracked file, no network:
+// Checks every tracked file, no network. Only tracked files are valid targets:
 //   1. Markdown links `[x](path#anchor)` and reference definitions in *.md: the target exists
 //      (relative to the linking file) and, for a *.md target, the anchor is a GitHub slug of
 //      one of its headings (duplicate headings get -1, -2 …; `<a id|name>` anchors count).
-//      Links inside fenced code blocks and http(s)/mailto links are ignored.
-//   2. Path mentions ending in `.md` (optionally `#anchor`), backticked or bare, in *.md prose
-//      and in the comments and strings of code, scripts, workflows and skill frontmatter: the
-//      file exists (resolved against the repo root, then the mentioning file's directory,
-//      then as the tail of a tracked path) and the anchor exists.
+//      Links inside fenced code blocks and http(s)/mailto links are ignored. In docs/*.html,
+//      relative `href`/`src` values and `github.com/<owner>/tmp-companion/blob|tree/<ref>/…`
+//      links into the repo get the same check.
+//   2. Path mentions ending in `.md` (optionally `#anchor`), backticked, bold or bare, in *.md
+//      prose, in the comments and strings of code, scripts, workflows and skill frontmatter,
+//      and in *.json, *.tsv and docs/*.html: the file exists (resolved against the repo root,
+//      then the mentioning file's directory, then as the tail of a tracked path) and the
+//      anchor exists.
 //   3. `--strict` (report-only, never changes the exit code): stale-wording ban list in prose
 //      and comments — firmware 1.8.45 mentions, `#NNN` issue references in comments, and
 //      plan labels such as `R5` or `AC3`.
 //
-// `--staged` (the pre-commit hook) reports only failures in staged files, unless the
-// commit deletes or renames a file, which can break links anywhere: then the whole tree.
+// `--staged` (the pre-commit hook) reads every file from the index — the bytes the commit
+// will hold — and reports only failures in staged files, unless the commit deletes or
+// renames a file, which can break links anywhere: then the whole tree.
 //
 // Prints `file:line: message` per failure and exits 1 on any failure from checks 1–2.
 // Plain ESM on node builtins, so `node` or `bun` runs it unchanged.
@@ -24,12 +28,13 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 
 const strict = process.argv.includes("--strict");
+const fromIndex = process.argv.includes("--staged");
 const git = (...args) =>
   execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 << 20 });
 process.chdir(git("rev-parse", "--show-toplevel").trim());
 // null = report every file; otherwise only these.
 let only = null;
-if (process.argv.includes("--staged")) {
+if (fromIndex) {
   const staged = (filter) =>
     git(
       "diff",
@@ -66,9 +71,9 @@ const ls = (args) =>
   git("ls-files", "-z", ...args)
     .split("\0")
     .filter(Boolean);
-const tracked = ls([]).filter((f) => existsSync(f));
-// Targets may be tracked or new-but-unignored; only tracked files are scanned.
-const known = new Set([...tracked, ...ls(["--others", "--exclude-standard"])]);
+// The index under --staged; otherwise the tracked files present in the working tree.
+const tracked = fromIndex ? ls([]) : ls([]).filter((f) => existsSync(f));
+const known = new Set(tracked);
 const dirs = new Set();
 for (const f of known) {
   let d = path.posix.dirname(f);
@@ -85,6 +90,41 @@ for (const f of known) {
 }
 const isFile = (p) => known.has(p);
 const isDir = (p) => p === "" || p === "." || dirs.has(p);
+
+// Under --staged, the index copy of every tracked text file (one `git cat-file --batch`).
+const SCANNED = /\.(md|rs|ts|tsx|mjs|js|sh|yml|yaml|py|toml|json|tsv|html)$/;
+const MAX_BYTES = 4 << 20;
+const indexText = new Map();
+if (fromIndex) {
+  const blobs = git("ls-files", "-s", "-z")
+    .split("\0")
+    .filter(Boolean)
+    .map((e) => /^(\d+) ([0-9a-f]+) \d+\t(.*)$/s.exec(e))
+    .filter((m) => m && m[1] !== "160000" && SCANNED.test(m[3]));
+  const out = execFileSync("git", ["cat-file", "--batch"], {
+    input: blobs.map((m) => m[2]).join("\n") + "\n",
+    maxBuffer: 256 << 20,
+  });
+  let pos = 0;
+  for (const m of blobs) {
+    const nl = out.indexOf(10, pos);
+    const size = Number(out.toString("latin1", pos, nl).split(" ")[2]);
+    pos = nl + 1;
+    if (size <= MAX_BYTES)
+      indexText.set(m[3], out.toString("utf8", pos, pos + size));
+    pos += size + 1;
+  }
+}
+// A file's text (index copy under --staged), or null when unreadable or over MAX_BYTES.
+function readText(file) {
+  if (fromIndex) return indexText.get(file) ?? null;
+  try {
+    if (statSync(file).size > MAX_BYTES) return null;
+    return readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
 
 const failures = [];
 const warnings = [];
@@ -144,12 +184,8 @@ function anchorsOf(file) {
   if (anchorCache.has(file)) return anchorCache.get(file);
   const set = new Set();
   const seen = new Map();
-  let text = "";
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    /* missing target: reported by the caller */
-  }
+  // A missing target is reported by the caller.
+  const text = readText(file) ?? "";
   for (const { l, code, front } of mdLines(text)) {
     if (code || front) continue;
     const h = /^\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(l);
@@ -216,10 +252,10 @@ function checkLink(file, line, raw) {
 }
 
 // ── 2. .md path mentions ──────────────────────────────────────────────────
-// No path or template char may precede a mention (so `/abs/x.md`, `${d}/x.md`, `*.md` and
-// `~/x.md` are skipped), and no word char may follow `.md`.
+// No path or template char may precede a mention (so `/abs/x.md`, `${d}/x.md`, `*x.md` and
+// `~/x.md` are skipped), and no word char may follow `.md`. Bold `**x.md**` is a mention.
 const MENTION =
-  /(?<![\w./\-$}{*%~\\])((?:\.{1,2}\/)*(?:[\w.-]+\/)*[\w.-]*\w\.md)(?![\w-])(?:#([\w-]+))?/g;
+  /(?<![\w./\-$}{%~\\])(?<!(?<!\*)\*)((?:\.{1,2}\/)*(?:[\w.-]+\/)*[\w.-]*\w\.md)(?![\w-])(?:#([\w-]+))?/g;
 
 function resolveMention(file, p) {
   const here = path.posix.dirname(file);
@@ -283,21 +319,33 @@ function commentOf(ext, l) {
   return i >= 0 ? l.slice(i + 2) : "";
 }
 
+// ── docs/*.html links ─────────────────────────────────────────────────────
+const ATTR = /\b(?:href|src)\s*=\s*["']([^"']*)["']/gi;
+const REPO_URL =
+  /^https:\/\/github\.com\/[^/]+\/tmp-companion\/(?:blob|tree)\/[^/]+\/([^?#]*)(#.*)?$/;
+function checkHtmlLinks(file, line, l) {
+  for (const [, v] of l.matchAll(ATTR)) {
+    const repo = REPO_URL.exec(v);
+    if (repo) checkLink(file, line, `/${repo[1]}${repo[2] ?? ""}`);
+    else if (!v.startsWith("#")) checkLink(file, line, v);
+  }
+}
+
 // ── scan ──────────────────────────────────────────────────────────────────
 const CODE_EXT = /^(rs|ts|tsx|mjs|js|sh|yml|yaml|py|toml)$/;
+const DATA_EXT = /^(json|tsv)$/;
 for (const file of tracked) {
   const ext = path.posix.extname(file).slice(1);
   const isMd = ext === "md";
-  if ((!isMd && !CODE_EXT.test(ext)) || file === "scripts/check-docs.mjs")
+  const isHtml = ext === "html" && file.startsWith("docs/");
+  if (
+    (!isMd && !isHtml && !CODE_EXT.test(ext) && !DATA_EXT.test(ext)) ||
+    file === "scripts/check-docs.mjs"
+  )
     continue;
   if (only && !only.has(file)) continue;
-  let text;
-  try {
-    if (statSync(file).size > 4 << 20) continue;
-    text = readFileSync(file, "utf8");
-  } catch {
-    continue;
-  }
+  const text = readText(file);
+  if (text === null) continue;
   if (isMd) {
     mdLines(text).forEach(({ l, code }, i) => {
       // Link syntax is checked outside fenced code only; a fence's bare paths still count.
@@ -312,8 +360,9 @@ for (const file of tracked) {
     });
   } else {
     text.split("\n").forEach((l, i) => {
+      if (isHtml) checkHtmlLinks(file, i + 1, l);
       checkMentions(file, i + 1, l);
-      if (strict) {
+      if (strict && CODE_EXT.test(ext)) {
         const c = commentOf(ext, l);
         if (c) checkBans(file, i + 1, c);
       }

@@ -217,7 +217,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
 ) -> Result<leveller::BatchLevelRun<leveller::FootswitchLevelResult>, AppError> {
     // Taken first, so a detach anywhere in the run re-labels a failure as a lost connection.
     let watch = DetachWatch::start();
-    // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
+    // Pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
     // before anything touches the device — see `scene_discard_guard`'s doc
     // (`level_scenes.rs`).
     scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())
@@ -1074,15 +1074,15 @@ mod tests {
         assert_eq!(verdicts, [Some(true), Some(true), None, None]);
     }
 
-    // BUG→GATE: a scene-context read that requires only `ftsw` leaves `scenes` — the section
+    // A scene-context read that requires only `ftsw` leaves `scenes` — the section
     // the ANSWER comes from — unnamed. A field-8 read cut mid-`scenes` keeps `ftsw`, so the
     // completeness check passes on a body with no scene overlays at all and every switch
     // silently reports "no scene enables me" → base context for the whole preset, when the
     // complete body is one backup read away. Reverting the const to `["ftsw"]` fails here.
     //
     // The assertion walks the DOCUMENT, not the const: for every section whose removal
-    // changes the answer, the const must name it. Iterating the const instead would be the
-    // blind spot that let this ship — a reverted `["ftsw"]` would loop over `ftsw` alone,
+    // changes the answer, the const must name it. Iterating the const instead would be a
+    // blind spot — a reverted `["ftsw"]` would loop over `ftsw` alone,
     // find it load-bearing, and pass while `scenes` went unrequired.
     #[test]
     fn the_scene_context_read_requires_every_section_its_answer_is_derived_from() {

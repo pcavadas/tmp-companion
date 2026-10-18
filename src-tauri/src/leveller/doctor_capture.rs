@@ -483,11 +483,10 @@ mod onset_gate {
         cap
     }
 
-    // BUG→GATE (#247): a wire chain (the empty preset re-amps as clean
-    // passthrough) must draw no finding at any playback level. On the old
-    // constants it read as a sick preset, because the target and gates came
-    // from a stimulus the shipped one no longer is. Runs the SHIPPED humbucker
-    // through the production analysis path, stereo, at the HW inject latency.
+    // A wire chain (the empty preset re-amps as clean passthrough) must draw no
+    // finding at any playback level: the target and gates must match the
+    // SHIPPED stimulus. Runs the shipped humbucker through the production
+    // analysis path, stereo, at the HW inject latency.
     #[test]
     fn a_wire_chain_through_the_shipped_stimulus_draws_no_finding() {
         let path = format!(
@@ -523,9 +522,8 @@ mod onset_gate {
         assert!(keys.is_empty(), "a wire chain diagnosed {keys:?}");
     }
 
-    // BUG→GATE (#249): the body PSD spanned the tail and the stimulus PSD the
-    // pad, so the two Welch grids sat 2.34 hops apart and a wire chain's
-    // transfer rippled by up to ±1.9 dB. On one span and one grid it is flat.
+    // The body PSD and the stimulus PSD must share one span and one Welch grid:
+    // grids 2.34 hops apart ripple a wire chain's transfer by up to ±1.9 dB.
     #[test]
     fn a_wire_chain_transfer_is_flat_across_the_scan_range() {
         let stim = synthetic_padded_stim();
@@ -547,9 +545,9 @@ mod onset_gate {
         assert!(worst < 0.05, "wire-chain transfer ripples {worst:.3} dB");
     }
 
-    // BUG→GATE (#259): the played pad sat inside the body RMS (3 s of signal
-    // averaged over 3.2 s), reading the body 0.28 dB low and the tail that
-    // much wetter. The body window now starts at the signal.
+    // The body window starts at the signal: a pad inside the body RMS (3 s of
+    // signal averaged over 3.2 s) reads the body 0.28 dB low and the tail that
+    // much wetter.
     #[test]
     fn the_pad_stays_out_of_the_body_window() {
         let stim = synthetic_padded_stim();
@@ -574,11 +572,9 @@ mod onset_gate {
         .expect("profile")
     }
 
-    // BUG→GATE (#250): the Doctor analysed the sample average of L and R, so a
-    // dual-mono chain read right but a decorrelated stereo tail lost 3 dB.
-    // Spectra and energies now combine the channels in the power domain:
-    // dual mono is bit-identical to mono, and a decorrelated tail keeps its
-    // full power.
+    // Spectra and energies combine the channels in the power domain: dual mono
+    // is bit-identical to mono, and a decorrelated stereo tail keeps its full
+    // power (a sample average of L and R loses it 3 dB).
     #[test]
     fn stereo_combines_in_power_and_dual_mono_is_unchanged() {
         let stim = synthetic_padded_stim();

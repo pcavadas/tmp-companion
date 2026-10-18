@@ -38,7 +38,7 @@
 //! Two proven traps drove the `blockOverrides` shape:
 //! - `level` on `ACD_TMRumbleV3` is an amp KNOB, not a level control — sweeping
 //!   it for loudness is wrong even though `level` is a `level_linear` default
-//!   everywhere else (`notes/leveling.md`).
+//!   everywhere else (`notes/leveling-scenes.md#amp-choice`).
 //! - Generic names collide across block families: `gain` means drive on most
 //!   amps/pedals, but on `ACD_Boost` it is measured RAW dB (HW): the block's base
 //!   value 2.5 is +2.5 dB, writes of 0/2.5/5/7 were all accepted by `changeParameter`, and the captured loudness

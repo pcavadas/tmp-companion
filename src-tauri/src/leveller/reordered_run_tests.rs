@@ -162,7 +162,7 @@ fn the_clamp_taxonomy_names_one_cause_per_shape() {
     );
 }
 
-// ⟦A1⟧ AN AUTHOR-MUTED BASE LANE IS NOT A FLOOR PIN. A preset whose base carries a muted
+// AN AUTHOR-MUTED BASE LANE IS NOT A FLOOR PIN. A preset whose base carries a muted
 // amp (`outputLevel = 0`, the player's own choice) has a lane sitting at/below
 // `BASE_FADER_FLOOR` in EVERY solve — `joint_k_floor` deliberately lets it ride and the
 // joint factor never moves it. A hold that then stalls MID-RANGE (the bounded secant out
@@ -191,7 +191,8 @@ fn a_muted_base_lane_does_not_turn_a_mid_range_stall_into_a_floor_pin() {
         ClampKind::PartialTrade,
         "a mid-range stall backs the pair out; it did not run out of base fader"
     );
-    // The GENUINE floor pin still reports itself — the fix must not blind the one retry.
+    // The GENUINE floor pin still reports itself — the muted-lane rule must not blind the
+    // one retry.
     let floored = joint_levels_pinned(
         &[0.0, BASE_FADER_FLOOR],
         &base,

@@ -47,7 +47,8 @@ FAIL=0
 say() { printf '%s\n' "$*"; }
 ok()   { PASS=$((PASS+1)); say "  ✓ $1"; }
 bad()  { FAIL=$((FAIL+1)); say "  ✗ $1"; }
-# A gap so the previous session's handle closes (0xe00002c5 = another handle holds the seize).
+# A settle gap between device processes: macOS can release an exited process's exclusive
+# HID handle late, and the next open then fails 0xe00002c5 (another handle holds the seize).
 gap()  { sleep 2; }
 
 say "=== TMP Companion — hardware e2e (non-destructive) ==="

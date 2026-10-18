@@ -1,6 +1,6 @@
 // src/__tests__/resultsModel.test.ts — what Doctor's Results page says, pure: the flat
 // worst-first list and its groups, the titles (a stopped or partly failed check never
-// claims "nothing to change in these sounds" — #190), every caption chosen by typed
+// claims "nothing to change in these sounds"), every caption chosen by typed
 // kind, the "Scenes" and "Footswitches" rows' words, and the "To sound like …" step (the
 // EQ the chain already has, a new one, or — with no CPU room — one already there).
 

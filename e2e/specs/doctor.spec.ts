@@ -176,7 +176,7 @@ test.describe("Doctor — select, check, results", () => {
   // scale_stimulus scales body and preamble uniformly, so coverage is level-invariant
   // offline however quiet the scene. This row is backend/online only.
 
-  // COVERAGE row 47 — a mid-run Stop (#190). Every capture is held for a minute, so the
+  // COVERAGE row 47 — a mid-run Stop. Every capture is held for a minute, so the
   // only way to reach Results inside the 15 s below is a cancel served WHILE
   // `doctor_check` is still running — the bridge's side lane (`e2e_server.rs`
   // `e2e_is_side_lane`); queued behind the run it would land minutes later. The sounds

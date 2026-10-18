@@ -1,4 +1,4 @@
-// PresetRow — the memo contract behind the ~500-row preset list (#315).
+// PresetRow — the memo contract behind the ~500-row preset list.
 //
 // Every tick builds a fresh `sel` Set, and PresetList hands that whole Set to every row.
 // `PresetRow` is `memo`'d with `presetRowPropsEqual`, which compares `sel` only on the

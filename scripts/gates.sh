@@ -8,9 +8,9 @@
 #
 #   scripts/gates.sh                 run the gates for the current change scope,
 #                                    write a green stamp on full pass
-#   scripts/gates.sh --check         exit 0 iff a green stamp matches this tree,
-#                                    else non-zero (used by the pre-push hook +
-#                                    the Claude gh-pr PreToolUse hook)
+#   scripts/gates.sh --check         exit 0 iff the docs links are clean AND a green
+#                                    stamp matches this tree, else non-zero (used by
+#                                    the pre-push hook + the Claude gh-pr PreToolUse hook)
 #   scripts/gates.sh --check-online  exit 0 iff an ONLINE stamp matches this tree
 #                                    AND covers every spec in the canonical online
 #                                    set (see --online-spec-set)
@@ -54,6 +54,8 @@
 #                                          prose is outside the stamp key, so a
 #                                          stamp cannot vouch for it
 #   docs-only (*.md, docs/, notes/)     → nothing more
+#   e2e/fixtures/COVERAGE.md            → cargo test --lib fixture_gates (it parses
+#                                          the file: code, not prose)
 #   frontend  (src/, e2e/, *.ts, *.tsx, → bun lint + typecheck + test + fmt-check
 #              *.config.*, tsconfig*.json,
 #              package.json, index.html)
@@ -477,14 +479,17 @@ want_frontend=0
 want_rust=0
 want_e2e=0
 want_shell=0
+want_coverage=0
 
 while IFS= read -r f; do
   if [ -z "$f" ]; then continue; fi
   case "$f" in
+    e2e/fixtures/COVERAGE.md)    docs_only=0; want_coverage=1 ;;  # parsed by fixture_gates
     *.md | docs/* | notes/*) ;;                # docs — no gate on their own
     *) docs_only=0 ;;
   esac
   case "$f" in
+    e2e/fixtures/COVERAGE.md)    ;;
     src-tauri/*)                 want_rust=1; want_e2e=1 ;;
     src/* | e2e/*)               want_frontend=1; want_e2e=1 ;;
     scripts/e2e.sh)              want_e2e=1 ;;
@@ -629,6 +634,9 @@ if [ "$want_rust" -eq 1 ]; then
   else
     printf 'gates: meter parity (ffmpeg) skipped — ffmpeg is not on PATH\n'
   fi
+elif [ "$want_coverage" -eq 1 ]; then
+  ensure_dist
+  run_gate "fixture gates (COVERAGE.md)" sh -c 'cd src-tauri && cargo test --lib fixture_gates'
 fi
 
 if [ -n "$fe_pid" ]; then

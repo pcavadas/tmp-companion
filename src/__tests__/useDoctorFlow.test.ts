@@ -1,4 +1,4 @@
-// src/__tests__/useDoctorFlow.test.ts — the Doctor run's ONE status (#290). A
+// src/__tests__/useDoctorFlow.test.ts — the Doctor run's ONE status. A
 // `doctor_check` that REJECTS must land `failed` with the backend's text, never
 // the `stopped` a user Stop produces; a resolved run is `done` or `stopped` off
 // its own `stopped` flag; Stop acknowledges at once and its cancel never leaks an

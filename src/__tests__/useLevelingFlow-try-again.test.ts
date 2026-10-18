@@ -2,10 +2,9 @@
 // (look B): it goes straight to the run with the same settings — no Set up, no backup
 // tick — and comes back to the same Summary with those sounds' rows updated.
 //
-// BUG→GATE #284, retargeted: "Run again" / "Re-run off target…" reopened Set up with every
-// row reset to the FIRST target and FIRST instrument, so one Start re-leveled a Lead sound
-// at Rhythm. Try again never reopens Set up: each sound runs again with exactly the
-// instrument, target, knob, scene and two-amp choice the first run used.
+// Try again never reopens Set up, so no row resets to the FIRST target and FIRST
+// instrument (one Start re-leveling a Lead sound at Rhythm): each sound runs again with
+// exactly the instrument, target, knob, scene and two-amp choice the first run used.
 //
 // Also pinned here: a Stop lands on the Summary by itself (no "Leveling stopped" screen and
 // no Continue), the Summary's footswitch scene pick rides the Try again, a scene tried

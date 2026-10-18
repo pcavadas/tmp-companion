@@ -142,8 +142,8 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
   });
 
   // COVERAGE row 2 — the base solve that CLAMPS (403 at Lead).
-  // (b) The clamp loop (BUG→GATE, the "clamp loop unresolvable" report; journey
-  // "clamped at a loud target → resolves at a quieter one"). 403's Base at Lead (-19)
+  // (b) The clamp loop (journey "clamped at a loud target → resolves at a quieter one").
+  // 403's Base at Lead (-19)
   // clamps at its -20 ceiling: the Summary says so and what to change, with no button and
   // no Try again (running it again can't help). The way to a quieter target is Done,
   // the list and Set up — and at Crunch (-21) it levels.
@@ -323,7 +323,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expectReampBalanced(page, reampBase);
   });
 
-  // #283: a tab switch must not unmount the run, leaving the loop writing to the unit with
+  // A tab switch must not unmount the run, leaving the loop writing to the unit with
   // no reachable Stop. The run lives in a module store, so leaving the Level tab and coming
   // back shows the same run, and its Stop still ends it.
   //

@@ -22,10 +22,10 @@ function balance(db: number[]): number[] {
 }
 
 describe("matchDeltas", () => {
-  // BUG→GATE (#254): two sounds identical except the reference has 30 dB more
-  // Air. The all-band mean moved 5 dB, so every other band read a −5 dB delta
-  // and the card prescribed five cuts nobody asked for. Only the Air move (and
-  // the too-big-for-EQ advisory) may remain.
+  // Two sounds identical except the reference has 30 dB more Air: the all-band
+  // mean moves 5 dB, so a naive delta reads −5 dB on every other band and
+  // prescribes five cuts nobody asked for. Only the Air move (and the
+  // too-big-for-EQ advisory) may remain.
   it("prescribes only the Air move when only Air differs", () => {
     const body = [-5, -2, -5, 13, 13.5];
     const sound = balance([...body, -40]);

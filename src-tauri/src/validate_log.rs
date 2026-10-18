@@ -457,7 +457,7 @@ mod tests {
         // Finite but flat and DOWN AT THE FLOOR: the failed-inject signature, hard FAIL.
         assert_eq!(engaged_verdict(&flat(-70.0)), "floor");
         assert_eq!(engaged_verdict(&loud(-17.0, -12.0)), "engaged");
-        // BUG→GATE: a healthy capture can have a short-term spread under 0.5 LU; it is
+        // A healthy capture can have a short-term spread under 0.5 LU; it is
         // still ENGAGED, never floor_suspect.
         assert_eq!(engaged_verdict(&loud(-17.0, -16.8)), "engaged");
         // Flat but LOUD: a floor read at leveling loudness (the floor scales with

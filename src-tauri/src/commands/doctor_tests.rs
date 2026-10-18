@@ -1,9 +1,9 @@
-//! Unit tests for the Doctor command layer (moved from lib.rs `audition_tests`).
+//! Unit tests for the Doctor command layer.
 use super::*;
 use crate::doctor;
 use crate::error::SkipKind;
 
-/// BUG→GATE (the silent-wrong-diagnosis class): a large preset's field-8 read is cut
+/// The silent-wrong-diagnosis class: a large preset's field-8 read is cut
 /// before its `ftsw` section, so the isolation fallback has no footswitch assignments.
 /// A FOOTSWITCH sound is DEFINED by those assignments — with none, the capture engages
 /// nothing and diagnoses the base sound under the switch's name. That sound must be
@@ -225,11 +225,10 @@ fn doctor_force_bypass_null_ftsw_degrades_to_empty() {
 
 // ── base_isolation_or_refuse: the shared probe/production "read → refuse-or-force" step ──
 //
-// Phase 5 isolation-parity fix (2026-08-31 bisect): `probe --levelpreset`'s Base leg used
-// to pass an empty `&[]` force list, measuring "base as saved" instead of production's
-// isolated base — a divergence that solved C=-11.95 as-saved vs production's C≈-28.2 on
-// "Plumes+BD2+OCD". Both paths now share ONE fn, `base_isolation_or_refuse`; these two
-// gates pin that sharing can't silently regress.
+// `probe --levelpreset`'s Base leg and production share ONE fn, `base_isolation_or_refuse`:
+// a Base leg with an empty `&[]` force list measures "base as saved", not the isolated base
+// — C=-11.95 vs production's C≈-28.2 on "Plumes+BD2+OCD" (2026-08-31 bisect). These two
+// gates pin the sharing.
 
 #[test]
 fn base_isolation_or_refuse_force_list_matches_doctor_force_bypass_directly() {
@@ -451,9 +450,8 @@ fn capture_suspect_floor_check_disarms_on_a_near_stationary_stimulus() {
     assert_eq!(capture_suspect(true, true, 0.01, 0.2), None);
 }
 
-// BUG→GATE (#246): an un-aligned onset used to only WARN, then every rule ran on the
-// whole buffer with every band covered. It must never reach the diagnosis, even when
-// the floor check is disarmed.
+// An un-aligned onset must never reach the diagnosis — not even as a warning that lets
+// every rule run on the whole buffer — even when the floor check is disarmed.
 #[test]
 fn capture_suspect_refuses_an_unaligned_onset() {
     assert_eq!(
@@ -467,8 +465,8 @@ fn capture_suspect_refuses_an_unaligned_onset() {
     assert_eq!(CaptureSuspect::NoOnset.into_error(), LevelError::FloorRead);
 }
 
-// BUG→GATE (#246): a capture that ends before the body did read the −80 dB "bone
-// dry" tail sentinel and silently dropped a wet preset's `washed` verdict.
+// A capture that ends before the body is refused: diagnosed, it reads the −80 dB "bone
+// dry" tail sentinel and silently drops a wet preset's `washed` verdict.
 #[test]
 fn capture_suspect_refuses_a_capture_with_no_tail() {
     assert_eq!(
@@ -516,7 +514,7 @@ fn a_stationary_floor_capture_is_refused_not_diagnosed() {
     );
 }
 
-// --- skipped_band_count: fix P3-4, SNR-gate transparency ---
+// --- skipped_band_count: SNR-gate transparency ---
 
 #[test]
 fn skipped_band_count_counts_false_entries() {
@@ -532,22 +530,20 @@ fn skipped_band_count_absent_coverage_reads_zero() {
     assert_eq!(skipped_band_count(None), 0);
 }
 
-// --- resolve_sound_isolation: fix P3-1, scenes ride their saved overlay state ---
+// --- resolve_sound_isolation: scenes ride their saved overlay state ---
 
 #[test]
 fn resolve_sound_isolation_never_writes_for_a_scene_sound() {
-    // A scene sound must get NO force-bypass write — graph present (the bug: it
-    // used to route through `derived_force_bypass` with the base-forcing shape,
-    // `fs=None`, identical to the base isolation) AND graph absent (already
-    // correct pre-fix, must stay so). Base/footswitch are untouched by this fix
-    // and are covered by the `doctor_force_bypass`/`derived_force_bypass` tests
-    // elsewhere in this file.
+    // A scene sound must get NO force-bypass write — graph present (never
+    // `derived_force_bypass`'s base-forcing shape, `fs=None`, the base isolation)
+    // AND graph absent. Base/footswitch are covered by the
+    // `doctor_force_bypass`/`derived_force_bypass` tests elsewhere in this file.
     let (preset, infos) = iso_ab_fixture();
     let nodes = nodes_from(&preset);
     let mut cache = std::collections::HashMap::new();
     let iso = resolve_sound_isolation(&nodes, &infos, &[], Some(0), None, ListIndex(5), &mut cache);
     assert!(iso.bypass.is_empty() && iso.params.is_empty());
-    // Graph absent too — the pre-existing empty-nodes behavior for scenes.
+    // Graph absent too — the empty-nodes behavior for scenes.
     let iso = resolve_sound_isolation(&[], &infos, &[], Some(0), None, ListIndex(5), &mut cache);
     assert!(iso.bypass.is_empty() && iso.params.is_empty());
 }
@@ -577,8 +573,8 @@ fn derived_param_writes_matches_the_live_engine_on_every_sound() {
             .unwrap_or_default();
         assert_eq!(derived, live, "mismatch for footswitch={case:?}");
     }
-    // And the param-only switch actually yields its engaged write — the case the
-    // Doctor used to capture as the base sound.
+    // And the param-only switch actually yields its engaged write — without it the
+    // Doctor captures the base sound.
     assert_eq!(
         footswitch::derived_param_writes(&infos, Some(2)),
         vec![("G1".into(), "MOD".into(), "gain".into(), 0.9_f32)]
@@ -818,8 +814,8 @@ fn base_and_scenes() -> Vec<(DoctorInput, String, doctor::StimulusKind)> {
     ]
 }
 
-/// BUG→GATE #190: Stop before the first capture. Every sound is `unrun` with no loudness —
-/// before the fix each one read 0.0 LUFS with no error and rendered as "All clear".
+/// Stop before the first capture: every sound is `unrun` with no loudness — never a
+/// 0.0 LUFS reading with no error that renders as "All clear".
 #[test]
 fn a_run_stopped_before_its_first_capture_reports_every_sound_unrun() {
     let items = base_and_scenes();
@@ -838,9 +834,9 @@ fn a_run_stopped_before_its_first_capture_reports_every_sound_unrun() {
     assert_eq!(v["integratedLufs"], serde_json::Value::Null);
 }
 
-/// BUG→GATE #190: Stop between the base and its scenes. The base is measured at −20 LUFS;
-/// the scenes were never captured. Before the fix they entered scene consistency as 0 LUFS
-/// readings — a fabricated +20 dB jump.
+/// Stop between the base and its scenes. The base is measured at −20 LUFS; the scenes
+/// were never captured, so they stay out of scene consistency — as 0 LUFS readings they
+/// would fabricate a +20 dB jump.
 #[test]
 fn a_run_stopped_between_base_and_scenes_keeps_unrun_scenes_out_of_consistency() {
     let items = base_and_scenes();
@@ -1035,9 +1031,9 @@ fn the_fixture_switches_are_selectable_in_the_ui() {
     }
 }
 
-/// BUG→GATE #191: a footswitch that turns on a saved-bypassed reverb is captured WET, so it
-/// gets the full wash tail and can be diagnosed `washed`. Before the fix the tail and the
-/// diagnosis read the base graph (reverb bypassed): a short tail and `washed` gated off.
+/// A footswitch that turns on a saved-bypassed reverb is captured WET, so it gets the
+/// full wash tail and can be diagnosed `washed` — never the base graph's (reverb
+/// bypassed) short tail with `washed` gated off.
 #[test]
 fn a_footswitch_enabling_a_bypassed_reverb_is_diagnosed_wet() {
     let (input, graph) = fixture_sound(None, Some(0));
@@ -1115,7 +1111,7 @@ fn a_non_allowlisted_param_jump_does_not_leak_into_params() {
     assert!(!amp.params.contains_key("gain"), "{:?}", amp.params);
 }
 
-/// BUG→GATE #191 (scene half): scene 0's saved overlay turns the plate on and sets its
+/// Scenes too: scene 0's saved overlay turns the plate on and sets its
 /// mix, so the scene sound is diagnosed wet with the overlay's mix. Scene 1 has no overlay
 /// and stays on the base graph.
 #[test]

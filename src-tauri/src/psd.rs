@@ -633,9 +633,9 @@ mod tests {
         (0..n).map(|_| rng.next_bipolar()).collect()
     }
 
-    // BUG→GATE: band edges that land exactly on a bin (3 and 6 kHz at
-    // 48 kHz / 8192 points) were counted in both adjacent bands. Contiguous
-    // half-open bands must sum to the full-range power, every bin once.
+    // Band edges that land exactly on a bin (3 and 6 kHz at 48 kHz / 8192
+    // points) must count in ONE band: contiguous half-open bands sum to the
+    // full-range power, every bin once.
     #[test]
     fn contiguous_bands_count_every_bin_once() {
         let p = welch_psd(&white_noise(48_000, 9), RATE);
@@ -927,7 +927,7 @@ mod tests {
             .collect()
     }
 
-    // BUG→GATE: where the stimulus dips, the capture holds mostly the
+    // Where the stimulus dips, the capture holds mostly the
     // chain's own noise, so the plain transfer reads tall fake peaks there.
     // The observable transfer bridges those bins; a real peaking EQ survives.
     #[test]

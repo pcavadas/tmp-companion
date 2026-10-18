@@ -66,7 +66,7 @@ beforeEach(() => {
 function renderView(connected: boolean) {
   const r = renderWithTheme(<LevelView connected={connected} />);
   // The backup scan is App-owned in production; seed it here when connected so the
-  // view's scene/block data populates (the view itself no longer triggers the scan).
+  // view's scene/block data populates (the view itself never triggers the scan).
   if (connected) void ensureLibraryScan();
   return r;
 }
@@ -221,7 +221,7 @@ describe("LevelView — choosing on the list", () => {
     resetLiveDevice();
   });
 
-  // BUG→GATE: Select all chooses only the filtered presets, never the whole library.
+  // Select all chooses only the filtered presets, never the whole library.
   it("Select all chooses only the presets the filter shows", async () => {
     mockThreePresets();
     renderView(true);
@@ -286,7 +286,7 @@ describe("LevelView — choosing on the list", () => {
       screen.getByRole("button", { name: /^level 1 sound$/i }),
     ).toBeEnabled();
     expect(screen.getByText("1 preset")).toBeInTheDocument();
-    // No loudness numbers on the list: the old targets readout is gone.
+    // No loudness numbers on the list: no targets readout.
     expect(screen.queryByText(/Targets/)).toBeNull();
   });
 
@@ -790,8 +790,8 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(fired("level_scenes_apply_batched")).toBe(true); // FS scene level
     // Adjacent same-preset scene rows BATCH into ONE backend call (one prepass, one
     // runner) REGARDLESS of per-scene target — each job carries its own targetLufs, so
-    // a mixed-target preset no longer splits into several prepasses. Per-scene calls
-    // re-loaded the preset each time, flashing the unit back to base twice per scene.
+    // a mixed-target preset never splits into several prepasses. A per-scene call
+    // re-loads the preset, flashing the unit back to base twice per scene.
     const sceneCalls = callsOf("level_scenes_apply_batched");
     expect(sceneCalls).toHaveLength(1);
     const sceneJobs = sceneCalls[0].jobs;
@@ -845,7 +845,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(fired("level_scenes_apply_batched")).toBe(true); // FS scenes re-measured live
   });
 
-  // BUG→GATE (#241): a wide dynamics spread is not a measurement problem, so it does not
+  // A wide dynamics spread is not a measurement problem, so it does not
   // flag the row "Check by ear".
   it("large dynamics spread → no 'Check by ear' on the Summary", async () => {
     mockLevelingFixture({ spreadLu: 8.2 });
@@ -920,8 +920,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     ).toBeInTheDocument();
   });
 
-  // BUG→GATE ("clamp loop unresolvable"): a sound
-  // clamped at full volume says so and what to change, with NO button (running it again
+  // A sound clamped at full volume says so and what to change, with NO button (running it again
   // can't help) and no Try again; the way to a quieter target is Done, the list and Set
   // up — and there it resolves.
   it("clamped at a loud target: says so with no button, then levels at a quieter one", async () => {

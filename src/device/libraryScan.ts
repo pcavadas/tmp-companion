@@ -346,7 +346,7 @@ export async function ensureLibraryScan(): Promise<void> {
   } finally {
     // Only the CURRENT scan settles. A reset (detach) already cleared state + the
     // listener; settling `ready` here would strand a stale scan and double-free the
-    // listener (the old bug: unlistenProgress() on a nulled ref threw).
+    // listener (unlistenProgress() on a nulled ref throws).
     if (gen === generation) {
       if (unlistenProgress) {
         unlistenProgress();

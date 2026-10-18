@@ -468,9 +468,9 @@ fn leveled_values(doc: &serde_json::Value) -> std::collections::HashMap<String, 
 // before it returns.
 
 /// Where the empty-body substitution is written up — quoted in the hard error so the
-/// next encounter starts from the written-up evidence. Section TITLE, not the anchor
-/// slug: the title is what survives a heading reflow.
-const DISCARD_GOTCHA: &str = "notes/device/presets.md — Rejected at load";
+/// next encounter starts from the written-up evidence. A path#anchor, so the docs gate
+/// (scripts/check-docs.sh) fails if the heading moves.
+const DISCARD_GOTCHA: &str = "notes/device/presets.md#rejected-at-load";
 
 /// Does `body` carry the firmware's EMPTY substitute rather than the import? Two
 /// independent signatures, either conclusive on a slot we imported THIS run:
@@ -954,10 +954,10 @@ mod tests {
         assert!(!body_names(named, "E2E Hiwatt 3S"));
     }
 
-    /// BUG→GATE (online e2e): fixture 404's UniVibe `volume` drifted from 0.49
-    /// to its 0.001 floor across runs (each run's footswitch bake lowers it 2 dB and never
-    /// touches `presetLevel`), so the seed kept it resident until its row could only clamp.
-    /// A leveled-value drift must fail the pristine check; the device's own import
+    /// A leveled-value drift must fail the pristine check: each run's footswitch bake lowers
+    /// fixture 404's UniVibe `volume` 2 dB and never touches `presetLevel`, so a seed that
+    /// kept it resident would walk it from 0.49 to its 0.001 floor, where its row can only
+    /// clamp. The device's own import
     /// normalization (parameters dropped, defaulted or rewritten, float re-rounding) must
     /// not.
     #[test]
@@ -1149,7 +1149,7 @@ mod tests {
         ));
     }
 
-    /// BUG→GATE (fw 1.8.58): a rejected import's stored row is the fixture
+    /// A rejected import's stored row (fw 1.8.58) is the fixture
     /// VERBATIM, so every stored-row check passes it; only its first real load shows the
     /// substitute (template `preset_id`, zero blocks, name kept). For every committed
     /// fixture, the load proof must pass the fixture's own working copy and refuse that

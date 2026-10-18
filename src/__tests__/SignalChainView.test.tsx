@@ -184,8 +184,8 @@ describe("SignalChainView — path-template grammar", () => {
 // The label-presence tests above only prove a name appears somewhere in the
 // document — they would NOT catch a lane-swap bug (a block rendered under the
 // wrong OUT/lane), because both labels stay present in the text regardless of
-// which parent they're under. That's exactly the bug class PR #78 fixed
-// (gtrSplit/micSplit lanes bunched onto the wrong side). These assert the
+// which parent they're under — the gtrSplit/micSplit lane-swap class (lanes
+// bunched onto the wrong side). These assert the
 // block actually lives inside its OWN lane row, not just in the document.
 describe("SignalChainView — lane-mapping DOM structure", () => {
   it("gtrSplit: out1/out2 lanes only contain their own group's blocks", () => {

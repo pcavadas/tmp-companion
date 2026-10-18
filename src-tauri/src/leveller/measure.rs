@@ -1167,10 +1167,9 @@ mod floor_guard_tests {
         samples.iter().map(|x| x * g).collect()
     }
 
-    // BUG→GATE (#233): the guard used to read the 3 s short-term spread, which the shipped
-    // stimuli (10 plucks 0.6 s apart) only move by 0.26–0.32 LU — under the 0.30 arming gate
-    // for 7 of 8 of them, and ≈ 0 for all 8 on the Doctor's 3 s slice. Every shipped WAV must
-    // ARM the guard, on both the leveling stimulus and the Doctor slice.
+    // The guard reads the MOMENTARY spread: the shipped stimuli (10 plucks 0.6 s apart) move
+    // the 3 s short-term spread only 0.26–0.32 LU, and ≈ 0 on the Doctor's 3 s slice. Every
+    // shipped WAV must ARM the guard, on both the leveling stimulus and the Doctor slice.
     #[test]
     fn every_shipped_stimulus_arms_the_floor_guard() {
         for (name, stim) in shipped_stimuli() {
@@ -1337,9 +1336,8 @@ mod floor_guard_tests {
         assert_eq!(calls, 1);
     }
 
-    // BUG→GATE (#241): a gate-like capture with WIDER momentary dynamics than the
-    // stimulus is a live read, measured once. The old "a chain cannot expand dynamics"
-    // retry is gone (gates, expanders, swells and tremolo all expand).
+    // A gate-like capture with WIDER momentary dynamics than the stimulus is a live read,
+    // measured once, never retried: gates, expanders, swells and tremolo all expand.
     #[test]
     fn momentary_expansion_is_a_live_read_with_no_retry() {
         let mut calls = 0;
@@ -1356,12 +1354,10 @@ mod floor_guard_tests {
         assert_eq!(calls, 1);
     }
 
-    // BUG→GATE (#175): `is_engaged` used the short-term spread (> 0.5 LU), which a healthy
-    // capture of the old stationary leveling stimulus never reached, so the external judge
-    // stamped `floor_suspect` on every row. A healthy capture of each shipped stimulus at
-    // leveling loudness must read engaged, and so must one whose short-term spread sits
-    // under the old 0.5 LU arm (the gate stays live on the pitched-pluck stimuli, most of
-    // which already read under it).
+    // A healthy capture of each shipped stimulus at leveling loudness must read engaged,
+    // including one whose short-term spread sits under 0.5 LU: `is_engaged` keys on the
+    // momentary spread, and a short-term > 0.5 LU arm would stamp `floor_suspect` on
+    // healthy rows (most pitched-pluck stimuli read under it).
     #[test]
     fn a_healthy_capture_of_every_shipped_stimulus_reads_engaged() {
         let mut under_old_arm = 0;
@@ -1378,7 +1374,7 @@ mod floor_guard_tests {
         );
     }
 
-    // BUG→GATE (#239): a flat-topped capture reads LOW, so no lane may solve from it.
+    // A flat-topped capture reads LOW, so no lane may solve from it.
     #[test]
     fn a_clipped_capture_is_refused_and_a_hot_transient_is_not() {
         let mut clipped = loud(-12.0, 0.2, 5.0);

@@ -200,7 +200,7 @@ pub fn apply_headroom_trade(
         true, // defer: the batch's ONE save persists this with everything else
         true, // verify + bounded-secant correction — the fader is not predictable
         saved,
-        // ⟦4a⟧ THE HOLD'S FLOOR (danger.md: `outputLevel = 0` is deep digital silence) — the
+        // THE HOLD'S FLOOR (danger.md: `outputLevel = 0` is deep digital silence) — the
         // solve that pays for the raise stops at `BASE_FADER_FLOOR`, reported as `TradeFloor`
         // below.
         crate::headroom_trade::BASE_FADER_FLOOR,

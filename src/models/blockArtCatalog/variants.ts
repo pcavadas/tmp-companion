@@ -4,13 +4,11 @@ import type { ArtVariant } from "../../ui/BlockArt";
 // branch on for a treatment the row's icon + tone can't express. Art is selected by
 // this token, NEVER by matching the display caption (`short`) — a caption is copy and
 // can change; a variant is the art contract. `blockArtVariants.test.tsx` pins this
-// table against the caption rules it replaced, row by row.
+// table row by row.
 //
-// `bassman-59` and `muff-rams` have art but no model here: the old caption match for
-// the '59 Bassman (`/59B|59 BASSMAN/`) never fired once captions were normalized to
-// "59 BASS", and no catalogued Big Muff is a Ram's Head. Assigning
-// `ACD_TM59Bassman: "bassman-59"` would give that combo its intended thin frame (an
-// art change, deliberately left out of the like-for-like refactor).
+// `bassman-59` and `muff-rams` have art but no model here: no catalogued Big Muff is a
+// Ram's Head, and `ACD_TM59Bassman` stays unassigned — "bassman-59" would give that
+// combo a thin frame, an art change.
 export const ART_VARIANT: Partial<Record<string, ArtVariant>> = {
   // amps
   ACD_SLO100: "slo100-panel",

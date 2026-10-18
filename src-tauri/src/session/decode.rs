@@ -30,7 +30,7 @@ pub(crate) struct PresetLoadedFields {
 /// Whether `loadScene(n)` is safe on the preset `doc` describes: the base sentinel
 /// ([`BASE_SCENE_SLOT`]) always is; any other index must name one of `doc`'s `scenes[]`.
 /// On a scene-less preset the unit swaps in its EMPTY template (presetError 6, static RE),
-/// and an index past the scenes aborts the device server (static RE).
+/// and an index past the scenes aborts the device server (static RE, likely).
 pub(crate) fn scene_index_ok(doc: &serde_json::Value, n: u32) -> bool {
     n == BASE_SCENE_SLOT
         || doc

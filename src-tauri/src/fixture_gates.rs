@@ -517,7 +517,7 @@ fn fx_edge_keeps_the_eq_ring_and_eight_scenes() {
         );
     }
 
-    // BUG→GATE (user-reported, "Friedman HBE" preset 28): `ACD_Boost` is bypassed in
+    // The user-reported "Friedman HBE" shape: `ACD_Boost` is bypassed in
     // BASE, and scene 3 "Solo" carries a BYPASS-ONLY overlay that flips it on — no
     // footswitch or EXP assign targets it, and every OTHER scene carries no overlay
     // at all — inherits base's bypass. That is exactly
@@ -613,7 +613,7 @@ fn incident_fixtures_pin_their_measurement_shapes() {
             "ACD_CabSimTMS", // appended for the cab rule; nothing upstream moved
         ]
     );
-    // BUG→GATE: each of 405's four drive pedals must author the parameter NAME the
+    // Each of 405's four drive pedals must author the parameter NAME the
     // real hardware actually exposes for that block. HW-confirmed from a
     // `presetDataRequest` (field 8) read of a real "Plumes+BD2+OCD" preset: the block's
     // parameters read `blend, bypass, bypassType, drive, filter, tone, volume` — there
@@ -1416,7 +1416,7 @@ fn every_fixture_footswitch_row_carries_at_most_one_entry() {
         assert!(
             stacked.is_empty(),
             "{name} ({idx}): ftsw rows {stacked:?} stack multiple entries — see \
-             notes/device/presets.md — Footswitch JSON"
+             notes/device/presets.md#footswitch-json"
         );
     }
     assert!(

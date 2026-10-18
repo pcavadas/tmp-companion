@@ -1,11 +1,10 @@
-// src/__tests__/useLevelingFlow-run-order.test.ts — BUG→GATE: each preset's Base row
+// src/__tests__/useLevelingFlow-run-order.test.ts — each preset's Base row
 // reaches the backend BEFORE that preset's scenes, whatever order the selection arrived in.
 //
 // Base levels `presetLevel`, a global multiplier over every scene, so a scene leveled
-// before its own Base is pushed off target by the Base write that follows. The run used
-// to sort with a comparator that returned 0 across slots — not a consistent order — and
-// on an interleaved selection (`[scene@0, base@1, base@0]`) it left slot 0's scene ahead
-// of slot 0's base. This drives `useLevelingFlow` with the device calls mocked and pins the
+// before its own Base is pushed off target by the Base write that follows. A comparator
+// that returns 0 across slots is not a consistent order: on an interleaved selection
+// (`[scene@0, base@1, base@0]`) it leaves slot 0's scene ahead of slot 0's base. This drives `useLevelingFlow` with the device calls mocked and pins the
 // order the two backend lanes are actually called in.
 
 import { beforeEach, describe, expect, it } from "vitest";

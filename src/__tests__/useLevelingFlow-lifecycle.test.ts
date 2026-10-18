@@ -1,11 +1,11 @@
-// src/__tests__/useLevelingFlow-lifecycle.test.ts — BUG→GATE for the run's lifecycle.
+// src/__tests__/useLevelingFlow-lifecycle.test.ts — the run's lifecycle.
 //
-// #283: a tab switch unmounts `LevelView`, so a run held in component state would keep
+// A tab switch unmounts `LevelView`, so a run held in component state would keep
 // writing to the unit with no reachable Stop, and a second run could start beside it. The
 // run lives in the module store (`levelRunStore`): a remounted hook shows the same run,
 // its Stop ends it, and a second start is refused while it is in flight.
 //
-// #285: a throw from the scene lane's fallback `listLevelBlocks` read skips that group with
+// A throw from the scene lane's fallback `listLevelBlocks` read skips that group with
 // the error as the row's reason, and the run ends (never stuck on "Saving the last one…").
 //
 // Because the flow outlives the view, a device detach closes it: its rows are keyed by

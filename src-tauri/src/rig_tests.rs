@@ -548,15 +548,14 @@ fn live_chain() -> Vec<String> {
         .collect()
 }
 
-/// BUG→GATE (HW, fw 1.8.58, 3/3 at a 100 ms settle): a discard read back the block it had
-/// just thrown away. The unit keeps sending a session's
-/// queued replies after the host closes it and hands what is left to the next session
-/// inside the 0.75 s drop, ahead of that session's own; the restore's lean session closed
-/// before its handshake copy of the DIRTY working copy was sent, so the next read got it
-/// first and longest-wins kept it. Both fixes are pinned: every restore and isolated load
-/// ends with a lapse, so the unit discards that queue (`queued_flood_reports` is
-/// empty), and the read takes the latest copy
-/// (`latest_json_payload_reads_past_a_longer_inherited_copy`).
+/// A discard must never read back the block it just threw away (HW, fw 1.8.58, 3/3 at a
+/// 100 ms settle). The unit keeps sending a session's queued replies after the host closes
+/// it and hands what is left to the next session inside the 0.75 s drop, ahead of that
+/// session's own; a restore's lean session that closes before its handshake copy of the
+/// DIRTY working copy is sent hands that copy to the next read first. Both guards are
+/// pinned: every restore and isolated load ends with a lapse, so the unit discards that
+/// queue (`queued_flood_reports` is empty), and the read takes the latest copy, not the
+/// longest (`latest_json_payload_reads_past_a_longer_inherited_copy`).
 #[test]
 fn a_discarded_edit_never_reads_back_from_the_queued_handshake_copy() {
     let (dev, rig) = rig();
