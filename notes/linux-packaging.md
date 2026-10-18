@@ -19,8 +19,8 @@ Linux install of this app needs done automatically:
   `/usr/lib/udev/rules.d/` and udev reloading, the app finds no device at all
   (`EACCES` — see `hid.rs`'s `open_device()`).
 - **Run install and removal hooks.** They reload udev and re-trigger connected HID devices
-  when the access rule is added or removed. Backup reads now use bundled SQLite through
-  `rusqlite`; that path no longer requires command-line SQLite.
+  when the access rule is added or removed. (Backup reads use the bundled SQLite in
+  `rusqlite`, so no command-line SQLite is needed.)
 
 A real package declares these files, hooks and runtime libraries in its metadata:
 `bundle.linux.deb/rpm.files` ships the rule, `postInstallScript` reloads udev, and
@@ -46,16 +46,14 @@ gives a genuine Fedora build: the binary links Fedora's libraries and the `depen
 Ubuntu instead would mean hand-writing Fedora dependency names against Ubuntu-linked
 libraries — a mismatch with no compiler or linker to catch it.
 
-Tauri's rpm bundler is the pure-Rust `rpm` crate — no `rpmbuild` needed on the build host
-(confirmed by building both bundles from this repo on a plain Debian dev box with no
-`rpm`/`rpmbuild` installed at all).
+Tauri's rpm bundler is the pure-Rust `rpm` crate — no `rpm`/`rpmbuild` needed on the build
+host.
 
 ## `tauri.linux.conf.json`
 
 Tauri 2 auto-merges a `tauri.<platform>.conf.json` file over the base `tauri.conf.json`
 (JSON Merge Patch, RFC 7396) — no `--bundles` flag, no risk to the macOS bundle config.
-One caveat that bit the first draft of this file: **merge-patch REPLACES arrays, it does
-not extend them** — `bundle.targets` here (`["deb", "rpm"]`) fully supersedes the base's
+**Merge-patch REPLACES arrays, it does not extend them** — `bundle.targets` here (`["deb", "rpm"]`) fully supersedes the base's
 `["app", "dmg"]` rather than adding to it.
 
 `createUpdaterArtifacts` is explicitly `false` here (the base sets `true`): the Linux
@@ -68,12 +66,10 @@ for no benefit — see the next section.
 list, because the bundler files each PNG into `/usr/share/icons/hicolor/<dir>/apps/`
 using a directory derived from the FILE NAME, and the base list is named for macOS.
 
-`icons/128x128@2x.png` is a 256×256 file, and the `@2x` made the bundler file it
-under `256x256@2` — which hicolor defines as `Size=256, Scale=2`, i.e. a slot that
-expects **512×512 physical pixels**. A 256×256 file there is a size/scale mismatch,
-so every HiDPI 256pt lookup got half the pixels it asked for. There was also no
-plain `256x256` and no `64x64` at all (`icons/64x64.png` exists on disk and was
-simply never listed), leaving `128x128` as the largest usable icon.
+A file named `@2x` is filed under a `…@2` directory, which hicolor defines as a Scale=2
+slot: `icons/128x128@2x.png` (a 256×256 file) would land in `256x256@2`, a slot that
+expects **512×512 physical pixels**, so every HiDPI 256pt lookup would get half the pixels
+it asked for.
 
 The Linux list is therefore spelled with plainly-named files only —
 `32x32 / 64x64 / 128x128 / 256x256` — each landing in a directory that matches its
@@ -89,8 +85,7 @@ is exactly what keeps `icon.icns`/`icon.ico` out of the Linux bundle.
 `ci.yml`'s `bundle-linux` installs each package it builds, runs
 `.github/scripts/check-linux-payload.sh` against the installed tree, then removes
 it again. A `tauri build` only proves the bundler config parses — it cannot catch a
-file that is present, correct and filed where nothing looks for it, which is
-precisely how the `256x256@2` mismatch above survived. The check asserts the binary,
+file that is present, correct and filed where nothing looks for it. The check asserts the binary,
 the udev rule, a desktop entry carrying `StartupWMClass`, and that every shipped
 icon sits in a hicolor directory matching its pixel size (with no strays). It
 reads that size out of each PNG's IHDR rather than trusting the path — a file
@@ -103,13 +98,13 @@ the `uaccess` ACL the departed rule gave it (the mirror of why `postinst.sh` tri
 a non-zero exit there would leave the package half-removed. Set `PAYLOAD_ROOT` to an
 unpacked package tree to run the check locally without installing anything.
 
-## No Linux updater channel (yet)
+## No Linux updater channel
 
 `scripts/latest-json.mjs` emits only `darwin-aarch64`/`darwin-x86_64` keys. A Linux
 install's in-app update check finds nothing at that endpoint and stays silent
-(`useUpdater.ts` treats any check failure as silent-fail by design) — Linux users update by
-installing updates through apt/dnf or re-downloading the latest `.deb`/`.rpm`. Not worth standing up and signing a second
-updater channel for an alpha; revisit once Linux has left alpha.
+(`useUpdater.ts` treats any check failure as silent-fail by design) — Linux users update
+through apt/dnf or by re-downloading the latest `.deb`/`.rpm`. A second signed updater
+channel is not worth running while Linux is alpha.
 
 ## Apt + dnf/yum repositories
 
@@ -189,12 +184,14 @@ temporary local bare repository and verify that package publication never change
 ```text
 resolve-version (ubuntu)              semantic-release --dry-run → next version, or none
    │
-   ├─► build-deb (ubuntu)             continue-on-error: true
-   └─► build-rpm (ubuntu, fedora container)   continue-on-error: true
+   ├─► build-deb (ubuntu-22.04)       continue-on-error: true
+   ├─► build-rpm (ubuntu, fedora container)   continue-on-error: true
+   └─► build-nsis (windows)           continue-on-error: true
               │
               ▼
-        release (macos-14)            downloads both bundles, runs the real semantic-release
+        release (macos-14)            downloads both Linux bundles, runs the real semantic-release
               │
+              ├─► publish-windows (ubuntu)      attaches the .exe when build-nsis produced one
               ▼
         publish-linux-repos (ubuntu)  commits apt/ + rpm/ to codex/linux-package-repos
               │
@@ -202,11 +199,13 @@ resolve-version (ubuntu)              semantic-release --dry-run → next versio
         deploy-linux-repos           calls pages.yml to compose and deploy the site
 ```
 
+`build-deb` runs on the oldest Ubuntu image GitHub still offers, for the lowest glibc floor.
+
 `resolve-version` needs `permissions: contents: write` despite writing nothing:
 semantic-release runs `verifyAuth` — a `git push --dry-run … HEAD:main` — before it
 branches on `--dry-run`, so a read-only `GITHUB_TOKEN` 403s and the run dies with
-`EGITNOPERMISSION` instead of printing a version. That is how this job failed on its very
-first run on `main`, and it is not visible from the `--dry-run` flag alone.
+`EGITNOPERMISSION` instead of printing a version — not visible from the `--dry-run` flag
+alone.
 
 Both Linux build jobs are `continue-on-error`, so a broken Linux bundle never blocks the
 signed, notarized macOS DMG — the release still ships, just without that platform's
