@@ -8,10 +8,9 @@ extraction" below).
 
 ## Why this matters
 
-The device audio engine (`tm-stomp-server`) enforces **none** of these caps and cannot reject an
-over-cap edit (it never populates a `PresetErrorMessage`; the node factory / replace-insert core /
-save-persist / dispatch / DSP-instantiation paths are all count-free — verified by two independent
-decompile passes + an objdump control-flow scan). So the companion's own guard
+The device audio engine (`tm-stomp-server`) enforces **none** of these count caps: its node
+factory, replace/insert, save and load paths check only the CPU budget (an over-budget replace gets
+`presetError` 14, an over-budget insert aborts the server) (static RE, fw 1.8.58). So the companion's own guard
 (`src-tauri/src/blockcaps.rs`, mirrored by `src/views/copy/validateBlockEdit.ts`) is the **sole**
 enforcement. Under-including an id ⇒ an over-cap preset gets written to a real slot. Keep the sets
 exact and complete.
@@ -19,13 +18,13 @@ exact and complete.
 Membership is **exact-string** on the device model id (ids arrive verbatim, suffixes intact). Never
 normalize / strip suffixes / append `NoFx` before lookup — the suffix is the classification signal.
 
-## The three caps (client fns, fw 1.8.45 → 1.7.75)
+## The three caps
 
-| Cap                         | Max | 1.8.45 fn      | 1.7.75 fn      | Form                                                                                |
-| --------------------------- | --- | -------------- | -------------- | ----------------------------------------------------------------------------------- |
-| ConvolutionReverbLimit      | 1   | `FUN_00952a50` | `FUN_008d0e40` | hardcoded `QString` literal `std::set`                                              |
-| ComboHalfStackCabinetsLimit | 2   | `FUN_009521a0` | `FUN_008d02f0` | category-enum classifier + explicit id set (`FUN_00952000`, set src `FUN_00523ed0`) |
-| GlooperEffectsLimit         | 2   | `FUN_00951480` | `FUN_008cf9a0` | direct compare vs one literal                                                       |
+| Cap | Max | Form in the client |
+|---|---|---|
+| ConvolutionReverbLimit | 1 | hardcoded `QString` literal `std::set` |
+| ComboHalfStackCabinetsLimit | 2 | category-enum classifier + explicit id set |
+| GlooperEffectsLimit | 2 | direct compare vs one literal |
 
 Formula (all three): `(candidate∈set) − (replaced∈set on a replace) + existing < MAX+1`. A dual-cab
 node (`cab_sim2_enabled`) counts as **2** toward the cabinet cap. FXLoopCoexistence: the stereo
@@ -35,8 +34,8 @@ node (`cab_sim2_enabled`) counts as **2** toward the cabinet cap. FXLoopCoexiste
 
 - The client hardcodes **19** convolution ids, but an `acdCategory ∈ {DspUnitACDConvEffect,
 DspUnitACDAmpCabsimReverb}` filter predicts **20**: `ACD_PrincetonReverb68CabIRConvRvb` is
-  category-tagged but **omitted** from the client's enforced list (a Fender list-maintenance gap). A
-  derived filter would silently over-enforce it.
+  category-tagged but **omitted** from the client's enforced list. A derived filter would silently
+  over-enforce it.
 - `ACD_TMSuperReverbVibratoCabIRConRvb` has a typo (`ConRvb`, not `ConvRvb`) — a `/ConvRvb$/` regex
   misses it.
 - Standalone `ACD_CabSimTMS` + `ACD_UserIRTMS` have empty `acdCategory` — only the explicit

@@ -150,7 +150,7 @@ pub fn probe_knob_sweep(
     Ok(out)
 }
 
-/// `probe --measure-pair <listIdx> <topology> <presetLevel> <g:n:p=v>…` — P0 repro
+/// `probe --measure-pair <listIdx> <topology> <presetLevel> <g:n:p=v>…` — repro
 /// instrumentation for the headroom-trade physics: measure the captured loudness at an
 /// explicit (`presetLevel` × block-param) point on one isolated fresh re-amp capture
 /// (bundled stimulus, base recall inside `measure_pair_at`). Working-copy writes are
@@ -414,8 +414,7 @@ pub fn probe_load_scene(scene_slot: u32) -> Result<(), String> {
 
 /// Retained passive-scene re-validation probe: minimal connect, then a
 /// NON-DESTRUCTIVE field-8 read per non-empty preset (connection_request re-arm,
-/// one connection, zero LoadPreset). The UI no longer runs this eagerly; it uses
-/// `read_preset_scenes` lazily per selected preset. Compare against `probe --scenes`
+/// one connection, zero LoadPreset). Compare against `probe --scenes`
 /// (the destructive LoadPreset→125 benchmark) for parity.
 pub fn probe_scan_scenes_passive() -> Result<String, String> {
     use std::time::Instant;
@@ -423,7 +422,7 @@ pub fn probe_scan_scenes_passive() -> Result<String, String> {
     let mut s = Session::connect()?;
     let presets = s.list_my_presets()?;
     // Drain the handshake flood before the first re-armed read (a read queued
-    // behind the flood used to be lost to the inactivity drop).
+    // behind the flood can be lost to the inactivity drop).
     s.drain_until_quiet(250, 20)?;
     let non_empty: Vec<_> = presets
         .iter()
@@ -487,9 +486,9 @@ pub fn probe_scan_scenes_load() -> Result<String, String> {
     let to_scan = non_empty.len();
 
     let mut s = Session::connect()?;
-    // Sustain dense heartbeats for ~2s to enter "live controller" mode — the
-    // device only pushes unsolicited data (sceneListResponse, PresetLoaded) on
-    // a session with sustained heartbeat cadence.
+    // Heartbeat for ~2 s: the device pushes unsolicited data (sceneListResponse,
+    // PresetLoaded) only to open clients, and a client closes after 750 ms with no
+    // OUT report.
     for _ in 0..16 {
         s.heartbeat()?;
         s.pump_silent(120)?;

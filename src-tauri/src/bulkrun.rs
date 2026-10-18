@@ -81,7 +81,7 @@ pub struct DryRunEntry {
 }
 
 /// Compute, per selected preset, what the operation WOULD change — writing nothing
-/// (no `PresetIo` is even passed, so a write is structurally impossible). AC1.
+/// (no `PresetIo` is even passed, so a write is structurally impossible).
 pub fn dry_run(targets: &[PresetTarget], op: &dyn Operation) -> Vec<DryRunEntry> {
     targets
         .iter()
@@ -122,7 +122,7 @@ pub struct RunEntry {
     pub verified: bool,
     pub error: Option<String>,
     /// Set once the pre-write snapshot is on disk — present even if the write then
-    /// fails, so the preset stays revertible (AC2).
+    /// fails, so the preset stays revertible.
     pub snapshot_path: Option<PathBuf>,
 }
 
@@ -148,8 +148,8 @@ impl RunReport {
 }
 
 /// Apply `op` to every target sequentially, snapshotting each before its
-/// write (AC2), verifying after (AC3), and collecting a per-preset result (AC3). A
-/// mid-run write failure leaves the already-snapshotted presets revertible (AC2).
+/// write, verifying after, and collecting a per-preset result. A
+/// mid-run write failure leaves the already-snapshotted presets revertible.
 pub fn apply(
     targets: &[PresetTarget],
     op: &dyn Operation,
@@ -205,7 +205,7 @@ fn apply_one(
         Ok(_) => {}
     }
 
-    // 3) AC2 — snapshot the pre-edit state BEFORE writing, so a write failure (or a
+    // 3) Snapshot the pre-edit state BEFORE writing, so a write failure (or a
     // later preset's failure) still leaves this one revertible.
     match save_pre_write_snapshot(
         backup_dir,
@@ -229,7 +229,7 @@ fn apply_one(
     }
     e.changed = true;
 
-    // 5) AC3 — verify by reading back + comparing (fidelity per the io).
+    // 5) Verify by reading back + comparing (fidelity per the io).
     match io.read_back(t) {
         Ok(rb) => match io.verify(&after, &rb) {
             Ok(true) => e.verified = true,
@@ -253,7 +253,7 @@ pub struct RevertEntry {
 }
 
 /// Restore every preset the run touched (those with a snapshot) to its pre-run
-/// state (AC4). Loads each snapshot and writes the captured JSON back through `io`.
+/// state. Loads each snapshot and writes the captured JSON back through `io`.
 /// Presets that were skipped/no-op (no snapshot) are left untouched.
 pub fn revert(report: &RunReport, io: &mut dyn PresetIo) -> Vec<RevertEntry> {
     let mut out = Vec::new();
@@ -299,9 +299,9 @@ pub(crate) fn now_stamp() -> String {
     format!("{ms:020}")
 }
 
-/// Build + persist a preset's pre-edit snapshot (AC2) — the ONE source of the snapshot
-/// shape, shared by [`apply_one`] and migration's direct-write path so the format can't
-/// drift out of what `backup::list_snapshots_in_dir` expects. `Err` ⇒ DO NOT WRITE.
+/// Build + persist a preset's pre-edit snapshot — the ONE source of the snapshot
+/// shape (called by [`apply_one`]), so the format can't drift out of what
+/// `backup::list_snapshots_in_dir` expects. `Err` ⇒ DO NOT WRITE.
 pub(crate) fn save_pre_write_snapshot(
     dir: &Path,
     list_enum: u32,
@@ -394,7 +394,7 @@ mod tests {
     const HAS: &str = r#"{"audioGraph":{"outputLevel":0.8}}"#;
     const HASNT: &str = r#"{"audioGraph":{}}"#;
 
-    // AC1 — dry-run lists the change set and writes nothing.
+    // Dry-run lists the change set and writes nothing.
     #[test]
     fn dryrun_lists_changes_and_writes_nothing() {
         let targets = vec![target(0, HAS), target(1, HASNT)];
@@ -408,7 +408,7 @@ mod tests {
         assert_eq!(targets[0].before_json, HAS);
     }
 
-    // AC2 — apply snapshots each target BEFORE writing; a failed write still leaves a
+    // Apply snapshots each target BEFORE writing; a failed write still leaves a
     // recoverable snapshot on disk.
     #[test]
     fn apply_snapshots_before_write() {
@@ -435,7 +435,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // AC3 — apply collects a per-preset result across changed / skipped / errored.
+    // Apply collects a per-preset result across changed / skipped / errored.
     #[test]
     fn apply_collects_per_preset_results() {
         let bad = r#"not json"#;
@@ -463,7 +463,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // AC4 — "revert run" restores every preset the run touched.
+    // "Revert run" restores every preset the run touched.
     #[test]
     fn revert_run_restores_all_touched() {
         let a = r#"{"audioGraph":{"outputLevel":0.8}}"#;

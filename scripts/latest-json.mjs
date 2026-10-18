@@ -8,7 +8,7 @@
 // Usage: node scripts/latest-json.mjs <version> <notesBase64> [bundleDir]
 // notesBase64 is base64-decoded into the `notes` field (empty string ⇒ "").
 //
-// ponytail: notes come in base64 (.releaserc prepareCmd runs
+// Known limit: notes come in base64 (.releaserc prepareCmd runs
 // `Buffer.from(nextRelease.notes).toString('base64')` in the exec template
 // sandbox). If a CI run shows Buffer is unavailable in that sandbox, switch the
 // prepareCmd to write the notes to a file and pass the path instead.

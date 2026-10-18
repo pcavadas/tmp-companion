@@ -35,7 +35,7 @@ forceTauri();
 function renderView(connected: boolean) {
   const r = renderWithTheme(<DoctorView connected={connected} />);
   // The backup scan is App-owned in production; seed it here when connected so the
-  // view's scene/graph data populates (the view no longer triggers the scan).
+  // view's scene/graph data populates (the view does not trigger the scan).
   if (connected) void ensureLibraryScan();
   return r;
 }
@@ -362,7 +362,7 @@ describe("DoctorView — select → instrument → check → results", () => {
     );
   });
 
-  // BUG→GATE: DoctorInput.footswitches must carry the FULL per-preset roster (incl. a
+  // DoctorInput.footswitches must carry the FULL per-preset roster (incl. a
   // switch with zero level candidates), not `footswitchesPerIndex`'s levelable-only
   // subset — else the damage detector's offline force-bypass derivation can't see a
   // toggle-only switch at all. The SELECT list still shows only the levelable switch

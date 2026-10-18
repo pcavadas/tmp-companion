@@ -9,13 +9,13 @@ use super::*;
 ///
 /// LATEST, never longest: a session opened within the device's inactivity drop of the
 /// previous one inherits the rest of that session's queued replies, AHEAD of its own
-/// (HW 2026-10-14, fw 1.8.58: the unit keeps sending its queue while no host is open, and
-/// what it has not sent yet reaches the next session first). The previous handshake's own
-/// field-3 reply ends that queue, so it is the working copy as it was BEFORE the previous
-/// session's loads — and an unsaved insert makes it the longer document. Longest-wins read
-/// that stale copy after a Doctor discard (3/3 at a 100 ms settle; carriers 2871 stale →
-/// 2451 → 2691 → 2691). A latest copy cut short is the caller's error to retry, never a
-/// reason to fall back to an older one.
+/// (HW, fw 1.8.58: the unit keeps sending its queue while no host is open, and what it has
+/// not sent yet reaches the next session first). The previous handshake's own
+/// `currentPresetDataChanged` (field 3) reply ends that queue, so it is the working copy as
+/// it was BEFORE the previous session's loads — and an unsaved insert makes it the longer
+/// document, so longest-wins would read that stale copy after a Doctor discard. A latest
+/// copy cut short is the caller's error to retry, never a reason to fall back to an older
+/// one.
 ///
 /// DANGER: carrier `(9, 3)` is the field-8 slot-read reply's own payload. If a session's
 /// accumulated reports carry a field-3 live push AND a later stray field-9 reply, the
@@ -65,7 +65,7 @@ pub(crate) fn extract_fw_version(body: &[u8]) -> Option<String> {
 }
 
 /// Extract the current preset's display name from the handshake's
-/// `CurrentPresetInfoChanged` event. Unlike the truncated preset JSON, this
+/// `CurrentPresetInfoChanged` event. Unlike the large preset JSON, this
 /// event is small and reliably survives the live discovery burst.
 pub(super) fn extract_current_preset_display_name(body: &[u8]) -> Option<String> {
     dig(body, TMS_PRESET, CURRENT_PRESET_INFO_CHANGED).and_then(|fields| {
@@ -93,13 +93,9 @@ impl Session {
     /// LoadPreset — the unit's selected preset (and any unsaved edits on it)
     /// are never touched. Addressed by 1-based [`DeviceSlot`].
     ///
-    /// HW-proven on fw 1.8.45 (`probe --slotread-x` / `--scenes-passive`):
-    /// the device answers exactly ONE data request per burst state, and a
-    /// re-sent `connection_request` re-arms that state on the OPEN connection
-    /// — so a whole-library sweep rides one connection (25/25, ~0.9 s/slot).
-    /// The classic full-handshake placement was 0/25 on 1.8.45: the reply queued
-    /// behind the ~480-frame flood and was discarded by the inactivity drop during the
-    /// silent window ([`HID_INACTIVITY_DROP_MS`]).
+    /// A re-sent `connection_request` reopens a lapsed session on the OPEN connection, so
+    /// a whole-library sweep rides one connection (~0.9 s/slot, HW). A session silent past
+    /// [`HID_INACTIVITY_DROP_MS`] answers nothing until re-armed (fw 1.8.58).
     /// `Ok(None)` = the device didn't answer this read (caller counts a miss).
     ///
     /// For a DEDICATED/QUIET session (every `probe_*` sweep + `scan_preset_scenes`):
@@ -223,14 +219,12 @@ impl Session {
             .collect()
     }
 
-    /// HW / Tier-4 diagnostic: capture the FULL `currentPresetDataChanged` (field
-    /// 3) preset JSON, decompressed byte-exact (not the lossy-UTF-8 prefix). Holds
-    /// a dense ~250 ms ConnectionHeartbeat while pumping so the device treats us as
-    /// a live controller and pushes the COMPLETE field-3 (the lean path truncates
-    /// at `"scenes"`; a healthy dense-heartbeat session was observed to deliver the
-    /// full ~16 KB preset). `slot` (Some) loads that preset first to trigger a fresh
-    /// push (non-destructive). Returns the decompressed bytes — which may still be a
-    /// device-truncated partial; the caller checks completeness.
+    /// HW diagnostic: capture the FULL `currentPresetDataChanged` (field 3) preset JSON,
+    /// decompressed byte-exact (not the lossy-UTF-8 prefix). Holds a dense ~250 ms
+    /// ConnectionHeartbeat while pumping so the session cannot lapse mid-push (a lapse
+    /// cuts the stream; the device sends it whole, fw 1.8.58). `slot` (Some) loads that
+    /// preset first to trigger a fresh push (non-destructive). Returns the decompressed
+    /// bytes; the caller checks completeness.
     pub fn capture_full_preset_json(
         &mut self,
         slot: Option<ListIndex>,
@@ -255,9 +249,9 @@ impl Session {
     }
 
     /// The current preset's tolerant-parsed JSON document, from the data the
-    /// handshake fetched (`currentPresetDataChanged`, field 3 — LZ4, routinely
-    /// truncated mid-object; `audioGraph` and usually `scenes` survive). The shared
-    /// read under [`current_preset_blocks`] / the per-scene amp pick.
+    /// handshake fetched (`currentPresetDataChanged`, field 3 — LZ4; the tolerant parse is
+    /// defensive, the device sends it whole, fw 1.8.58). The shared
+    /// read under [`Self::current_preset_blocks`] / the per-scene amp pick.
     pub fn current_preset_value(&self) -> Result<serde_json::Value, String> {
         parse_preset_text(&self.buffered_preset_text()?)
     }
@@ -302,10 +296,10 @@ impl Session {
 
     /// The active preset's full signal-chain graph (active-preset signal chain block strip) — every
     /// block per group plus routing template and split/mix controls, parsed from the same
-    /// live field-3 partial as [`current_preset_blocks`]. Unlike that level-only
+    /// live field-3 document as [`Self::current_preset_blocks`]. Unlike that level-only
     /// reader, this surfaces every node + its model id + bypass + the routing
     /// fields the strip needs to draw series vs parallel. `name`/`slot` come from
-    /// `info` when present (usually absent in the truncated partial → `None`).
+    /// `info` when present (`None` otherwise).
     pub fn current_audio_graph(&self) -> Result<ActiveGraph, String> {
         let payload = self.latest_json_payload();
         let text = decode_preset_json(&payload).ok_or_else(|| {
@@ -340,14 +334,13 @@ impl Session {
     }
 
     pub(crate) fn try_preset_data_json(&self) -> Option<Vec<u8>> {
-        // Largest wins: a complete multi-packet stream beats a truncated/early one.
+        // Largest wins: a complete multi-packet stream beats a cut-short/early one.
         // BOTH reassembly rules are tried: `streams()` keeps an interleaved 0x35
         // separate (safe mid-flood) but DROPS the final frame of a complete
         // stream; `streams_final()` folds the trailing 0x35 in. On the passive
         // scene scan the field-9 stream ends in a 0x35 final frame — the
-        // `streams()`-only harvest systematically lost the document tail
-        // (`"scenes"` lives at the end; HW: 22/25 presets read "scenes unknown"
-        // until the final-rule recovery).
+        // `streams()`-only harvest loses the document tail (`"scenes"` lives at
+        // the end).
         self.streams()
             .iter()
             .map(|s| s.body.clone())
@@ -358,14 +351,13 @@ impl Session {
 
     /// Pump until a slot-read reply stops growing, then return the largest
     /// presetDataChanged (field 9 → presetJson 3) else exportPresetResponse
-    /// (field 116 → presetJson 1) payload. For the in-burst AC1 spike
+    /// (field 116 → presetJson 1) payload. For the in-burst slot read
     /// (`connect_with_burst_request`). Keeps pumping while the payload grows so a
     /// large multi-packet preset is fully reassembled before we read it.
-    #[cfg(test)] // the in-burst slot-read spike; only the wire golden runs it
+    #[cfg(test)] // the in-burst slot read; only the wire golden runs it
     pub fn harvest_slot_read(&mut self) -> Result<Vec<u8>, String> {
         let best = |s: &Self| s.try_preset_data_json().or_else(|| s.try_export_json());
-        // Kept alive: the old "device stops at the same byte count" baseline was measured on
-        // SILENT windows, whose stop the inactivity drop also produces.
+        // Kept alive: a silent window lapses the session, which also stops the stream.
         self.pump_until_stable(SLOT_HARVEST_MAX_WINDOWS, KEEPALIVE_WINDOW_MS, |s| {
             best(s).map_or(0, |b| b.len())
         })?;

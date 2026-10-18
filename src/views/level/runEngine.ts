@@ -77,7 +77,7 @@ const ENVELOPE_BIDS = bidsWhere((m) => m.et === "Envelope Filter");
 // Live fallback only: filter a live block read down to amp `outputLevel` candidates
 // (the common path uses the startup-backup candidates instead). A discovered amp
 // block may carry merged cab/IR/convolution suffixes the catalog's bare amp bids
-// lack (e.g. "ACD_HiwattDR103CanModCabIR") — `baseDeviceId` strips them via the
+// lack (e.g. "ACD_HiwattDR103CanModCabIR") — `resolveDeviceId` strips them via the
 // canonical suffix set so amp+cab(+reverb) combo blocks still match their amp bid.
 function ampBlocks(blocks: LevelBlock[]): AmpCandidate[] {
   return blocks
@@ -148,7 +148,7 @@ export const valueOf = (r: LevelOutcomeFields): number =>
   r.verify_lufs ?? r.predicted_lufs;
 // Resolve to a SINGLE by-ear cause. `wet_floor` only ever rides on a footswitch row, which
 // never sets `verify_by_ear` (scene-only), so the two can't collide in practice. There is no
-// dynamics-spread cause (#241): a wide-spread capture is not a measurement problem.
+// dynamics-spread cause: a wide-spread capture is not a measurement problem.
 export const byEarCause = (r: LevelOutcomeFields): RunItem["verifyByEar"] =>
   r.wet_floor ? "wet_floor" : r.verify_by_ear ? "rebalance" : undefined;
 
@@ -216,9 +216,9 @@ export interface ItemPatch {
 }
 
 /** A repaint point: the patches since the last step, the run table's step counter, and
- *  the batch-wide caption (issue 6b: "Saving…" / "Verifying…", which no row's own status
+ *  the batch-wide caption ("Saving…" / "Verifying…", which no row's own status
  *  can show — null clears it, so it never outlives the window it describes).
- *  `resolvedKey` names a row that just reached its result (BUG-4: closing the wizard
+ *  `resolvedKey` names a row that just reached its result (closing the wizard
  *  deselects it), and drops the live meter — the result row is the confirm. */
 export interface EngineStep {
   patches: readonly ItemPatch[];
@@ -321,12 +321,11 @@ export async function runEngine(
     emit({ patches, currentIndex, tailMessage, resolvedKey });
   };
 
-  // INVARIANT (BUG 2): at most ONE row is ever "active". Several rows once all rendered
-  // "leveling · <the same LUFS>" because nothing cleared a row OUT of "active" when the
-  // channel (or the optimistic group pre-flip) named a NEW one; `RunPage` names the active
-  // row in its now line and points the one live meter at its target. Every activation goes
-  // through here, demoting any OTHER active row back to "queued" (never touching a resolved
-  // "result" row).
+  // INVARIANT: at most ONE row is ever "active" — `RunPage` names the active row in its now
+  // line and points the one live meter at its target, so a row left "active" when the
+  // channel (or the optimistic group pre-flip) names a NEW one would show the same LUFS.
+  // Every activation goes through here, demoting any OTHER active row back to "queued"
+  // (never touching a resolved "result" row).
   const setSoleActive = (target: number) => {
     work.forEach((w, j) => {
       if (j !== target && w.status === "active") patch(j, { status: "queued" });
@@ -382,10 +381,11 @@ export async function runEngine(
         });
       }
     };
-  // A batched call does ~8 s of un-streamed setup (the field-8 read, the preset load)
-  // before its first `active` item, so flip the group's first row active up front — or
-  // the run reads "queued" everywhere with the meter hidden. `start` is the batch's own
-  // index, never re-derived from the map, so the step counter can't jump backward.
+  // A batched call does ~8 s of un-streamed setup (the `presetDataRequest` (field 8)
+  // read, the preset load) before its first `active` item, so flip the group's first row
+  // active up front — or the run reads "queued" everywhere with the meter hidden. `start`
+  // is the batch's own index, never re-derived from the map, so the step counter can't
+  // jump backward.
   const markGroupActive = <K>(rows: Map<K, number>, start: number) => {
     const indices = [...rows.values()];
     if (indices.length === 0) return;

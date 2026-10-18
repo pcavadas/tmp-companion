@@ -5,7 +5,7 @@
 // only available inside the WKWebView, so every call is guarded by `isTauri()`
 // — under plain `vite` / Vitest the helpers degrade to console output. Used by
 // the global error handlers in main.tsx and by the top-level ErrorBoundary, so
-// a render crash (the class that once blanked the whole window) lands on disk.
+// a render crash (which blanks the whole window) lands on disk.
 
 import { error as pluginError } from "@tauri-apps/plugin-log";
 

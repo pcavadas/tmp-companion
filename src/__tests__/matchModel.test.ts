@@ -22,10 +22,10 @@ function balance(db: number[]): number[] {
 }
 
 describe("matchDeltas", () => {
-  // BUG→GATE (#254): two sounds identical except the reference has 30 dB more
-  // Air. The all-band mean moved 5 dB, so every other band read a −5 dB delta
-  // and the card prescribed five cuts nobody asked for. Only the Air move (and
-  // the too-big-for-EQ advisory) may remain.
+  // Two sounds identical except the reference has 30 dB more Air: the all-band
+  // mean moves 5 dB, so a naive delta reads −5 dB on every other band and
+  // prescribes five cuts nobody asked for. Only the Air move (and the
+  // too-big-for-EQ advisory) may remain.
   it("prescribes only the Air move when only Air differs", () => {
     const body = [-5, -2, -5, 13, 13.5];
     const sound = balance([...body, -40]);
@@ -123,8 +123,8 @@ describe("eqMovesFor", () => {
   });
 
   it("skips the bass-vi Sub band entirely (no known center), leaving Lows undiluted", () => {
-    // Sub has no entry in BAND_CENTER_HZ (deleted — its own log-nearest EQ-10
-    // band is gain31hz, HW-unverified/no-op-prone), so it never joins the
+    // Sub has no entry in BAND_CENTER_HZ (its own log-nearest EQ-10 band,
+    // gain31hz, is not HW-verified to move the sound), so it never joins the
     // sums/counts map at all — it does NOT get averaged into Lows' gain62hz
     // move, which would happen if Sub's delta (10, wildly different from
     // Lows' 3) were silently folded in. Distinct deltas make that provable:

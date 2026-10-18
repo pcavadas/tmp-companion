@@ -1,5 +1,6 @@
-//! Device trace recorder (TCT v1): a lossless record of every HID call, settle, re-amp
-//! capture and seed field-8 read a process makes, for later replay and analysis.
+//! Device trace recorder (TCT v1): a lossless record of every HID call, settle, rig re-amp
+//! capture and seed `presetDataRequest` (field 8) read a process makes, for later replay and
+//! analysis.
 //!
 //! OFF BY DEFAULT AND INERT. Nothing here runs unless `TMP_TRACE_DIR` is set: no
 //! thread, no allocation, no file. [`recorder`] reads the environment once; every entry
@@ -21,13 +22,13 @@
 //! THE SEAMS. [`open`] wraps every rig's transport open (`rig::Rig::open_transport`, the
 //! one path `session::open_transport` takes), so every session (command lane, monitor lane,
 //! probe) is recorded below `TrackedHid` and its auto-reopens are on the wire record too.
-//! [`settle`] is called from `device_gate::settle_ms`; [`capture`] wraps every rig's
+//! [`settle`] is called from `device_gate::settle_ms`; [`capture()`] wraps every rig's
 //! capture (`audio::reamp_capture`); [`record_field8`]
-//! follows the seed's field-8 reads; [`record_cmd`] is for the e2e server's `/invoke`
-//! route. The event table and file layout are in `notes/e2e-test-plan.md` ("Recording").
+//! follows the seed's stored-row reads; [`record_cmd`] is for the e2e server's `/invoke`
+//! route. The event table and file layout are in `notes/e2e-recording.md`.
 //!
 //! PRIVACY. A trace holds the owner's preset names and bodies, and captures are the
-//! device's DSP output. Traces, WAVs and field-8 files stay on the machine that made
+//! device's DSP output. Traces, WAVs and stored-row files stay on the machine that made
 //! them: never commit them, attach them to an issue or PR, or upload them as a CI
 //! artifact.
 
@@ -125,7 +126,7 @@ pub(crate) fn capture(
     result
 }
 
-/// A field-8 body the seed read for `list_index`, with its pristine verdict (`ok`, the
+/// A stored-row body the seed read for `list_index`, with its pristine verdict (`ok`, the
 /// reason it is not, or `None` when not checked). Record only fixture bodies.
 pub(crate) fn record_field8(list_index: ListIndex, body: &[u8], pristine: Option<&str>) {
     if let Some(r) = recorder() {

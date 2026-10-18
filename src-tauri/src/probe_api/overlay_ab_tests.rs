@@ -1,5 +1,5 @@
 //! Unit tests for the overlay A/B arm (sibling of `overlay_ab.rs`). The saved-side
-//! per-scene overlay derivation now routes through `scene_jobs::scene_docs_from_saved`
+//! per-scene overlay derivation routes through `scene_jobs::scene_docs_from_saved`
 //! (covered by `scene_jobs_tests.rs`), so only the arm's own amp-enumeration helper is
 //! pinned here — no device.
 

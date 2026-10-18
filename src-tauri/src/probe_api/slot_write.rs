@@ -25,17 +25,11 @@ pub fn probe_connect_and_list() -> Result<Vec<PresetEntry>, String> {
     s.list_my_presets()
 }
 
-/// HW PROBE (WRITE): set the global `sceneChangeBehavior` (SettingsMessage field 83).
-///
-/// Rides TMS 3, the same branch `reampModeActive` (field 30) proves is served for
-/// that field specifically — this does not itself prove field 83 is served.
-///
-/// `value` is the `SceneChangeBehavior::Behavior` enum: keys `Retain`, `Revert`
-/// from the client's Qt MOC table. The **ordinal** (`0 = Retain`) is already settled
-/// by direct touchscreen observation, not by this write — see open-questions.md A6.
-/// Calls [`Session::begin_live_edit`] before writing, closing the confound a past
-/// attempt on an unwarmed line left open. Retested 2026-07-26 on a warmed session:
-/// still no observable change — see open-questions.md A6 for both results.
+/// HW PROBE (WRITE): set the global `sceneChangeBehavior` (SettingsMessage field 83,
+/// TMS 3). `value`: 0 = Retain (MAINTAIN CHANGES), 1 = Revert (DISCARD CHANGES)
+/// (static RE + HW, fw 1.8.58). Read it back with `--settings-read`
+/// (`footswitchSettingsRequest` (47) → field 12). Calls `Session::begin_live_edit`
+/// before writing.
 ///
 /// GLOBAL setting — the caller MUST restore the original value.
 pub fn probe_set_scene_change_behavior(value: u64) -> Result<String, String> {
@@ -44,7 +38,7 @@ pub fn probe_set_scene_change_behavior(value: u64) -> Result<String, String> {
     if value > 1 {
         return Err(format!(
             "refusing sceneChangeBehavior={value}: the Behavior enum has exactly two \
-             keys (Retain, Revert) in the 1.8.45 client's MOC table"
+             keys (Retain, Revert)"
         ));
     }
     let mut s = Session::connect()?;
@@ -60,16 +54,13 @@ pub fn probe_set_scene_change_behavior(value: u64) -> Result<String, String> {
 
 /// HW PROBE (working-copy WRITE): set one block parameter on a SCRATCH preset.
 ///
-/// Deliberately does ONE thing per invocation. An earlier attempt drove the whole
-/// C2 experiment (read → edit → scene round trip → re-read) inside a single
-/// connection and could not be trusted: `latest_json_payload` returns a
+/// Deliberately does ONE thing per invocation: `latest_json_payload` returns a
 /// payload accumulated so far, so a second read in the same session can serve the
-/// handshake's snapshot rather than live state — which would silently compare a
-/// value against itself.
+/// handshake's snapshot rather than live state — silently comparing a value against
+/// itself.
 ///
-/// The reliable shape instead uses ONE SESSION PER STEP, because a working-copy
-/// edit PERSISTS on the device across USB reconnects (established with
-/// `switchTemplate`). Every read then rides a fresh handshake and is genuinely live:
+/// Use ONE SESSION PER STEP instead: a working-copy edit PERSISTS on the device
+/// across USB reconnects, and every read then rides a fresh handshake and is live:
 ///
 /// ```text
 /// probe --set-param 400 G1 ACD_TubeScreamer level 0.125
@@ -92,8 +83,8 @@ pub fn probe_set_param(
         ));
     }
     // `changeParameter` carries the value in the block's OWN real units verbatim (dB, Hz,
-    // …), never range-checked by the wire — disproven this session on hardware:
-    // `ACD_Boost.gain` accepts raw dB 0/2.5/5, ~1:1 dB→LUFS (see `param_class`'s doc). This
+    // …), never range-checked by the wire (HW: `ACD_Boost.gain` accepts raw dB 0/2.5/5,
+    // ~1:1 dB→LUFS; see `param_class`'s doc). This
     // seam is a scratch-zone diagnostic (the caller), so the only guard that belongs here
     // is a sane wire value, not a guessed range.
     if !value.is_finite() {
@@ -104,17 +95,17 @@ pub fn probe_set_param(
     std::thread::sleep(std::time::Duration::from_millis(700));
     // Recall BASE explicitly before the write. A preset loads into its SAVED
     // `lastLoadedScene`, so a bare `changeParameter` lands in whatever scene overlay
-    // that happens to be — never base by default (HW-confirmed, fw 1.8.45). Hoisted
+    // that happens to be — never base by default (HW). Hoisted
     // ABOVE the first write of this connection: a recall AFTER a write reverts it.
-    // Same fix `set_knob`/`set_knobs`/`capture_full_at` already carry.
+    // Same shape as `set_knob`/`set_knobs`/`capture_full_at`.
     s.load_scene(session::BASE_SCENE_SLOT)?;
     std::thread::sleep(std::time::Duration::from_millis(
         leveller::SETTLE_AFTER_SCENE_RECALL_MS,
     ));
     // Use the SESSION method, not a hand-rolled `send_and_dump(proto::change_parameter(..))`.
-    // The session wrapper is the path the leveller drives on every run; sending the
-    // bare message skipped its bookkeeping and the edit silently did not land — the
-    // parameter read back unchanged with no error reported.
+    // The session wrapper is the path the leveller drives on every run; the bare
+    // message skips its bookkeeping and the edit silently does not land (HW: the
+    // parameter read back unchanged with no error reported).
     s.change_parameter(group, node, param, value)?;
     std::thread::sleep(std::time::Duration::from_millis(500));
     Ok(format!(
@@ -143,13 +134,12 @@ pub fn probe_settings_read(field: u32) -> Result<String, String> {
 /// HW PROBE (WRITE): switch the signal-path template of a SCRATCH preset
 /// (`PresetMessage.switchTemplate`, field 43).
 ///
-/// Settles what happens to per-scene state when the template changes — the manual
+/// Shows what happens to per-scene state when the template changes — the manual
 /// says only that it "repopulates the signal path" and "will affect all Scenes",
 /// never whether per-scene bypass/parameter overrides are preserved, remapped or
-/// wiped.
+/// wiped. `switchTemplate` is a working-copy edit (no autosave; static RE, fw 1.8.58).
 ///
-/// Scratch-guarded: this is a destructive edit if the device auto-saves, and
-/// whether it does is one of the unknowns. Does NOT load `slot` itself — see the
+/// Scratch-guarded. Does NOT load `slot` itself — see the
 /// active-preset check below for why an explicit load can't substitute for it.
 pub fn probe_switch_template(slot: ListIndex, template_type: &str) -> Result<String, String> {
     if !SCRATCH_SLOTS.contains(&slot) {
@@ -160,17 +150,15 @@ pub fn probe_switch_template(slot: ListIndex, template_type: &str) -> Result<Str
     }
     let mut s = Session::connect()?;
     // Confirm identity through the mutation path's own read — never a caller-
-    // supplied assumption (same discipline as `probe_move_preset` below). This
-    // function used to just trust that the caller had already loaded `slot` in a
-    // prior session; nothing enforced it, so switchTemplate could land on
-    // whatever preset the unit actually had open. An explicit `load_preset(slot)`
-    // here isn't a substitute fix: loading the ALREADY-current preset emits no
+    // supplied assumption (same discipline as `probe_move_preset` below): without it,
+    // switchTemplate lands on whatever preset the unit actually has open. An explicit
+    // `load_preset(slot)` here isn't a substitute: loading the ALREADY-current preset emits no
     // field-3 push at all (see the `Some(slot)` note below), so it wouldn't move
     // the risk, only hide it behind a call that looks like it helped.
     //
     // Compares `info.preset_id`, NOT `info.displayName` — displayName is
-    // user-editable and duplicates are allowed (see this skill's own documented
-    // invariant: preset identity is the UUID, never the label), so a name-only
+    // user-editable and duplicates are allowed (preset identity is the UUID, never
+    // the label), so a name-only
     // check could pass while a different, same-named preset is actually active.
     // The field-8 read is on a QUIET line (its own drain, like `probe_roster`),
     // BEFORE the undrained capture below — the two don't interleave.
@@ -183,15 +171,12 @@ pub fn probe_switch_template(slot: ListIndex, template_type: &str) -> Result<Str
     let expected_id = expected_identity(&expected_json, slot)?;
     // NO pre-drain here. `capture_full_preset_json` waits for the field-3
     // currentPresetDataChanged PUSH, and `drain_until_quiet` eats exactly that —
-    // draining first made the capture fail with "no payload captured". This is the
+    // draining first makes the capture fail with "no payload captured". This is the
     // mirror image of the read-request rule (requests need a quiet line; pushes
     // must not be drained away).
 
-    // Read BEFORE and AFTER on THIS connection. A template switch is very likely a
-    // working-copy edit (same class as force-bypass), and a working-copy edit is
-    // discarded by the reload a fresh connection performs — so a cross-connection
-    // read cannot distinguish "unserved" from "applied then discarded". Only a
-    // same-connection pair can.
+    // Read BEFORE and AFTER on THIS connection: a template switch is a working-copy
+    // edit, and a same-connection pair reads it with no reload in between.
     //
     // `capture_full_preset_json` (the dense-heartbeat capture): a read that comes
     // back empty compared against an empty read silently looks like "unchanged".
@@ -288,16 +273,16 @@ fn switch_template_identity(
 }
 
 /// HW PROBE (DEVICE WRITE): reorder a user preset, `from` → `to` (0-based list
-/// indices). The device renumbers presets automatically; whether it also rewrites
-/// slot-keyed Song/Setlist bindings is the open question this exists to settle.
+/// indices). A reorder updates only the preset's slot; Song rows join presets by
+/// row id, so Song bindings follow it (static RE, fw 1.8.58).
 ///
 /// **Confirms identity through the mutation path's own read**, before and after —
 /// never a caller-supplied label. It reads the live `list_my_presets` on the same
 /// connection that performs the move, prints what actually occupies both indices,
-/// and reports the post-move occupants so a caller can diff. An earlier off-by-one
-/// destroyed a real preset; a printed label is not identity.
+/// and reports the post-move occupants so a caller can diff — a printed label is
+/// not identity.
 ///
-/// **Scratch-zone only.** A reorder outside 400/401/402 shifts real user presets,
+/// **`SCRATCH_SLOTS` only.** A reorder outside it shifts real user presets,
 /// so anything else is refused rather than trusted to the caller.
 pub fn probe_move_preset(from: ListIndex, to: ListIndex) -> Result<String, String> {
     if !SCRATCH_SLOTS.contains(&from) || !SCRATCH_SLOTS.contains(&to) {
@@ -404,7 +389,7 @@ pub fn probe_list_blocks(slot: ListIndex) -> Result<String, String> {
     Ok(out)
 }
 
-/// Probe (AC3): re-import a `.preset` file to the device over USB and
+/// Probe: re-import a `.preset` file to the device over USB and
 /// report where it landed. Reads the raw file bytes (the OFFLINE codec's XOR'd
 /// output) and imports them with the stored-row proof
 /// (`replace_inplace::import_with_stored_proof`): the predicted landing slot must hold
@@ -421,7 +406,7 @@ pub fn probe_import_preset(path: &str) -> Result<String, String> {
     ))
 }
 
-/// Probe: clear (delete) a user preset slot — `clearUserPreset` (AC4 setter).
+/// Probe: clear (delete) a user preset slot — `clearUserPreset`.
 /// Used to undo a `--import` test and to exercise the setter on hardware. Guarded:
 /// only clears a slot that currently reads `expect_name` (pass the imported name,
 /// e.g. "Guitar") so a mistyped slot can't nuke an unrelated preset.
@@ -490,17 +475,14 @@ pub fn probe_diag_writes() -> Result<String, String> {
     Ok(out)
 }
 
-/// Probe (AC7 prerequisite): report the data needed to understand the
-/// list-index ↔ device-userSlot relationship.
+/// Probe: report the data behind the list-index ↔ device-userSlot mapping
+/// (device `userSlot` = list index + 1, HW).
 ///
 /// `list_my_presets` returns 0-based list positions; the `userSlot` setters
 /// (`saveCurrentPreset`/`clearUserPreset`/`moveUserPreset`) address a device
-/// userSlot. `requestNextEmptyPresetSlot` (81→82) is **dead on 1.7.75**, so we
-/// can't enumerate device empties; instead we report the list's `--` placeholders
-/// and Song-1's `userPresetSlot`s. Correlating a Song row's `userPresetSlot` with
-/// the list index of the preset assigned to it (you supply that preset) pins the
-/// numbering: if they match, list index == device userSlot. The shipped leveller
-/// already saves via list index, which is consistent with that.
+/// userSlot. Reports the list's `--` placeholders and Song-1's `userPresetSlot`s;
+/// a Song row's `userPresetSlot` against the list index of the preset assigned to
+/// it (you supply that preset) shows the offset.
 pub fn probe_map_slots() -> Result<String, String> {
     let list = Session::connect()?.list_my_presets()?;
     let empty_list: Vec<ListIndex> = list
@@ -524,7 +506,7 @@ pub fn probe_map_slots() -> Result<String, String> {
         empty_list.iter().take(12).collect::<Vec<_>>(),
         song_rows,
     );
-    out += "note: requestNextEmptyPresetSlot (81→82) is dead on 1.7.75 — scratch slots are \
+    out += "note: requestNextEmptyPresetSlot (81→82) is unused here — scratch slots are \
             found by observation (import then re-list), not prediction. To pin the \
             list↔userSlot numbering, assign a known preset to a song and compare its \
             list index with the userPresetSlot reported above.\n";
@@ -579,7 +561,7 @@ pub fn probe_bulk_apply(
     let operation = bulk_cmd::build_operation(&op)?;
     let mut io = io_for_path(op.io_path());
     // The revert snapshots live with the app's own (`backups/` under its config dir), not
-    // in the temp dir the OS may clean between the apply and a later revert (#280).
+    // in the temp dir the OS may clean between the apply and a later revert.
     let backup_dir = crate::fsutil::app_config_dir_for_cli()
         .ok_or("cannot resolve the app config dir for the revert snapshots (HOME/APPDATA unset)")?
         .join("backups")
@@ -627,7 +609,7 @@ pub fn probe_bulk_apply(
     Ok(out)
 }
 
-/// ponytail: throwaway HW experiment (`--save-load-test`): can ONE connection chain
+/// HW experiment (`--save-load-test`): can ONE connection chain
 /// item N's `saveCurrentPreset` with item N+1's `loadPreset`? Conn 1 makes `slot_a`
 /// current; conn 2 sets a distinctive presetLevel, saves, then loads `slot_b` on the
 /// SAME connection. Verification is the caller's (field-8 read of `slot_a` + an
@@ -682,32 +664,26 @@ pub fn probe_save_load_test(
     ))
 }
 
-/// The gain-budget redistribution (PR5) atomicity PRE-REQUISITE (`probe
+/// The gain-budget redistribution's persistence check (`probe
 /// --redistribute-persist-check <scratchSlot> <expectedName>`). It HW-verifies the
-/// single load-bearing assumption behind the feature's read-back-then-save design:
-/// that a `presetLevel` write **+** a BASE amp `outputLevel` `changeParameter` **+**
-/// a scene-overlay `outputLevel` write can all accumulate UNSAVED in the working copy
-/// and survive ONE `saveCurrentPreset`. If any of the three does NOT persist, the
-/// redistribution feature's atomicity model is unsound and must be reworked — this is
-/// the go/no-go gate the plan mandates running FIRST.
+/// assumption behind the feature's read-back-then-save design: that a `presetLevel`
+/// write **+** a BASE amp `outputLevel` `changeParameter` **+** a scene-overlay
+/// `outputLevel` write all accumulate UNSAVED in the working copy and survive ONE
+/// `saveCurrentPreset`.
 ///
 /// Point it at a prepared SCRATCH preset that carries an amp (a guitarNodes node with
 /// an `outputLevel` control) and ≥1 footswitch scene — e.g. the e2e "E2E Rig"
 /// after `probe --seed-scenario` (e.g. "E2E Parallel" at 403, whose amp id is short
 /// enough to fit a single-report `changeParameter`). It reads the slot's current values,
-/// applies three DISTINCTIVE test values (base 0.30, scene[1] 0.66, presetLevel 0.42) all
+/// applies three DISTINCTIVE test values (base 0.30, `scene[1]` 0.66, presetLevel 0.42) all
 /// on ONE live-edit session, saves ONCE, reconnects, reads back, and asserts. Then —
 /// name-guarded — it restores the originals, leaving the slot as found.
 ///
-/// Two HW-learned rules baked in: (1) all writes + the save share ONE session (a fresh
-/// full-handshake reconnect re-reads the preset and discards the prior session's working
-/// copy → an empty-graph save); (2) recall the BASE scene before saving (saving with a
-/// non-base scene active + scene-edit ON serialized an empty base graph on HW). No re-amp
-/// is engaged (a persistence check, not a loudness measure), so the post-re-amp save-drop
-/// can't bite. Read-back is FIELD-8: it reliably carries presetLevel + the base amp
-/// outputLevel (the surviving prefix), but NOT the scene overlay post-save (a device save
-/// re-serializes verbose, pushing scenes[] past field-8's fixed truncation window — the
-/// overlay leg's persistence is HW-established independently, not re-read here).
+/// Two rules baked in: (1) all writes + the save share ONE session; (2) recall the BASE
+/// scene before saving (saving with a non-base scene active + scene-edit ON serialized an
+/// empty base graph on HW). No re-amp is engaged (a persistence check, not a loudness
+/// measure). Read-back is FIELD-8: it carries presetLevel + the base amp outputLevel,
+/// but not reliably the scene overlay post-save (see the read-back note below).
 /// Quiet gap between the write-session's save-close and the field-8 read-back reconnect:
 /// a rapid close→reopen after a save lands on a lean line whose data request goes
 /// unanswered (a truncated/garbled read), so let the device settle first.
@@ -753,8 +729,7 @@ pub fn probe_redistribute_persist_check(
         orig_scene
     );
 
-    // Apply the three write kinds + save on ONE live-edit session (see
-    // `write_three_and_save`: fresh reconnects between edits reset the working copy).
+    // Apply the three write kinds + save on ONE live-edit session (`write_three_and_save`).
     write_three_and_save(
         slot,
         &group_id,
@@ -765,12 +740,11 @@ pub fn probe_redistribute_persist_check(
         TEST_SCENE_OL,
     )?;
 
-    // Read back via FIELD-8 after a quiet settle. field-8 reliably carries presetLevel +
-    // the base guitarNodes amp outputLevel (both live in the surviving prefix) — HW-proven
-    // to read back the written 0.42 / 0.30. It does NOT carry the SCENE overlay post-save:
-    // a device save re-serializes the preset verbose and its scenes[] fall past field-8's
-    // fixed ~17 KB truncation window (HW-confirmed by A/B — the production scene-write path
-    // reads back scenes=0 on field-8 too, while the overlay is physically saved). So the
+    // Read back via FIELD-8 after a quiet settle. field-8 carries presetLevel + the base
+    // guitarNodes amp outputLevel — HW-proven to read back the written 0.42 / 0.30. It does
+    // NOT reliably carry the SCENE overlay post-save: a device save re-serializes the
+    // preset verbose and the read can end before scenes[] (HW: the production scene-write
+    // path reads back scenes=0 on field-8 too, while the overlay is physically saved). The
     // scene-overlay leg's persistence is HW-ESTABLISHED INDEPENDENTLY (a single
     // saveCurrentPreset persists all accumulated overlays), not re-read here.
     std::thread::sleep(Duration::from_millis(READBACK_SETTLE_MS));
@@ -928,11 +902,8 @@ fn scene_overlay_output_level(
 }
 
 /// Apply the three write kinds + save on ONE live-edit session (the
-/// `write_footswitch_values` model). A fresh full-handshake reconnect RE-READS the
-/// preset and discards the prior session's working-copy edits, so load + presetLevel +
-/// base amp `outputLevel` (base scene) + scene overlay (`loadScene` + scene-edit) + save
-/// must all share the SAME session. No re-amp is toggled, so the same-session save is
-/// safe (the post-re-amp save-drop can't bite).
+/// `write_footswitch_values` model): load + presetLevel + base amp `outputLevel` (base
+/// scene) + scene overlay (`loadScene` + scene-edit) + save. No re-amp is toggled.
 fn write_three_and_save(
     slot: ListIndex,
     group_id: &str,
@@ -963,7 +934,8 @@ fn write_three_and_save(
     s.change_parameter(group_id, node_id, "outputLevel", base_ol)?;
     let _ = s.heartbeat();
     let _ = s.pump_silent(150);
-    // Scene overlay — recall the scene, enable scene edit, write within the ~700 ms window.
+    // Scene overlay — recall the scene, enable scene edit, write well inside the 750 ms
+    // host-silence lapse.
     s.load_scene(scene_slot)?;
     std::thread::sleep(Duration::from_millis(150));
     s.set_node_scene_edit(group_id, node_id, true)?;
@@ -975,7 +947,7 @@ fn write_three_and_save(
     // HW (403 came back presetLevel 0.53 / no nodes). Base recall stamps the full graph.
     s.load_scene(crate::session::BASE_SCENE_SLOT)?;
     std::thread::sleep(Duration::from_millis(crate::leveller::SETTLE_AFTER_SET_MS));
-    // ONE save, same session (no re-amp toggled → no save-drop).
+    // ONE save, same session.
     s.save_current_preset(slot)
 }
 
@@ -1007,9 +979,8 @@ fn restore_scratch(
 ///
 /// Shared by every slot-keyed destructive probe path so the guard cannot drift between
 /// copies — the same consolidation `SCRATCH_SLOTS` got. The read is non-destructive and
-/// happens in the SAME address space as the mutation it protects, which is the whole
-/// point: a `clear` once deleted a real preset because its guard checked list-index
-/// space while the op acted in device-slot space.
+/// happens in the SAME address space as the mutation it protects (danger.md: a guard in
+/// list-index space over an op in device-slot space lets a `clear` delete a real preset).
 pub(crate) fn confirm_slot_name(slot: ListIndex, expect_name: &str) -> Result<(), String> {
     let before = Session::connect()?.list_my_presets()?;
     let cur = before
@@ -1026,56 +997,25 @@ pub(crate) fn confirm_slot_name(slot: ListIndex, expect_name: &str) -> Result<()
 
 /// Write ONE block parameter to a preset and persist it (`probe --set-scene-param`) —
 /// the repair seam for a preset whose scene overlay drifted. Routes through the
-/// leveller's own [`leveller::apply_level`] write path, so `scene = Some(n)` gets the
+/// leveller's own `leveller::apply_level` write path, so `scene = Some(n)` gets the
 /// supported per-scene treatment (scene recall → per-block Scene Edit →
 /// `changeParameter`) and `scene = None` writes the base/global value. `verify: false`,
 /// so no stimulus is read and re-amp is never engaged — this is a pure write.
 ///
-/// TWO HW OBSERVATIONS from this arm's first use (fw 1.8.45, preset 028):
+/// Scene-write facts:
+/// * `set_node_scene_edit(node, true)` **alone** reseeds that node's scene overlay from
+///   BASE (HW). Without the enable, a write lands in the overlay when the entry has more
+///   than one key or the param is `bypass` on an existing entry, and on BASE otherwise
+///   (static RE, fw 1.8.58; HW for a Full and a `{bypass}`-only overlay). So enable Scene
+///   Edit ONLY for a node with no overlay in that scene (`scene_write_verdict_for_param`).
+/// * `change_parameter` carries real-unit values VERBATIM. `tapTimeBPM` is a DERIVED
+///   mirror of the block's rate — the PERIOD IN SECONDS, not BPM — so writes to it
+///   never stick.
+/// * A `change_parameter` with NO preceding `load_scene` writes into the currently
+///   active scene's overlay, not base: a preset loads into its saved `lastLoadedScene`.
+///   Base is a scene recall (wire slot 8), never an omission.
 ///
-/// (a) SETTLED by the `--scene-write-cell` 3-cell isolation matrix (fw 1.8.45, scratch
-/// slot 32): `set_node_scene_edit(node, true)` **alone** reseeds that node's scene
-/// overlay from BASE — recall+write without the enable kept all 7 sibling params, while
-/// recall+enable *without any write* reset 6 of them. So it is neither a race nor
-/// `change_parameter`; it SUPERSEDES the earlier assumption in `notes/leveling.md`
-/// ("enabling scene mode is harmless in itself" — corrected since) and
-/// `leveller::set_knobs`, which used to blame a re-`load_scene` between per-knob writes.
-///
-/// The enable's necessity depends on whether the node ALREADY has an overlay in the
-/// target scene (both branches HW-proven on scratch slot 30):
-///   * overlay EXISTS  → the write lands on it with the enable dropped, and the enable
-///     is actively harmful (it reseeds the overlay from base).
-///   * overlay ABSENT  → without the enable the write LEAKS TO BASE (G3
-///     `ACD_MarG12H30BB.hpf` 59 → 200 landed on BASE while scene 0 gained no overlay).
-///     The enable is what materialises the overlay.
-///
-/// So `set_knob` should enable scene edit ONLY for a node with no overlay in that
-/// scene. This also reconciles `notes/leveling.md`'s "leaks to base" claim — true, but
-/// only for the overlay-absent case.
-///
-/// (b) RESOLVED — there is NO normalisation. `change_parameter` carries real-unit values
-/// VERBATIM (`ratehz` 6.0 → 3.0 and `hpf` 59 → 200 both landed exactly). `tapTimeBPM` is
-/// a DERIVED mirror of the block's rate — the PERIOD IN SECONDS, not BPM — which is why
-/// writes to it never stick and why it looked normalised: the 0.2599872 readback is
-/// 1/3.84634 s and the node's `speed` was 3.8463430404663086; a later write of
-/// `ratehz` = 3.0 moved the same field to 0.33333334 = 1/3. Both exact. The Doctor's
-/// measured-frequency EQ write (`commands/doctor.rs::apply_doctor_ops`) is therefore
-/// safe on the value axis.
-///
-/// (c) NEW, and the sharpest of the three: a `change_parameter` with NO preceding
-/// `load_scene` writes into the **currently active scene's overlay**, not base. A preset
-/// loads into its saved `lastLoadedScene`, so on a scened preset every "base" operation
-/// that omits the recall silently targets that scene (HW: slot 30 loads on scene 3;
-/// bare writes of `level` 0.80 and `ratehz` 3.0 landed in scene 3's overlay with BASE
-/// untouched — then, once base was the active context, an identical bare write moved
-/// BASE). `LevelKnob::Block { scene_slot: None }` (`commands/level_preset.rs`) and
-/// `capture_full_at`'s `scene: None` both take that path, so base block leveling
-/// measures AND writes the wrong scene. Base is a scene recall (wire slot 8), never an
-/// omission — `views/level/LevelView.tsx`'s "loading a preset activates BASE" is false.
-///
-/// ponytail: single-param, [0,1]-only. Both limits are the diagnostic's, not the
-/// device's — widen it (multi-param targets, real-unit encoding) only if a repair
-/// actually needs it.
+/// Known limit: single-param, `[0,1]`-only — the diagnostic's limits, not the device's.
 pub fn probe_set_scene_param(
     slot: ListIndex,
     expect_name: &str,
@@ -1091,8 +1031,7 @@ pub fn probe_set_scene_param(
     //   1. scratch-zone restriction — the same allowlist every other destructive probe
     //      path checks, opt-out-able for the deliberate case;
     //   2. list-index -> preset mapping confirmed by a non-destructive read, in the SAME
-    //      address space as the mutation (a `clear` once deleted a real preset because
-    //      its guard checked a different index space than the op).
+    //      address space as the mutation (danger.md).
     if !SCRATCH_SLOTS.contains(&slot) && std::env::var("TMP_ALLOW_NONSCRATCH_WRITE").is_err() {
         return Err(format!(
             "refusing --set-scene-param on list index {slot}: outside the scratch zone \
@@ -1152,8 +1091,8 @@ pub fn probe_set_scene_param(
 ///   scene-edit enable is the wiper.
 /// * `value=None` → recall + scene-edit + save, no `changeParameter`. Siblings wiped ⇒ the
 ///   write is exonerated; the enable alone reseeds the overlay.
-/// * `recall_settle_ms` → lengthen the post-`loadScene` settle (keep well under the ~700 ms
-///   scene-write acceptance cliff). Siblings survive at a longer settle ⇒ it is a RACE (the
+/// * `recall_settle_ms` → lengthen the post-`loadScene` settle (keep well under the 750 ms
+///   host-silence lapse). Siblings survive at a longer settle ⇒ it is a RACE (the
 ///   node's scene values had not materialised when the enable arrived), not a semantic.
 ///
 /// Always saves, so the caller can diff the persisted preset. Diagnostic only.
@@ -1171,7 +1110,7 @@ pub fn probe_scene_write_cell(
 ) -> Result<String, String> {
     // Non-destructive read-back BEFORE any write: confirm the list-index mapping in the
     // SAME address space as the mutation below, so an index mistake refuses instead of
-    // silently saving over a real preset (the write-safety lesson this PR series is about).
+    // silently saving over a real preset (danger.md).
     confirm_slot_name(slot, expect_name)?;
     {
         let mut s = Session::connect()?;

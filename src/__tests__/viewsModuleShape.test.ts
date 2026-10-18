@@ -1,4 +1,4 @@
-// src/__tests__/viewsModuleShape.test.ts — non-regression gate for #313: the views tree
+// src/__tests__/viewsModuleShape.test.ts — the views tree
 // keeps ONE exported component per file and NO import cycles between its modules.
 //
 // Both checks parse every non-test `src/views/**/*.{ts,tsx}` source with the TypeScript
@@ -12,8 +12,7 @@
 //   in `./x`. Barrels (`index.ts`) re-export and are skipped; a file may keep any
 //   number of private (non-exported) helpers.
 // - An IMPORT edge is any relative `import` / `export … from` between two views modules,
-//   type-only ones included: a type-level cycle is still a cycle (the `EditMode` one
-//   between `BlockEditor` and `validateBlockEdit` was exactly that).
+//   type-only ones included: a type-level cycle is still a cycle.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";

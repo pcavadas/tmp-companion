@@ -1,8 +1,9 @@
 name: Arm auto-merge
 
 # Decides WHETHER to arm GitHub's native auto-merge, per author. GitHub's "protect main"
-# ruleset (1 approval + build-test/commitlint/e2e green) is the floor; this workflow adds the
-# one thing a ruleset can't express — "require a human review only for external authors":
+# ruleset (1 approval + build-test/commitlint/e2e/docs/remote-lane green) is the floor; this
+# workflow adds the one thing a ruleset can't express — "require a human review only for
+# external authors":
 #
 #   - Trusted author (OWNER/MEMBER/COLLABORATOR, or dependabot[bot]) → arm auto-merge now.
 #     GitHub merges once the ruleset clears (CodeRabbit's approval counts).
@@ -12,23 +13,20 @@ name: Arm auto-merge
 #
 # Auto-merge is armed with a GitHub App token, NOT the GITHUB_TOKEN. GitHub does not re-trigger
 # workflows for pushes made by GITHUB_TOKEN, so a GITHUB_TOKEN-armed merge lands on main WITHOUT
-# firing ci.yml's push run — that's how a release backlog once silently built up (see #59; releases
-# are now started by hand, so release.yml has no push trigger). The eventual merge push is
-# attributed to whatever identity ENABLED auto-merge, so arming as the App makes that push trigger
-# ci.yml on main. Safety discipline is unchanged: still
-# no `actions/checkout`, so PR-controlled code never runs; the App private key comes from repo
+# firing ci.yml's push run. The eventual merge push is attributed to whatever identity ENABLED
+# auto-merge, so arming as the App makes that push trigger ci.yml on main. There is no
+# `actions/checkout`, so PR-controlled code never runs; the App private key comes from repo
 # secrets and is never exposed to the PR. The one third-party action (actions/create-github-app-
 # token, GitHub-authored) is pinned to a full commit SHA.
 #
 # MAIN-ONLY: arming is gated to PRs whose base is `main`. The ruleset only protects main, so
 # auto-merge on any other base has nothing to wait for and merges the INSTANT the PR leaves
-# draft — that's how a stacked-series PR (#50) merged with zero review the moment it was marked
-# ready, into an already-merged parent. Stack/side-branch PRs merge only by deliberate manual
-# action; the review gate lives once, at main.
+# draft, with zero review. Stack/side-branch PRs merge only by deliberate manual action; the
+# review gate lives once, at main.
 #
 # FORK PRs: `pull_request_review` runs triggered from a fork head get NO secrets, so the App
-# token can't be minted — the job used to fail there (empty app-id), and the red check left the
-# PR UNSTABLE, which stalled auto-merge (#143). The job now skips that combination entirely.
+# token can't be minted, and a red check there would leave the PR UNSTABLE and stall
+# auto-merge. The job skips that combination entirely.
 # `pull_request_target` runs keep secrets even for forks, so disarm-on-external-push still works;
 # the review-approval ARM path for a fork PR is instead a manual click by @pcavadas — a
 # user-armed auto-merge attributes the merge push to the user, so ci.yml still fires.

@@ -1,16 +1,14 @@
-// src/__tests__/useLevelingFlow-lifecycle.test.ts — BUG→GATE for the run's lifecycle.
+// src/__tests__/useLevelingFlow-lifecycle.test.ts — the run's lifecycle.
 //
-// #283: a leveling run's state used to live in `useLevelingFlow`'s component state. A tab
-// switch unmounts `LevelView`, so the run kept writing to the unit with no Stop the user
-// could reach, and a second run could start beside it. The run now lives in the module
-// store (`levelRunStore`): a remounted hook shows the same run, its Stop ends it, and a
-// second start is refused while it is in flight.
+// A tab switch unmounts `LevelView`, so a run held in component state would keep
+// writing to the unit with no reachable Stop, and a second run could start beside it. The
+// run lives in the module store (`levelRunStore`): a remounted hook shows the same run,
+// its Stop ends it, and a second start is refused while it is in flight.
 //
-// #285: the scene lane's fallback `listLevelBlocks` read sat outside any try, so a throw
-// left the wizard on "Saving the last one…" forever with the run still marked running.
-// It now skips that group with the error as the row's reason, and the run ends.
+// A throw from the scene lane's fallback `listLevelBlocks` read skips that group with
+// the error as the row's reason, and the run ends (never stuck on "Saving the last one…").
 //
-// Because the flow now outlives the view, a device detach closes it: its rows are keyed by
+// Because the flow outlives the view, a device detach closes it: its rows are keyed by
 // list index, which the next connection can re-map, so a stale Summary's Try again could
 // write the wrong preset. A run in flight resets once it has wound down.
 

@@ -24,7 +24,7 @@ extern "C" {
 // the same baked squircle — macOS only auto-draws the rounded enclosure for icons in
 // the Icon Composer `.icon`/Assets.car format, not a plain Tauri `.icns`, so a
 // square-cornered `.icns` would show as a hard tile. dock.png = icons/png/icon-256.png
-// from the design handoff (see the App-icon note in CLAUDE.md).
+// from the design handoff (see `.claude/rules/app-icon.md`).
 static ICON_PNG: &[u8] = include_bytes!("../icons/dock.png");
 
 pub fn set_dock_icon() {

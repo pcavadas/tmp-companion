@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# level-validate.sh — P5 external validation. ffmpeg's `ebur128` is the ONLY meter here:
+# level-validate.sh — external validation. ffmpeg's `ebur128` is the ONLY meter here:
 # Companion code plays/solves/captures, this script independently MEASURES the captured
 # WAV and compares it against the TARGET the leveling run recorded — never against that
 # run's own achieved/predicted number. A green run means "the physical output actually
@@ -26,9 +26,9 @@
 #           output floor, which ebur128 happily measures as a plausible-looking wrong
 #           number.
 #   WARN  — `engaged` is "floor_suspect": the capture is FLAT but LOUD. That is the known
-#           false positive of `leveller::is_engaged`'s spread>0.5 arm on a compressed
-#           chain (CLAUDE.md), not a failed inject, and failing it hard would sink a
-#           correct 45-minute online run. The row is still MEASURED and still PASS/FAILs
+#           false positive of `leveller::is_engaged`'s spread arm (FLOOR_TRIP_LU, 0.4 LU)
+#           on a compressed chain (notes/device/reamp-audio.md#silent-captures), not a failed inject, and failing it hard
+#           would sink a correct online run. The row is still MEASURED and still PASS/FAILs
 #           on ffmpeg's own number — only the engage proof is downgraded to advisory, and
 #           the verdict column carries `[WARN engage floor_suspect]`.
 #   FAIL  — `wav` is null / the file is missing (named distinctly from a target miss).
@@ -61,7 +61,7 @@
 #
 # TOLERANCE defaults to 1.0 LU, NOT the solve's own acceptance band. `level.online.spec.
 # ts` documents the arithmetic: the footswitch lane accepts a solve within KNOB_TOL_LU
-# (0.3 LU, `leveller.rs`) and the re-measure adds its own run-to-run noise on top (~0.12
+# (0.3 LU, `leveller/mod.rs`) and the re-measure adds its own run-to-run noise on top (~0.12
 # LU base/scene, more on a modulated preset), so a 0.3 tolerance here would fail
 # perfectly correct runs. This validates the LEVELING, not the solver's last digit.
 #
@@ -163,7 +163,7 @@ measure_row() { # label wav target tol [engaged] [probe_log]
   local warn_note=""
   ROWS_SEEN=$((ROWS_SEEN + 1))
   # `floor_suspect` is a WARN, not a FAIL: the emitter stamps it when the capture is flat
-  # (is_engaged's spread>0.5 arm) but LOUD — the documented false positive of that
+  # (is_engaged's spread arm, FLOOR_TRIP_LU) but LOUD — the documented false positive of that
   # criterion on a compressed chain, not a failed inject (`validate_log.rs`'s
   # `engaged_verdict`). ffmpeg stays the authority: the row still gets measured and still
   # PASSes/FAILs on its own number, with the doubt carried into the verdict string.

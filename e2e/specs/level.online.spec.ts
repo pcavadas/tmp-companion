@@ -16,58 +16,57 @@ import {
   runBaseLevel,
 } from "../fixtures/scenario";
 
-// ONLINE Level rework (P4, the Plumes/BD2/OCD leveling-regression fix). Two arcs, run
-// back-to-back in one session so a 27↔28 see-saw regression surfaces in a single run: T1′
-// (below) — Friedman-shape (410)'s consolidated base+footswitches+scenes arc + idempotency,
-// the TRADE/see-saw CONTROL, lane order base → footswitches → scenes matching production's own
-// `runRank` (notes/gotchas.md's "A scene renders the base chain's ON blocks" entry). T5 —
-// Plumes-shape (405)'s first-run BOOST journey via the wizard UI.
+// ONLINE Level. Two arcs, run back-to-back in one session so a 27↔28 see-saw regression
+// surfaces in a single run: the 410 arc (below) — Friedman-shape (410)'s consolidated
+// base+footswitches+scenes arc + idempotency, the TRADE/see-saw CONTROL, lane order base →
+// footswitches → scenes matching production's own `runRank`
+// (notes/device/scenes.md#footswitch-state-on-recall). The 405 journey — Plumes-shape (405)'s
+// first-run BOOST journey via the wizard UI.
 // SELF-CALIBRATE: every target/precondition below is derived at RUNTIME from the device's own
 // as-is reading or solved `constant_c`, never a fixture constant — a sim-model magnitude (e.g.
 // a `scenario-loudness.json` ceiling) is a sim-model truth, not a device one, and asserting it
-// directly has already failed against real hardware once.
-// Measured real-device run: ~26-27 min, ~5 min of it two fixed 150 s T5 stalls for a lazy save
-// commit that fw 1.8.58 does not have — both are gone.
-// Rows this file emits per run: T1′'s 1 base + `SCENES_410.length`, T5's 1 base +
-// `SWITCH_SPECS_405.length` — `scripts/e2e.sh` greps the line below and compares by EQUALITY.
+// directly does not hold on real hardware.
+// Rows this file emits per run: the 410 arc's 1 base + `SCENES_410.length`, the 405 journey's 1
+// base + `SWITCH_SPECS_405.length` — `scripts/e2e.sh` greps the line below and compares by
+// EQUALITY.
 // STRICT_VALIDATE_ROWS=6
 // The same rows by identity (`validate_log`'s label: list index + scene/switch). Each must be
 // MEASURED and PASS under the ffmpeg judge, or the run does not certify.
 // STRICT_VALIDATE_LABELS=base:slot410 scene:slot410:scene0 scene:slot410:scene1 base:slot405 footswitch:slot405:switch5 footswitch:slot405:switch8
-// The REMOTE twin runs only the two re-measures that guard an ORDERING regression (`isRemote`
+// The REMOTE lane runs only the two re-measures that guard an ORDERING regression (`isRemote`
 // below): 410's scene 0 (the see-saw row) and 405's Rat (the base-ON pedal). Its audio is not
 // calibrated against the unit and `scripts/e2e-remote.sh` runs no ffmpeg judge, so the other
 // four only re-check a solve the run already reported. The unit runs all six.
 
 // COVERAGE rows 37, 45
-const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S — the P4 leveling-regression fixture
-const PRESET24 = SCENARIO[5]; // E2E Preset24 — the Plumes-shape first-run journey (T5)
+const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S — the see-saw leveling-regression fixture
+const PRESET24 = SCENARIO[5]; // E2E Preset24 — the Plumes-shape first-run journey
 
-// 410's base pair is a plain TRADE solve at -23 (G≈+1.0 <= P_up≈+6.0, plan physics section):
-// presetLevel alone closes the gap, so the fader must NEVER move — this is the see-saw
-// control target, deliberately the SAME numeric target as T5's Plumes-shape BOOST case below
-// so the two runs are directly comparable in one online session. This is a DEFAULT ATTEMPT,
-// not a guarantee — the real device's own ceiling wins if -23 turns out unreachable (T1′
-// falls back to the run's own solved `constant_c - 1` when the first attempt clamps; see the
-// file header's SELF-CALIBRATE note and T1′'s own comment).
+// 410's base pair is a plain TRADE solve at -23 (G≈+1.0 <= P_up≈+6.0,
+// `headroom_trade::plan_level_pair`): presetLevel alone closes the gap, so the fader must NEVER
+// move — this is the see-saw control target, deliberately the SAME numeric target as the 405
+// journey's BOOST case below so the two runs are directly comparable in one online session.
+// This is a DEFAULT ATTEMPT, not a guarantee — the real device's own ceiling wins if -23 turns
+// out unreachable (the 410 arc falls back to the run's own solved `constant_c - 1` when the
+// first attempt clamps; see the file header's SELF-CALIBRATE note and that arc's own comment).
 const BASE_TARGET_410 = -23;
 // The scene rows 410's arc levels. Its three overlays are byte-identical apart from
 // `sceneName`, so the third only costs a capture pair. Scene 2 is the droppable one: 0 is the
 // see-saw guard row (its strict re-measure below), 1 is `lastLoadedScene` (danger.md's
-// batched-save revert class). The FIXTURE keeps all three — E9 pins `scene_count == 3`.
+// batched-save revert class). The FIXTURE keeps all three — `fixture_gates.rs`'s
+// `e2e_fixture_scenes_are_device_conformant` pins them.
 const SCENES_410 = [0, 1];
-// Scene and footswitch targets are no longer fixture constants — see T1′'s own AS-IS
-// derivation (file header's SELF-CALIBRATE note: a fixed sim-model ceiling doesn't hold as device
-// physics). `SCENE_TARGET_410`/`FS_TARGET_410`/`FS_TARGET_UNIVIBE` used to live here.
+// Scene and footswitch targets are not fixture constants — see the 410 arc's own AS-IS
+// derivation (file header's SELF-CALIBRATE note).
 
 const DELTA = 0.5; // base/scene: run-to-run noise + the one-shot/secant residual (unchanged)
-const DELTA_FS = 1.0; // footswitch re-measure: KNOB_TOL_LU (0.3, leveller.rs) + capture noise
-// The footswitch SOLVE's own acceptance band (not a re-measure) — matches leveller.rs's
+const DELTA_FS = 1.0; // footswitch re-measure: KNOB_TOL_LU (0.3, leveller/mod.rs) + capture noise
+// The footswitch SOLVE's own acceptance band (not a re-measure) — matches leveller/mod.rs's
 // KNOB_TOL_LU exactly, no extra margin needed since this checks the solver's own report.
 const KNOB_TOL_LU = 0.3;
 // "On target" in every lane (leveller::ACCEPT_TOL_LU): the band inside which the footswitch
 // solver accepts a reading and an idempotent re-run skips its write. About 2 sigma of the
-// ~0.12 LU capture noise; the old 0.1 band sat below it.
+// ~0.12 LU capture noise.
 const ACCEPT_TOL_LU = 0.25;
 
 interface LevelResult {
@@ -79,9 +78,10 @@ interface LevelResult {
   /** Null unless the base pair entered the BOOST regime — see `src/lib/types.ts`'s
    *  `BaseBoostSummary` doc. 410's base pair is TRADE, so this must stay null throughout. */
   base_boost: { applied: boolean } | null;
-  /** Solved constant `C` in `LUFS = 20*log10(level) + C` (max reachable LUFS) — leveller.rs's
-   *  `LevelResult::constant_c` doc. Used by T1′'s base fallback and T5's self-calibration to
-   *  read the run's own measured ceiling instead of trusting a fixture number. */
+  /** Solved constant `C` in `LUFS = 20*log10(level) + C` (max reachable LUFS) —
+   *  leveller/mod.rs's `LevelResult::constant_c` doc. Used by the 410 arc's base fallback and
+   *  the 405 journey's self-calibration to read the run's own measured ceiling instead of
+   *  trusting a fixture number. */
   constant_c: number;
 }
 /** A batched leveling command's return: the rows, with the run-end re-amp verdict beside them. */
@@ -96,11 +96,11 @@ interface FootswitchLevelResult {
   clamped: boolean;
   clamp_reason: string | null;
   predicted_lufs: number;
-  /** The field-8 read after the save (`verify_fs_persisted_writes`): true when the stored
-   *  row does not hold what the batch wrote. Null when nothing was saved. */
+  /** The `presetDataRequest` (field 8) read after the save (`verify_fs_persisted_writes`): true
+   *  when the stored row does not hold what the batch wrote. Null when nothing was saved. */
   persist_mismatch: boolean | null;
 }
-/** P5 external validation: what the run PROMISED for the sound about to be re-measured —
+/** External validation: what the run PROMISED for the sound about to be re-measured —
  *  see .claude/rules/e2e.md's "External validation" section. */
 interface ValidateArg {
   targetLufs: number;
@@ -110,7 +110,7 @@ interface ValidateArg {
 
 const T = LEVEL_T;
 
-/** Whether the server drives the REMOTE twin (`/health`'s `remote`), not the unit. */
+/** Whether the server drives the REMOTE device (`/health`'s `remote`), not the unit. */
 async function isRemote(page: Page): Promise<boolean> {
   const res = await page.request.get(`${SERVER}/health`);
   return ((await res.json()) as { remote?: boolean }).remote === true;
@@ -151,8 +151,8 @@ function assertFsSolved(
 /** Every requested switch must come back. `level_footswitches_apply` reports a row that
  *  errors (an audio overrun mid-solve, say) as a streamed Error item and leaves it out of the
  *  returned array, so `assertFsSolved` alone passes over it, and a later test that builds on
- *  the row then measures something else (a dropped switch-1 solve turned the idempotency
- *  re-run into a fresh solve on the unit, 2026-10-14). */
+ *  the row then measures something else (a dropped switch-1 solve turns the idempotency
+ *  re-run into a fresh solve on the unit). */
 function expectEverySwitch(
   results: FootswitchLevelResult[],
   jobs: readonly { switch: number }[],
@@ -206,7 +206,7 @@ test.describe("Level online — Friedman-shape consolidated arc + idempotency (4
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
     // Base (3 conns/1 engage) + 2 scenes (one batch) + 1 footswitch batch + 3 strict
-    // ffmpeg re-measures — generous headroom over the plan's own ~8 min estimate.
+    // ffmpeg re-measures — generous headroom over a ~8 min run.
     test.setTimeout(900_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
@@ -266,9 +266,6 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     // src/views/level/leveling.ts ranks footswitch=1 ahead of scene=2, both after base=0) —
     // 410's own TubeScreamer row. The as-is probe is taken AFTER the base save above, since
     // base leveling just moved `presetLevel`, which scales every capture on this same slot.
-    // (The modulated UniVibe row on 404 this lane once carried is gone: a footswitch solve on
-    // a LFO'd knob is the same solver path as this row, and it cost a probe, a solve, a save
-    // and the next run's re-import of 404.)
     const { asIs: asIsFs410, target: fsTargetUsed410 } =
       await measureAsIsTarget(page, {
         slot: FRIEDMAN.slot,
@@ -306,11 +303,8 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     // footswitch-owned, and all 3 scene overlays render through it (their overlays carry only
     // `ACD_MarshallPlexi`), so the scene as-is probes below MUST be taken after lane 2's
     // footswitch save — otherwise the derived scene target reflects a TubeScreamer value lane 2
-    // is about to change out from under it. HW proof this was the bug: with footswitches
-    // running AFTER scenes (the old order), lane 2's 2.0 dB cut to TubeScreamer (as-is -21.31 →
-    // target -23.31) silently re-moved all 3 already-on-target scenes — scene 0 read exactly on
-    // target (-29.33) right after its own batch save, then drifted to -31.34 by the end of the
-    // arc.
+    // is about to change out from under it (HW: with footswitches running AFTER scenes, lane
+    // 2's 2.0 dB TubeScreamer cut moved scene 0 from on target, -29.33, to -31.34).
     const blocks = (await invoke(
       page,
       "list_level_blocks",
@@ -391,7 +385,7 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     // The footswitch row above is judged by its OWN solve result, not a second
     // strict re-measure — this arc caps its ffmpeg-validated rows to keep its cost down. It
     // emits 1 + SCENES_410.length; STRICT_VALIDATE_ROWS at the top of this file counts them.
-    // The remote twin re-measures scene 0 only (file header).
+    // The remote lane re-measures scene 0 only (file header).
     const remote = await isRemote(page);
     const sceneRow = (slot: number): LevelResult | undefined =>
       scenes.find((r) => r.scene_slot === slot);
@@ -443,7 +437,7 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
       ).toBeLessThanOrEqual(DELTA);
     }
 
-    // ── Idempotency, ON THE SAME SAVED STATE this arc just wrote (was its own test, T2) ──
+    // ── Idempotency, ON THE SAME SAVED STATE this arc just wrote ──
     // The SKIP-LEGITIMACY guard: a `saved:false` footswitch result above is legitimate ONLY
     // when the stored value already measured within tolerance of target — never a silent
     // "did nothing" masquerading as success.
@@ -484,7 +478,7 @@ value already measured within tolerance of target`,
 });
 
 // COVERAGE row 36 (online half: 405's base BOOST, then its footswitch rows after the save)
-// ── T5: Plumes-shape (405) first-run journey — the BOOST case paired with T1′'s TRADE
+// ── Plumes-shape (405) first-run journey — the BOOST case paired with the 410 arc's TRADE
 // control above, run back-to-back in the same online session (see-saw surfaces in one run) ──
 test.describe("Level online — Plumes-shape first-run journey (405)", () => {
   test.afterEach(async ({ page }) => {
@@ -500,21 +494,21 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
   // cross-spec imports of test fixtures aren't this codebase's convention (each spec owns its
   // own job literals). Identity only: NOT a fixture-derived magnitude (file header's
   // SELF-CALIBRATE note bans that class of online target). Each row's `targetLufs` is self-calibrated at
-  // runtime inside the test, the same way T1′ derives its own footswitch target — see the
+  // runtime inside the test, the same way the 410 arc derives its own footswitch target — see the
   // probe loop below.
   //
-  // WHY TWO AND NOT FOUR (the ratified ≤25 min online leveling budget). Every device capture
-  // costs ~22 s and a four-row journey spent ~45 of them, putting this file at 27.7 min. The
-  // two rows kept are the two that carry DISTINCT classes:
+  // WHY TWO AND NOT FOUR (the ≤25 min online leveling budget): every device capture costs
+  // ~22 s, and a four-row journey spends ~45 of them. The two rows kept are the two that
+  // carry DISTINCT classes:
   //   • switch 5 `ACD_Plumes.level`  — a `level`-named handle, bypassed in base.
   //   • switch 8 `ACD_Rat.volume`    — a `volume`-named handle, and the one pedal this fixture
   //     leaves ON in base (`bypass:false` + `isActive:true`), so it is also the row that
   //     exercises the base-ON interaction the run-order fix exists for.
   // Switches 6 (`ACD_BluesDriver.level`) and 7 (`ACD_ObsessiveDrive.volume`) are the same two
   // classes over again and are dropped from the ONLINE journey only. They stay covered where
-  // the coverage is free: gate E5
-  // (`e2e_server_tests.rs`) proves all four converge after a base boost, and — the reason
-  // switch 7 mattered — `fixture_gates` now pins all four pedals' parameter NAMES against the
+  // the coverage is free: `e2e_server_tests.rs`'s
+  // `the_footswitch_rows_still_converge_after_a_base_boost` proves all four converge after a
+  // base boost, and `fixture_gates` pins all four pedals' parameter NAMES against the
   // names the hardware exposes, which is a stronger guard than one online row was.
   const SWITCH_SPECS_405 = [
     {
@@ -538,7 +532,7 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
     // Base UI drive (3 conns/1 engage via the wizard), a fallback calibration only when the
     // seeded fixture does not boost (up to ~4 engages + a second UI drive), a 2-switch
-    // footswitch batch + 3 strict ffmpeg re-measures (not on the remote twin).
+    // footswitch batch + 3 strict ffmpeg re-measures (not on the remote lane).
     test.setTimeout(1_800_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
@@ -600,14 +594,14 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       return true;
     };
 
-    // OPTIMISTIC FIRST on the unit (the T1′ base-clamp fallback's pattern): the seed
+    // OPTIMISTIC FIRST on the unit (the 410 arc's base-clamp fallback pattern): the seed
     // re-imports 405 pristine before every run, and its authored pair (presetLevel 0.27,
     // Twin 0.28, the Rat base-ON) is meant to put G = target - as_is past P_up (headroom to
     // presetLevel 1.0), so the run boosts with no setup. The as-is read, the dry preview and
     // the fader calibration (file header's SELF-CALIBRATE note: a sim magnitude is not device
-    // truth) run only when the device proves that wrong — the fallback below. The REMOTE twin
-    // is deterministic and its pristine 405 does NOT boost (G <= P_up on every twin run so
-    // far), so it goes straight to the calibration: trying first would cost it a second
+    // truth) run only when the device proves that wrong — the fallback below. The REMOTE
+    // device is deterministic and its pristine 405 does NOT boost (G <= P_up on every remote
+    // run), so it goes straight to the calibration: trying first would cost it a second
     // wizard drive every run.
     const remote = await isRemote(page);
     let fCalibrated = twinCandidatePre.value;
@@ -722,14 +716,14 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       twinFader,
       "the Twin's outputLevel candidate must be discoverable",
     ).toBeDefined();
-    // A derived BAND off our OWN baseline, never a hard-coded model number (the old
-    // `toBeCloseTo(0.498, 1)` was the offline sim model's own number, not a real-HW invariant
-    // — file header's SELF-CALIBRATE note). Boost maxes `presetLevel` FIRST (the disclosure
-    // sentence above just confirmed it fired), so the solved fader must be strictly louder
-    // than its baseline. When the fallback measured the excess of G over P_up, the fader's
-    // own share of closing it is at least that excess (inflated further by the drive pedals'
-    // base-ON contribution), so it must also clear `(guaranteedExcessDb - 1)` dB over the
-    // baseline (1 dB slack for solve noise/secant residual).
+    // A derived BAND off our OWN baseline, never a hard-coded model number (a sim-model number
+    // is not a real-HW invariant — file header's SELF-CALIBRATE note). Boost maxes
+    // `presetLevel` FIRST (the disclosure sentence above just confirmed it fired), so the
+    // solved fader must be strictly louder than its baseline. When the fallback measured the
+    // excess of G over P_up, the fader's own share of closing it is at least that excess
+    // (inflated further by the drive pedals' base-ON contribution), so it must also clear
+    // `(guaranteedExcessDb - 1)` dB over the baseline (1 dB slack for solve noise/secant
+    // residual).
     expect(
       twinFader?.value ?? Number.NaN,
       "the boosted fader must be LOUDER than its baseline (a real boost, not a no-op)",
@@ -789,7 +783,7 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
     });
 
     // 3 strict ffmpeg re-measures: base + both leveled pedals, from the saved state. The
-    // remote twin re-measures the Rat only (file header).
+    // remote lane re-measures the Rat only (file header).
     const measure405 = (
       job?: (typeof SWITCH_JOBS_405)[number],
     ): Promise<number> =>

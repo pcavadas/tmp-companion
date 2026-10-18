@@ -3,7 +3,7 @@
 // the BACKEND reports (`app_info().os`, never the user agent): Pro Control exists only on
 // macOS and Windows, so Linux names just the other TMP Companion window — and that the
 // busy page offers no button (quitting the other app is the whole fix). The Connection
-// help button itself is the #304 gate in ClickOnlyHelpAndReorder.test.tsx.
+// help button itself is gated in ClickOnlyHelpAndReorder.test.tsx.
 
 import { describe, it, expect } from "vitest";
 import { act, screen } from "@testing-library/react";

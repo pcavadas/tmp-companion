@@ -1,6 +1,6 @@
 // src/theme/ThemeContext.tsx — theme provider + hook (LIGHT-ONLY).
 //
-// The app is light-only (dark mode was removed). There is one token object;
+// The app is light-only. There is one token object;
 // `useTheme()` returns `{ t }`. The provider is kept (rather than importing the
 // tokens directly everywhere) so the token source stays a single seam.
 

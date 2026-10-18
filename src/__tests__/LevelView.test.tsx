@@ -66,7 +66,7 @@ beforeEach(() => {
 function renderView(connected: boolean) {
   const r = renderWithTheme(<LevelView connected={connected} />);
   // The backup scan is App-owned in production; seed it here when connected so the
-  // view's scene/block data populates (the view itself no longer triggers the scan).
+  // view's scene/block data populates (the view itself never triggers the scan).
   if (connected) void ensureLibraryScan();
   return r;
 }
@@ -221,8 +221,7 @@ describe("LevelView — choosing on the list", () => {
     resetLiveDevice();
   });
 
-  // BUG→GATE (owner review, 2026-10-16): Select all ignored the filter and chose the whole
-  // library, so leveling a bank meant ticking each preset by hand.
+  // Select all chooses only the filtered presets, never the whole library.
   it("Select all chooses only the presets the filter shows", async () => {
     mockThreePresets();
     renderView(true);
@@ -287,7 +286,7 @@ describe("LevelView — choosing on the list", () => {
       screen.getByRole("button", { name: /^level 1 sound$/i }),
     ).toBeEnabled();
     expect(screen.getByText("1 preset")).toBeInTheDocument();
-    // No loudness numbers on the list: the old targets readout is gone.
+    // No loudness numbers on the list: no targets readout.
     expect(screen.queryByText(/Targets/)).toBeNull();
   });
 
@@ -488,8 +487,7 @@ function mockLevelingFixture(
         ],
       }),
     level_footswitches_apply: ({ jobs, onResult }) => {
-      // Every row levels now (D2 — the backend removed the verify-only mode
-      // entirely), so every job resolves the same way.
+      // Every row levels, so every job resolves the same way.
       jobs.forEach((j) => {
         onResult.onmessage({
           switch: j.switch,
@@ -519,7 +517,7 @@ function mockLevelingFixture(
     list_level_blocks: () => [TWEED_OUTPUT],
     level_scenes_apply_batched: levelScenesDone,
     // No candidates in these fixtures — the point is exercising the target-mode
-    // pick, not the handle picker's candidate list (see SceneLevelPick.test.tsx).
+    // pick, not the handle picker's candidate list.
     list_scene_level_handles: () => [
       { sceneSlot: 0, candidates: [], allCandidates: [] },
       { sceneSlot: 1, candidates: [], allCandidates: [] },
@@ -792,8 +790,8 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(fired("level_scenes_apply_batched")).toBe(true); // FS scene level
     // Adjacent same-preset scene rows BATCH into ONE backend call (one prepass, one
     // runner) REGARDLESS of per-scene target — each job carries its own targetLufs, so
-    // a mixed-target preset no longer splits into several prepasses. Per-scene calls
-    // re-loaded the preset each time, flashing the unit back to base twice per scene.
+    // a mixed-target preset never splits into several prepasses. A per-scene call
+    // re-loads the preset, flashing the unit back to base twice per scene.
     const sceneCalls = callsOf("level_scenes_apply_batched");
     expect(sceneCalls).toHaveLength(1);
     const sceneJobs = sceneCalls[0].jobs;
@@ -847,8 +845,8 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(fired("level_scenes_apply_batched")).toBe(true); // FS scenes re-measured live
   });
 
-  // BUG→GATE (#241): a wide dynamics spread is not a measurement problem, so it no longer
-  // flags the row "Check by ear".
+  // A wide dynamics spread is not a measurement problem, so it does not
+  // flag the row "Check by ear".
   it("large dynamics spread → no 'Check by ear' on the Summary", async () => {
     mockLevelingFixture({ spreadLu: 8.2 });
     renderView(true);
@@ -922,10 +920,9 @@ describe("LevelView — full leveling wizard e2e", () => {
     ).toBeInTheDocument();
   });
 
-  // BUG→GATE (the 2026-07 "clamp loop unresolvable" report), retargeted to look B: a sound
-  // clamped at full volume says so and what to change, with NO button (running it again
+  // A sound clamped at full volume says so and what to change, with NO button (running it again
   // can't help) and no Try again; the way to a quieter target is Done, the list and Set
-  // up — and there it resolves. The old "Re-level clamped…" reopened Set up in a re-level mode that is gone.
+  // up — and there it resolves.
   it("clamped at a loud target: says so with no button, then levels at a quieter one", async () => {
     mockLevelingFixture({ ceiling: -22 });
     renderView(true);
@@ -990,10 +987,9 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(
       await screen.findByRole("heading", { name: /^Level \d+ sounds?$/ }),
     ).toBeInTheDocument();
-    // D2: every row levels now (the verify-only default + "Make level-neutral" opt-in
-    // are gone) — the row already carries a real handle (SOLO_FOOTSWITCH's one
+    // Every row levels — the row already carries a real handle (SOLO_FOOTSWITCH's one
     // candidate, tone-safe-classified `level_linear`) with no picker interaction
-    // required to start (design 1a dropped the per-row explanatory caption).
+    // required to start.
     expect(screen.getAllByText("Solo").length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "Start leveling" }));
     expect(
@@ -1009,7 +1005,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(screen.queryByText(/assigned/i)).toBeNull();
   });
 
-  // ── BUG-3: a Stop pressed during the LAST item must mark the run stopped ──────
+  // ── a Stop pressed during the LAST item must mark the run stopped ──────
   // The last item was already in flight when Stop was pressed, so the top-of-loop
   // cancel check never sees it; the final publish must still read the cancel flag and
   // report "stopped", not mislabel a finished run. Look B: a stopped run lands on the
@@ -1067,10 +1063,9 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(screen.getByRole("button", { name: "Try again (1)" })).toBeEnabled();
   });
 
-  // ── BUG-4: closing the flow after a run deselects the leveled sounds ──────────
-  // Closing after a run used to leave the whole selection ticked, so the next Level
-  // re-ran everything. Done now prunes exactly the keys the runs leveled, accumulating
-  // across Try again rounds; a sound left over stays chosen.
+  // ── closing the flow after a run deselects the leveled sounds ──────────
+  // Done prunes exactly the keys the runs leveled (so the next Level does not re-run
+  // everything), accumulating across Try again rounds; a sound left over stays chosen.
   it("Done after a run deselects the already-leveled sounds (BUG-4)", async () => {
     mockLevelingFixture({ clamped: true });
     renderView(true);

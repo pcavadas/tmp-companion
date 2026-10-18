@@ -1,6 +1,6 @@
 //! Capture records: who a re-amp capture measured, and what it heard.
 //!
-//! The capture tap ([`super::capture`]) runs on the caller's thread and only clones the
+//! The capture tap ([`super::capture()`]) runs on the caller's thread and only clones the
 //! stimulus and the interleaved capture into the recorder's queue. Everything here runs
 //! on the writer thread: the processed pair, the BS.1770 loudness, per-channel peak and
 //! RMS over EVERY returned channel (so a stale third or fourth channel shows), and the

@@ -78,9 +78,9 @@ impl Session {
     ///
     /// `max_secs` bounds the time WITHOUT a progress event (new chunk, state change,
     /// build tick), not the whole transfer: the stream runs at ~2.7 chunks/s, so a
-    /// 230-chunk (2.2 MiB) library needs ~85 s and a whole-transfer cap of 60 s cut it
-    /// at 163/230 (HW, 2026-09-02). Every refresh source is finite, so the stall timer
-    /// alone bounds the loop.
+    /// 230-chunk (2.2 MiB) library needs ~85 s and a whole-transfer cap would cut a large
+    /// library short (HW). Every refresh source is finite, so the stall timer alone bounds
+    /// the loop.
     pub fn device_backup<F: FnMut(BackupProgress)>(
         &mut self,
         max_secs: u64,

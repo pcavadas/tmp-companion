@@ -1,13 +1,12 @@
 // src/__tests__/SelectLateContent.test.tsx — a Select's open list must RE-PLACE itself
-// when its rows arrive after the open. Ported from usePickAnchorContentKey.test.tsx to
-// the look B `Select` (whose list is the DS `Menu`, placed from the trigger's rect).
+// when its rows arrive after the open (the look B `Select`, whose list is the DS `Menu`,
+// placed from the trigger's rect).
 //
-// BUG→GATE (the original): the picker's placement effect depended only on values fixed at
-// open time while what it measures is the list's height. A list whose body lands LATE —
-// opening fires a lazy per-preset read, so the first paint is one "Reading…" line and the
-// real rows appear a moment later — kept the placement computed for the one-line list: a
-// tall list rendered straight off the bottom of the window, never clamped and never
-// flipped above its trigger, with its rows unreachable.
+// A placement effect that depends only on values fixed at open time, while what
+// it measures is the list's height, keeps a LATE list (a lazy per-preset read paints one
+// "Reading…" line, the real rows a moment later) placed for the one-line list: the tall list
+// renders straight off the bottom of the window, never clamped and never flipped above its
+// trigger, with its rows unreachable.
 //
 // The proxy this asserts is the list's own `top`, which IS the placement's only output.
 // The trigger is placed low in a short window on purpose: the grown list cannot fit below

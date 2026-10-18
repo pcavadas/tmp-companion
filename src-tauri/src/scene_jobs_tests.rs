@@ -442,7 +442,7 @@ fn scene_docs_restore_scene_is_the_guarded_saved_on_load_scene() {
     assert_eq!(restore, Some(session::BASE_SCENE_SLOT));
 }
 
-// ── #176: the production saved-overlay prepass (`prepass_scene_docs_with`) ───────────────
+// ── the production saved-overlay prepass (`prepass_scene_docs_with`) ───────────────
 
 /// What one `prepass_scene_docs_with` call did on the device — the loads it issued — and its
 /// answer. There is no other device seam: no live walk, no read.
@@ -539,9 +539,8 @@ fn overlay_prepass_fails_the_run_when_the_load_fails() {
 // ── saved-structure fallback (the oversized-audioGraph class) ───────────────────────────
 // A preset whose audioGraph overruns the device's lean-session field-3 push (~3.4 KB
 // observed; the prepass sessions empirically get the lean cut)
-// loses `audioGraph.template` in EVERY live scene doc, which used to hard-fail the whole
-// preset ("some presets just never scene-level" — the Hiwatt user report). The
-// field-8 saved JSON still carries the template (it sits at the end of audioGraph, well
+// loses `audioGraph.template` in EVERY live scene doc; that must not fail the whole preset
+// (the Hiwatt user report). The field-8 saved JSON still carries the template (it sits at the end of audioGraph, well
 // inside the ~17 KB field-8 partial), so build_scene_jobs accepts it as the routing
 // STRUCTURE while knob values keep coming from the live docs.
 #[test]
@@ -717,17 +716,13 @@ fn scene_overlay_base_slot_is_unknown() {
     ));
 }
 
-// ── per-node bake gate (`scene_overlays_change_param`) — REMOVED 2026-08-19 ────────────
+// ── footswitch assign gate ──────────────────────────────────────────────────────────────
 //
-// The whole "does any scene overlay CHANGE this node's param" gate this section used to pin
-// is gone: `plan_footswitch_jobs`'s assign gate no longer reads scene data at all — it decides
-// bake-vs-assign purely off whether the switch already carries a `param` fn for the selected
-// control. The dozen-plus VALUE/truncation/ambiguity cases that lived here (plus the
-// truncation-only `without_scene0_bypass` fixture) existed solely to pin that removed
-// function; they went with it. `bake_gate_preset` survives BELOW — `restating_base_skips_a_
-// bypass_only_scene_which_inherits_the_bake` still needs its in-range `lastLoadedScene` — and
-// `scene_overlay_shape_classifies_bypass_only_vs_full` further down still stands too; both pin
-// `scene_overlay`/`scenes_restating_base`, neither of which this rule change touched.
+// `plan_footswitch_jobs`'s assign gate reads no scene data: it decides bake-vs-assign purely
+// off whether the switch already carries a `param` fn for the selected control.
+// `bake_gate_preset` below serves `restating_base_skips_a_bypass_only_scene_which_inherits_
+// the_bake` (it needs an in-range `lastLoadedScene`); it and
+// `scene_overlay_shape_classifies_bypass_only_vs_full` pin `scene_overlay`/`scenes_restating_base`.
 
 // `saved_preset`'s `lastLoadedScene` (2) is out of range for its 2-entry `scenes[]`; the
 // mirror-target fixture below needs it in range, so it pins that itself.
@@ -737,7 +732,7 @@ fn bake_gate_preset() -> serde_json::Value {
     p
 }
 
-// ── three-state overlay split: Full vs BypassOnly (HW-verified fw 1.8.45) ───────────────
+// ── three-state overlay split: Full vs BypassOnly (HW) ───────────────
 //
 // A scene's per-node overlay can be BYPASS-ONLY — the block's Scene Edit flag is DISABLED,
 // so the scene carries only the bypass family and SHARES the node's knobs with base. A
@@ -827,12 +822,12 @@ fn restating_base_skips_a_bypass_only_scene_which_inherits_the_bake() {
 
 // ── Part B: audibility-guarded BypassOnly shared write ──────────────────────────────────
 //
-// BUG (preset 28 "Friedman HBE", `ACD_Boost`/`gain`): base bypassed, `gain` 2.5. Dirt (scene
+// The "Friedman HBE" shape (preset 28, `ACD_Boost`/`gain`): base bypassed, `gain` 2.5. Dirt (scene
 // 0) and Crunch (scene 3) carry FULL overlays (their own bypass + gain). Clean (scene 1) is
 // bypass-only and stays bypassed. Solo (scene 2) is bypass-only and UN-bypassed — it is the
 // ONLY scene that can hear a plain leak-to-base write, because every OTHER scene either stays
-// bypassed or pins `gain` with its own overlay. `scene_write_verdict` used to refuse this
-// outright ("shares knobs with base"); `shared_write_is_scene_local` clears it.
+// bypassed or pins `gain` with its own overlay. `shared_write_is_scene_local` clears it rather
+// than refusing it as "shares knobs with base".
 
 /// `hbe_boost_preset()`'s node id/param, named once so the matrix tests below don't repeat
 /// the literals.
@@ -959,11 +954,9 @@ fn shared_write_is_scene_local_false_when_an_exp_binding_targets_the_node() {
     assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
 }
 
-// The three escapes `footswitch::node_targeted_by_assign` catches that the old, local
-// `scene_jobs::node_targeted_by_ftsw_or_exp` copy it replaced did NOT: a `toe` jack (the old
-// scan only checked `exp1`/`exp2`), an object-shaped jack body (the old scan assumed an array),
-// and a non-`"param"` func naming the node (the old scan matched `func:"param"` only). Each
-// must still make `shared_write_is_scene_local` refuse, exactly like the exp1/param case above.
+// Three assigns `footswitch::node_targeted_by_assign` must catch beyond `exp1`/`exp2` with an
+// array body and `func:"param"`: a `toe` jack, an object-shaped jack body, and a non-`"param"`
+// func naming the node. Each must still make `shared_write_is_scene_local` refuse, exactly like the exp1/param case above.
 
 #[test]
 fn shared_write_is_scene_local_false_when_a_toe_jack_assign_targets_the_node() {
@@ -1089,7 +1082,7 @@ fn scene_write_verdict_for_param_unknown_overlay_arm_unchanged() {
     }
 }
 
-// ─────────────── G-D1a: an unusable scene doc must REFUSE, never fall back to base ───────────
+// ─────────────── an unusable scene doc must REFUSE, never fall back to base ────────────────
 // HW motivation (Friedman HBE, device slot 28): the preset carries two guitar amps — `ACD_BE100`
 // active in base and `ACD_TwinReverb65NoFx` bypassed there. When a scene's doc does not arrive,
 // `classify_scene_knobs`' `None => !nd.bypassed` arm resolves bypass from the BASE graph, so the
@@ -1217,7 +1210,7 @@ fn a_scene_whose_saved_overlay_is_unclassifiable_skips_instead_of_losing_its_hea
 
 // --- The swap scene: the live walk missed it; the saved overlay answers it ---
 
-// G-D1a's two-amp base, plus the SCENES the real "Friedman HBE" carries. Scene 1 ("Clean") is
+// The same two-amp base, plus the SCENES the real "Friedman HBE" carries. Scene 1 ("Clean") is
 // the swap scene: its overlay inverts the base pair — `ACD_BE100` off, `ACD_TwinReverb65NoFx`
 // on at its own outputLevel of 0.45. That is the scene base fallback gets wrong, and the one
 // the live prepass skipped on HW (2026-09-01) by pushing no usable doc for it.

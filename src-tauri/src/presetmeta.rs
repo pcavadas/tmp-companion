@@ -69,7 +69,7 @@ mod tests {
     use crate::slot::ListIndex;
     use std::path::PathBuf;
 
-    // AC1 — set bpm + MIDI messages on a fixture; cap enforced.
+    // Set bpm + MIDI messages on a fixture; cap enforced.
     #[test]
     fn set_bpm_divisions_midi() {
         let mut p = serde_json::json!({ "bpm": 120.0, "onLoadMidiMsgs": Value::Null });
@@ -122,7 +122,7 @@ mod tests {
         assert!(too_many.transform(&target).is_err(), "over-cap is rejected");
     }
 
-    // AC2 — setting bpm on the fixture re-encodes losslessly (the OFFLINE .preset round-trip).
+    // Setting bpm on the fixture re-encodes losslessly (the OFFLINE .preset round-trip).
     #[test]
     fn reencode_roundtrips() {
         let xor = crate::backup::xor_jld;

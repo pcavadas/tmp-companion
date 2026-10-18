@@ -1,10 +1,10 @@
-//! The base (`presetLevel`) lane: [`solve_level`] / [`apply_level`], [`level_preset`] with
-//! its boost and isolation handling, and [`level_setlist`].
+//! The base (`presetLevel`) lane: [`solve_level`] / [`apply_level`], and [`level_preset`]
+//! with its boost and isolation handling.
 
 use super::*;
 
-/// `captured_LUFS = 20·log10(level) + C` — THE leveling physics identity (`CLAUDE.md`, "How
-/// leveling works"). ONE definition so the solver, the boost planner, its executor and the
+/// `captured_LUFS = 20·log10(level) + C` — THE leveling physics identity (`AGENTS.md`, "Leveling
+/// model"). ONE definition so the solver, the boost planner, its executor and the
 /// idempotency band cannot round it four different ways: the planner and executor recompute
 /// the SAME base as-is loudness, and a drift between them would move a boost's split with no
 /// lane noticing. `level` is floored at `1e-6`.
@@ -35,12 +35,12 @@ pub fn solve_level(c: f64, target_lufs: f64) -> (f32, bool, f64) {
 ///
 /// `reload_preset` controls whether the preset is re-loaded first: the
 /// single-preset and block paths leave it `false` (the preset is still current
-/// from the prior load — exactly the validated 3-connection sequence); the setlist
-/// path sets it `true` because measuring other presets has since changed which
-/// preset is current. The scene runners (`jointk_one_scene`/rebalance) also leave
+/// from the prior load — exactly the validated 3-connection sequence); the probe
+/// write path sets it `true` because it cannot vouch that the preset is still
+/// current. The scene runners (`jointk_one_scene`/rebalance) also leave
 /// it `false` — their runner loads the preset once up front and nothing between
-/// applies changes it; a reload per apply was pure churn the user SAW (the unit
-/// flashing back to the preset between every scene write).
+/// applies changes it; a reload per apply would flash the unit back to the preset
+/// between every scene write.
 pub fn apply_level(
     slot: ListIndex,
     stimulus: &[f32],
@@ -72,7 +72,7 @@ pub fn apply_levels(
     opts: LevelOptions,
     reload_preset: bool,
     saved: Option<&serde_json::Value>,
-    // A4: a BASE job's isolation list — "base means base" (a scene job's is always empty; it
+    // A BASE job's isolation list — "base means base" (a scene job's is always empty; it
     // rides its own overlay instead). Written AFTER `set_knobs`/the intended-`presetLevel`
     // assert and BEFORE the settle/engage, mirroring `arm_measurement`'s "SCENE CONTEXT FIRST,
     // ISOLATION LAST" ordering (that seam is for a single `LevelKnob`; this one already has its
@@ -95,9 +95,9 @@ pub fn apply_levels(
     let mut verify_lufs = None;
     let mut s = Session::connect()?;
     set_knobs(&mut s, targets, saved)?; // set before any re-amp engage (latched)
-                                        // Re-assert the run's own `presetLevel` AFTER `set_knobs` — its scene recall runs the
-                                        // device's level-apply and would otherwise leave the verify capture rendering at the
-                                        // SAVED level (see `LevelOptions::intended_preset_level`). Skipped when a PresetLevel
+                                        // Re-assert the run's own `presetLevel` AFTER `set_knobs` — its scene recall can
+                                        // re-apply a stale base-snapshot level and leave the verify capture rendering at
+                                        // it (see `LevelOptions::intended_preset_level`). Skipped when a PresetLevel
                                         // target is in this batch: that value is the one under measurement and must win.
     if let Some(pl) = opts.intended_preset_level {
         if !targets
@@ -149,7 +149,7 @@ pub fn apply_levels(
     }
 
     // Any unsaved `presetLevel` must ride through the pre-save recall via
-    // `recall_reassert_save` (see its doc for the load-level-apply clobber this
+    // `recall_reassert_save` (see its doc for the base-snapshot revert this
     // guards). The re-assert value is the PresetLevel target when one is in the
     // batch; Block-knob targets need none (overlay writes persist through the
     // recall — the footswitch `switch_at_target` re-run spec proves it).
@@ -160,11 +160,10 @@ pub fn apply_levels(
     let reasserts = Reassert::preset_level_only(reassert_pl);
     if opts.save {
         if opts.verify {
-            // A session that has toggled re-amp silently DROPS the save (HW: after the
-            // verify engage/disengage, `saveCurrentPreset` on the same session persists
-            // nothing — `probe --bisect-scene … save` with TMP_BISECT_SAVE_MODE=same vs
-            // fresh). The written values survive in the device's working copy across
-            // reconnects, so save on a FRESH connection.
+            // A save never shares a connection with a capture: the capture's silent window
+            // lapses the session (750 ms) and a save on a lapsed session is dropped. The
+            // written values survive in the device's working copy across reconnects, so save
+            // on a FRESH connection.
             drop(s);
             let mut s2 = Session::connect()?;
             recall_reassert_save(&mut s2, slot, opts.restore_scene, &reasserts)?;
@@ -234,7 +233,7 @@ pub(crate) struct BoostContext<'a> {
     pub base_amp: Option<SceneJob>,
     /// The same saved-preset doc the caller already read, threaded through to
     /// `jointk_one_scene`/`undo_base_isolation` exactly like every other scene-job seam takes
-    /// it. v1 scopes the full continuation to scene-less presets, see `level_preset_impl`'s
+    /// it. The full continuation is scoped to scene-less presets, see `level_preset_impl`'s
     /// routing doc.
     pub saved: Option<&'a serde_json::Value>,
     /// The SAME read's own fail-safe "does this preset carry `scenes[]`?" flag — see
@@ -242,12 +241,12 @@ pub(crate) struct BoostContext<'a> {
     pub has_fs_scenes: bool,
 }
 
-/// The v1 boost-routing gate's "is this preset scene-bearing?" signal (BUG→GATE). THE HOLE: a
-/// field-8 read cut before the alphabetically-last `scenes` key yields a doc with no `scenes`
+/// The boost-routing gate's "is this preset scene-bearing?" signal. THE HOLE: a
+/// saved-preset read cut before the alphabetically-last `scenes` key yields a doc with no `scenes`
 /// at all — indistinguishable, by a bare doc check, from a genuinely scene-less preset — and
 /// the base arm only requires `ftsw` complete, so a scene-bearing preset would take the
 /// APPLIED boost instead of the advisory. `has_fs_scenes` is the READ's own fail-safe flag
-/// (`read_slot_preset_sections`: `true` on a truncated or unknown tail); the doc check is
+/// (`read_slot_preset_sections`: `true` on a cut or unknown tail); the doc check is
 /// OR'd in as defense in depth.
 pub(crate) fn scene_bearing_for_boost_gate(
     has_fs_scenes: bool,
@@ -269,11 +268,11 @@ pub(crate) fn scene_bearing_for_boost_gate(
 /// a re-run that solves the SAME level as last time AND whose saved level is itself on
 /// target reloads the stored preset and returns without writing (see the
 /// `level_unchanged` + [`already_on_target`] guard below — both conjuncts are load-bearing,
-/// per the latter's doc), so repeat runs don't re-randomize an already-on-target preset. `None` (the probe/benchmark
-/// call sites, and the setlist common-target pass) keeps the always-write behavior.
+/// per the latter's doc), so repeat runs don't re-randomize an already-on-target preset.
+/// `None` (the probe/benchmark call sites) keeps the always-write behavior.
 ///
-/// Thin compat wrapper over [`level_preset_impl`] for the legacy 6-arg (well, 7 with
-/// `cancelled`) callers that have no boost context to supply — see [`BoostContext`]'s doc.
+/// Thin wrapper over [`level_preset_impl`] for callers that have no boost context to
+/// supply — see [`BoostContext`]'s doc.
 pub fn level_preset(
     slot: ListIndex,
     stimulus: &[f32],
@@ -411,8 +410,8 @@ pub(crate) fn level_preset_impl(
             apply_opts.verify = false;
         }
 
-        // ⟦BOOST⟧ Plan the base pair off the SAME measurement, before any write (physics in
-        // `notes/leveling.md`'s BOOST section). `sounds` is empty: base has no OTHER sound's
+        // BOOST: plan the base pair off the SAME measurement, before any write (physics in
+        // `headroom_trade.rs`'s module header). `sounds` is empty: base has no OTHER sound's
         // clamp to redistribute against here (that is `redistribute_clamped_headroom`'s lane)
         // — this planner only asks "can base's OWN gap be closed by moving both its own
         // controls together?". `base_amp` is `Some` only from `commands::level_preset`'s base
@@ -453,9 +452,9 @@ pub(crate) fn level_preset_impl(
             };
             let ids = (group_id.clone(), node_id.clone(), parameter_id.clone());
 
-            // v1 SCOPE: the full continuation only fires for a `save` run on a SCENE-LESS
-            // preset; a scene preset gets the advisory below and today's honest clamp.
-            // Widening needs its own plan — a boosted base's `presetLevel` raise also shifts
+            // SCOPE: the full continuation only fires for a `save` run on a SCENE-LESS
+            // preset; a scene preset gets the advisory below and the honest clamp.
+            // Widening is out of scope here — a boosted base's `presetLevel` raise also shifts
             // every SCENE row's captured loudness by `raise_db`, which is
             // `redistribute_clamped_headroom`'s territory, not this seam's.
             let scene_preset = scene_bearing_for_boost_gate(ctx.has_fs_scenes, ctx.saved);
@@ -477,7 +476,7 @@ pub(crate) fn level_preset_impl(
             }
 
             // ADVISORY: this run's shape can't apply the boost this cycle — either it has no
-            // `save`, or the preset carries scenes (v1 scopes the full continuation to
+            // `save`, or the preset carries scenes (the full continuation is scoped to
             // scene-less presets). Either way the disclosure keys on `applied` alone.
             base_boost = Some(crate::headroom_trade::BaseBoostSummary::from_plan(
                 false,
@@ -507,7 +506,7 @@ pub(crate) fn level_preset_impl(
         )?;
         // ONE bounded correction when the verify misses the acceptance band: the verify is a
         // second, independent reading of `C` at the written level, so a reference capture
-        // that read low (the 2.9 LU outliers on record) no longer saves silently off target.
+        // that read low (2.9 LU-low outliers occur, HW) no longer saves silently off target.
         // A healthy preset lands in band and pays nothing extra.
         let (mut final_level, mut clamped, mut predicted) = (final_level, clamped, predicted);
         if let Some(v) = verify_lufs.filter(|v| !clamped && (v - target_lufs).abs() > ACCEPT_TOL_LU)
@@ -694,7 +693,7 @@ pub(super) fn apply_base_boost(
     // Undo base's isolation (if any) BEFORE the save — a preset load is forbidden from here
     // on (the raise and solved fader are unsaved deferred writes), so the isolation is undone
     // with inverse writes on their own fresh connection instead (mirrors
-    // `apply_headroom_trade`'s A5/F2 cleanup).
+    // `apply_headroom_trade`'s cleanup).
     undo_isolation_or_bail(&job.force_bypass, saved, "boost", |e| bail(e.into()))?;
     let fader_value = solved
         .levels
@@ -718,7 +717,7 @@ pub(super) fn apply_base_boost(
     // way is exactly the liability `apply_headroom_trade`'s own bail exists to close.
     save_deferred_scene_writes(slot, opts.restore_scene, &reasserts).map_err(bail)?;
     // POST-SAVE HARD READ-BACK: unlike `verify_persisted_writes` (advisory — a batch save
-    // already landed there, so a miss only WARNS), a boost's two-control save is new and
+    // already landed there, so a miss only WARNS), a boost's two-control save is
     // untested on real hardware, so a mismatch here fails loudly instead of reporting a
     // persisted value that may not actually be on the device.
     let doc = crate::scene_jobs::read_saved_preset_complete(slot)?;
@@ -780,7 +779,7 @@ pub(super) fn apply_base_boost(
 mod scene_bearing_for_boost_gate_tests {
     use super::*;
 
-    // The bug this gate exists to close: a field-8 read truncated before the (alphabetically
+    // The bug this gate exists to close: a saved-preset read cut short before the (alphabetically
     // last) `scenes` key leaves the doc with NO `scenes` field at all — indistinguishable from
     // a genuinely scene-less preset by a bare doc check — but the read's own `has_fs_scenes`
     // flag is fail-safe `true` for exactly this "unknown" case, so the gate must still treat

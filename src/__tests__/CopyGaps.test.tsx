@@ -1,7 +1,7 @@
 // src/__tests__/CopyGaps.test.tsx — Copy's "+" gaps (look B), the one approved
 // change near the signal-path code:
 //   - SignalChainView draws `graph.gap` in place of every wire between two tiles of a row
-//     or series stage, plus one at each end, and draws exactly the old wires without it;
+//     or series stage, plus one at each end, and draws exactly the plain wires without it;
 //   - CopyPath names each gap by where it places the block, puts gaps only on a target
 //     strip with a chosen block, and keeps a dual cab drawn as its two cab tiles while
 //     placing: the upper tile's gaps place the block before or after the whole cab,

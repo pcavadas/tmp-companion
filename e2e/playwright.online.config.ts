@@ -9,14 +9,14 @@ const VITE = process.env.TMP_E2E_VITE_PORT ?? "1421";
 
 // ONLINE e2e config — runs the SAME specs as the offline config (./specs), but starts the
 // e2e_server with TMP_E2E_ONLINE=1 so it does ONE real USB handshake to seed the snapshot
-// and every command opens the seized device (no SimDevice). `ensureScenario` clones the
-// three working presets into 400/401/402 at setup; each spec clears them afterwards.
+// and every command opens the seized device (no SimDevice). It verifies the eleven
+// resident scenario presets (400–410), seeded by e2e.sh before the server starts.
 // Attended only: the device must be plugged in and Pro Control closed.
 //
 //   bunx playwright test --config e2e/playwright.online.config.ts
 export default defineConfig({
   testDir: "./specs",
-  // Fails fast if the bridge server (e.g. an adopted offline orphan) isn't online (#193).
+  // Fails fast if the bridge server (e.g. an adopted offline orphan) isn't online.
   globalSetup: "./fixtures/assert-mode.ts",
   metadata: {
     expectOnline: true,
@@ -30,8 +30,8 @@ export default defineConfig({
   // rather than just being a CI-only hygiene nit.
   forbidOnly: true,
   reporter: [["list"]],
-  // Real device: the ~22 s backup, real re-amp (×3 for the Level scenario), and the
-  // per-test scratch seed/clear all add up — give each test generous room.
+  // Real device: the ~22 s backup, real re-amp captures and the seed check all add up —
+  // give each test generous room.
   timeout: 300_000,
   use: {
     baseURL: `http://localhost:${VITE}`,

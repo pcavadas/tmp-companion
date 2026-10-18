@@ -1,8 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// Port 1421 (emulator owns 1420) so both apps' dev servers can coexist. The e2e runner
-// overrides it via TMP_E2E_VITE_PORT for per-worktree isolation (see scripts/e2e.sh).
+// Port 1421, so another local Tauri dev server on Vite's default 1420 can run beside it.
+// The e2e runner overrides it via TMP_E2E_VITE_PORT for per-worktree isolation (see
+// scripts/e2e.sh).
 const port = Number(process.env.TMP_E2E_VITE_PORT) || 1421;
 
 export default defineConfig({

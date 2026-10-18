@@ -6,7 +6,7 @@
 // and choosing any other; "Select all N shown" acting on the presets the filter shows
 // only; the no-match state; empty slots; Caret → main sound + scene + footswitch
 // sub-rows → per-sound toggle; no carets until `ready`; the "Loaded" badge; CPU on preset
-// rows only; and BUG 1 (a footswitch with no volume knob is shown, disabled, reasoned).
+// rows only; and a footswitch with no volume knob (shown, disabled, reasoned).
 
 import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
@@ -62,9 +62,9 @@ function fsw(sw: number, label: string): FootswitchInfo {
     ],
   };
 }
-// A footswitch with NO level-class parameter (real incident: "Friedman HBE" FS2
-// "PHASER" → ACD_PhaserP90) — BUG 1: must still render as a row, visibly disabled
-// with a reason, never silently dropped.
+// A footswitch with NO level-class parameter (e.g. "Friedman HBE" FS2 "PHASER" →
+// ACD_PhaserP90): must still render as a row, visibly disabled with a reason, never
+// silently dropped.
 function fswNoLevel(sw: number, label: string): FootswitchInfo {
   return {
     switch: sw,
@@ -368,7 +368,7 @@ describe("PresetList (look B scene tree)", () => {
     ).toHaveTextContent("Loaded");
   });
 
-  // ── BUG 1: a footswitch with no level-class parameter — shown, disabled, reasoned ──
+  // ── a footswitch with no level-class parameter — shown, disabled, reasoned ──
   describe("a footswitch with no volume knob (BUG 1)", () => {
     const FSW_WITH_UNLEVELABLE = new Map<number, FootswitchInfo[]>([
       [0, [fsw(4, "Solo"), fswNoLevel(1, "PHASER")]],

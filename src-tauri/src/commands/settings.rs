@@ -14,7 +14,7 @@ pub(crate) struct TopologyInfo {
 /// List the shipped pickup topologies (the catalog backing instrument profiles)
 /// plus the pickup ALIASES (familiar names — P90, Filter'Tron… — as selectable
 /// rows resolving to a parent topology's stimulus; see `topologies::ALIASES`).
-/// Supersedes `list_samples` for the UI — profiles reference a topology by `id`.
+/// Profiles reference a topology by `id`.
 #[tauri::command]
 pub(crate) fn list_pickup_topologies() -> Vec<TopologyInfo> {
     topologies::TOPOLOGIES
@@ -40,7 +40,7 @@ pub(crate) fn list_pickup_topologies() -> Vec<TopologyInfo> {
 
 /// Load the persisted profile store (instrument profiles + per-slot assignments),
 /// with each profile's `has_capture` filled from the capture store so the UI can
-/// show whether it levels with the player's recording or the test signal (#361).
+/// show whether it levels with the player's recording or the test signal.
 #[tauri::command]
 pub(crate) fn get_store<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,

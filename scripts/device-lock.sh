@@ -43,9 +43,9 @@ device_lock_acquire() {
       # EXCLUSIVELY owns the moved-aside dir. The dead-check above is only a cheap filter —
       # the AUTHORITY is re-reading the pid FROM the moved copy: if a live holder acquired
       # between our dead-check and the mv, the pid no longer matches the dead one we saw, so
-      # we restore it and keep waiting instead of stealing a live lock (the TOCTOU CodeRabbit
-      # flagged). A failed mv (another waiter already won) just loops back to waiting.
-      # ponytail: a 3-way reclaim/acquire interleave can still momentarily dual-own; the
+      # we restore it and keep waiting instead of stealing a live lock (a TOCTOU race). A
+      # failed mv (another waiter already won) just loops back to waiting.
+      # Known limit: a 3-way reclaim/acquire interleave can still momentarily dual-own; the
       # device's own exclusive-HID open (0xe00002c5) is the loud backstop, and contention is
       # a handful of sessions, not a hot path — a full CAS lock isn't worth it here.
       stale="$DEVICE_LOCK_DIR.stale.$$"

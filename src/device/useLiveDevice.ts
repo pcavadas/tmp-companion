@@ -1,22 +1,17 @@
-// src/device/useLiveDevice.ts — the R3 live-sync event-subscription hook.
+// src/device/useLiveDevice.ts — the live-sync event-subscription hook.
 //
-// The backend's persistent device monitor (src-tauri/src/monitor.rs) holds a live
-// TMP session with a dense heartbeat so the unit PUSHES its state changes
-// (footswitch taps, scene recalls, preset changes done ON THE HARDWARE) unsolicited;
-// it mirrors them as the 5 `tmp://` events this hook subscribes to. App-initiated
-// commands (loadScene/loadPreset) route through the device-op gate, which pauses the
-// monitor for the command's duration; the resulting device state returns through the
-// SAME event stream — so app-initiated and device-pushed updates are ONE stream and
-// the UI never optimistically mutates then reconciles. It sets `syncing` and waits
-// for the push.
+// It subscribes to the device monitor's `tmp://` events (the stream is described in
+// `lib/liveEvents.ts`). App-initiated and device-pushed updates are ONE stream, so the UI
+// shows the monitor's `syncing` flag and waits for the push rather than mutating
+// optimistically.
 //
 // Lifecycle: the app-level `connectDevice()` starts the monitor. This hook is only an
 // event subscriber; tab switches must not churn the monitor session.
 //
 // This hook is PURE TRANSPORT: it normalizes the event stream into a single
-// `LiveDeviceState` snapshot. The Presets-view orchestrator maps that snapshot to its
-// own UI state machine (active row, drawer, flash, scroll-follow). Keeping the wiring
-// here means the orchestrator never touches `@tauri-apps/api/event` directly.
+// `LiveDeviceState` snapshot. Its consumers (LevelView, DoctorView, CopyView,
+// levelRunStore) map that snapshot to their own UI state. Keeping the wiring here means
+// no view touches `@tauri-apps/api/event` directly.
 
 import { useEffect, useSyncExternalStore } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -33,7 +28,7 @@ export interface LiveScene {
   name: string | null;
 }
 
-/** The normalized live-device snapshot the Presets orchestrator consumes. Every field
+/** The normalized live-device snapshot the views consume. Every field
  * is the unit's REAL current state (or its honest absence), never a software guess. */
 export interface LiveDeviceState {
   /** 0-based My-Presets list index of the active preset (matches a PresetRow.slot),
@@ -89,9 +84,9 @@ function setLive(next: LiveDeviceState): void {
 }
 
 /** Optimistically patch the hero's live graph after our OWN structural edit (Copy
- *  save). A live block edit pushes NO device field-3, so the hero would otherwise
- *  stay stale until the monitor reconnects — this paints the edited graph immediately
- *  (BUG-2). The next genuine device push overwrites it, so it self-reconciles. */
+ *  save). A live block edit pushes no `currentPresetDataChanged` (field 3), so the hero
+ *  would otherwise stay stale until the monitor reconnects — this paints the edited
+ *  graph immediately. The next genuine device push overwrites it, so it self-reconciles. */
 export function patchLiveGraph(graph: ActiveGraph): void {
   setLive({ ...liveState, graph });
 }
@@ -106,7 +101,7 @@ function resetLiveState(): void {
 /** FULL reset incl. tearing down the event bridge — for test isolation only (call
  *  in `beforeEach`, like `resetLibraryScan`). Tests clear the mock listener registry
  *  between cases, so the bridge must be re-armable; prod never tears it down.
- *  ponytail: the unlisten callbacks fire async (fire-and-forget) — fine for test
+ *  Known limit: the unlisten callbacks fire async (fire-and-forget) — fine for test
  *  setup, where nothing runs between this reset and the next mount's re-subscribe. */
 export function resetLiveDevice(): void {
   for (const p of bridgeUnlisten)

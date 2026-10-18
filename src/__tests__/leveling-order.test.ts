@@ -108,23 +108,19 @@ describe("chosenFrom run-order", () => {
     });
   });
 
-  // BUG→GATE (2026-08-31 HW, online 410 arc): the run leveled a preset's scenes before its
-  // footswitches, and the footswitch pass then moved every scene it had just finished. 410's
-  // ACD_TubeScreamer is left ON in the preset's base state and each of its three scenes
-  // overlays only the amp, so all three render the screamer — cutting that switch's own
-  // handle 2.0 dB put all three already-leveled scenes 2.0 dB under target.
-  //
-  // RE-CONFIRMED 2026-09-01 by independent ffmpeg validation: ranking every footswitch after
-  // the scenes reproduced this exactly (all 3 scenes 2.011 LU under target) EVEN THOUGH 410's
-  // scenes enable no switches at all. `ftswStates` records whether a switch is ENGAGED in a
-  // scene, not whether its block is ACTIVE — a base-ON block is rendered by every scene
-  // either way. So a BASE-context switch must still run before scenes.
+  // (HW, 410) A footswitch pass run AFTER the scenes moves every scene it had
+  // just leveled. 410's ACD_TubeScreamer is ON in the preset's base state and each of its
+  // three scenes overlays only the amp, so all three render the screamer — cutting that
+  // switch's own handle 2.0 dB put all three already-leveled scenes 2.0 dB under target
+  // (ffmpeg: 2.011 LU), EVEN THOUGH 410's scenes enable no switches at all. `ftswStates`
+  // records whether a switch is ENGAGED in a scene, not whether its block is ACTIVE — a
+  // base-ON block is rendered by every scene either way. So a BASE-context switch must
+  // still run before scenes.
   it("emits a base-context footswitch BEFORE scenes, defaulting to its tone-safe candidate (D2)", () => {
     // Alpha (slot 0): 2 scenes + 1 footswitch (switch index 4 → tag FS5). Order must be
-    // Base → footswitch → scenes. Every row levels now (D2 — the backend removed the
-    // verify-only footswitch mode entirely): the default target is the switch's
-    // (only, here) candidate, measured against the preset's BASE sound (D3's
-    // `sceneContext: null`) until the Set up step's picker resolves a `suggested` scene.
+    // Base → footswitch → scenes. Every row levels: the default target is the switch's
+    // (only, here) candidate, measured against the preset's BASE sound
+    // (`sceneContext: null`) until the Set up step's picker resolves a `suggested` scene.
     const fswInfo = new Map<number, FootswitchInfo[]>([[0, [fsw(4, "Solo")]]]);
     const sel = new Set([
       fswKey(0, 0),
@@ -155,9 +151,9 @@ describe("chosenFrom run-order", () => {
 
   it("footswitchName falls back to the toggled block's DEVICE name when the label is blank", () => {
     // A footswitch the player never named → the name the UNIT prints under that switch,
-    // not a blank row. `ACD_TubeScreamer` reads "Greenbox 8" on the hardware; the old
-    // fallback said "Tube Screamer", which is the pedal Fender EMULATES — a name the
-    // device never shows anywhere (BUG→GATE 2026-08-20, see the strip-name gate below).
+    // not a blank row. `ACD_TubeScreamer` reads "Greenbox 8" on the hardware, never
+    // "Tube Screamer", which is the pedal Fender EMULATES — a name the device never shows
+    // anywhere (see the strip-name gate below).
     const blank: FootswitchInfo = { ...fsw(4, ""), label: "" };
     blank.level_params = [
       { ...blank.level_params[0], fender_id: "ACD_TubeScreamer" },
@@ -167,13 +163,12 @@ describe("chosenFrom run-order", () => {
     expect(footswitchName(fsw(4, "Solo"))).toBe("Solo");
   });
 
-  // BUG→GATE (2026-08-20 HW report, preset 30 "Plumes+BD2+OCD"): all four of that
-  // preset's switches carry an empty `customLabel`, so every row fell back to the
-  // de-camel-cased FenderId — "Blues Driver", "Obsessive Drive", "Rat" — while the unit's
-  // scribble strips read "Sapphire OD", "CSD", "Rodent". The player could not match a row
-  // to the switch under their foot. These are the reported blocks with their reported
-  // strip names; if a future catalog regen drops `strip_name` (the `name8` half of the
-  // display-name table the catalog already reads for `pro_control_name`), this fails.
+  // (HW, "Plumes+BD2+OCD") All four of that preset's switches carry an empty
+  // `customLabel`; a de-camel-cased FenderId fallback — "Blues Driver", "Obsessive Drive",
+  // "Rat" — does not match the unit's scribble strips ("Sapphire OD", "CSD", "Rodent"), so
+  // the player cannot match a row to the switch under their foot. These are the blocks with
+  // their strip names; if a future catalog regen drops `strip_name` (the `name8` half of
+  // the display-name table the catalog already reads for `pro_control_name`), this fails.
   it.each([
     ["ACD_BluesDriver", "Sapphire OD"],
     ["ACD_ObsessiveDrive", "CSD"],
@@ -189,7 +184,7 @@ describe("chosenFrom run-order", () => {
   );
 
   // The name is not "any candidate" — it follows the same tone-safe RANKED pick Set up
-  // recommends (item 1: `defaultParamIndex` off the wire `class`), never the first
+  // recommends (`defaultParamIndex` off the wire `class`), never the first
   // entry in array order. Load-bearing: this string is written on-device as the
   // switch's `customLabel`, so naming the wrong block is a wire write, not cosmetic.
   it("footswitchName names the rank-0 (level) block, not an earlier rank-1 (wet_mix) one", () => {
@@ -286,7 +281,7 @@ describe("chosenFrom run-order", () => {
 
   // The only remaining -1 case: an EMPTY candidate list. A non-empty list always has a
   // valid default now — every candidate the backend offers already carries a real
-  // (never "other") class (item 1: `class` ships on the wire, gated by
+  // (never "other") class (`class` ships on the wire, gated by
   // `footswitch::level_candidates_for_node`), so there is no "unclassifiable-only" list
   // left to construct.
   it("defaultParamIndex returns -1 for an empty candidate list", () => {
@@ -323,10 +318,9 @@ describe("chosenFrom run-order", () => {
     ]);
     const out = chosenFrom(new Set([fswKey(0, 0)]), rows, sceneInfo, fswInfo);
     expect(out).toHaveLength(1);
-    // Every row levels now (D2 — the backend removed the verify-only footswitch mode
-    // entirely) — the default target is the tone-safe candidate (LEVEL, not
-    // alphabetical-first GAIN), measured against the preset's BASE sound (D3's
-    // `sceneContext: null`) until the Set up step's picker resolves a `suggested` scene.
+    // Every row levels — the default target is the tone-safe candidate (LEVEL, not
+    // alphabetical-first GAIN), measured against the preset's BASE sound
+    // (`sceneContext: null`) until the Set up step's picker resolves a `suggested` scene.
     expect(out[0].footswitch).toEqual({
       switchIndex: 4,
       levGroupId: "G1",
@@ -372,7 +366,7 @@ describe("chosenFrom run-order", () => {
 // `chosenFrom` emitting the right order is not enough on its own: `useLevelingFlow` sorts
 // its work list through `sortRunItems` so the run holds however the items were assembled
 // (a resumed run, a re-ordered selection, a future caller that builds items itself). These
-// pin that sort and the rank it reads — the same BUG→GATE as the emission test above.
+// pin that sort and the rank it reads — the same rule as the emission test above.
 describe("runRank / sortRunItems — the run's dependency order", () => {
   const base = { slot: 1, isBase: true };
   const footswitch = { slot: 1, isBase: false, footswitch: { switchIndex: 4 } };
@@ -400,7 +394,7 @@ describe("runRank / sortRunItems — the run's dependency order", () => {
     expect(work).toEqual([scene, footswitch, base]);
   });
 
-  // BUG→GATE, and the split is PER-ROW because each half is separately HW-measured.
+  // The split is PER-ROW because each half is separately HW-measured.
   // Ranking every footswitch LATE was tried on hardware and reproduced the 410 regression
   // (3 scenes 2.011 LU under target by independent ffmpeg read) even though 410's scenes
   // enable no switches — `ftswStates` means ENGAGED, not ACTIVE, and a base-ON block is
@@ -428,8 +422,8 @@ describe("runRank / sortRunItems — the run's dependency order", () => {
     ]);
   });
 
-  // BUG→GATE: the old inline comparator returned 0 across slots, which is not a consistent
-  // order — on this input it left slot 1's scene running before slot 1's base.
+  // A comparator that returns 0 across slots is not a consistent order — on this input
+  // it runs slot 1's scene before slot 1's base.
   it("runs a preset's base before its scene when another preset sits between them", () => {
     const base2 = { slot: 2, isBase: true };
     expect(sortRunItems([scene, base2, base])).toEqual([base, scene, base2]);

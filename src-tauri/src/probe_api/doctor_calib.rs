@@ -6,7 +6,7 @@
 //! stimulus band coverage, and — when a `--labels` ground-truth is supplied —
 //! DERIVE proposed `Thresholds` values. There is no separate CAPTURE table:
 //! `StimulusKind::Synthetic` and `StimulusKind::Capture` share one per-family
-//! `Thresholds` table, and this sweep's derived values inform the R5 attended
+//! `Thresholds` table, and this sweep's derived values inform an attended
 //! recalibration of that shared table.
 //!
 //! Output is a DETERMINISTIC JSON report (no timestamps; the operator names the
@@ -35,7 +35,7 @@ use crate::stimulus::read_stimulus_48k;
 
 /// Margin (in the rule's own metric units) added above `p95(clean)` when a rule
 /// has NO labelled positives — a conservative "fire only well past the cleanest
-/// library" threshold. ponytail: a flat 3-unit margin; re-derive per-rule only if
+/// library" threshold. Known limit: a flat 3-unit margin; re-derive per-rule only if
 /// the no-positive rules prove too eager on real captures.
 const NO_POSITIVE_MARGIN: f64 = 3.0;
 
@@ -157,7 +157,7 @@ type SlotMetrics = (ListIndex, Option<f64>, Vec<RuleMetric>);
 /// Per-slot rule metrics, in the SAME LHS space `doctor::diagnose` compares to
 /// each threshold (every rule is "metric > threshold"): the target-deviation
 /// tilt-split LOCAL ([`doctor::deviations`] / [`doctor::tilt_split`]) plus the
-/// R6 CONSENSUS [`doctor::centered_deviations`] value for the tonal rules, the
+/// CONSENSUS [`doctor::centered_deviations`] value for the tonal rules, the
 /// self-difference for fizzy, and the time-domain tail metric for washed.
 /// Also returns the broadband tilt slope (`tilt_split`'s discarded first value)
 /// so callers building a `tiltDbPerOct` report field don't re-run the same
@@ -197,8 +197,7 @@ fn rule_metrics(
 
 /// The engine's ACTUAL verdict keys for one measured row — recorded in the
 /// sweep JSON so a sanity/false-fire check reads real engine output, not a
-/// re-derivation (an earlier check silently read a MISSING `verdicts` key and
-/// concluded "0 fires" from vacuous data — never again).
+/// re-derivation (a MISSING `verdicts` key would read as a vacuous "0 fires").
 fn row_verdicts(
     profile: &doctor::SoundProfile,
     coverage: &[bool],
@@ -410,7 +409,7 @@ pub fn probe_doctor_calib(
 
     // Per-rule derivation (only rules present in --labels), BOTH consensus
     // spaces independently — tilt and centered each get their own clean/
-    // positive split + proposed threshold (R6: a band rule now fires only when
+    // positive split + proposed threshold (a band rule fires only when
     // BOTH spaces clear their own gate, see `doctor::Thresholds`'s doc).
     let mut derivations = serde_json::Map::new();
     let mut md = String::new();
@@ -490,9 +489,9 @@ pub fn probe_doctor_calib(
         "bandLabels": family.labels(),
         "skippedSlots": skipped,
         "captureParams": {
-            // Per-slot now (`doctor::doctor_tail_ms` off each slot's own graph,
-            // 300 ms known-dry / 1500 ms wet-or-unknown) — no longer one fixed
-            // number, so this reports the policy, not a single capture value.
+            // Per-slot (`doctor::doctor_tail_ms` off each slot's own graph,
+            // 300 ms known-dry / 1500 ms wet-or-unknown), so this reports the
+            // policy, not a single capture value.
             "doctorTailMsPolicy": "graph-derived per slot (doctor::doctor_tail_ms)",
             "refLevel": 0.5,
             "bandCoverageDb": doctor::BAND_COVERAGE_DB,
@@ -556,8 +555,8 @@ pub fn probe_doctor_calib_factory(
     let _reamp_off = super::ReampOffGuard;
     let mut rows: Vec<Row> = Vec::new();
     for &slot in factory_slots {
-        // Load on its OWN connection (load + engage in one connection captures
-        // silence — see `doctor_capture_current`); FactoryPresets tab = 4, 1-based.
+        // Load on its OWN connection (kept conservatively — see
+        // `doctor_capture_current`); FactoryPresets tab = 4, 1-based.
         // Conservative default tail (wet/unknown) until the load's own graph
         // resolves below.
         let mut tail_ms = u64::from(leveller::DOCTOR_TAIL_MS);

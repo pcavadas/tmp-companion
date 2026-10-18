@@ -107,7 +107,7 @@ describe("libraryScan — songs↔presets axis data", () => {
 
   it("keeps a membership gap as 0 at its position, and gives an empty setlist []", async () => {
     // Remove/move address a song by DEVICE position, so a gap must not shift the songs
-    // after it (#298); an empty setlist is a known [] — not "unread" (#296).
+    // after it; an empty setlist is a known [] — not "unread".
     const backup: BackupReadResult = {
       ...BACKUP,
       setlists: [
@@ -203,7 +203,7 @@ describe("libraryScan — songs↔presets axis data", () => {
       { slot: 57, name: "Stadium Lead" },
     ]);
     // The slot-keyed song→preset map is UNKNOWN now (null), not an empty map that
-    // would read as "no song uses any preset" (#299).
+    // would read as "no song uses any preset".
     expect(lib.songPresetSlots).toBeNull();
     expect(lib.ready).toBe(true);
   });
@@ -252,14 +252,13 @@ describe("libraryScan — songs↔presets axis data", () => {
     expect(lib.footswitchesPerIndex.has(57)).toBe(false);
   });
 
-  // BUG→GATE: the doctor lane's damage detector reads DoctorInput.footswitches off
+  // The doctor lane's damage detector reads DoctorInput.footswitches off
   // `useDoctorFlow`'s `footswitchesByIndex`, which App wires from `allFootswitchInfo`
   // (this store's `allFootswitchesByIndex`) — NOT the levelable-only
-  // `footswitchesPerIndex`. Before the fix, an Other-class-only switch (like "Tuner"
-  // here, zero level candidates) was invisible to Doctor's offline force-bypass
-  // isolation because the ONE feed both tabs shared was pre-filtered for Level's
-  // reason (nothing to solve), which has nothing to do with Doctor's reason (it still
-  // toggles a block).
+  // `footswitchesPerIndex`. An Other-class-only switch (like "Tuner" here, zero level
+  // candidates) must stay visible to Doctor's offline force-bypass isolation: Level's
+  // filter reason (nothing to solve) has nothing to do with Doctor's (it still toggles
+  // a block).
   it("keeps the FULL footswitch roster in allFootswitchesByIndex, unfiltered", async () => {
     const levelable: FootswitchInfo = {
       switch: 4,
@@ -331,7 +330,7 @@ describe("libraryScan — detach mid-scan (generation guard)", () => {
     await flush(); // let it reach `await readLibraryViaBackup()` (past the progress listen)
     resetLibraryScan(); // device detaches mid-scan
     resolveRead(BACKUP); // the read resolves — the continuation must not resurrect state
-    await scan; // the old finally crashed here on a nulled unlistenProgress()
+    await scan; // the finally must not crash on a nulled unlistenProgress()
 
     const lib = getLibraryScan();
     expect(lib.ready).toBe(false); // abandoned, not settled

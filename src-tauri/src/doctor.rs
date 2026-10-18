@@ -2,7 +2,7 @@
 //!
 //! Turns a re-amp capture's measurements (`SoundProfile`) into named tone
 //! diagnoses (muddy / boomy / harsh / fizzy / washed / lost / buried /
-//! dark / bright / thin) with concrete, graph-derived prescriptions (`Rx` →
+//! dark / bright / thin / resonant / boxy) with concrete, graph-derived prescriptions (`Rx` →
 //! `DoctorOp`s), plus the scene-loudness consistency check. The device work
 //! (capture, apply) lives in `leveller::doctor_capture` and the `doctor_*`
 //! commands; this module is the rules.
@@ -19,9 +19,9 @@
 //! feedback pedal that substring-matches "eq"). The one documented exception
 //! is [`has_time_effect`]'s conservative tail-length catch-all (see its doc
 //! for why a false positive is harmless there). The `DIST_IDS` / `REVERB_MIX`
-//! tables are extracted from the fw 1.8.45 embedded schemas
-//! (`algoCategory == "dist" / "reverb"`); re-derive with the carve script if a
-//! firmware rev adds blocks.
+//! tables are extracted from the firmware's embedded schemas
+//! (`algoCategory == "dist" / "reverb"`); re-derive them if a firmware rev adds
+//! blocks.
 //!
 //! ## Thresholds
 //! Every rule constant lives in `Thresholds` (`GUITAR` / `BASS`) — calibrated
@@ -36,9 +36,7 @@ use crate::blockcaps;
 use crate::profiles::PlaybackLevel;
 
 /// The six player-named analysis bands (Hz) — the Guitar/Bass layout. Doctor-
-/// specific; the legacy 4-band `spectrum::default_bands` stays untouched for the
-/// older commands. 12 kHz top matches the practical capture ceiling `spectrum`
-/// already uses.
+/// specific. The 12 kHz top is the practical capture ceiling.
 const BANDS_6: [(f32, f32); 6] = [
     (60.0, 120.0),     // Lows
     (120.0, 400.0),    // Low mids
@@ -53,8 +51,8 @@ const LABELS_6: [&str; 6] = ["Lows", "Low mids", "Mids", "High mids", "Highs", "
 
 /// The Bass VI layout: a (30,60) "Sub" band under the standard six. Bass VI
 /// fundamentals are E1 ≈ 41 Hz — invisible in the 60 Hz-floored 6-band layout —
-/// so its lowest octave gets its own measured band. No rule keys on Sub yet
-/// (PR-7 calibration decides); it is MEASURED and DISPLAYED only.
+/// so its lowest octave gets its own measured band. No rule keys on Sub (no Bass
+/// VI calibration sweep exists); it is MEASURED and DISPLAYED only.
 const BANDS_7: [(f32, f32); 7] = [
     (30.0, 60.0),      // Sub
     (60.0, 120.0),     // Lows
@@ -78,12 +76,12 @@ const LABELS_7: [&str; 7] = [
 /// deviation-from-target space (a band's dB above the authored [`target_curve`],
 /// after the Theil–Sen tilt/local split — see [`deviations`] / [`tilt_split`]).
 ///
-/// ONE table per family (no more synthetic/capture split): the diagnosis metric
+/// ONE table per family (no synthetic/capture split): the diagnosis metric
 /// itself is deterministic per sound, and capture-space is discriminated by the
-/// `fizzy` rule's [`FIZZY_MIN_FLATNESS`] gate, not a second threshold table. A
-/// DI-specific recalibration of these values is an explicit follow-up (the R5
-/// attended sweep). Any recalibration pass edits values here and nowhere else.
-/// (`benchmark.rs`'s leave-one-out re-derives a held-out copy in memory to
+/// `fizzy` rule's [`FIZZY_MIN_FLATNESS`] gate, not a second threshold table.
+/// These values are not calibrated on DI captures
+/// (notes/doctor-thresholds.md#calibrated-di-captures). Any recalibration pass edits values
+/// here and nowhere else. (`benchmark.rs`'s leave-one-out re-derives a held-out copy in memory to
 /// estimate these values' false-positive rate; it never ships one.)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thresholds {
@@ -111,14 +109,13 @@ pub struct Thresholds {
     pub scene_delta_db: f64,
     /// Broadband Theil–Sen tilt magnitude (dB/oct) past which the whole tone
     /// reads dark (negative slope) or bright (positive slope).
-    // ponytail: R5-calibrated for guitar (factory sweep); bass/bass-vi stay a
-    // provisional +0.5 dB/oct extrapolation.
+    // Calibrated for guitar (factory sweep); bass/bass-vi stay a provisional
+    // +0.5 dB/oct extrapolation.
     pub tilt_db_per_oct: f64,
     /// Lows local deficit (dB, guitar only) past which a tone reads thin.
-    // ponytail: R5-calibrated for guitar (factory sweep); thin is guitar-only
-    // so there's no bass/bass-vi extrapolation to speak of.
+    // Calibrated for guitar (factory sweep); thin is guitar-only.
     pub thin_db: f64,
-    /// CONSENSUS gates (R5, HW defect-injection, `probe --doctor-inject`): a
+    /// CONSENSUS gates (HW defect injection, `probe --doctor-inject`): a
     /// band rule fires only when its Theil–Sen tilt-split local (the `*_db`
     /// gates above) AND its [`centered_deviations`] value BOTH clear their own
     /// threshold — severity is `min(margin_tilt, margin_centered)`. The
@@ -129,7 +126,7 @@ pub struct Thresholds {
     /// trustworthy — the false-positive control lives in the INTERSECTION, so
     /// each space's gate is set independently at ~p75 of the healthy factory
     /// population (looser than a single combined max+margin gate would need,
-    /// because consensus itself is the safety margin). See `notes/doctor.md`
+    /// because consensus itself is the safety margin). See `notes/doctor-thresholds.md#metric`
     /// for the injection sweep this pair was derived from.
     pub muddy_centered_db: f64,
     pub boomy_centered_db: f64,
@@ -139,20 +136,18 @@ pub struct Thresholds {
     pub buried_centered_db: f64,
 }
 
-/// Re-derived 2026-10-15 for the pitched-pluck stimulus (#235, `probe
-/// --doctor-derive --baseline`, a 248-sound factory sweep through it): each
-/// gate is RANK-TRANSFERRED from the gate the 2026-07-16 calibration shipped —
-/// it keeps that gate's percentile in the healthy factory population, read
-/// against the old stimulus and the old target there and against the new
-/// stimulus and [`GUITAR_TARGET`] here (`benchmark::transfer_gate`), so each
-/// rule's false-alarm rate on healthy presets carries over unchanged. A
-/// max-plus-margin re-derive over the whole bank would have widened `lost` by
-/// 21 dB and silenced the defect presets. `wash_tail_db` moved from −10.0 to
-/// −8.5 the same way: the darker stimulus lifts every tail ratio (wet presets
-/// by about 1 dB, dry by 3). The tilt-space gates are deliberately loose:
+/// Derived for the pitched-pluck stimulus from a 248-sound factory sweep
+/// (fw 1.8.58, `probe --doctor-derive --baseline`): each gate is
+/// RANK-TRANSFERRED from the earlier band-passed-noise calibration — it keeps
+/// that gate's percentile in the healthy factory population
+/// (`benchmark::transfer_gate`) against the pitched-pluck stimulus and
+/// [`GUITAR_TARGET`], so each rule's false-alarm rate on healthy presets
+/// carries over. A max-plus-margin derive over the whole bank would widen
+/// `lost` by 21 dB and silence the defect presets. `wash_tail_db` is
+/// rank-transferred the same way. The tilt-space gates are deliberately loose:
 /// they fire only in CONSENSUS with `*_centered_db` (see [`Thresholds`]'s
-/// doc); `buried_db` stays `INFINITY` (bass-only). The original derivation
-/// lives in `notes/doctor-calibration.md`.
+/// doc); `buried_db` stays `INFINITY` (bass-only). The derivation lives in
+/// `notes/doctor-thresholds.md#re-deriving-on-a-new-stimulus`.
 pub const GUITAR: Thresholds = Thresholds {
     muddy_db: 0.8,
     boomy_db: 4.1,
@@ -176,9 +171,8 @@ pub const GUITAR: Thresholds = Thresholds {
 /// spaces (tilt and centered), pending a real bass factory sweep (mirrors
 /// [`BASS_TARGET`]'s single-preset-anchor status): the honest starting point
 /// until `probe --doctor-calib-factory` on a real bass library re-derives
-/// these from their own population. `tilt_db_per_oct` (the whole-tone
-/// dark/bright gate, not a band-rule gate) is untouched by the R5 consensus
-/// retune.
+/// these from their own population. `tilt_db_per_oct` is the whole-tone
+/// dark/bright gate, not a band-rule gate.
 pub const BASS: Thresholds = Thresholds {
     muddy_db: 2.5,
     boomy_db: 3.0,
@@ -198,24 +192,22 @@ pub const BASS: Thresholds = Thresholds {
     buried_centered_db: 4.0,
 };
 
-/// PROVISIONAL — a straight copy of `BASS`, pending the attended Bass VI
-/// calibration sweep (PR-7). Bass VI shares bass's low-fundamental character, so
+/// PROVISIONAL — a straight copy of `BASS`, pending an attended Bass VI
+/// calibration sweep. Bass VI shares bass's low-fundamental character, so
 /// bass thresholds are the honest starting point until `probe --doctor` on a
 /// real Bass VI library re-derives them. (`thin_db` stays `INFINITY` here too,
 /// inherited from `BASS` — thin is guitar-only.)
 pub const BASS_VI: Thresholds = BASS;
 
-/// Whether a sound was captured through the SYNTHETIC shaped-noise stimulus (the
-/// Doctor default) or a real Tier-2 DI CAPTURE. Both diagnose against the SAME
-/// per-family `Thresholds` table now — a real DI's HF hash reads as noise-like
+/// Whether a sound was captured through the SYNTHETIC pitched-pluck stimulus
+/// (the Doctor default) or a real DI CAPTURE. Both diagnose against the SAME
+/// per-family `Thresholds` table — a real DI's HF hash reads as noise-like
 /// broadband content rather than a systematic band-balance shift, so the one
 /// place capture space needs different behavior is the `fizzy` rule: it gains an
-/// extra [`FIZZY_MIN_FLATNESS`] gate on `Capture` (the synthetic shaped-noise
-/// stimulus is noise-like everywhere, so the gate is inert there by
-/// construction). The diagnosis metric itself ([`deviations`] / [`tilt_split`])
+/// extra [`FIZZY_MIN_FLATNESS`] gate on `Capture` only (the code skips it on
+/// `Synthetic`). The diagnosis metric itself ([`deviations`] / [`tilt_split`])
 /// is deterministic per sound — this enum never pools measurements across
-/// sounds. A DI-specific threshold recalibration is an explicit follow-up (see
-/// `Thresholds` doc).
+/// sounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StimulusKind {
     Synthetic,
@@ -271,8 +263,8 @@ impl PlaybackOffsets {
     }
 }
 
-/// The Stage shifts, derived from the ISO 226:2023 equal-loudness contours
-/// (#255). Nominal loudness levels: Quiet 60 phon, Rehearsal 70 phon (the
+/// The Stage shifts, derived from the ISO 226:2023 equal-loudness contours.
+/// Nominal loudness levels: Quiet 60 phon, Rehearsal 70 phon (the
 /// anchor, offset 0), Stage 80 phon — 10 phon apart, and 80 is the top of the
 /// standard's validity for the 5–12.5 kHz points the Air band needs (the
 /// 20 Hz–4 kHz points are valid to 90 phon). A real stage runs louder than 80
@@ -303,7 +295,7 @@ impl PlaybackOffsets {
 ///
 /// The dark/bright tilt rules stay SPL-blind too, though the same contour
 /// change tilts a tone −0.67 dB/oct darker at Stage; see
-/// notes/doctor-calibration.md. The anchor (Rehearsal = the calibration
+/// notes/doctor-thresholds.md#playback-level-offsets. The anchor (Rehearsal = the calibration
 /// monitoring level) is still an assumption until a sweep records monitor SPL.
 const STAGE_OFFSETS: PlaybackOffsets = PlaybackOffsets {
     boomy_db: -0.7,
@@ -336,7 +328,7 @@ pub enum Family {
     BassVi,
 }
 
-/// Migration alias — the old name for [`Family`] before the Bass VI split.
+/// Alias for [`Family`].
 pub type Instrument = Family;
 
 impl Family {
@@ -414,7 +406,7 @@ pub struct SoundProfile {
     /// short-term spread can't tell a floor from a live capture of the 3 s Doctor
     /// stimulus (both read ≈ 0).
     pub momentary_spread_lu: f64,
-    /// Post-stimulus tail RMS vs body RMS, in dB (see [`tail_energy_ratio`]).
+    /// Post-stimulus tail RMS vs body RMS, in dB (see `tail_energy_ratio`).
     pub tail_ratio_db: f64,
     /// Spectral flatness (SFM, `psd::Psd::flatness`) of the top octave
     /// (6–12 kHz), `0..1`. Separates NOISE-like HF hash (fizz, high on a real DI
@@ -453,7 +445,7 @@ impl SoundProfile {
     /// played pad) so band powers measure the SOUND, not the silence.
     /// LUFS/spread (whole-buffer, time-domain — leading silence dilutes them
     /// uniformly and the gated LUFS discards it anyway) and `tail_ratio_db`
-    /// (already onset-aware, see [`tail_energy_ratio`]) are unchanged by which
+    /// (already onset-aware, see `tail_energy_ratio`) are unchanged by which
     /// PSD is passed in.
     #[allow(clippy::too_many_arguments)]
     pub fn from_capture_with_psd(
@@ -472,15 +464,15 @@ impl SoundProfile {
     }
 
     /// Like [`Self::from_capture_with_psd`], but lets the caller supply an
-    /// already-measured `Loudness` (PR2, D4: 2-ch BS.1770 over the un-mixed
+    /// already-measured `Loudness` (2-ch BS.1770 over the un-mixed
     /// processed pair) to use for `integrated_lufs`/`spread_lu` INSTEAD of the
     /// mono measure over the averaged `samples` mixdown. `stereo_mix`'s average
     /// is lossy for loudness — it can't reconstruct per-channel energy — so a
     /// caller with access to the raw un-mixed capture (`commands/doctor.rs`'s
     /// production path, via `leveller::doctor_capture_with_loudness`) passes its
     /// stereo measure here. `None` (every curated/test fixture, and every dev
-    /// probe harness that only has the mixed-down `samples`) preserves the exact
-    /// legacy mono-on-mixdown behaviour byte-for-byte.
+    /// probe harness that only has the mixed-down `samples`) uses the mono
+    /// measure over the mixdown.
     #[allow(clippy::too_many_arguments)]
     pub fn from_capture_with_psd_loudness(
         samples: &[f32],
@@ -507,8 +499,8 @@ impl SoundProfile {
     }
 
     /// [`Self::from_capture_with_psd_loudness`] over every channel of a
-    /// capture: the tail ratio combines the channels in the power domain
-    /// (#250). With no `stereo_loudness`, loudness falls back to the mono
+    /// capture: the tail ratio combines the channels in the power domain.
+    /// With no `stereo_loudness`, loudness falls back to the mono
     /// measure over the first channel (a 1-channel capture's only one).
     #[allow(clippy::too_many_arguments)]
     pub fn from_channels(
@@ -545,7 +537,7 @@ impl SoundProfile {
             // the deterministic stimulus's own spectral ridges cancel — raw
             // capture-space peaks false-fired `resonant` on 25/25 clean
             // factory presets (see `Psd::transfer_db`) — read only where the
-            // stimulus has energy, bridging its dips (#235, see
+            // stimulus has energy, bridging its dips (see
             // `Psd::observable_transfer_db`). No stimulus PSD (or a mismatched
             // grid) → no localization, empty peaks.
             peaks: stim_psd
@@ -572,12 +564,10 @@ impl SoundProfile {
 /// The shared post-onset BODY Welch PSD one Doctor capture measures ONCE, read
 /// by both [`SoundProfile::from_capture_with_psd`] (band powers + air
 /// flatness) and [`output_coverage_with_body`] (the SNR gate) — one
-/// measurement space instead of two disagreeing ones (the profile used to span
-/// the WHOLE buffer, preamble + tail included; the coverage gate's body
-/// excluded them). Slices to `samples[onset..]` when `onset` is a confident
-/// in-range value (`> 0` and `< samples.len()`); falls back to the legacy
-/// whole-buffer PSD otherwise (an un-aligned/zero onset — every
-/// synthetic-stimulus call site passes 0, `welch_psd` handles a short slice by
+/// measurement space instead of two disagreeing ones. Slices to
+/// `samples[onset..]` when `onset` is a confident in-range value (`> 0` and
+/// `< samples.len()`); falls back to the whole-buffer PSD otherwise (an un-aligned/zero onset —
+/// every synthetic-stimulus call site passes 0, `welch_psd` handles a short slice by
 /// falling back to a smaller segment length, no extra guard needed here).
 pub fn body_psd(samples: &[f32], rate: u32, onset: usize) -> crate::psd::Psd {
     body_psd_span(&[samples], rate, onset, samples.len())
@@ -586,23 +576,22 @@ pub fn body_psd(samples: &[f32], rate: u32, onset: usize) -> crate::psd::Psd {
 /// The body PSD over `[start, end)` of every channel, combined in the power
 /// domain — the space every production and sweep capture is analysed in.
 ///
-/// - `end` is the body end (#249): the post-stimulus tail stays out of the
-///   spectrum, so a wet preset's decay no longer mixes into its band powers
+/// - `end` is the body end: the post-stimulus tail stays out of the
+///   spectrum, so a wet preset's decay does not mix into its band powers
 ///   in proportion to how wet it is, and the body spans exactly the
 ///   stimulus's own unpadded length, on the same Welch grid as
 ///   [`crate::leveller::stim_body_psd`] — so the stimulus's fine structure
 ///   cancels in [`crate::psd::Psd::transfer_db`].
-/// - The channels' PSDs are averaged, not their waveforms (#250): a mono
-///   chain reads the same, while decorrelated stereo keeps its full power and
-///   partly correlated stereo (chorus, doublers) no longer comb-filters.
+/// - The channels' PSDs are averaged, not their waveforms: a mono chain
+///   reads the same, while decorrelated stereo keeps its full power and partly
+///   correlated stereo (chorus, doublers) does not comb-filter.
 ///
 /// An empty span (`start >= end`, after clamping `end` to the channel) falls
 /// back to the whole buffer, as [`body_psd`] always has. A zero `start` with an
 /// in-range `end` still drops the tail: [`body_psd`] passes `end = len`, so for
 /// it slicing from 0 is the whole buffer anyway.
 pub fn body_psd_span(channels: &[&[f32]], rate: u32, start: usize, end: usize) -> crate::psd::Psd {
-    // Low-variance Welch PSD (Stage 1) replaces the noisy single-bin Goertzel
-    // probes — true integrated band power over each layout band, plus the
+    // Low-variance Welch PSD — true integrated band power over each layout band, plus the
     // top-octave flatness the capture-space fizzy gate reads.
     crate::psd::Psd::power_mean(
         channels
@@ -623,20 +612,19 @@ pub fn body_psd_span(channels: &[&[f32]], rate: u32, start: usize, end: usize) -
 /// (`TMP_E2E_SHOWCASE=1`). The offline fake re-amp returns the raw stimulus for
 /// every preset, so every sound would measure identically: a flat passthrough,
 /// which today draws the same "Gets lost in the mix" and "Fizzy" cards on every
-/// preset (#247), not the showcase's distinct ones. Instead `doctor_check` injects these per showcase list
+/// preset, not the showcase's distinct ones. Instead `doctor_check` injects these per showcase list
 /// index (`commands/doctor.rs`), so the REAL `diagnose` engine renders genuine
 /// cards.
 ///
-/// The three mapped presets cover five of the six original guitar diagnoses
-/// (two cards each), now judged under the deviation-from-target + Theil–Sen
+/// The three mapped presets cover five of the six muddy / boomy / harsh / fizzy
+/// / washed / lost diagnoses (two cards each), judged under the deviation-from-target + Theil–Sen
 /// tilt/local metric ([`deviations`] / [`tilt_split`]). Band values are
 /// ABSOLUTE per-band dB; `fizzy` (Air − Highs) and `washed` (tail) ride
 /// independently of the tilt/local split. NOTE: a tilt (dark/bright) and a local
-/// bump (muddy/boomy/harsh/lost) now CAN co-fire — Theil–Sen's median fit
-/// doesn't absorb a single-band bump into the trend the way the old OLS fit did
-/// — so preset 11 is muddy+dark (a −5.0 dB/oct dark tilt plus a +7 dB low-mid
-/// bump on top of the guitar target). The one co-firing limit that remains: a
-/// SYMMETRIC 2-band low shelf (both Lows and Low mids raised together) reads as
+/// bump (muddy/boomy/harsh/lost) CAN co-fire — Theil–Sen's median fit
+/// doesn't absorb a single-band bump into the trend — so preset 11 is muddy+dark (a −5.0 dB/oct
+/// dark tilt plus a +7 dB low-mid bump on top of the guitar target). The one co-firing limit that
+/// remains: a SYMMETRIC 2-band low shelf (both Lows and Low mids raised together) reads as
 /// a tilt (dark), not a local bump — an accepted 6-point identifiability limit
 /// of a single slope+intercept fit. Verified by the `showcase_profile_diagnoses`
 /// test — keep those presets PLAIN and scene-less.
@@ -708,31 +696,30 @@ pub const BAND_COVERAGE_DB: f64 = 30.0;
 /// Minimum top-octave spectral flatness ([`SoundProfile::air_flatness`]) for the
 /// `fizzy` rule to fire under [`StimulusKind::Capture`]. Fizz is NOISE-like HF
 /// hash; on a real-DI capture the top octave's flatness separates it from a
-/// merely bright cab's harmonic top. On the SYNTHETIC shaped-noise stimulus
-/// everything above the cab's rolloff is noise-like by construction, so the gate
-/// is inert there by design (only `Capture` reads it).
+/// merely bright cab's harmonic top. Only `Capture` reads the gate; the
+/// synthetic stimulus skips it.
 pub const FIZZY_MIN_FLATNESS: f64 = 0.35;
 
 // ─── localized peak (resonant/boxy) constants ────────────────────────────────
 
-/// The frequency range [`RuleMetrics::peaks`] scans — every EQ-10-drivable
+/// The frequency range `RuleMetrics::peaks` scans — every EQ-10-drivable
 /// band the `resonant` rule can target sits inside it.
 const RESONANT_SCAN_LO_HZ: f64 = 200.0;
 const RESONANT_SCAN_HI_HZ: f64 = 8_000.0;
 
-/// [`crate::psd::Psd::find_peaks`]'s detection floor: well below both rule
+/// `crate::psd::Psd::find_peaks`'s detection floor: well below both rule
 /// gates below so a below-threshold peak is still CANDIDATE data the rules can
-/// compare against, rather than invisible to `find_peaks` entirely. ponytail:
-/// an arbitrary "clearly a bump, not noise" floor — no HW calibration behind
-/// this one (only the two rule gates below are pinned to the R8 sweep).
+/// compare against, rather than invisible to `find_peaks` entirely. An
+/// arbitrary "clearly a bump, not noise" floor — not HW-calibrated (only the
+/// two rule gates below are).
 const PEAK_DETECT_FLOOR_DB: f64 = 3.0;
 
 /// Minimum height (dB of TRANSFER excess over its one-octave median
 /// envelope — see [`crate::psd::Psd::transfer_db`]: localization runs on
 /// capture−stimulus, where the stimulus's own spectral ridges cancel; raw
 /// capture-space detection false-fired `resonant` on 25/25 clean factory
-/// presets) for a peak to read as `resonant`. MATRIX-CALIBRATED (HW
-/// 2026-07-17, `probe --doctor-inject --block ACD_FiveBandParamEQ` height×Q
+/// presets) for a peak to read as `resonant`. MATRIX-CALIBRATED (HW,
+/// `probe --doctor-inject --block ACD_FiveBandParamEQ` height×Q
 /// grid — gains +6/+9/+12 dB × Q 2/4/8/12 at 700/2000/5600 Hz — through a
 /// real drives→'65 Deluxe+CabIR chain, placed against the 25-slot factory
 /// peak population):
@@ -759,22 +746,23 @@ pub const RESONANT_MIN_HEIGHT_DB: f64 = 13.5;
 /// the probe arms keep recording the full picture): above ≈4 kHz the cab-IR
 /// comb forest owns the transfer — 55 of the 75 factory-bank peaks live
 /// there, at up to 16 dB and any apparent Q — so no (height, Q) gate can
-/// separate a real ring from chain fine structure in that region (HW
-/// 2026-07-17). Below the cap the factory population is sparse and short
+/// separate a real ring from chain fine structure in that region (HW).
+/// Below the cap the factory population is sparse and short
 /// (see [`RESONANT_MIN_HEIGHT_DB`]).
 pub const RESONANT_MAX_FREQ_HZ: f64 = 4_000.0;
-/// Minimum quality factor (center / −3 dB width) — 2.0 admits real-world
+/// Minimum quality factor (center / half-height width, see
+/// `Psd::peak_q`) — 2.0 admits real-world
 /// resonances (wah/cocked filter, Q 2–6) while an octave-wide +12 dB
 /// graphic-EQ band stays below (Q < 2; HW-verified it never reads resonant).
 pub const RESONANT_MIN_Q: f64 = 2.0;
 /// Maximum quality factor — the isolated-comb-needle guard (single comb
-/// LINES measure q 85–455). MATRIX-RECALIBRATED (HW 2026-07-17): the
+/// LINES measure q 85–455). MATRIX-CALIBRATED (HW): the
 /// estimator INFLATES measured q for strong on-chain rings (an injected Q8
 /// read q 23 at one site; a stacked Q14 flagrant ring measured h 24.2 but
 /// q 25.4 — a 16 ceiling rejected a true positive), and below
 /// [`RESONANT_MAX_FREQ_HZ`] the height floor alone already rejects the
 /// whole factory population at ANY q (max in-range h = 12.6), so the
-/// ceiling's only remaining job is the needle class — 40 clears observed
+/// ceiling's only job is the needle class — 40 clears observed
 /// inflation with margin while staying far under it. Shared by `boxy`.
 pub const RESONANT_MAX_Q: f64 = 40.0;
 /// BAND CORROBORATION — the decisive false-positive control for both
@@ -782,7 +770,7 @@ pub const RESONANT_MAX_Q: f64 = 40.0;
 /// consensus spaces (tilt-split local AND median-centered deviation > this
 /// gate). The peak then LOCALIZES heat the calibrated band metric already
 /// confirms, instead of asking the noisy fine-structure shape to prove a
-/// defect on its own. HW (2026-07-16): the injected cocked wah carries
+/// defect on its own. HW: the injected cocked wah carries
 /// +15.7 dB of mid-band local; every comb-forest fake sits in a ≈0-local
 /// band — corroboration cut the factory sweep's shape-only resonant fires
 /// from 19/25 to 2/25, and both survivors are audible localized bumps (a
@@ -790,12 +778,13 @@ pub const RESONANT_MAX_Q: f64 = 40.0;
 /// rules' own gates by design: the peak supplies the specificity.
 pub const RESONANT_MIN_BAND_LOCAL_DB: f64 = 2.0;
 
-/// Master switch for the localized `resonant`/`boxy` VERDICTS — ENABLED
-/// since the 2026-07-17 parametric-EQ ground-truth round (the
-/// [`RESONANT_MIN_HEIGHT_DB`] matrix): the gates are now placed between a
-/// measured injected-resonance population and the measured factory peak
-/// population on the same amp+cab chain, which the three earlier
-/// (shape-only) rounds lacked. Scope honesty: peak-space `resonant` is for
+/// Master switch for the localized `resonant`/`boxy` VERDICTS — ENABLED:
+/// the gates sit between a measured injected-resonance population and the
+/// measured factory peak population on the same amp+cab chain (the
+/// [`RESONANT_MIN_HEIGHT_DB`] matrix). That matrix predates the pitched-pluck
+/// stimulus and is not re-derived for it: on the 248-sound sweep these gates
+/// fire on 7 (`resonant`) and 4 (`boxy`) healthy sounds
+/// (`notes/benchmarks.md`). Scope honesty: peak-space `resonant` is for
 /// NARROW rings (parametric-EQ/feedback class); a cocked WAH is a WIDE hump
 /// the octave envelope correctly tracks (peak-space h ≈ 6.7 while its
 /// band-space mid local reads +15.7 dB) — wahs are the band rules' job, by
@@ -803,7 +792,7 @@ pub const RESONANT_MIN_BAND_LOCAL_DB: f64 = 2.0;
 pub const LOCALIZED_RULES_ENABLED: bool = true;
 /// Minimum height for a peak centered in 300–500 Hz to read as `boxy` (a
 /// narrower, more specific verdict than `muddy`'s whole-band buildup).
-/// MATRIX-CALIBRATED (HW 2026-07-17, same grid as
+/// MATRIX-CALIBRATED (HW, same grid as
 /// [`RESONANT_MIN_HEIGHT_DB`]): the 300–500 Hz range is a CLEAN site on this
 /// bank — the 25-slot factory population has ZERO peaks below 662 Hz — and a
 /// clean-site +12 dB Q8 parametric hump measures h = 8.3 (the one-octave
@@ -820,8 +809,9 @@ const BOXY_HI_HZ: f64 = 500.0;
 /// by [`crate::psd::welch_psd`] + `band_powers`); a band is "covered" when within [`BAND_COVERAGE_DB`]
 /// of the loudest band. A sparse stimulus (an EBow drone, a couple of notes)
 /// leaves bands uncovered, and the Doctor skips any rule keyed on a band the
-/// stimulus never excited. Synthetic stimuli cover every band by construction, so
-/// gating no-ops there. Shared by the Tier-2 calibration readout and the Doctor
+/// stimulus never excited. The synthetic stimulus excites every body band, but
+/// its Air sits more than 30 dB under them ([`GUITAR_STIM_REF`]), so production
+/// gates on OUTPUT coverage. Shared by the DI calibration readout and the Doctor
 /// band-confidence gate. Pure — no I/O, unit-tested.
 pub fn coverage(bands: &[f64]) -> Vec<bool> {
     let loudest = bands.iter().copied().fold(0.0f64, f64::max).max(1e-12);
@@ -834,8 +824,8 @@ pub fn coverage(bands: &[f64]) -> Vec<bool> {
 
 /// A sound's spectral "balance": each band's dB offset from the sound's own
 /// mean band level. Level-invariant — the UI's `balance_db` bar meter
-/// (`commands/doctor.rs`). NOT the diagnosis metric anymore (that's
-/// [`deviations`] / [`tilt_split`] below); kept only for the display bars.
+/// (`commands/doctor.rs`). NOT the diagnosis metric (that's
+/// [`deviations`] / [`tilt_split`] below); display bars only.
 pub fn balance(bands: &[f64]) -> Vec<f64> {
     let db: Vec<f64> = bands.iter().copied().map(to_db).collect();
     let n = db.len().max(1);
@@ -855,23 +845,18 @@ pub fn band_db(bands: &[f64]) -> Vec<f64> {
 ///
 /// Guitar: the MEDIAN spectral shape of the factory bank (248 guitar sounds)
 /// through the shipped pitched-pluck humbucker stimulus at the production
-/// capture window (2026-10-15, `probe --doctor-derive`; #235 replaced the
-/// 2026-07-16 band-passed-noise sweep), rounded to 0.5 dB. An authored anchor for
+/// capture window (fw 1.8.58, `probe --doctor-derive`), rounded to 0.5 dB. An authored anchor for
 /// "well-voiced Fender tone" whose provenance is the factory designers' own
 /// consensus voicing, NOT a per-preset fit — a corpus-derived target and
 /// threshold would be confounded (the target IS "what a typical preset
 /// does", so comparing a preset against it can only ever measure how
-/// atypical it is, never whether it sounds good; the flaw that killed the
-/// old runtime-cohort metric). The original hand-authored curve imagined
-/// per-Hz density and read every factory preset as +5 dB/oct "bright":
-/// band powers are WIDTH-INTEGRATED, so the wide presence bands legitimately
-/// dominate.
+/// atypical it is, never whether it sounds good). A curve authored as per-Hz
+/// density reads every factory preset as +5 dB/oct "bright": band powers are
+/// WIDTH-INTEGRATED, so the wide presence bands legitimately dominate.
 ///
 /// Bass: a single-preset anchor (user bank slot 21). Bass VI: a two-preset
 /// anchor (slots 8–9). Both PROVISIONAL pending a proper bass factory sweep
 /// — a starting point, not a calibrated consensus like the guitar curve.
-// ponytail: bass/bass-vi voicings are single/two-preset anchors, provisional
-// until a real bass factory sweep lands.
 const GUITAR_TARGET: [f64; 6] = [-3.5, 8.5, 9.5, 9.0, 1.0, -24.0];
 const BASS_TARGET: [f64; 6] = [1.5, 6.5, 9.5, 5.0, 1.5, -24.0];
 const BASS_VI_TARGET: [f64; 7] = [-18.0, 1.5, 2.0, -5.0, 14.0, 15.0, -9.0];
@@ -881,9 +866,9 @@ const BASS_VI_TARGET: [f64; 7] = [-18.0, 1.5, 2.0, -5.0, 14.0, 15.0, -9.0];
 /// stimulus-transfer anchor ([`anchor_deviations`]) subtracts each capture's
 /// stimulus deviation FROM this reference, so a capture through the reference
 /// gets exactly zero correction while any other stimulus's differing spectral
-/// shape no longer skews the tilt/band verdicts.
+/// shape does not skew the tilt/band verdicts.
 ///
-/// The shipped `samples/guitar-humbucker.wav` (#235): the target, the
+/// The shipped `samples/guitar-humbucker.wav`: the target, the
 /// thresholds and [`FACTORY_CONTRAST_DB`] all came from a factory sweep
 /// through it, so the humbucker gets exactly zero correction and the other
 /// pickups are anchored onto it. That correction is exact for a linear chain
@@ -994,9 +979,9 @@ pub(crate) fn anchor_deviations(
 }
 
 /// The capture's own Air − Highs dB (the `fizzy` metric), corrected for the
-/// stimulus the same way [`anchor_deviations`] corrects the band rules (#248):
+/// stimulus the same way [`anchor_deviations`] corrects the band rules:
 /// `(bdb[air] − bdb[highs]) − ((stim air − highs) − (ref air − highs))`. A
-/// brighter pickup's stimulus therefore no longer reads as fizz. Exactly the
+/// brighter pickup's stimulus therefore does not read as fizz. Exactly the
 /// raw difference when the stimulus IS the reference, when `stim_bands` is
 /// `None` (curated fixtures) and for families with no [`stim_ref`].
 pub(crate) fn fizzy_metric(bdb: &[f64], stim_bands: Option<&[f64]>, family: Family) -> f64 {
@@ -1150,7 +1135,7 @@ pub fn tilt_split(
 /// Fewest COVERED body bands [`centered_deviations`] centers on — the same
 /// minimum [`tilt_split`] needs for a slope. Below it there is no reliable
 /// consensus level, so the centered space is unknown and every consensus band
-/// rule abstains (the insufficient-evidence policy, #192).
+/// rule abstains (the insufficient-evidence policy).
 pub const MIN_CENTERING_BANDS: usize = 3;
 
 /// Median-centered deviations: `dev[i] − median(dev[covered body bands])`.
@@ -1164,8 +1149,8 @@ pub const MIN_CENTERING_BANDS: usize = 3;
 /// `tilt_split`'s fit uses).
 ///
 /// Only COVERED body bands (`covered`, `None` = all covered) set the median, so
-/// a band the stimulus never excited cannot move a covered band's verdict
-/// (#192). With fewer than [`MIN_CENTERING_BANDS`] covered body bands the
+/// a band the stimulus never excited cannot move a covered band's verdict.
+/// With fewer than [`MIN_CENTERING_BANDS`] covered body bands the
 /// result is `None`. Otherwise one value per band in `dev` (Sub/Air and
 /// uncovered bands included, centered against the same median — display only
 /// there, like `tilt_split`'s locals). `median` is the shared odd/even-safe
@@ -1205,7 +1190,7 @@ pub struct CutThrough {
 }
 
 /// Sorted presence contrasts (dB, see [`cut_through`]'s formula) of the
-/// 248-sound factory-bank sweep through the shipped humbucker (2026-10-15,
+/// 248-sound factory-bank sweep through the shipped humbucker (fw 1.8.58,
 /// `probe --doctor-derive`, the same sweep [`GUITAR_TARGET`] is derived from) — the reference population
 /// [`cut_through`]'s `factory_percentile` ranks a sound against.
 const FACTORY_CONTRAST_DB: [f64; 248] = [
@@ -1230,9 +1215,8 @@ const FACTORY_CONTRAST_DB: [f64; 248] = [
     3.34, 3.64, 4.20, 4.31,
 ];
 
-/// Below this presence contrast (dB), [`cut_through`] flags `advisory` — the
-/// shipped −6.2 dB rank-transferred to the 2026-10-15 sweep (it sat at the old
-/// bank's p10 and keeps that rank in [`FACTORY_CONTRAST_DB`]).
+/// Below this presence contrast (dB), [`cut_through`] flags `advisory` — about
+/// p14 of [`FACTORY_CONTRAST_DB`].
 pub const CUT_THROUGH_ADVISORY_DB: f64 = -6.2;
 
 /// `contrast_db`'s position (0..100) within the sorted [`FACTORY_CONTRAST_DB`]:
@@ -1274,12 +1258,12 @@ fn factory_percentile(contrast_db: f64) -> f64 {
 /// distribution of the factory-bank sweep — never an authored
 /// "typical mix masker" constant (unauditable).
 ///
-/// Guitar-only anchor for now: `factory_percentile`/`advisory` are
-/// `None`/`false` for Bass/Bass VI (no bass factory sweep yet, see
+/// Guitar-only anchor: `factory_percentile`/`advisory` are
+/// `None`/`false` for Bass/Bass VI (no bass factory sweep exists, see
 /// [`GUITAR_TARGET`]'s doc for the same caveat on the target curve) — the
 /// contrast itself is still computed and returned for every family.
 ///
-/// This is an ESTIMATE card, not a [`Diag`]: it never enters [`diagnose`] or
+/// This is an ESTIMATE card, not a [`Diag`]: it never enters `diagnose` or
 /// `apply_thresholds`, fires no rule, and has no [`Rx`].
 ///
 /// Returns `None` when `profile.bands` is too short for `family`'s layout, or
@@ -1287,7 +1271,7 @@ fn factory_percentile(contrast_db: f64) -> f64 {
 /// capture).
 pub fn cut_through(profile: &SoundProfile, family: Family) -> Option<CutThrough> {
     let raw = contrast_db(&profile.bands, family)?;
-    // Stimulus correction (#248), as `fizzy_metric` does for fizz: a brighter
+    // Stimulus correction, as `fizzy_metric` does for fizz: a brighter
     // pickup's own presence contrast is not the preset's.
     let correction = match (profile.stim_bands.as_deref(), stim_ref(family)) {
         (Some(bands), Some(reference)) => {
@@ -1322,7 +1306,7 @@ pub fn cut_through(profile: &SoundProfile, family: Family) -> Option<CutThrough>
 }
 
 /// RMS of a sample window, in f64 (0.0 for an empty window). The ONE copy of the
-/// formula shared by [`tail_energy_ratio`] and the `--doctor-calib` noise-floor
+/// formula shared by `tail_energy_ratio` and the `--doctor-calib` noise-floor
 /// metric — a precision/edge-case fix must not drift between them.
 /// RMS of `[start, end)` across `channels`, combined in the power domain (the
 /// square root of the channels' mean RMS²). One channel is exactly [`rms_f64`].
@@ -1354,10 +1338,10 @@ pub(crate) fn rms_f64(samples: &[f32]) -> f64 {
 
 /// A signal's own band coverage in a family's layout — [`coverage`] over its
 /// Welch-PSD band powers ([`crate::psd::welch_psd`]) at the device's 48 kHz
-/// clock. The one home for the (rate, layout) pairing shared by the Tier-2
+/// clock. The one home for the (rate, layout) pairing shared by the DI
 /// calibration readout and the `--doctor-calib` sweep. NOT used by the live
-/// `doctor_check` gate anymore — that reads the CAPTURED OUTPUT's own coverage
-/// ([`output_coverage`]), since the input stimulus can't see amp-created
+/// `doctor_check` gate — that reads the CAPTURED OUTPUT's own coverage
+/// (`output_coverage`), since the input stimulus can't see amp-created
 /// distortion HF.
 pub fn band_coverage(samples: &[f32], family: Family) -> Vec<bool> {
     coverage(&crate::psd::welch_psd(samples, 48_000.0).band_powers(family.bands()))
@@ -1387,7 +1371,7 @@ pub const OUTPUT_SNR_MARGIN_DB: f64 = 8.0;
 /// stimulus preamble,
 /// so the guard below fires only on the UNCONFIDENT-onset fallback
 /// (`signal_start == 0`) — then every band reads covered WITHOUT touching
-/// `body_psd`, the legacy permissive behavior.
+/// `body_psd` (permissive).
 pub fn output_coverage_with_body(
     samples: &[f32],
     rate: u32,
@@ -1399,7 +1383,7 @@ pub fn output_coverage_with_body(
 }
 
 /// [`output_coverage_with_body`] over every channel of a capture: the floor
-/// PSD is the power mean of the channels' floors (#250), matching a body PSD
+/// PSD is the power mean of the channels' floors, matching a body PSD
 /// from [`body_psd_span`].
 pub fn output_coverage_ch(
     channels: &[&[f32]],
@@ -1417,7 +1401,7 @@ pub fn output_coverage_ch(
     }
     // The floor window (~11,100 samples behind the 200 ms pad) fits only one
     // full-length Welch segment, whose single periodogram scattered the narrow low
-    // bands' floor by 1.5–2.5 dB run to run (#258); the floor estimator averages
+    // bands' floor by 1.5–2.5 dB run to run; the floor estimator averages
     // short segments instead. The two PSDs then sit on different grids, so the
     // bands compare by mean density (equal to the band-power ratio on one grid).
     let floor = crate::psd::Psd::power_mean(
@@ -1446,9 +1430,9 @@ pub fn output_coverage_ch(
 /// stream start, BEFORE the audio propagated through cpal/USB/DSP; see
 /// `crate::leveller::doctor_onset`). Splitting at `body_len` alone (from
 /// sample 0) leaks the last ~latency of body-level signal into the tail,
-/// inflating a bone-dry preset's ratio toward the washed threshold (~−17 dB vs
-/// the −13 dB gate for a 50 ms leak into a multi-second tail); pass
-/// `body_start: 0` to keep the un-aligned legacy split.
+/// inflating a bone-dry preset's ratio toward the washed gate
+/// (`wash_tail_db`; a 50 ms leak into a multi-second tail reads ≈ −17 dB);
+/// `body_start: 0` gives the un-aligned split.
 ///
 /// The tail window itself is PINNED to `tail_ms` past the body end (clamped to
 /// the capture length) rather than "everything after the body" — a
@@ -1469,8 +1453,8 @@ pub fn tail_energy_ratio(
     tail_energy_ratio_ch(&[samples], rate, body_len, body_start, tail_ms)
 }
 
-/// [`tail_energy_ratio`] over every channel of a capture, combined in the
-/// POWER domain (#250): each window's RMS² is the mean of the channels' RMS²,
+/// `tail_energy_ratio` over every channel of a capture, combined in the
+/// POWER domain: each window's RMS² is the mean of the channels' RMS²,
 /// so a decorrelated stereo tail keeps its full energy instead of losing 3 dB
 /// to a sample-wise average. One channel (or dual mono) reads exactly as the
 /// mono form.
@@ -1496,24 +1480,23 @@ pub fn tail_energy_ratio_ch(
     (20.0 * (tail / body).max(1e-4).log10()).max(-80.0)
 }
 
-/// Run-to-run σ of the band rules' metrics (dB): the R4 repeatability
-/// figure behind the 1.2 dB (3σ) band margin ([`GUITAR`]'s doc). `fizzy` is a
+/// Run-to-run σ of the band rules' metrics (dB): the repeatability figure
+/// behind the 1.2 dB (3σ) band margin ([`crate::benchmark::BAND_MARGIN_DB`]). `fizzy` is a
 /// difference of two band levels and uses the same figure.
 pub const BAND_SIGMA_DB: f64 = 0.4;
-/// Run-to-run σ of the broadband tilt (dB/oct), from the same R4 runs.
+/// Run-to-run σ of the broadband tilt (dB/oct), from the same runs.
 pub const TILT_SIGMA_DB_PER_OCT: f64 = 0.05;
 /// Run-to-run σ of a localized peak's height (dB) — see
 /// [`RESONANT_MIN_HEIGHT_DB`]'s doc.
 pub const PEAK_SIGMA_DB: f64 = 0.3;
 /// Run-to-run σ of the tail ratio (dB). Five warm runs of the wash fixture
 /// spread σ ≈ 0.05 dB, but the first capture after other device activity
-/// reads about 0.3 dB off (`notes/gotchas.md`, the 2026-08-25 wash fixture
-/// re-seed), so the cold offset sets it.
+/// reads about 0.3 dB off (HW), so the cold offset sets it.
 pub const WASH_SIGMA_DB: f64 = 0.3;
 
 /// The run-to-run σ of `key`'s metric, in the rule's own unit — what
 /// [`Diag::z`] divides the margin by so every rule hedges and ranks on one
-/// scale (#253). An unknown key falls back to the band figure.
+/// scale. An unknown key falls back to the band figure.
 pub fn rule_sigma(key: &str) -> f64 {
     match key {
         "dark" | "bright" => TILT_SIGMA_DB_PER_OCT,
@@ -1560,7 +1543,7 @@ pub struct Diag {
     /// fizzy, washed and peak rules, dB/oct for dark/bright) — `metric −
     /// threshold`, always ≥ 0 for a fired card. Playback offsets shift the
     /// threshold, so they shift this. Display only: units differ by rule, so
-    /// hedging and ranking read [`Diag::z`] instead (#253).
+    /// hedging and ranking read [`Diag::z`] instead.
     pub severity: f64,
     /// `severity` over the rule's run-to-run σ ([`rule_sigma`]): how many
     /// standard deviations of measurement noise the finding sits past its
@@ -1637,7 +1620,7 @@ pub enum DoctorOp {
     },
 }
 
-// ─── exact-id block tables (fw 1.8.45 schema extractions) ───────────────────
+// ─── exact-id block tables (firmware schema extractions) ─────────────────────
 
 /// Drive/distortion pedals (`algoCategory == "dist"`).
 const DIST_IDS: [&str; 46] = [
@@ -1794,15 +1777,15 @@ const OTHER_EQ_IDS: [&str; 4] = [
     "ACD_MustangPEQ",
 ];
 const HIGH_LOW_PASS: &str = "ACD_HighLowPass";
-/// The five-band parametric EQ the narrow-ring notch uses (#252). Live
-/// controlIds `filterN{frequency,gaindb,q}` are HW write-verified (1 kHz/+12 dB/Q8
-/// in → 1008 Hz/q 7.5 measured, `notes/doctor-calibration.md` 2026-07-17); band
+/// The five-band parametric EQ the narrow-ring notch uses. Live controlIds
+/// `filterN{frequency,gaindb,q}` are HW write-verified (1 kHz/+12 dB/Q8 in →
+/// 1008 Hz/q 7.5 measured, `notes/doctor-thresholds.md#localized-rule-gates`); band
 /// 1 defaults to a high-pass, bands 2–4 to peaks, so only 2–4 carry a notch.
 const PARAM_EQ: &str = "ACD_FiveBandParamEQ";
 const COMPRESSOR: &str = "ACD_DynaComp"; // classic 2-knob pedal comp, schema-verified
 
-/// EQ-10 band gain range (dB). ponytail: ±12 is the graphic-EQ standard; the
-/// band controlIds' fw schema is the source to re-derive from if a rev differs.
+/// EQ-10 band gain range (dB): ±12, the graphic-EQ standard; the band
+/// controlIds' fw schema is the source to re-derive from if a rev differs.
 const EQ10_BAND_RANGE_DB: f64 = 12.0;
 
 // ─── graph facts ─────────────────────────────────────────────────────────────
@@ -2231,8 +2214,9 @@ fn measured_freq_label(hz: f64) -> String {
 /// The 10 standard EQ-10 graphic-EQ bands (Hz, gain controlId), ascending.
 /// HW-verified via `probe --doctor-inject` (a wrong id silently no-ops on the
 /// device, visible as the defect not appearing in the after-capture):
-/// 62/125/250/500/1k/2k/4k/8k. Only `gain31hz`/`gain16khz` remain
-/// unverified — both UNREACHABLE by the resonant/boxy Rx (the 200 Hz–8 kHz
+/// 62/125/250/500/1k/2k/4k/8k. `gain31hz`/`gain16khz` are valid schema
+/// controlIds (firmware data, fw 1.8.58) but not HW write-verified — both
+/// UNREACHABLE by the resonant/boxy Rx (the 200 Hz–8 kHz
 /// scan's log-nearest bands span 250 Hz–8 kHz).
 const EQ10_BANDS: [(f64, &str); 10] = [
     (31.0, "gain31hz"),
@@ -2266,8 +2250,8 @@ fn nearest_eq10_band(freq_hz: f64) -> &'static str {
     nearest_band(freq_hz, &EQ10_BANDS)
 }
 
-/// Nearest of the 250/500 Hz pair to a `boxy` peak's measured center — the
-/// task's explicit "500 Hz (or 250 Hz if nearer)" band choice.
+/// Nearest of the 250/500 Hz pair to a `boxy` peak's measured center — boxy
+/// cuts at 500 Hz, or 250 Hz when nearer.
 fn nearest_boxy_band(freq_hz: f64) -> &'static str {
     nearest_band(freq_hz, &EQ10_BANDS[3..=4])
 }
@@ -2293,12 +2277,12 @@ fn band_index_for_freq(instrument: Family, freq_hz: f64) -> Option<usize> {
 /// defaults to a high-pass and band 5 is left alone too.
 const PEQ_NOTCH_BANDS: [u8; 3] = [2, 3, 4];
 
-/// The notch's Q range: the measured ring Q (#251), clamped so a misread can
+/// The notch's Q range: the measured ring Q, clamped so a misread can
 /// neither widen the cut toward the octave-wide band it replaces nor narrow it
 /// past the ring's own width.
 const NOTCH_Q_RANGE: (f64, f64) = (2.0, 12.0);
 
-/// The resonant/boxy Rx (#252): a PARAMETRIC peak cut of
+/// The resonant/boxy Rx: a PARAMETRIC peak cut of
 /// `−min(max_cut_db, height_db/2)` (rounded to 0.5 dB) at the MEASURED
 /// frequency, with the measured Q ([`NOTCH_Q_RANGE`]) — instead of an
 /// octave-wide graphic-EQ band that removes about an octave of tone to treat
@@ -2416,9 +2400,9 @@ fn localized_cut_rx(
     .collect()
 }
 
-/// A cut-filter move on the existing cab (standalone only — the amp-embedded
-/// cab's `hpf`/`lpf` share the schema but ride the amp node; supported the
-/// same way) or an `ACD_HighLowPass` insert when the chain has no cab.
+/// A cut-filter move on the chain's cab (the standalone CabSim, or a CabIR
+/// amp, whose `hpf`/`lpf` ride the amp node) or an `ACD_HighLowPass` insert
+/// when the chain has no cab.
 /// `cab_title` is the step on the cab's own knob, `insert_title` the step that
 /// adds the filter block.
 fn cut_move(
@@ -2536,8 +2520,8 @@ fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
 /// past its gate: `base_db` (the fixed cut the rule shipped with, which the
 /// hardware defect suite cleared) plus the margin, rounded to 0.5 dB and capped
 /// at `max_db`. A finding just past its gate keeps the shipped cut, and a larger
-/// excess gets a proportionally deeper one (#256) — never a shallower cut than
-/// before. A non-finite or negative margin reads as 0.
+/// excess gets a proportionally deeper one — never a shallower cut than
+/// `base_db`. A non-finite or negative margin reads as 0.
 fn sized_cut_db(base_db: f64, margin_db: f64, max_db: f64) -> f64 {
     let margin = if margin_db.is_finite() {
         margin_db.max(0.0)
@@ -2572,7 +2556,7 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode]) -> Vec<Rx> {
     generate_rx_sized(diag_key, nodes, 0.0)
 }
 
-/// [`generate_rx`] for a finding `margin_db` past its gate (its severity): the
+/// `generate_rx` for a finding `margin_db` past its gate (its severity): the
 /// muddy and harsh EQ cuts grow with the measured excess ([`sized_cut_db`]); every
 /// other prescription ignores it.
 ///
@@ -2668,7 +2652,7 @@ pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -
             rx.extend(comp_front(nodes, &facts));
             rx
         }
-        // The handoff's parallel clean/driven split is NOT wire-expressible:
+        // A parallel clean/driven split is NOT wire-expressible:
         // insert/replace/remove operate inside existing groups, and no session
         // op creates a new split topology — so Doctor prescribes the honest
         // expressible fixes instead (ease the drive, then a comp in front).
@@ -2681,13 +2665,8 @@ pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -
             rx
         }
         // dark/bright/thin are broadband tilt/local findings, not a single
-        // block's fault — advisory-only. ponytail deviation from the frozen
-        // spec: dark's "reuse the EQ as a lift" branch is SKIPPED (advisory-only
-        // for both directions) rather than reusing `eq_move`'s cut-only helper —
-        // no verified EQ-10 band controlId exists in this codebase past
-        // gain1khz/gain2khz (harsh) and gain250hz (muddy), and this codebase's
-        // exact-id-matching discipline (see the module doc) makes guessing one
-        // (e.g. a `gain4khz`/`gain8khz`) too risky to ship unverified.
+        // block's fault — advisory-only in both directions: dark gets no
+        // EQ-lift one-click (`eq_move` is cut-only).
         "dark" => vec![
             advisory("Raise the amp's Treble or Presence.", ""),
             advisory(
@@ -2719,21 +2698,17 @@ pub fn generate_rx_sized(diag_key: &str, nodes: &[DoctorNode], margin_db: f64) -
 /// diagnosis still works without it (graph-dependent rx are simply absent).
 /// Deterministic — the verdict depends only on THIS sound (its deviation from a
 /// fixed authored target curve), never on which other sounds ran.
-/// Test-only: every production/probe caller now goes through [`diagnose_kind`]
+/// Test-only: every production/probe caller goes through [`diagnose_kind`]
 /// directly with real `coverage` (this shim's `None` disables the low-energy-
-/// band gate — the exact class of bug fixed in `probe_doctor`/`analyze_capture`).
-/// Kept as the tests' concise default (`StimulusKind::Synthetic`,
-/// `PlaybackOffsets::NONE`, no coverage) — synthetic stimuli cover every band
-/// by construction, so skipping the gate there is correct, not an oversight.
+/// band gate). The tests' concise default (`StimulusKind::Synthetic`,
+/// `PlaybackOffsets::NONE`, no coverage).
 #[cfg(test)]
 pub fn diagnose(
     profile: &SoundProfile,
     nodes: Option<&[DoctorNode]>,
     instrument: Family,
 ) -> Vec<Diag> {
-    // Back-compat shim: the synthetic table + no band gating + no playback offset
-    // (Rehearsal anchor) == the pinned pre-capture behavior (synthetic stimuli
-    // cover every band by construction).
+    // Synthetic + no band gating + no playback offset (Rehearsal anchor).
     diagnose_kind(
         profile,
         nodes,
@@ -2755,7 +2730,7 @@ struct RuleMetrics {
     bdb: Vec<f64>,
     slope: Option<f64>,
     locals: Vec<f64>,
-    /// `None` when too few body bands are covered to center on (#192).
+    /// `None` when too few body bands are covered to center on.
     centered: Option<Vec<f64>>,
     facts: Option<GraphFacts>,
 }
@@ -2767,7 +2742,7 @@ struct RuleMetrics {
 /// robust to a single-band anomaly. The same space the `--doctor-calib` sweep
 /// derives thresholds in. Also derives the median-centered space (see
 /// [`centered_deviations`]'s doc) — the SECOND space every band rule must
-/// ALSO clear (CONSENSUS: R5 HW defect injection showed the tilt-split local
+/// ALSO clear (CONSENSUS: HW defect injection showed the tilt-split local
 /// alone misattributes a skirted single-band defect to a neighboring rule,
 /// and the centered space alone is contaminated by healthy tilt at the
 /// endpoint bands).
@@ -2841,7 +2816,7 @@ fn consensus(
 /// Diagnose one sound with an explicit stimulus `kind` (picks the threshold
 /// table) and optional band `coverage` — per-band excitation of whatever
 /// coverage source the caller supplies (the input stimulus via [`coverage`],
-/// or the captured output via [`output_coverage`]): a band-keyed rule whose
+/// or the captured output via `output_coverage`): a band-keyed rule whose
 /// primary band is UNCOVERED is skipped — a sparse capture must not produce
 /// verdicts in bands it never excited. `coverage = None` disables gating
 /// (all bands treated as covered). The localized `resonant`/`boxy` rules read
@@ -2901,16 +2876,16 @@ pub fn diagnose_calibrated(
 /// A low-end (muddy/boomy) gate shifted by the playback level's offset, never
 /// below 0 dB: these gates read a band's EXCESS over the target, so a gate the
 /// Stage tightening pushed under 0 would flag a band sitting exactly on the
-/// target (#247 — the pitched-pluck re-derivation put the muddy tilt gate at
-/// 0.8 dB, and the then-Stage −2 dB made a wire chain read muddy).
+/// target (the muddy tilt gate is 0.8 dB, so a −2 dB Stage offset would make a
+/// wire chain read muddy).
 fn low_end_gate(gate: f64, offset: f64) -> f64 {
     (gate + offset).max(0.0)
 }
 
 /// Threshold-application half of [`diagnose_kind`]: takes the level-invariant
 /// [`RuleMetrics`] plus everything that DOES vary with playback level
-/// (`kind`/`coverage`/`offsets`) and produces the fired [`Diag`]s. An exact
-/// behavioral split of the old single-function body — driven once directly by
+/// (`kind`/`coverage`/`offsets`) and produces the fired [`Diag`]s. Driven once
+/// directly by
 /// `diagnose_kind`, and three times (over one shared `RuleMetrics`) by
 /// `diagnose_levels`.
 #[allow(clippy::too_many_arguments)]
@@ -2964,8 +2939,6 @@ fn apply_thresholds(
     // need the CENTERED-space margin to also clear its own gate (`consensus`) —
     // severity is the smaller of the two, so a boundary consensus fire reads as
     // "Possible".
-    // ponytail: guard-band widening (surfacing below-threshold cards) is a later,
-    // HW-σ-calibrated step — keep the raw `> threshold` fire condition here.
     let (muddy_margin, muddy_fires) = consensus(
         locals[low_mids],
         low_end_gate(t.muddy_db, offsets.muddy_db),
@@ -3021,11 +2994,11 @@ fn apply_thresholds(
         );
     }
     // Fizz is the Air band failing to roll off below the presence band — a
-    // difference of the two bands' own dB (self-mean cancels, so it's identical
-    // to the old balance-space form). See `Thresholds::fizzy_db`. Own-spectrum,
+    // difference of the two bands' own dB (self-mean cancels). See
+    // `Thresholds::fizzy_db`. Own-spectrum,
     // so it needs BOTH the Air and Highs bands actually excited. On a real DI
     // capture, gate on the top octave's spectral flatness (noise-like HF hash vs
-    // a merely bright cab) — inert on the synthetic stimulus (see
+    // a merely bright cab) — skipped on the synthetic stimulus (see
     // `FIZZY_MIN_FLATNESS`).
     let fizzy_db = fizzy_metric(bdb, profile.stim_bands.as_deref(), instrument);
     let fizzy_margin = fizzy_db - (t.fizzy_db + offsets.fizzy_db);
@@ -3171,8 +3144,8 @@ fn apply_thresholds(
         );
     }
 
-    // Localized resonance — matrix-calibrated and ENABLED (2026-07-17); see
-    // `localized_diags`'s doc for the calibration lineage.
+    // Localized resonance — matrix-calibrated and ENABLED; see
+    // `localized_diags`'s doc.
     if LOCALIZED_RULES_ENABLED {
         out.extend(localized_diags(
             profile, metrics, instrument, nodes, &covered,
@@ -3182,16 +3155,11 @@ fn apply_thresholds(
 }
 
 /// The localized `resonant`/`boxy` diagnoses (see the gate consts around
-/// [`RESONANT_MIN_HEIGHT_DB`]). Calibration lineage: three 2026-07-16
-/// shape-only HW rounds (raw capture space → transfer space → Q-window +
-/// band corroboration) could not place gates — the boundary between a
-/// playable resonance and a normal chain's comb fine structure moved every
-/// round, so the verdicts shipped DISABLED. The 2026-07-17 parametric-EQ
-/// ground-truth round (`ACD_FiveBandParamEQ` schema dump → height×Q
-/// injection matrix through a real drives→'65 Deluxe+CabIR chain, placed
-/// against the 25-slot factory peak population) produced measurable
-/// separations, and the verdicts are ON with matrix-derived gates:
-/// frequency cap [`RESONANT_MAX_FREQ_HZ`] (the >4 kHz comb forest is
+/// [`RESONANT_MIN_HEIGHT_DB`]). Shape alone cannot separate a playable
+/// resonance from a normal chain's comb fine structure; the gates come from a
+/// parametric-EQ (`ACD_FiveBandParamEQ`) height×Q injection matrix through a
+/// real drives→'65 Deluxe+CabIR chain, placed against the factory peak
+/// population. The gates: frequency cap [`RESONANT_MAX_FREQ_HZ`] (the >4 kHz comb forest is
 /// ungateable), height floors [`RESONANT_MIN_HEIGHT_DB`]/
 /// [`BOXY_MIN_HEIGHT_DB`], the Q window, and band corroboration. Scope: a
 /// cocked WAH is a WIDE hump — peak-space h ≈ 6.7 while its mid-band local
@@ -3449,7 +3417,7 @@ pub struct LevelingDamageHint {
 
 /// The wet-mix base (`valueB`) must clear this to call the drop material — a
 /// base already near zero has nothing to delete. The materiality floor;
-/// how far `valueA` must fall below `valueB` is [`leveller::WET_FLOOR_FRACTION`]
+/// how far `valueA` must fall below `valueB` is `leveller::WET_FLOOR_FRACTION`
 /// (below), not a number invented here.
 const DELETED_EFFECT_BASE_MIN: f64 = 0.15;
 /// Minimum relative move (of the base) to count as a genuine sweep for
@@ -3465,15 +3433,15 @@ const SWEPT_OTHER_ABS_FLOOR: f64 = 1e-3;
 /// `func: "param"` assignments with both `valueA`/`valueB` present are
 /// candidates (an `on-off` function carries neither). The classifier keys on
 /// the ACTED-ON block's `fender_id`, exactly like
-/// [`crate::footswitch::is_levelable_param`] (kept private there — this
+/// `crate::footswitch::is_levelable_param` (kept private there — this
 /// re-derives the classification rather than depending on it, since the
 /// predicate answers a different question: "may the CURRENT leveler write
 /// this" vs "does an EXISTING assignment match a damage shape"). The
 /// `DeletedEffect` threshold IS the leveler's own wet-floor invariant, negated:
-/// [`leveller::WET_FLOOR_FRACTION`] is the floor the CURRENT leveler refuses to
+/// `leveller::WET_FLOOR_FRACTION` is the floor the CURRENT leveler refuses to
 /// cross, so `valueA` sitting below `WET_FLOOR_FRACTION × valueB` is a value the
 /// current leveler would never have written — a 94% wet kill (`0.05` vs base
-/// `0.90`) matches this and would NOT have fired the old absolute `<=0.02` gate.
+/// `0.90`) matches this.
 pub fn leveling_damage_hints(
     footswitches: &[crate::footswitch::FootswitchInfo],
 ) -> Vec<LevelingDamageHint> {
@@ -3629,10 +3597,9 @@ pub fn scene_consistency(
                 ),
                 &gap,
             )],
-            // The open loadScene(0) anomaly: USB scene-0 recall can
-            // materialize a different amp state than the physical footswitch
-            // tap, so its reading isn't trustworthy enough to act on — ask
-            // for ears instead.
+            // Wire scene 0 asks for ears instead of a leveling step, although a USB
+            // loadScene(0) reaches the same state as selecting scene 0 on the unit
+            // (notes/device/scenes.md#panel-and-footswitch-scene-changes).
             Some(0) => vec![advisory(
                 &format!(
                     "Couldn't confirm the reading for {worst_name}. Check it by ear before you change it."
@@ -3676,10 +3643,10 @@ mod onset_split_tests {
 
     const SR: u32 = 48_000;
 
-    /// The D3 regression: a bone-dry chain whose capture starts with 50 ms of
+    /// Regression: a bone-dry chain whose capture starts with 50 ms of
     /// I/O-latency silence. The un-aligned split leaks the last 50 ms of BODY
-    /// into the tail window (reads ≈ −17 dB, hugging the −13 dB washed
-    /// threshold); the onset-aligned split reads the true near-silent tail.
+    /// into the tail window (reads ≈ −17 dB, toward the washed gate); the
+    /// onset-aligned split reads the true near-silent tail.
     #[test]
     fn onset_aligned_split_stops_body_leak_into_the_tail() {
         let stim_n = SR as usize * 6;
@@ -3885,7 +3852,7 @@ mod tests {
             .collect()
     }
 
-    // #258: the coverage gate's floor estimate over the ~11,100-sample pre-onset
+    // The coverage gate's floor estimate over the ~11,100-sample pre-onset
     // window. One 8192-point segment scattered 1.9 dB (Lows) to 0.2 dB (Air) on
     // guitar and 2.6 dB on Bass VI Sub; the short-segment average reads 1.2 / 1.5 dB
     // there and ≤ 0.6 dB from Low mids up. The narrow low bands can't reach 0.5 dB
@@ -3978,8 +3945,8 @@ mod tests {
     //    (log2 of `Family::Guitar.band_centers()`): [6.406891, 7.775373,
     //    9.30482, 10.758266, 12.050747, 13.050747].
     //
-    // R5-retune (2026-07-16): every vector below is re-derived against the new
-    // GUITAR_TARGET/BASS_VI_TARGET and the new gates using this reference
+    // Every vector below is derived against GUITAR_TARGET/BASS_VI_TARGET and
+    // the gates using this reference
     // implementation (independent of the Rust under test), run with python3:
     //
     //   X  = [6.406891, 7.775373, 9.30482, 10.758266, 12.050747, 13.050747]
@@ -4044,7 +4011,7 @@ mod tests {
 
     #[test]
     fn uncovered_bands_cannot_change_a_covered_verdict() {
-        // #192's reproduction: covered body bands 0, 2, 4 read [0, −8, 0]. The
+        // Covered body bands 0, 2, 4 read [0, −8, 0]. The
         // mids scoop is `lost` whatever the UNcovered bands 1 and 3 hold.
         let cov = [true, false, true, false, true, true];
         let baseline = diag_keys_covered(&[0.0, 0.0, -8.0, 0.0, 0.0, 0.0], &cov);
@@ -4093,7 +4060,7 @@ mod tests {
 
     #[test]
     fn flat_chain_fizz_and_cut_through_do_not_depend_on_the_pickup() {
-        // #248: a wire chain (capture = stimulus) reads the same corrected fizz
+        // A wire chain (capture = stimulus) reads the same corrected fizz
         // metric and cut-through percentile through every guitar stimulus.
         let stems = [
             "guitar-humbucker",
@@ -4312,9 +4279,8 @@ mod tests {
     #[test]
     fn oracle_o4_dark_and_muddy_co_fire() {
         // The multi-defect lock: a −5.0 dB/oct dark tilt PLUS a +7 dB low-mid
-        // bump on top — under Theil–Sen (unlike the old OLS fit) both verdicts
-        // fire together. Same vector as the marketing showcase's preset 11
-        // (`showcase_dark_muddy_bdb` builds it on the current target).
+        // bump on top — under Theil–Sen both verdicts fire together. Same vector as the marketing
+        // showcase's preset 11 (`showcase_dark_muddy_bdb` builds it on the current target).
         // -> slope=-5.0, locals=[0,7,0,0,0,0].
         let bdb = showcase_dark_muddy_bdb();
         let p = oracle_profile(&bdb);
@@ -4362,7 +4328,7 @@ mod tests {
 
     #[test]
     fn oracle_o8_thin_is_guitar_only() {
-        // R5 consensus: a single-band bump over an otherwise-flat target has 4
+        // Consensus: a single-band bump over an otherwise-flat target has 4
         // of 5 body bands sitting on the median, so `centered_deviations` reads
         // back the SAME exact bump as the tilt-split local (median = 0 either
         // way) — the binding gate is the LARGER of the two spaces. A Lows cut
@@ -4422,7 +4388,7 @@ mod tests {
         assert!(keys(&diagnose(&p, None, Family::BassVi)).contains(&"muddy"));
     }
 
-    // ── R5 HW defect-injection regression fixtures (`probe --doctor-inject`,
+    // ── HW defect-injection regression fixtures (`probe --doctor-inject`,
     //    post-chain ±12 dB EQ-10 moves on a clean guitar preset, real device
     //    measurements — pinned VERBATIM, not python-derived like the oracle
     //    vectors above). These are the CONSENSUS design's motivating cases: the
@@ -4432,13 +4398,12 @@ mod tests {
     //    tilt. Only the intersection gets both right. Vectors are already
     //    target-subtracted (`dev[i]`, i.e. what `deviations()` returns) — built
     //    into a `band_db` via `GUITAR_TARGET[i] + dev[i]` so they exercise the
-    //    real `deviations()` too, per `notes/doctor.md`.
+    //    real `deviations()` too, per `notes/doctor-thresholds.md#metric`.
 
-    /// The gates these HW fixtures were measured against (2026-07-16, the
-    /// band-passed-noise stimulus). They pin the CONSENSUS logic, so they keep
-    /// those gates: the 2026-10-15 re-derivation moved every gate to the
-    /// pitched-pluck stimulus, where these old-stimulus deviations no longer
-    /// apply (#235's defect run re-checks the shipped gates on real presets).
+    /// The gates these HW fixtures were measured against (the band-passed-noise
+    /// stimulus). They pin the CONSENSUS logic, so they keep those gates; the
+    /// shipped gates are derived for the pitched-pluck stimulus, where these
+    /// deviations do not apply.
     const R5_GUITAR: Thresholds = Thresholds {
         muddy_db: 2.0,
         boomy_db: 2.5,
@@ -4522,7 +4487,7 @@ mod tests {
     #[test]
     fn inject_low_shelf_62_125hz_fires_no_band_rule_documented_limit() {
         // +12 dB @62+125 Hz (a low SHELF, not a single band) — HW-measured.
-        // Documented R1 identifiability limit: a shelf spanning 2+ bands reads as
+        // Documented identifiability limit: a shelf spanning 2+ bands reads as
         // a tilt (dark/bright territory), not a local bump, to a single
         // slope+intercept fit. This one's tilt (−1.2 dB/oct) sits under the
         // dark gate too, so it's silent among band rules by design, not a miss.
@@ -4706,7 +4671,7 @@ mod tests {
         assert_eq!(b, c);
     }
 
-    // ── severity (magnitude past threshold — no backend confidence anymore;
+    // ── severity (magnitude past threshold — no backend confidence;
     //    "possible" is a pure frontend threshold on severity, see severity.ts) ──
 
     fn find(diags: &[Diag], key: &str) -> Diag {
@@ -5253,7 +5218,7 @@ mod tests {
         assert_eq!(sized_cut_db(2.0, f64::NAN, 6.0), 2.0);
     }
 
-    // #256: a muddy or harsh finding far past its gate prescribes a deeper cut
+    // A muddy or harsh finding far past its gate prescribes a deeper cut
     // than one just past it, and the fix's detail names the size it writes (the
     // step on screen carries no figures).
     #[test]
@@ -5504,8 +5469,8 @@ mod tests {
 
     #[test]
     fn scene_zero_worst_gets_verify_by_ear_advisory() {
-        // The open loadScene(0) anomaly: a worst scene at wire index 0 gets a
-        // verify-by-ear advisory (distinct copy from the plain louder advisory).
+        // A worst scene at wire index 0 gets a verify-by-ear advisory (distinct copy from the
+        // plain louder advisory).
         let scenes = vec![other("Lead", Some("FS1"), -14.0, Some(0))];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("6 dB jump flags");
@@ -5536,7 +5501,7 @@ mod tests {
         assert!(scene_consistency("Rhythm", f64::NEG_INFINITY, &ok, Instrument::Guitar).is_none());
     }
 
-    // ── leveling-damage advisories (fix P3-5, backup-scan only) ──
+    // ── leveling-damage advisories (backup-scan only) ──
 
     /// One `param`-function footswitch, single assignment — the shape
     /// `leveling_damage_hints` scans.
@@ -5579,9 +5544,8 @@ mod tests {
     #[test]
     fn leveling_damage_deleted_effect_fires_on_a_wet_floor_violation_not_just_zero() {
         // A 94% wet kill (engaged 0.05, base 0.90) — below WET_FLOOR_FRACTION (0.25)
-        // × base (0.225) — is a value today's leveler would have refused to write.
-        // The OLD absolute `<=0.02` gate missed this (0.05 > 0.02); the wet-floor
-        // invariant catches it.
+        // × base (0.225) — is a value the leveler refuses to write; the
+        // wet-floor invariant catches it, not just a near-zero value.
         let fs = [fs_param(0, "ACD_TCEChorus", "mix", Some(0.05), Some(0.90))];
         let hints = leveling_damage_hints(&fs);
         assert_eq!(hints.len(), 1);
@@ -5659,7 +5623,7 @@ mod tests {
         assert!(sc.rows.iter().any(|r| r.name == "Boost"));
     }
 
-    // ── silent capture (#6) ──
+    // ── silent capture ──
 
     #[test]
     fn silent_capture_errors_instead_of_minus_inf() {
@@ -5800,7 +5764,7 @@ mod tests {
         assert_eq!(coverage(&[1.0, past_boundary]), vec![true, false]);
     }
 
-    // ── output_coverage / Welch band_coverage / has_time_effect (R2) ──
+    // ── output_coverage / Welch band_coverage / has_time_effect ──
 
     /// Deterministic bipolar LCG noise (Numerical Recipes constants) — a local
     /// copy of `psd::tests::Lcg`'s generator, which is private to its own
@@ -5875,8 +5839,7 @@ mod tests {
 
     #[test]
     fn band_coverage_welch_single_sine_covers_only_its_band() {
-        // Mirrors the old Goertzel-based behavior (`coverage_sparse_take_covers_
-        // only_played_bands`), now on the Welch estimator.
+        // A single sine covers only its own band.
         let samples = test_sine(2_000.0, 1.0, 96_000, 48_000.0);
         let cov = band_coverage(&samples, Family::Guitar);
         assert!(cov[3], "High mids should be covered: {cov:?}");
@@ -5884,12 +5847,12 @@ mod tests {
         assert!(!cov[5], "Air should not be covered: {cov:?}");
     }
 
-    // ── shared post-onset body PSD (Task 1: one PSD per capture) ──
+    // ── shared post-onset body PSD (one PSD per capture) ──
 
     #[test]
     fn from_capture_onset_zero_matches_legacy_whole_buffer_psd() {
         // onset=0 (every synthetic-stimulus call site) must stay byte-identical
-        // to a direct whole-buffer welch_psd computation — the legacy space.
+        // to a direct whole-buffer welch_psd computation.
         const RATE: u32 = 48_000;
         let samples = test_sine(1_000.0, 0.4, RATE as usize, RATE as f32);
         let psd = body_psd(&samples, RATE, 0);
@@ -6019,8 +5982,7 @@ mod tests {
 
     #[test]
     fn synthetic_full_coverage_gate_is_a_noop() {
-        // A synthetic stimulus excites every band by construction, so its coverage
-        // is all-true and gated diagnosis == ungated (the pinned behavior).
+        // An all-covered input is all-true, so gated diagnosis == ungated.
         let cov = coverage(&[1.0f64; 6]);
         assert_eq!(
             cov,
@@ -6179,7 +6141,7 @@ mod tests {
         assert_eq!(legacy, rehearsal);
     }
 
-    // ── R6: localized resonance (resonant/boxy) off the fine Welch PSD ──
+    // ── localized resonance (resonant/boxy) off the fine Welch PSD ──
 
     /// A capture = broadband noise + one strong sine, built via the REAL
     /// `welch_psd`/`SoundProfile::from_capture_with_psd` pipeline (never a
@@ -6194,9 +6156,8 @@ mod tests {
         ringing_profile_q(freq_hz, sine_amp, 9.0)
     }
 
-    /// Run the (release-disabled, see `LOCALIZED_RULES_ENABLED`) localized
-    /// rules directly — the oracle tests lock the machinery so the next
-    /// calibration round starts from proven code.
+    /// Run the localized rules directly, bypassing `LOCALIZED_RULES_ENABLED` —
+    /// the oracle tests lock the machinery independently of the switch.
     fn localized_for(p: &SoundProfile, nodes: Option<&[DoctorNode]>) -> Vec<Diag> {
         let metrics = compute_rule_metrics(p, nodes, Family::Guitar, None, &GUITAR_TARGET);
         localized_diags(p, &metrics, Family::Guitar, nodes, &|_| true)
@@ -6249,9 +6210,8 @@ mod tests {
         .expect("finite loudness")
     }
 
-    /// The matrix round's "flagrant ring" test fixture: Q14 (saturation
-    /// ceiling ≈17 dB clears the 13.5 floor) at strong drive. One knob for
-    /// the next recalibration round.
+    /// The injection matrix's "flagrant ring" test fixture: Q14 (saturation
+    /// ceiling ≈17 dB clears the 13.5 floor) at strong drive.
     fn flagrant_ring(freq_hz: f32) -> SoundProfile {
         ringing_profile_q(freq_hz, 1.6, 14.0)
     }
@@ -6277,7 +6237,7 @@ mod tests {
         // Q14): past RESONANT_MIN_HEIGHT_DB(13.5) — the matrix-calibrated
         // "flagrant ring" floor — inside the Q window, under the 4 kHz cap, and
         // outside the 300–500 Hz boxy range. The fix is a parametric cut right
-        // on the measured frequency (#252), not the octave-wide 2 kHz band.
+        // on the measured frequency, not the octave-wide 2 kHz band.
         let p = flagrant_ring(2_600.0);
         let peak = p.peaks[0];
         let nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
@@ -6407,7 +6367,7 @@ mod tests {
     #[test]
     fn oracle_boxy_range_sine_fires_boxy_not_resonant() {
         // Same shape, centered at 380 Hz — inside the 300–500 Hz boxy range
-        // and past the boxy gate. (It can no longer ALSO clear the resonant
+        // and past the boxy gate. (It cannot ALSO clear the resonant
         // floor: at 380 Hz the Welch bin resolution (~5.9 Hz/bin) can't
         // resolve a high-Q ring, and saturation caps a resolvable one below
         // 13.5 — so the boxy-range exclusion in `resonant_pick`'s filter is
@@ -6541,7 +6501,7 @@ mod tests {
 
     #[test]
     fn shipped_diagnose_emits_resonant_since_the_matrix_calibration() {
-        // `LOCALIZED_RULES_ENABLED = true` (the 2026-07-17 matrix round): a
+        // `LOCALIZED_RULES_ENABLED = true`: a
         // flagrant ring must reach the user through the SHIPPED diagnose
         // path, not just the direct `localized_for` harness.
         let p = flagrant_ring(2_600.0);
@@ -6615,7 +6575,7 @@ mod tests {
         // always a louder-suffix and `from_level` fully describes it. Guard the
         // relation any future offset edit must preserve. A shift ISO 226 puts
         // at zero (muddy's local gate) stays level, never inverted; every other
-        // field moves strictly, and boomy moves at least as far as muddy (#255).
+        // field moves strictly, and boomy moves at least as far as muddy.
         let q = playback_offsets(Quiet);
         let r = playback_offsets(Rehearsal);
         let s = playback_offsets(Stage);

@@ -487,8 +487,7 @@ fn build_stages_dual_split_assigns_roles() {
     let g = extract_active_graph(&v, None);
 
     assert_eq!(g.stages.len(), 5, "pre · split1 · mid · split2 · post");
-    // 1. XO Boost stays in SERIES before the first split (the old bug pulled it
-    //    into a lane).
+    // 1. XO Boost stays in SERIES before the first split, never pulled into a lane.
     assert_eq!(stage_series(&g.stages[0]), vec!["ACD_EPBooster"]);
     // 2. First split: lane A = 57 Deluxe, lane B = 65 Princeton (not shifted).
     assert_eq!(
@@ -500,7 +499,7 @@ fn build_stages_dual_split_assigns_roles() {
     );
     // 3. Space Echo runs in SERIES between the two splits.
     assert_eq!(stage_series(&g.stages[2]), vec!["ACD_SpaceEcho"]);
-    // 4. SECOND split survives (the old bug flattened it): Small Hall ‖ Filtron.
+    // 4. SECOND split survives, never flattened: Small Hall ‖ Filtron.
     assert_eq!(
         stage_split(&g.stages[3]),
         (
@@ -651,7 +650,7 @@ fn route_graph_split_outputs_label_out1_and_out2() {
 // a device group is itself an ordered mini-chain that can hold multiple blocks
 // (adding a 2nd effect in Pro Control landed inside G2's own array, not G4), so
 // gtrSplit/micSplit assign ONE WHOLE GROUP per output lane (G2→out1, G3→out2),
-// not a bunched multi-group half like the old ["G2","G3","G4"]/["G5","G6","G7"].
+// never a bunched multi-group half like ["G2","G3","G4"]/["G5","G6","G7"].
 #[test]
 fn route_graph_gtr_split_lane_is_one_full_group_in_order() {
     let v: serde_json::Value = serde_json::from_str(
@@ -730,8 +729,8 @@ fn route_graph_mic_parallel1_splits_m2_m3_around_m1_and_m4() {
 }
 
 // gtrParallel1 with EVERY group multi/populated (G1/G2 two blocks each, G3 one,
-// G4..G7 all populated) — the direct regression guard for the old bug's
-// tail-concat path silently bunching/dropping groups beyond the split lanes.
+// G4..G7 all populated) — the direct guard against a tail-concat path silently
+// bunching/dropping groups beyond the split lanes.
 #[test]
 fn build_stages_single_split_multi_block_groups_and_full_tail() {
     let v: serde_json::Value = serde_json::from_str(
@@ -1098,14 +1097,12 @@ fn latest_json_payload_from_reports_takes_a_later_field9_reply() {
     );
 }
 
-/// BUG→GATE (online e2e `doctor-apply.online.spec.ts`, since removed with the Doctor write
-/// path; the post-discard working-copy read; HW 2026-10-14, fw 1.8.58, 3/3 at a 100 ms
-/// settle): a session opened inside the device's inactivity drop receives the previous
-/// session's queued replies FIRST — last of them that session's handshake copy of the
-/// working copy BEFORE its loads, here the applied block a Doctor discard had just thrown
-/// away. The unit's carrier sizes were 2871 (stale, one block more) → 2451 (the restore's
-/// neighbour) → 2691 → 2691 (the restored copy). Longest-wins read the stale one; the
-/// latest copy is the restored one.
+/// The post-discard working-copy read (HW 2026-10-14, fw 1.8.58, 3/3 at a 100 ms settle): a
+/// session opened inside the device's inactivity drop receives the previous session's queued
+/// replies FIRST — last of them that session's handshake copy of the working copy BEFORE its
+/// loads, here the applied block a discard had just thrown away. The unit's carrier sizes
+/// were 2871 (stale, one block more) → 2451 (the restore's neighbour) → 2691 → 2691 (the
+/// restored copy). Longest-wins would read the stale one; the latest copy is the restored one.
 #[test]
 fn latest_json_payload_reads_past_a_longer_inherited_copy() {
     let stale = b"STALE_WORKING_COPY_WITH_THE_APPLIED_EQ".to_vec();
@@ -1266,11 +1263,10 @@ fn extract_level_blocks_tolerates_missing_graph() {
     assert!(super::extract_level_blocks(&serde_json::json!({})).is_empty());
 }
 
-// BUG→GATE: the preset lane's PICKER used to run the name-substring rule, which
-// disagreed with the run-time class gate — it offered `ACD_TMRumbleV3.level` (an amp
-// knob the solve then refuses) and hid the raw-dB `ACD_Boost.gain` the footswitch and
-// scene-handle pickers offer. One classifier for every picker. (Issue 3, later: `mix`
-// itself became excluded from every picker's safe-default list too — see the test body.)
+// The preset lane's PICKER runs the run-time class gate, not the name-substring rule: it
+// never offers `ACD_TMRumbleV3.level` (an amp knob the solve refuses) and never hides the
+// raw-dB `ACD_Boost.gain` the footswitch and scene-handle pickers offer. One classifier
+// for every picker; `mix` is excluded from every picker's safe-default list too.
 #[test]
 fn extract_level_candidates_uses_the_classifier_not_the_name_rule() {
     let json = serde_json::json!({
@@ -1296,7 +1292,7 @@ fn extract_level_candidates_uses_the_classifier_not_the_name_rule() {
         got.contains(&("boost".to_string(), "gain".to_string())),
         "ACD_Boost.gain is raw dB with ~1:1 authority — the name rule hid it: {got:?}"
     );
-    // Issue 3 ("hide Mix everywhere"): a wet/mix control is EXCLUDED from this
+    // "Hide Mix everywhere": a wet/mix control is EXCLUDED from this
     // safe-default candidate list, even though the classifier still recognises it
     // (floored, not gutted, when explicitly named elsewhere) — see
     // `footswitch::is_levelable_param`'s doc.
@@ -1310,7 +1306,7 @@ fn extract_level_candidates_uses_the_classifier_not_the_name_rule() {
         "…the classifier's own verdict is untouched"
     );
     // The classifier still reads the block's FenderId, so the raw-dB value passes through
-    // unscaled (the old `(0.0..=1.0)` value filter would have dropped 2.5).
+    // unscaled (a `(0.0..=1.0)` value filter would drop 2.5).
     let boost = super::extract_level_candidates(&json)
         .into_iter()
         .find(|b| b.node_id == "boost")
@@ -1378,7 +1374,7 @@ fn json_section_complete_separates_a_truncated_tail_from_a_genuinely_empty_secti
     assert!(!super::json_section_complete(mid_scenes, "scenes"));
 
     // Cut INSIDE `ftsw` — the salvaged array is a plausible-looking prefix, which is
-    // exactly the shape that used to plan zero jobs silently.
+    // exactly the shape that would plan zero jobs silently.
     let cut = body.find(r#","customLabel"#).expect("cut point");
     let mid_ftsw = &body[..cut];
     assert!(super::tolerant_parse_json(mid_ftsw).is_some());
@@ -1993,7 +1989,7 @@ fn a_scene_less_preset_has_no_scene_to_restore() {
     );
 }
 
-/// #262: the live-sync monitor's receive path. N pushes pumped one tick at a time leave
+/// The live-sync monitor's receive path. N pushes pumped one tick at a time leave
 /// `raw` empty after every drain (no growth with uptime, no re-parse), each push decodes
 /// on the tick its stream closes — the newest included, with no later stream to unblock
 /// it — and a stream still open across ticks is held, not lost.
@@ -2104,8 +2100,8 @@ fn session_echoing(list_index: u64) -> Session {
     crate::test_support::session_over(&crate::test_support::ScriptedTransport::default(), raw)
 }
 
-/// BUG→GATE #177 (HW fw 1.8.58): the connection opened right after a load still echoed the
-/// slot loaded before it, so a load that landed was refused and its scratch import stranded.
+/// The connection opened right after a load can echo the slot loaded before it (HW fw
+/// 1.8.58), refusing a load that landed and stranding its scratch import.
 /// A refused confirm releases its connection and retries on a fresh one; the first echo
 /// that names the target confirms.
 #[test]

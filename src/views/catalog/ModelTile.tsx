@@ -59,7 +59,7 @@ function TileArt({ r, size }: ModelTileProps) {
         cabIcon={cabArt?.icon ?? "cab4"}
         // an unpaired head's cab inherits the HEAD's tone so its grille matches the
         // head/combo (Fender bass/blackface cabs must share the head grille),
-        // not the old "marshall" fallback that gave them a salt-pepper grille.
+        // never a "marshall" fallback's salt-pepper grille.
         cabTone={
           (r.bid ? HALF_STACK_CAB_TONE[r.bid] : undefined) ??
           cabArt?.tone ??

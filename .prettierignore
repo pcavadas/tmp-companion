@@ -4,5 +4,6 @@ node_modules/
 bun.lock
 .design-ref/
 
-# Dense, hand-maintained agent doc — don't let prettier reflow its layout
-CLAUDE.md
+# Markdown is hand-maintained (one sentence per line, compact tables): prettier
+# would pad its tables and reflow its layout
+*.md

@@ -14,7 +14,6 @@
 # ── offline-oracle: unit tests and offline-only fixtures (before every catch-all) ──
 src-tauri/src/*_tests.rs	offline-oracle
 src-tauri/src/sim_device.rs	offline-oracle
-src-tauri/src/sim_device/*	offline-oracle
 src-tauri/src/test_support.rs	offline-oracle
 src-tauri/src/fixture_gates.rs	offline-oracle
 src-tauri/src/doctor_audio_oracle.rs	offline-oracle
@@ -91,7 +90,7 @@ src-tauri/src/probe_api/slot_write.rs	write
 src-tauri/src/discovery.rs	write
 src-tauri/src/probe_api/mod.rs	write
 
-# ── unit-lane: the unit lane's own runner, judge and lock (the remote twin runs none) ──
+# ── unit-lane: the unit lane's own runner, judge and lock (the remote lane runs none) ──
 scripts/e2e.sh	unit-lane
 scripts/level-validate.sh	unit-lane
 scripts/device-lock.sh	unit-lane
@@ -100,11 +99,11 @@ scripts/lib/e2e-evidence.sh	unit-lane
 scripts/lib/ebur128.sh	unit-lane
 e2e/playwright.online.config.ts	unit-lane
 
-# ── remote-runner: the remote twin's own runner and config (the unit runs neither) ──
+# ── remote-runner: the remote lane's own runner and config (the unit runs neither) ──
 scripts/e2e-remote.sh	remote-runner
 e2e/playwright.remote.config.ts	remote-runner
 
-# ── lane: the harness and seed every online run, unit or twin, goes through ──
+# ── lane: the harness and seed every online run, unit or remote, goes through ──
 e2e/bridge-client.js	lane
 e2e/fixtures/scenario.ts	lane
 e2e/fixtures/assert-mode.ts	lane
@@ -187,29 +186,13 @@ src-tauri/src/bootstrap.rs	unexercised
 scripts/hw-e2e.sh	on-demand
 scripts/validate-hbe.sh	on-demand
 scripts/replay-user-leveling.sh	on-demand
-scripts/calibrate.sh	on-demand
-src-tauri/src/probe_api/harvest.rs	on-demand
 
 # ── deps: the Rust dependency set (hidapi, cpal and tauri ride it) ──
 src-tauri/Cargo.toml	deps
 src-tauri/Cargo.lock	deps
 
-# ── none, made explicit: the side-by-side runner only orchestrates the two lanes ──
+# ── none, made explicit: the release runner only orchestrates the gates and the online lane ──
 scripts/pre-release.sh	none
-
-# ── offline-oracle files planned for later PRs (rows ahead of the files) ──
-src-tauri/src/sim_clock.rs	offline-oracle
-src-tauri/src/sim_link.rs	offline-oracle
-src-tauri/src/sim_calibrated.rs	offline-oracle
-src-tauri/src/conformance/*	offline-oracle
-e2e/conformance/*	offline-oracle
-e2e/fixtures/device-timing.json	offline-oracle
-e2e/fixtures/capture-noise.json	offline-oracle
-e2e/fixtures/smoke-anchors.json	offline-oracle
-e2e/fixtures/calibration/*	offline-oracle
-# The PR that adds this file enables this row, with a Rust test that every /sim
-# route no-ops when e2e_online().
-# src-tauri/src/e2e_sim_routes.rs	offline-oracle
 
 # ── none: offline backend modules (their //! headers say offline; no device call) ──
 src-tauri/src/dock.rs	none

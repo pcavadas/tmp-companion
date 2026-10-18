@@ -118,7 +118,7 @@ mod tests {
         (a - b).abs() < 1e-9
     }
 
-    // AC1 — set / offset / scale compute the expected target.
+    // Set / offset / scale compute the expected target.
     #[test]
     fn compute_target_set_offset_scale() {
         let cases = [

@@ -215,8 +215,8 @@ pub fn run() {
         // plugin it relaunches through to apply a downloaded update.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        // Every app command, from the one list in `app_commands.rs` (#270). Which of them the
-        // webview may invoke is `capabilities/default.json`'s call (#268).
+        // Every app command, from the one list in `app_commands.rs`. Which of them the
+        // webview may invoke is `capabilities/default.json`'s call.
         .invoke_handler(app_invoke_handler!())
         // Native menu, per platform (`menu_plan`). Setting a menu replaces the
         // default, so the standard submenus are rebuilt explicitly (Edit is
@@ -230,7 +230,7 @@ pub fn run() {
             use tauri::menu::{AboutMetadataBuilder, MenuBuilder, SubmenuBuilder};
             let about = AboutMetadataBuilder::new()
                 .name(Some("TMP Companion"))
-                // ponytail: omit `version` (NSAboutPanelOptionApplicationVersion, the
+                // Omit `version` (NSAboutPanelOptionApplicationVersion, the
                 // parenthetical) — macOS already shows the bundle's short version, so
                 // setting it too renders the redundant `Version 0.1.0 (0.1.0)`.
                 .short_version(Some(env!("CARGO_PKG_VERSION")))

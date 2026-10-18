@@ -7,9 +7,8 @@ use super::*;
 impl Session {
     /// `nodeJsonRequest` (field 119){groupId,nodeId} — the node-edit-context preamble
     /// Pro Control sends immediately before a structural edit (device replies
-    /// `nodeJsonResponse`, 120). Without it fw 1.8.45 drops the following `replaceNode`.
-    /// On fw 1.8.58 it is a stateless read broadcast to every client (static RE): harmless,
-    /// not required. Rides the live heartbeat cadence.
+    /// `nodeJsonResponse`, 120). On fw 1.8.58 it is a stateless read broadcast to every
+    /// client (static RE): harmless, not required. Rides the live heartbeat cadence.
     pub(super) fn node_json_request(&mut self, group: &str, node_id: &str) -> Result<(), String> {
         self.send_chunked_collect(
             &proto::node_json_request(group, node_id),
@@ -57,7 +56,7 @@ impl Session {
     }
 
     /// Replace the node `node_id` in `dest_group` with model `fender_id` —
-    /// `replaceNode` (field 39). Sends Pro Control's proven fw-1.8.45 sequence:
+    /// `replaceNode` (field 39). Sends Pro Control's sequence:
     /// `nodeJsonRequest` (edit context) → `replaceNode` with **NO batchStatus**, both
     /// chunked-safe and ridden on the live heartbeat the caller established via
     /// [`Self::begin_live_edit`]. **Returns `true` only when the device confirms with
@@ -119,13 +118,13 @@ impl Session {
     /// `nodeJsonRequest` edit-context preamble (mirroring replace's preamble made the
     /// device REJECT the insert) and NO batchStatus — RE'd byte-exact from a PC add-block
     /// capture. `before` = the NODE ID to insert AHEAD of (the device's field 2 inserts
-    /// the new block BEFORE the referenced node — HW-verified fw 1.8.45: a short-anchor
-    /// insert "before X" landed the new block ahead of X), or `None` to APPEND at the end
+    /// the new block BEFORE the referenced node, HW), or `None` to APPEND at the end
     /// of the group. Field 2 is matched against the group's CURRENT node ids, and on fw
     /// 1.8.58 a missing one aborts the device server (static RE, danger.md): resolve it
-    /// through `copy_apply`'s `DeviceIds`, never pass a FenderId. Rides the live heartbeat established by
-    /// [`Self::begin_live_edit`]. Returns `true` when the device confirms with
-    /// `nodeInserted` (field 33, HW-confirmed), `false` on a `presetError`(53) or no reply.
+    /// through `copy_apply`'s `DeviceIds`, never pass a FenderId. Rides the live heartbeat
+    /// established by [`Self::begin_live_edit`]. Returns `true` when the device confirms
+    /// with `nodeInserted` (field 33, HW-confirmed), `false` on a `presetError`(53) or no
+    /// reply.
     pub fn insert_node(
         &mut self,
         dest_group: &str,
@@ -138,7 +137,6 @@ impl Session {
             STRUCTURAL_EDIT_ECHO_MS,
         )?;
         let confirmed = self.confirm_structural_edit(NODE_INSERTED)?;
-        // HW evidence for whether `nodeInserted` carries the minted id (never decoded).
         log::info!(
             "insertNode {dest_group} {fender_id} before {before:?}: confirmed={confirmed} \
              device id {:?}",
@@ -150,7 +148,7 @@ impl Session {
     /// INSERT a block at a POSITION (`index`, group-relative) within `dest_group` —
     /// `insertNodeAtBlockIndex` (field 99), the index-based sibling of [`Self::insert_node`].
     /// Same bare framing (no `nodeJsonRequest` preamble), confirms on `nodeInserted` (33).
-    /// HW (fw 1.8.45): `index = 0` into a single-block group landed the new block AFTER the
+    /// HW: `index = 0` into a single-block group lands the new block AFTER the
     /// existing one (it does NOT prepend), so the production Copy path uses the field-34
     /// `before` anchor in [`Self::insert_node`] instead; this stays as a TOOLING primitive
     /// (`probe --insert-map --at-index`) for characterising the index semantics.
@@ -294,9 +292,8 @@ impl Session {
     }
 
     /// Every distinct PresetMessage inner field number present in the accumulated reply
-    /// bodies, sorted ascending — a diagnostic for discovering the device's actual
-    /// structural-edit reply (the add-block inbound capture caught nothing, so the insert
-    /// confirm field is unverified). Used by the `--insert-active` probe report.
+    /// bodies, sorted ascending — a diagnostic for the device's structural-edit replies.
+    /// Used by the `--insert-active` probe report.
     pub fn seen_preset_fields(&self) -> Vec<u32> {
         let mut seen = std::collections::BTreeSet::new();
         for b in self.push_bodies() {

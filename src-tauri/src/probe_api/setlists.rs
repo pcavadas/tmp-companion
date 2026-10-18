@@ -86,7 +86,7 @@ fn find_setlist_slot(setlists: &[session::SetlistRecord], name: &str) -> Result<
 /// `--add-setlist <name>` — create a setlist, verify it appears.
 ///
 /// `addSetlist` works from a bare connection (the earlier "failures" were a
-/// truncating multi-packet READ, not a write problem — see [`read_setlist_list`]).
+/// truncating multi-packet READ, not a write problem — see `read_setlist_list`).
 pub fn probe_add_setlist(name: &str) -> Result<String, String> {
     {
         let mut s = Session::connect()?;
@@ -191,7 +191,6 @@ pub fn probe_remove_setlist(name: &str) -> Result<String, String> {
 /// `--remove-setlist-song <setlist-name> <position>` — remove the song at a given
 /// POSITION within the setlist (setlist resolved by name). Prints before/after
 /// membership so the 0-vs-1-based `setlistSongSlot` semantics are self-evident.
-/// Used to HW-pin the index base before the UI relies on it.
 pub fn probe_remove_setlist_song(setlist_name: &str, position: u32) -> Result<String, String> {
     let setlists = read_setlist_list()?;
     let setlist_slot = find_setlist_slot(&setlists, setlist_name)?;

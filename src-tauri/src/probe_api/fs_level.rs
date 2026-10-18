@@ -16,11 +16,10 @@ use crate::{
     commands::level_footswitch::FootswitchLevelJob, slot_read::read_slot_preset_parsed,
 };
 
-/// Probe entry: isolate the in-process CoreAudio → chunked-HID failure. Sends a chunked
-/// `set_footswitch_assignment` (1) BEFORE any audio, (2) after ONE re-amp CoreAudio capture,
-/// (3) after a SECOND capture — reporting the device's reply fields each time ([54] = landed,
-/// [] = dropped). Tells us whether one capture is enough to break chunked sends, or if it
-/// accumulates. Targets slot 23 / FS6 (the BD2 preset); restores after each set.
+/// Probe entry: sends a chunked `set_footswitch_assignment` (1) BEFORE any audio, (2) after
+/// ONE re-amp CoreAudio capture, (3) after a SECOND capture — reporting the device's reply
+/// fields each time (`[54]` = landed, [] = dropped). Known limit: hard-wired to slot 23 / FS6,
+/// outside `SCRATCH_SLOTS`; restores after each set.
 pub fn probe_repro_chunked() -> Result<String, String> {
     let slot = ListIndex(23);
     let switch = 6u32;
@@ -554,9 +553,8 @@ pub fn probe_measure_forced(slot: ListIndex, group: &str, node: &str) -> Result<
 }
 
 /// READ-ONLY re-measure of ONE footswitch's ENGAGED sound — the footswitch twin of
-/// `probe --measure-scene`, and the flag that closes P5's external-validation hole (a
-/// footswitch row used to be leveled with no independent capture path, so it could only
-/// be reported as "not externally verified").
+/// `probe --measure-scene`, so a footswitch row has an independent capture path for
+/// external validation.
 ///
 /// Composes EXISTING primitives, adding no engage/disengage sequencing of its own:
 /// * `commands::doctor::doctor_force_bypass` over the SAVED doc — the ONE shared
@@ -604,8 +602,8 @@ pub fn probe_measure_footswitch(
     };
     let result =
         leveller::measure_sound_asis_strict(slot, None, &force, fs_value, &stim, row.as_ref());
-    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the device DROPS
-    // an in-session OFF sent on a session that has idled >~1 s, and this lane's capture
+    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: an in-session OFF
+    // to a session lapsed by 750 ms of host silence is discarded, and this lane's capture
     // idles ~7 s — so `engage_capture_disengage_in`'s in-session disengage cannot be trusted
     // as the last word). A standalone `probe --measure-footswitch` would otherwise be able
     // to leave the unit input-muted. Bound BEFORE the `?` for exactly that reason: an Err
@@ -725,10 +723,9 @@ pub fn probe_level_footswitch(
 /// HW validation for the batched footswitch WRITE phase (`probe --fs-batch
 /// <listIndex> <v1> <v2> …`): enumerate the preset's block-acting switches, plan
 /// bake-vs-assign exactly like `level_footswitches_apply`, pair each with the given
-/// FIXED value (no measurement captures — the sweep phase is unchanged, shipped
-/// code), then commit every write on ONE live-edit session with ONE save
-/// (`write_footswitch_values`). Verify persistence with `--export` afterwards.
-/// Point it at a SCRATCH preset: it persists.
+/// FIXED value (no measurement captures), then commit every write on ONE live-edit
+/// session with ONE save (`write_footswitch_values`). Verify persistence with
+/// `--export` afterwards. Point it at a SCRATCH preset: it persists.
 pub fn probe_fs_batch(list_index: ListIndex, values: Vec<f32>) -> Result<String, String> {
     let (preset, _, _) = read_slot_preset_parsed(list_index)?;
     let ftsw = preset

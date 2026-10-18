@@ -4,8 +4,8 @@
 # access to this repo, so its formal Approve/Request-changes review (below) counts
 # toward the ruleset's required_approving_review_count the same way @pcavadas's does.
 # Non-collaborator reviews still never count — that's GitHub's own write-access
-# requirement for required reviews, unrelated to this file. CodeRabbit CAN now block
-# a merge on unresolved findings; it is no longer purely advisory.
+# requirement for required reviews, unrelated to this file. CodeRabbit CAN block a
+# merge on unresolved findings.
 language: en-US
 
 reviews:
@@ -24,8 +24,8 @@ reviews:
   # the risk buys nothing. Add exclusions only alongside a positive pattern ("src/**").
 
   # Whole-PR pass. path_instructions below are per-hunk and can only judge lines the
-  # diff ADDS; this one judges what the diff FAILED to add — the actual shipped-bug
-  # shape here (#108, #109), where a sibling path's guard was never carried over.
+  # diff ADDS; this one judges what the diff FAILED to add — the shape of the bugs this
+  # repo ships, where a sibling path's guard was never carried over.
   pre_merge_checks:
     docstrings:
       mode: "off" # quoted: bare `off` is YAML 1.1 boolean false, the schema wants the string. 27% actual vs an 80% threshold: a permanent warning that drowns the check below
@@ -33,11 +33,11 @@ reviews:
       - name: "Behavioral parity"
         mode: warning
         instructions: |
-          The bugs that ship from this repo are OMISSIONS, not bad added lines. Two recent examples:
-          the leveling wizard's Summary stage lacked the accidental-backdrop-click protection its Run
-          stage already had (#109); Doctor's run screen lacked the stop-requested/stopped/done footer
-          states Leveling's run stage (now RunPage) already had (#108). Reading each hunk in isolation cannot catch
-          either — the defect is a guard that is present next door and absent here.
+          The bugs that ship from this repo are OMISSIONS, not bad added lines: a wizard stage
+          without the accidental-backdrop-click protection its sibling stage has, or one run screen
+          without the stop-requested/stopped/done footer states the other run screen has. Reading
+          each hunk in isolation cannot catch either — the defect is a guard that is present next
+          door and absent here.
 
           For this PR:
           1. Name the siblings of every changed unit — the other stages of the same wizard, the other
@@ -98,7 +98,7 @@ reviews:
 knowledge_base:
   code_guidelines:
     enabled: true
-    # REVIEW.md and CLAUDE.md are both already in CodeRabbit's DEFAULT filePatterns, but
+    # REVIEW.md, AGENTS.md and CLAUDE.md are in CodeRabbit's DEFAULT filePatterns, but
     # the docs don't state whether an explicit list is additive to those defaults or
     # replaces them. Listing them here costs two lines and makes the question moot —
     # do not remove them on the assumption that the defaults still apply.
@@ -107,12 +107,12 @@ knowledge_base:
     # Enumerated explicitly — never a .claude/skills/** wildcard. The per-skill references/**
     # entries are listed because the skill bodies were split: lookup-shaped content moved there
     # to stay under the 5,000-token compaction re-injection cap, so review must follow it.
-    # Consequence of listing CLAUDE.md: it is an AUTHORITATIVE guideline when reviewing every
-    # other doc, so at profile: assertive a prose-doc PR has no fixed point — each rewrite
-    # yields fresh nits (#119: 19 of 24 commits touched one skill file). Reply-with-reason on
-    # doc nits instead of re-editing the prose.
+    # Consequence of listing AGENTS.md and CLAUDE.md: they are AUTHORITATIVE guidelines when
+    # reviewing every other doc, so at profile: assertive a prose-doc PR has no fixed point —
+    # each rewrite yields fresh nits. Reply-with-reason on doc nits instead of re-editing the prose.
     filePatterns:
-      - "REVIEW.md" # reviewer-facing: bug shape, ungated surfaces, what not to guess
+      - "REVIEW.md" # reviewer-facing: bug shape, destructive actions, what not to guess
+      - "AGENTS.md" # the canonical agent guide (CLAUDE.md imports it)
       - "CLAUDE.md"
       - ".claude/rules/**" # always-loaded danger rules + the path-scoped edit-time rules
       - ".claude/skills/tmp-companion-frontend/SKILL.md"

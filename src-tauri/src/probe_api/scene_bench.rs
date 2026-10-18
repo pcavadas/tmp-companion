@@ -2,8 +2,7 @@
 //!
 //! It also holds the retired live-batched runner ([`level_scenes_live_batched`]) and its
 //! live controllers ([`SceneLevelStrategy`]): kept only for `probe --bench-scene-leveling`
-//! and for the tests that show why the hybrid controller won, and moved here out of the
-//! production `leveller` module. The app levels scenes with
+//! and for the tests that show why the hybrid controller won. The app levels scenes with
 //! `leveller::level_scenes_oneshot`.
 
 use super::stimulus::probe_stimulus_path;
@@ -54,15 +53,10 @@ pub fn probe_bench_scene_leveling(
             .as_deref(),
         Some("0" | "false" | "no")
     );
-    // BatchedLive only: the phase-1 matrix established the
-    // per-scene numbers (legacy 80-93 s/scene; isolated live rows 22-45 s/scene
-    // dominated by per-scene session ceremony; liveSecant noise-fragile,
-    // proportional stalls on compressed knobs, full jumps overshoot steep ones).
-    // BatchedLive amortizes ONE session + ONE re-amp engage across a preset's
-    // scenes with trust-region slope jumps — the <10 s/scene candidate.
+    // BatchedLive only: it amortizes ONE preset load + ONE stream pair across a
+    // preset's scenes with trust-region slope jumps.
     let mut rows = Vec::<SceneLevelBenchmarkRow>::new();
-    // Stream each row to disk as it lands (an OOM reboot lost a full 40-minute
-    // run that only wrote at the end).
+    // Stream each row to disk as it lands, so a crash keeps the rows so far.
     let jsonl_path = format!("{out_path}.jsonl");
     let emit = |row: &SceneLevelBenchmarkRow| {
         if let Ok(line) = serde_json::to_string(row) {
@@ -76,22 +70,16 @@ pub fn probe_bench_scene_leveling(
             }
         }
     };
-    // The bench glue chains many short sessions; 800 ms between them is the
-    // EMPIRICAL sweet spot (HW A/B): at 800 ms the open after a
-    // live-cadence session close succeeded 4/4; at 1500 ms it failed 0xe00002c5
-    // even on a freshly power-cycled unit — the device seems to accept a QUICK
-    // re-open after a close, then lock out for minutes. Do not "safely" widen.
+    // The bench glue chains many short sessions, 800 ms apart (HW: 4/4 clean opens).
+    // A failed open (`0xe00002c5`) means another handle still holds the seize.
     let session_gap = || std::thread::sleep(std::time::Duration::from_millis(800));
 
     for slot in slots {
-        // Scenes AND level blocks from ONE rich session (the `--scenes-load`
-        // recipe + the monitor's graph-from-push-bodies approach): heartbeat
-        // warmup → send_and_collect LoadPreset → pump; the load's pushes carry
-        // BOTH the sceneListResponse(125) and the field-3 currentPresetDataChanged
-        // (full audioGraph) on a live-cadence session. One session because every
-        // alternative failed on HW: field-8 reads and extra re-opens
-        // wedge the device's next exclusive open, and `connect_for_discovery`'s
-        // field-78 burst kills field-3 delivery for its whole session on 1.8.45.
+        // Scenes AND level blocks from ONE rich session (the monitor's
+        // graph-from-push-bodies approach): heartbeat warmup → send_and_collect
+        // LoadPreset → pump; the load's pushes carry BOTH the sceneListResponse(125)
+        // and the field-3 currentPresetDataChanged (full audioGraph) on a
+        // live-cadence session.
         eprintln!(
             "[bench] preset {:03}: load + scene + block-discovery session…",
             slot.device_slot()
@@ -103,8 +91,9 @@ pub fn probe_bench_scene_leveling(
         );
         let intel: Result<PresetIntel, String> = (|| {
             let mut s = Session::connect()?;
-            // Dense heartbeats ~2 s: the device only pushes unsolicited data
-            // (125, PresetLoaded, field-3) on a live-cadence session.
+            // Heartbeat ~2 s: the device pushes unsolicited data (125, PresetLoaded,
+            // field-3) only to open clients, and a client closes after 750 ms with
+            // no OUT report.
             for _ in 0..16 {
                 s.heartbeat()?;
                 s.pump_silent(120)?;
@@ -145,8 +134,7 @@ pub fn probe_bench_scene_leveling(
             let blocks = s.current_preset_blocks()?;
             // Un-engaged per-scene doc pre-pass (same session): loadScene →
             // field-3 push → the scene's LIVE doc, for the knob pick + that
-            // scene's actual knob value. Must happen BEFORE any engage — the
-            // device pushes no field-3 while re-amp is engaged.
+            // scene's actual knob value. Must happen BEFORE any engage.
             let mut docs: Vec<(u32, Option<serde_json::Value>)> =
                 vec![(session::BASE_SCENE_SLOT, s.current_preset_value().ok())];
             if let Some(names) = &scenes {
@@ -408,13 +396,13 @@ const LIVE_SETTLE_MS: u64 = 350;
 )]
 const LIVE_MAX_ITERS: u32 = 5;
 
-/// Live-controller flavors. Only `LiveHybrid` ships (the batched runner's
-/// controller — the benchmark winner); the others remain as
+/// Live-controller flavors of the bench-only batched runner. `LiveHybrid` is its
+/// controller (the benchmark winner); the others remain as
 /// `next_live_coord` branches exercised by the unit tests, documenting WHY
 /// hybrid won (secant is noise-fragile, fixed-gain proportional stalls on
 /// compressed responses, Fractal-style full meter-match jumps overshoot —
 /// Fractal itself ships no auto-leveler, just a ~300 ms VU meter the player
-/// matches manually, FM9 manual p.62). `BatchedLive` labels the shipped
+/// matches manually, FM9 manual p.62). `BatchedLive` labels the batched
 /// whole-preset runner in benchmark rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -482,8 +470,8 @@ fn live_window_lufs(live: &audio::LiveReamp, window_ms: u64) -> Result<f64, Leve
 /// - `LiveSecant`: conservative half-error probe first so the secant gets a real
 ///   local slope estimate, then pure secant.
 /// - `LiveProportional`: bounded-gain (0.75) nudges toward the target.
-/// - `FractalStyle`: full meter-match jump every step — paired with the SHORT
-///   capture window in `live_window_ms()` (Fractal's fast-meter posture).
+/// - `FractalStyle`: full meter-match jump every step (Fractal's fast-meter
+///   posture).
 fn next_live_coord(
     strategy: SceneLevelStrategy,
     iter: u32,
@@ -510,10 +498,10 @@ fn next_live_coord(
     stepped.clamp(c_lo, c_hi)
 }
 
-/// Per-scene capture window for the BATCHED live runner. Shorter than
-/// `LIVE_WINDOW_MS`: the batched run amortizes session + engage ceremony, so
-/// the window is the dominant per-trim cost; 2 s of the looped stimulus is the
-/// speed/accuracy compromise (final accuracy still gated at `KNOB_TOL_LU`).
+/// Per-scene capture window for the BATCHED live runner: the batched run
+/// amortizes session + engage ceremony, so the window is the dominant per-trim
+/// cost; 2 s of the looped stimulus is the speed/accuracy compromise (final
+/// accuracy still gated at `KNOB_TOL_LU`).
 const BATCH_WINDOW_MS: u64 = 2000;
 const BATCH_MAX_TRIMS: u32 = 4;
 
@@ -533,14 +521,13 @@ fn solo(job: &SceneJob) -> Result<&KnobTarget, LevelError> {
     }
 }
 
-/// BATCHED live scene leveling — the fast path. The preset loads ONCE and the
+/// BATCHED live scene leveling (bench only). The preset loads ONCE and the
 /// stimulus/capture streams run ONCE for the whole preset; each scene then gets
 /// a lean engage connection: `set_knob` (scene recall + Scene Edit + start
 /// value) → engage re-amp → measure on the shared stream → trust-region slope
 /// jumps via live `changeParameter` (audible mid-engage, HW-proven) → re-amp
-/// OFF → drop. One ENGAGE PER SCENE is mandatory: re-amp latches the ACTIVE
-/// SCENE at engage — `loadScene` mid-engage is inaudible (HW: all 9
-/// scenes of an 8-scene preset measured the identical audio on one engage).
+/// OFF → drop. One ENGAGE PER SCENE, for accuracy: only the first capture after
+/// an engage is accurate (danger.md).
 ///
 /// `jobs` come from the caller's un-engaged pre-pass (live doc per scene →
 /// knob + bounds + that scene's current value). `save` persists once at the
@@ -555,7 +542,7 @@ fn level_scenes_live_batched(
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, LevelError> {
     let result = (|| {
-        // Load in its own connection (set-after-load override + engage latch).
+        // Load in its own connection (kept conservatively).
         load_preset_isolated(slot, CancelMode::Cleanup)?;
 
         // ONE pair of CoreAudio streams for the whole preset (between engages
@@ -580,7 +567,7 @@ fn level_scenes_live_batched(
                 // a parallel-merged scene must use the joint-k `level_scenes_oneshot`.
                 let kt = solo(job)?;
                 // Fresh engage connection per scene: scene recall + Scene Edit
-                // + start value ride `set_knob` BEFORE the engage (latch rule).
+                // + start value ride `set_knob` BEFORE the engage.
                 let mut s = Session::connect()?;
                 set_knob(&mut s, &kt.knob, kt.current.clamp(kt.lo, kt.hi), saved)?;
                 *writes += 1;
@@ -718,7 +705,7 @@ mod live_controller_tests {
     // ---- live-controller (next_live_coord) against a fake loudness source ----
 
     /// Drive `next_live_coord` against a fake device response `respond(coord) →
-    /// LUFS` exactly the way `level_preset_block_live` does (same best-tracking,
+    /// LUFS` exactly the way the batched runner does (same best-tracking,
     /// same stop conditions). Returns (measurement steps after the seed, best
     /// LUFS, best coord).
     fn simulate_live(

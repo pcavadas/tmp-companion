@@ -1,6 +1,6 @@
 import type { FullConfig } from "@playwright/test";
 
-// globalSetup for both lanes (#193): runs AFTER the webServers, so it also catches a server
+// globalSetup for every lane: runs AFTER the webServers, so it also catches a server
 // adopted by `reuseExistingServer` in the wrong mode — an online one under the offline
 // config (device writes), or an offline one under the online config (fake-online green).
 // Each config declares `metadata: { expectOnline, healthUrls }`, plus `expectRemote` for a

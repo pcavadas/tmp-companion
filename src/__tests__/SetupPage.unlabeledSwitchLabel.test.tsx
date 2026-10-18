@@ -1,15 +1,15 @@
 // src/__tests__/SetupPage.unlabeledSwitchLabel.test.tsx — label provenance for an
 // UNLABELED footswitch.
 //
-// BUG→GATE. A footswitch row's `sceneName` is the Level list's displayed row name (never
+// A footswitch row's `sceneName` is the Level list's displayed row name (never
 // sent to the backend — the assign gate only ever edits an EXISTING `param` fn or refuses,
-// so there is no on-device `customLabel` write to keep in sync any more). Even so, a wrong
+// so there is no on-device `customLabel` write to keep in sync). Even so, a wrong
 // name here misleads the player reading their own Level list about what is being leveled.
 //
 // `chosenFrom` picks that name when the LIST is built, and at that moment the only
 // candidate it knows about is the tone-safe DEFAULT (`defaultParamIndex`). A user who then
-// overrides the pick in Set up used to have the switch renamed after the default
-// candidate's block while the run leveled a different one. `SetupPage.start` now re-derives
+// overrides the pick in Set up must not see the switch named after the default candidate's
+// block while the run levels a different one. `SetupPage.start` re-derives
 // the name from the candidate actually chosen — but only for an unlabeled switch: a
 // player's own label is theirs, and picking a different knob does not make it wrong.
 
@@ -56,9 +56,9 @@ function fsOption(over: Partial<SetupOption> = {}): SetupOption {
     sceneName: "Boost",
     tag: "FS3",
     hasScenes: true,
-    // D2: every footswitch row already carries a real handle — the tone-safe DEFAULT
+    // Every footswitch row already carries a real handle — the tone-safe DEFAULT
     // (the Boost's `gain`, the block the row is currently named after), same as
-    // `chosenFrom` seeds it. `sceneContext: null` (D3) = the base sound.
+    // `chosenFrom` seeds it. `sceneContext: null` = the base sound.
     footswitch: {
       switchIndex: 2,
       levGroupId: "G1",
@@ -75,7 +75,7 @@ function fsOption(over: Partial<SetupOption> = {}): SetupOption {
 async function pickTubeScreamerAndStart(option: SetupOption) {
   const { onStart } = renderSetupPage([option]);
   const user = userEvent.setup();
-  // Every row levels (D2). The Block dropdown is on the tone-safe DEFAULT (the Boost);
+  // Every row levels. The Block dropdown is on the tone-safe DEFAULT (the Boost);
   // pick the OTHER block, which lands on its best knob.
   await choose(user, "block:f0:sw2", "G1:ACD_TubeScreamer");
   expect(selectTrigger("knob:f0:sw2")).toHaveAccessibleName(

@@ -70,7 +70,7 @@ diff_of() {
 }
 required() { (cd "$r" && /bin/bash scripts/gates.sh --required-online 2>/dev/null) | tr '\n' ' ' | sed 's/ $//'; }
 required_err() { (cd "$r" && /bin/bash scripts/gates.sh --required-online 3>&1 1>/dev/null 2>&3); }
-# The remote twin's reading (remote-lane.yml): `<class>@remote` policy rows win.
+# The remote lane's reading (remote-lane.yml): `<class>@remote` policy rows win.
 required_remote() { (cd "$r" && TMP_GATES_LANE=remote /bin/bash scripts/gates.sh --required-online 2>/dev/null) | tr '\n' ' ' | sed 's/ $//'; }
 
 ALL="doctor.online level.online songs copy"
@@ -98,14 +98,14 @@ done
 # The song-list harvest runs before every spec (scan + seed), so songs alone covers it.
 diff_of src-tauri/src/session/songs.rs
 check "session/songs.rs → songs" "songs" "$(required)"
-# The unit lane's own runner, judge and lock: every spec on the unit, none on the twin.
+# The unit lane's own runner, judge and lock: every spec on the unit, none on the remote lane.
 for f in scripts/e2e.sh scripts/level-validate.sh scripts/device-lock.sh scripts/lib/e2e-lane.sh \
   e2e/playwright.online.config.ts; do
   diff_of "$f"
   check "$f → all four on the unit" "$ALL" "$(required)"
   check "$f → nothing on the twin" "" "$(required_remote)"
 done
-# The twin's own runner: every spec on the twin, nothing on the unit.
+# The remote lane's own runner: every spec on the remote lane, nothing on the unit.
 for f in scripts/e2e-remote.sh e2e/playwright.remote.config.ts; do
   diff_of "$f"
   check "$f → nothing on the unit" "" "$(required)"
@@ -133,7 +133,7 @@ for f in src-tauri/src/session/tests.rs src-tauri/src/session/boundary_tests.rs 
 done
 diff_of src-tauri/src/bin/probe.rs
 check "bin/probe.rs → ANY" "ANY" "$(required)"
-for f in notes/e2e-test-plan.md scripts/gate-map.tsv scripts/gates.sh .github/workflows/ci.yml \
+for f in notes/README.md scripts/gate-map.tsv scripts/gates.sh .github/workflows/ci.yml \
   src/App.tsx src-tauri/src/sim_device.rs e2e/specs/level.spec.ts src-tauri/src/probe_api/inspect.rs; do
   diff_of "$f"
   check "$f → nothing" "" "$(required)"

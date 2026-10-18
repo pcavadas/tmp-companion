@@ -38,7 +38,7 @@ describe("CPU cost layer", () => {
   });
 
   it("returns the real per-block cost by FenderId", () => {
-    // Values verified against the tm-stomp-server 1.8.45 utilization blob.
+    // Values verified against the tm-stomp-server 1.8.58 utilization table.
     expect(cpuForBid("ACD_GuitarSynth")).toBe(36);
     expect(cpuForBid("ACD_UserIRTMS")).toBe(4.1);
   });

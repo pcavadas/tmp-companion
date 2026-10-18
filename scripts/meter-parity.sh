@@ -23,15 +23,11 @@
 # from a real device capture (`--dump-wav`), where device-side noise/DC offset
 # is also a plausible explanation.
 #
-# Precision: ffmpeg's end-of-run ebur128 SUMMARY prints only one decimal, which
-# would cap this comparison at ~0.1 LU and hide the real agreement. So we read the
-# full-precision integrated value out of the filter's own metadata instead
-# (`ebur128=metadata=1` + `ametadata=print:key=lavfi.r128.I`, last value emitted =
-# the final integrated loudness, ~0.001 resolution). That let the tolerance drop
-# from 0.1 to 0.02 LU. Measured residual vs ffmpeg on real device captures is
-# 0.004-0.006 LU; two conformant BS.1770 implementations still differ slightly in
-# how the final partial gating block is handled, so do NOT expect bit-exact
-# equality — 0.02 is a deliberately tight but achievable bar.
+# Precision: the full-precision read lives in scripts/lib/ebur128.sh (~0.001 LU
+# resolution). Measured residual vs ffmpeg on real device captures is 0.004-0.006 LU;
+# two conformant BS.1770 implementations still differ slightly in how the final
+# partial gating block is handled, so do NOT expect bit-exact equality — 0.02 is a
+# deliberately tight but achievable bar.
 #
 # Written to run under macOS system /bin/bash (3.2): no associative arrays,
 # no `mapfile`. Plain indexed arrays (`WAVS=()`/`+=()`) ARE fine on 3.2 — only
@@ -88,7 +84,7 @@ else
 
   # sine dual-mono — same tone duplicated onto both channels: the TMP's own
   # mirrored USB-Out shape. dual-mono minus mono should read +3.0103 dB exactly
-  # (10*log10(2)) — the whole PR2 re-baseline in one comparison.
+  # (10*log10(2)) — the stereo-vs-mono metering offset in one comparison.
   ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "sine=frequency=1000:duration=5:sample_rate=48000,volume=0.5,pan=stereo|c0=c0|c1=c0" \
     -ar 48000 -c:a pcm_f32le "$FIXTURE_DIR/sine_dual_mono.wav"

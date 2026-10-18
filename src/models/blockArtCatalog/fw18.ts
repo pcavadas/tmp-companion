@@ -2,7 +2,7 @@ import type { CatalogCategory } from "./types";
 
 // ── firmware 1.8 additions (41 menu-exposed new models) ──────────────────
 // icon/tone per the 1.8 Models-tab illustration handoff; ids + names from the
-// 1.8.45 model-leaks inventory. Each per-form variant id is keyed explicitly so
+// fw 1.8 Model Guide. Each per-form variant id is keyed explicitly so
 // it renders its own form (head=amp icon, combo=combo icon) instead of relying
 // on resolveBlockArt's suffix-stripping. `short` carries the engine's label-keyed
 // discriminator (EVH GREEN/BLUE/RED accent · Twin 15 · gear-pedal name · 76).

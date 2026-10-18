@@ -1,4 +1,4 @@
-// src/ui/blockart/shared.tsx — barrel re-exporting the block-art engine's shared
+// src/ui/blockart/shared.ts — barrel re-exporting the block-art engine's shared
 // data/helpers, split across ./sharedIds (icon/tone/form vocabularies + cab grid),
 // ./sharedTones (chassis-tone palette + tone lookups) and ./sharedCloth (grille
 // cloth + combo livery + luminance helpers) to keep each file cohesive and ≤500

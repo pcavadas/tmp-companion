@@ -1,11 +1,10 @@
 // src/views/level/useLazySlotCache.ts — the shared lazy per-slot fetch cache behind
 // `useSceneHandles`, `useLevelBlocks` and `useFootswitchSceneContexts`. All three fetch a
-// PER-PRESET list off a real device read that must fire lazily (on first open of the
-// relevant row's picker, once per preset — the Set-up step otherwise does no device
-// reads) and cache it for the rest of the mount. This hook carries that one cache shape;
-// each caller stays a thin wrapper supplying its own `invoke` call and deriving its own
-// (often secondary-keyed, e.g. by scene slot or switch index) result shape from the
-// resolved list.
+// PER-PRESET list that fires lazily, once per preset (the Set-up step's warm, or the first
+// open of a row's picker), and cache it for the rest of the mount. This hook carries that
+// one cache shape; each caller stays a thin wrapper supplying its own `invoke` call and
+// deriving its own (often secondary-keyed, e.g. by scene slot or switch index) result shape
+// from the resolved list.
 //
 // NO SELF-HEAL: an "error" result for a slot is cached for the rest of THIS mount
 // (`fetchedSlotsRef` marks the slot fetched even on failure) — re-opening the wizard (a

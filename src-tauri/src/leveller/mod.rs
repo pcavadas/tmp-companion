@@ -1,17 +1,12 @@
-//! Preset leveling — derived from the live de-risk against real hardware.
+//! Preset leveling.
 //!
-//! Findings that shape this (all confirmed on-device):
-//!   1. The re-amp USB-Out tap reflects `presetLevel`, but ONLY the value that
-//!      was set BEFORE re-amp engaged — re-amp latches preset state at engage.
-//!   2. Re-amp engages reliably only ONCE per connection (fresh connect →
-//!      single toggle). Repeated toggling within a session is unreliable.
-//!   3. `set_preset_level` is IGNORED when it immediately follows `load_preset`
-//!      in the SAME connection — the load's own level-apply overrides our set.
-//!      A no-load `set_preset_level` (on the already-current preset) sticks.
-//!      → load the preset in its own connection, then measure/set on FRESH
-//!      connections. The device keeps the loaded preset "current" across USB
-//!      reconnects, so the no-load set targets the right preset.
-//!   4. `presetLevel` is a LINEAR amplitude control:
+//! The code keeps a conservative connection shape — load on its own connection, set the
+//! level before engaging, one engage per capture on a fresh connection — for accuracy
+//! (only the first capture after an engage is within 0.04 LU) and to stay clear of the
+//! 750 ms session lapse (HW, fw 1.8.58). The device keeps the loaded preset current across
+//! USB reconnects, so a no-load set targets the right preset.
+//!
+//! `presetLevel` is a LINEAR amplitude control:
 //!      `captured_LUFS = 20·log10(presetLevel) + C`,
 //!      where `C` folds the preset's inherent processed loudness + stimulus
 //!      level + the fixed re-amp tap gain. Verified to ~0.2 LU across 0.1–0.9.
@@ -27,7 +22,7 @@
 //!   - `reamp_off` — the guaranteed re-amp OFF and the run-end guard.
 //!   - `secant` — the one secant step and its per-unit flatness rules.
 //!   - `knob` — the scene-aware level-control writes.
-//!   - `base` — the `presetLevel` lane and the setlist runner.
+//!   - `base` — the `presetLevel` lane.
 //!   - `footswitch` — the footswitch (engaged-state) lane.
 //!   - `scene` — scene jobs, the one-shot joint-k and handle solves, the batch runner.
 //!   - `trade` — the headroom trade and the clamped-headroom redistribution.
@@ -37,8 +32,6 @@
 //!
 //! This file holds what every lane shares: the settle and capture constants, the
 //! tolerance bands, [`Verification`], [`LevelResult`], [`LevelOptions`] and [`LevelKnob`].
-//! The retired live-batched scene harness lives with its only caller,
-//! `probe_api::scene_bench`.
 
 use crate::slot::ListIndex;
 use std::time::Duration;
@@ -88,12 +81,9 @@ pub use scene::*;
 pub(crate) use secant::*;
 pub use trade::*;
 
-// Post-load DSP settle before a capture. Was a conservative 1200; HW-bisected to 400
-// on fw 1.8.45 (dry slot 11 + wet delay slot 5): measured C, presetLevel, and verify
-// error are byte-identical to 1200, and the verify captures confirm writes also land
-// at 400 (`notes/perf.md`). 200 on fw 1.8.58 with the rest of the leveling-speed wait
-// set below (HW 2026-10-17: every capture of the 405/410 bench within 0.01 LU of the
-// 400 run). TMP_SETTLE_AFTER_LOAD_MS is the diagnostic env override for future bisects.
+// Post-load DSP settle before a capture: 200 ms (HW, fw 1.8.58: every capture within 0.01 LU of a
+// 400 ms settle; `notes/leveling.md#re-validating-a-timing-change`). TMP_SETTLE_AFTER_LOAD_MS is
+// the diagnostic env override for bisects.
 const SETTLE_AFTER_LOAD_MS: u64 = 200;
 pub(crate) fn settle_after_load_ms() -> u64 {
     std::env::var("TMP_SETTLE_AFTER_LOAD_MS")
@@ -102,10 +92,10 @@ pub(crate) fn settle_after_load_ms() -> u64 {
         .unwrap_or(SETTLE_AFTER_LOAD_MS)
 }
 // Settle after a reload when the next step is a PURE WRITE (no verify capture).
-// DELIBERATELY kept above SETTLE_AFTER_LOAD_MS: on this branch a settle-caused
+// DELIBERATELY kept above SETTLE_AFTER_LOAD_MS: on this path a settle-caused
 // dropped write is maximally silent (no verify capture follows; the save persists
 // the old value while the result reports success), so the 200 ms it could save
-// isn't worth the risk class — see the scene-write-cliff history.
+// isn't worth the risk class — see `SETTLE_AFTER_SCENE_EDIT_MS`.
 const SETTLE_BEFORE_WRITE_MS: u64 = 600;
 pub(crate) const SETTLE_AFTER_SET_MS: u64 = 300;
 pub(crate) const SETTLE_AFTER_REAMP_MS: u64 = 500;
@@ -113,17 +103,15 @@ pub(crate) const SETTLE_AFTER_REAMP_MS: u64 = 500;
 // ── Leveling-speed bisect knobs ──────────────────────────────────────────────────────
 // Diagnostic env overrides for the waits around a capture, read per use like
 // `TMP_SETTLE_AFTER_LOAD_MS`. They exist to HW-bisect each wait against the full-capture
-// oracle (`notes/perf.md`'s re-validation oracles); a shortened default lands only with
-// that evidence. The defaults are the leveling-speed wait set (HW 2026-10-17, fw 1.8.58,
-// bench presets 405 + 410, all at once): every capture within 0.01 LU of the old waits,
-// identical iteration counts, every ffmpeg-judge row passing, no floor reads; −37 s on
-// 405 and 410 each. The old values are in each knob's doc.
+// oracle (`notes/leveling.md#re-validating-a-timing-change`); a shortened default lands only with
+// that evidence. The defaults (HW, fw 1.8.58): every capture within 0.01 LU of longer
+// waits, identical iteration counts, every ffmpeg-judge row passing, no floor reads.
 
-/// [`settle_after_reamp_ms`]'s default (was [`SETTLE_AFTER_REAMP_MS`], 500).
+/// [`settle_after_reamp_ms`]'s default.
 const CAPTURE_SETTLE_AFTER_REAMP_MS: u64 = 100;
-/// [`pre_engage_settle_ms`]'s default (was [`SETTLE_AFTER_SET_MS`], 300).
+/// [`pre_engage_settle_ms`]'s default.
 const PRE_ENGAGE_SETTLE_MS: u64 = 100;
-/// [`recall_settle_ms`]'s default (was [`SETTLE_AFTER_SET_MS`], 300).
+/// [`recall_settle_ms`]'s default.
 const RECALL_SETTLE_MS: u64 = 150;
 
 /// `var` parsed as milliseconds, else `default`.
@@ -150,10 +138,10 @@ pub(crate) fn recall_settle_ms() -> u64 {
 }
 
 /// How many heartbeat → settle steps the naked-shape breaker sends before an engage
-/// (`TMP_BREAKER_BEATS`, default 1, was 2; see `capture_on_session`). One beat sends a
+/// (`TMP_BREAKER_BEATS`, default 1; see `capture_on_session`). One beat sends a
 /// single heartbeat and no settle: with the recall and pre-engage settles above, every
 /// idle gap stays well inside the ≤300 ms rule, and a heartbeat still lands between the
-/// last write and the engage. The bench ran 0 beats with no floor read.
+/// last write and the engage.
 pub(crate) fn breaker_beats() -> u64 {
     env_ms("TMP_BREAKER_BEATS", 1)
 }
@@ -180,26 +168,16 @@ pub(crate) fn solve_accept_tol() -> f64 {
 }
 const CAPTURE_TAIL_MS: u64 = 800;
 
-// The device silently DROPS a scene-context write when the session sat IDLE too long
-// immediately before it. On fw 1.8.45 this read as a PER-COMMAND idle-gap cliff at
-// ~400–450 ms rather than a "time since loadScene" window. The HW run (Hiwatt slot 31,
-// fw 1.8.45): the enable-dropped branch's back-to-back 150+300 ms sleeps formed ONE
-// 450 ms idle gap and 6/6 bare scene writes vanished (no presetError, nothing in the
-// working copy, nothing persisted) even though only ~450 ms had passed since
-// `loadScene` — while the bisect's load_scene→300→edit→400→write (max single gap
-// 400 ms) lands and …→450→write drops. Those are fw 1.8.45 numbers. On fw 1.8.58 the
-// client lapses 750 ms after the last OUT report, read windows included (740 ms kept,
-// 760 ms dropped, device-confirmed). The companion measures gaps from the command and
-// excludes its read window of up to 300 ms, so 300 + 450 = 750 ms (dropped) and
-// 300 + 400 = 700 ms (lands): the total-window reading is the consistent one (INFERRED).
-// So: keep EVERY pre-write idle gap ≤~300 ms, and never sleep a settle for a
-// command that wasn't sent (the conditional in `set_knobs`).
+// The device silently DROPS a write sent after 750 ms of host OUT silence, counted from
+// the last OUT report with read windows included (740 ms kept, 760 ms dropped; HW,
+// fw 1.8.58) — no presetError, nothing in the working copy. So: keep EVERY pre-write idle
+// gap ≤~300 ms, and never sleep a settle for a command that wasn't sent (the conditional
+// in `set_knobs`).
 const SETTLE_AFTER_SCENE_EDIT_MS: u64 = 300;
 // Gap between the `loadScene` recall and the next command (`SetNodeSceneEdit`, or the
 // value write itself when the enable is dropped). 150 (not the general 300
-// `SETTLE_AFTER_SET_MS`) keeps the gap far under the ~400–450 ms idle cliff above.
-// HW-bisected lower edge (`probe --bisect-scene`, fw 1.8.45): scene_settle 150, 100,
-// and even 50 all land ON the scene overlay (never leak to base) and persist.
+// `SETTLE_AFTER_SET_MS`) keeps the recall→write gap well inside the ≤300 ms rule above;
+// 50–150 ms all land on the scene overlay and persist (HW, `probe --bisect-scene`).
 pub(crate) const SETTLE_AFTER_SCENE_RECALL_MS: u64 = 150;
 pub(crate) const RATE: u32 = 48_000;
 const LEVEL_MIN: f32 = 0.0;
@@ -224,7 +202,7 @@ pub enum Verification {
 
 impl Verification {
     /// The verdict for a lane that asked for a verify (`planned`) and got `read` back from
-    /// `apply_levels` — whose `None` under a planned verify now means "the capture failed"
+    /// `apply_levels` — whose `None` under a planned verify means "the capture failed"
     /// (a Stop propagates as an error instead).
     pub(crate) fn of(planned: bool, read: Option<f64>) -> Self {
         match (planned, read) {
@@ -260,7 +238,7 @@ pub struct LevelResult {
     pub target_lufs: f64,
     /// Predicted captured LUFS at `final_level` (== target unless clamped).
     pub predicted_lufs: f64,
-    /// True if the target needed level outside [0,1] (unreachable — clamped).
+    /// True if the target needed level outside `[0,1]` (unreachable — clamped).
     pub clamped: bool,
     /// Whether `final_level` was persisted to the preset (SaveCurrentPreset).
     pub saved: bool,
@@ -357,19 +335,19 @@ pub struct LevelOptions {
     pub defer: bool,
     /// Scene to recall right before a `save: true` save, so the save re-stamps the
     /// preset's ORIGINAL `lastLoadedScene` (0-based scene index, or
-    /// `session::BASE_SCENE_SLOT`). The base-context measurement recalls base (issue:
-    /// base must measure base, not the saved scene), which leaves base active at save
-    /// time — without this the save silently rewrites `lastLoadedScene` to 8 (HW,
-    /// Hiwatt slot 31: pre 3 → post 8), changing which scene the preset loads into on
-    /// the pedalboard. `None` = save whatever context is active (old behavior).
+    /// `session::BASE_SCENE_SLOT`). The base-context measurement recalls base (base must
+    /// measure base, not the saved scene), which leaves base active at save time —
+    /// without this the save silently rewrites `lastLoadedScene` to 8 (HW), changing
+    /// which scene the preset loads into on the pedalboard. `None` = save whatever
+    /// context is active.
     pub restore_scene: Option<u32>,
     /// The run's OWN `presetLevel` — its solved value, or the UNSAVED raise a headroom
     /// trade is holding — re-asserted after `set_knobs` and before the verify engage.
     ///
-    /// `set_knobs` recalls the knob's scene, and a recall runs the device's own
-    /// level-apply (`recall_reassert_save`'s doc carries the HW evidence), so without
-    /// this the VERIFY capture renders at the level the device HAS SAVED even when the
-    /// as-is capture was correctly asserted. That asymmetry is silent and it INVERTS the
+    /// `set_knobs` recalls the knob's scene, and a base recall while base is current
+    /// re-applies the base snapshot's `presetLevel` (see `recall_reassert_save`), so
+    /// without this the VERIFY capture renders at a stale level even when the as-is
+    /// capture was correctly asserted. That asymmetry is silent and it INVERTS the
     /// correction: the verify reads quiet, so the bounded secant walks the fader the wrong
     /// way (offline gate `a_batched_scene_run_persists_both_halves_of_a_landed_headroom_trade`:
     /// the compensating fader rose 0.69 → 0.726 instead of falling).
@@ -443,9 +421,9 @@ impl LevelKnob {
 pub(crate) const KNOB_TOL_LU: f64 = 0.3;
 /// THE acceptance band — "on target" means the same thing in every lane: the base lane's
 /// idempotency skip ([`already_on_target`]) and verify correction, every scene at-target
-/// check, and every footswitch at-target check. About 2σ of the ~0.12 LU run-to-run capture
-/// noise (`notes/gotchas.md`): a perfectly converged point reads inside it ~96% of the time,
-/// where the old footswitch band (0.1 LU, under σ) read it inside only ~60% and the loop kept
+/// check, and every footswitch at-target check. About 2σ of the ~0.12 LU run-to-run capture noise
+/// (`notes/device/reamp-audio.md#capture-window`): a perfectly converged point reads inside it
+/// ~96% of the time, where a 0.1 LU band (under σ) reads it inside only ~60% and the loop keeps
 /// buying captures to chase noise.
 pub(crate) const ACCEPT_TOL_LU: f64 = 0.25;
 const KNOB_MAX_ITERS: u32 = 6;
@@ -454,7 +432,7 @@ const KNOB_MAX_ITERS: u32 = 6;
 /// (scene `outputLevel` AND footswitch `param` valueA). Each correction is a fresh-connect
 /// re-amp capture (~10 s), so this is kept small — 2–3 slope-corrected steps converge any
 /// chain with slope ≥ ~0.15 (below that it's the no-authority case), and a large cap would
-/// re-inflate per-scene cost toward the legacy 80–93 s regime. (NOT `KNOB_MAX_ITERS`, which
+/// inflate per-scene cost. (NOT `KNOB_MAX_ITERS`, which
 /// counts 2 seed measurements in its budget.)
 const MEASURE_CORRECT_MAX: u32 = 3;
 
@@ -462,22 +440,19 @@ const MEASURE_CORRECT_MAX: u32 = 3;
 /// `solve_footswitch`). Larger than the scene path's `MEASURE_CORRECT_MAX`
 /// because arbitrary block params (a `volume` audio taper, a `drive` knob) can
 /// put the target on a steep cliff that needs several Illinois-damped bracket
-/// iterates (HW, Hiwatt fs12: ~4 from a 21-LU-wide bracket) — converged solves
+/// iterates (HW: ~4 from a 21-LU-wide bracket) — converged solves
 /// still exit on the first in-tolerance iterate, so the headroom costs well-behaved knobs
-/// nothing. Kept at 16 when the band widened to [`ACCEPT_TOL_LU`] (0.1 → 0.25 LU): the
-/// noise-chasing the old band caused is gone because a converged point now reads inside
-/// the band (`fs_solve_noise_tests`), and the budget only runs out on genuinely slow
-/// curves (the quiet-chain silence-sentinel fixture needs ~12 iterates).
+/// nothing. A converged point reads inside [`ACCEPT_TOL_LU`] (`fs_solve_noise_tests`), so
+/// the budget only runs out on genuinely slow curves (the quiet-chain silence-sentinel
+/// fixture needs ~12 iterates).
 const FS_CORRECT_MAX: u32 = 16;
 /// Minimum acceptable `|target_lufs − seed1's measured LUFS|` the law-predicted second
 /// seed's IMPLIED separation must clear before it's trusted over the fixed 0.75/0.25-
 /// fraction fallback (see `FsParamTarget::seed2_plausible`). Gates in the SAME space the
-/// downstream flatness proof (`KNOB_TOL_LU`) reads, not raw knob-value span: the
-/// predecessor of this gate, `FS_MIN_SEED_SPAN_FRAC` (0.12 of the param's own v-space
-/// range), wrongly REJECTED correct predictions at low knob values — at `v_a = 0.05` a
-/// genuine 6 LU correction moves `v` by only `0.0498`, under a 12%-of-`[0,1]` span, so the
-/// old gate silently fell back to the fixed seed exactly where the log-knob law matters
-/// most (the quiet end of the range, where `v` compresses hardest per dB).
+/// downstream flatness proof (`KNOB_TOL_LU`) reads, not raw knob-value span: a span gate
+/// would reject correct predictions at low knob values — at `v_a = 0.05` a genuine 6 LU
+/// correction moves `v` by only `0.0498` — exactly where the log-knob law matters most
+/// (the quiet end of the range, where `v` compresses hardest per dB).
 ///
 /// Why gating on the EXPECTED LU gap is still safe against a false no-authority verdict:
 /// for an ACCEPTED prediction the coord-space law makes the pair's expected separation
@@ -517,15 +492,14 @@ const NO_SIGNAL_REASON: &str = "no signal on USB 1/2";
 /// gated on the point being REAL — see both call sites — so this sentinel can never become
 /// the reported "achieved" loudness). Deliberately NOT the true digital-silence floor
 /// (`MUTE_FLOOR_SILENT_LUFS`, −120 — still used for the FIRST seed's routing-clamp report):
-/// pinning the geometry to the literal floor forced the bounded Illinois-damped correction
-/// loop (`FS_CORRECT_MAX` = 8 iterates) to spend its ENTIRE budget walking the bracket back
-/// down from a 90+ LU gap, landing ONE iterate short of converging on the reported repro
-/// (HW, fw 1.8.45, preset "TR+BD2+BMP": Plumes `level` knob, target −26 LUFS, mono-era
-/// convention — see the PR2 metering re-baseline in `notes/leveling.md`). −50 sits 21 LU
-/// below the quietest user-settable target (`TargetRow` TMIN = −29) — well clear of any real
-/// target, yet close enough that the damping converges with iterates to spare (a sentinel
-/// sensitivity sweep found −62..−70 and −98..−100 to be non-converging "dead zones" for this
-/// fixture's geometry — avoid those bands if this value ever needs to move).
+/// pinning the geometry to the literal floor makes the bounded Illinois-damped correction
+/// loop (`FS_CORRECT_MAX`) spend its budget walking the bracket back down from a 90+ LU
+/// gap. The pseudo point is `min(−50, quietest real capture − FS_SILENT_MARGIN_LU)`
+/// (`fs_silent_geometry`). −50 sits 21 LU below the quietest user-settable target
+/// (`TargetRow` TMIN = −29) — well clear of any real target, yet close enough that the
+/// damping converges with iterates to spare (a sentinel sensitivity sweep found −62..−70
+/// and −98..−100 to be non-converging "dead zones" for the Plumes fixture's geometry —
+/// avoid those bands if this value ever needs to move).
 const FS_SILENT_GEOMETRY_LUFS: f64 = -50.0;
 
 /// Fixed margin `fs_silent_geometry` keeps the silent-capture pseudo point BELOW the

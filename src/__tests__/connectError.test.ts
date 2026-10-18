@@ -1,5 +1,5 @@
 // Locks the connect-error classification (which page a device tab shows while no unit
-// is connected), keyed on the backend's typed error KIND (#269), never on the message
+// is connected), keyed on the backend's typed error KIND, never on the message
 // text. The cold-boot case is the one that bit us: the TMP's HID interface enumerates
 // (hotplug fires, open/seize succeeds) seconds before its USB stack accepts reports, so
 // the first handshake send fails — `not_ready` — and that must read as "plug it in /

@@ -180,7 +180,7 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
     expect(baseCall.job.target_lufs).toBe(TARGET_LUFS);
   });
 
-  // #187: the store maps the backend's `verify_failed` to a "not confirmed" row. A Base
+  // The store maps the backend's `verify_failed` to a "not confirmed" row. A Base
   // whose check capture failed carries only a prediction, so it must not count as leveled:
   // it needs you, and Try again confirms it (with its preset's leveled scenes, which a
   // main sound's new level moves).

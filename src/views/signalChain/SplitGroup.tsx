@@ -22,8 +22,7 @@ export interface SplitGroupProps {
 // The two parallel branches between a SPLIT and a MIX diamond, joined by the
 // rounded brackets. Branch heights vary (a half-stack tile is much taller than a
 // pedal branch), so the brackets are MEASURED from the rendered branch art centres
-// at runtime rather than from a fixed tile height — for equal-height branches this
-// resolves to the same geometry the old fixed brackets used.
+// at runtime rather than from a fixed tile height.
 export function SplitGroup({
   a,
   b,

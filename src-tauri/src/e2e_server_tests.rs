@@ -16,7 +16,7 @@ use tauri::WebviewWindow;
 use super::TEST_SERIAL as SERIAL;
 
 /// Take [`SERIAL`] for one test and put the process in the OFFLINE settle regime for exactly
-/// that span (#198): every test here drives an in-process SimDevice, whose settles are dead
+/// that span: every test here drives an in-process SimDevice, whose settles are dead
 /// time, exactly as in the offline browser tier. [`Serial`]'s drop restores the default.
 fn serial() -> Serial {
     // The lock first, so the mark cannot include another test's requests.
@@ -30,7 +30,7 @@ fn serial() -> Serial {
 }
 
 /// [`SERIAL`] held for one test (with the offline settle regime armed — see [`serial`]), plus
-/// the #279 gate: when the test ends (without already
+/// the unmodelled-request gate: when the test ends (without already
 /// panicking), every request an installed fake answered with nothing during the test, if
 /// its kind is outside `UNHANDLED_CENSUS`, must be opted in with
 /// [`Serial::allow_unmodeled`]. Otherwise the test fails, naming the kinds. Requests are
@@ -161,7 +161,7 @@ fn fs_written_row(switch: u32, value: f32, method: &str) -> crate::leveller::Foo
 }
 
 /// One footswitch job through the SHIPPED batch (`run_footswitch_batch`, the only assembly of
-/// footswitch leveling — #276), the way the app's command runs it: the batch reads the preset,
+/// footswitch leveling), the way the app's command runs it: the batch reads the preset,
 /// plans bake-vs-assign, runs the ceiling prepass and the solve, and (on `save`) writes and
 /// saves. No playback offset, no Stop.
 fn fs_batch_one(
@@ -364,8 +364,7 @@ fn offline_copy_journey_through_real_backend() {
 /// `--features e2e` physics-faithful capture model (`audio::reamp_capture` → the
 /// SimDevice's `e2e_capture`), so the leveler measures the modeled loudness and solves a
 /// finite `C` / final level with no hardware. Proves the audio seam AND the physics
-/// wire-in: slot 0 is unlisted in the sidecar → the flat default `C = -15` (PR2
-/// re-baseline: +3 from the mono-era -18), so the solved
+/// wire-in: slot 0 is unlisted in the sidecar → the flat default `C = -15`, so the solved
 /// `constant_c` lands there (a `set_live` regression that skipped the model would read the
 /// passthrough stimulus's own loudness instead and fail this).
 #[test]
@@ -393,8 +392,7 @@ fn offline_level_preset_runs_against_the_fake_audio() {
         r.measured_lufs.is_finite(),
         "measured a finite loudness: {r:?}"
     );
-    // The physics wire-in ran: an unlisted slot solves to the sidecar's flat default C
-    // (PR2 re-baseline: +3 from the mono-era -18).
+    // The physics wire-in ran: an unlisted slot solves to the sidecar's flat default C.
     assert!(
         (r.constant_c - (-15.0)).abs() < 0.5,
         "the physics model produced the default C=-15 (not a passthrough loudness): {r:?}"
@@ -412,8 +410,8 @@ fn offline_level_preset_runs_against_the_fake_audio() {
     );
 }
 
-/// Bug class: a base recall right after a level + save plays the OLD level (HW 2026-10-17,
-/// slot 401 levelled to −20 played −27.5 on `loadScene(8)` until a real reload). fw 1.8.58
+/// Bug class: a base recall right after a level + save plays the OLD level (HW, fw 1.8.58:
+/// slot 401 levelled to −20 played −27.5 on `loadScene(8)` until a real reload). The device
 /// re-applies its base snapshot on a base → base recall, and only a real load refreshes that
 /// snapshot's `presetLevel` (`leveller::reload_after_level_save`). The run must leave the
 /// device so the recall the user (or the post-run re-measure) sends plays the saved level.
@@ -452,13 +450,12 @@ fn a_base_recall_after_a_level_save_plays_the_saved_level() {
 
 /// `note_structural_save` flips `SCENARIO_VERIFIED` false for a `STRUCTURAL_SAVE_CMDS`
 /// member and leaves it untouched for anything else — pins the set's intent in BOTH
-/// directions. Root cause (2026-08-01, `notes/user-journeys.md` bug→gate registry):
-/// online `copy.spec.ts` saved a structural edit (dropping a block) over the resident
-/// `E2E Edge` fixture with nothing clearing `SCENARIO_VERIFIED`, so the next spec's
-/// `ensureScenario` hit the fast path, skipped the device re-verify, and asserted on the
-/// mutilated fixture. Value-only leveling saves are deliberately excluded from the set
-/// (within-run value drift is handled by spec ORDERING — doctor.online before level.online —
-/// not by paying a device re-verify per spec).
+/// directions: an online `copy.spec.ts`
+/// structural save (dropping a block) over the resident `E2E Edge` fixture must clear
+/// `SCENARIO_VERIFIED`, or the next spec's `ensureScenario` hits the fast path, skips the
+/// device re-verify, and asserts on the mutilated fixture. Value-only leveling saves are
+/// deliberately excluded from the set (within-run value drift is handled by spec ORDERING —
+/// doctor.online before level.online — not by paying a device re-verify per spec).
 #[test]
 fn note_structural_save_flags_structural_saves_only() {
     use std::sync::atomic::Ordering::SeqCst;
@@ -519,7 +516,7 @@ fn a_stray_sweep_keeps_the_verified_fast_path() {
 
     super::SCENARIO_VERIFIED.store(true, SeqCst);
     // The sim serves no full 504-entry list, so the sweep itself errors here; the flag must
-    // survive either way (the old command cleared it before sweeping).
+    // survive either way (the command must not clear it before sweeping).
     let _ = invoke(&webview, "e2e_clear_strays", serde_json::json!({}));
     assert!(
         super::SCENARIO_VERIFIED.load(SeqCst),
@@ -528,13 +525,13 @@ fn a_stray_sweep_keeps_the_verified_fast_path() {
 }
 
 /// The physics that drives `level-defaults.spec.ts`, split across the two fixtures that
-/// now carry it: slot 403 (E2E Parallel) at a SHIPPED DEFAULT target produces the
+/// carry it: slot 403 (E2E Parallel) at a SHIPPED DEFAULT target produces the
 /// first-session Base CLAMP (headroom, reason-less), and slot 402 (E2E Edge) carries the
 /// OFF-BRANCH footswitch — its block sits on the `gtrSplit` OUT-2 lane, which this preset
 /// routes away from USB 1/2, so an isolated engaged capture reads dead air → the
 /// "no signal on USB 1/2" routing clamp. Fast backend gate for the sidecar authoring,
 /// independent of the Playwright UI flow: a sidecar C perturbation or an
-/// `offbranch_switch_node` regression flips these here (mutation-check #2/#4). Uses the
+/// `offbranch_switch_node` regression flips these here. Uses the
 /// committed fixture + sidecar via their env overrides.
 #[test]
 fn level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch() {
@@ -627,15 +624,13 @@ fn level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch() {
     );
 }
 
-/// GATE (user report, preset 30 "Plumes+BD2+OCD", 2026-08-20): THE PREPASS MUST ANNOUNCE ITSELF.
+/// GATE (user report, "Plumes+BD2+OCD"): THE PREPASS MUST ANNOUNCE ITSELF.
 ///
 /// The ceiling prepass measures every selected footswitch — one engage, ~10 s — BEFORE the
-/// first row is solved, and it used to stream nothing at all. The wizard's optimistic
-/// `markGroupActive` therefore held row 0 highlighted for the whole sweep while the unit
-/// engaged four different pedals in turn, and the run read as "the Pinions row is leveling
-/// with the Sapphire OD footswitch on". Nothing was misleveled — every capture's isolation
-/// was correct — but the display named the wrong sound for a minute, which is the same thing
-/// to the person watching.
+/// first row is solved. Streaming nothing, the wizard's optimistic `markGroupActive` holds
+/// row 0 highlighted for the whole sweep while the unit engages four different pedals in
+/// turn, so the display names the wrong sound for a minute — misleading to the person
+/// watching even though every capture's isolation is correct.
 ///
 /// Two halves, both required, because either alone still lies:
 /// 1. ORDERING — all four rows go `active` before ANY row finishes. Per-row events are what
@@ -686,7 +681,7 @@ fn the_fs_prepass_announces_every_row_before_any_row_finishes() {
         .expect("wv");
 
     // The four drive pedals, in switch order — ObsessiveDrive and Rat's handle is `volume`,
-    // the others' `level` (HW-confirmed from a field-8 read of the real device; ObsessiveDrive
+    // the others' `level` (HW-confirmed from a `presetDataRequest` (field 8) read; ObsessiveDrive
     // has no `level` parameter at all).
     let switches: [(u32, &str, &str); 4] = [
         (5, "ACD_Plumes", "level"),
@@ -916,18 +911,17 @@ fn the_fs_prepass_reads_the_ceiling_at_the_handles_top_bound() {
 }
 
 /// The BAKE write path end-to-end offline — the DOMINANT footswitch shape under the assign
-/// gate (user directive, 2026-08-19): a switch only plans `Assign` when it ALREADY carries a
+/// gate (user directive): a switch only plans `Assign` when it ALREADY carries a
 /// `param` function for the user-selected control, and slot 400's Boost switch (2) does not —
 /// it ships a bare on-off, so leveling `ACD_Boost.gain` writes the block directly
-/// (`FsLevelPlan::Bake`) rather than adding a function to the switch (the shape `danger.md`
-/// forbids: a two-entry row is HW-proven to make the firmware silently discard the whole
-/// imported preset). `gain` is the raw-dB `[0, 12]` param the write must carry unclamped.
+/// (`FsLevelPlan::Bake`) rather than adding a function to the switch (a two-entry row, which
+/// `validate_import_body` still refuses — conservatively, since it is legal on fw 1.8.58). `gain`
+/// is the raw-dB `[0, 12]` param the write must carry unclamped.
 ///
 /// It drives the batch's own WRITER (`leveller::write_footswitch_values`, the half of
 /// `run_footswitch_batch` after the solve) with the planner's `FsWrite::Bake` and a fixed
-/// solved value, so it needs no loudness model. Four things are pinned, each of which was
-/// silently unprovable offline before:
-/// 1. the write COMPLETES routed through `FsWrite::Bake`, not the now-refused
+/// solved value, so it needs no loudness model. Four things are pinned:
+/// 1. the write COMPLETES routed through `FsWrite::Bake`, not the refused
 ///    append (`resolve_footswitch_job` would `Err` on this exact switch — see
 ///    `resolve_footswitch_job_refuses_rather_than_append_a_new_function`),
 /// 2. the wire op sequence carries a `ChangeParameter` fire-and-forget setter for
@@ -1069,7 +1063,7 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     // (3) the CONFIRM channel: `Session::change_parameter` is a fire-and-forget setter with
     // no reply (its own doc comment) — unlike an Assign there is no read-back to check here.
     // The switch's own `ftsw` row is untouched: confirm that directly, so a future Bake that
-    // accidentally starts writing `ftsw` (re-introducing the forbidden two-entry shape) fails
+    // accidentally starts writing `ftsw` (introducing the refused two-entry shape) fails
     // this test rather than sailing through silently.
     {
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
@@ -1091,7 +1085,7 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
         );
     }
 
-    // (4) the save round trip, through the production persist verify (field-8 → the block's
+    // (4) the save round trip, through the production persist verify (stored-row → the block's
     // own dspUnitParameters). `is_assign: false` reads the block, not `ftsw.valueA`.
     let mut results = vec![Some(r.clone())];
     crate::leveller::verify_fs_persisted_writes(
@@ -1108,14 +1102,13 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     );
 }
 
-/// THE BAKE-ARM IDEMPOTENCY GATE (this PR): before the fix, `level_footswitches_apply`'s Bake
-/// arm called `measure_footswitch(..., None, ...)` unconditionally — no anchor for the re-run
-/// probe in `solve_param_secant` — so a Bake row re-solved and RE-SAVED an identical value on
-/// EVERY re-run (~6 min of device time, HW-confirmed tonight). This is the Bake-arm sibling of
+/// THE BAKE-ARM IDEMPOTENCY GATE: a Bake arm that calls `measure_footswitch(..., None, ...)`
+/// unconditionally — no anchor for the re-run probe in `solve_param_secant` — re-solves and
+/// RE-SAVES an identical value on EVERY re-run (~6 min of device time, HW). This is the
+/// Bake-arm sibling of
 /// `assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persists_its_value_a`'s
 /// gate, but drives the actual BATCHED COMMAND (`level_footswitches_apply`) through its IPC
-/// surface, twice, where the other footswitch gates run one pass of its batch
-/// (`fs_batch_one`).
+/// surface, twice, where the other footswitch gates run one pass of its batch (`fs_batch_one`).
 ///
 /// Fixture 405's Plumes switch (5) is the shape: `ACD_Plumes` is bypassed in base and switch 5
 /// carries a bare on-off with no `param` fn, so `plan_footswitch_jobs` bakes it (same premise as
@@ -1127,21 +1120,17 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
 /// sim's ambient `preset_level` from a slot's committed doc once that slot has been SAVED at
 /// least once this run — see the `ever_saved` gate in `sim_device.rs`'s own doc — and this
 /// test's first load of 405 predates any save, so the ambient value stays at the process
-/// default of 1.0 throughout, exactly as before the Plumes-regression amendment.)
+/// default of 1.0 throughout.)
 ///
 /// `Saved` (not `ChangeParameter`) is the discriminator because the ceiling prepass engages once
-/// per row on EVERY run regardless of the fix (a known, accepted cost — see `CLAUDE.md`'s
-/// trade-offs) and writes its own throwaway `ChangeParameter` at the handle's top bound; only the
-/// actual write session (`write_footswitch_values`, gated on `pending` being non-empty) ever
-/// emits `Saved`.
+/// per row on EVERY run (a known, accepted cost) and writes its own throwaway
+/// `ChangeParameter` at the handle's top bound; only the actual write session
+/// (`write_footswitch_values`, gated on `pending` being non-empty) ever emits `Saved`.
 ///
-/// WITHOUT the fix this is RED on run 2's `saved: false` / no-new-`Saved` assertions: the old
-/// unconditional `None` anchor never lets the probe fire, and the old `save &&
-/// r.clamp_reason.is_none()` guard (no comparison to `current`) pushes the identical value to
-/// `pending` regardless, so `write_footswitch_values` runs again and a second `Saved` event
-/// lands. The same two assertions also catch a HALF-applied fix: reading `current` correctly but
-/// leaving the unconditional push still saves every time; guarding the push but leaving
-/// `current: None` makes `Some(final_value) != None` always true, which also always saves.
+/// RED on run 2's `saved: false` / no-new-`Saved` assertions if the `current` anchor is `None`
+/// (the probe never fires) or the persist push skips the comparison to `current` (the identical
+/// value lands in `pending`, `write_footswitch_values` runs again and a second `Saved` event
+/// lands) — either half alone still saves every time.
 #[test]
 fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
     let _serial = serial();
@@ -1257,7 +1246,7 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
     // ACCEPT_TOL_LU — if a future tolerance/curve shift makes it unconverged, run
     // 2 would legitimately re-solve too, and the no-new-`Saved` gate below would false-red on
     // a correct run. Fail here, at the premise, instead of misattributing that to a
-    // regression in the fix.
+    // regression.
     assert_eq!(
         r1[0]["unconverged"], false,
         "run 1 must fully converge (see the seed-headroom note above): {r1:?}"
@@ -1312,12 +1301,12 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
 }
 
 /// The ASSIGN write path end-to-end offline — the shape a switch takes ONLY when it already
-/// carries a `param` function for the user-selected control (the assign gate, user directive
-/// 2026-08-19). Slot 400's param-only switches (VERB KILL, WAH SWEEP) don't fit this test: both
+/// carries a `param` function for the user-selected control (the assign gate, user directive).
+/// Slot 400's param-only switches (VERB KILL, WAH SWEEP) don't fit this test: both
 /// target a node some OTHER switch also toggles on-off, so `siblings_off_excluding`'s isolation
 /// — which only ever excludes THIS switch's OWN on-off nodes, and a param-only switch has none —
-/// force-bypasses the very block being leveled (the "ponytail" edge case `plan_footswitch_jobs`
-/// already flags as acknowledged-not-handled). That's a real, separate gap, not this gate's
+/// force-bypasses the very block being leveled (the edge case `plan_footswitch_jobs` flags as
+/// acknowledged-not-handled). That's a real, separate gap, not this gate's
 /// subject, so it stays unexercised here rather than being smuggled in as if it were clean.
 ///
 /// Slot 407 (the Doctor-oracle fixture) has a clean case instead: switch 13's WASHED is a
@@ -1466,7 +1455,7 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
         }],
         crate::scene_jobs::last_loaded_scene(&preset),
     )
-    .expect("the Assign write must COMPLETE — it used to fail its confirm gate offline");
+    .expect("the Assign write must COMPLETE — its confirm gate must pass offline");
     let r = fs_written_row(SWITCH, SOLVED, "assigned");
 
     // (2) the field-54 write, at the resolved (OWN, never appended) index, with the solved
@@ -1536,7 +1525,7 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
         );
     }
 
-    // (4) the save round trip, through the production persist verify (field-8 → ftsw valueA).
+    // (4) the save round trip, through the production persist verify (stored-row → ftsw valueA).
     let mut results = vec![Some(r.clone())];
     crate::leveller::verify_fs_persisted_writes(
         ListIndex(407),
@@ -1554,7 +1543,7 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
 
 /// COVERAGE row 18 — the WET-FLOOR outcome, end to end offline. 400's SPRING switch (3) is a
 /// bare on-off with no `param` fn on `ACD_TMSpring63`, so its plan is `Bake` (the assign gate,
-/// user directive 2026-08-19) and its `mix` (authored 0.42) classifies `wet_mix`:
+/// user directive) and its `mix` (authored 0.42) classifies `wet_mix`:
 /// `FsParamTarget::bounds` raises the solve's LOW bound to `WET_FLOOR_FRACTION` (0.25) x 0.42
 /// = 0.105, because driving a reverb's mix toward 0 to hit a loudness target doesn't make the
 /// effect quieter, it DELETES it.
@@ -1567,15 +1556,13 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
 /// * a REACHABLE target converges inside the band with `wet_floor: false`, proving the flag
 ///   tracks the outcome rather than the param's class.
 ///
-/// This was unprovable offline until two things landed together (either alone leaves it
-/// red): the sidecar's `leveledParams` entry for `400 / G1 / ACD_TMSpring63 / mix` on the
-/// `wetMix` curve, and `model_lufs`'s widened activation predicate — a Bake's isolation
-/// (`siblings_off_excluding`) forces only the OTHER switches' blocks off, so the LEVELED
-/// block gets no bypass write and the old `bypass_writes[node] == Some(false)` predicate
-/// never fired. With a flat capture model both seeds read the same C, `solve_param_secant`
-/// took its no-authority `flat_response` exit at the low SEED (`at_fraction(0.25)` = 0.32875)
-/// and never reached the floor at all — which is what row 18 previously mis-attributed to
-/// the Bake path skipping the floor.
+/// Two things make it provable offline (either alone leaves it red): the sidecar's
+/// `leveledParams` entry for `400 / G1 / ACD_TMSpring63 / mix` on the `wetMix` curve, and
+/// `model_lufs`'s activation predicate, which must not require a bypass write on the LEVELED
+/// block (a Bake's isolation, `siblings_off_excluding`, forces only the OTHER switches' blocks
+/// off). With a flat capture model both seeds read the same C, and `solve_param_secant` takes
+/// its no-authority `flat_response` exit at the low SEED (`at_fraction(0.25)` = 0.32875)
+/// without ever reaching the floor.
 ///
 /// `save: false` on BOTH runs, deliberately: a saving first run would change what the second
 /// run's load restores, so the second assertion could fail for a reason that looks nothing
@@ -1706,14 +1693,12 @@ fn solve_400_spring(
         } => (engaged.clone(), *clear_stale),
         other => panic!("400 switch {SWITCH} must plan as Bake, got {other:?}"),
     };
-    // CONTRACT CORRECTED 2026-08-19 (HW, fw 1.8.45). This used to assert the opposite — that
-    // a Bake isolates only the SIBLINGS and the leveled block gets NO bypass write, on the
-    // reasoning that a block already ON in the base needs nothing said about it. Hardware
-    // refuted it: a SIBLING row's isolation writes this block's `bypass = true` into the
-    // device working copy, every capture's `recall_base` re-asserts that mutated copy, and
-    // the row then measures with the very block it is levelling switched OFF (slot 26
-    // "Plumes+BD2+OCD", every row clamped — `notes/gotchas.md`). The plan must state the
-    // block's own engaged bypass, and must state EXACTLY what `switch_states` hands the
+    // A Bake must state the leveled block's own engaged bypass, even when the block is
+    // already ON in the base: a SIBLING row's isolation writes this block's `bypass = true`
+    // into the device working copy, every capture's `recall_base` re-asserts that mutated
+    // copy, and the row then measures with the very block it is levelling switched OFF (HW,
+    // "Plumes+BD2+OCD": every row clamped). The plan must state the block's own engaged
+    // bypass, and must state EXACTLY what `switch_states` hands the
     // ceiling prepass, or plan and prepass describe different sounds.
     assert_eq!(
         engaged,
@@ -1888,10 +1873,9 @@ fn footswitch_assignment_set_and_clear_edit_the_working_copy_and_survive_only_a_
 }
 
 /// The preset-28 ("Friedman HBE") first-run class: a scene whose live field-3 doc arrives cut
-/// before the amp nodes must still level ITS OWN amp, from the saved preset. Since #176 the
-/// batch never reads the recall push at all (the docs come from the saved overlay), so this now
-/// pins that a cut push cannot leak into the solve. HW 2026-09-01, two
-/// of four scenes pushed unanswerable docs and were silently SKIPPED — one of them swaps amps.
+/// before the amp nodes must still level ITS OWN amp, from the saved preset. The batch never
+/// reads the recall push (the docs come from the saved overlay), so this pins that a cut push
+/// cannot leak into the solve (HW: two of four scenes pushed cut docs — one of them swaps amps).
 ///
 /// Paired with BASE, not a second scene: base's push is whole so `scene_jobs::structure_graph`
 /// still resolves, and base moves `presetLevel`, not a fader, leaving "`BASE_AMP` never written"
@@ -1943,10 +1927,10 @@ fn a_truncated_swap_scene_levels_its_own_amp_not_the_base_one() {
     );
 }
 
-/// #176: a request for a scene the preset does not have is REFUSED before anything reaches the
+/// A request for a scene the preset does not have is REFUSED before anything reaches the
 /// unit. The saved read guarantees `scenes` is complete, so index 6 on 403 (4 scenes) is a
-/// stale request; the removed live fallback would have sent `loadScene(6)` past the preset's
-/// scenes, which aborts the device server. No load and no scene recall may go out.
+/// stale request; a `loadScene(6)` past the preset's scenes likely aborts the device server
+/// (static RE, fw 1.8.58). No load and no scene recall may go out.
 #[test]
 fn a_scene_outside_the_preset_is_refused_and_no_scene_recall_is_sent() {
     let _serial = serial();
@@ -1998,8 +1982,8 @@ fn a_scene_outside_the_preset_is_refused_and_no_scene_recall_is_sent() {
 /// The SCENE-leveling physics for slot 403 through the REAL `level_scenes_apply_batched`
 /// command over mock IPC — the same path the offline UI drives, minus the streamed rows
 /// (`.claude/rules/e2e.md`'s "Events and Channels reach the page"): this gate asserts the
-/// outcomes on the command's RETURN value instead. At the shipped default target (-23,
-/// PR2 re-baseline: +3 from the mono-era -26) the 4 scenes produce the level-defaults outcome
+/// outcomes on the command's RETURN value instead. At the shipped default target (-23) the
+/// 4 scenes produce the level-defaults outcome
 /// set: 3 SOLVABLE (amp `outputLevel` converged to ~-23) + 1 OFF-BRANCH ("Clean", saved with
 /// BOTH lane amps' output at zero → deep digital silence on the unit, so its as-is capture
 /// is silent → the "no signal on USB 1/2" routing clamp, `ClampKind::NoAuthority`). Proves the
@@ -2112,7 +2096,7 @@ fn level_403_with_verify_faults(verify_faults: u32) -> Vec<serde_json::Value> {
     res["rows"].as_array().expect("results array").clone()
 }
 
-/// BUG→GATE (#187): a scene whose post-write verify capture fails must never report the
+/// A scene whose post-write verify capture fails must never report the
 /// PREDICTION as a verified, on-target result. One failed verify is retried (fresh re-apply +
 /// verify) and the row is verified; when every verify fails the row says `verify_failed`
 /// and carries no `verify_lufs`.
@@ -2164,12 +2148,12 @@ fn a_failed_scene_verify_is_retried_and_never_reported_as_verified() {
 /// Instrument-profile stimulus resolution + re-level smoke: a profile-driven level run resolves
 /// its stimulus (the `profile_id` with no stored DI capture must fall back to the topology
 /// stimulus, not crash) and a repeated run re-levels without a stale-candidate crash or a panic.
-/// SCOPE HONESTY: this is the drivable SUBSET of journey #22 (calibrate→re-level), NOT the
-/// staleness reproduction itself — the real #22 is a device-write-by-feature-A → feature-B's
+/// SCOPE HONESTY: this is the drivable SUBSET of the calibrate→re-level journey, NOT the
+/// staleness reproduction itself — that is a device-write-by-feature-A → feature-B's
 /// stale FRONTEND scan cache, which is a UI-cache class no backend command-level test can
-/// reproduce; and the Tier-2 DI CAPTURE (`calibrate_profile` → `capture_input`, the dry tap) is
+/// reproduce; and the DI CAPTURE (`calibrate_profile` → `capture_input`, the dry tap) is
 /// not modeled offline. So this gate protects the profile-stimulus-resolution + re-level
-/// stability, and the label makes no journey-#22 coverage claim it can't back.
+/// stability, and the label makes no staleness coverage claim it can't back.
 #[test]
 fn cross_feature_profile_relevel_resolves_and_no_crash() {
     let _serial = serial();
@@ -2393,8 +2377,8 @@ fn offline_batched_song_saves_open_one_connection_each() {
 
 /// Every slot-keyed song/setlist write is guarded by the name the user acted on: setlist
 /// and song slots shift on every delete/add, so a stale slot must be REFUSED, never
-/// retargeted onto whatever now sits there (#295). Each refusal leaves the sim untouched;
-/// the matching name goes through. Remove/move also pin the song at the position (#298).
+/// retargeted onto whatever now sits there. Each refusal leaves the sim untouched; the
+/// matching name goes through. Remove/move also pin the song at the position.
 #[test]
 fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
     let _serial = serial();
@@ -2593,8 +2577,8 @@ fn sim_answers_the_field8_saved_preset_read() {
 }
 
 /// The scenario slot + node the corruption-class gates below drive: the reported preset
-/// (a real 1.8.45 unit's 3-scene + "Base Scene" Hiwatt, saved `lastLoadedScene = 3`, 4
-/// block-acting footswitches) and its trunk amp. See `notes/user-journeys.md`'s bug→gate rows.
+/// (a device-authored 3-scene + "Base Scene" Hiwatt, saved `lastLoadedScene = 3`, 4
+/// block-acting footswitches) and its trunk amp.
 const HIWATT: u32 = 404;
 const HIWATT_AMP: &str = "ACD_HiwattDR103CanMod";
 
@@ -2610,12 +2594,11 @@ fn hiwatt_sim() -> crate::sim_device::SimDevice {
     sim
 }
 
-/// BUG→GATE (2026-07-27 report, the SCENE-TONE WIPE — the corruption bug): leveling the
+/// The SCENE-TONE WIPE (the corruption bug): leveling the
 /// reported preset's scenes must NOT send `SetNodeSceneEdit(enable)` for a node that ALREADY
 /// has an overlay in that scene. On hardware that enable RESEEDS the whole overlay from base,
 /// so the scene's authored tone (this preset's per-scene Hiwatt bass/treble/middle/presence/
-/// volumes) reverted to base while the leveled `outputLevel` survived — the user's "it changed
-/// my sound" report.
+/// volumes) reverts to base while the leveled `outputLevel` survives.
 ///
 /// WHY THE EVENT LOG, not a persisted read-back: the fake has no persisted preset store at all
 /// (`param_writes` is edit-buffer state, cleared on every `loadPreset`), so "the stored overlay
@@ -2707,10 +2690,10 @@ fn hiwatt_scene_leveling_never_reseeds_an_existing_overlay() {
     );
 }
 
-/// BUG→GATE (2026-07-27 report, the MEASUREMENT CONTEXT): a preset loads into its SAVED
+/// The MEASUREMENT CONTEXT: a preset loads into its SAVED
 /// `lastLoadedScene`, so a base measurement that does not recall base first measures THAT
 /// scene. The reported preset saves `lastLoadedScene = 3`, and the authored C table puts scene
-/// 3 eight dB below base (-31 vs -17, PR2 re-baseline: +3 from the mono-era -34/-20) — so the
+/// 3 eight dB below base (-31 vs -17) — so the
 /// outcome itself discriminates: recalled to base the run SOLVES -23 (presetLevel ~0.5);
 /// measuring scene 3 instead the target is above that ceiling and the run reports CLAMPED. No
 /// event-order heuristic needed.
@@ -2752,7 +2735,7 @@ fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
         "base solved from base's C=-17; a CLAMP means the capture measured the saved scene 3 \
          (C=-31) instead of base: {r}"
     );
-    // The reference capture now runs at the preset's saved presetLevel, so `measured_lufs` is
+    // The reference capture runs at the preset's saved presetLevel, so `measured_lufs` is
     // that as-is reading, not a reading at the solved level. Check what it solved from (base's
     // C) and where it lands.
     let c = r["constant_c"].as_f64().expect("constant_c");
@@ -2776,20 +2759,11 @@ fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
     );
 }
 
-/// BUG→GATE (2026-08-20 HW report, "Plumes+BD2+OCD", slot 30): BASE means the preset with NO
-/// footswitch engaged. The command briefly measured base AS SAVED instead — every
-/// footswitch-owned on-off block keeping its saved bypass — which on a preset whose pedal is
-/// saved ON makes "Base" and that pedal's own footswitch row THE SAME SOUND. Measured with the
-/// player's own DI through external ffmpeg `ebur128`: base-as-saved and the FS6 row both read
-/// -22.99 LUFS (identical to three decimals, and FS6's solve converged on the value it started
-/// from), while the same preset with its four pedals forced off sat 4.7 LU away at -27.69 —
-/// never measured, never leveled, and unreachable by any row the run offered.
-///
-/// The as-saved experiment had been argued from an ffmpeg read of -18.3 LUFS against a -23.0
-/// target on this same preset. That number was real but CONFOUNDED: on that day the block's own
-/// footswitch row was clamping in every multi-row batch (see `footswitch.rs`'s isolation note),
-/// which alone leaves the recalled sound exactly that hot. The clamp is fixed; base and its
-/// pedal row are separately reachable again.
+/// BASE means the preset with NO footswitch engaged (HW, "Plumes+BD2+OCD").
+/// Measuring base AS SAVED — every footswitch-owned on-off block keeping its saved bypass —
+/// makes "Base" and a saved-ON pedal's own footswitch row THE SAME SOUND (HW, external ffmpeg
+/// `ebur128`: both read -22.99 LUFS, while the preset with its four pedals forced off sat
+/// 4.7 LU away — never measured, never leveled).
 ///
 /// Slot 400 ("E2E Rig") is the offline fixture of that shape: three of its four block-acting
 /// switches own a block that is `bypass: false` in the saved base graph (`ACD_TubeScreamer`,
@@ -2799,10 +2773,9 @@ fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
 /// SCOPE: this pins the device-visible CAUSE — the same standard
 /// `hiwatt_scene_leveling_never_reseeds_an_existing_overlay` documents — not the LU delta. The
 /// C assertion below is a non-vacuity guard (the capture really went through the physics model),
-/// not the discriminator. The LU delta itself — RETIRED here as of the Plumes leveling-
-/// regression fixture amendment, which gave 405 ("E2E Preset24") a base-ENGAGED block
-/// (`ACD_Rat`) in the sidecar's `leveledParams` — is now expressible offline and pinned by
-/// `base_isolation_on_a_base_engaged_pedal_costs_the_measured_lu_delta` (E4, below).
+/// not the discriminator. The LU delta itself is pinned by
+/// `base_isolation_on_a_base_engaged_pedal_costs_the_measured_lu_delta` (below), on 405
+/// ("E2E Preset24"), whose base-ENGAGED `ACD_Rat` is in the sidecar's `leveledParams`.
 #[test]
 fn base_leveling_forces_every_footswitch_owned_block_off_not_the_preset_as_saved() {
     let _serial = serial();
@@ -2918,17 +2891,17 @@ fn base_leveling_forces_every_footswitch_owned_block_off_not_the_preset_as_saved
 }
 
 // ============================================================================
-// PHASE 2 GATES E1-E9 — the joint (presetLevel, base-amp fader) BOOST regime: the
-// plumes/BD2/OCD-class leveling regression fix (`notes/leveling.md`'s BOOST section,
-// `headroom_trade::plan_level_pair`, `leveller::level_preset_impl`'s routing).
+// BOOST GATES — the joint (presetLevel, base-amp fader) BOOST regime for the
+// plumes/BD2/OCD class (`headroom_trade::plan_level_pair`,
+// `leveller::level_preset_impl`'s routing).
 //
-// Fixture 405 ("E2E Preset24") is the PLUMES shape after its Phase 4 amendment:
+// Fixture 405 ("E2E Preset24") is the PLUMES shape:
 // presetLevel 0.27, the Twin's outputLevel 0.28, Rat base-engaged (bypass:false,
 // volume 0.62), sidecar base C = -28. Fixture 410 ("E2E Friedman 3S") is the HEALTHY
 // companion: presetLevel 0.5, Plexi outputLevel 1.0, 3 full-overlay scenes, sidecar
-// base C = -18, no `leveledParams` (a plain flat-C/`ol_term` fixture). E1 + E3 are the
-// PAIRED SEE-SAW GATE this regression is named for ("fixing 27 breaks 28 and vice
-// versa") — both shapes are asserted in this ONE suite and must always run together.
+// base C = -18, no `leveledParams` (a plain flat-C/`ol_term` fixture). The first two gates
+// below are the PAIRED SEE-SAW GATE (fixing one shape must not break the other) — both shapes
+// are asserted in this ONE suite and must always run together.
 // ============================================================================
 
 const PLUMES: u32 = 405;
@@ -2948,7 +2921,7 @@ fn base_job(slot: u32, target_lufs: f64, save: bool) -> serde_json::Value {
     })
 }
 
-/// A mock app + webview wired for the `level_preset` command alone — every E1-E8 gate below
+/// A mock app + webview wired for the `level_preset` command alone — every boost gate below
 /// drives base leveling through exactly this one command.
 fn level_preset_app() -> (tauri::App<MockRuntime>, WebviewWindow<MockRuntime>) {
     let app = tauri::test::mock_builder()
@@ -2963,7 +2936,7 @@ fn level_preset_app() -> (tauri::App<MockRuntime>, WebviewWindow<MockRuntime>) {
 }
 
 /// Run `level_preset` for `slot` at `target_lufs`/`save` through `webview` and return the
-/// decoded JSON result — the ONE invocation shape every E1-E8 gate below shares.
+/// decoded JSON result — the ONE invocation shape every boost gate below shares.
 fn run_base_level(
     webview: &WebviewWindow<MockRuntime>,
     slot: u32,
@@ -2979,7 +2952,7 @@ fn run_base_level(
 }
 
 /// Did any `ChangeParameter` write land on `node`'s `outputLevel`? The shared non-vacuity /
-/// never-touched check across every E1-E8 gate.
+/// never-touched check across every boost gate.
 fn wrote_output_level(events: &[crate::sim_device::SimEvent], node: &str) -> bool {
     events.iter().any(|e| {
         matches!(e, crate::sim_device::SimEvent::ChangeParameter { node: n, param, .. }
@@ -2987,8 +2960,8 @@ fn wrote_output_level(events: &[crate::sim_device::SimEvent], node: &str) -> boo
     })
 }
 
-/// How many times a `ChangeParameter` write landed on `node`'s `outputLevel` — E8's own
-/// "written exactly N times across both runs" count.
+/// How many times a `ChangeParameter` write landed on `node`'s `outputLevel` — the boosted
+/// re-run's own "written exactly N times across both runs" count.
 fn output_level_write_count(events: &[crate::sim_device::SimEvent], node: &str) -> usize {
     events
         .iter()
@@ -3011,8 +2984,8 @@ fn saved_event_count(events: &[crate::sim_device::SimEvent]) -> usize {
         .count()
 }
 
-/// `slot`'s SAVED `presetLevel` + `node`'s SAVED `outputLevel`, off a fresh field-8 read — the
-/// post-run pair every E1-E8 gate re-reads to confirm what actually persisted.
+/// `slot`'s SAVED `presetLevel` + `node`'s SAVED `outputLevel`, off a fresh stored-row read — the
+/// post-run pair every boost gate re-reads to confirm what actually persisted.
 fn saved_pl_and_output_level(slot: u32, node: &str) -> (f64, f64) {
     let doc = crate::scene_jobs::read_saved_preset(ListIndex(slot)).expect("post-run field-8 read");
     let pl = crate::audiograph::preset_level(&doc).expect("presetLevel");
@@ -3022,7 +2995,7 @@ fn saved_pl_and_output_level(slot: u32, node: &str) -> (f64, f64) {
 }
 
 /// A run that must never touch `node`'s fader: no wire write, and the SAVED fader still reads
-/// `expected_fader` — shared by every E-gate that asserts a no-op on the amp. `expected_pl`
+/// `expected_fader` — shared by every boost gate that asserts a no-op on the amp. `expected_pl`
 /// additionally pins the stored `presetLevel` when the caller cares.
 fn assert_fader_untouched(
     sim: &crate::sim_device::SimDevice,
@@ -3049,7 +3022,7 @@ fn assert_fader_untouched(
     );
 }
 
-/// E1 + E3 — THE PAIRED SEE-SAW GATE. BUG→GATE (2026-08-31 investigation): 405's base
+/// THE PAIRED SEE-SAW GATE: 405's base
 /// (Rat isolated off, presetLevel 0.27, Twin outputLevel 0.28) cannot reach -23 LUFS at
 /// `presetLevel`'s own ceiling (P_up ≈ 11.37 dB short of the ≈16.4 LU deficit implied by
 /// the sidecar's base C = -28 at this fixture's authored fader) — `plan_level_pair` must
@@ -3097,7 +3070,7 @@ fn a_base_row_that_cannot_reach_target_at_preset_level_max_raises_the_active_amp
     );
 
     // NON-VACUITY: the boost really did write the amp's outputLevel on the wire, not just
-    // presetLevel — the whole point of the fix is that a fader move actually happens.
+    // presetLevel — the whole point of the boost is that a fader move actually happens.
     let events = sim.events();
     assert!(
         wrote_output_level(&events, PLUMES_TWIN),
@@ -3105,12 +3078,12 @@ fn a_base_row_that_cannot_reach_target_at_preset_level_max_raises_the_active_amp
     );
 }
 
-/// E1's PAIRED companion (see the block header above): 410's own base deficit fits
+/// The PAIRED companion of the test above (see the block header): 410's base deficit fits
 /// comfortably inside `presetLevel`'s own room, so `plan_level_pair` must choose TRADE with
 /// a bit-exact zero fader move (`headroom_trade.rs`'s U3 pins the same numbers) — this run
-/// must therefore behave BYTE-FOR-BYTE like the pre-Phase-1 plain solve: no `base_boost`
+/// must therefore behave BYTE-FOR-BYTE like a plain solve: no `base_boost`
 /// summary at all, no fader write, and the preset's own `lastLoadedScene` untouched. This is
-/// the historical regression's OTHER half: a fix that always raises the fader (or always
+/// the see-saw's OTHER half: a solver that always raises the fader (or always
 /// leaves it alone) breaks one of these two shapes.
 #[test]
 fn a_healthy_base_row_never_moves_the_amp_fader() {
@@ -3148,7 +3121,7 @@ fn a_healthy_base_row_never_moves_the_amp_fader() {
     );
 }
 
-/// BUG→GATE (Phase 2 save-path guards, `notes/leveling.md`'s Phase 2 section): the pre-save
+/// The save-path guards (`leveller::recall_reassert_save`): the pre-save
 /// base recall must re-assert BOTH the raised `presetLevel` and the solved fader, and the save
 /// must persist both together — no same-slot load may ever see a half-old, half-new pair. Seeds
 /// `ever_saved` with a plain unedited save first (`sim_device.rs`'s saved-doc model), so the
@@ -3171,7 +3144,7 @@ fn the_base_boost_saves_both_halves_of_the_pair_and_undoes_the_isolation() {
     assert_eq!(r["base_boost"]["applied"], true, "{r}");
     assert_eq!(r["saved"], true, "{r}");
 
-    // POST-SAVE FIELD-8 RE-READ: both halves of the pair actually landed TOGETHER.
+    // POST-SAVE STORED-ROW RE-READ: both halves of the pair actually landed TOGETHER.
     let (pl, fader) = saved_pl_and_output_level(PLUMES, PLUMES_TWIN);
     assert!(
         (pl - 1.0).abs() < 1e-3,
@@ -3225,16 +3198,15 @@ fn the_base_boost_saves_both_halves_of_the_pair_and_undoes_the_isolation() {
     );
 }
 
-/// BUG→GATE (2026-08-31 investigation): closes the SCOPE note this gate's own comment used to
-/// carry (see `base_leveling_forces_every_footswitch_owned_block_off_not_the_preset_as_saved`,
-/// above) — 405's Phase 4 fixture amendment gave it a base-ENGAGED leveled block (`ACD_Rat`,
-/// bypass:false, volume 0.62), so the LU cost of forcing every footswitch-owned block off for
-/// a Base measurement is now expressible offline, not just on hardware.
+/// The LU cost of forcing every footswitch-owned block off for a Base measurement
+/// (the SCOPE note on
+/// `base_leveling_forces_every_footswitch_owned_block_off_not_the_preset_as_saved`, above),
+/// offline: 405 carries a base-ENGAGED leveled block (`ACD_Rat`, bypass:false, volume 0.62).
 ///
 /// This gate builds its OWN fresh `SimDevice` (`hiwatt_sim()`), independent of every other
 /// gate's own sim — so it is inherently evaluated PRE-BOOST (before any 405 gate has raised
-/// this preset's `presetLevel`/fader) with no run-order dependency on E1/E2/E8's sims, which
-/// each construct their own device too.
+/// this preset's `presetLevel`/fader) with no run-order dependency on the other boost gates'
+/// sims, which each construct their own device too.
 #[test]
 fn base_isolation_on_a_base_engaged_pedal_costs_the_measured_lu_delta() {
     let _serial = serial();
@@ -3273,23 +3245,22 @@ fn base_isolation_on_a_base_engaged_pedal_costs_the_measured_lu_delta() {
     );
 }
 
-/// BUG→GATE: leveling the 4 footswitch rows AFTER a base boost must still converge — the
+/// Leveling the 4 footswitch rows AFTER a base boost must still converge — the
 /// boost consumed `presetLevel`'s headroom (0.27 → 1.0), which SHIFTS every leveled pedal's
 /// own achievable ceiling by the same `+raise_db` (each pedal's `SaturatedPedal` contribution
 /// folds in the ambient `preset_term`, `sim_device.rs::model_lufs`), so a footswitch row
 /// solved against the OLD presetLevel would be badly wrong against the new one. This is the
-/// "the fix must not just move the problem downstream" gate for Plumes' own 4-pedal FS lane.
+/// "the boost must not just move the problem downstream" gate for Plumes' own 4-pedal FS lane.
 ///
-/// It also carries what the retired `level-fs-preset24.spec.ts` alone proved (the 2026-08-02
-/// stale-load incident, COVERAGE row 36): every row converges and saves, the Twin's boosted
-/// fader SURVIVES the footswitch batch's own load → save, and base and every pedal
+/// It also pins the stale-load incident (COVERAGE row 36): every row converges and saves, the
+/// Twin's boosted fader SURVIVES the footswitch batch's own load → save, and base and every pedal
 /// RE-MEASURE at target from the saved state, not merely as the run reported them.
 #[test]
 fn the_footswitch_rows_still_converge_after_a_base_boost() {
     let _serial = serial();
     let _sim = hiwatt_sim();
 
-    // ── The base boost (mirrors E1) ──
+    // ── The base boost (mirrors the see-saw gate) ──
     {
         let (_app, webview) = level_preset_app();
         let r = run_base_level(&webview, PLUMES, -23.0, true);
@@ -3417,7 +3388,7 @@ fn the_footswitch_rows_still_converge_after_a_base_boost() {
     }
 }
 
-/// BUG→GATE: a no-save run must PLAN the boost and disclose it, but must never touch the
+/// A no-save run must PLAN the boost and disclose it, but must never touch the
 /// device's persisted state — the advisory branch of `level_preset_impl`'s routing
 /// (`opts.save && !has_scenes` gates the full continuation; a `save:false` run always falls
 /// to the advisory).
@@ -3446,8 +3417,8 @@ fn a_no_save_base_boost_run_plans_it_but_writes_nothing() {
     assert_fader_untouched(&sim, PLUMES, PLUMES_TWIN, 0.28, Some(0.27));
 }
 
-/// BUG→GATE: an unreachable base target — even with BOTH controls pushed to their limits —
-/// must plan no move and report today's honest, unmodified clamp:
+/// An unreachable base target — even with BOTH controls pushed to their limits —
+/// must plan no move and report the honest, unmodified clamp:
 /// no half-applied boost, no persisted fader move. -10 LUFS needs +29.37 dB over 405's as-is
 /// base; `presetLevel`'s ceiling supplies only +11.37 dB and the Twin's fader adds at most
 /// +11.06 dB more (0.28 → 1.0) — +22.43 dB total, still ~7 dB short — so `plan_level_pair`'s
@@ -3472,7 +3443,7 @@ fn an_infeasible_base_target_reports_todays_honest_clamp_with_no_partial_boost()
     assert_eq!(
         r["clamp_kind"],
         serde_json::json!("scene_ceiling"),
-        "the ordinary headroom clamp, unchanged from the pre-Phase-1 shape: {r}"
+        "the ordinary headroom clamp, unchanged from a plain solve: {r}"
     );
     assert!(
         (r["final_level"].as_f64().expect("final_level") - 1.0).abs() < 1e-3,
@@ -3482,11 +3453,11 @@ fn an_infeasible_base_target_reports_todays_honest_clamp_with_no_partial_boost()
     assert_fader_untouched(&sim, PLUMES, PLUMES_TWIN, 0.28, None);
 }
 
-/// BUG→GATE: a second base run on an already-boosted preset must skip cleanly — no re-boost,
+/// A second base run on an already-boosted preset must skip cleanly — no re-boost,
 /// no re-write of `presetLevel`, no new save, no spurious `clamped` row. The float-epsilon
 /// straddle this hinges on is `leveller::already_on_target`'s own mechanism, not re-derived
 /// here; assertions below hold on either side of it. Run 1 writes the fader exactly twice
-/// (solve + pre-save recall-reassert, Phase 2 guard (b)); run 2 must add none —
+/// (solve + pre-save recall-reassert, `recall_reassert_save`); run 2 must add none —
 /// `restore_saved_preset` is a bare load and emits no `ChangeParameter` at all.
 #[test]
 fn a_second_base_run_on_a_boosted_preset_writes_nothing_new_to_the_fader() {
@@ -3537,8 +3508,8 @@ fn a_second_base_run_on_a_boosted_preset_writes_nothing_new_to_the_fader() {
     );
 
     // The fader is written exactly TWICE, both by run 1 (once by the solve, once by the
-    // pre-save recall-reassert guard replaying the SAME value — Phase 2's guard (b), see
-    // `recall_reassert_save`) — never a THIRD time by run 2.
+    // pre-save recall-reassert guard replaying the SAME value, see `recall_reassert_save`)
+    // — never a THIRD time by run 2.
     assert_eq!(
         output_level_write_count(&events, PLUMES_TWIN),
         2,
@@ -3553,13 +3524,12 @@ fn a_second_base_run_on_a_boosted_preset_writes_nothing_new_to_the_fader() {
     );
 }
 
-/// T3 RETIRED from the online lane (moved offline — `notes/leveling.md`'s online budget
-/// table): the online suite drove a live-device enumeration of every scenario preset purely
-/// to prove the backup-scan seam lists them all — a pure list read with no device-truth
-/// value, since `read_library_via_backup`'s e2e arm decodes the SAME fixture blob offline or
-/// on. Drives the backup-scan seam directly against the sim's own backup fixture and pins
-/// both this PR's fixtures' own child-row shape (405's 4 block-acting footswitches / no
-/// scenes, 410's 1 block-acting footswitch / 3 scenes) alongside the full 11-preset count.
+/// The backup-scan seam lists every scenario preset — offline only: a live-device enumeration
+/// has no device-truth value, since `read_library_via_backup`'s e2e arm decodes the SAME
+/// fixture blob offline or on. Drives the backup-scan seam directly against the sim's own
+/// backup fixture and pins the 405/410 fixtures' own child-row shape (405's 4 block-acting
+/// footswitches / no scenes, 410's 1 block-acting footswitch / 3 scenes) alongside the full
+/// 11-preset count.
 #[test]
 fn the_fixture_enumeration_reads_eleven_child_rows() {
     let _serial = serial();
@@ -3612,11 +3582,11 @@ fn the_fixture_enumeration_reads_eleven_child_rows() {
     );
 }
 
-/// BUG→GATE (2026-07-27 report, the FOOTSWITCH "MULTI" class): pin the bake-vs-assign PLAN the
+/// The FOOTSWITCH "MULTI" class: pin the bake-vs-assign PLAN the
 /// reported preset produces, so a change to the discriminator has to face this fixture.
 ///
 /// All four of its block-acting switches must take the BAKE path (no `ftsw` touch, no added
-/// function, no MULTI — the user-reported expectation, issues 3/4), even though each scene
+/// function, no MULTI — the user-reported expectation), even though each scene
 /// overlays the very param the leveler bakes with a value that differs from base (MythicDrive
 /// `output` 0.55 → 0.78 in scene 3; TremoloBias `level` 0.5 → 0.0; UniVibe `volume` 0.49 →
 /// 0.54; Lightspeed `loudness` 0.47 → 0.26 in scene 2 — scene 3 being this preset's own
@@ -3626,13 +3596,12 @@ fn the_fixture_enumeration_reads_eleven_child_rows() {
 /// anything sends these switches down Assign (the MULTI regression) or mirrors a diverging
 /// scene.
 ///
-/// The shipped discriminator (2026-08-19) is simpler than either scene-reading gate this test
-/// used to pin: `plan_footswitch_jobs`'s assign gate decides bake-vs-assign purely off whether
-/// the switch ALREADY carries a `param` fn for the selected (node, param) — none of this
-/// fixture's four switches do, so all four bake regardless of what any scene overlay does.
-/// Mirroring is still VALUE-based (`scenes_restating_base`): this fixture's device-authored
-/// overlays carry the full param set for every node in every scene, so a bare "does the key
-/// appear" check would mirror into every scene including the ones that authored their own
+/// The discriminator does not read scenes: `plan_footswitch_jobs`'s assign gate decides
+/// bake-vs-assign purely off whether the switch ALREADY carries a `param` fn for the selected
+/// (node, param) — none of this fixture's four switches do, so all four bake regardless of what any
+/// scene overlay does. Mirroring is still VALUE-based (`scenes_restating_base`): this fixture's
+/// device-authored overlays carry the full param set for every node in every scene, so a bare "does
+/// the key appear" check would mirror into every scene including the ones that authored their own
 /// value. Pure planner test (no device): `plan_footswitch_jobs` is the whole decision.
 #[test]
 fn hiwatt_footswitch_plan_bakes_and_mirrors_only_the_scenes_restating_base() {
@@ -3696,7 +3665,7 @@ fn hiwatt_footswitch_plan_bakes_and_mirrors_only_the_scenes_restating_base() {
             !diverging.is_empty(),
             "{node}.{param}: fixture precondition — at least one scene authored its own value"
         );
-        // The user-reported expectation (issues 3/4): leveling this preset's switches must
+        // The user-reported expectation: leveling this preset's switches must
         // NOT touch `ftsw` at all — no Assign, no added function, no MULTI. A scene that
         // overlays the leveled param can never make a bake unsafe (the overlay MASKS base,
         // HW slot 31), so the plan BAKES, mirroring the solved value only into the scenes
@@ -3724,13 +3693,11 @@ fn hiwatt_footswitch_plan_bakes_and_mirrors_only_the_scenes_restating_base() {
 
 /// GATE: a footswitch capture renders at the level the RUN intends, not at whatever a scene
 /// recall's level-apply serves. Every capture's `recall_base` re-runs the device's own
-/// level-apply, which reverts an unsaved working-copy `presetLevel` to the SAVED one
-/// (`leveller::recall_reassert_save`'s doc has the HW evidence) — so a capture re-asserts the
-/// run's own level itself rather than trusting what the recall left in place. (History: on fw
-/// 1.8.45 the recall served a pre-save level for 45-100 s after a save, and a whole batch
-/// measured 5.53 dB quiet — HW 2026-08-19, "Plumes+BD2+OCD".) The sim models the fw 1.8.58
-/// shape: a base → base recall restores the base snapshot's level, set by the last real load
-/// (here the reload of the saved 0.51).
+/// level-apply, which reverts an unsaved working-copy `presetLevel` to the base snapshot's
+/// level, set by the last real load (`leveller::recall_reassert_save`'s doc) — so a capture
+/// re-asserts the run's own level itself rather than trusting what the recall left in place.
+/// The sim models the fw 1.8.58 shape: a base → base recall restores the base snapshot's level, set
+/// by the last real load (here the reload of the saved 0.51).
 #[test]
 fn a_capture_renders_at_the_run_level_not_the_recall_reverted_one() {
     let _serial = serial();
@@ -3830,7 +3797,7 @@ fn a_capture_renders_at_the_run_level_not_the_recall_reverted_one() {
     );
 }
 
-/// D3 gate: a scene row given the USER'S OWN handle is solved by the generic param secant
+/// GATE: a scene row given the USER'S OWN handle is solved by the generic param secant
 /// (`solve_param_secant`) instead of the amp joint-k, and still lands on target through the
 /// Scene-Edit-aware write path. The handle here is the Hiwatt's `outputLevel` in scene 0 —
 /// the one control the offline capture model responds to — so the assertion is about the
@@ -3921,9 +3888,9 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
     );
     // The seam actually ran: joint-k is ONE write (its solve is closed-form), the param
     // secant needs at least one written capture plus the final apply. Its first seed is the
-    // prologue's as-is reading at the authored value (#196 — the knob sits at its stored
-    // effective value in the same scene, nothing isolated, no trade), so it pays one capture
-    // fewer than it did before the seed reuse.
+    // prologue's as-is reading at the authored value (the knob sits at its stored
+    // effective value in the same scene, nothing isolated, no trade), which saves one
+    // capture.
     assert!(
         o.writes >= 2,
         "a searched solve writes once per capture plus the final apply: {o:?}"
@@ -4125,16 +4092,16 @@ fn a_silent_mergeable_scene_rebalances_to_the_no_signal_routing_clamp() {
     );
 }
 
-// ───────────────── P5 external validation: identity + flags on the emitted rows ─────────
+// ───────────────── External validation: identity + flags on the emitted rows ─────────────
 //
-// The bug class this closes: the first design zipped a scene batch's RESULT vec against
-// its REQUEST array by position to label each row. `level_scenes_apply_batched` FILTERS
-// failed scenes out of that vec (`commands/level_scenes.rs`), so a mid-batch failure
-// either shifted every later label onto the wrong scene or — with a length guard — dropped
-// the ENTIRE batch's expectations silently, which the shell consumer reads as "nothing was
-// leveled" and reports as a pass. Both are false greens.
+// The bug class: labelling a scene batch's rows by zipping its RESULT vec against its
+// REQUEST array by position. `level_scenes_apply_batched` FILTERS failed scenes out of that
+// vec (`commands/level_scenes.rs`), so a mid-batch failure either shifts every later label
+// onto the wrong scene or — with a length guard — drops the ENTIRE batch's expectations
+// silently, which the shell consumer reads as "nothing was leveled" and reports as a pass.
+// Both are false greens.
 //
-// So this gate asserts the two halves of the fix against the offline physics:
+// So this gate asserts two halves against the offline physics:
 //   (a) a batch WITH a mid-batch failure returns FEWER rows than it was sent, and every
 //       surviving row NAMES ITS OWN scene (`scene_slot`) — no position is involved;
 //   (b) the re-measure seam emits one validation row per sound, carrying that identity plus
@@ -4317,14 +4284,8 @@ fn a_mid_batch_failure_keeps_every_surviving_scenes_identity_and_emits_its_row()
 // `outputLevel` independently of base, so the compensating fader drop misses it, and the
 // authored C table puts it 14 LU below base, far under any shipped target.
 //
-// WHY 404 SCENE 3 AND NOT 400 SCENE 2 (the obvious "Ceiling" candidate). Historical: when the
-// batch ran the LIVE prepass, the fake served ONE (base) graph for every scene recall, so every
-// scene's knob read as BASE's value — which is what `classify_scene_knobs` takes as the row's
-// `current`, hence what `scene_ceiling_lufs` extrapolates from. On 400 that read scene 2's knob
-// as 0.35 when the preset authors it at 1.0, inventing 9 dB of headroom the sound does not
-// have, and nothing ever clamped. Since #176 the docs come from the saved overlay (and the
-// fake's recall push renders the scene's overlay too), so that distortion is gone; 404's
-// scene 3 stays the fixture because it authors the SAME `outputLevel` as base (0.69), so the
+// WHY 404 SCENE 3 AND NOT 400 SCENE 2 (the obvious "Ceiling" candidate): 404's scene 3 is
+// the fixture because it authors the SAME `outputLevel` as base (0.69), so the
 // plan and the capture model agree about that row either way and its clamp is real.
 
 /// Reset the SCENE LANE'S CANCEL FLAG when the test ends, INCLUDING on a panicking assert.
@@ -4409,7 +4370,7 @@ type CapturedChannel = std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>;
 
 /// `batched_scene_app`'s sibling for a test that needs the whole PROGRESS-ITEM SEQUENCE, not
 /// just the command's return value — e.g. "no item ever named slot 8" or "some `done` item
-/// carried the trade" (F5). The mock runtime's own eval-based `Channel` only remembers the
+/// carried the trade". The mock runtime's own eval-based `Channel` only remembers the
 /// LAST script it evaluated (`MockWebviewDispatcher::last_evaluated_script`), so a sequence
 /// assertion needs a `channel_interceptor` instead: it fires on every message a
 /// `tauri::ipc::Channel` sends, in order, before the (here, inert) mock eval — exactly the
@@ -4450,7 +4411,7 @@ fn scene_row(rows: &[serde_json::Value], scene: Option<u64>) -> Option<&serde_js
     })
 }
 
-/// GATE (offline profiling, 2026-10-10): a scene save whose write landed on the SHARED base
+/// GATE (offline profiling): a scene save whose write landed on the SHARED base
 /// value is graded where it landed. 402's scene 3 "Solo" un-bypasses `ACD_Boost` through a
 /// bypass-only overlay (Scene Edit off), so the landing policy writes `gain` to BASE
 /// (`WriteDirect { lands_on_base: true }`); graded against scene 3's overlay, which never
@@ -4503,7 +4464,7 @@ fn a_shared_base_scene_save_is_not_reported_lost() {
     );
 }
 
-/// ⟦F1⟧ THE TRADE, LANDED AND PERSISTED, through the real batched command. At the shipped −21
+/// THE TRADE, LANDED AND PERSISTED, through the real batched command. At the shipped −21
 /// default 404's scene 3 is 11 LU short with its own knob already at the top, and it BENEFITS
 /// (a Full overlay pins that knob independently of base) — the one shape that justifies
 /// churning the base pair, so the run raises base `presetLevel` and solves the base amp fader
@@ -4733,23 +4694,23 @@ impl crate::hid::HidTransport for CancelAtSceneWrite {
     }
 }
 
-/// ⟦F2⟧ CANCEL AFTER A LANDED TRADE RETURNS ITS OUTCOMES AND DISCLOSES THE TRADE — it does not
+/// CANCEL AFTER A LANDED TRADE RETURNS ITS OUTCOMES AND DISCLOSES THE TRADE — it does not
 /// come back as a bare cancel error, whose results the command maps to an EMPTY vec.
-/// That historical shape is the silent-wrong-numbers outcome this codebase refuses: the save
+/// A bare cancel is the silent-wrong-numbers outcome this codebase refuses: the save
 /// on the stopped path has already persisted the raised `presetLevel` + the base fader holding
 /// base on target, every scene already solved was solved AT that raised level, and handing
 /// back nothing would leave the preset carrying a gain-structure change the UI never mentioned
-/// and cannot offer to restore (danger.md — see ⟦F1⟧'s doc).
+/// and cannot offer to restore (danger.md — see
+/// `a_batched_scene_run_persists_both_halves_of_a_landed_headroom_trade`'s doc).
 ///
-/// JOB ORDER IS LOAD-BEARING, and so is which row triggers — and A1/A4 (`base-LAST` sort,
-/// "base's isolated prepass capture must run LAST in PHASE 1") changed what that order IS:
-/// `scene_jobs` is sorted so BASE always runs LAST, whatever position it held on the wire, and
-/// PHASE 3 shares that same order. So base is now the batch's own reliable "never runs" job —
-/// the trigger must fire on the SECOND job instead of the first, or the stop lands before even
-/// ONE row completes. Slot 404's scene 1 ("Rhythm") is, like scene 3, a Full-overlay
-/// beneficiary of this same trade (its own authored `outputLevel` also clamps and gets raised —
-/// see `TRADE_SCENE`'s doc for the fixture's physics), so it is the trigger: scene 3 (still
-/// first among the wire's non-base jobs) completes untouched, scene 1's own write stops the
+/// JOB ORDER IS LOAD-BEARING, and so is which row triggers: `scene_jobs` is sorted so BASE
+/// always runs LAST (base's isolated prepass capture must run LAST in PHASE 1), whatever
+/// position it held on the wire, and PHASE 3 shares that same order. So base is the batch's own
+/// reliable "never runs" job — the trigger must fire on the SECOND job instead of the first, or the
+/// stop lands before even ONE row completes. Slot 404's scene 1 ("Rhythm") is, like scene 3, a
+/// Full-overlay beneficiary of this same trade (its own authored `outputLevel` also clamps and gets
+/// raised — see `TRADE_SCENE`'s doc for the fixture's physics), so it is the trigger: scene 3
+/// (still first among the wire's non-base jobs) completes untouched, scene 1's own write stops the
 /// run, and base — sorted last — never starts. It has to land at a LOOP TOP with at least one
 /// row already attempted: land it earlier and the runner takes its pre-solve exit, which
 /// reloads the preset and discards the untraded-for pair, exactly as the back-out does.
@@ -4798,7 +4759,7 @@ fn a_cancel_after_a_landed_trade_returns_its_outcomes_with_the_trade_disclosed()
         rows.len(),
         2,
         "the two non-base scenes that finished come back; the stop landed on BASE's loop top \
-         (base sorts last post-A1/A4) — the historical shape returned an EMPTY vec here: \
+         (base sorts last) — a bare cancel would return an EMPTY vec here: \
          {rows:?}"
     );
     assert!(
@@ -4855,11 +4816,11 @@ fn parallel_403_candidates() -> serde_json::Value {
     ])
 }
 
-/// BUG→GATE (2026-10-16): a STOP WITHOUT A TRADE RETURNS WHAT IT LEVELED,
-/// WITH THE SAVE'S VERDICT. The stopped path has always fired the batch's one save, but it
-/// came back as a bare cancel (an empty vec) and only LOGGED a failed save, so "the save
-/// didn't hold" could never reach the Summary after a Stop. Now the save is re-read on that
-/// path too and the scenes it covered come back carrying `persist_mismatch`.
+/// A STOP WITHOUT A TRADE RETURNS WHAT IT LEVELED,
+/// WITH THE SAVE'S VERDICT. The stopped path fires the batch's one save; it must not come back
+/// as a bare cancel (an empty vec) that only LOGS a failed save, or "the save didn't hold" can
+/// never reach the Summary after a Stop. The save is re-read on that path too and the scenes it
+/// covered come back carrying `persist_mismatch`.
 ///
 /// Slot 403 (no base anchor, so no trade): the Stop fires on scene 0's own write and lands at
 /// scene 1's loop top, so scene 0 finishes and nothing after it starts.
@@ -5008,21 +4969,21 @@ fn a_leveling_command_rejects_with_a_typed_kind() {
     );
 }
 
-// ───────────── A1/A9: the "base anchor" — the trade fires on a WIZARD-SHAPED run ─────────
+// ───────────── The "base anchor" — the trade fires on a WIZARD-SHAPED run ─────────
 //
 // The wizard never sends a wire job for base itself (that lane is `level_preset`'s, run
-// separately) — so `plan_trade_for_batch`'s gate #2 ("a base row in `scene_jobs`") would
+// separately) — so `plan_trade_for_batch`'s gate 2 ("a base row in `scene_jobs`") would
 // otherwise never see one on a real wizard run, and the trade above would stay reachable
-// only from a hand-built `base_requested` batch no UI path produces. `base_anchor` (A1) is
-// the fix: it keeps a base job alive through PHASE 1/2 with no wire target of its own, then
+// only from a hand-built `base_requested` batch no UI path produces. `base_anchor`
+// keeps a base job alive through PHASE 1/2 with no wire target of its own, then
 // strips it before PHASE 3. This section proves the anchor reaches the SAME trade the
-// `base_requested` shape does, and that its isolation (A3/A4 — "base means base") never
+// `base_requested` shape does, and that its isolation ("base means base") never
 // leaks into the saved preset.
 
-/// ⟦A9(i)⟧ THE ANCHOR REACHES THE SAME TRADE A `base_requested` BATCH DOES — same fixture
+/// THE ANCHOR REACHES THE SAME TRADE A `base_requested` BATCH DOES — same fixture
 /// (404/scene 3), same raise, but the wizard's OWN shape: ONE wire job (the clamped scene)
 /// plus a bare `baseAnchor`, no slot-8 job at all. If the anchor's target didn't get the
-/// same offset a real wire job's does (A1's doc), or if PHASE 3 failed to strip the
+/// same offset a real wire job's does (`base_anchor`'s doc), or if PHASE 3 failed to strip the
 /// anchor-only base job, this would either trade against the wrong number or double-solve
 /// base on top of `level_preset`'s own apply — both regressions this pins.
 #[test]
@@ -5117,7 +5078,7 @@ fn a_wizard_shaped_run_trades_headroom_when_base_arrives_as_an_anchor() {
     );
 
     // NO progress item ever named slot 8 — the anchor-only base has no frontend row to
-    // route one to (A1's suppression at both the prepass `started` and the PHASE-3
+    // route one to (the anchor's suppression at both the prepass `started` and the PHASE-3
     // `on_scene` send sites — moot for the latter since the job is stripped before PHASE 3,
     // but the prepass DOES run a base capture and must stay silent about it).
     let items = captured.lock().unwrap();
@@ -5132,7 +5093,7 @@ fn a_wizard_shaped_run_trades_headroom_when_base_arrives_as_an_anchor() {
             .any(|it| it["sceneSlot"].as_u64() == Some(u64::from(session::BASE_SCENE_SLOT))),
         "an anchor-only base must stream NO progress item at all: {items:?}"
     );
-    // F5: at least one `done` item discloses the trade over the channel, not just the
+    // At least one `done` item discloses the trade over the channel, not just the
     // command's awaited return — the wizard's row-by-row UI reads the channel, not the
     // return value.
     assert!(
@@ -5143,11 +5104,11 @@ fn a_wizard_shaped_run_trades_headroom_when_base_arrives_as_an_anchor() {
     );
 }
 
-/// ⟦A9(ii)⟧ THE ANCHOR'S BASE CAPTURE IS ISOLATED, AND THE ISOLATION NEVER PERSISTS. Slot 400
+/// THE ANCHOR'S BASE CAPTURE IS ISOLATED, AND THE ISOLATION NEVER PERSISTS. Slot 400
 /// ("E2E Rig") saves its "DRIVE" footswitch's own `ACD_TubeScreamer` bypass=false — exactly
 /// the shape `base_leveling_forces_every_footswitch_owned_block_off_not_the_preset_as_saved`
 /// pins for `level_preset`'s own base lane ("base means base": preset 28's TubeScreamer was
-/// saved ON too). A1/A3/A4 give the BATCH command the identical isolation whenever base is in
+/// saved ON too). The BATCH command gets the identical isolation whenever base is in
 /// plan, anchor or not — this is the anchor half of that gate.
 ///
 /// LUFS can't prove it: the offline capture model's C table carries no bypass term (same
@@ -5223,7 +5184,7 @@ fn a_base_anchor_measures_the_isolated_base_and_never_persists_the_isolation() {
     );
 }
 
-/// ⟦F3⟧ A FOOTSWITCH ROW'S SCENE CONTEXT IS A MEASUREMENT ORDER, not a label. `measure_fs_state`
+/// A FOOTSWITCH ROW'S SCENE CONTEXT IS A MEASUREMENT ORDER, not a label. `measure_fs_state`
 /// recalls the context FIRST, then writes the switch's engaged state and the pinned handle,
 /// and only then engages: re-amp latches preset state AT ENGAGE (`danger.md`), so a recall or
 /// a write that goes out after it is simply not in the capture. `scene_context: None` recalls
@@ -5340,7 +5301,7 @@ fn an_fs_scene_context_recalls_its_scene_before_the_engage_and_base_without_one(
     );
 }
 
-/// #193: only the exact value `1` is online; `0`, empty and `true` must stay offline.
+/// Only the exact value `1` is online; `0`, empty and `true` must stay offline.
 #[test]
 fn online_from_is_strict() {
     assert!(crate::e2e_server::online_from(Some("1")));
@@ -5681,7 +5642,7 @@ fn sim_state_counts_unanswered_kinds_and_lists_the_ones_outside_the_census() {
     assert!(new.contains(&"5.5"), "{state}");
 }
 
-/// The #279 gate itself: a test that makes the fake answer an unmodelled kind without
+/// The unmodelled-request gate itself: a test that makes the fake answer an unmodelled kind without
 /// opting in fails when its `serial()` guard drops.
 #[test]
 #[should_panic(expected = "does not model")]
@@ -5754,7 +5715,7 @@ fn events_and_channel_sends_reach_the_ui_ring() {
 /// The run-end re-amp OFF is read back, and an OFF that never reads back OFF reaches the
 /// run result as `reamp_still_on` (the typed signal the Summary reads) beside the
 /// `reamp_warning` text (log and bug report). Gate for the stranded re-amp mute:
-/// `reamp_off_guaranteed` used to send its OFF and log "sent" with no read.
+/// `reamp_off_guaranteed` must not send its OFF and log "sent" with no read.
 #[test]
 fn a_base_run_whose_final_off_never_lands_carries_the_reamp_warning() {
     let _serial = serial();

@@ -18,7 +18,7 @@
 # OFFLINE is a near-passthrough to `playwright test` (Playwright starts/stops its own
 # SimDevice e2e_server + vite). ONLINE is fully managed: it pre-flights the device via a
 # handshake-verified server start, runs each heavy spec in its own invocation (the device is
-# exclusive-seize and the level spec is two ~3-min tests), and ALWAYS recovers the unit on
+# exclusive-seize and each heavy spec runs for minutes), and ALWAYS recovers the unit on
 # exit — reamp-off + stray sweep + recall 001 (+ a guarded scratch-zone clear with
 # TMP_E2E_CLEAR_SCENARIO=1) — even on Ctrl-C or a failed/killed run (a killed level run
 # otherwise strands the unit re-amp-engaged / input-muted).
@@ -26,7 +26,8 @@
 # STAMPING: any passing ONLINE run merges the specs it ran into this tree's online stamp
 # (`scripts/gates.sh --record-online`), so a failed spec re-runs alone. It stamps only when
 # every spec passed, the tree key held, the mode is not soak, level.online (if it ran) was
-# externally validated, and the unit presents its stock USB interfaces
+# externally validated, the server's own trace shows a session on the real device
+# (`evidence_server_touched_device`), and the unit presents its stock USB interfaces
 # (`lane_stamp_verdict` in scripts/lib/e2e-lane.sh).
 #
 # Both modes first kill any stale e2e_server across this worktree's whole port stride (filtered
@@ -56,10 +57,10 @@ cd "$REPO"
 # from the worktree path so each tree gets its own port pair; override with TMP_E2E_PORT /
 # TMP_E2E_VITE_PORT. Exported so the Playwright configs, vite, and the Rust e2e_server all read
 # the same values (they default to 7600/1421 when unset, preserving a bare `bun x playwright`).
-# ponytail: cksum%200 — a collision between two of the handful of real worktrees merely shares
-# ports (today's status quo); widen the modulus only if that ever bites.
+# Known limit: cksum%200 — a collision between two worktrees merely shares ports; widen the
+# modulus only if that ever bites.
 #
-# OFFLINE now claims a RANGE, not one port: each Playwright worker gets its own e2e_server on
+# OFFLINE claims a RANGE, not one port: each Playwright worker gets its own e2e_server on
 # PORT+i. So the per-worktree offset is STRIDED — with a stride of 1 a neighbouring worktree's
 # base would land inside this one's range and the two runs would kill each other's servers.
 #
@@ -69,16 +70,9 @@ cd "$REPO"
 # worktree's range is stable, and the stale-kill below always covers all of it.
 # Vite stays one port per worktree (a single shared asset server).
 #
-# OFFLINE's PORT_BASE is 7800, ABOVE the 7600-7799 window the previous single-port scheme
-# could occupy (7600 + cksum%200). Two concurrent offline runs must never interfere, and during
-# the window where some worktrees still run the OLD script that is only true if the two schemes
-# cannot overlap at all: a strided range based at 7600 would have put THIS worktree at
-# 7704-7711, squarely inside the legacy band, so a run here could kill a sibling's live server
-# and vice versa. Disjoint bands make that structurally impossible rather than merely unlikely.
-#
-# ONLINE (and soak) get their OWN bands — bridge 9400 + offset*8 (9400-10999), Vite 1621 +
-# offset (1621-1820) — disjoint from offline's 7800-9399 / 1421-1620 and from the legacy
-# 7600-7799. So the two lanes can run side by side in ONE worktree: each
+# Bands (bridge / Vite): offline 7800-9399 / 1421-1620; online and soak 9400-10999 /
+# 1621-1820; remote 12000+ / 1821+ (scripts/e2e-remote.sh). Disjoint, so the two lanes can
+# run side by side in ONE worktree: each
 # lane's stale-server sweep covers only its own band, and each lane starts and owns its own
 # Vite, so an offline run that finishes first cannot take the online run's Vite down with it.
 # The mode is pre-scanned here because the full argument parse comes later.
@@ -124,13 +118,13 @@ SERVER_LOG="$LOG_DIR/e2e_server.log"
 SEED_LOG="$LOG_DIR/seed.log"
 RUN_DIR=""
 STAMPED=0
-# ── P5 external validation (ONLINE only) ──────────────────────────────────────────
-# GATE SEMANTICS, stated identically here and in `.claude/rules/e2e.md`:
+# ── External validation (ONLINE only) ──────────────────────────────────────────
+# GATE SEMANTICS (canonical here; `.claude/rules/e2e.md` points to this header):
 #   ffmpeg ABSENT   ⇒ advisory. A loud, VISIBLE skip line in this lane summary. Never a
 #                     silent pass, but never red either — ffmpeg is not a build or CI
 #                     dependency of this app.
 #   ffmpeg PRESENT
-#     + rows emitted ⇒ a REAL GATE. A target miss flips `fail` red (CLAUDE.md: never
+#     + rows emitted ⇒ a REAL GATE. A target miss flips `fail` red (AGENTS.md: never
 #                      characterize or expected-fail a product bug to keep CI green).
 #     + no rows      ⇒ nothing was leveled+re-measured this run; logged and passed over.
 #
@@ -149,8 +143,8 @@ VALIDATE_WAV_DIR="$LOG_DIR/level-validate-wavs"
 VALIDATE_MAX_ROWS="${TMP_E2E_VALIDATE_MAX_ROWS:-40}"
 # Exact row count for the strict lane, READ FROM THE SPEC so there is one source of truth and
 # nothing to keep in step by hand. Compared by EQUALITY: short means a re-measure died before
-# its capture (it emits no row, and the judge grades only what it is handed — how a truncated
-# log used to sail through as "fewer rows, all green"); long means an unbudgeted sound.
+# its capture (it emits no row, and the judge grades only what it is handed); long means an
+# unbudgeted sound.
 VALIDATE_SPEC_FILE="$REPO/e2e/specs/level.online.spec.ts"
 VALIDATE_STRICT_ROWS="$(grep -c '^// STRICT_VALIDATE_ROWS=' "$VALIDATE_SPEC_FILE" 2>/dev/null || echo 0)"
 if [ "$VALIDATE_STRICT_ROWS" != "1" ]; then
@@ -195,7 +189,7 @@ mkdir -p "$LOG_DIR"
 # ── parse args: a mode token (online|offline) + zero or more spec names (copy|level|songs|all) ──
 MODE="offline"
 SPECS=()
-# Set ONLY by the default/`all` spec-set arm below. It no longer gates stamping (any passing
+# Set ONLY by the default/`all` spec-set arm below. It does not gate stamping (any passing
 # run stamps the specs it ran); it is recorded as `set=full|partial` on the stamp's #run line.
 FULL_SET=0
 for a in "$@"; do
@@ -301,8 +295,8 @@ PROBE_BIN="src-tauri/target/debug/probe"
 #
 # `lsof -ti tcp:N` is indiscriminate twice over: it lists any process with N on EITHER
 # endpoint (so an outbound connection to a remote :N counts), and it cannot tell our server
-# from someone else's. That was tolerable when the script killed ONE port; now it sweeps a
-# whole stride, across a band that can reach ports other tools use. Filtering by process name
+# from someone else's, and the sweep covers a whole stride, across a band that can reach
+# ports other tools use. Filtering by process name
 # keeps the sweep from ever reaching another worktree's run — or an unrelated dev server.
 kill_port() {
   for pid in $(lsof -ti "tcp:$1" 2>/dev/null || true); do
@@ -360,19 +354,17 @@ recover_device() {
   log "recovering device — reamp-off + stray sweep + recall 001"
   post '{"cmd":"e2e_reamp_off","args":{}}'
   # The scenario fixtures stay RESIDENT in the scratch slots between runs (the run-start
-  # pristine-checking seed self-repairs anything a run leveled; clearing here only forced
-  # the next run to re-import all 5 — ~2 min of device churn per run). Set
+  # pristine-checking seed self-repairs anything a run leveled; clearing here would only
+  # force the next run to re-import every scenario preset — ~2 min of device churn). Set
   # TMP_E2E_CLEAR_SCENARIO=1 for the on-demand net-zero clean.
   if [ "${TMP_E2E_CLEAR_SCENARIO:-}" = "1" ]; then
     # `e2e_clear_preset` is NAME-GUARDED and fail-closed (danger.md: a destructive op keyed
     # on a slot mapping must be confirmed against the slot's own contents). A stale name
     # therefore does not clobber anything — it just makes the clear a silent no-op, which
-    # is worse than loud: the "net-zero" run leaves the fixtures resident. That is exactly
-    # what happened here (this list still said `E2E Reference`/`Target 1`/`Target 2`/
-    # `Realistic` after the P4-A rename, and never mentioned 405 at all).
+    # is worse than loud: the "net-zero" run leaves the fixtures resident.
     #
     # SINGLE SOURCE: derive both the slot and the name from the fixture file itself, so a
-    # rename or a seventh fixture can never leave this list behind again. The parse is a
+    # rename or a new fixture can never leave this list behind. The parse is a
     # line-oriented grep over the two adjacent keys `scenario-presets.json` actually emits
     # (`"listIndex": N,` then `"name": "…",`) — jq is not a dependency of this repo.
     scenario_pairs="$(awk '
@@ -457,7 +449,7 @@ wait_server_ready() {
 #    rest of its range is harmless (nothing of its own is listening there). ──
 kill_port_range
 ensure_dist
-# The build is its own phase (#198): cold or incremental compile time, never part of a
+# The build is its own phase: cold or incremental compile time, never part of a
 # spec's or a test's timing. Logged here and handed to the offline budget report.
 build_start=$(date +%s)
 prebuild
@@ -489,7 +481,7 @@ if [ "$MODE" = offline ]; then
   run_start=$(date +%s)
   bun x playwright test --config "$OFFLINE_CFG" "$@" || rc=$?
   RUN_SECS=$(( $(date +%s) - run_start ))
-  # The phase split (#198) rides the same advisory report and is persisted beside the JSON
+  # The phase split rides the same advisory report and is persisted beside the JSON
   # report: build vs the Playwright run's wall time vs the summed test time (hardware waits
   # are collapsed offline — `device_gate::settle_ms` — so the run is warm runtime only).
   bun "$REPO/scripts/e2e-budgets.mjs" "$TMP_E2E_TIMINGS_JSON" "$REPO/scripts/e2e-budgets.tsv" \
@@ -514,7 +506,7 @@ else
   fi
 fi
 
-# ── this run's evidence folder (notes/e2e-test-plan.md, "Recording") ─────────────
+# ── this run's evidence folder (notes/e2e-recording.md) ──────────────────────────
 # Created before the first seed. The root lives in the git common dir by default, outside
 # the hashed tree, so writing evidence never changes the tree key this run stamps.
 if ! EVIDENCE_ROOT="$(evidence_root "$REPO")"; then
@@ -558,48 +550,34 @@ if ! device_lock_acquire "$REPO"; then
 fi
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
-# ONLINE e2e consolidation (8 files/~60-75 min → 4 files, ~25 min today): doctor.online absorbs
-# doctor.spec.ts's online half + doctor-oracle.online.spec.ts (both deleted/retired);
-# level.online absorbs level.spec.ts's online half + level-strict.spec.ts (deleted) +
-# level-rerun.spec.ts's online half (retired; level-rerun.spec.ts is now DELETED entirely
-# — its offline half merged into level.spec.ts, offline suite consolidation).
-# doctor-apply.online left this set for good with the Doctor write path itself: Doctor
-# never writes to the unit (the owner's decision), so there is no save or discard to read
-# back.
+# Doctor never writes to the unit, so there is no Doctor save to read back.
 #
-# ORDER: doctor.online BEFORE level.online (the ordering guard below still enforces this
-# for the leveling-equalizes-loudness reason it always has), then songs, then the two
-# STRUCTURAL MUTATOR copy LAST — a structural save (copy_apply) is the one thing that
-# clears the server's SCENARIO_VERIFIED flag
+# ORDER: doctor.online BEFORE level.online (enforced by the ordering guard below), then
+# songs, then copy LAST (the one structural mutator) — a structural save (copy_apply) is the
+# one thing that clears the server's SCENARIO_VERIFIED flag
 # (`note_structural_save`, e2e_server.rs), so putting it last means nothing AFTER it in
 # this run pays a mid-run re-verify/re-import; the cost lands once, on the NEXT run's very
 # first (pristine-checking) seed instead.
 #
-# KNOWN TRADE-OFF (flag, don't silently drop): copy no longer runs BEFORE doctor in the
-# default order, reversing the sequence notes/user-journeys.md's bug→gate registry (the
-# 2026-08-01 entry) used as its online end-to-end confirmation that doctor's
-# `SCENARIO_VERIFIED` re-verify still catches a live copy mutation WITHIN one server
-# process. That specific real-hardware sequence now needs a manual
-# `scripts/e2e.sh online copy doctor.online`; the underlying fix stays gated by that
-# entry's two Rust-level tests either way. See that registry row for the full context.
+# KNOWN TRADE-OFF: copy runs AFTER doctor, so the hardware check that doctor's
+# `SCENARIO_VERIFIED` re-verify catches a live copy mutation within one server process
+# needs a manual `scripts/e2e.sh online copy doctor.online` (the fix itself is gated by
+# Rust tests).
 case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(doctor.online level.online songs copy); FULL_SET=1 ;; esac
 
-# RETIRED-FROM-ONLINE GUARD: these spec basenames either still exist as files whose online
-# tier now `test.skip`s every test (level, doctor), or have been deleted outright
-# (level-rerun — offline suite consolidation, its offline test merged into level.spec.ts).
-# `online level` / `online doctor` / `online level-rerun` used to print PASSED having
-# exercised nothing (or, for level-rerun, would now fail to even find the file). Fail fast
-# with the real target instead of a silent no-op green or a confusing "no such file".
+# NOT-ONLINE GUARD: `level` and `doctor` are offline-only (use *.online), and `level-rerun`
+# does not exist (use level.online). Fail fast with the real target instead of a silent
+# no-op green or a confusing "no such file".
 for s in "${SPECS[@]:-}"; do
   case "$s" in
     level)
-      err "spec 'level' has no online tests — renamed/absorbed into level.online (ONLINE e2e consolidation). Use: scripts/e2e.sh online level.online"
+      err "spec 'level' has no online tests — the online leveling spec is level.online. Use: scripts/e2e.sh online level.online"
       exit 2 ;;
     doctor)
-      err "spec 'doctor' has no online tests — renamed/absorbed into doctor.online (ONLINE e2e consolidation). Use: scripts/e2e.sh online doctor.online"
+      err "spec 'doctor' has no online tests — the online Doctor spec is doctor.online. Use: scripts/e2e.sh online doctor.online"
       exit 2 ;;
     level-rerun)
-      err "spec 'level-rerun' no longer exists — its online tests were absorbed into level.online's idempotency test, and its offline test was merged into level.spec.ts (offline suite consolidation). Use: scripts/e2e.sh online level.online"
+      err "spec 'level-rerun' does not exist — re-run idempotency is level.online's idempotency test online and level.spec.ts offline. Use: scripts/e2e.sh online level.online"
       exit 2 ;;
   esac
 done
@@ -607,11 +585,8 @@ done
 # ORDERING GUARD (enforced, not just documented): doctor.online must run BEFORE any
 # leveling spec — every level* spec writes (the wizard always saves post-disclaimer), and
 # leveling equalizes the relative scene loudness the doctor's consistency check keys on,
-# so the reverse order silently weakens the doctor oracle. `level*` matches both the
-# dash-named legacy specs and the new `level.online` (dot, not dash). `doctor`/
-# `doctor.online` are the only order-sensitive doctor specs — the retired
-# doctor-oracle.online worked presets the level* specs never save to, and the run-start
-# seed self-repairs, so it needed no guard.
+# so the reverse order silently weakens the doctor oracle. `level*` matches every leveling
+# spec.
 seen_leveling=0
 for s in "${SPECS[@]:-}"; do
   case "$s" in level*) seen_leveling=1 ;; esac
@@ -639,7 +614,7 @@ seed_scenario() { # $1 = "pre" (no server yet — skip the snapshot patch) | "mi
   [ "$1" = pre ] || bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
 }
 
-# Only a short pause between attempts: fw 1.8.58 has no HID open lockout.
+# Only a short pause between attempts: there is no HID open lockout.
 seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed attempts
   local attempt
   for attempt in 1 2 3 4; do
@@ -655,7 +630,7 @@ seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed atte
 
 # Seed (pre-server) → start the handshake-verified e2e_server → patch in the seeded presets.
 # Shared by the ordered online spec loop below AND `soak` — this seed-race + fail-loud
-# mark-seeded sequence must not drift between the two callers. No rests: fw 1.8.58 has no HID
+# mark-seeded sequence must not drift between the two callers. No rests: there is no HID
 # open lockout.
 # Sets SERVER_PID; exits 1 (recoverable via the trap) on a seed/handshake failure.
 start_online_server() {
@@ -702,13 +677,7 @@ start_online_server() {
 #    stochastic device-state class) — reuses the exact seed-first / handshake-verified /
 #    always-recover machinery above; it just loops the ONE spec N times instead of the
 #    ordered spec set below, with a per-run pass/fail/wall-time ledger + an end tally.
-#    WAS level-rerun.spec.ts (now deleted entirely): that file's online describe block
-#    (the idempotency probes soak exists to stress) is retired — its content is now
-#    level.online.spec.ts's own idempotency test, run right after that file's strict-arc
-#    test in the same `describe.serial` block, with no standalone smaller spec left to
-#    target. Point soak there instead; there is no narrower substitute. HONEST TRADE: each
-#    soak iteration now runs the WHOLE file (the strict arc plus the idempotency test,
-#    not just level-rerun's two idempotency probes alone) — pick a smaller N accordingly.
+#    Each iteration runs all of level.online — pick N accordingly.
 if [ "$MODE" = soak ]; then
   N="${SPECS[0]:-}"
   case "$N" in
@@ -724,8 +693,8 @@ if [ "$MODE" = soak ]; then
   run=1
   while [ "$run" -le "$N" ]; do
     if [ "$run" -gt 1 ]; then
-      # Each run's own afterAll clears the scenario slots — reseed before every
-      # run after the first (mirrors the online spec-loop's inter-spec reseed).
+      # Reseed after the first run so the pristine-checking seed repairs what the
+      # last run leveled.
       if ! seed_with_retry mid; then
         printf 'soak run %d/%s: FAIL (seed)  wall=0s\n' "$run" "$N"
         fail_seed=$((fail_seed + 1))
@@ -756,11 +725,11 @@ if [ "$MODE" = soak ]; then
   exit $(( fail_total > 0 ))
 fi
 
-# ── Scene Change Behavior pre-flight (gap 2) ────────────────────────────────────
+# ── Scene Change Behavior pre-flight ────────────────────────────────────
 # `level.online` drives the DEFERRED-WRITE leveling lanes (`level_scenes_apply_batched`,
 # `level_footswitches_apply`), and `scene_discard_guard` refuses those outright when the
 # device's global Scene Change Behavior reads DISCARD CHANGES. Unchecked, that refusal
-# lands ~13 min into the run — after doctor.online has already spent its 8 — and takes
+# lands ~13 min into the run — after doctor.online's ~8 minutes — and takes
 # level.online's other three tests down with it (`describe.serial`). Seconds here instead.
 #
 # The snapshot must be REFRESHED, not merely read. It is written by a backup scan, so a
@@ -773,7 +742,7 @@ fi
 # contract with this function.
 #
 # Advisory on its own failure: a backup read that doesn't land leaves the real in-run
-# guard as the backstop, which is exactly today's behaviour. Only a positively-read
+# guard as the backstop. Only a positively-read
 # DISCARD stops the run.
 scene_change_preflight() {
   log "pre-flight: refreshing the device settings snapshot (Scene Change Behavior)…"
@@ -825,26 +794,26 @@ fail=0
 # leaves a leveled sound unchecked, not confirmed correct).
 validated=0
 for s in "${SPECS[@]}"; do
-  # ONE pristine-checking seed per run serves every spec: teardowns no longer clear the
+  # ONE pristine-checking seed per run serves every spec: teardowns do not clear the
   # scenario (fixtures stay RESIDENT; TMP_E2E_CLEAR_SCENARIO=1 for net-zero). A spec that
-  # persists a STRUCTURAL edit over a fixture slot (copy, doctor-save) clears the server's
+  # persists a STRUCTURAL edit over a fixture slot (copy) clears the server's
   # SCENARIO_VERIFIED flag on success, so the NEXT spec's ensureScenario re-verifies the
   # device and re-imports only what drifted — it does not trust a fixture that's since been
   # mutilated. Value-only drift (leveling saves) is NOT in that set and is still handled by
   # ORDERING: doctor.online must run BEFORE level.online — leveling equalizes the relative
-  # scene loudness the doctor's consistency check keys on. No rest between specs: fw 1.8.58
-  # has no HID open lockout.
+  # scene loudness the doctor's consistency check keys on. No rest between specs: there is
+  # no HID open lockout.
   log "running specs/$s.spec.ts (online)"
   # No outer timeout: Playwright's own 300 s/test governs, except the two heaviest online
   # specs (doctor.online.spec.ts, level.online.spec.ts) which override to multi-minute
-  # ceilings via their own test.setTimeout — so a hung spec fails forward in up to ~40
+  # ceilings via their own test.setTimeout — so a hung spec fails forward in up to ~45
   # min, not 5. A short wrapper here would kill any of them mid-run.
   #
   # ALL-SKIP GUARD: `tee` a per-spec log — `set -o pipefail` (top of this script) means
   # the `if` still sees PLAYWRIGHT's own exit code, not tee's — and require at least one
   # actually-PASSED test in the summary. A spec whose every test online-skips (some
-  # runtime condition) exits 0 having exercised nothing; that used to log PASSED and
-  # could certify a stamp for a run that proved nothing about the spec it named.
+  # runtime condition) exits 0 having exercised nothing; without this guard it would log
+  # PASSED and could certify a stamp for a run that proved nothing about the spec it named.
   spec_log="$RUN_DIR/online-spec-$s.log"
   read -r waits_settle_start waits_capture_start <<< "$(wait_totals)"
   spec_start=$(date +%s)
@@ -861,7 +830,7 @@ for s in "${SPECS[@]}"; do
     err "specs/$s.spec.ts FAILED"; fail=1
   fi
   # Per-spec wall time, so per-diff spec selection's saving is measured, not guessed — and
-  # its HARDWARE WAITS beside it (#198): the settles the server applied and the wall time it
+  # its HARDWARE WAITS beside it: the settles the server applied and the wall time it
   # spent inside re-amp captures during this spec (`GET /timing`, read around the spec). What
   # is left of the wall time is runtime: UI, IPC and device round trips.
   spec_secs=$(( $(date +%s) - spec_start ))
@@ -882,8 +851,8 @@ done
 # auto-reopen (session/link.rs), so a load-induced lapse is a named event, not a mystery red.
 # Counted from THIS run's server log (truncated at server start) and recorded on the stamp's
 # #run line as `headroom=<events>/<reopens>`. INFORMATIONAL, never a failure: an unloaded
-# level.online run on the reference unit logged 224 events, 141 of them auto-reopens
-# (2026-10-11) — idle gaps the reopen already covers by design — so "no gap above 500 ms"
+# level.online run on the reference unit logged 224 events, 141 of them auto-reopens —
+# idle gaps the reopen already covers by design — so "no gap above 500 ms"
 # cannot be a pass criterion. Each line carries `at=<unix ms>`, so a loaded run
 # (offline gates alongside) can be compared window by window with a quiet one.
 headroom_events="$(grep -c 'hid-headroom:' "$SERVER_LOG" 2>/dev/null || true)"
@@ -897,7 +866,7 @@ fi
 
 if [ "$fail" -eq 0 ]; then
   log "all online specs passed"
-  # ── P5 external validation ────────────────────────────────────────────────────
+  # ── external validation ────────────────────────────────────────────────────
   # No re-capture here: the WAVs and expectation rows were already written BY THE
   # SERVER, at the moment each sound was strict-re-measured (see the TMP_E2E_VALIDATE_*
   # block at the top of this file for the gate semantics and for why re-driving `probe`
@@ -910,9 +879,8 @@ if [ "$fail" -eq 0 ]; then
     log "#  ffmpeg to turn this lane into a real gate.               #"
     log "############################################################"
   else
-    # ROW COUNT and IDENTITY — the false-greens this branch used to be. "No rows emitted"
-    # was passed over unconditionally, and a capped feed or an all-skipped judge could
-    # still read as validated. Both checks apply only when level.online ran (see
+    # ROW COUNT and IDENTITY: "no rows emitted", a capped feed or an all-skipped judge must
+    # never read as validated. Both checks apply only when level.online ran (see
     # VALIDATE_STRICT_ROWS/LABELS at the top of this file), so `scripts/e2e.sh online
     # songs` keeps its legitimate skip. The decision is `lane_external_validation`
     # (scripts/lib/e2e-lane.sh), proven offline by scripts/e2e-lane.spec.sh: `validated`
@@ -968,7 +936,7 @@ done
 KEY_END="$(bash "$REPO/scripts/gates.sh" --key)"
 # Device-session proof: the server this run talked to must have opened the real device.
 # Its own trace says which backend each open used, so a stale offline server answering on
-# the port (CLAUDE.md's fake-online trap) is a checked fact, not a log line to remember.
+# the port (AGENTS.md's fake-online trap) is a checked fact, not a log line to remember.
 on_device=0
 if evidence_server_touched_device "$RUN_DIR/trace"; then
   on_device=1

@@ -1,5 +1,5 @@
-// #302: setlist songs reorder with clicks alone (⋯ Move up / Move down), and
-// #304: the no-device page's "Connection help" (DeviceState, shared by Level, Doctor,
+// Setlist songs reorder with clicks alone (⋯ Move up / Move down), and
+// the no-device page's "Connection help" (DeviceState, shared by Level, Doctor,
 // Copy and Songs) opens real help instead of being a dead button.
 
 import { describe, it, expect, vi } from "vitest";

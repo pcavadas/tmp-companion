@@ -14,9 +14,9 @@ import type { GraphNode } from "../../lib/types";
  *  keep in lockstep with the Rust table if it ever changes. */
 export const BAND_CENTER_HZ: Partial<Record<string, number>> = {
   // Sub (bass-vi only, ~42 Hz) is deliberately EXCLUDED: its own log-nearest
-  // EQ-10 band is `gain31hz` (verified — NOT gain62hz, despite Lows' nearby
-  // ~85 Hz center landing there), and gain31hz is HW-unverified/no-op-prone
-  // (doctor.rs ~:1686-1691's EQ10_BANDS comment). So Sub is skipped entirely
+  // EQ-10 band is `gain31hz` (NOT gain62hz, despite Lows' nearby ~85 Hz center
+  // landing there) — a valid control id (firmware data, fw 1.8.58), but not
+  // HW-verified to move the sound. So Sub is skipped entirely
   // (eqMovesFor already no-ops on a band with no known center) rather than
   // mapped to a band we can't confirm actually moves — a deliberate
   // divergence from the Rust EQ10_BANDS mirror.
@@ -99,7 +99,7 @@ function median(xs: number[]): number {
  *  body-band delta. `balanceDb` is each band's dB minus the mean of ALL
  *  bands, Air (and Bass VI's Sub) included, and Air differs by tens of dB
  *  between a cab'd and an open sound: 30 dB more Air on the reference shifted
- *  every other band's delta by −5 dB, a cut nobody asked for (#254). The
+ *  every other band's delta by −5 dB, a cut nobody asked for. The
  *  per-sound means cancel to one constant offset across bands, and the body
  *  median removes it without letting Air or Sub move it — the same centring
  *  `doctor.rs`'s `centered_deviations` uses for the verdicts. A pure

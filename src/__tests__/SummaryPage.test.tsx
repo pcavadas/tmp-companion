@@ -2,8 +2,7 @@
 // sections, one plain sentence per sound with no loudness numbers, at most one badge, one
 // Notice, "Try again (N)" before "Done", and the footswitch scene choice. What each row
 // says is pinned in `summaryModel.test.ts`; this suite pins what reaches the screen and
-// what the buttons do. It replaces the Summary* suites of the old wizard (unconverged vs
-// clamped, true peak, wet floor, base boost, re-amp warning), ported to look B.
+// what the buttons do, unconverged vs clamped and the re-amp warning included.
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, within } from "@testing-library/react";
@@ -46,7 +45,7 @@ describe("Summary page", () => {
     expect(onDone).toHaveBeenCalledOnce();
   });
 
-  // The two miss states differ in the next action (was SummaryUnconverged.test.tsx): an
+  // The two miss states differ in the next action: an
   // off-target sound still had knob room, so Try again covers it; a sound already at full
   // volume says what to change and gets no button (running it again can't help).
   it("off target is tried again; full volume says what to change, with no button", async () => {
@@ -68,7 +67,7 @@ describe("Summary page", () => {
         "Already at full volume, so it can't reach Lead. Choose a quieter target for it.",
       ),
     ).toBeInTheDocument();
-    // No per-row buttons of the old wizard.
+    // No per-row buttons.
     for (const old of [
       /Run again/,
       /Level lower/,
@@ -121,7 +120,6 @@ describe("Summary page", () => {
     expect(screen.getByRole("button", { name: "Try again (1)" })).toBeEnabled();
   });
 
-  // Was SummaryTruePeak.test.tsx / SummaryWetFloor.test.tsx.
   it("loud peaks and check by ear: one badge per row and its sentence", () => {
     renderSummary([
       base({ truePeakDbtp: -0.4 }),
@@ -143,7 +141,7 @@ describe("Summary page", () => {
     expect(screen.queryByText("by ear")).toBeNull();
   });
 
-  // Was SummaryBaseBoost.test.tsx: words only, no knob values.
+  // Words only, no knob values.
   it("a main sound whose preset level ran out says the amp's output went up, without numbers", () => {
     const { view } = renderSummary([
       base({
@@ -173,7 +171,7 @@ describe("Summary page", () => {
     ).not.toBeNull();
   });
 
-  // Was SummaryReampWarning.test.tsx: keyed on the typed flag, the flow's latest reading.
+  // Keyed on the typed flag, the flow's latest reading.
   it("re-amp may still be on: one Notice that says to restart the unit", () => {
     renderSummary(
       [

@@ -2,8 +2,8 @@
 //!
 //! THE TRADE. When a sound cannot reach its loudness target at the top of its own handle,
 //! the run can buy it headroom by raising the preset's base `presetLevel` — a pure linear
-//! post-chain amplitude control (`captured_LUFS = 20·log10(presetLevel) + C`, HW-verified
-//! fw 1.8.45 to ±0.002 dB THROUGH an active post-amp compressor) — and paying for it by
+//! post-chain amplitude control (`captured_LUFS = 20·log10(presetLevel) + C`, to ±0.002 dB
+//! THROUGH an active post-amp compressor, HW) — and paying for it by
 //! lowering the BASE amp's `outputLevel` so the base sound itself stays exactly where the
 //! user asked for it.
 //!
@@ -20,8 +20,8 @@
 //! pair for no gain.
 //!
 //! WHAT THIS MODULE DELIBERATELY DOES NOT DO: compute the compensating fader value. Amp
-//! `outputLevel` response through a real chain is NOT algebraically predictable (HW,
-//! fw 1.8.45: a 0.5 fader through a soft-knee compressor measured −4.98 dB where the naive
+//! `outputLevel` response through a real chain is NOT algebraically predictable (HW: a 0.5
+//! fader through a soft-knee compressor measured −4.98 dB where the naive
 //! taper says −6.02), so the base hold must be SOLVED with the existing bounded secant. The
 //! naive `20·log10` arithmetic here is used for ONE thing only — a conservative PRE-FILTER
 //! that keeps the planner from asking for a raise no fader could plausibly absorb. When the
@@ -31,7 +31,8 @@
 //! Everything in this module is pure. The device-facing half lives in `leveller::trade`.
 
 /// The lowest base amp `outputLevel` the trade may solve down to. `outputLevel = 0` is DEEP
-/// DIGITAL SILENCE on the real TMP (`danger.md`) and `loudest_loudness` errors on a silent
+/// DIGITAL SILENCE on the real TMP (`danger.md`) and `leveller::measure::loudness_verdict`
+/// errors on a silent
 /// capture — a finite LUFS is not recoverable from it — so the floor sits just above, which
 /// still leaves ~40 dB of trade room.
 pub const BASE_FADER_FLOOR: f32 = 0.01;
@@ -255,13 +256,14 @@ fn base_fader_room_db(base_fader: f32) -> f64 {
 /// "scene-writable" shape, not off ceiling-inheritance physics: `Full` already carries its own
 /// pinned `outputLevel`, so the raise lands there whole. `Absent` has no overlay YET, but
 /// `set_knobs`' Scene Edit enable MATERIALIZES one the moment this scene's own row is solved
-/// (PHASE 3) — after that write the scene is exactly as independent of base as a `Full` scene
-/// always was, so it benefits too (the earlier "Absent inherits base, net-zero" answer was
-/// only true of an UNWRITTEN scene, and every benefiting scene in this batch gets written).
+/// — after that write the scene is exactly as independent of base as a `Full` scene, so it
+/// benefits too (only an UNWRITTEN Absent scene inherits base, and every benefiting scene in
+/// this batch gets written).
 /// `BypassOnly` is REFUSED outright by `set_knobs` for a scene-scoped write (its Scene Edit
 /// flag is off, knobs share base) — a raise buys it nothing, since no per-scene write can ever
-/// land. `Unknown` (a truncated field-8 read) stays the conservative NO: a wrong YES churns the
-/// base pair for a sound that may gain nothing and leaves every other sound quieter.
+/// land. `Unknown` (a truncated `presetDataRequest` (field 8) read) stays the conservative NO: a
+/// wrong YES churns the base pair for a sound that may gain nothing and leaves every other sound
+/// quieter.
 pub fn benefits_from_base_raise(overlay: &crate::scene_jobs::SceneOverlay<'_>) -> bool {
     matches!(
         overlay,
@@ -402,8 +404,8 @@ pub fn plan_level_pair(
     let d_ben = benefiting_deficit_db(sounds);
 
     // Both halves of this test matter: `plan_headroom_trade`'s wrapper always calls with
-    // `base_asis_lufs == base_target_lufs`, so G is EXACTLY zero on every legacy call —
-    // gating on G alone would silence every legacy trade the moment a benefiting sound
+    // `base_asis_lufs == base_target_lufs`, so G is EXACTLY zero on every such call —
+    // gating on G alone would silence every wrapper trade the moment a benefiting sound
     // clamped, which the U1 equivalence gate forbids.
     if g.abs() <= TRADE_CLAMP_EPS_LU && d_ben <= TRADE_CLAMP_EPS_LU {
         return no_move();
@@ -416,8 +418,8 @@ pub fn plan_level_pair(
     let dp = ask.clamp(dp_lo, dp_hi);
     let df = g - dp;
     let capped = if ask > dp_hi {
-        // Same tie-break as the legacy formula: the SMALLER room is what actually bound the
-        // raise. At G == 0 this is bit-for-bit the old `pl_room <= fader_room` comparison.
+        // The SMALLER room is what actually bound the raise. At G == 0 this is bit-for-bit
+        // the `pl_room <= fader_room` comparison.
         Some(if p_up <= g - f_dn {
             TradeCap::PresetLevelMax
         } else {
@@ -451,8 +453,8 @@ pub fn plan_headroom_trade(sounds: &[TradeSound], preset_level: f32, base_fader:
 /// RE-PLAN after a first attempt's base hold pinned at [`BASE_FADER_FLOOR`], at the raise the
 /// hardware turned out to afford. `None` = not worth another attempt.
 ///
-/// WHY THIS EXISTS AND WHY IT IS BOUNDED TO ONE USE. D4 says the trade repeats "until no room
-/// remains", and [`plan_headroom_trade`]'s fader pre-filter is only a naive `20·log10` bound —
+/// WHY THIS EXISTS AND WHY IT IS BOUNDED TO ONE USE. The trade could repeat until no room
+/// remains, but [`plan_headroom_trade`]'s fader pre-filter is only a naive `20·log10` bound —
 /// the real fader response is not algebraically predictable (module header), so the FIRST
 /// measured floor pin is the only honest evidence of where the room actually ended. The
 /// affordable raise is the first ask MINUS the base sound's measured overshoot (presetLevel is
@@ -597,7 +599,7 @@ mod tests {
         assert_eq!(plan.capped, None);
     }
 
-    // ⟦R2⟧ THE CENTRAL RULE. A clamp on a sound the trade cannot help must be reported
+    // THE CENTRAL RULE. A clamp on a sound the trade cannot help must be reported
     // honestly and must NOT move the base pair — the raise buys it nothing while making
     // every other sound's fader drop for free.
     #[test]
@@ -669,7 +671,7 @@ mod tests {
         assert_eq!(plan.capped, Some(TradeCap::BaseFaderFloor));
     }
 
-    // ⟦4c⟧ THE ONE BOUNDED RE-PLAN (see fn doc above for the arithmetic and why it lives here).
+    // THE ONE BOUNDED RE-PLAN (`replan_after_floor_pin`'s doc has the arithmetic and why).
     #[test]
     fn a_replan_after_a_floor_pin_asks_for_the_measured_affordable_raise() {
         let plan = replan_after_floor_pin(6.0, 3.5).expect("3.5 LU of room is worth a retry");
@@ -693,7 +695,7 @@ mod tests {
         );
     }
 
-    // ⟦4b⟧ THE SHARED FOLD (see min_audible_above's doc for why the quietest lane binds).
+    // THE SHARED FOLD (see `min_audible_above`'s doc for why the quietest lane binds).
     #[test]
     fn the_audible_fold_takes_the_quietest_lane_and_ignores_the_parked_ones() {
         assert_eq!(
@@ -794,7 +796,7 @@ mod tests {
         assert!(seen.iter().all(|m| !m.is_empty()));
     }
 
-    // ⟦6⟧ THE TRADE ON THE WIRE. `danger.md`: a save cannot be undone from the app, so a
+    // THE TRADE ON THE WIRE. `danger.md`: a save cannot be undone from the app, so a
     // landed trade must be disclosable — and an ADVISORY must be tellable apart from it
     // without the consumer guessing (an advisory never solved a fader, so it says so).
     #[test]
@@ -897,7 +899,7 @@ mod tests {
         }
     }
 
-    // U2. Plumes+BD2+OCD numbers (2026-08-31 investigation): presetLevel alone (P_up ~11.1
+    // U2. Plumes+BD2+OCD numbers (HW): presetLevel alone (P_up ~11.1
     // dB) cannot cover the ~16.4 LU deficit, so it pins at its ceiling and the base fader
     // absorbs the remaining ~5 dB, UPWARD.
     #[test]
@@ -972,7 +974,7 @@ mod tests {
     // U6. A base deficit inside the acceptance band, with NO benefiting sound clamped either,
     // plans no move at all -- the planner and the runner must agree about "done" (module
     // header on `TRADE_CLAMP_EPS_LU`). NB a benefiting clamp at the same |G| still trades
-    // (that is legacy behaviour, proven by U1) -- this gate deliberately uses a non-benefiting
+    // (the U1 shape) -- this gate deliberately uses a non-benefiting
     // sound so both halves of the no-move gate are exercised.
     #[test]
     fn a_deficit_inside_the_acceptance_band_plans_no_move() {
@@ -1014,10 +1016,10 @@ mod tests {
     }
 
     // U8 -- SKIPPED BY DESIGN. The >=2-amp refusal (danger.md's OPEN distrust of parallel-amp
-    // scene-0 leveling) is enforced at the Phase-2 call site that decides WHICH amp
-    // candidates ever reach this planner -- `plan_level_pair` is pure arithmetic over whatever
-    // `sounds`/levels it is handed and has no way to see "how many amps" produced them. See
-    // the `leveller` Base-arm derivation for that guard.
+    // scene-0 leveling) is enforced at the call site that decides WHICH amp candidates ever
+    // reach this planner (`commands::level_preset::base_boost_candidate`, which keeps exactly
+    // one amp-`outputLevel` knob) -- `plan_level_pair` is pure arithmetic over whatever
+    // `sounds`/levels it is handed and has no way to see "how many amps" produced them.
 
     // U9. `LevelPairPlan::preset_level` must be EXACTLY what `raised_preset_level` computes
     // from the SAME `dp_db` -- two call sites (the plan and the eventual write) must never be

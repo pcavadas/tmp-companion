@@ -1,10 +1,9 @@
-//! Bulk-operation command plumbing (foundation): the IPC-facing [`OpSpec`], the
-//! [`build_operation`] factory that turns it into a concrete [`crate::bulkrun::Operation`],
-//! the LIVE/OFFLINE [`IoPath`] routing, and the in-memory [`RunRegistry`] that lets
-//! `bulk_revert` find a prior run's report.
+//! Bulk-operation plumbing: the serde-facing [`OpSpec`], the [`build_operation`]
+//! factory that turns it into a concrete [`crate::bulkrun::Operation`], and the
+//! LIVE/OFFLINE [`IoPath`] routing.
 //!
-//! The thin `#[tauri::command]` wrappers (`bulk_dry_run`/`bulk_apply`/`bulk_revert`)
-//! live in `lib.rs` with `AppState` + `with_released_seize`; this module is the pure,
+//! Callers: `commands::library::io_for_path` and the probe's `--bulk-dryrun` /
+//! `--bulk-apply` arms (`probe_api::slot_write`); this module is the pure,
 //! unit-tested core they call.
 
 use serde::Deserialize;
@@ -94,9 +93,8 @@ impl OpSpec {
     }
 }
 
-/// Build the concrete engine [`Operation`] from a spec. Infallible today (every
-/// variant maps directly to an existing op), but returns `Result` so future
-/// validation (e.g. unknown model id) has a home.
+/// Build the concrete engine [`Operation`] from a spec. Infallible (every variant
+/// maps directly to an existing op); `Result` leaves room for validation.
 pub fn build_operation(spec: &OpSpec) -> Result<Box<dyn Operation>, String> {
     Ok(match spec {
         OpSpec::ParamEdit {
@@ -138,8 +136,6 @@ pub fn build_operation(spec: &OpSpec) -> Result<Box<dyn Operation>, String> {
         }),
     })
 }
-
-// ─── run registry ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

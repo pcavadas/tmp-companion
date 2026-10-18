@@ -30,16 +30,16 @@ pub(crate) struct FootswitchLevelJob {
     /// This row's OWN loudness target. Per-row (not one batch target) so a preset with a
     /// mix of targets levels in ONE batch — one prepass, one runner, one deferred save.
     pub(crate) target_lufs: f64,
-    /// THE SCENE CONTEXT this switch's sound is measured and solved in (D3): a 0-based
-    /// `scenes[]` wire slot, or `None` = the preset's BASE sound (the historical behaviour and
-    /// the serde default, so an existing payload with no `sceneContext` key is unchanged).
+    /// THE SCENE CONTEXT this switch's sound is measured and solved in: a 0-based
+    /// `scenes[]` wire slot, or `None` = the preset's BASE sound (the serde default, so a
+    /// payload with no `sceneContext` key levels base).
     ///
     /// A footswitch does not sound the same in every scene — the scene's overlay decides which
     /// blocks the switch is layered on top of, and (for the headroom trade) whether the sound
     /// is pinned by its own `outputLevel` overlay or inherits base's. The UI picks this with
     /// [`footswitch::scene_contexts_for_switches`]: any scene enabling the switch preselects the
-    /// FIRST such scene (issue 4 — a switch enabled by several scenes no longer falls back to
-    /// base), and only zero enabling scenes falls back to base. A user override to a
+    /// FIRST such scene (a switch enabled by several scenes does not fall back to base), and
+    /// only zero enabling scenes falls back to base. A user override to a
     /// NON-enabling scene is allowed — it is a real sound, just not one the pedalboard reaches
     /// by tapping that switch there — and the picker flags it.
     #[serde(default)]
@@ -119,7 +119,7 @@ pub(crate) fn resolve_footswitch_job(
     // colorA/colorB/customLabel/linkGroup/switchType are SWITCH-level — the manual:
     // "common to all five footswitch assignments" — so both an edited existing
     // function AND a brand-new one read them the same way (an absent field on an
-    // existing function falls back to the historical constants, same as a switch
+    // existing function falls back to the default constants, same as a switch
     // with no sibling to inherit from). isActive is NOT switch-level (it's the
     // per-function ENGAGED state — HW round-trip: engaging an unlinked switch and
     // re-saving flipped it false→true on that one function only) — a firmware-
@@ -152,14 +152,14 @@ pub(crate) fn resolve_footswitch_job(
             // `footswitch::plan_footswitch_jobs` only answers `Assign` when the switch ALREADY
             // carries a param function for this `(node, param)` — the same
             // `existing_param_fn_index` lookup as above — and every other job BAKES. So a
-            // `None` here means the plan and this resolver disagreed, and the old behaviour
-            // (append at `function_index: sw.len()`) would then create a SECOND entry on a row
-            // that already has an on-off: the shape `danger.md` forbids, HW-proven (fw 1.8.45)
-            // to make the firmware silently replace an IMPORTED preset with an EMPTY body under
-            // its own display name. Refusing loses one row; appending can lose the preset.
+            // `None` here means the plan and this resolver disagreed, and an append (at
+            // `function_index: sw.len()`) would create a SECOND entry on a row that already
+            // has an on-off. Leveling never adds a function to a switch (product rule); a
+            // two-entry row is legal on fw 1.8.58 but refused at import as a conservative
+            // choice (danger.md).
             //
             // Keep this as a guard, not an `unreachable!()`: it is the last thing standing
-            // between a future planner change and a silently gutted preset.
+            // between a future planner change and a switch the user never authored.
             return Err(Refusal::new(
                 SkipKind::Other,
                 format!(
@@ -177,11 +177,11 @@ pub(crate) fn resolve_footswitch_job(
 
 /// Every section [`footswitch::scene_contexts_for_switches`] dereferences — `ftsw` sizes the
 /// row list, `scenes` carries the answer (see `the_scene_context_read_requires_every_section_
-/// its_answer_is_derived_from` for the truncation this shape exists to survive).
+/// its_answer_is_derived_from` for the cut-short read this shape exists to survive).
 const SCENE_CONTEXT_SECTIONS: &[&str] = &["ftsw", "scenes"];
 
 /// Which scenes enable each footswitch of `slot`, for the leveling wizard's SCENE-CONTEXT
-/// picker (D3). PURE apart from ONE field-8 read: every answer comes out of the saved document,
+/// picker. PURE apart from ONE field-8 read: every answer comes out of the saved document,
 /// so no scene is recalled on the unit and nothing is measured.
 ///
 /// The frontend preselects [`footswitch::FsSceneContext::suggested`] — the FIRST scene that
@@ -217,7 +217,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
 ) -> Result<leveller::BatchLevelRun<leveller::FootswitchLevelResult>, AppError> {
     // Taken first, so a detach anywhere in the run re-labels a failure as a lost connection.
     let watch = DetachWatch::start();
-    // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
+    // Pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
     // before anything touches the device — see `scene_discard_guard`'s doc
     // (`level_scenes.rs`).
     scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())
@@ -234,7 +234,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
     let app_evt = app.clone();
 
     with_released_seize(state.session.clone(), move || {
-        // Decode the stimulus WAV here, off the async runtime (#271), as
+        // Decode the stimulus WAV here, off the async runtime, as
         // `level_scenes_apply_batched` does; a bad file still fails before any device read.
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
@@ -293,8 +293,9 @@ pub(crate) fn run_footswitch_batch(
         .unwrap_or(serde_json::Value::Null);
 
     // THE LEVEL EVERY CAPTURE OF THIS BATCH MUST RENDER AT: the stored `presetLevel`,
-    // re-asserted after each capture's `recall_base` so a capture never depends on what the
-    // recall's own level-apply serves. `None` (no `audioGraph.presetLevel`) asserts nothing.
+    // re-asserted after each capture's `recall_base` so a capture never depends on what
+    // level the recall leaves (a base recall can re-apply a stale snapshot level, see
+    // `recall_reassert_save`). `None` (no `audioGraph.presetLevel`) asserts nothing.
     let intended_pl = crate::audiograph::preset_level(&preset).map(|v| v as f32);
 
     // Plan bake-vs-assign for the whole batch (pure) — block-off-in-base + sole-owner + no
@@ -409,7 +410,7 @@ pub(crate) fn run_footswitch_batch(
     // working copy clean. No re-measure verify capture: `predicted_lufs` is already a
     // REAL measurement at `final_value` (the sweep's best point), not a model
     // prediction — re-measuring it bought nothing but ~10 s per switch. A CHEAP
-    // param-level persist verify (one field-8 read, §A4) still runs below.
+    // param-level persist verify (one field-8 read) still runs below.
     if save && !pending.is_empty() {
         // A failed write session or save is not a failed RUN: every row it covered is
         // reported as not held (`persist_mismatch`), so the frontend says "the save didn't
@@ -719,8 +720,8 @@ impl FsBatch<'_> {
         }
         let states = footswitch::switch_states(self.ftsw, self.preset, job.switch);
         let probe = leveller::FsCeilingProbe {
-            // THE ROW'S SCENE CONTEXT (D3). `None` = base — the historical default,
-            // the sound the isolation list describes on its own. A `Some(i)` row
+            // THE ROW'S SCENE CONTEXT. `None` = base — the sound the isolation list
+            // describes on its own. A `Some(i)` row
             // recalls scene `i` before engaging, so the ceiling read describes the
             // switch AS IT SOUNDS IN THAT SCENE — the same context its solve below
             // measures in, or the two would describe different sounds.
@@ -803,8 +804,7 @@ impl FsBatch<'_> {
                 ))
             }
             // A row's handle is what the whole solve addresses; an empty coordinate
-            // would sweep node "" and report a number for nothing. (The verify-only row
-            // that used to legitimately carry no handle is gone — every row levels.)
+            // would sweep node "" and report a number for nothing (every row levels).
             _ if job.lev_group_id.is_empty()
                 || job.lev_node_id.is_empty()
                 || job.lev_parameter_id.is_empty() =>
@@ -956,7 +956,7 @@ impl FsBatch<'_> {
         })
     }
 
-    /// PHASE 3: the ONE write session + save for every pending write, then the §A4
+    /// PHASE 3: the ONE write session + save for every pending write, then the
     /// persist verify, stamping `saved`/`persist_mismatch` onto `results` (and onto the
     /// `BakeShared` siblings of a written representative).
     fn persist(
@@ -992,7 +992,7 @@ impl FsBatch<'_> {
                 r.saved = true;
             }
         }
-        // §A4: one field-8 read, stamping `persist_mismatch` per switch — the FS-lane
+        // One field-8 read, stamping `persist_mismatch` per switch — the FS-lane
         // mirror of the scene lane's `verify_persisted_writes`.
         leveller::verify_fs_persisted_writes(
             self.slot,
@@ -1074,16 +1074,15 @@ mod tests {
         assert_eq!(verdicts, [Some(true), Some(true), None, None]);
     }
 
-    // BUG→GATE (2026-09-01, HW preset 28 "Friedman HBE"): the scene-context read required
-    // only `ftsw`, and `scenes` — the section the ANSWER comes from — was left unnamed. That
-    // preset's field-8 read is cut mid-`scenes`, which `ftsw` survives, so the completeness
-    // check passed on a body with no scene overlays at all and every switch silently
-    // reported "no scene enables me" → base context for the whole preset, on a preset whose
-    // complete body was one backup read away. Reverting the const to `["ftsw"]` fails here.
+    // A scene-context read that requires only `ftsw` leaves `scenes` — the section
+    // the ANSWER comes from — unnamed. A field-8 read cut mid-`scenes` keeps `ftsw`, so the
+    // completeness check passes on a body with no scene overlays at all and every switch
+    // silently reports "no scene enables me" → base context for the whole preset, when the
+    // complete body is one backup read away. Reverting the const to `["ftsw"]` fails here.
     //
     // The assertion walks the DOCUMENT, not the const: for every section whose removal
-    // changes the answer, the const must name it. Iterating the const instead would be the
-    // blind spot that let this ship — a reverted `["ftsw"]` would loop over `ftsw` alone,
+    // changes the answer, the const must name it. Iterating the const instead would be a
+    // blind spot — a reverted `["ftsw"]` would loop over `ftsw` alone,
     // find it load-bearing, and pass while `scenes` went unrequired.
     #[test]
     fn the_scene_context_read_requires_every_section_its_answer_is_derived_from() {
@@ -1177,17 +1176,12 @@ mod tests {
         assert!(job.lev_parameter_id.is_empty());
     }
 
-    // The assign gate (2026-08-19 directive) means `resolve_footswitch_job` NEVER creates a
-    // footswitch function any more — it edits an existing `param` fn on the selected
-    // (node, param), or refuses. The whole append path this group used to pin (appending at
-    // `sw.len()`, inheriting a sibling's colour/label/link/switchType, the "MULTI"-avoidance
-    // display-label fallback) is GONE along with the code that did it: appending a second
-    // entry to a row that already carries an on-off is the exact shape `danger.md` forbids —
-    // HW-proven (fw 1.8.45, 2026-08-18) to make the firmware silently replace an IMPORTED
-    // preset with an EMPTY body under its own display name. A refused row costs one row; an
-    // appended one could cost the whole preset. `plan_footswitch_jobs`'s assign gate uses the
-    // SAME `existing_param_fn_index` lookup, so the two can never disagree about which jobs
-    // reach this branch.
+    // The assign gate (product rule) means `resolve_footswitch_job` NEVER creates a
+    // footswitch function — it edits an existing `param` fn on the selected (node, param),
+    // or refuses. Leveling never adds a function to a switch; a two-entry row is legal on
+    // fw 1.8.58 but refused at import as a conservative choice (danger.md).
+    // `plan_footswitch_jobs`'s assign gate uses the SAME `existing_param_fn_index` lookup,
+    // so the two can never disagree about which jobs reach this branch.
     #[test]
     fn resolve_footswitch_job_refuses_rather_than_append_a_new_function() {
         for (label, ftsw) in [

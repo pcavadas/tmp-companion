@@ -1,4 +1,4 @@
-// src/__tests__/InlineEdit.test.tsx — the ONE inline text editor (#314) behind the
+// src/__tests__/InlineEdit.test.tsx — the ONE inline text editor behind the
 // setlist-title rename, the target-name rename and the new-setlist field: Enter
 // commits, blur commits (unless opted out), Escape cancels, the commit is the
 // TRIMMED draft, and a commit/cancel is never followed by a second one.

@@ -111,14 +111,13 @@ pub(super) struct RouteGraph {
     pub(super) stages: Vec<Stage>,
 }
 
-/// The active preset's signal-chain topology, read live from the field-3 partial
-/// (the only reliable live preset read). `template` gives the active routing
+/// The active preset's signal-chain topology, read live from the
+/// `currentPresetDataChanged` (field 3) document. `template` gives the active routing
 /// (one of 12 signal-path templates); `split_mix` carries the available split/mix
 /// controls, including inactive ones. `nodes` are
 /// the blocks per group (`G1..G7` guitar, `M1..M4` mic), in stable group+array
-/// order. `name`/`slot` are `None` when the device-truncated partial doesn't carry
-/// preset `info` (the honest no-fabricate state — the partial truncates at
-/// `"scenes"`, and `info` sits past that, so these are usually `None`).
+/// order. `name`/`slot` are `None` when the document doesn't carry preset `info` (the
+/// honest no-fabricate state, e.g. a read cut short before it).
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct ActiveGraph {
     pub name: Option<String>,
@@ -150,11 +149,10 @@ pub struct ActiveGraph {
 /// control. Deliberately EXCLUDES `gain`/drive (changes tone, not clean level)
 /// and EQ — the scoping decision was "level-type controls only".
 ///
-/// NOT the leveling PICKER's gate any more — that is
-/// [`crate::param_class::classify`], via [`extract_level_candidates`]. This
-/// name-substring rule survives only inside [`extract_level_blocks`], whose
-/// remaining callers all look up ONE known control (the amp's `outputLevel`) or
-/// dump a probe diagnostic, so the two rules can no longer disagree about what
+/// NOT the leveling PICKER's gate — that is [`crate::param_class::classify`], via
+/// [`extract_level_candidates`]. This name-substring rule lives only inside
+/// [`extract_level_blocks`], whose callers all look up ONE known control (the amp's
+/// `outputLevel`) or dump a probe diagnostic, so the two rules cannot disagree about what
 /// the user is OFFERED.
 pub(super) fn is_level_param(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
@@ -216,16 +214,13 @@ pub(crate) fn extract_level_blocks(v: &serde_json::Value) -> Vec<LevelBlock> {
 
 /// The leveling PICKER's block-control list: every control under
 /// `audioGraph.guitarNodes.{G1..G7}[].dspUnitParameters` that
-/// [`crate::param_class::classify`] recognises as a level or wet/mix control, via the shared
-/// [`crate::footswitch::level_candidates_for_node`].
+/// [`crate::param_class::classify`] recognises as a level control (never `Other`, never
+/// `WetMix`), via the shared [`crate::footswitch::level_candidates_for_node`].
 ///
 /// Same walk and same [`LevelBlock`] shape as [`extract_level_blocks`] — only the GATE
-/// differs, and that is the point. The legacy name-substring rule ([`is_level_param`]) and the
-/// classifier disagree in both directions, and the disagreement was user-visible: the preset
-/// lane's picker OFFERED `ACD_TMRumbleV3.level` (an amp knob the run-time gate then refuses)
-/// and HID wet `mix` / `ACD_Boost.gain` (raw dB, HW-verified fw 1.8.45) that the footswitch
-/// and scene-handle pickers both offer. One gate for every picker, so the same control can no
-/// longer be answered two ways.
+/// differs: the name-substring rule ([`is_level_param`]) and the classifier disagree in both
+/// directions. One gate (the classifier) for every picker, so the same control can never be
+/// answered two ways.
 ///
 /// GUITAR graph only, like [`extract_level_blocks`]: re-amp drives the instrument input, so
 /// only the guitar chain reaches the USB-Out the leveler measures.
@@ -269,8 +264,8 @@ pub(crate) fn extract_level_candidates(v: &serde_json::Value) -> Vec<LevelBlock>
 
 /// Doctor's param allowlist (see the [`GraphNode::params`] doc): the reverb wet/dry mix
 /// names, the cab low/high cut, the EQ-10 band gains, and the parametric EQ's per-filter
-/// `filterN{frequency,gaindb,q,type,bypass}` (the narrow-ring notch reuses a free band,
-/// #252). The ONE definition — the base graph and every per-sound override
+/// `filterN{frequency,gaindb,q,type,bypass}` (the narrow-ring notch reuses a free band).
+/// The ONE definition — the base graph and every per-sound override
 /// (`doctor::NodeOverride`) filter through it, so a sound's effective graph can never
 /// carry a param its base graph would have dropped.
 pub(crate) fn doctor_param_kept(k: &str) -> bool {
@@ -309,7 +304,7 @@ pub(crate) fn doctor_params(
 /// node under `audioGraph.{guitarNodes,micNodes}.<group>[]` (model id + bypass),
 /// in stable sorted-group then array order, plus `audioGraph.template` for
 /// routing and `audioGraph.splitMix` for its controls. Tolerant of every missing branch — a
-/// truncated partial that only reached `guitarNodes` still yields its nodes.
+/// cut-short document that only reached `guitarNodes` still yields its nodes.
 pub(crate) fn extract_active_graph(
     v: &serde_json::Value,
     template_hint: Option<&str>,
@@ -585,9 +580,8 @@ pub(super) fn push_split(stages: &mut Vec<Stage>, a: Vec<GraphNode>, b: Vec<Grap
     }
 }
 
-/// gtrSplit/micSplit only read a fixed 3-group subset (G1-G3 / M1-M3) — the
-/// same shape of unverified "which groups does this template read" assumption
-/// that bunched the wrong groups per lane before it was HW-corrected. Warn
+/// gtrSplit/micSplit only read a fixed 3-group subset (G1-G3 / M1-M3) — an
+/// unverified "which groups does this template read" assumption. Warn
 /// (don't fail) if a device payload carries blocks in a group this arm never
 /// reads, so a future firmware/template surprise shows up in the logs instead
 /// of silently vanishing from the rendered strip.

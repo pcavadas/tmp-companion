@@ -3,11 +3,11 @@
 //!
 //! The load-bearing USB-protocol invariants (batchStatus grouping, re-amp latch
 //! rules, the HID seize, slot +1 addressing, the capture window) are written up
-//! in `notes/protocol.md`.
+//! in `notes/device/` (`session.md`, `presets.md`, `reamp-audio.md`).
 //!
 //! Builds on `hid` (transport) + `proto` (wire codec). Replicates the request
 //! sequence that is known-good against a real device. The
-//! handshake REUSES `batchStatus` in the device's exact groups (1; 2×7; 3; 4) —
+//! handshake REUSES `batchStatus` in the device's exact groups (1; 2×7; 3) —
 //! NOT a per-request counter: incrementing per request makes the device go silent
 //! after the preset lists. Setters and heartbeats omit `batchStatus` entirely.
 //!
@@ -90,7 +90,7 @@ const PRESET_LOADED: u32 = 11;
 const CURRENT_PRESET_INFO_CHANGED: u32 = 22;
 const NODE_REPLACED: u32 = 40; // PresetMessage.nodeReplaced (device confirms a structural replace)
 const NODE_REMOVED: u32 = 36; // PresetMessage.nodeRemoved (device confirms a structural remove)
-const NODE_INSERTED: u32 = 33; // PresetMessage.nodeInserted (device confirms a structural insert) — SPEC field; the add-block inbound capture caught no reply, so this is unverified on HW (corroborate with a content read-back on the first run)
+const NODE_INSERTED: u32 = 33; // PresetMessage.nodeInserted (insert confirm, to every host; field 3 = the new node, minted id)
 const NODE_JSON_RESPONSE: u32 = 120; // PresetMessage.nodeJsonResponse (a node's current JSON)
 const PRESET_ERROR: u32 = 53; // PresetMessage.presetError (device REJECTS an edit — never save after this)
 const PRESET_LEVEL_CHANGED: u32 = 77;

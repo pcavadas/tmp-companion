@@ -26,33 +26,30 @@ import {
 } from "../fixtures/scenario";
 
 // First-session DEFAULTS + the physics-outcome gates (the real user's complaint set), driven
-// through the REAL UI so the Summary's words are asserted verbatim. Outcomes come from
-// the offline physics-faithful capture model (sim_device.rs) + e2e/fixtures/scenario-loudness.json
+// through the REAL UI so the Summary's words are asserted verbatim. Outcomes come from the
+// offline physics-faithful capture model (sim_device.rs) + e2e/fixtures/scenario-loudness.json
 // (the hand-authored C table), so these are OFFLINE-ONLY: online the real device's ceilings are
-// whatever the seeded presets actually give, not the authored sidecar values. Online still
-// exercises the seed + net-zero teardown via scenario_spec / SCENARIO. Fixture "slot" numbers
-// are 0-based LIST INDICES (the unit shows userSlot = index + 1: 403 → 404).
+// whatever the seeded presets actually give, not the authored sidecar values. Fixture "slot"
+// numbers are 0-based LIST INDICES (the unit shows userSlot = index + 1: 403 → 404).
 //
-// P4-B fixture rebuild: EVERY scenario preset now carries footswitches and/or scenes (none is
-// "plain" Base-only any more — see e2e/fixtures/COVERAGE.md). Base C ceilings: 400 (E2E Rig)
+// EVERY scenario preset carries footswitches and/or scenes (none is "plain" Base-only — see
+// e2e/fixtures/COVERAGE.md). Base C ceilings: 400 (E2E Rig)
 // -15, 401 (E2E Pedalboard) -20, 402 (E2E Edge) -13, 403 (E2E Parallel) -20. -23/-21 both solve
 // on every preset. The tests below select ONLY the Base row (never the whole preset) for the
 // clamp/boost cases: sweeping in a preset's footswitches too risks changing the Summary's
 // outcome for reasons unrelated to the base outcome under test.
 //
-// P4 (the Plumes/BD2/OCD leveling-regression fix, `headroom_trade::plan_level_pair`) SPLIT
-// what "the loud shipped default" (Lead, -19) does at a preset's ~-20 ceiling, by whether a
-// SECOND control exists to close the gap: 401 has exactly one active, non-maxed amp candidate
-// (`ACD_MarshallPlexi`, `outputLevel` authored 0.6) with headroom above 0.6, so it now BOOSTS
-// past its old clamp and reaches Lead — see test (a) for the exact math. 403 has TWO active
-// amps (`gtrParallel1`, both already at `outputLevel` 1.0), which the boost candidate
-// derivation refuses outright (Phase 1's own refusal list: "≥2 amp knobs (parallel —
-// danger.md OPEN distrust)"; a maxed fader would also have zero room even if it were
-// considered) — so 403 still clamps at Lead exactly as before, matching
-// `e2e_server_tests.rs`'s `level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch`
-// ("Base at Lead (-19) on 403 -> CLAMP at its ceiling (-20)"). Test (b), the clamp loop, runs
-// on 403 for exactly this reason — 401 no longer has a LOUD-enough named target to
-// demonstrate a clamp with.
+// `headroom_trade::plan_level_pair` decides what "the loud shipped default" (Lead, -19) does
+// at a preset's ~-20 ceiling, by whether a SECOND control exists to close the gap: 401 has
+// exactly one active, non-maxed amp candidate (`ACD_MarshallPlexi`, `outputLevel` authored
+// 0.6) with headroom above 0.6, so it BOOSTS past its presetLevel ceiling and reaches Lead —
+// see test (a) for the exact math. 403 has TWO active amps (`gtrParallel1`, both already at
+// `outputLevel` 1.0), which the boost candidate derivation refuses outright (≥2 amp knobs:
+// parallel, danger.md OPEN distrust; a maxed fader would also have zero room) — so 403
+// clamps at Lead, matching `e2e_server_tests.rs`'s
+// `level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch` ("Base at Lead
+// (-19) on 403 -> CLAMP at its ceiling (-20)"). Test (b), the clamp loop, runs on 403 for
+// this reason — 401 has no LOUD-enough named target to demonstrate a clamp with.
 //
 // Per-SCENE/per-FOOTSWITCH outcomes are asserted at the command level (e2e_server_tests.rs
 // `level_defaults_403_scenes_solve_and_offbranch` + `..._base_clamps_and_footswitch_is_offbranch`);
@@ -60,15 +57,10 @@ import {
 // and Channels reach the page"), but this file reads none of them. The UI here asserts only
 // the BASE-leveling outcomes (level_preset returns directly, no Channel): the base-boost
 // reaching a loud default (a), the clamp loop — clamped at Lead, then leveled at Crunch
-// (b) — and a mid-run off-branch capture fault (c). The 403 Lead clamp is also pinned at
-// the command layer (`level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch`).
+// (b) — and a mid-run off-branch capture fault (c).
 //
 // The tests are independent (each starts from the fixture's `/sim/reset`, each worker owns
-// its own e2e_server), so the file runs them in parallel: as one serial file it was the
-// offline lane's wall-clock floor.
-
-// openLevel / selectBaseOnly / pickBaseTarget now live in ../fixtures/scenario.ts (shared
-// with level-setup.spec.ts and level.spec.ts).
+// its own e2e_server), so the file runs them in parallel.
 
 /** The run page's Stop, confirmed in its "Stop leveling?" dialog (the page behind the
  *  dialog is inert while it is open, so the confirm is the dialog's own button). */
@@ -91,16 +83,15 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await page.close();
   });
 
-  // COVERAGE row 2 — base solve that USED to CLAMP, now BOOSTS.
-  // (a) 401's Base at the LOUD shipped default (Lead, -19) used to clamp at its ~-20 ceiling
-  // (PR2 re-baseline math lives in scenario-loudness.json's "401" entry) — pure `presetLevel`
-  // maxing out short of target, nothing else to give. Post-P4, `headroom_trade::
+  // COVERAGE row 2 — a base solve past the presetLevel ceiling BOOSTS.
+  // (a) 401's Base at the LOUD shipped default (Lead, -19) is past its ~-20 presetLevel
+  // ceiling (math in scenario-loudness.json's "401" entry); `headroom_trade::
   // plan_level_pair` finds a SECOND control: `ACD_MarshallPlexi`'s own `outputLevel`, stored
   // 0.6 (COVERAGE.md's cab-rule table), well below its 1.0 ceiling. The math (`g = target -
   // base_asis_lufs`, `p_up`/`f_up` = presetLevel/fader headroom in dB — see
   // `headroom_trade.rs`'s own doc comments):
   //   - presetLevel raises from its authored 0.32 to its ceiling 1.0: raise_db = p_up =
-  //     20·log10(1/0.32) ≈ 9.90 dB — this alone reaches exactly C = -20 (today's old ceiling).
+  //     20·log10(1/0.32) ≈ 9.90 dB — this alone reaches exactly C = -20.
   //   - `g > p_up` (BOOST's own trigger) reduces algebraically to `target > C`: -19 > -20, so
   //     BOOST fires. The remaining gap the fader must close is exactly `target - C` = -19 -
   //     (-20) = +1.00 dB — well inside the amp's own `f_up` = 20·log10(1/0.6) ≈ 4.44 dB of
@@ -150,13 +141,12 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expectReampBalanced(page, reampBase);
   });
 
-  // COVERAGE row 2 — the base solve that still CLAMPS (403 at Lead).
-  // (b) The clamp loop (BUG→GATE, the 2026-07 "clamp loop unresolvable" report; journey
-  // "clamped at a loud target → resolves at a quieter one"). 403's Base at Lead (-19)
+  // COVERAGE row 2 — the base solve that CLAMPS (403 at Lead).
+  // (b) The clamp loop (journey "clamped at a loud target → resolves at a quieter one").
+  // 403's Base at Lead (-19)
   // clamps at its -20 ceiling: the Summary says so and what to change, with no button and
   // no Try again (running it again can't help). The way to a quieter target is Done,
-  // the list and Set up — and at Crunch (-21) it levels. Look B removed the Summary's
-  // "Re-level clamped…" that used to reopen Set up.
+  // the list and Set up — and at Crunch (-21) it levels.
   test("clamp loop: clamped at Lead says so with no button, then levels at Crunch", async ({
     page,
   }) => {
@@ -201,7 +191,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
   });
 
   // (c) Mid-run failure + no-signal message + the PEDAL-FIASCO gate (the complainant's
-  // "items failing / it changed everything" class; was pedal-fiasco.spec.ts): /sim/fault
+  // "items failing / it changed everything" class): /sim/fault
   // silences 402's first capture → 402's Base goes OFF-BRANCH (no signal) with its routing
   // message and writes NOTHING (a silent capture must never be saved over with a near-zero
   // level), while its sibling 401 still levels and saves. Exactly the three rows the
@@ -333,9 +323,9 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expectReampBalanced(page, reampBase);
   });
 
-  // #283: a tab switch used to unmount the run with it, leaving the loop writing to the
-  // unit with no reachable Stop. The run lives in a module store now, so leaving the Level
-  // tab and coming back shows the same run, and its Stop still ends it.
+  // A tab switch must not unmount the run, leaving the loop writing to the unit with
+  // no reachable Stop. The run lives in a module store, so leaving the Level tab and coming
+  // back shows the same run, and its Stop still ends it.
   //
   // Harness note: the remounted view's reloads queue on the e2e server behind the run, and
   // Chromium's six-connections-per-host pool fills with them, so the Stop's cancel invoke

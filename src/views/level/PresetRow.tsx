@@ -233,7 +233,7 @@ export const PresetRow = memo(function PresetRow({
             />
           ))}
           {fswArr.map((f, i) => {
-            // BUG 1: a footswitch with no level-class parameter (e.g. "PHASER" →
+            // A footswitch with no level-class parameter (e.g. "PHASER" →
             // ACD_PhaserP90) still gets a row — disabled, with a reason — never
             // silently omitted. `footswitchLevelable` is the SAME predicate
             // `childKeys` uses to exclude it from the selectable/counted set, so the

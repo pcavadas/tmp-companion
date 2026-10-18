@@ -1,9 +1,8 @@
 // src/__tests__/param-class-table.test.ts — the TS half of the param-class contract.
 //
 // `param_class.rs`'s table loader says, in the message it panics with, that "it's the Rust
-// and TS test suites that catch" a malformed `src/models/param-class.json`. That was only
-// half true: nothing on this side read the file at all, so the Rust panic message was
-// promising a check that did not exist. This file is that check.
+// and TS test suites that catch" a malformed `src/models/param-class.json`. This file is
+// the TS half of that check.
 //
 // It is deliberately NOT a second classifier. The frontend has no local mirror of the
 // classifier and must not grow one (`lib/types.ts`'s `ParamClass` doc: `class` arrives on

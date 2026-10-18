@@ -1,4 +1,4 @@
-// src/__tests__/footswitch-no-level-control.test.ts — BUG→GATE: a footswitch with
+// src/__tests__/footswitch-no-level-control.test.ts — a footswitch with
 // NO level-class parameter (e.g. "Friedman HBE" FS2 "PHASER" → `ACD_PhaserP90`, which
 // carries zero level_params) must never be silently dropped, and `childKeys` (the
 // selection-count source) must agree EXACTLY with the row builder (`chosenFrom`) on

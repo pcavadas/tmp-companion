@@ -41,7 +41,7 @@ pub(crate) struct SceneLevelProgressItem {
     /// WHY an `error` row was not leveled ([`SkipKind`]) — what the frontend picks the row's
     /// message by; `message` keeps the text for the log. `None` on every other status.
     skip_kind: Option<SkipKind>,
-    /// B6 (issue 6b): a batch-wide caption ("Saving preset…" / "Verifying…") for the
+    /// A batch-wide caption ("Saving preset…" / "Verifying…") for the
     /// deferred-save/persist-verify phases, which have no single scene to report progress
     /// against. Rides on its OWN item — see [`tail_progress_item`] — never alongside a real
     /// per-scene `result`/`message`, so `message` (the active row's own caption) never has to
@@ -109,7 +109,7 @@ fn anchor_reading(
         .then_some(leveller::ScenePrepass { asis, spread })
 }
 
-/// A1, PURE: derive `(anchor_only_base, base_in_plan)` from the wire inputs — the whole anchor
+/// PURE: derive `(anchor_only_base, base_in_plan)` from the wire inputs — the whole anchor
 /// decision, exercised without any device/session in the loop.
 ///
 /// `anchor_only_base` — the anchor is the ONLY reason base is in this batch (no wire job named
@@ -152,7 +152,7 @@ mod base_anchor_plan_tests {
         }
     }
 
-    // #3 (leveling speed): base's PHASE 1 reading comes from the base row only when that
+    // Base's PHASE 1 reading comes from the base row only when that
     // reading was taken at the level this batch reads as saved.
     #[test]
     fn a_base_reading_is_reused_only_at_the_saved_level() {
@@ -191,7 +191,7 @@ mod base_anchor_plan_tests {
         assert_eq!(base_anchor_plan(false, None), (false, false));
     }
 
-    // A9/F3: anchor validation failure (a non-finite target) degrades to NO trade — exactly
+    // Anchor validation failure (a non-finite target) degrades to NO trade — exactly
     // `base_requested`'s own plan — never a failed run. `plan_trade_for_batch` then simply
     // finds no base row in the batch (gate #2 in its own doc) and answers `TradeDecision::None`.
     #[test]
@@ -208,7 +208,7 @@ mod base_anchor_plan_tests {
     }
 }
 
-/// A5/F2 (TRADE-PATH GAP): the restore list for a BASE-REQUESTED job's own isolation — the base
+/// The restore list for a BASE-REQUESTED job's own isolation — the base
 /// job survives PHASE 3 whenever it arrived as a real wire job (not stripped as anchor-only),
 /// and its own solve there routes through `apply_levels(defer: true)`, which re-asserts
 /// `force_bypass` on every capture and never undoes it (that seam exists to keep the isolation
@@ -360,20 +360,16 @@ impl Drop for LiveLufsGuard {
 }
 
 /// Pre-run guard for every leveling lane that accumulates UNSAVED scene writes
-/// across scene recalls and saves once at batch end (gap 2 of
-/// `notes/device-manual-gaps.md`): refuse before ANY device write when the device's
-/// `Scene Change Behavior` snapshot reads `DISCARD CHANGES`. Under `DISCARD` every
-/// recall silently reverts the recalled scene's unsaved edits (HW-confirmed on the
-/// touchscreen) — the batch-end save would then persist the reverted state, and a
-/// save has no revert (danger.md). Call sites: `level_scenes_apply_batched`,
-/// `level_footswitches_apply`, `redistribute_headroom`, `restore_redistribution`
-/// (the deferred-write lanes; the legacy per-scene lane and `level_setlist` save
-/// immediately / re-assert through `recall_reassert_save`, so they are safe under
-/// `DISCARD` and deliberately unguarded).
+/// across scene recalls and saves once at batch end: refuse before ANY device write when
+/// the device's `Scene Change Behavior` snapshot reads `DISCARD CHANGES`. Under `DISCARD`
+/// every `loadScene` first rebuilds base and every overlay from the stored preset, losing
+/// all unsaved edits (static RE, fw 1.8.58; HW on the touchscreen) — the batch-end save
+/// would then persist the reverted state, and a save has no revert (danger.md). Call
+/// sites: `level_scenes_apply_batched` and `level_footswitches_apply`.
 ///
 /// `settings_path` is the settings snapshot the startup backup read persisted
 /// (`support/device-settings.json`). It can be STALE — the touchscreen may have been
-/// edited since connecting — and the asymmetry mirrors `calibrate_profile`'s #124
+/// edited since connecting — and the asymmetry mirrors `calibrate_profile`'s
 /// fader handling: only a positively-read `Discard` refuses (the failure it causes is
 /// silent corruption of a destructive save, and the wrongly-refused stale case is
 /// recovered by the same replug the message names, since a detach fires
@@ -424,7 +420,7 @@ mod scene_discard_guard_tests {
         Snapshot(path)
     }
 
-    // THE gate for gap 2: a snapshot that positively reads DISCARD refuses, and the
+    // THE gate for the DISCARD guard: a snapshot that positively reads DISCARD refuses, and the
     // message carries the two things the user needs — the touchscreen setting to
     // change (by its on-unit name) and the replug that refreshes the stale snapshot.
     #[test]
@@ -488,7 +484,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     topology_id: Option<String>,
     calibration_lufs: Option<f32>,
     profile_id: Option<String>,
-    // A1: the wizard's Base row levels through the separate `level_preset` lane and hands its
+    // The wizard's Base row levels through the separate `level_preset` lane and hands its
     // OWN target here so PHASE 1/2 can plan (and PHASE 2 execute) the headroom trade against
     // it. `None` = today's behavior verbatim.
     base_anchor: Option<BaseAnchorArg>,
@@ -499,7 +495,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     if jobs.is_empty() {
         return Err(AppError::Other("no scenes selected".to_string()));
     }
-    // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
+    // Pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
     // before anything touches the device — see `scene_discard_guard`'s doc.
     scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())
         .map_err(|e| Refusal::new(SkipKind::SceneChangeDiscards, e))?;
@@ -586,16 +582,14 @@ fn run_scene_batch(
     let slot = req.slot;
     let mut scene_slots: Vec<u32> = req.jobs.iter().map(|j| j.scene_slot).collect();
     // Force-append base so the prepass always harvests a base doc — one more chance at a
-    // complete `audioGraph.template` for `build_scene_jobs`' routing classification (the
-    // scene-vs-base repair diff it was originally added for is gone: `set_knobs` now
-    // enables Scene Edit only where the node has no overlay, so nothing gets reseeded
-    // away). Stripped back out below (before the wire-job match) when the user never
+    // complete `audioGraph.template` for `build_scene_jobs`' routing classification.
+    // Stripped back out below (before the wire-job match) when the user never
     // asked to level base itself.
     let base_requested = scene_slots.contains(&session::BASE_SCENE_SLOT);
     if !base_requested {
         scene_slots.push(session::BASE_SCENE_SLOT);
     }
-    // A1: see `base_anchor_plan`'s doc — anchor validation degrades to no-trade, never a
+    // See `base_anchor_plan`'s doc — anchor validation degrades to no-trade, never a
     // failed run.
     if req.base_anchor.is_some_and(|a| !a.target_lufs.is_finite()) {
         log::warn!(
@@ -612,15 +606,15 @@ fn run_scene_batch(
     // routing-structure fallback — which still only fills in for a live doc set that
     // lacks `audioGraph.template`, so an unconditional `Some` changes no classification.
     //
-    // COMPLETE-OR-FAIL, not the tolerant read: a truncated `scenes` tail makes the
+    // COMPLETE-OR-FAIL, not the tolerant read: a cut `scenes` tail makes the
     // planner blind to the scenes it cuts, and the run then levels the visible ones and
     // leaves the rest silently untouched (`read_saved_preset_complete`'s doc carries the
     // HW evidence). Refusing with a readable error beats half-leveling a preset.
     //
-    // A3: widened to `["scenes", "ftsw"]` when base is in this batch — `ftsw` feeds the
+    // Widened to `["scenes", "ftsw"]` when base is in this batch — `ftsw` feeds the
     // base isolation derivation below, and a PARTIAL `ftsw` silently under-isolates (some
     // footswitch-owned blocks never forced off), so it must be required, not optional.
-    // `audioGraph` is required too (#176): the scene docs are derived from this read alone
+    // `audioGraph` is required too: the scene docs are derived from this read alone
     // (`prepass_scene_docs_via`, no live fallback), so a graph cut off its tail must take the
     // backup re-read or be refused here, never reach the prepass half-read.
     //
@@ -649,8 +643,8 @@ fn run_scene_batch(
     // can't reach target even at the knob's limit it CLAMPS and reports the achieved
     // loudness — we do NOT raise the global `presetLevel` to compensate. Raising it
     // lifts EVERY other scene off-target (presetLevel is the Base's job, settled once
-    // before the scene pass), and HW the old boost-and-rerun drove
-    // presetLevel to 1.0 and blew preset 001's loud scenes 5–7 LU over target.
+    // before the scene pass): a boost-and-rerun drives presetLevel to 1.0 and puts loud
+    // scenes 5–7 LU over target (HW).
     //
     // The headroom trade above is NOT that boost: it raises `presetLevel` only while
     // scaling the base amp's fader DOWN by the same dB, so base stays ON target and
@@ -732,7 +726,7 @@ impl SceneBatch<'_> {
         let cancelled = scene_level_cancelled;
         // ── THE REORDERED RUN ────────────────────────────────────────────────────
         // PHASE 1 — measure EVERY sound's ceiling before anything is written. Same
-        // captures the solves used to take themselves, simply paid up front, which is
+        // captures the solves would take themselves, simply paid up front, which is
         // the only ordering in which the headroom trade can be decided (it needs every
         // ceiling next to every target, and its verdict changes what every later sound
         // is solved to).
@@ -747,7 +741,7 @@ impl SceneBatch<'_> {
             save_run,
             cancelled,
         );
-        // A1: NOW strip the anchor-only base job — it had to survive PHASE 1 (prepass) and
+        // NOW strip the anchor-only base job — it had to survive PHASE 1 (prepass) and
         // PHASE 2 (the trade, which needed its ceiling/target/fader) with no wire job of its
         // own, but PHASE 3 solves the batch's WIRE jobs and base's own `outputLevel` is
         // never one of this batch's writes when it arrived only as an anchor (the wizard's
@@ -756,14 +750,14 @@ impl SceneBatch<'_> {
         if self.anchor_only_base {
             scene_jobs.retain(|sj| sj.scene_slot != session::BASE_SCENE_SLOT);
         }
-        // A5/F2 (TRADE-PATH GAP): the base job SURVIVES the anchor strip above whenever it
+        // The base job SURVIVES the anchor strip above whenever it
         // arrived `base_requested` (a real wire job, not just an anchor) — see
         // `isolation_restore_for_batch`'s doc for why `run_scene_jobs` needs this
         // independently of whatever the trade's own restore list carries.
         let isolation_restore = isolation_restore_for_batch(&scene_jobs, self.saved);
         // No message: the solve is the wizard's DEFAULT phase, and its bare `active` is
         // what flips the row's verb back from the prepass's `measuring`.
-        // F5: `trade.summary` is known now (PHASE 2 already ran) — stamped on every `done`
+        // `trade.summary` is known now (PHASE 2 already ran) — stamped on every `done`
         // item so the channel carries the same disclosure the return vec gets at :521-531.
         let on_scene = |scene, done: Option<&leveller::BatchedSceneOutcome>| {
             (self.send)(scene_progress_item(
@@ -776,7 +770,7 @@ impl SceneBatch<'_> {
                 self.req.watch,
             ));
         };
-        // B6: the deferred-save/persist-verify batch-wide captions — see
+        // The deferred-save/persist-verify batch-wide captions — see
         // `tail_progress_item`'s doc for why the row key is safe to ignore.
         let on_tail = |tail: &str| {
             (self.send)(tail_progress_item(tail));
@@ -830,7 +824,7 @@ impl SceneBatch<'_> {
         // `restore_scene` = the preset's original active scene: the batch-end
         // single save recalls it first so the preset persists in the same
         // base/scene/footswitch state it was loaded in.
-        // SAVED-OVERLAY prepass (#176): each scene's doc is derived from the complete
+        // SAVED-OVERLAY prepass: each scene's doc is derived from the complete
         // `saved` read above (its stored overlay applied over base) plus the prepass's own-
         // connection `load_preset` — no scene-hopping on the unit. Validated against the live
         // walk by `probe --overlay-ab` (76/76 scene-amp pairs, 0 bypass mismatches). There is
@@ -871,7 +865,7 @@ impl SceneBatch<'_> {
             self.saved,
             &handles,
         )?;
-        // A1: `base_in_plan` replaces `base_requested` in the strip — an anchor-only base
+        // `base_in_plan` replaces `base_requested` in the strip — an anchor-only base
         // survives past PHASE 1/2 exactly like a `base_requested` one, and is stripped
         // separately, right before PHASE 3, below.
         if !self.base_in_plan {
@@ -880,9 +874,9 @@ impl SceneBatch<'_> {
             .iter_mut()
             .find(|sj| sj.scene_slot == session::BASE_SCENE_SLOT)
         {
-            // A3: "base means base" — isolate every footswitch-owned on/off block exactly
-            // like `level_preset`'s own base lane (preset 28's TubeScreamer is saved ON; an
-            // un-isolated base capture would measure it and silently under-isolate).
+            // "base means base" — isolate every footswitch-owned on/off block exactly
+            // like `level_preset`'s own base lane (a drive saved ON in base would be measured
+            // by an un-isolated base capture, silently under-isolating it).
             // Derived ONCE from the (now ftsw-widened) saved doc via the shared seam; an
             // absent/empty `ftsw` degrades to no isolation, never an error.
             let empty_ftsw = serde_json::Value::Null;
@@ -895,7 +889,7 @@ impl SceneBatch<'_> {
                 .map(|s| crate::commands::doctor::doctor_force_bypass(ftsw, s, None))
                 .unwrap_or_default();
         }
-        // A1/F4: base's isolated prepass capture must run LAST in PHASE 1, or its forced
+        // Base's isolated prepass capture must run LAST in PHASE 1, or its forced
         // bypasses would render every LATER scene's as-is capture through a mutated
         // (pedals-off) working copy. The force-append happens to put it last already, but a
         // `base_requested` caller can name base anywhere among the wire jobs — enforce it
@@ -915,7 +909,7 @@ impl SceneBatch<'_> {
         let jobs = self.req.jobs;
         let offset = self.req.offset;
         for sj in scene_jobs.iter_mut() {
-            // A1: the anchored base job has NO wire job of its own by construction (that is
+            // The anchored base job has NO wire job of its own by construction (that is
             // the whole point of the anchor) — special-cased here so the "no wire target"
             // hard-error below never fires on it. Offset-adjusted exactly like every other
             // job's wire target (the `base_target` above), or the trade would solve against
@@ -963,7 +957,7 @@ impl SceneBatch<'_> {
         let slot = self.req.slot;
         // The prepass tick names its OWN phase — see `leveller::PREPASS_ACTIVE_MSG`.
         // A capture is streaming when it lands, so the wizard reads it as the verb.
-        // A1: suppressed for the anchor-only base row — the frontend has no row to
+        // Suppressed for the anchor-only base row — the frontend has no row to
         // route a slot-8 item to when base arrived with no wire job of its own.
         let started = |scene| {
             if self.anchor_only_base && scene == session::BASE_SCENE_SLOT {
@@ -1017,16 +1011,14 @@ impl SceneBatch<'_> {
             started,
             scene_level_cancelled,
         );
-        // A5/F1 (BLOCKER): the PHASE-1 restore must run on EVERY exit from this block —
+        // The PHASE-1 restore must run on EVERY exit from this block —
         // Ok, Err, AND CANCELLED — from the moment base's isolated capture (LAST in the
         // loop above) may have landed its forced bypasses. Nothing has been written or
         // deferred yet at this point (PHASE 1 is read-only measurement), so the cheapest
         // correct cleanup is a full reload, unconditionally, mirroring the unbatched
         // path's own dirt handling. A cancel must not skip it either (danger.md). A
         // same-slot load reloads the stored preset only over a DIRTY working copy (fw
-        // 1.8.58, HW-shown for a `presetLevel` edit; that a forced
-        // bypass's `changeParameter` sets the flag is static RE only). The deleted fw
-        // 1.8.45 barrier issued this same load.
+        // 1.8.58: a forced bypass's `changeParameter` sets the flag, HW).
         //
         // A FAILED cleanup HARD-FAILS the whole command rather than warn-and-continue:
         // on the anchor-only path base carries no wire job of its own, so nothing later
@@ -1132,7 +1124,7 @@ pub(crate) struct TradeIntent {
     pub(crate) base_fader: f32,
     /// The wire scene slots a base raise actually helps.
     pub(crate) benefiting: Vec<u32>,
-    /// A6: the STRICT SUBSET of `benefiting` whose ALREADY-TAKEN prepass reading can be
+    /// The STRICT SUBSET of `benefiting` whose ALREADY-TAKEN prepass reading can be
     /// shifted `+raise_db` and reused rather than dropped for a re-measure — see
     /// `headroom_trade::retains_prepass_after_raise`'s doc. Every `Full`-overlay beneficiary
     /// qualifies; an `Absent` one benefits from the eventual raise but its prepass rendered
@@ -1152,9 +1144,9 @@ pub(crate) struct TradeIntent {
 ///    to and no fader to hold it with;
 /// 3. the base row is HANDLE-DRIVEN. The user picked base's own leveling control, and the hold
 ///    would solve THAT control down instead of a fader — a wet `mix` carries a preservation
-///    floor precisely so a run never guts an effect to make a number (D5), and the only knob
+///    floor precisely so a run never guts an effect to make a number, and the only knob
 ///    the trade may lower is the base amp fader (`outputLevel` is pure digital gain; a
-///    wet/tone param is never a trade lever, D6). So: no trade. The base row still levels on
+///    wet/tone param is never a trade lever). So: no trade. The base row still levels on
 ///    its handle exactly as asked and every clamp is reported honestly. Checked BEFORE the
 ///    fader fold, because a handle row's `current` is the handle param's value — folding it
 ///    would fabricate fader room out of a mix control;
@@ -1222,7 +1214,7 @@ pub(crate) fn plan_trade_for_batch(
             });
         if benefits {
             benefiting.push(job.scene_slot);
-            // A6: the NARROWER Full-only predicate — see `retains_prepass_after_raise`'s doc.
+            // The NARROWER Full-only predicate — see `retains_prepass_after_raise`'s doc.
             let retains = job.knobs.iter().all(|kt| match &kt.knob {
                 leveller::LevelKnob::Block { node_id, .. } => {
                     retains_prepass_after_raise(&scene_overlay(saved_doc, job.scene_slot, node_id))
@@ -1476,7 +1468,7 @@ fn trade_for_batch(
     }
     match outcome {
         Ok(applied) => {
-            // A6: only the NARROWER `retains_prepass` set shifts its already-taken reading —
+            // Only the NARROWER `retains_prepass` set shifts its already-taken reading —
             // an `Absent` beneficiary's prepass is dropped instead (`None` → its own PHASE-3
             // solve re-measures, AFTER its overlay exists). See `retarget_prepass_after_trade`'s
             // doc for why the split is the physics, not a refactor choice.
@@ -1498,7 +1490,7 @@ fn trade_for_batch(
                     .map(|&scene_slot| crate::headroom_trade::SoundId::Scene { scene_slot })
                     .collect(),
             };
-            // A5/F2 DETECTION: what the base isolation should read back as, per forced node —
+            // What the base isolation should read back as, per forced node —
             // the same shared derivation `apply_headroom_trade`'s own `undo_base_isolation`
             // uses (`leveller::isolation_restore_list`'s doc).
             let force_bypass_restore =
@@ -1540,7 +1532,7 @@ fn trade_for_batch(
 /// apart from the solve, which passes `None`; without it the two ticks are byte-identical and
 /// the run reads as though it were already solving.
 ///
-/// F5: `trade` is the batch's own [`crate::headroom_trade::TradeSummary`], known (PHASE 2 runs
+/// `trade` is the batch's own [`crate::headroom_trade::TradeSummary`], known (PHASE 2 runs
 /// before PHASE 3 ever emits a `done` item) and stamped on every `done` row alongside the
 /// same stamping `level_scenes_apply_batched` passes through `outcome_to_level_result`'s own
 /// `trade` parameter for its awaited return — the wizard consumes the CHANNEL's items, not the
@@ -1588,7 +1580,7 @@ fn scene_progress_item(
     }
 }
 
-/// B6 (issue 6b): a batch-wide caption for a phase with no single scene to attach to — the
+/// A batch-wide caption for a phase with no single scene to attach to — the
 /// deferred-save start ("Saving preset…") and the post-save persist-verify start
 /// ("Verifying…"). Rides its OWN [`SceneLevelProgressItem`].
 ///
@@ -1664,7 +1656,7 @@ fn outcome_to_level_result(
         // path in `level_preset` estimates it).
         true_peak_dbtp: None,
         persist_mismatch: o.persist_mismatch,
-        // F5: the batch's own trade summary, known before PHASE 3 ever emits this — see
+        // The batch's own trade summary, known before PHASE 3 ever emits this — see
         // `scene_progress_item`'s doc for why the channel items need it too, not just the
         // awaited return vec.
         trade: trade.cloned(),
@@ -1695,18 +1687,18 @@ pub(crate) async fn list_scene_level_handles(
     slot: ListIndex,
 ) -> Result<Vec<SceneHandleRow>, String> {
     with_released_seize(state.session.clone(), move || {
-        // The row set is `scenes.len()` — the tail section a large preset's field-8 read
-        // cuts first — so a truncated body would silently offer the player a handle
-        // picker missing its last scenes.
+        // The row set is `scenes.len()` — the tail section a lapse-cut field-8 read loses
+        // first — so a cut body would silently offer the player a handle picker missing
+        // its last scenes.
         let (preset, _, _) = read_slot_preset_complete(slot, &["scenes"])?;
         Ok(scene_handle_rows(&preset))
     })
     .await
 }
 
-/// PHASE 2's pure decision seam, exercised with NO device in the loop. Items ⟦1⟧ (a
-/// handle-carrying base row disables the trade), ⟦2⟧ (a no-save run plans but never applies)
-/// and ⟦4b⟧ (the QUIETEST lane binds a joint scale-down) all land here.
+/// PHASE 2's pure decision seam, exercised with NO device in the loop: a handle-carrying base
+/// row disables the trade, a no-save run plans but never applies, and the QUIETEST lane binds
+/// a joint scale-down.
 #[cfg(test)]
 mod trade_planner_tests {
     use super::*;
@@ -1812,10 +1804,10 @@ mod trade_planner_tests {
         );
     }
 
-    // A9/THE REGRESSION TEST (bug: preset 28 "Friedman HBE"). Before A6 `benefits_from_base_raise`
-    // required a PRE-EXISTING `Full` overlay — wrong, because PHASE 3's own Scene Edit write
-    // materializes the overlay the moment an Absent scene's own row is solved, so by the time
-    // the raise matters that scene is exactly as independent of base as a Full one always was.
+    // THE REGRESSION TEST: `benefits_from_base_raise` must not require a PRE-EXISTING `Full`
+    // overlay, because PHASE 3's own Scene Edit write materializes the overlay the moment an
+    // Absent scene's own row is solved, so by the time the raise matters that scene is
+    // exactly as independent of base as a Full one.
     // Shaped like the wizard's own anchor-delivered run: base is present with `skip: None` and
     // NO wire job of its own (`level_scenes.rs`'s anchor keeps it alive through PHASE 1/2 with
     // exactly this shape), and the SOLE beneficiary is Absent, not Full.
@@ -1850,10 +1842,10 @@ mod trade_planner_tests {
         );
     }
 
-    // ⟦1⟧ THE BLOCKING ONE. When the user picked base's OWN control, the hold would solve THAT
+    // When the user picked base's OWN control, the hold would solve THAT
     // control down to pay for the raise — a wet mix has a preservation floor precisely so a run
-    // never guts an effect to make a number (D5), and the only knob the trade may lower is the
-    // base amp fader (D6). So a handle-carrying base row disables the trade outright; the row
+    // never guts an effect to make a number, and the only knob the trade may lower is the
+    // base amp fader. So a handle-carrying base row disables the trade outright; the row
     // still levels on its handle and every clamp is reported honestly.
     #[test]
     fn a_handle_carrying_base_row_disables_the_trade() {
@@ -1888,7 +1880,7 @@ mod trade_planner_tests {
         ));
     }
 
-    // ⟦2⟧ A NO-SAVE run must plan the trade and write NOTHING: phase 3 runs `defer = save`, so
+    // A NO-SAVE run must plan the trade and write NOTHING: PHASE 3 runs `defer = save`, so
     // with `save = false` every scene apply reloads the stored preset and destroys an unsaved
     // raise + hold — while the benefiting rows' prepass readings would already have been
     // shifted `+raise_db` to describe a device state that no longer exists.
@@ -1920,7 +1912,7 @@ mod trade_planner_tests {
         }
     }
 
-    // ⟦4b⟧ see `min_audible_above`'s doc for why the QUIETEST lane binds the room.
+    // See `min_audible_above`'s doc for why the QUIETEST lane binds the room.
     #[test]
     fn the_quietest_base_lane_binds_the_fader_room() {
         // presetLevel 0.05 leaves ~26 dB of its own room, so the FADER is what binds.
@@ -1984,7 +1976,7 @@ mod trade_planner_tests {
         );
     }
 
-    // ⟦7⟧ The trade's solved base faders become the jobs' new anchors — but only where the
+    // The trade's solved base faders become the jobs' new anchors — but only where the
     // scene actually READS base's value. Scene 0 pins its own `outputLevel` overlay (that is
     // why it benefits), so its anchor must be left alone.
     #[test]
@@ -2149,7 +2141,7 @@ mod scene_handle_tests {
         assert!(jobs[0].knobs.is_empty());
     }
 
-    // BUG→GATE (the mixed-batch class): the amp prerequisites — an `outputLevel` candidate
+    // In a mixed batch, the amp prerequisites — an `outputLevel` candidate
     // and a readable routing template — are inputs a HANDLE row does not need. The fixture
     // carries no `audioGraph.template`, so the amp classifier fails preset-wide; that must
     // skip only the row that needed the amp, never the row whose control the user named.
@@ -2276,10 +2268,10 @@ mod scene_handle_tests {
         assert!(base_handle_candidates(&preset).is_empty());
     }
 
-    // BUG: `base_handle_candidates` used to walk BOTH graphs (`audiograph::roster`), so a
-    // mic-node candidate could surface in the Base picker. Only the guitar chain reaches the
+    // `base_handle_candidates` must not walk BOTH graphs (`audiograph::roster`), or a
+    // mic-node candidate surfaces in the Base picker. Only the guitar chain reaches the
     // USB-Out the leveler measures (`session::extract_level_candidates`'s own rationale) —
-    // Base must be guitar-only. `scene_handle_rows` keeps its pre-existing both-graphs walk.
+    // Base must be guitar-only. `scene_handle_rows` keeps its both-graphs walk.
     #[test]
     fn base_handle_candidates_is_guitar_only_but_scene_handle_rows_still_walks_both_graphs() {
         let preset = serde_json::json!({
@@ -2313,9 +2305,9 @@ mod scene_handle_tests {
         );
     }
 
-    // ── Part B: audibility-guarded BypassOnly scope (bug: preset 28 "Friedman HBE",
-    // `ACD_Boost`/`gain` — a Solo-only shared write was annotated "shared_with_base" and
-    // disabled, even though the leak is inaudible everywhere else) ─────────────────────
+    // ── Part B: audibility-guarded BypassOnly scope (bug: `ACD_Boost`/`gain` — a
+    // Solo-only shared write annotated "shared_with_base" and disabled, even though the
+    // leak is inaudible everywhere else) ─────────────────────
 
     /// The bug's exact shape: `boost`/`ACD_Boost` (group G1) bypassed in base with `gain`
     /// 2.5; Dirt (0) and Crunch (3) carry Full overlays (own bypass + gain); Clean (1) is
@@ -2407,7 +2399,7 @@ mod scene_handle_tests {
         );
     }
 
-    // ── Part C: `enables_block` (issue 5 — Boost preselect) ─────────────────────────────
+    // ── Part C: `enables_block` (Boost preselect) ─────────────────────────────
 
     // THE E2E-Edge shape: base-bypassed Boost, Solo (scene 2) is the ONLY scene whose own
     // overlay positively un-bypasses it (`bypass: false`) — that is exactly the signal the

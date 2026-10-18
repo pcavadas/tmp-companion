@@ -7,7 +7,7 @@
 //   2. "Over" uses the SAME rule as Copy's validation and the device (`overCpuBudget`:
 //      the total rounded half away from zero must not exceed the budget). A bare
 //      `value > 76.5` would call exactly 76.5 fine while the save gate refuses it.
-// Plus the old static-bar guarantees: the fill clamps, and nothing animates (the meter
+// Plus the static-bar guarantees: the fill clamps, and nothing animates (the meter
 // paints instantly — it is deliberately not ProgressBar).
 
 import { describe, it, expect } from "vitest";

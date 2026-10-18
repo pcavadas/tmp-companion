@@ -5,20 +5,18 @@ use crate::session;
 use crate::session::Session;
 use crate::slot::{DeviceSlot, ListIndex};
 
-/// Tier-4 diagnostic: capture the live `currentPresetDataChanged` (field 3) preset
+/// Diagnostic: capture the live `currentPresetDataChanged` (field 3) preset
 /// JSON on a dense-heartbeat session, write the full decompressed body to
 /// `out_path`, and report whether it is COMPLETE (the `scenes` array + `ftsw` map
-/// present and the JSON parses to the end) — the go/no-go for live FS-tags and the
-/// "truncates at scenes" gotcha. `slot` (Some) loads that preset first to trigger a
+/// present and the JSON parses to the end). `slot` (Some) loads that preset first to trigger a
 /// fresh push. Non-destructive (load + reads only).
 pub fn probe_dump_preset_data(slot: Option<ListIndex>, out_path: &str) -> Result<String, String> {
     let raw = Session::connect()?.capture_full_preset_json(slot, 2000)?;
     std::fs::write(out_path, &raw).map_err(|e| format!("write {out_path}: {e}"))?;
     let text = String::from_utf8_lossy(&raw);
-    // A healthy dense-heartbeat field-3 is ~17 KB and routinely truncates only at
-    // the LAST scene's uuid — so a full serde parse fails even though `ftsw` and
-    // most of `scenes` ARE present. Detect presence by raw key search (reliable);
-    // report the full-parse result separately. `ftsw` (footswitch→scene map) sorts
+    // A lapse mid-stream cuts a field-3 read, `scenes` first — so a full serde parse can fail
+    // even though `ftsw` and most of `scenes` ARE present. Detect presence by raw key search
+    // (reliable); report the full-parse result separately. `ftsw` (footswitch→scene map) sorts
     // well before `scenes`, so its presence is the FS-tag go/no-go.
     let complete = serde_json::from_str::<serde_json::Value>(&text).is_ok();
     let has_ftsw = text.contains("\"ftsw\"");
@@ -40,22 +38,19 @@ pub fn probe_listen(seconds: u64, hb_ms: u64, poll_secs: u64) -> Result<(), Stri
     Session::connect()?.listen_dump(seconds, hb_ms, poll_secs)
 }
 
-/// AC1: read a library slot's preset JSON over USB and report whether
-/// it is a complete preset or a partial. On 1.7.75 HW `presetDataRequest` (field 8 →
-/// `presetDataChanged` 9, plaintext) returned partials (e.g. slot 1 = 17264 B cut
-/// mid-`uuid`) — on fw 1.8.58 that cut is the device's inactivity drop on a silent
-/// harvest; kept alive, a large preset reads whole. `exportPresetRequest` (115) is
-/// unimplemented (no response).
-///
-/// The request MUST ride inside the handshake burst with NO batchStatus — a
-/// standalone post-handshake request, or one carrying a batch, gets no reply.
+/// Read a library slot's preset JSON over USB (`presetDataRequest` (field 8) →
+/// `presetDataChanged` 9, plaintext) and report whether it is a complete preset or a
+/// partial. A cut mid-body is the device's inactivity drop on a silent harvest; kept
+/// alive, a large preset reads whole (HW, fw 1.8.58). `exportPresetRequest` (115)
+/// answers with an encrypted, compressed 116 blob (static RE, fw 1.8.58), so this
+/// reads field 8 instead.
 pub fn probe_export_preset(list_enum: u32, slot: DeviceSlot) -> Result<String, String> {
     // Slot-addressed full read on a MINIMAL re-armed burst (connect() +
     // read_slot_preset_json), NOT the full-handshake Classic burst. The field-9
     // reply's unkeyed 0x33/0x34/0x35 framing collides with the ~17 KB ProductProfile
     // flood when the read is appended to the full handshake (HW `probe --slotread-x`:
     // Classic burst = NO REPLY, every minimal/re-arm variant = clean reply). This is
-    // the same reliable path scan_preset_scenes / probe_slot_json use. (`read_slot_preset_json`
+    // the same path `probe_slot_json` uses. (`read_slot_preset_json`
     // addresses My Presets, so `list_enum` is effectively 1 here — the only validated case.)
     let _ = list_enum;
     let raw = {
@@ -274,13 +269,12 @@ fn slotread_harvest(s: &mut Session) -> Option<Vec<u8>> {
 /// Investigation (`probe --slotread-x [deviceSlot…]`): can the slot-addressed
 /// `presetDataRequest` (field 8 → `presetDataChanged` 9) serve a
 /// NON-DESTRUCTIVE per-slot scene read — no LoadPreset, the unit's selected
-/// preset never changes? The connect-fast benchmark scored the classic in-burst read
-/// 0/25 on fw 1.8.45 — on fw 1.8.58 that is the inactivity drop discarding the queued
-/// reply during a silent window (3/3 once kept alive). The matrix:
+/// preset never changes? A classic in-burst read can lose its queued reply to the
+/// inactivity drop during a silent window (HW, fw 1.8.58: 3/3 once kept alive). The matrix:
 ///   B          post-handshake read on a warmed dense-heartbeat LIVE session
 ///   C-early    in-burst, read fired BEFORE the flood requests
 ///   C-minimal  trimmed burst: connection_request + My Presets + read only
-///   A          classic full-burst baseline (the 0/25 configuration)
+///   A          classic full-burst baseline
 /// Slots are 1-based DEVICE slots; default = first 3
 /// non-empty presets. Sends ZERO LoadPreset.
 pub fn probe_slotread_experiments(device_slots: Vec<DeviceSlot>) -> Result<String, String> {
@@ -402,7 +396,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<DeviceSlot>) -> Result<Strin
                 }
                 Err(e) => out += &format!("  [{tag}] slot {slot}: connect FAILED: {e}\n"),
             }
-            // Seize-recycle settle between fresh connections.
+            // Settle between fresh connections.
             std::thread::sleep(std::time::Duration::from_millis(400));
         }
     }

@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """Bake the macOS app icon (the level-meter mark) PROCEDURALLY with Pillow.
 
-The original SVG→PNG pipeline (`make-rounded-icns.py`) was deleted and is
-unrecoverable, and no SVG rasterizer is installed — so this redraws the mark
-directly: a terracotta (#d97757) INSET squircle (art body 824/1024, ~10%
+No SVG→PNG pipeline or SVG rasterizer is part of the toolchain, so this draws the
+mark directly: a terracotta (#d97757) INSET squircle (art body 824/1024, ~10%
 transparent margin) with an Apple-style rounded corner + 3 white bottom-aligned
 bars in a 6:11:8 rhythm. The inset + rounder corner make it read smaller and
-less boxy in the Dock next to Apple's icons. The grid-inset waiver was reverted —
-the Dock-size concern returned via user report. Icon spec: CLAUDE.md, "App icon".
+less boxy in the Dock next to Apple's icons. Icon spec: `.claude/rules/app-icon.md`.
 
 Emits ONLY the macOS-facing assets:
   • desktop ladder 32 / 64 / 128 / 128@2x(256) / icon.png(1024)

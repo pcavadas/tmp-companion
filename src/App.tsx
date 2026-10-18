@@ -2,15 +2,15 @@
 //
 // A click-only 6-tab shell — Level / Doctor / Copy / Songs / Catalog / Settings — routing to one
 // self-gating <…View/> per tab under views/:
-//   • Level    → <LevelView/>   now-playing strip + preset list + the §4
-//                destructive-write ritual, bound to real invoke wrappers.
+//   • Level    → <LevelView/>   now-playing strip + preset list + the
+//                backup-acknowledged leveling flow, bound to real invoke wrappers.
 //   • Doctor   → <DoctorView/>   tone diagnosis: re-amp captures, spectral
 //                findings, fixes described as steps on the unit (it never writes).
 //   • Copy     → <CopyView/>     copy blocks between presets (staged off-device).
 //   • Songs    → <SongsView/>    device-backed songs + setlists CRUD.
 // The four device tabs render the shared <DeviceState/> page until a unit connects.
 //   • Catalog  → <CatalogView/>  device-independent reference catalog.
-//   • Settings → <SettingsView/> instrument profiles + Tier-2 calibration.
+//   • Settings → <SettingsView/> instrument profiles + calibration.
 //
 // Connection is fully automatic: connect_device on mount, retry every 3 s on a
 // guarded interval (inert while connected, live again after an unplug), and the
@@ -323,7 +323,7 @@ export default function App() {
           // Positioning context for a tab's full-page `absolute; inset:0` body
           // swaps (Doctor Setup/Results) so they fill the workspace and never
           // cover the tab bar — Level/Copy already scope their own; this backstops
-          // any tab (like Doctor) that doesn't. // ponytail: shell-level guard.
+          // any tab (like Doctor) that doesn't.
           position: "relative",
         }}
       >

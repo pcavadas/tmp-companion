@@ -2,8 +2,8 @@
 //! CURRENTLY LOADED slot reload it? fw 1.8.58 skips a same-slot `loadPreset` while the
 //! working copy is clean, so if an import onto the loaded slot did NOT reload it, a
 //! following same-slot load would be a no-op and the old working copy could be saved back
-//! over the import. Static RE says the firmware reloads that slot itself; one HW check on
-//! 2026-10-11 agreed. This arm makes the check repeatable, as `probe --restore-check` is
+//! over the import. The firmware reloads that slot itself (static RE + HW, fw 1.8.58).
+//! This arm makes the check repeatable, as `probe --restore-check` is
 //! for the same-slot restore.
 //!
 //! Sequence: predict the landing slot (the lowest empty one) and refuse unless its stored

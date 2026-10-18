@@ -23,7 +23,7 @@
 //     )}
 //   </span>
 //
-// Fixed in #308, once here:
+// Rules:
 //   1. The card PORTALS to `document.body` at `position: fixed`, placed by
 //      the shared `placeAnchored` rule (`./placeAnchored`) against the viewport — so a menu on
 //      the last rows of an `overflowY: auto` list (SongList) flips ABOVE its trigger
@@ -31,8 +31,8 @@
 //      its own content resizes, and whenever `contentKey` changes (a list whose rows
 //      land after the open — see the prop).
 //   2. Dismiss is a document `pointerdown` OUTSIDE the card and the anchor box — no
-//      transparent Scrim. The Scrim closed the menu on the first outside click AND ate
-//      it; now that one click both closes the menu and lands on whatever was clicked.
+//      transparent Scrim (which would eat the click): one click both closes the menu
+//      and lands on whatever was clicked.
 //   3. `role` comes from the caller: an item menu is "menu", the `Select` list is
 //      "listbox", the add-songs popover (a search field + checklist + buttons) is a
 //      non-modal "dialog".

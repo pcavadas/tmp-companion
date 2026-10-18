@@ -933,7 +933,7 @@ describe("SongsView — Presets axis", () => {
   });
 });
 
-// ── Stale-slot regressions (#295–#299) ───────────────────────────────────────────
+// ── Stale-slot regressions ───────────────────────────────────────────────────────
 // Setlist and song slots are list index + 1 and shift on every delete/add, so every
 // cache keyed on them goes stale after an edit. These run against a small fake unit
 // that applies each write and returns the fresh lists, like the backend does.

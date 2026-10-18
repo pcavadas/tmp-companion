@@ -2,17 +2,16 @@
 // split/join point (one or two diamonds, two lane rows).
 //
 // The bracket is DOM-measured from the two lane rows' real rendered centres rather than
-// derived from hardcoded tile-height constants (the old per-lane SVG curve math assumed
-// both lanes were exactly the same fixed height, which left a visible gap once a
-// gtrSplit/micSplit preset had a different block count per output lane). Used by
+// derived from hardcoded tile-height constants (a gtrSplit/micSplit preset can have a
+// different block count, so a different height, per output lane). Used by
 // SplitGroup (two-sided, in-line splits like gtrParallel1/2) and ForkTail/JoinHead
 // (one-sided, split-output/dual-input lanes) alike.
 //
-// WHEN it re-measures (#313): after EVERY commit of the owning component, and whenever
-// the column or either lane row resizes. A lane's height moves with more than its block
+// WHEN it re-measures: after EVERY commit of the owning component, and whenever the
+// column or either lane row resizes. A lane's height moves with more than its block
 // COUNT — a label, the skeleton→real swap, a half-stack tile, a late web-font load — so
-// keying the measurement on the count alone (the old `${aLen}|${bLen}` signature) left
-// a stale bracket after any same-count change. Re-measuring every commit is safe: the
+// keying the measurement on the count alone would leave a stale bracket after any
+// same-count change. Re-measuring every commit is safe: the
 // measurement converges (an unchanged rect keeps the SAME state object, so React bails
 // out of the re-render), and it is three `getBoundingClientRect` reads. The
 // ResizeObserver catches the changes that re-render nothing (a web font landing, a

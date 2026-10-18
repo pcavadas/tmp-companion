@@ -1,9 +1,8 @@
-// src/__tests__/AboutPane.test.tsx — the no-update-channel block is worded per
-// OS: a Windows build must never show the Linux ".deb or .rpm" sentence (owner
-// finding on PR #381 — Windows users saw the Linux hand-update copy, which now
-// that a setup.exe ships would send them looking for packages that do not
-// exist). The platform comes from the module-scoped `usePlatform` store, so the
-// test mocks the hook rather than the store's loader.
+// src/__tests__/AboutPane.test.tsx — the no-update-channel block is worded per OS: a
+// Windows build must never show the Linux ".deb or .rpm" sentence (it would send
+// Windows users looking for packages that do not exist). The platform comes from the
+// module-scoped `usePlatform` store, so the test mocks the hook rather than the store's
+// loader.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { ReactElement } from "react";

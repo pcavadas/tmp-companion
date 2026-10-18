@@ -4,7 +4,7 @@ version = "0.0.0-development"
 description = "USB controller for the Fender Tone Master Pro: loudness leveling, block copy, and song/setlist editing"
 authors = ["Pedro CAVADAS"]
 # Edition 2024 is its own change (`cargo fix --edition`, then the unsafe-op lints it
-# brings), kept out of the hygiene pass that set the floor and lints below (#281).
+# brings).
 edition = "2021"
 # The floor is set by the dependencies, not by this crate: tauri 2's crates (and its
 # plugins) declare 1.90. CI builds on `stable`.
@@ -16,11 +16,11 @@ default-run = "tmp-companion"
 [lib]
 name = "tmp_companion_lib"
 # Desktop only: the app and the dev bins link the rlib. The Tauri mobile template's
-# `staticlib`/`cdylib` were never used and cost a link each per build (#281).
+# `staticlib`/`cdylib` are unused and would cost a link each per build.
 crate-type = ["rlib"]
 
 # The lint policy CI enforces (`cargo clippy --all-targets -- -D warnings`), so a plain
-# `cargo clippy` or `cargo build` holds a contributor to the same bar (#281). It covers
+# `cargo clippy` or `cargo build` holds a contributor to the same bar. It covers
 # clippy's warnings too.
 [lints.rust]
 warnings = "deny"
@@ -57,7 +57,7 @@ serde_json = "1"
 # Closed-loop progress + cross-thread command/response to the HID runloop thread.
 crossbeam-channel = "0.5"
 # Re-amp playback + capture of the processed return. cpal IS native CoreAudio
-# (AUHAL) on macOS — same backend the emulator uses.
+# (AUHAL) on macOS.
 cpal = "0.18"
 # Pure-Rust EBU R128 / ITU-R BS.1770 loudness measurement (no C dependency).
 ebur128 = "0.1"

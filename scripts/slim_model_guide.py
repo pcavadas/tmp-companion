@@ -4,11 +4,11 @@
 WHY THIS EXISTS
 ---------------
 `src/models/tmp-model-guide.json` is the generated Model Guide catalog (its
-generator, `expand_catalog.py`, lives outside this repo). It carries every field the
+generator lives outside this repo). It carries every field the
 extraction produced, and the Rust side embeds it whole (`include_str!` in
 `src-tauri/src/scene_jobs.rs`, which reads `block_id` + `category`). The
 frontend needs far less: `catalog.ts` reads only the fields in `KEEP` below. The rest
-was dead weight parsed on every app start, including `image` — 361 vendor PNG tile
+would be dead weight parsed on every app start, including `image` — 361 vendor PNG tile
 paths that nothing renders (block art is original SVG; the Fender photo tiles are
 not bundled, and must not come back).
 

@@ -33,7 +33,7 @@ pub struct Profile {
     #[serde(default)]
     pub calibration_lufs: Option<f32>,
     /// Whether a stored Tier-2 DI capture exists for this profile, so leveling
-    /// re-amps the player's own recording rather than the synthetic stimulus (#361).
+    /// re-amps the player's own recording rather than the synthetic stimulus.
     /// Derived from the capture store on every `get_store` ([`mark_captures`]) and
     /// never read back: it is neither deserialized nor written while false, so the
     /// store file never carries a stale value.
@@ -64,7 +64,7 @@ pub struct Target {
 /// Attachment 1, §4.1, reports the listening tests behind it (Benjamin 2004, AES
 /// preprint 6233; Soulodre 2004, Canadian Acoustics 32(3) pp. 152–153, 97
 /// subjects) with the reference reproduced at 60 dBA. That is bedroom level, so
-/// `Quiet` is the anchor (#242).
+/// `Quiet` is the anchor.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PlaybackLevel {
@@ -105,9 +105,7 @@ pub enum PlaybackChannels {
 /// K-weighting was fitted at (see [`PlaybackLevel`]). Louder, the ear credits
 /// low-frequency energy MORE than K-weighting does, so bass presets are leveled
 /// lower the louder the playback. Values are deliberately coarse (the contours
-/// vary by listener and rig): the 1.5 LU span of the earlier Stage-anchored table,
-/// re-anchored at Quiet (#242), so every level sits 1.5 LU lower for bass than it
-/// did. A per-capture correction from the capture's own spectrum is a later step.
+/// vary by listener and rig): a 1.5 LU span from Quiet (0) to Stage (the largest cut).
 pub fn playback_offset_lu(level: PlaybackLevel, instrument: &str) -> f64 {
     // Bass VI shares bass's low-fundamental Fletcher–Munson character (its E1 is
     // even lower), so it takes the same compensation.
@@ -123,10 +121,9 @@ pub fn playback_offset_lu(level: PlaybackLevel, instrument: &str) -> f64 {
 
 /// The three pro-grade live levels shipped by default (and seeded into any store
 /// that predates the `targets` field). Names match modeler vocab (Kemper/Helix/QC);
-/// all ≤ −19 LUFS to stay under the device's ~−17 LUFS re-amp tap ceiling
-/// (PR2 re-baseline: convention-adjusted from the mono-era ~−20 LUFS ceiling by
-/// the +3.0103 dB dual-mono shift, pending hardware re-validation — see
-/// `notes/leveling.md`'s metering-convention section).
+/// all ≤ −19 LUFS so most presets can reach them. There is no fixed ceiling: the
+/// reachable maximum is per preset (its `C`), and a louder target clamps (see
+/// `notes/leveling.md`).
 fn default_targets() -> Vec<Target> {
     vec![
         Target {
@@ -145,17 +142,17 @@ fn default_targets() -> Vec<Target> {
 }
 
 /// Current meter convention this store's `targets` are expressed in. `1` = 2-ch
-/// BS.1770 over the processed USB pair (this PR); `0` (or the field ABSENT —
-/// `#[serde(default)]`, every store written before this PR) = the mono-era
-/// single-channel convention, +3.0103 dB quieter for the same audible loudness.
+/// BS.1770 over the processed USB pair; `0` (or the field ABSENT —
+/// `#[serde(default)]`) = the mono-era single-channel convention, +3.0103 dB
+/// quieter for the same audible loudness.
 pub const METER_CONVENTION_STEREO: u8 = 1;
 
 /// The exact dB a mono-era stored target needs to keep producing the SAME
-/// audible loudness under the new stereo convention — see `lufs.rs`'s module
+/// audible loudness under the stereo convention — see `lufs.rs`'s module
 /// header for why this is algebraically exact, not just empirically measured.
 const MONO_TO_STEREO_SHIFT_LU: f64 = 3.0103;
 
-/// One-shot mono-era → stereo-era target migration (D3): if `store.meter_convention`
+/// One-shot mono-era → stereo-era target migration: if `store.meter_convention`
 /// predates [`METER_CONVENTION_STEREO`], shift every stored target by
 /// [`MONO_TO_STEREO_SHIFT_LU`] (rounded to 0.1 LU — the UI's own quantizer step)
 /// and stamp the new convention. Idempotent: a store already AT the current
@@ -174,8 +171,7 @@ const MONO_TO_STEREO_SHIFT_LU: f64 = 3.0103;
 /// defaults". Shifting the latter would silently persist -20/-18/-16, above
 /// `default_targets()`'s own <= -19 ceiling. So when `targets` was ABSENT
 /// from the file, this only stamps the convention — never shifts — while a
-/// file that DID have a `targets` key (mono-era or otherwise) shifts exactly
-/// as before.
+/// file that DID have a `targets` key (mono-era or otherwise) shifts.
 fn migrate_meter_convention(mut store: Store, targets_present_in_file: bool) -> (Store, bool) {
     if store.meter_convention >= METER_CONVENTION_STEREO {
         return (store, false);
@@ -202,20 +198,19 @@ pub struct Store {
     /// installs (via `Default`) and for older stores missing the key (serde default).
     #[serde(default = "default_targets")]
     pub targets: Vec<Target>,
-    /// The playback loudness leveling compensates for (older stores default to
-    /// `Stage` = no compensation, preserving their existing leveling baseline).
+    /// The playback loudness leveling compensates for (a store without the key
+    /// defaults to `Stage`, the largest bass cut — see [`playback_offset_lu`]).
     #[serde(default)]
     pub playback_level: PlaybackLevel,
-    /// Which output(s) the rig plays (Settings → Playback). Older stores default
-    /// to `Stereo` = the meter every store before this field leveled with.
+    /// Which output(s) the rig plays (Settings → Playback). A store without the
+    /// key defaults to `Stereo`.
     #[serde(default)]
     pub playback_channels: PlaybackChannels,
     /// Auto-download updates in the background (Settings → App updates).
     #[serde(default = "default_true")]
     pub auto_install_updates: bool,
-    /// See [`METER_CONVENTION_STEREO`]/[`migrate_meter_convention`]. Absent (any
-    /// store written before this PR) deserializes to `0` — mono-era — via
-    /// `#[serde(default)]`.
+    /// See [`METER_CONVENTION_STEREO`]/[`migrate_meter_convention`]. Absent
+    /// deserializes to `0` — mono-era — via `#[serde(default)]`.
     #[serde(default)]
     pub meter_convention: u8,
 }
@@ -288,7 +283,7 @@ fn store_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, S
 
 /// Read the store from `path`; a missing file yields the default (empty) store.
 /// A store loaded from a REAL file runs the mono→stereo meter-convention
-/// migration (D3): if it predates [`METER_CONVENTION_STEREO`], its targets are
+/// migration: if it predates [`METER_CONVENTION_STEREO`], its targets are
 /// shifted in memory and the migrated store is persisted back immediately, so
 /// every subsequent load (this run or a future one) sees the already-migrated
 /// convention and never re-shifts. A persist failure here (read-only config
@@ -347,8 +342,8 @@ pub fn apply_meter_channels(store: &Store) {
 }
 
 /// Startup sync of the meter mode from the persisted store (the app's `setup` and the
-/// e2e server's). A load failure is logged and leaves the default (Stereo) — the same
-/// meter as before the setting existed — rather than failing startup.
+/// e2e server's). A load failure is logged and leaves the default (Stereo) rather
+/// than failing startup.
 pub fn sync_meter_channels<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     match load(app) {
         Ok(store) => apply_meter_channels(&store),
@@ -421,7 +416,7 @@ pub(crate) fn existing_capture_for<R: tauri::Runtime>(
 }
 
 /// Store a profile's calibration capture:
-/// - `refused` (a take past the #361 clip severity rule) → touch nothing and return
+/// - `refused` (a take past the clip severity rule) → touch nothing and return
 ///   `Ok(false)`. A refused take never deletes the capture already stored: a good
 ///   earlier take keeps leveling, and with none the synthetic stimulus stays.
 /// - else write the mono 48 kHz f32 samples via temp-file + sync + rename
@@ -446,7 +441,7 @@ pub(crate) fn store_capture(
     let tmp = path.with_extension("wav.part");
     let tmp_str = tmp.to_str().ok_or("capture temp path not UTF-8")?;
     crate::stimulus::write_wav_mono(tmp_str, samples, 48_000)?;
-    // Synced before the rename, so a crash can't leave a renamed but empty WAV (#280).
+    // Synced before the rename, so a crash can't leave a renamed but empty WAV.
     crate::fsutil::commit(&tmp, &path).map_err(|e| format!("store capture: {e}"))?;
     Ok(true)
 }
@@ -601,10 +596,9 @@ mod tests {
         let legacy = r#"{"profiles":[],"profile_by_slot":{}}"#;
         let store: Store = serde_json::from_str(legacy).unwrap();
         assert_eq!(store.targets, default_targets());
-        // Likewise pre-playback_level stores: Stage = no compensation, so a
-        // migrated store levels exactly as it did before the field existed.
+        // Likewise a store without playback_level: Stage.
         assert_eq!(store.playback_level, PlaybackLevel::Stage);
-        // And pre-playback_channels stores: Stereo = the meter they leveled with.
+        // And a store without playback_channels: Stereo.
         assert_eq!(store.playback_channels, PlaybackChannels::Stereo);
     }
 
@@ -662,7 +656,7 @@ mod tests {
 
     #[test]
     fn load_from_path_does_not_shift_serde_seeded_default_targets() {
-        // MAJOR data-integrity fix: `targets` is `#[serde(default =
+        // Data integrity: `targets` is `#[serde(default =
         // "default_targets")]`, and those defaults are ALREADY expressed in
         // the current (stereo) convention. A file that predates the `targets`
         // field entirely (no key in the JSON at all) makes serde SEED
@@ -699,7 +693,7 @@ mod tests {
 
     #[test]
     fn mono_era_store_migrates_targets_on_load_and_stamps_the_convention() {
-        // D3: a hand-authored mono-era file (no `meterConvention` key at all —
+        // A hand-authored mono-era file (no `meterConvention` key at all —
         // `#[serde(default)]` reads it as 0) must migrate on `load_from_path`.
         let dir = tmp_dir("migrate-on-load");
         std::fs::create_dir_all(&dir).unwrap();
@@ -755,7 +749,7 @@ mod tests {
 
     #[test]
     fn migration_survives_a_save_targets_style_round_trip() {
-        // The advisor-flagged real failure mode: `commands::settings::save_targets`
+        // The failure mode: `commands::settings::save_targets`
         // loads the WHOLE store (running the migration), overwrites ONLY `.targets`
         // with the caller's new values, then saves the WHOLE store back. If the
         // stamped `meter_convention` were dropped or not carried through that
@@ -801,17 +795,14 @@ mod tests {
 
     #[test]
     fn migration_persist_failure_still_returns_the_migrated_store_not_an_error() {
-        // Advisor-flagged regression: before the fix, `load_from_path` propagated
-        // the post-migration `save_to_path` error with `?`, turning a cosmetic
-        // persistence failure (read-only config dir, full disk, permissions) into
-        // a HARD settings-load failure — on exactly the first launch after an
-        // update, when the migration runs. Force that persist to fail and assert
+        // A failed post-migration persist (read-only config dir, full disk,
+        // permissions) must not become a HARD settings-load failure on the first
+        // launch after an update. Force that persist to fail and assert
         // `load_from_path` still returns Ok with the in-memory-migrated store.
         //
-        // Fix 2 made `save_to_path` atomic (temp-file + rename), which needs
-        // only DIRECTORY write permission, not permission on the destination
-        // file itself — a read-only `profiles.json` no longer blocks a rename
-        // over it. So the failure is injected into the temp-file write
+        // `save_to_path` is atomic (temp-file + rename), which needs only
+        // DIRECTORY write permission, so a read-only `profiles.json` does not
+        // block it. The failure is therefore injected into the temp-file write
         // (`FailTempWrite`), not via file or directory permissions — root
         // ignores those, and cloud sessions run as root.
         let dir = tmp_dir("migrate-persist-failure");
@@ -859,7 +850,7 @@ mod tests {
 
     #[test]
     fn store_capture_refused_keeps_the_stored_capture() {
-        // #361: a take refused for clipping must not delete a good earlier capture.
+        // A take refused for clipping must not delete a good earlier capture.
         let dir = tmp_dir("clip");
         let path = capture_wav_path_in(&dir, "p1");
         let good = [0.1f32, -0.1, 0.2, -0.2];
@@ -968,7 +959,7 @@ mod tests {
         ] {
             assert_eq!(playback_offset_lu(lvl, "guitar"), 0.0);
         }
-        // Quiet is the anchor (K-weighting's ~60 dBA design level, #242); bass
+        // Quiet is the anchor (K-weighting's ~60 dBA design level); bass
         // is leveled lower as playback gets louder.
         assert_eq!(playback_offset_lu(PlaybackLevel::Quiet, "bass"), 0.0);
         assert_eq!(playback_offset_lu(PlaybackLevel::Rehearsal, "bass"), -1.0);

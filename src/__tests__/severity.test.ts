@@ -1,7 +1,7 @@
 // src/__tests__/severity.test.ts — the tone a Doctor finding shows and the one order
 // every list follows. A borderline ("possible") finding shows caution and sorts below
 // every confident danger finding, so where a row sits always agrees with what it shows;
-// the hedge and the ranking key on `z`, never on a rule's raw margin (#253).
+// the hedge and the ranking key on `z`, never on a rule's raw margin.
 
 import { describe, it, expect } from "vitest";
 

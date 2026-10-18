@@ -6,16 +6,16 @@
 // (`radiusGroup`, `shadowDialog`, no edge), 20 px padding, a 15/600 title, 13 px body and
 // buttons right-aligned. This file stays BUTTON-FREE: any confirm shell that carries
 // buttons (Modal) lives in primitives.tsx, which imports this one — never the reverse.
-// Rules the old per-dialog copies got wrong, fixed here once:
-//   1. The backdrop is `position: fixed` (the viewport), NOT `absolute` (which resolved
+// Rules:
+//   1. The backdrop is `position: fixed` (the viewport), NOT `absolute` (which resolves
 //      against the view container below the tab bar) — so the scrim/blur covers the WHOLE
 //      window including the top tab bar, and the card centers in the viewport.
 //   2. The card height is capped to the viewport; DialogBody scrolls, so an overflowing
 //      dialog never clips past the window edge.
 //   3. Padding + dividers are owned by DialogHeader/DialogBody/DialogFooter (one
-//      DIALOG_PAD_X), so dialogs stop drifting to per-screen ad-hoc padding.
-//   4. The dialog is MODAL for assistive tech and the Tab key too, not just the mouse
-//      (#308): it portals to `document.body` — OUTSIDE the app root — and the app root
+//      DIALOG_PAD_X), so dialogs never drift to per-screen ad-hoc padding.
+//   4. The dialog is MODAL for assistive tech and the Tab key too, not just the mouse:
+//      it portals to `document.body` — OUTSIDE the app root — and the app root
 //      (`#root`, main.tsx) is `inert` while any dialog is open, so nothing behind the
 //      scrim is Tab-reachable or announced. A module-level open-dialog COUNT owns the
 //      attribute, so stacked dialogs (a confirm over a sheet) un-inert the root only when

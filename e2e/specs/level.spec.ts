@@ -20,30 +20,18 @@ import {
 
 // Level scenarios — run identically offline (fake re-amp) and online (real re-amp).
 // SCENARIO[0] "E2E Rig" has BOTH footswitch scenes AND block-acting footswitches (and an
-// amp flip). None of the six rebuilt fixtures is Base-only any more (see
-// e2e/fixtures/COVERAGE.md) — SCENARIO[1]/[2] ("E2E Pedalboard"/"E2E Edge") now carry
-// footswitches/scenes of their own, so the first test below selects each preset's Base
-// row EXPLICITLY (never the whole-preset tick) to keep one selected row per preset — a
-// whole-preset tick would sweep those in too and change the Summary's outcome for
-// reasons unrelated to what this test drives.
+// amp flip). None of the eleven fixtures is Base-only (see e2e/fixtures/COVERAGE.md) —
+// SCENARIO[1]/[2] ("E2E Pedalboard"/"E2E Edge") carry footswitches/scenes of their own, so
+// the first test below selects each preset's Base row EXPLICITLY (never the whole-preset
+// tick) to keep one selected row per preset — a whole-preset tick would sweep those in too
+// and change the Summary's outcome for reasons unrelated to what this test drives.
 // Loudness accuracy is the device's job; these prove the multi-preset, per-preset-target
 // flow AND the base+scene+footswitch flow end to end through the real backend.
 //
-// ONLINE e2e suite consolidation (8→4 files): tests 1 and 3 below now run OFFLINE ONLY
-// (test.skip'd online) — both moved into `level.online.spec.ts` (test 1 verbatim; test 3
-// alongside that file's own Hiwatt arc, since it already carries slot 404). Test 2 (base +
-// scenes + footswitches on E2E Rig) is OFFLINE ONLY too, but for a different reason — trade
-// T2: it was never picked up by any *.online.spec.ts file, so its online run is simply
-// retired rather than moved (E2E Rig's own online leveling-flow coverage stays real via
-// this file's offline tier, which drives the identical UI/backend path against SimDevice).
-//
-// OFFLINE suite consolidation: test 4 below is level-rerun.spec.ts's remaining offline
-// test, merged in verbatim (owner decision: one offline level spec is enough). That file's
-// online tests were already retired to `level.online.spec.ts`'s idempotency test — see this
-// file's own describe block for the merge; level-rerun.spec.ts is deleted.
-// Test 1 ("levels two presets' Base to different targets") was then folded into that last
-// test: its first run IS the two-preset, two-target wizard run, so the flow pays one page
-// load and one leveling run instead of two.
+// The three tests of the first describe run OFFLINE ONLY (test.skip'd online): the online
+// leveling coverage is `level.online.spec.ts` (410's consolidated arc + idempotency, 405's
+// first-run journey). The offline tier drives the identical UI/backend path against
+// SimDevice; only the real-audio loudness outcome of E2E Rig is not checked online.
 test.describe("Level — plain presets + a scenes-and-footswitches preset", () => {
   // Between tests: SAFETY only (re-amp off, so an aborted capture can't strand the
   // unit input-muted for the next test). Slot cleanup happens ONCE in afterAll —
@@ -64,8 +52,8 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   // The mandatory "both scenes and footswitches" case: E2E Rig carries a Base, 4
   // footswitch SCENES (amp outputLevel, incl. an amp flip) AND block-acting FOOTSWITCHES. Ticking
   // the whole preset sweeps in ALL of them, so the run exercises base (level_preset) +
-  // scene (level_scenes_apply_batched) + footswitch (level_footswitches_apply, VERIFY
-  // mode by default — measures ON/OFF delta, writes nothing) leveling in one preset.
+  // scene (level_scenes_apply_batched) + footswitch (level_footswitches_apply) leveling
+  // in one preset.
   // Oracle: Set up shows all three row kinds (asserted via their distinct sub-text), the
   // bake/assign mechanism never leaks, and the run reaches a terminal Summary. Offline the
   // fake re-amp may clamp scenes — that's expected; the base still solves and the flow
@@ -73,14 +61,12 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   test("levels a preset with base + scenes + footswitches end to end", async ({
     page,
   }) => {
-    // OFFLINE ONLY (trade T2, ONLINE e2e consolidation): this test's online run is
-    // retired, not moved — no *.online.spec.ts file picked it up, since E2E Rig's
-    // base+scene+footswitch flow doesn't need its own online arc on top of the Hiwatt
-    // (404) one `level.online.spec.ts` already carries. The offline tier below still
-    // drives the identical UI/backend path against SimDevice, so the FLOW itself (all
-    // three row kinds in Set up, the bake/assign mechanism never leaking, a terminal
-    // Summary) stays proven; only the real-audio loudness outcome is untested now.
-    test.skip(await isOnline(page), "trade T2 — see this file's own header");
+    // OFFLINE ONLY (see this file's header): the FLOW itself (all three row kinds in Set
+    // up, the bake/assign mechanism never leaking, a terminal Summary) is proven offline.
+    test.skip(
+      await isOnline(page),
+      "offline only — see this file's own header",
+    );
     // ~18-23 re-amp captures (E2E Rig base + all scenes + all footswitches) — the budget
     // matches the terminal wait below, with headroom on top.
     test.setTimeout(1_500_000);
@@ -127,20 +113,20 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   });
 
   // COVERAGE row 37 — scene wipe / bake / conformance oracle.
-  // BUG→GATE (2026-07-27 report — the corruption-class preset's SHAPE). SCENARIO[4]
-  // "E2E Hiwatt 3S" is a real unit's preset: 3 tone scenes + a 4th literally named
-  // "Base Scene" (a real overlay, NOT the base sentinel) and 4 block-acting footswitches,
-  // saved `lastLoadedScene = 3`. Its outcomes are command-level gates (the per-scene/
-  // per-footswitch Channel is a no-op offline — see level-defaults.spec.ts's header); what
-  // ONLY the UI can prove is that the backup scan ENUMERATES this shape: 4 scene children
-  // (not 3 + a swallowed "Base Scene", and not 5 with base double-counted) plus 4 footswitch
-  // children. No leveling run — list rendering only, so it costs seconds.
+  // The corruption-class preset's SHAPE. SCENARIO[4] "E2E Hiwatt 3S" is a real
+  // unit's preset: 3 tone scenes + a 4th literally named "Base Scene" (a real overlay, NOT
+  // the base sentinel) and 4 block-acting footswitches, saved `lastLoadedScene = 3`. Its
+  // outcomes are command-level gates (see level-defaults.spec.ts's header); what ONLY the
+  // UI can prove is that the backup scan ENUMERATES this shape: 4 scene children (not 3 + a
+  // swallowed "Base Scene", and not 5 with base double-counted) plus 4 footswitch children.
+  // No leveling run — list rendering only, so it costs seconds.
   test("enumerates the 3-scene + Base-Scene + 4-footswitch preset in the list", async ({
     page,
   }) => {
-    // OFFLINE ONLY (ONLINE e2e consolidation): moved into `level.online.spec.ts` for the
-    // online tier, alongside that file's own Hiwatt (404) arc — same slot, one file.
-    test.skip(await isOnline(page), "moved to level.online.spec.ts");
+    // OFFLINE ONLY: a pure list read with no device truth (the backup scan decodes the
+    // same fixture blob offline or on; `e2e_server_tests.rs`'s
+    // `the_fixture_enumeration_reads_eleven_child_rows` pins it at the command level).
+    test.skip(await isOnline(page), "offline only — a pure list read");
     await ensureScenario(page);
     await page.goto("/");
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
@@ -170,25 +156,19 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     await expect(soundBox(page, "Main sound", SCENARIO[4].name)).toHaveCount(1);
   });
 
-  // Consecutive-runs idempotency gate — the PR #74 requirement ("2 consecutive leveling
-  // runs must produce the same result") that lived only in a session prompt, never as
-  // executable infrastructure, until level-rerun.spec.ts (now merged in here — offline
-  // suite consolidation; its online tests were already retired to `level.online.spec.ts`'s
-  // idempotency test). The SimDevice's field-8 read is READ-YOUR-WRITES (mirrors the real
-  // device), so `commands/level_preset.rs`'s pre-run `read_slot_preset_parsed` populates a
-  // real, non-`None` `previous_level` offline too, and `leveller::level_unchanged` is
-  // reachable in both modes — not merely an online-only property (it was offline-only
-  // "events-equality", `previous_level` structurally always `None`, before that fidelity
-  // fix landed; see git history for that shape if reviving it).
-  // It also carries the retired "levels two presets' Base to different targets" test: run 1
-  // levels two presets' Base rows to DIFFERENT per-preset targets through the wizard
+  // Consecutive-runs idempotency gate: 2 consecutive leveling runs must produce the same
+  // result. The SimDevice's `presetDataRequest` (field 8) read is READ-YOUR-WRITES (mirrors
+  // the real device), so `commands/level_preset.rs`'s pre-run `read_slot_preset_parsed`
+  // populates a real, non-`None` `previous_level` offline too, and
+  // `leveller::level_unchanged` is reachable in both modes.
+  // Run 1 also levels two presets' Base rows to DIFFERENT per-preset targets through the wizard
   // (`runBaseLevel` asserts each row's own `target:<rowKey>` pick binds), and must finish
   // with every row solved ("All 2 sounds leveled.").
   test("two presets' Base at different targets, then an identical re-run makes no new Saved write (level_unchanged skip)", async ({
     page,
   }) => {
-    // Online-only equivalent: `level.online.spec.ts`'s idempotency test, on the Hiwatt
-    // state its own strict-arc test just saved — skip here to avoid a second full UI wait
+    // Online-only equivalent: `level.online.spec.ts`'s idempotency test, on the 410
+    // state its own arc just saved — skip here to avoid a second full UI wait
     // + device seize for the same property.
     test.skip(
       await isOnline(page),
@@ -197,8 +177,8 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
-    // Base-only, not the whole-preset checkbox: 401/402 now carry footswitches of their own
-    // (P4-B fixture rebuild — see level-defaults.spec.ts's header), and a whole-preset
+    // Base-only, not the whole-preset checkbox: 401/402 carry footswitches of their own,
+    // and a whole-preset
     // tick would sweep those in too and change the Summary's outcome.
     const run = () =>
       runBaseLevel(page, [
@@ -254,7 +234,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
 // up to an enabled "Start leveling" with every click counted (Start and Done are the last
 // two). What to level is chosen once, on the list: the checkbox ticks a whole preset, the
 // NAME of a preset with scenes opens it, and "Select all N shown" acts only on what the
-// filter shows (a bug fix: it used to choose the whole library). Set up then needs only
+// filter shows (never the whole library). Set up then needs only
 // the backup tick: scenes named like a target already have it. List-and-Set-up only, so
 // it costs seconds; OFFLINE ONLY like the list-rendering test above (nothing is started).
 test.describe("Level list — choosing, scenario by scenario", () => {
@@ -316,7 +296,7 @@ test.describe("Level list — choosing, scenario by scenario", () => {
     await page.getByRole("checkbox", { name: "Select all 2 shown" }).click(); // 2
     actions++;
     // Only the two shown presets were chosen (the caption counts every chosen preset,
-    // hidden ones included) — the old Select all chose all eleven.
+    // hidden ones included) — never all eleven.
     await expect(page.getByText("2 presets", { exact: true })).toBeVisible();
     await levelButton(page, "any").click(); // 3 Level N sounds
     actions++;

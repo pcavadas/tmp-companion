@@ -7,8 +7,8 @@ use crate::{
     AppState, ListIndex, Serialize, Session, State,
 };
 
-/// The block content a copy [`CopyOp`] applies — the SAME three "with a block"
-/// variants [`ReplArg`] supports (no `Remove`; that is a [`CopyOp::Remove`] op).
+/// The block content a copy `CopyOp` applies — the SAME three "with a block"
+/// variants `ReplArg` supports (no `Remove`; that is a `CopyOp::Remove` op).
 /// Nested keys arrive camelCase, so `fenderId` is renamed.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -180,7 +180,8 @@ pub struct CopyJob {
 }
 
 /// One preset's outcome from a [`copy_apply`] run (streamed per preset). Like
-/// [`BulkReplaceItem`] (`slot`/`name`/`outcome`/`detail`) plus the signal `graph` the
+/// [`BulkReplaceItem`](super::bulk_replace::BulkReplaceItem)
+/// (`slot`/`name`/`outcome`/`detail`) plus the signal `graph` the
 /// device's WORKING COPY showed in a field-2 re-prompt taken after the last confirmed op
 /// and BEFORE the save (the save itself is unacknowledged), so the Copy view can patch its
 /// cached library in place (no ~22 s re-scan) after a write. `graph` is `None` when the
@@ -199,7 +200,8 @@ pub struct CopyApplyItem {
 
 /// "Copy blocks between presets" — apply an ORDERED list of structural ops
 /// (replace / insert / remove) to EACH target preset, live, then save that preset in
-/// place (only when every op confirmed AND `save`). Mirrors [`replace_many_held`]'s
+/// place (only when every op confirmed AND `save`). Mirrors
+/// [`replace_many_held`](super::held_edit::replace_many_held)'s
 /// architecture: ONE held re-armed session per preset (`copy_apply_one`), the
 /// DEVICE_OP_LOCK / monitor-pause bookend (`with_released_seize`) and streamed
 /// `CopyApplyItem`s. There is no cancel (the Copy tab has no Stop button). DEVICE WRITE —
@@ -214,7 +216,7 @@ pub(crate) async fn copy_apply(
     on_result: tauri::ipc::Channel<CopyApplyItem>,
 ) -> Result<Vec<CopyApplyItem>, String> {
     with_released_seize(state.session.clone(), move || {
-        // ONE held session for the whole run (the E1 architecture): connect once, warm
+        // ONE held session for the whole run: connect once, warm
         // the live-controller heartbeat once (`begin_live_edit`), then `copy_apply_one`
         // each preset with no reopens. A per-preset failure stays an `error` row (the
         // session stays alive); only a failure to ESTABLISH the session propagates.
@@ -238,7 +240,8 @@ pub(crate) async fn copy_apply(
 }
 
 /// Apply one [`CopyJob`]'s ordered ops to its target preset on a HELD re-armed session
-/// and (if `save`) persist it — the [`held_replace_one`] shape generalised from one
+/// and (if `save`) persist it — the [`held_replace_one`](super::held_edit::held_replace_one)
+/// shape generalised from one
 /// replace to a list of replace/insert/remove ops. Loads the preset, re-arms the edit
 /// context, confirms attachment (the SAME safety gate: never edit/save an unverified
 /// preset), applies each op (an unconfirmed first op is READ BACK before any re-send — see
@@ -280,11 +283,10 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     let mut ids = DeviceIds::new(&roster);
 
     // Apply each op in order. An unconfirmed FIRST edit with no presetError is read back
-    // before anything is re-sent (`apply_copy_op`). The old "cold first edit is silently
-    // dropped" reading is a fw 1.8.45 belief with no cited HW evidence: fw 1.8.58 has no
-    // silent-drop path for a correctly framed edit (INFERRED). A missing confirm is a
-    // confirm queued behind the FIFO, a lapse (which draws ConnectionError), a backup
-    // freeze, or an insert abort. Recover by read-back, never by blind re-send.
+    // before anything is re-sent (`apply_copy_op`). fw 1.8.58 has no silent-drop path for a
+    // correctly framed edit (static RE, inferred): a missing confirm is a confirm queued behind the
+    // FIFO, a lapse (which draws ConnectionError), a backup freeze, or an insert abort.
+    // Recover by read-back, never by blind re-send.
     let total = job.ops.len();
     for (i, op) in job.ops.iter().enumerate() {
         let first = i == 0;
@@ -475,9 +477,9 @@ fn insert_precheck(
     // An IR/saved INSERT addresses the node it adds by FenderId (a node id is its
     // FenderId only for the first instance of a model in a group: fw 1.8.58 mints
     // `X`, `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
-    // `notes/write-safety.md`), so a group that ALREADY holds that model would make the
-    // follow-up swap ambiguous (it could re-point an existing block). (A cap-legal
-    // case: two cabinets in one group.) Refuse, never guess.
+    // `notes/device/structural-edits.md#node-ids`), so a group that ALREADY holds that model would
+    // make the follow-up swap ambiguous (it could re-point an existing block). (A cap-legal case:
+    // two cabinets in one group.) Refuse, never guess.
     let ambiguous = !matches!(repl, CopyRepl::Model { .. })
         && before.is_none_or(|ids| ids.iter().any(|id| id == repl.insert_fender_id()));
     if ambiguous {
@@ -590,12 +592,10 @@ fn expected_roster(pre: &[blockcaps::RosterEntry], ops: &[CopyOp]) -> Option<Ros
 
 /// The working-copy graph for the Copy view's cache patch — a REAL read: `clear_raw` +
 /// `currentPresetDataRequest` (field 2) on the held session, the `Session::live_ftsw`
-/// wire shape, taken after the last confirmed op and BEFORE the save. HW 2026-09-03
-/// (fw 1.8.45, `probe --reprompt-map`, Copy's exact session shape): 6/6 re-prompts
-/// answered in ~520 ms with the POST-edit roster (insert and remove), the stream complete
-/// in its first slice, and both saves after a re-prompt persisted (field-8 read-back).
-/// The previous "read-back" was a buffer scrape that once returned the LOAD-TIME graph
-/// (HW 2026-09-02) and patched the cache back to the pre-edit blocks.
+/// wire shape, taken after the last confirmed op and BEFORE the save (HW: the re-prompt
+/// answers with the post-edit roster in ~0.5 s, and a save after it persists). A buffer
+/// scrape instead can return the LOAD-TIME graph and patch the cache back to the pre-edit
+/// blocks.
 ///
 /// The roster oracle (`expected_roster`) is both the completion predicate — a mid-flight
 /// partial keeps pumping until the roster matches, then the payload must hold still for
@@ -709,13 +709,13 @@ struct AppliedOp<'a> {
 /// (`nodeReplaced`(40) / `nodeRemoved`(36) / `nodeInserted`(33)).
 ///
 /// `recover_unconfirmed`: an edit with no confirm and no `presetError` is READ BACK from
-/// the working copy before anything is re-sent, and a landed edit is never re-sent (a
-/// missing confirm on fw 1.8.58 is a landed edit whose confirm was lost, INFERRED). A
-/// replace mints a new node id, so a blind re-send would name a node that is already gone,
-/// which may abort the device server (static RE that `replaceNode` on an unknown id throws;
-/// whether it is caught is OPEN). See [`replace_read_back`]; a remove re-sends only when the
-/// read shows the node still there; an insert reads against `before` (its group's FenderIds
-/// before the op), see [`Session::insert_landed`]. Never on a `presetError`.
+/// the working copy before anything is re-sent, and a landed edit is never re-sent (fw 1.8.58 has
+/// no silent-drop path for a correctly framed edit, static RE, inferred). A replace mints a new
+/// node id, so a blind re-send would name a node that is already gone, and a replace naming a
+/// node that is gone draws `presetError` 14 (static RE, fw 1.8.58). See
+/// [`replace_read_back`]; a remove re-sends only when the read shows the node still there;
+/// an insert reads against `before` (its group's FenderIds before the op), see
+/// [`Session::insert_landed`]. Never on a `presetError`.
 ///
 /// An IR/saved INSERT then applies its IR-file / saved-block follow-up to the node it
 /// added, addressed by FenderId (its id when it is the group's first instance of that
@@ -852,13 +852,13 @@ fn apply_copy_replace(
 /// node it just added and apply the IR-file link / saved-block swap to it. A node's id is
 /// its FenderId only for the first instance of a model in a group (fw 1.8.58 mints `X`,
 /// `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
-/// `notes/write-safety.md`), so the new node is addressed as
-/// `repl.insert_fender_id()` directly — no before/after roster diff (the old diff read the
-/// session buffer, which `insert_node`'s `clear_raw` had just emptied, so it always
-/// degraded to a bare insert on hardware; and a partial "before" read could have diffed
-/// out an EXISTING node and pointed the IR/block swap at it). `copy_apply_one` refuses the
-/// op up front when the group already holds that model. The IR/saved follow-ups are
-/// software-green (SimDevice) with their HW validation still pending — `diffToOps` emits
+/// `notes/device/structural-edits.md#node-ids`), so the new node is addressed as
+/// `repl.insert_fender_id()` directly — no before/after roster diff (`insert_node`'s
+/// `clear_raw` empties the session buffer such a diff would read, and a partial "before"
+/// read could diff out an EXISTING node and point the IR/block swap at it).
+/// `copy_apply_one` refuses the op up front when the group already holds that model. The
+/// IR/saved follow-ups are software-green (SimDevice) with their HW validation still
+/// pending — `diffToOps` emits
 /// only Model inserts today.
 fn apply_copy_insert(
     s: &mut Session,

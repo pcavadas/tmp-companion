@@ -303,7 +303,7 @@ describe("Firmware 1.8 catalog additions", () => {
   });
 });
 
-// The frontend bundles a SLIM projection of the generated guide (#315): the full
+// The frontend bundles a SLIM projection of the generated guide: the full
 // guide's dead fields (`image` — vendor PNG tile paths — plus the provenance notes)
 // cost parse time on every start. The slim file is derived by
 // `scripts/slim_model_guide.py`; these gate it against the full guide so a regen

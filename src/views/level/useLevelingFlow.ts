@@ -9,11 +9,10 @@
 // (save:true). The Summary's one "Try again" re-runs sounds straight away on the first
 // run's settings (`retryLeveling`), with no second Set up and no second backup tick.
 //
-// No revert of any kind lives in this flow (design 1a, user directive): the backup
-// acknowledgment is the one revert path (restore from a Pro Control backup), so this
-// hook carries no gain-budget redistribution, reachable-common-target, or per-row
-// "Restore original" state — a sound that can't reach its target is reported with what
-// to change, nothing more.
+// No revert: the Pro Control backup is the only way back, so this hook carries no
+// gain-budget redistribution, reachable-common-target, or per-row "Restore original"
+// state — a sound that can't reach its target is reported with what to change, nothing
+// more.
 
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
@@ -65,7 +64,7 @@ export interface UseLevelingFlowDeps {
    *  refines the offbranch row status (stamped on each RunItem at build). */
   silenceHintByIndex: Map<number, SilenceHint>;
   targetLufsByName: TargetLufsOf;
-  /** Drop just the given selection keys (BUG-4: prune the keys a run actually leveled,
+  /** Drop just the given selection keys (prune the keys a run actually leveled,
    *  accumulating across Try again rounds, so un-run sounds stay selected). */
   deselectKeys: (keys: string[]) => void;
   refresh: () => Promise<void>;
@@ -111,7 +110,7 @@ export function useLevelingFlow({
     [rows, sceneInfo, footswitchInfo],
   );
 
-  // Close the flow, deselecting exactly what a run leveled (BUG-4). A close with no run
+  // Close the flow, deselecting exactly what a run leveled. A close with no run
   // preserves the selection.
   const onClose = useCallback(() => {
     const keys = closeFlow();

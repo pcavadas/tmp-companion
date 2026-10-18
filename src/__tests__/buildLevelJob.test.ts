@@ -1,5 +1,5 @@
 // buildLevelJob threads the chosen instrument profile's id onto the wire job so the
-// backend can resolve its Tier-2 calibration capture as the re-amp stimulus.
+// backend can resolve its calibration capture as the re-amp stimulus.
 
 import { describe, expect, it } from "vitest";
 
@@ -31,8 +31,7 @@ describe("buildLevelJob", () => {
 
 describe("toFootswitchJobWire", () => {
   // `toFootswitchJobWire` — the ONE place `FootswitchTarget` becomes the wire's job
-  // shape. Every row levels now (D2 — the backend removed the verify-only mode
-  // entirely), so a target always carries a real handle; `sceneContext` (D3) is the
+  // shape. Every row levels, so a target always carries a real handle; `sceneContext` is the
   // only field that varies (null = base, else a 0-based scenes[] slot).
   it("toFootswitchJobWire carries the full handle + a null (base) sceneContext", () => {
     const target: FootswitchTarget = {

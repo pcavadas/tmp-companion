@@ -23,19 +23,19 @@ const PORT = Number(process.env.TMP_E2E_PORT ?? "7600");
 const VITE = process.env.TMP_E2E_VITE_PORT ?? "1421";
 
 // One `e2e_server` PROCESS per worker, on PORT+i — `fixtures/port.ts` picks the matching
-// one from TEST_PARALLEL_INDEX. `workers: 1` was never about the fake: it is the exclusive
-// -seize DEVICE, an ONLINE-only constraint (the online config keeps it). Offline the only
-// shared state is one server's `SimDevice`, and the remaining work is CPU-bound, so extra
-// processes convert directly into wall-clock.
+// one from TEST_PARALLEL_INDEX. `workers: 1` is for the exclusive-seize DEVICE, an
+// ONLINE-only constraint (the online config keeps it). Offline the only shared state is one
+// server's `SimDevice`, and the remaining work is CPU-bound, so extra processes convert
+// directly into wall-clock.
 const WORKERS = Number(process.env.TMP_E2E_WORKERS ?? "3");
 
 // Each e2e_server keeps its store (`profiles.json`: targets, instruments, the instrument
 // chosen for each preset) in its OWN config dir, fresh for every run. The server builds on
 // Tauri's mock context, whose empty identifier puts that store straight in the user's
-// config dir, so without this all N servers shared one `profiles.json` with each other
-// and with every earlier run: the "None" Doctor saved for the scenario presets in one run
-// made every later run skip Doctor's Instrument page, and a choice one worker saved could
-// change what another worker's spec saw. `scripts/e2e.sh` exports a fresh root for each
+// config dir, so without this all N servers would share one `profiles.json` with each other
+// and with every earlier run: a Doctor instrument saved in one run would skip Doctor's
+// Instrument page in every later run, and one worker's choice would leak into another
+// worker's spec. `scripts/e2e.sh` exports a fresh root for each
 // run and removes it afterwards; a bare `bunx playwright test` makes its own here, in the
 // system temp dir. Writing it back to `process.env` hands the same root to the loader and
 // worker processes, which load this config again. HOME moves the macOS config dir
@@ -59,13 +59,9 @@ const TIMINGS_JSON =
   process.env.TMP_E2E_TIMINGS_JSON ??
   path.join(ROOT, "e2e", "test-results", "e2e-timings.json");
 
-// SOTA dual-mode e2e: the same specs drive the REAL React UI in Chromium against the
-// real Rust backend. Offline (here) fakes only the USB transport (SimDevice) + the
-// startup snapshot via the windowless `e2e_server`. Online (Slice 2) points the bridge
-// at a server opened against the real device. Device is exclusive-seize → `workers: 1`.
 export default defineConfig({
   testDir: "./specs",
-  // Fails fast if any bridge server (e.g. an adopted orphan) reports online (#193).
+  // Fails fast if any bridge server (e.g. an adopted orphan) reports online.
   globalSetup: "./fixtures/assert-mode.ts",
   metadata: {
     expectOnline: false,
@@ -77,8 +73,8 @@ export default defineConfig({
   // Some spec files are online-only ORACLES in their entirety — `*.online.spec.ts` needs a
   // real device (the offline capture is a stimulus passthrough for anything needing real
   // audio). Offline they can only ever `test.skip(...)`, but the skip is decided INSIDE the
-  // test body, so Playwright had already run the file's fixtures and hooks — wasted CI time
-  // to reach a foregone skip. Not running them is the same coverage. OFFLINE ONLY: the
+  // test body, after Playwright has run the file's fixtures and hooks — wasted CI time to
+  // reach a foregone skip. Not running them is the same coverage. OFFLINE ONLY: the
   // online config must keep collecting them, they are its whole point.
   testIgnore: ["**/*.online.spec.ts"],
   // File-level parallelism only: tests inside one file keep running in order, in one
@@ -98,19 +94,16 @@ export default defineConfig({
   // 30-240 s timeout — those are dead under a tighter test cap.
   //
   // KEEP THIS EQUAL TO THE ONLINE CAP. `testDir` is the SAME ./specs in both configs, so one
-  // spec set cannot carry two budgets: the eleven 240 s waits the shared specs declare are
+  // spec set cannot carry two budgets: the 240 s waits the shared specs declare are
   // only reachable under a cap ≥ 300 s, and a tighter cap silently truncates them instead of
-  // failing the assertion they belong to. A 120 s cap did exactly that to the heaviest offline
-  // test (level-defaults.spec.ts "reachable-common-target fallback" — TWO full 2-preset level
-  // runs), which measured 133 s → 150 s begin-to-begin across CI runners and so died mid-run
-  // on whichever runner drew the slow straw, reporting a timeout on unrelated PRs.
+  // failing the assertion they belong to.
   timeout: 300_000,
   use: {
     baseURL: `http://localhost:${VITE}`,
     trace: "on-first-retry",
     // An environment that ships its own Chromium (e.g. a cloud image whose browser build
     // differs from the one this Playwright pins, with the download hosts blocked) points
-    // TMP_E2E_CHROMIUM at it. Unset, Playwright uses its own browser as before.
+    // TMP_E2E_CHROMIUM at it. Unset, Playwright uses its own browser.
     launchOptions: { executablePath: process.env.TMP_E2E_CHROMIUM },
   },
   projects: [{ name: "offline", use: { ...devices["Desktop Chrome"] } }],
@@ -125,7 +118,7 @@ export default defineConfig({
       timeout: 120_000,
     },
     // The PREBUILT binary, not `cargo run`: N concurrent `cargo run`s serialize on the
-    // cargo target-dir lock at startup, and even one paid a ~17 s recompile inside the
+    // cargo target-dir lock at startup, and even one can pay a ~17 s recompile inside the
     // timed server-start window. `scripts/e2e.sh` always builds first (so does CI).
     // Running `bunx playwright test` directly after a Rust edit therefore uses the last
     // build — run `scripts/e2e.sh` (or `cargo build --features e2e --bin e2e_server`) to

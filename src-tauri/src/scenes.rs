@@ -8,7 +8,7 @@ use serde_json::Value;
 /// (an array per group; matched by instance via `audiograph::instance_id`). Shared
 /// node-lookup for [`block_bypass_in_live_graph`] and the scene-repair diff
 /// (`scene_jobs::node_dsp_params`) — both need "find this node in a
-/// materialized `audioGraph` doc" and previously duplicated the pointer/array/find walk.
+/// materialized `audioGraph` doc".
 pub fn guitar_node<'a>(preset: &'a Value, group_id: &str, node_id: &str) -> Option<&'a Value> {
     preset
         .pointer(&format!("/audioGraph/guitarNodes/{group_id}"))?
@@ -25,8 +25,7 @@ pub fn guitar_node<'a>(preset: &'a Value, group_id: &str, node_id: &str) -> Opti
 /// with scenes swapping which is active (HW-found: leveling the Twin's knob
 /// in a scene that runs the other amp measured flat → clamped), so the leveling knob
 /// must belong to the amp ON in the currently-loaded scene. Reads the live graph (with
-/// the scene loaded over USB), NOT the stored `scenes[]` overlay — the overlay flags
-/// proved unstable (the same scene read opposite amp states in different read contexts).
+/// the scene loaded over USB), NOT the stored `scenes[]` overlay.
 pub fn block_bypass_in_live_graph(preset: &Value, group_id: &str, node_id: &str) -> Option<bool> {
     guitar_node(preset, group_id, node_id)?
         .pointer("/dspUnitParameters/bypass")

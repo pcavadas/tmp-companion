@@ -54,8 +54,8 @@ export const sceneKeyOf = (slot: number, i: number): string =>
   `s${String(slot)}:${String(i)}`;
 /** The key for the i-th (0-based) FOOTSWITCH of a preset slot — `i` is that switch's
  *  ORIGINAL POSITION in the backup-cached per-preset footswitch array (the full
- *  roster, levelable or not, since BUG 1: a switch with no level control still gets a
- *  row, disabled), so the key stays stable across the list, selection, and the flow
+ *  roster, levelable or not: a switch with no level control still gets a row,
+ *  disabled), so the key stays stable across the list, selection, and the flow
  *  regardless of which siblings are levelable. */
 export const fswKey = (slot: number, i: number): string =>
   `f${String(slot)}:${String(i)}`;
@@ -63,9 +63,9 @@ export const fswKey = (slot: number, i: number): string =>
  *  candidate to solve. Every consumer that decides whether a footswitch row is
  *  selectable/counted (`childKeys`, `footswitchTarget`) or disabled-with-a-reason
  *  (`PresetRow`'s row builder) must call this, not re-derive `level_params.length`
- *  itself — that duplication is exactly how BUG 1 (a "PHASER" switch with no level
- *  control silently vanishing between the list and the wizard) happened: `childKeys`
- *  counted the row as selectable while the row builder dropped it. */
+ *  itself — a duplicated predicate lets `childKeys` count a row as selectable while the
+ *  row builder drops it (a "PHASER" switch with no level control silently vanishing
+ *  between the list and the wizard). */
 export function footswitchLevelable(f: FootswitchInfo): boolean {
   return f.level_params.length > 0;
 }
@@ -92,9 +92,8 @@ export function childKeys(
 }
 
 /** The leveling coordinates a footswitch row carries into `levelFootswitchesApply`: the
- *  `ftsw` switch index + the block param to solve + the scene context it is measured in
- *  (D3). Every row levels now — the old verify-only "no handle" mode is gone backend-side
- *  ("every row levels" — `FootswitchLevelJob`'s doc), so this is a plain shape, not a
+ *  `ftsw` switch index + the block param to solve + the scene context it is measured in.
+ *  Every row levels (`FootswitchLevelJob`'s doc), so this is a plain shape, not a
  *  discriminated union. */
 export interface FootswitchTarget {
   /** 0-based `ftsw` array index (the wire footswitch address). */
@@ -102,7 +101,7 @@ export interface FootswitchTarget {
   levGroupId: string;
   levNodeId: string;
   levParameterId: string;
-  /** THE SCENE CONTEXT this switch's sound is measured and solved in (D3): a 0-based
+  /** THE SCENE CONTEXT this switch's sound is measured and solved in: a 0-based
    *  `scenes[]` wire slot, or `null` = the preset's BASE sound (the historical default).
    *  `null` until `list_footswitch_scene_contexts` resolves the picker's `suggested`
    *  scene AND the user (or the picker's own default-fill) picks it. */
@@ -161,7 +160,7 @@ export function defaultParamIndex(params: LevelParamCandidate[]): number {
 
 /** Build a footswitch target from a specific candidate (the user's explicit pick, or the
  *  tone-safe default). The backend classifies bake vs assign from these ids.
- *  `sceneContext` — see `FootswitchTarget.sceneContext` (D3); `null` = base. */
+ *  `sceneContext` — see `FootswitchTarget.sceneContext`; `null` = base. */
 export function targetFromCandidate(
   switchIndex: number,
   sceneContext: number | null,
@@ -245,11 +244,9 @@ export function footswitchNameForCandidate(c: LevelParamCandidate): string {
  *  no `customLabel` of its own — so the Level list reads the same as the hardware the
  *  player is looking at.
  *
- *  BUG→FIX (2026-08-20, "Plumes+BD2+OCD"): this used to be `shortFallback(fender_id)`,
- *  which merely de-camel-cases the internal id — `ACD_BluesDriver` → "Blues Driver".
- *  That is the name of the pedal Fender EMULATES, not any name the device shows: the
- *  unit's strip reads "Sapphire OD" and the control picker one column over already read
- *  "SAPPHIRE DRIVE". Three names for one block, none of them matching the unit.
+ *  Not `shortFallback(fender_id)`, which merely de-camel-cases the internal id —
+ *  `ACD_BluesDriver` → "Blues Driver", the pedal Fender EMULATES, not any name the device
+ *  shows: the unit's strip reads "Sapphire OD".
  *
  *  Order: the device's own strip name (`name8`), else the Model Guide name, else the
  *  old de-camel-cased id so an uncatalogued or user block still gets something. */
@@ -278,12 +275,12 @@ export function footswitchName(f: FootswitchInfo): string {
 }
 
 /** Resolve a levelable footswitch's DEFAULT row target: the tone-safe default candidate
- *  (D2 — every row levels against a combined block+param dropdown, best candidate
- *  pre-selected), base scene context (D3's `suggested` scene isn't known synchronously —
+ *  (every row levels against a combined block+param dropdown, best candidate
+ *  pre-selected), base scene context (the `suggested` scene isn't known synchronously —
  *  the combined picker's lazy fetch fills it in once opened). `null` when the footswitch
  *  is not `footswitchLevelable` (no leveling candidate at all) — callers must NOT rely
  *  on this being pre-filtered upstream: the list shows such a switch too, disabled with
- *  a reason (BUG 1), so `chosenFrom` still has to cope with one reaching it. */
+ *  a reason, so `chosenFrom` still has to cope with one reaching it. */
 function footswitchTarget(f: FootswitchInfo): FootswitchTarget | null {
   if (!footswitchLevelable(f)) return null;
   const idx = defaultParamIndex(f.level_params);
@@ -333,10 +330,10 @@ export interface SetupOption {
    *  `outputLevel` — undefined/null = the amp default (every existing caller). */
   sceneHandle?: SceneHandlePick | null;
   /** Base rows only: the user's chosen leveling control, INSTEAD of the master
-   *  `presetLevel` — undefined/null = the "Preset level" pseudo-handle default (D2). */
+   *  `presetLevel` — undefined/null = the "Preset level" pseudo-handle default. */
   baseHandle?: BaseHandlePick | null;
   /** Footswitch rows only: this switch's preset's own scene NAMES, index-aligned with
-   *  the wire `scenes[]` slots — the scene-context picker's label source (D3). Undefined
+   *  the wire `scenes[]` slots — the scene-context picker's label source. Undefined
    *  for Base/scene rows. */
   fsSceneNames?: string[];
 }
@@ -472,8 +469,7 @@ export function buildSetupChoices(
  *
  *  Rank order: 0 base, 1 base-context footswitch, 2 scene, 3 scene-context footswitch — the
  *  split is per-row, not "all footswitches early" or "all footswitches late". HW evidence
- *  (the online 410 arc) is in `notes/gotchas.md`'s "A scene renders the base chain's ON
- *  blocks" entry.
+ *  (the online 410 arc) is in `notes/device/scenes.md#footswitch-state-on-recall`.
  *
  *  The rank only orders rows WITHIN one preset; `sortRunItems` below is the whole run
  *  order (presets in first-appearance order, then this rank). `chosenFrom` emits that
@@ -758,7 +754,7 @@ export function buildLevelJob(
   targetLufs: number,
   profile: Profile | null,
   save: boolean,
-  /** The row's user-chosen leveling control (D2), instead of the master `presetLevel`.
+  /** The row's user-chosen leveling control, instead of the master `presetLevel`.
    *  `null`/undefined = the "Preset level" pseudo-handle default. */
   handle?: BaseHandlePick | null,
 ): LevelJob {

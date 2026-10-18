@@ -106,7 +106,7 @@ describe("regression: #313 same-count bracket re-measure", () => {
     );
     expect(bracketCapOf(container).style.height).toBe("82px");
     // Same block counts, but the lanes now lay out differently (e.g. a longer label
-    // or the skeleton→real swap) — the old count-keyed signature never re-measured.
+    // or the skeleton→real swap) — a count-keyed signature would never re-measure.
     vi.restoreAllMocks();
     mockLaneRects([
       { top: 100, height: 0 },

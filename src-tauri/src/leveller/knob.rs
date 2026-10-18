@@ -4,9 +4,9 @@
 
 use super::*;
 
-/// The field-8 saved doc `set_knobs` needs for its Scene Edit decision, for the ENTRY
-/// POINTS that can't be handed one: the probe/legacy seams whose callers live
-/// outside the leveling run that already read it (`level_preset_block`,
+/// The `presetDataRequest` (field 8) saved doc `set_knobs` needs for its Scene Edit
+/// decision, for the ENTRY POINTS that can't be handed one: the probe seams whose callers
+/// live outside the leveling run that already read it (`level_preset_block`,
 /// `mute_floor_report`, the bench runner). Reads ONLY when a
 /// scene target is actually present, so every base/`presetLevel` path pays nothing, and
 /// ONCE per run — the batched scene runners take the command's single read instead
@@ -42,9 +42,9 @@ pub(super) fn recall_base(s: &mut Session) -> Result<(), LevelError> {
 }
 
 /// Recall the preset's ORIGINAL `lastLoadedScene` right before a save, so the save
-/// re-stamps it instead of whatever scene the run left active (HW: a base-context
-/// leveling save silently rewrote the preset's on-load scene, 3 → 8). Unsaved writes
-/// survive the recall (HW, `probe --defer-scenes`). `None` = no recall (old behavior).
+/// re-stamps it instead of whatever scene the run left active (HW: without it a
+/// base-context leveling save rewrites the preset's on-load scene to 8). Unsaved writes
+/// survive the recall (HW, `probe --defer-scenes`). `None` = no recall.
 /// The ONE pre-save recall shared by `apply_levels`, `save_deferred_scene_writes`, and
 /// `write_fs_values_on_session` — a settle-timing fix here fixes all three.
 pub(super) fn recall_original_scene(
@@ -59,25 +59,18 @@ pub(super) fn recall_original_scene(
 }
 
 /// The ONE pre-save sequence every batch/deferred save shares: recall the preset's original
-/// scene, re-assert any unsaved `presetLevel` the recall just reverted, then save. The
-/// recall's `loadScene` — base included — runs the device's own level-apply (danger.md's
-/// "`load_preset` + `set_preset_level` in the same connection → the set is overridden"), so
-/// an unsaved working-copy `presetLevel` reverts to the SAVED value right before the save
-/// persists it. HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved doc still
-/// read the prior 0.32.
-///
-/// THE SHAPE SPLIT. That revert is LEAN-session behaviour — every caller of this seam saves
-/// on a connection that did NOT `load_preset` in-session. A LIVE-edit session that loaded the
-/// preset itself carries its unsaved `presetLevel` through scene recalls and into the save
-/// (HW, fw 1.8.45-era `probe_redistribute_persist_check`: pl 0.42 read back against a saved
-/// 0.53 after `loadScene(1)` + `loadScene(BASE)` + save), which is why
-/// `restore_redistribution` does not route through here. Node/overlay writes are immune in
-/// either shape, so only `Reassert::PresetLevel` needs re-writing.
+/// scene, re-assert the run's unsaved values, then save. A `loadScene(8)` while base is
+/// current re-applies the base snapshot's `presetLevel` — the level of the last real load,
+/// scene recall or base structural edit, not the run's unsaved one (`setPresetLevel` and a
+/// save leave the snapshot alone; see [`reload_after_level_save`]). A recall from any other
+/// scene carries the unsaved level forward. So the run's own level is re-asserted after any
+/// recall (static RE + HW, fw 1.8.58). Node/overlay writes survive a recall, so only
+/// `Reassert::PresetLevel` needs re-writing.
 ///
 /// The re-assert does NOT defeat the restore: `setPresetLevel` emits no `loadScene`, so the
 /// scene the save stamps is still the recalled one. `reasserts` are written in the ORDER
 /// GIVEN (every caller lists `PresetLevel` before a `Param`), each followed by
-/// `SETTLE_AFTER_SET_MS` so the idle gap stays under the cliff.
+/// `SETTLE_AFTER_SET_MS` so the idle gap stays inside the ≤300 ms rule.
 pub(super) fn recall_reassert_save(
     s: &mut Session,
     slot: ListIndex,
@@ -85,7 +78,7 @@ pub(super) fn recall_reassert_save(
     reasserts: &[Reassert],
 ) -> Result<(), LevelError> {
     recall_original_scene(s, restore_scene)?;
-    // Only a recall reverts the working copy, so only a recall needs undoing. Without one the
+    // Only a recall can revert the level, so only a recall needs undoing. Without one the
     // values are already in the device's working copy from this same session.
     if restore_scene.is_some() {
         for r in reasserts {
@@ -112,10 +105,9 @@ pub(super) fn recall_reassert_save(
 /// Set the chosen knob to `value` on an open session (before re-amp engage). The
 /// single-knob case of `set_knobs` — see its doc for the recall/write ordering
 /// rules and what `saved` is for. Must be the FIRST write on the connection when
-/// `knob` is a `Block`: its own scene recall, base or otherwise, reverts an
-/// earlier unsaved `presetLevel` on this session (the lean-session level-apply —
-/// callers here connect without an in-session `load_preset`; see
-/// `recall_reassert_save`'s shape split) AND re-asserts that scene's own bypass
+/// `knob` is a `Block`: its own scene recall can revert an earlier unsaved
+/// `presetLevel` on this session (a base recall while base is current; see
+/// `recall_reassert_save`) AND re-asserts that scene's own bypass
 /// state (see `capture_on_session`'s doc), so a caller doing force-bypass
 /// isolation must write the bypasses AFTER this call, never before
 /// (`measure_knob_at`/`measure_fs_at` follow that order).
@@ -181,42 +173,35 @@ pub(crate) fn set_knob_value_only(
 ///   from base (HW 3-cell matrix, `probe_api/slot_write.rs`), so it is required
 ///   where the overlay is absent (it is what materialises it; without it the write
 ///   LEAKS TO BASE) and actively destructive where the overlay exists (the write
-///   lands on the overlay anyway, and the enable wipes the scene's other stored
-///   params). `saved` — the slot's field-8 preset JSON, read ONCE per run and
+///   params). `saved` — the slot's `presetDataRequest` preset JSON, read ONCE per run and
 ///   threaded (`scene_jobs::read_saved_preset`) — is the only source
 ///   that can tell the two apart: after `overlay_scene_onto_graph` a base value is
 ///   indistinguishable from an overlaid one, so the live docs can't answer it.
 ///   The decision itself is NOT taken here: it is
 ///   `scene_jobs::scene_write_verdict_for_param`, the ONE write-landing policy this
-///   lane shares with the Doctor's prescription apply, so a `BypassOnly` node can't
-///   be refused in one lane and written in the other.
-///   `SceneOverlay::Unknown` (truncated read) or no `saved` at all ⇒ REFUSE the
+///   lane shares with the persist check and the scene-handle picker.
+///   `SceneOverlay::Unknown` (a cut read) or no `saved` at all ⇒ REFUSE the
 ///   batch before any device write; both write shapes corrupt from there. Mostly so
-///   does `SceneOverlay::BypassOnly` — an overlay carrying only the bypass family
-///   means that block's Scene Edit flag is DISABLED and the scene SHARES its knobs
-///   with base, so the enable-dropped write lands on BASE and changes every sharing
-///   scene (HW-verified fw 1.8.45) — UNLESS `scene_jobs::shared_write_is_scene_local`
+///   does `SceneOverlay::BypassOnly` — a `{bypass}`-only entry (what a Scene Edit
+///   disable leaves) sends the write to BASE, which changes every sharing scene
+///   (static RE + HW, fw 1.8.58) — UNLESS `scene_jobs::shared_write_is_scene_local`
 ///   confirms the leak is audible ONLY in this scene (every other sharing scene stays
 ///   bypassed, or pins the param with its own overlay), in which case the verdict
 ///   allows the base-landing write through as `WriteDirect` too. The refusal is a
 ///   per-scene skip, never a batch abort: `run_scene_jobs` turns a solve `Err` into a
 ///   `failed_scene_outcome` and continues, exactly like a `build_scene_jobs`
 ///   "no active guitar amp" skip.
-///   Re-asserted on EVERY connection — including the enable. On fw 1.8.45 the scene
-///   and the scene-edit enables read as not surviving the leveller's reconnects; on
-///   fw 1.8.58 both survive (static RE: only the HID open flag and the send queue
-///   reset), and the 1.8.45 symptom fits a same-slot `loadPreset` being a real reload
-///   into `lastLoadedScene`, or a lapse-dropped `loadScene` (INFERRED). Re-asserting
-///   stays safe, but a repeated enable on an overlay that is already Full reseeds it
-///   from base. The enable repeats because `saved` is a pre-run
-///   snapshot: an overlay this run just materialised still reads Absent, so the
-///   enable repeats and reseeds again. Harmless, because the leveled write always
-///   follows it inside the same batch — do NOT "optimise" it into a cached
-///   per-node enabled set, which would drop the enable on a later connection where
-///   the device no longer has scene edit armed.
-///   The settles must stay SHORT: the device silently drops a write after a
-///   ~400–450 ms pre-write IDLE gap (see `SETTLE_AFTER_SCENE_EDIT_MS` — measured as a
-///   per-command cliff on fw 1.8.45, so a settle is slept ONLY when its command was sent);
+///   Re-asserted on EVERY connection — including the enable. The active scene and the
+///   Scene Edit state survive a reconnect (static RE, fw 1.8.58); re-asserting stays
+///   safe, but a repeated enable on an overlay that is already Full reseeds it from
+///   base. The enable repeats because `saved` is a pre-run snapshot: an overlay this
+///   run just materialised still reads Absent, so the enable repeats and reseeds
+///   again. Harmless, because the leveled write always follows it inside the same
+///   batch — do NOT "optimise" it into a cached per-node enabled set; the re-assert is
+///   the conservative shape.
+///   The settles must stay SHORT: the client lapses after 750 ms of host OUT silence,
+///   so keep each pre-write gap ≤300 ms (see `SETTLE_AFTER_SCENE_EDIT_MS`; a settle is
+///   slept ONLY when its command was sent);
 ///   the rare too-fast leak-to-base race is covered by the verify + correction
 ///   pass.
 /// * A base-only target set (`Block { scene_slot: None, .. }`, no `Some`) gets
@@ -303,11 +288,11 @@ pub(super) fn set_knobs(
                 }
                 checked.push(key);
                 // ONE write-landing policy for every scene-writing lane
-                // (`scene_jobs::scene_write_verdict_for_param`, shared with the Doctor's
-                // apply) — the four overlay states can never be answered two ways. The
-                // no-saved-read case stays local: the verdict is a function OF a saved
-                // document, so having none is this caller's own gap, and it keeps its own
-                // wording.
+                // (`scene_jobs::scene_write_verdict_for_param`, shared with the persist
+                // check and the scene-handle picker) — the four overlay states can never be
+                // answered two ways. The no-saved-read case stays local: the verdict is a
+                // function OF a saved document, so having none is this caller's own gap, and
+                // it keeps its own wording.
                 let Some(sv) = saved else {
                     return Err(LevelError::refused(
                         SkipKind::SceneWriteRefused,
@@ -338,9 +323,8 @@ pub(super) fn set_knobs(
             }
         }
     }
-    // Repro instrumentation: wall-clock every step relative to the loadScene recall,
-    // to observe idle gaps crossing the ~400-450 ms silent-drop cliff (see
-    // `SETTLE_AFTER_SCENE_EDIT_MS`).
+    // Wall-clock every step relative to the loadScene recall, to observe idle gaps
+    // approaching the 750 ms session lapse (see `SETTLE_AFTER_SCENE_EDIT_MS`).
     let t0 = std::time::Instant::now();
     if let Some(scene) = scene {
         s.load_scene(scene)?;
@@ -357,8 +341,8 @@ pub(super) fn set_knobs(
             );
         }
         // Settle ONLY when an enable was actually sent — a settle for a command that
-        // wasn't is pure idle and rides the ~400-450 ms silent-drop cliff (see
-        // `SETTLE_AFTER_SCENE_EDIT_MS`'s doc for the HW evidence).
+        // wasn't is pure idle and moves toward the 750 ms session lapse (see
+        // `SETTLE_AFTER_SCENE_EDIT_MS`).
         if !needs_enable.is_empty() {
             crate::device_gate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
         }

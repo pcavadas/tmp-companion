@@ -118,11 +118,10 @@ mod audition_copy_tests {
 }
 
 /// End-to-end tests of the held-session Copy/Level orchestration over the in-memory
-/// `sim_device::SimDevice` fake — NO hardware. These exercise the real command-layer
-/// state machine (`copy_apply_one`'s load → re-arm → confirm-gated edits → identity-
-/// preserving save) and the two safety invariants that previously only ever ran on the
-/// device: a `presetError` is NEVER followed by a save, and an unconfirmed edit is read
-/// back before any re-send. The pure edit→op diff is unit-tested elsewhere (`copyModel` in
+/// `sim_device::SimDevice` fake — NO hardware. These exercise the real command-layer state machine
+/// (`copy_apply_one`'s load → re-arm → confirm-gated edits → identity- preserving save) and the two
+/// safety invariants, offline: a `presetError` is NEVER followed by a save, and an unconfirmed edit
+/// is read back before any re-send. The pure edit→op diff is unit-tested elsewhere (`copyModel` in
 /// Vitest, `bulk_cmd` in Rust); this is the wire-driving the diff feeds.
 #[cfg(test)]
 mod copy_level_e2e_tests {
@@ -265,9 +264,9 @@ mod copy_level_e2e_tests {
     fn copy_cold_first_edit_silent_drop_is_retried_then_saved() {
         // The first structural edit after a fresh load is silently DROPPED; the read-back
         // shows `n2` still there with its old model, so the held path re-sends it once and
-        // then confirms + saves. The shape is `drop-first-structural`, tagged `unreachable`:
-        // fw 1.8.58 has no silent-drop path for a correctly framed edit (INFERRED). It stays
-        // as coverage of the not-landed branch of the read-back.
+        // then confirms + saves. The shape is `drop-first-structural`, tagged `unreachable`: fw
+        // 1.8.58 has no silent-drop path for a correctly framed edit (static RE, inferred). It
+        // stays as coverage of the not-landed branch of the read-back.
         let (item, ev) = run_copy(
             SimDevice::new()
                 .with_preset_json(&padded_two_node_doc())
@@ -552,10 +551,10 @@ mod copy_level_e2e_tests {
 
     #[test]
     fn copy_a_stale_post_save_push_cannot_poison_the_read_back() {
-        // HW 2026-09-02 (fw 1.8.45): the buffer-scraped "read-back" after the save was the
-        // LOAD-TIME document and the Copy view patched its cache back to the original
-        // blocks. The read now happens BEFORE the save, so whatever the device pushes
-        // afterwards — here the pre-edit graph — is never what the item carries.
+        // A buffer-scraped "read-back" after the save can be the LOAD-TIME document and
+        // patch the Copy view's cache back to the original blocks (HW). The read happens
+        // BEFORE the save, so whatever the device pushes afterwards — here the pre-edit
+        // graph — is never what the item carries.
         let sim = SimDevice::new()
             .with_preset_json(&padded_two_node_doc())
             .with_stale_push_after_save();
@@ -928,7 +927,7 @@ mod copy_level_e2e_tests {
         // The fake's field-2 re-prompt renders the working copy: confirmed structural edits
         // in order (a dropped send never lands), group-scoped, `nodeId == FenderId` for a
         // minted node; a load discards them. This is the offline stand-in for the HW fact
-        // the Copy read rests on (6/6 re-prompts showed the edit, fw 1.8.45, 2026-09-03).
+        // the Copy read rests on (HW: the re-prompt shows the edit).
         let sim = SimDevice::new()
             .with_preset_json(&padded_two_node_doc())
             .with_drop_first();
@@ -1029,7 +1028,7 @@ mod copy_level_e2e_tests {
         assert!(expected_roster(&pre, &ghost).is_none());
     }
 
-    // ── PR2: confirm-before-save write safety (Session::confirm_active) ──
+    // ── Confirm-before-save write safety (Session::confirm_active) ──
 
     #[test]
     fn confirm_active_ok_when_slot_echo_matches() {

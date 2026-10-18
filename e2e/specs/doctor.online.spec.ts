@@ -10,31 +10,27 @@ import {
   reampOff,
 } from "../fixtures/scenario";
 
-// ONLINE Doctor consolidation (8-file → 4-file suite shrink). Two oracles that both need
-// the real device, merged into one file so the online run pays ONE Playwright boot/rest
-// for Doctor instead of two (doctor.spec.ts's online half + doctor-oracle.online.spec.ts).
-// Doctor never writes to the unit (the owner's decision), so no online spec reads a Doctor
-// save back.
+// ONLINE Doctor: two oracles that both need the real device, in one file so the online run
+// pays ONE Playwright boot for Doctor. Doctor never writes to the unit, so no online spec
+// reads a Doctor save back.
 //
-// (a) is doctor-oracle.online.spec.ts moved here (its two wire-seam-only rows, FIZZY and
-//     BRIGHT, are covered numerically by src-tauri/src/doctor_audio_oracle.rs) — the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
+// (a) is the executable proof that all 13 of E2E Doctor Oracle's (407) spectral checks
 //     actually diagnose on real audio, not just that the fixture carries the right shape
-//     (that structural half stays pinned offline by fixture_gates.rs).
+//     (that structural half stays pinned offline by fixture_gates.rs; its two
+//     wire-seam-only rows, FIZZY and BRIGHT, are covered numerically by
+//     src-tauri/src/doctor_audio_oracle.rs).
 // (b) is E2E Edge's (402) baked 2.6 kHz EQ ring on real audio, by raw invoke: base plus two
 //     consecutive scenes. (a)'s RESONANT row is a q14 +24 dB spike far over the ring gate;
 //     Edge's ring is the near-threshold one (a hedged chip still counts), and its scenes are
 //     the only online Doctor sounds that run the SCENE path — the second scene skips its
-//     preset load (`doctor_skip_load`). It used to drive the Doctor UI over all ~10 Edge
-//     sounds behind a whole-library backup scan; the finding's rendering, its scoping to
+//     preset load (`doctor_skip_load`). The finding's rendering, its scoping to
 //     its own preset's rows ("keeps a ringing finding on its own preset's rows") and the
 //     select → check → Results flow are `DoctorResults.test.tsx`'s and doctor.spec.ts's
 //     offline.
 test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", () => {
-  // Shared across both tests below (mirrors doctor-oracle.online.spec.ts's own teardown):
-  // reamp-off FIRST on every test so a mid-test failure can't strand the unit
-  // input-muted, and ONE afterAll clearScenario rather than a per-test clear — a per-test
-  // clear would force the second test's ensureScenario down the flaky in-process re-seed
-  // (the very re-import cost this consolidation exists to avoid paying twice).
+  // Shared across both tests below: reamp-off FIRST on every test so a mid-test failure
+  // can't strand the unit input-muted, and ONE afterAll clearScenario rather than a
+  // per-test clear.
   test.afterEach(async ({ page }) => {
     await reampOff(page);
   });
@@ -73,7 +69,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", ()
   const SWITCHES: { row: number; label: string; verdict: Verdict }[] = [
     { row: 1, label: "CONTROL", verdict: { kind: "zero" } },
     { row: 2, label: "MUDDY", verdict: { kind: "contains", diagKey: "muddy" } },
-    // BOOMY and HARSH fire on the pitched-pluck stimulus (#199): the remote device read
+    // BOOMY and HARSH fire on the pitched-pluck stimulus: the remote device read
     // BOOMY's lows local 7.0 against the 4.1 gate (dark co-fires) and HARSH's high-mids
     // local 4.6 against 3.9.
     { row: 3, label: "BOOMY", verdict: { kind: "contains", diagKey: "boomy" } },
@@ -100,7 +96,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", ()
     },
   ];
 
-  // (a) — moved verbatim from doctor-oracle.online.spec.ts (COVERAGE row 40).
+  // (a) — COVERAGE row 40.
   test("base fires nothing; each switch's own spectral verdict fires; seam-only rows just capture", async ({
     page,
   }) => {
@@ -112,10 +108,10 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", ()
     //   14 sounds (1 base + 13 switches) x 18 s/capture (doctor.spec.ts's own
     //   documented 12-18 s/capture online range, worst end) = 252 s.
     //   + up to 3 floor-suspect retries (FLOOR_RETRY_GAP_MS 5 s + one recapture
-    //     18 s each, leveller.rs) = 69 s.
-    //   + ONE live field-8 isolation read for the whole run (nodes/footswitches
-    //     are sent empty below, so every sound falls to the cached-per-list-index
-    //     legacy read) = ~5 s.
+    //     18 s each, leveller/measure.rs) = 69 s.
+    //   + ONE live `presetDataRequest` (field 8) isolation read for the whole run
+    //     (nodes/footswitches are sent empty below, so every sound falls to the
+    //     cached-per-list-index fallback read) = ~5 s.
     //   + a cold `ensureScenario` seed, worst case (its own 240_000 ms request
     //     timeout) = 240 s.
     //   + the run-end restore-active-preset reload = ~5 s.
@@ -134,7 +130,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ ring (402)", ()
     const reampBase = await reampCounters(page);
 
     // Nodes/footswitches sent empty: `resolve_sound_isolation`
-    // (src-tauri/src/commands/doctor.rs) falls back to the legacy live field-8
+    // (src-tauri/src/commands/doctor.rs) falls back to the live `presetDataRequest`
     // read (cached per list index) whenever a sound's `nodes` is empty — this
     // spec raw-invokes the command directly rather than replaying a backup scan,
     // so it exercises that fallback path deliberately.

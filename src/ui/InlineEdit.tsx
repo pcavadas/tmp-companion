@@ -1,11 +1,11 @@
-// src/ui/InlineEdit.tsx — the ONE inline text editor (#314): Songs' setlist-title
+// src/ui/InlineEdit.tsx — the ONE inline text editor: Songs' setlist-title
 // rename, Settings' target-name rename, and Songs' new-setlist field.
 //
 // It owns its draft (seeded from `initial` on mount — callers mount it only while
 // editing, so a remount is a fresh edit). Enter commits, blur commits unless the
 // caller opts out (`commitOnBlur={false}`: the new-setlist field, whose ✓/✕
 // buttons — `commitLabel` — sit beside it), and Escape cancels. Enter/Escape here
-// are the CLAUDE.md text-field carve-out: they act only while THIS input has
+// are the AGENTS.md text-field carve-out: they act only while THIS input has
 // focus, on THIS field's own edit — never a shortcut. The first commit or cancel ends the edit, so a blur
 // that follows an Enter/Escape (the input unmounting) can't fire a second one.
 //

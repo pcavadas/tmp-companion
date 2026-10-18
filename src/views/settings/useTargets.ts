@@ -35,8 +35,7 @@ export function useTargets({
 
   function addTarget() {
     const uid = newUid();
-    // PR2 re-baseline: +3 from the mono-era -22.0 default (same audible loudness
-    // under the new 2-ch BS.1770 convention — see TargetRow's TMIN/TMAX doc).
+    // −19.0 LUFS under the 2-ch BS.1770 convention (see TargetRow's TMIN/TMAX doc).
     void persistTargets([...targets, { uid, name: "New target", lufs: -19.0 }]);
     setJustAdded(uid);
   }

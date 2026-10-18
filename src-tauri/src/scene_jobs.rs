@@ -1,6 +1,6 @@
 //! Scene-leveling job planning: amp classification, knob classification and bounds, job build,
 //! and the saved-preset scene-overlay reads. Shared by the scene-leveling commands, the
-//! leveller and the probe (it moved out of `probe_api`, which holds probe entry points).
+//! leveller and the probe.
 
 use crate::error::{Refusal, SkipKind};
 use crate::footswitch::{self, max_referenced_scene};
@@ -120,9 +120,9 @@ static NULL_DOC: serde_json::Value = serde_json::Value::Null;
 /// Pick the route STRUCTURE graph from the pre-pass docs: the first doc that decodes
 /// to a KNOWN routing template (`session::is_known_routing_template`). Routing is
 /// scene-invariant, so one complete-enough doc defines lane membership for every
-/// scene. Returns `None` when no doc carries a known template — the live field-3
-/// partial truncates before the `template` tail, and silently defaulting to "series"
-/// would re-introduce the parallel mislevel, so the caller must skip instead.
+/// scene. Returns `None` when no doc carries a known template — a doc cut short before
+/// the `template` tail carries none, and silently defaulting to "series" would
+/// re-introduce the parallel mislevel, so the caller must skip instead.
 pub(crate) fn structure_graph(
     docs: &[(u32, Option<serde_json::Value>)],
 ) -> Option<session::ActiveGraph> {
@@ -152,8 +152,8 @@ fn answers_all_amp_bypasses(amps: &[&session::GraphNode], doc: &serde_json::Valu
         .all(|nd| scenes::block_bypass_in_live_graph(doc, &nd.group_id, &nd.node_id).is_some())
 }
 
-/// Preset-wide gate: the routing template must be KNOWN (the live field-3 partial
-/// truncates before the `template` tail, and silently defaulting to "series" would
+/// Preset-wide gate: the routing template must be KNOWN (a doc cut short before the
+/// `template` tail carries none, and silently defaulting to "series" would
 /// re-introduce the parallel mislevel). A known template — series, parallel-merged,
 /// split-output, or dual-input — is classifiable; only an unknown/incomplete one is a
 /// hard error. (Mic-only paths produce no guitar amp candidate and skip per-scene.)
@@ -240,8 +240,8 @@ pub(crate) fn classify_scene_knobs(
     // the amps: a scene that SWAPS amps then gets leveled
     // on whichever amp BASE leaves on, a knob outside that scene's signal path. The solve sweeps
     // it, nothing moves, and the row reports a `no_authority` clamp indistinguishable from a
-    // genuine ceiling (HW: Friedman HBE slot 28 — every scene drove `ACD_BE100` while the Twin the
-    // swap scene needs was never written).
+    // genuine ceiling (HW: on an amp-swap preset every scene drove the base amp while the amp
+    // the swap scene needs was never written).
     //
     // A well-formed doc always answers: the live prepass materialises the whole graph, and
     // `scene_docs_from_saved` merges the sparse overlay ONTO the base graph. So "no amp is
@@ -432,12 +432,9 @@ pub(crate) const KNOB_ONLY_PROBE_TARGET_LUFS: f64 = -23.0;
 /// `Err` for that scene — never a silent single-amp fallback.
 ///
 /// `saved_fallback` = the slot's field-8 saved preset JSON, used ONLY for the routing
-/// STRUCTURE when no live doc carries a complete `audioGraph.template`: a preset with a
-/// large audioGraph (many blocks) overruns the device's LEAN-session field-3 push (~3.4 KB
-/// observed; a dense healthy session can deliver the full doc, but the prepass sessions
-/// empirically get the lean push) in EVERY scene doc, so classification failed for the
-/// whole preset ("some presets
-/// just never scene-level"). Routing is scene-invariant and the prepass `load_preset`
+/// STRUCTURE when no live doc carries a complete `audioGraph.template` (a live doc cut
+/// short loses it, and without a fallback the whole preset would fail to classify).
+/// Routing is scene-invariant and the prepass `load_preset`
 /// materialized exactly the saved preset, so the saved base graph is authoritative for
 /// template + lane membership. Knob VALUES still come from the live per-scene docs.
 pub(crate) fn build_scene_jobs(
@@ -542,11 +539,11 @@ impl AmpPlan {
 /// can't answer. A doc with no `scenes` at all is not a failed overlay read — it is the
 /// routing-TEMPLATE fallback the oversized-audioGraph class depends on
 /// (`scene_jobs_saved_fallback_supplies_missing_template`), and `scenes` is the first section
-/// a field-8 cut takes (HW: 22/25 presets read "scenes unknown"), so refusing on its mere
+/// a field-8 cut takes, so refusing on its mere
 /// absence would skip almost every row for the probe/bench callers, whose saved doc is never
 /// required to be complete. The batched command path — the only one that runs the trade —
 /// reads complete-or-fail, so there a present-but-unanswerable `scenes` is genuine
-/// malformation, not truncation.
+/// malformation, not a cut.
 pub(crate) fn plan_amp_scene(
     scene: u32,
     doc: &serde_json::Value,
@@ -655,7 +652,7 @@ pub(crate) fn build_scene_jobs_with_handles(
                         // Filled by `leveller::prepass_scene_ceilings` when the caller runs
                         // the reordered (measure-everything-first) run.
                         prepass: None,
-                        // Base isolation (A3/A4), when this job is the base row, is stamped
+                        // Base isolation, when this job is the base row, is stamped
                         // onto it AFTER this builder returns — see
                         // `commands::level_scenes::level_scenes_apply_batched`.
                         force_bypass: Vec::new(),
@@ -898,13 +895,10 @@ pub(crate) fn read_saved_preset(list_index: ListIndex) -> Option<serde_json::Val
 /// [`read_saved_preset`]'s COMPLETE-OR-FAIL sibling, for the scene LEVELING planners.
 ///
 /// The tolerant read above is right for consumers that degrade gracefully when a section
-/// is missing. A scene-leveling run is not one of them: a large preset's field-8 read is
-/// tail-truncated (per-slot deterministic — re-reading never lengthens it), and the tail
-/// that gets cut is `scenes`. The planner then simply does not see the last scene, so the
-/// run levels the scenes it can see and silently leaves the others untouched — the user
-/// reads that as "the Clean scene failed". HW-verified on the Friedman HBE (device slot
-/// 28): the field-8 read returns 3 of 4 scenes, the third cut mid-record with no
-/// `sceneName` and 9 of 15 nodes, and "Clean" is absent entirely.
+/// is missing. A scene-leveling run is not one of them: a lapse mid-stream can cut a
+/// field-8 reply (the device sends it whole, fw 1.8.58), and the tail that gets cut is
+/// `scenes`. The planner would then simply not see the last scenes, so the run would level
+/// the scenes it can see and silently leave the others untouched.
 ///
 /// So this routes through [`crate::slot_read::read_slot_preset_complete`], which falls back to a
 /// name-guarded device backup — the only transport carrying the whole document — and
@@ -915,7 +909,7 @@ pub(crate) fn read_saved_preset_complete(
     read_saved_preset_complete_sections(list_index, &["scenes"])
 }
 
-/// [`read_saved_preset_complete`] with an explicit required-sections list — A3's widened read
+/// [`read_saved_preset_complete`] with an explicit required-sections list — the widened read
 /// for a batch that carries a BASE row: the base isolation derivation additionally needs
 /// `ftsw` (`doctor_force_bypass`'s own input), and a partial `ftsw` under-isolates silently
 /// rather than erroring, so it must be COMPLETE-OR-FAIL exactly like `scenes` already is.
@@ -1035,7 +1029,10 @@ pub(crate) fn prepass_scene_docs(
 /// place). For every node in every group of both `guitarNodes` and `micNodes`, if the scene
 /// carries `<graph>.<group>.<nodeId>.dspUnitParameters`, those keys win over the
 /// cloned node's `dspUnitParameters` (base keys the overlay omits survive). A `splitMix`
-/// overlay merges key-level onto the cloned `audioGraph.splitMix`.
+/// overlay merges key-level onto the cloned `audioGraph.splitMix`. On a recall the device
+/// merges only a `{bypass}` overlay key by key and rebuilds the node from any other overlay
+/// alone, with block defaults for the keys it lacks; this merge keeps base keys either way
+/// (notes/device/scenes.md#the-apps-classifier).
 pub(crate) fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::Value) {
     for key in crate::audiograph::GRAPHS {
         let overlay_groups = scene.get(key).and_then(|g| g.as_object());
@@ -1092,24 +1089,30 @@ pub(crate) fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &se
 /// [`overlay_scene_onto_graph`] destroys (after the merge a base value is indistinguishable
 /// from an overlaid one, so overlay presence can only be read from the raw scene).
 ///
-/// Load-bearing for the scene-write rule (HW-proven, fw 1.8.45 scratch slot 30; the isolation
-/// matrix is written up in `slot_write::probe_set_scene_param`): `set_node_scene_edit(node,
-/// true)` RESEEDS that node's overlay from base, so it must be enabled ONLY for a node with
+/// Load-bearing for the scene-write rule (HW, `slot_write::probe_set_scene_param`; static RE,
+/// fw 1.8.58): `set_node_scene_edit(node, true)` RESEEDS that node's overlay from base, so it
+/// must be enabled ONLY for a node with
 /// no overlay in the target scene — with an overlay present the enable WIPES the scene's
 /// stored params, without one the write LEAKS TO BASE. Both mistakes corrupt the preset, so
 /// "can't tell" is its own state and never collapses into `Absent`.
 ///
-/// FOUR states, not three (HW-verified fw 1.8.45): an overlay carrying ONLY the bypass
-/// family is a node whose Scene Edit flag is DISABLED — its knobs are SHARED with base, and
-/// the enable-dropped write lands on BASE rather than on the overlay. That is
-/// [`SceneOverlay::BypassOnly`], and it must never collapse into `Full`.
+/// FOUR states, not three. The device keys a scene write's landing on the overlay entry,
+/// not on a separate flag: a `bypass` write, or a write to an entry with more than one key,
+/// lands in the overlay; a write to an absent or one-key entry lands on base (a `bypass`
+/// write into an entry with no `bypass` key lands nowhere). A Scene Edit
+/// disable shrinks the entry to `{bypass}`, so the node's knobs are SHARED with base (static
+/// RE, fw 1.8.58; HW). That is [`SceneOverlay::BypassOnly`], and it must never collapse into
+/// `Full`. The classifier here tests for the bypass family ([`BYPASS_ONLY_KEYS`]), not the
+/// key count, so it differs from the device at edge shapes — a one-key non-bypass entry
+/// classifies `Full`, a `{bypass, bypassType}` entry `BypassOnly`
+/// (notes/device/scenes.md#the-apps-classifier).
 ///
 /// A BYPASS-ONLY overlay's whole permitted key set — the block's per-scene STATE keys;
 /// NONE of these is a knob, so an overlay whose keys are a subset of these carries no
-/// per-scene knob values at all (HW-verified fw 1.8.45 — see [`SceneOverlay::BypassOnly`]).
+/// per-scene knob values at all (see [`SceneOverlay::BypassOnly`]).
 /// `bypass` is the on/off flag and `bypassType` its companion enum; `clipState`,
 /// `muteInput`, `muteOutput` are the other non-knob per-block state fields
-/// [`crate::footswitch::is_levelable_param`] also excludes — shared so the two exclusion
+/// `footswitch::is_levelable_param` also excludes — shared so the two exclusion
 /// lists (an overlay's "carries no knobs" test and a footswitch candidate's "is this a
 /// knob" test) can't drift apart: an overlay of `{bypass, clipState}` must classify
 /// `BypassOnly` exactly like a bare `{bypass}` one. An EMPTY param map is a subset too and
@@ -1125,26 +1128,17 @@ const BYPASS_ONLY_KEYS: [&str; 5] = [
     "muteOutput",
 ];
 
-/// Consumed by `leveller::set_knobs`' Scene Edit enable decision. (The footswitch bake gate
-/// in `footswitch::plan_footswitch_jobs` no longer reads scene overlays at all — the assign
-/// gate (2026-08-19) decides bake-vs-assign purely off whether the switch already carries a
-/// `param` fn for the selected control, so this type's other former consumer,
-/// `scene_overlays_change_param`, is gone.)
+/// Consumed by the write-landing verdict ([`scene_write_verdict_for_param`]).
 pub(crate) enum SceneOverlay<'a> {
-    /// The scene carries KNOB params for this node (its Scene Edit flag is ENABLED) — write
-    /// WITHOUT the Scene Edit enable; the write lands on the overlay (HW). The Scene-Edit
-    /// FLAG STATE alone decides the landing, not per-param containment: an enable-less write
-    /// of a param this overlay does NOT yet carry still lands on the overlay, EXTENDING it
-    /// per-param (HW-verified fw 1.8.45, crafted Full-partial overlay: a TubeScreamer scene-0
-    /// overlay carrying `blend`/`overdrive`/`tone` but not `level`, base `level` 0.65 — an
-    /// enable-less `changeParameter(level, 0.22)` landed IN the overlay, every sibling param
-    /// survived unchanged with no reseed, base stayed 0.65, other scenes untouched).
+    /// The scene carries KNOB params for this node — write WITHOUT the Scene Edit enable; the
+    /// write lands on the overlay. Per-param containment does not matter: an enable-less
+    /// write of a param this overlay does NOT yet carry still lands on the overlay, EXTENDING
+    /// it per-param with no reseed (static RE, fw 1.8.58; HW).
     Full(&'a serde_json::Map<String, serde_json::Value>),
-    /// The overlay exists but carries ONLY the bypass family ([`BYPASS_ONLY_KEYS`]) — the
-    /// block's Scene Edit flag is DISABLED, so this scene SHARES the node's knobs with the
-    /// base preset. HW-verified fw 1.8.45: a scene-context param write with the enable
-    /// dropped against such a node lands on BASE (measured: base gain 2.5 → 7.0, the
-    /// bypass-only overlay unchanged, other scenes' full overlays untouched). Neither write
+    /// The overlay exists but carries ONLY the bypass family ([`BYPASS_ONLY_KEYS`]) — what a
+    /// Scene Edit disable leaves, so this scene SHARES the node's knobs with the base preset.
+    /// A scene-context param write with the enable dropped against such a node lands on BASE
+    /// (static RE, fw 1.8.58; HW). Neither write
     /// shape is safe — enabling reseeds, omitting leaks to base — so a scene-scoped knob
     /// write must REFUSE, exactly like [`SceneOverlay::Unknown`], but with a cause the user
     /// can act on. Carries the params so the bypass-family gates can still read them.
@@ -1152,9 +1146,9 @@ pub(crate) enum SceneOverlay<'a> {
     /// The scene exists and carries no entry for this node — the enable is what materialises
     /// the overlay, so it is REQUIRED here.
     Absent,
-    /// Presence unknown: a base slot (base has no overlay concept) or a truncated field-8
-    /// read (`scenes` sits at the document tail, so a cut takes it first — HW: 22/25 presets
-    /// read "scenes unknown"). Neither write shape is safe; the caller must refuse.
+    /// Presence unknown: a base slot (base has no overlay concept) or a cut-short field-8
+    /// read (`scenes` sits at the document tail, so a cut takes it first). Neither write
+    /// shape is safe; the caller must refuse.
     Unknown,
 }
 
@@ -1174,7 +1168,7 @@ pub(crate) fn scene_overlay<'a>(
     // (scene, node) pair.
     let Some((group, node_id, fender_id)) = crate::audiograph::roster_entry(preset, node) else {
         // No roster hit is only meaningful once the scene body itself is readable: a base
-        // slot or a truncated `scenes` tail must still answer `Unknown`, not `Absent`.
+        // slot or a cut-short `scenes` tail must still answer `Unknown`, not `Absent`.
         return scene_body(preset, scene).map_or(SceneOverlay::Unknown, |_| SceneOverlay::Absent);
     };
     scene_overlay_for(preset, scene, (&group, &node_id, &fender_id))
@@ -1190,7 +1184,7 @@ pub(crate) enum SceneParamRead<'a> {
     /// miss, from [`SceneOverlay::Full`]/[`SceneOverlay::BypassOnly`] without the key, or
     /// [`SceneOverlay::Absent`].
     Absent,
-    /// Presence unanswerable ([`SceneOverlay::Unknown`]) — a base slot or a truncated field-8
+    /// Presence unanswerable ([`SceneOverlay::Unknown`]) — a base slot or a cut-short field-8
     /// read.
     Unknown,
 }
@@ -1214,7 +1208,7 @@ pub(crate) fn overlay_param<'a>(
     }
 }
 
-/// The scene's raw body (`scenes[scene]`), or `None` for a base slot / a truncated read.
+/// The scene's raw body (`scenes[scene]`), or `None` for a base slot / a cut-short read.
 fn scene_body(preset: &serde_json::Value, scene: u32) -> Option<&serde_json::Value> {
     if scene >= session::BASE_SCENE_SLOT {
         return None;
@@ -1270,8 +1264,7 @@ pub(crate) fn scene_overlay_for<'a>(
 /// states one (`Full`/`BypassOnly` carrying a `bypass` key), `None` when it doesn't
 /// (`Absent`, `Unknown`, or a `Full`/`BypassOnly` overlay with no `bypass` key at all) —
 /// shared by [`shared_write_is_scene_local`]'s `effective_bypass` and
-/// [`scene_handle_rows_scanned`]'s `enables_block` derivation, which both used to hand-write
-/// this same match.
+/// [`scene_handle_rows_scanned`]'s `enables_block` derivation.
 fn overlay_bypass(overlay: &SceneOverlay) -> Option<bool> {
     match overlay {
         SceneOverlay::Full(p) | SceneOverlay::BypassOnly(p) => {
@@ -1388,23 +1381,22 @@ pub(crate) enum RefusedScope {
     /// [`SceneOverlay::BypassOnly`], not cleared by the audibility guard — the scene SHARES
     /// this node's knobs with base.
     SharedWithBase,
-    /// [`SceneOverlay::Unknown`] — a truncated field-8 read / a base slot, presence
+    /// [`SceneOverlay::Unknown`] — a cut-short field-8 read / a base slot, presence
     /// unanswerable.
     Unknown,
 }
 
 /// Where a scene-context knob write on one node would LAND, and what the writer must send to
-/// put it there. The ONE write-landing policy — every lane that writes a knob under a scene
-/// (`leveller::set_knobs`, the Doctor's prescription apply) reads it here, so the four
-/// [`SceneOverlay`] states can never be answered two ways.
+/// put it there. The ONE write-landing policy — `leveller::set_knobs`, the persist check and
+/// the scene-handle picker all read it here, so the four [`SceneOverlay`] states can never be
+/// answered two ways.
 pub(crate) enum SceneWriteVerdict {
     /// Safe to write with the Scene Edit enable DROPPED. Two cases reach here, and
-    /// `lands_on_base` says which — the post-save readers (`leveller::run_scene_jobs`'
-    /// persist check and freshness witness) must look for the value where it LANDED:
-    /// * [`SceneOverlay::Full`] (`lands_on_base: false`), the node's Scene Edit flag is
-    ///   already ON. The flag state alone decides the landing, so the write lands on the
-    ///   overlay even for a param the overlay does not yet carry, and re-enabling would
-    ///   RESEED the overlay from base (HW 3-cell matrix, fw 1.8.45).
+    /// `lands_on_base` says which — the post-save persist check (`leveller::persist`) must
+    /// look for the value where it LANDED:
+    /// * [`SceneOverlay::Full`] (`lands_on_base: false`), the entry already carries knob
+    ///   params, so the write lands on the overlay even for a param the overlay does not yet
+    ///   carry, and re-enabling would RESEED the overlay from base (static RE, fw 1.8.58; HW).
     /// * A [`SceneOverlay::BypassOnly`] node whose [`shared_write_is_scene_local`]
     ///   reads `true` (`lands_on_base: true`): the write DELIBERATELY lands on the shared
     ///   BASE value, not an overlay (there is none to land in), because the leak is confirmed
@@ -1418,7 +1410,7 @@ pub(crate) enum SceneWriteVerdict {
     /// machine-readable state behind it: [`RefusedScope::SharedWithBase`]
     /// ([`SceneOverlay::BypassOnly`], not audibility-cleared — the enable-dropped write would
     /// land on BASE and change every sharing scene, the enable would reseed) or
-    /// [`RefusedScope::Unknown`] ([`SceneOverlay::Unknown`] — a truncated field-8 read / a
+    /// [`RefusedScope::Unknown`] ([`SceneOverlay::Unknown`] — a cut-short field-8 read / a
     /// base slot, presence unanswerable).
     Refuse { scope: RefusedScope, reason: String },
 }
@@ -1447,11 +1439,9 @@ fn unknown_refuse_message(scene: u32, node: &str) -> String {
 /// The write-landing verdict for `node`/`param` in `scene` of the SAVED (field-8) `preset` —
 /// pure, no device I/O, decided before any write so an unanswerable overlay state refuses with
 /// the preset untouched. The refusal strings are user-facing and live here, next to the states
-/// they describe, so the leveling and Doctor lanes tell the player the same story. The ONE
-/// write-landing policy for every scene-writing lane (`leveller::set_knobs`, the Doctor's
-/// prescription apply — both know the param they're about to write, so both call this form; an
-/// earlier paramless `scene_write_verdict` existed for a caller with no param in hand, but every
-/// real caller HAD one, so it was folded in here rather than kept as unreachable code).
+/// they describe, so every lane tells the player the same story. The ONE write-landing policy
+/// (`leveller::set_knobs`, the persist check, the scene-handle picker — each knows the param
+/// it reads or writes).
 ///
 /// [`SceneOverlay::Full`] and [`SceneOverlay::Absent`] answer exactly as the param-blind rule
 /// would (`WriteDirect` / `NeedsEnable` — the landing there never depends on which param is
@@ -1466,8 +1456,8 @@ fn unknown_refuse_message(scene: u32, node: &str) -> String {
 /// leave the node as a genuine `Full` overlay instead of a shared BASE write. It was rejected
 /// because a cancel landing between the bypass rewrite and the param write — plus the leveller's
 /// ALWAYS-RUN post-cancel deferred-save cleanup (`danger.md`) — could persist the scene with the
-/// node's `bypass` flipped OFF and the param unset: a genuine corruption window, HW-unverified
-/// because nobody has forced that race on real hardware. The BASE-write shape this function
+/// node's `bypass` flipped OFF and the param unset: a genuine corruption window (not
+/// HW-reproduced). The BASE-write shape this function
 /// allows instead has no such window: it is one single write, on a param that was ALREADY
 /// shared with base before this call, so a cancel mid-write leaves the same shared state the
 /// scene started in, only with base's own value moved (audible nowhere but `scene`, by
@@ -1503,12 +1493,11 @@ pub(crate) fn scene_write_verdict_for_param(
 }
 
 /// True iff a plain (enable-dropped) leak-to-base write of `param` on `node` — the shape a
-/// [`SceneOverlay::BypassOnly`] node gets, since its Scene Edit flag is off and there is no
+/// [`SceneOverlay::BypassOnly`] node gets, since its Scene Edit is off and there is no
 /// overlay to land in — would be audible in `scene` and ONLY `scene`. HW-confirmed bug class
-/// (preset 28 "Friedman HBE", `ACD_Boost`/`gain`): the node is bypassed in base and in every
-/// OTHER scene, and only the Solo scene's bypass-only overlay flips it on, so a shared write is
-/// inaudible everywhere the knobs are shared and therefore safe to send exactly as scene_write_
-/// verdict would today refuse.
+/// (`ACD_Boost`/`gain`): the node is bypassed in base and in every OTHER scene, and only the
+/// Solo scene's bypass-only overlay flips it on, so a shared write is inaudible everywhere the
+/// knobs are shared and therefore safe to send where a plain bypass-only refusal would refuse.
 ///
 /// Effective bypass for one scene: `overlay.bypass ?? base.bypass`, applied UNIFORMLY across
 /// every [`SceneOverlay`] kind (a `Full` overlay that happens to omit `bypass` inherits base
@@ -1523,7 +1512,7 @@ pub(crate) fn scene_write_verdict_for_param(
 ///   carries its OWN [`SceneOverlay::Full`] overlay that already contains `param` (a per-scene
 ///   knob PINS that scene against whatever base holds, insulating it from the leak).
 ///
-/// Refuses (`false`) outright, before any of the above, when: the `scenes` array is truncated
+/// Refuses (`false`) outright, before any of the above, when: the `scenes` array is cut short
 /// (`footswitch::max_referenced_scene` names an index the array doesn't reach — the same guard
 /// [`scenes_restating_base`] uses, and for the same reason: "every other scene" is unanswerable
 /// with a cut tail); the base node identity is AMBIGUOUS ([`base_node_matches`] > 1 hit); or
@@ -1603,7 +1592,7 @@ fn shared_write_is_scene_local(
 }
 
 // `max_referenced_scene` lives in `crate::footswitch` (shared with the field-8
-// truncation-detection fallback in `commands::presets` — see its doc comment there).
+// cut-detection fallback in `commands::presets` — see its doc comment there).
 
 /// Tolerance for "this overlay merely restates the base value". Params are 0..1 knob floats
 /// that JSON round-trips exactly, so this only absorbs a last-bit difference.
@@ -1638,7 +1627,7 @@ fn base_node_matches(
 /// The saved document's `lastLoadedScene` (0-based scene index, or the base wire slot) —
 /// the value every save path must re-stamp via a pre-save recall (`LevelOptions::
 /// restore_scene` / the footswitch writer's restore param). One helper because the
-/// extraction now has a call site per save-capable entry point.
+/// extraction has a call site per save-capable entry point.
 ///
 /// A scene index on a preset whose `scenes` is present and EMPTY reads as `None` with a
 /// warning: recalling it would swap in the unit's empty template (presetError 6, static
@@ -1687,13 +1676,13 @@ pub(crate) fn warn_missing_restore_scene(
 
 /// The scenes whose overlay CARRIES `param` on `node` with the BASE value (within
 /// [`SCENE_PARAM_EPS`]) — the safe targets for a bake MIRROR write. A device-authored
-/// full-param overlay MASKS base (HW, Hiwatt slot 31: scene overlays governed the DSP while
-/// base stayed untouched), so a baked base value is inert in any scene whose overlay restates
+/// full-param overlay MASKS base (HW: scene overlays govern the DSP while base stays
+/// untouched), so a baked base value is inert in any scene whose overlay restates
 /// the param — mirroring the solved value there makes the bake effective, and is loss-free
 /// because the overlay held exactly the base value. A scene that authored its OWN value is
-/// NEVER mirrored (the divergence is intent — e.g. the Hiwatt's "Base Scene" mutes its trem
-/// with `level: 0.0`), and a scene whose overlay omits the param inherits base, so there is
-/// nothing to write. Guards are conservative the same way: `scenes` absent, a truncated
+/// NEVER mirrored (the divergence is intent — e.g. a scene that mutes its trem with
+/// `level: 0.0`), and a scene whose overlay omits the param inherits base, so there is
+/// nothing to write. Guards are conservative the same way: `scenes` absent, a cut-short
 /// entry, an array cut SHORT of the scenes the document still references
 /// ([`max_referenced_scene`]), or an AMBIGUOUS node identity all answer empty — a mirror is
 /// an optimization, never worth a blind write.
@@ -1744,7 +1733,7 @@ pub(crate) fn scenes_restating_base(
 ///
 /// Returns `None` (the caller must fall back to the live prepass — NEVER a partial answer)
 /// when `audioGraph` is missing OR any requested FS scene index is absent from `scenes[]` or
-/// isn't an object (a truncated field-8 read).
+/// isn't an object (a cut-short field-8 read).
 ///
 /// The restore scene is [`last_loaded_scene`] of the same document — the SAVED on-load scene
 /// every other save lane re-stamps (`level_preset`, the Doctor, the footswitch lanes), and the
@@ -1752,9 +1741,9 @@ pub(crate) fn scenes_restating_base(
 /// stored row, so on the freshly loaded preset the two name the same scene. Through the
 /// guarded helper, so a scene-less preset never hands the save an empty-template recall.
 ///
-/// Overlay agreement validated against the live prepass by `probe --overlay-ab` (76/76
-/// scene-amp pairs, 0 bypass mismatches). The production scene-doc source since #176 — see
-/// the call site in `commands::level_scenes` and `prepass_scene_docs_via`.
+/// Overlay agreement validated against the live prepass by `probe --overlay-ab` (HW:
+/// matches the live walk). The production scene-doc source — see the call site in
+/// `commands::level_scenes` and `prepass_scene_docs_via`.
 pub(crate) fn scene_docs_from_saved(
     preset: &serde_json::Value,
     scene_slots: &[u32],
@@ -1768,7 +1757,7 @@ pub(crate) fn scene_docs_from_saved(
             docs.push((slot, Some(serde_json::json!({ "audioGraph": base_graph }))));
             continue;
         }
-        // FS scene: the index must exist and be an object, else the read is truncated → bail
+        // FS scene: the index must exist and be an object, else the read is cut → bail
         // (a partial answer would silently mis-classify the missing scenes).
         let scene = scenes
             .and_then(|a| a.get(slot as usize))
@@ -1780,12 +1769,11 @@ pub(crate) fn scene_docs_from_saved(
     Some((docs, restore))
 }
 
-/// THE production scene-doc prepass (#176): each requested scene's doc derived from the
-/// caller's COMPLETE saved preset via [`scene_docs_from_saved`] — no scene recalls on the unit
-/// — then the preset made current. There is NO live fallback: the live walk
-/// ([`prepass_scene_docs`], kept for the probe benches and `probe --overlay-ab`) was the flaky
-/// harvest this replaces (the active-scene no-push gap, pushes cut before the amp nodes), and
-/// in the one case the saved document cannot answer it was actively dangerous — see
+/// THE production scene-doc prepass: each requested scene's doc derived from the caller's
+/// COMPLETE saved preset via [`scene_docs_from_saved`] — no scene recalls on the unit — then
+/// the preset made current. There is NO live fallback: the live walk ([`prepass_scene_docs`],
+/// kept for the probe benches and `probe --overlay-ab`) is flaky (the active-scene no-push
+/// gap), and in the one case the saved document cannot answer it is actively dangerous — see
 /// [`saved_scene_docs_refusal`].
 ///
 /// `saved` is the batch's one COMPLETE-OR-FAIL field-8 read, which requires `audioGraph` and
@@ -1844,8 +1832,8 @@ pub(crate) fn prepass_scene_docs_with(
 ///
 /// Why refuse rather than fall back to the live walk: with `scenes` guaranteed complete by
 /// the read, a requested index outside it means the request names a scene the preset does
-/// not have (a stale request after the preset changed on the unit). The live walk had no
-/// range guard and would send `loadScene(N)` past the preset's scenes — which aborts the
+/// not have (a stale request after the preset changed on the unit). The live walk has no
+/// range guard and would send `loadScene(N)` past the preset's scenes — which likely aborts the
 /// device server (fw 1.8.58 static RE), and on a scene-less preset swaps the working copy for
 /// the EMPTY template under the same name (`presetError` 6). A missing `audioGraph` has no
 /// safe guess either.
@@ -1893,7 +1881,7 @@ pub(crate) fn saved_scene_docs_refusal(
 // `scene_jobs::` path.
 
 /// One control a scene row could be leveled on, with the two annotations the picker cannot
-/// derive on its own. `class`/`range` come from [`crate::param_class`]; `current` is the
+/// derive on its own. `class`/`range` come from `crate::param_class`; `current` is the
 /// value AUTHORED IN THAT SCENE (overlay if present, else base).
 ///
 /// Block DISPLAY info is `groupId`/`nodeId`/`fenderId` only — the frontend owns the
@@ -1934,7 +1922,7 @@ pub struct SceneHandleCandidate {
     ///   and the leak above is NOT confirmed scene-local, so this scene reads the BASE knob
     ///   and a write would audibly change another sharing scene too. `set_knobs` REFUSES
     ///   such a write, so the picker must warn rather than offer it silently.
-    /// * `"unknown"` — the saved read could not answer (a truncated `scenes` tail). Both
+    /// * `"unknown"` — the saved read could not answer (a cut-short `scenes` tail). Both
     ///   write shapes corrupt from there, so the write is refused too.
     pub(crate) scope: String,
     /// `"full"` = the control has room in both directions. `"lowers_only"` = its authored
@@ -1946,7 +1934,7 @@ pub struct SceneHandleCandidate {
     /// has the node bypassed AND this scene's own overlay un-bypasses it (`Absent` — sharing
     /// base's bypass state — never counts, only a positive `bypass: false` in the scene's own
     /// `Full`/`BypassOnly` overlay does) AND the node has at least one leveling candidate
-    /// (mirrors [`footswitch::is_levelable_param`]'s gate, so this can never be true for a
+    /// (mirrors `footswitch::is_levelable_param`'s gate, so this can never be true for a
     /// node the safe-default picker wouldn't offer at all). A signal for the frontend's
     /// preselect ONLY — it plays no part in `scope`/`headroom` or any solve decision. Always
     /// `false` on [`base_handle_candidates_scanned`]'s output: Base has no overlay/scene
@@ -2009,10 +1997,11 @@ fn finish_handle_candidate(
     }
 }
 
-/// One preset's node param map plus its two rosters — the graph walk [`base_handle_candidates_scanned`]
-/// and [`scene_handle_rows`] used to each pay for INDEPENDENTLY (a full `audiograph::for_each_node`
-/// pass for the param map, a full `audiograph::roster` pass for the block list) on the SAME
-/// preset, back-to-back, in `backup_read::read_backup_archive`'s per-preset loop. Run this
+/// One preset's node param map plus its two rosters — the graph walk
+/// [`base_handle_candidates_scanned`] and [`scene_handle_rows`] would otherwise each pay for
+/// INDEPENDENTLY (a full `audiograph::for_each_node` pass for the param map, a full
+/// `audiograph::roster` pass for the block list) on the SAME preset, back-to-back, in
+/// `backup_read::read_backup_archive`'s per-preset loop. Run this
 /// ONCE per preset via [`scan_node_graph`] and thread the result BY REFERENCE into
 /// [`base_handle_candidates_scanned`]/[`scene_handle_rows_scanned`] instead. [`scene_handle_rows`]
 /// (unlike Base, which has no such command) stays as a plain (preset-only) convenience wrapper
@@ -2104,8 +2093,8 @@ pub(crate) fn base_handle_candidates_scanned(scan: &NodeGraphScan) -> Vec<SceneH
     out
 }
 
-/// [`list_scene_level_handles`]'s pure core — the whole annotation rule, unit-testable
-/// against a preset document with no device in the loop.
+/// `commands::level_scenes::list_scene_level_handles`'s pure core — the whole annotation
+/// rule, unit-testable against a preset document with no device in the loop.
 ///
 /// SCAN-COST NOTE: the `BypassOnly` arm below calls [`scene_write_verdict_for_param`] PER
 /// (scene, node, param) — its own `shared_write_is_scene_local` re-walks the whole preset
@@ -2170,7 +2159,7 @@ pub(crate) fn scene_handle_rows_scanned(
                 let enables_block =
                     base_bypassed && scene_unbypasses && !node_candidates.is_empty();
                 // Only the Full overlay's own params ever override a candidate's `current` —
-                // the scope annotation below is now derived per-candidate from the write-
+                // the scope annotation below is derived per-candidate from the write-
                 // landing verdict itself, not re-derived here.
                 let overlay_params = match overlay {
                     SceneOverlay::Full(p) => Some(p),
@@ -2246,7 +2235,7 @@ pub(crate) fn scene_handle_rows_scanned(
 // (`commands::doctor_tests` shares `with_scene0_overlay` — the shape `scene_overlay`
 // itself is pinned against) instead of re-typing the preset JSON.
 /// Closed-loop search bounds for a block knob, from its current value: amplitude
-/// params (0..1) search the full [0,1]; dB-unit params (current outside [0,1],
+/// params (0..1) search the full `[0,1]`; dB-unit params (current outside `[0,1]`,
 /// e.g. an IR `outputlevel`) search a ±window around the current value, capped at
 /// 0 dB on top.
 pub(crate) fn knob_bounds(current: f32) -> (f32, f32) {

@@ -320,7 +320,7 @@ root2="$(sed -n '2s/^[a-z]* //p' "$fb/roots")"
 check "each offline run hands Playwright an existing config root" "dir|dir" \
   "$(cut -d' ' -f1 "$fb/roots" | tr '\n' '|' | sed 's/|$//')"
 check "the config root is a new one under TMPDIR, never the ambient one" yes \
-  "$(case "$root1" in "$work/tmpdir/"*) echo yes ;; *) echo "no ($root1)" ;; esac)"
+  "$(case "$root1" in ("$work/tmpdir/"*) echo yes ;; (*) echo "no ($root1)" ;; esac)"
 check "two offline runs get two different config roots" yes \
   "$([ -n "$root2" ] && [ "$root1" != "$root2" ] && echo yes || echo no)"
 check "the config roots are gone once the runs end" "gone|gone" \

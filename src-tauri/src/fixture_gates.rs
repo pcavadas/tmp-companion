@@ -124,8 +124,7 @@ fn signal_paths(graph: &crate::ActiveGraph) -> Vec<Vec<crate::GraphNode>> {
 /// silently regress): every guitar amp in every committed fixture is a combo, an
 /// amp+cab-merged model (a cab/IR-suffixed id), or a bare head with a cabinet
 /// block DOWNSTREAM IN ITS OWN LANE. No bare heads — including in the incident
-/// fixtures, which used to be exempt by accident (`E2E Preset24` shipped four
-/// drives into a naked `ACD_TwinReverb65NoFx`).
+/// fixtures.
 ///
 /// "Its own lane" is what makes this non-trivial: `E2E Hiwatt 3S` puts its head in
 /// the pre-split `G1` and a cab in EACH of the two `gtrParallel1` lanes (`G2`,
@@ -192,8 +191,8 @@ fn every_guitar_amp_in_every_fixture_reaches_a_cab() {
 #[test]
 fn e2e_fixtures_stay_inside_the_field8_read_budget() {
     const BUDGET: usize = 16 * 1024;
-    // Includes the one byte the #r10 FIXTURE_SOURCE_STAMP costs over #r9 in this
-    // fixture's own `info.source_id` — the stamp growing, not an edit to its substance.
+    // Includes this fixture's own `info.source_id` stamp, whose length grows with the
+    // revision suffix — not an edit to its substance.
     const HIWATT_BYTES: usize = 20_013;
     for (idx, name, js, _) in fixtures() {
         if name == "E2E Hiwatt 3S" {
@@ -289,7 +288,7 @@ fn fx_rig_carries_the_scene_and_damage_cases() {
         1.0,
         "scene 2 'Ceiling' is the headroom lowers_only / scene-clamp row"
     );
-    // COVERAGE rows 6/8/9's real load-bearing fact — NOT "four distinct ceilings" (two of
+    // COVERAGE row 6's real load-bearing fact — NOT "four distinct ceilings" (two of
     // the sidecar Cs are equal on purpose). What every spec keys on is that scene 2 is the
     // UNIQUE clamper: it alone sits at the knob's top with zero boost headroom, so it alone
     // clamps at every shipped target, and the other three keep room to be re-levelled into
@@ -518,7 +517,7 @@ fn fx_edge_keeps_the_eq_ring_and_eight_scenes() {
         );
     }
 
-    // BUG→GATE (user-reported, "Friedman HBE" preset 28): `ACD_Boost` is bypassed in
+    // The user-reported "Friedman HBE" shape: `ACD_Boost` is bypassed in
     // BASE, and scene 3 "Solo" carries a BYPASS-ONLY overlay that flips it on — no
     // footswitch or EXP assign targets it, and every OTHER scene carries no overlay
     // at all — inherits base's bypass. That is exactly
@@ -583,7 +582,7 @@ fn fx_edge_keeps_the_eq_ring_and_eight_scenes() {
 
 /// 404/405 — the two INCIDENT fixtures. 404 is kept verbatim (its exact bytes are
 /// pinned by the size gate above); 405's amendment must not have disturbed the
-/// lazy-save incident's own shape: the four drive pedals, their block-acting
+/// stale-load incident's own shape: the four drive pedals, their block-acting
 /// switches and the amp node are all untouched, and only a cab was appended.
 ///
 /// Pins the CURRENT measurement shapes a leveling spec depends on (405's amp/pedal knobs,
@@ -614,9 +613,9 @@ fn incident_fixtures_pin_their_measurement_shapes() {
             "ACD_CabSimTMS", // appended for the cab rule; nothing upstream moved
         ]
     );
-    // BUG→GATE: each of 405's four drive pedals must author the parameter NAME the
-    // real hardware actually exposes for that block. HW-confirmed from a field-8 read
-    // of the user's own real "Plumes+BD2+OCD" preset (2026-08-31): the block's
+    // Each of 405's four drive pedals must author the parameter NAME the
+    // real hardware actually exposes for that block. HW-confirmed from a
+    // `presetDataRequest` (field 8) read of a real "Plumes+BD2+OCD" preset: the block's
     // parameters read `blend, bypass, bypassType, drive, filter, tone, volume` — there
     // is NO `level`. `ACD_Plumes` and `ACD_BluesDriver` do carry `level` in that same
     // read, and `ACD_Rat` carries `volume`, so `ACD_ObsessiveDrive` is the odd one out
@@ -627,8 +626,7 @@ fn incident_fixtures_pin_their_measurement_shapes() {
     // stays self-consistent regardless of whether that name exists on the device.
     // Online, a write to a nonexistent parameter reaches the device, the capture never
     // responds, and the solver's flat-response branch clamps the row at zero — this is
-    // exactly how the `ACD_ObsessiveDrive` "level" mistake was caught (footswitch 7's
-    // row clamped to 0.0 while its siblings converged normally).
+    // how a wrong name shows (the row clamps to 0.0 while its siblings converge).
     for (node, param) in [
         ("ACD_Plumes", "level"),
         ("ACD_BluesDriver", "level"),
@@ -657,9 +655,9 @@ fn incident_fixtures_pin_their_measurement_shapes() {
              block has no such control"
         );
     }
-    // Plumes-regression amendment: the amp's outputLevel and the preset's own
-    // presetLevel both moved (0.28/0.27, from 1.0/1.0) and both are now baked into
-    // scenario-loudness.json's "405" C — a drift here silently invalidates that C.
+    // The amp's outputLevel and the preset's own presetLevel (0.28/0.27) are both
+    // baked into scenario-loudness.json's "405" C — a drift here silently
+    // invalidates that C.
     assert_eq!(
         p24["audioGraph"]["guitarNodes"]["G1"][4]["dspUnitParameters"]["outputLevel"], 0.28,
         "the saturated amp's own knob — the offline C table and the `leveledParams` \
@@ -715,10 +713,7 @@ fn base_node_bypass(p: &serde_json::Value, node_id: &str) -> Option<bool> {
 /// lane (the trade/correction physics case), an FS acting on a block no scene ever
 /// overlays ("FS alone"), a scene literally named "BASE SCENE" that enables no
 /// footswitch ("scene alone"), and a distinct scene that DOES enable one ("Lead")
-/// — both judged rows sitting at wire index ≥ 1 (index 0 stays an unjudged filler:
-/// scene 0 of a 2-amp preset is never judged, since USB `loadScene(0)` can
-/// materialize a different amp state than the physical footswitch tap — see
-/// `danger.md`'s OPEN scene-0 item).
+/// — both judged rows sitting at wire index ≥ 1 (index 0 stays an unjudged filler).
 #[test]
 fn fx_combined_level_carries_the_leveling_use_cases() {
     let cabs = cab_model_ids();
@@ -842,9 +837,8 @@ fn fx_combined_level_carries_the_leveling_use_cases() {
 
 /// `E2E Doctor Oracle` @ 407: the Doctor spectral-check
 /// oracle fixture. Pins the per-defect param constants TABLE BELOW, which MIRRORS
-/// the fixture JSON — the fixture JSON itself is the actual HW-tuning surface for
-/// the eventual real-Doctor-path verification, and the two must be edited in
-/// lockstep — and the "base fires nothing" precondition (every one of the 4
+/// the fixture JSON — the fixture JSON itself is the HW-tuning surface, and the two
+/// must be edited in lockstep — and the "base fires nothing" precondition (every one of the 4
 /// defect blocks enabled-neutral at rest). `buried` is DELIBERATELY absent: it only fires
 /// for `Family::Bass|BassVi` with a drive detected, both impossible on this
 /// guitar-topology fixture.
@@ -854,10 +848,10 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
     assert_eq!(name, "E2E Doctor Oracle");
 
     // Base precondition: amp+cab live, defect blocks ENABLED-NEUTRAL via single-entry
-    // ftsw rows — a dual-entry row gets the whole import gutted at commit (see
-    // notes/gotchas.md's "A dual-entry footswitch row…" entry). The fixture carries
-    // no bypassed-in-base block: the spiky rule (and its comp1 on-off target)
-    // was removed (#241).
+    // ftsw rows (a dual-entry row is legal on fw 1.8.58 but still refused,
+    // conservatively — see notes/device/presets.md#footswitch-json).
+    // The fixture carries no bypassed-in-base block (comp1, the removed spiky rule's
+    // on-off target, must not come back).
     assert_eq!(base_node_bypass(&p, "ACD_HiwattDR103CanMod"), Some(false));
     assert_eq!(base_node_bypass(&p, "cab1"), Some(false));
     for node in ["eq10", "peq5", "hlp1", "plate1"] {
@@ -870,7 +864,7 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
     assert_eq!(
         base_node_bypass(&p, "comp1"),
         None,
-        "comp1 (the removed spiky rule's target, #241) must not come back"
+        "comp1 (the removed spiky rule's target) must not come back"
     );
 
     // Neutrality: an enabled block must be transparent, or base fires verdicts.
@@ -933,7 +927,7 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
     // Every peq5 filter is either explicitly bypassed or pinned to an explicit
     // NEUTRAL type-2 peaking shape: the firmware fills unauthored filters as
     // ACTIVE type-4 filters at 1 kHz (q 0.707, gaindb 0), and a gaindb-based
-    // neutrality check cannot see them — HW-measured 2026-08-18, the default
+    // neutrality check cannot see them — HW-measured: the default
     // filter1/filter5 pair cost ~20 dB of level and read as muddy+dark on an
     // otherwise clean chain. filter1 (BOOMY's 80 Hz bump) and filter4 (HARSH's
     // 1.8 kHz bump) are deliberately ENABLED-neutral defect vehicles.
@@ -975,7 +969,7 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
     );
     // Steep orders are LOAD-BEARING for THIN/DARK: at the firmware-default
     // order the hpffc/lpffc toggles read as broad tilt ("bright"/nothing)
-    // instead of a local band cliff ("thin"/"dark") — HW-tuned 2026-08-18.
+    // instead of a local band cliff ("thin"/"dark") — HW-tuned.
     assert_eq!(hlp["hpforder"].as_i64(), Some(3), "hlp1.hpforder");
     assert_eq!(hlp["lpforder"].as_i64(), Some(3), "hlp1.lpforder");
     let plate = dp("plate1");
@@ -985,29 +979,26 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
         Some(0.9),
         "WASHED's decay is pre-baked in base (inaudible at mix 0) — the switch \
          only moves wetdrymix, keeping the row single-entry. 0.9 (with the \
-         switch's 0.9 mix) puts the aligned tail ratio well past the -10 dB \
-         gate; at decay 0.7 / mix 0.65 it sat 0.4 dB over it (HW 2026-08-25)"
+         switch's 0.9 mix) puts the aligned tail ratio past the \
+         `GUITAR.wash_tail_db` gate (HW)"
     );
 
-    // The per-defect param table (label -> node -> (param, valueA, valueB)),
-    // P0-informed, tune-later per the module's own report. ONE param entry per
-    // switch row (the dual-entry import discard above); the filter anchors the
-    // old multi-entry rows carried (RESONANT/BOXY frequency+Q) now live in the
-    // BASE peq5 params asserted above.
+    // The per-defect param table (label -> node -> (param, valueA, valueB)).
+    // ONE param entry per switch row (the single-entry rule above); the
+    // RESONANT/BOXY filter anchors (frequency+Q) live in the BASE peq5 params
+    // asserted above.
     type DefectRow = (u32, &'static str, &'static str, &'static str, f64, f64);
     let table: &[DefectRow] = &[
         (1, "CONTROL", "eq10", "gain1khz", 0.0, 0.0),
         (2, "MUDDY", "eq10", "gain250hz", 12.0, 0.0),
-        // BOOMY was seam-only on the old stimulus (its +18 dB 80 Hz bump read as
-        // a broad low tilt, HW 2026-08-18). On the pitched pluck it fires: the
-        // remote device read the lows local at 7.0 against the 4.1 gate (#199).
+        // BOOMY fires on the pitched pluck: the device read the lows local at 7.0
+        // against the 4.1 gate (HW, fw 1.8.58).
         (3, "BOOMY", "peq5", "filter1gaindb", 18.0, 0.0),
-        // HARSH was seam-only on the old stimulus (the high-mids local
-        // saturated near +1.4). On the pitched pluck it fires standalone: the
-        // remote device read 4.6 against the 3.9 gate (#199).
+        // HARSH fires standalone on the pitched pluck: the device read 4.6
+        // against the 3.9 gate (HW, fw 1.8.58).
         (4, "HARSH", "peq5", "filter4gaindb", 15.0, 0.0),
         // FIZZY is seam-only on this chain: the V30 cab IR leaves nothing above
-        // ~10 kHz for any EQ boost to lift (HW 2026-08-18: +12 dB at 16 kHz moved
+        // ~10 kHz for any EQ boost to lift (HW: +12 dB at 16 kHz moved
         // the air band +0.2 dB), and an on-off row bypassing the cab poisons every
         // OTHER sound's capture through the doctor's force-bypass isolation. The
         // row validates the param-write seam; no fizzy verdict fires online
@@ -1017,7 +1008,7 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
         // BRIGHT is seam-only: no single param tilts the whole spectrum past
         // the 3 dB/oct bright gate through this cab, and the DR103's tone-stack
         // knobs (treble/presence) are ACCEPTED by the FS param seam but change
-        // nothing in the captured audio (HW 2026-08-18) — kept as the amp-knob
+        // nothing in the captured audio (HW) — kept as the amp-knob
         // write-acceptance probe (doctor_audio_oracle.rs covers the verdict).
         (
             7,
@@ -1031,8 +1022,8 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
         // counterpart): a mid push that helps cut through, below every gate.
         (8, "CUTTHRU", "eq10", "gain500hz", 6.0, 0.0),
         // RESONANT's q14 +24 spike fires "harsh" AND "resonant" together. +18
-        // read h 14.5 on the old stimulus and 12.4 on the pitched pluck, under
-        // the 13.5 gate; +24 reads h 16.8 (HW 2026-10-15).
+        // reads h 12.4 on the pitched pluck, under the 13.5 gate; +24 reads
+        // h 16.8 (HW, fw 1.8.58).
         (9, "RESONANT", "peq5", "filter3gaindb", 24.0, 0.0),
         // +18, not +12: at +12 the boxy locals sat ON the gate (+2.9/+1.8
         // across two otherwise-identical sweeps) — a coin-flip oracle row.
@@ -1059,8 +1050,8 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
         assert_eq!(
             entries.len(),
             1,
-            "ftsw[{idx}] ({label}): exactly ONE entry per row — fw 1.8.45 discards \
-             the whole import on a dual-entry row"
+            "ftsw[{idx}] ({label}): exactly ONE entry per row — \
+             `footswitch::validate_import_body` refuses a dual-entry row"
         );
         let e = &entries[0];
         assert_eq!(e["func"], "param", "ftsw[{idx}] ({label})");
@@ -1090,8 +1081,8 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
         }
     }
 
-    // Row 14 was SPIKY's on-off row; the spiky rule was removed (#241), so the
-    // row stays EMPTY (every other row keeps its index).
+    // Row 14 (the removed spiky rule's on-off row) stays EMPTY, so every other
+    // row keeps its index.
     assert_eq!(
         ftsw[14].as_array().map(Vec::len),
         Some(0),
@@ -1107,11 +1098,11 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
 }
 
 /// The minimal incident repros:
-/// the SMALLEST preset still reproducing each bug class, landing ALONGSIDE the
-/// originals (404/405 stay untouched — spec migration is a later pass, not this
-/// one). Pins each repro's own structural shape; size is bounded elsewhere (the
-/// 16 KiB per-fixture field-8 budget gate, `e2e_fixtures_stay_inside_the_field8_
-/// read_budget`) rather than compared against its original here.
+/// the SMALLEST preset still reproducing each bug class, ALONGSIDE the originals
+/// (404/405 stay untouched). Pins each repro's own structural shape; size is bounded
+/// elsewhere (the 16 KiB per-fixture stored-row read budget gate,
+/// `e2e_fixtures_stay_inside_the_field8_read_budget`) rather than compared against its
+/// original here.
 #[test]
 fn fx_minimal_incident_repros_pin_their_incident_shape() {
     // 408 "E2E Preset24 Min" — the stale-load (base save -> FS batch load) bug class
@@ -1181,18 +1172,15 @@ fn fx_minimal_incident_repros_pin_their_incident_shape() {
     );
 }
 
-/// NON-REGRESSION GATE for two defects found on a real 1.8.45 unit (2026-07-26).
+/// NON-REGRESSION GATE: device `product_id` and unique `preset_id`s.
 ///
-/// The e2e scenario fixtures were written with `info.product_id = "pro"`. Every
-/// preset the device itself creates uses **`tmStomp`**, and on the unit a `"pro"`
-/// preset is rejected with **"This preset was created using a newer firmware
-/// revision"** — the scene-selection ribbon refuses to open it. Any scene-related
-/// experiment or e2e step targeting these fixtures is silently invalid.
+/// Every preset the device itself creates uses `info.product_id` **`tmStomp`**; a
+/// `"pro"` preset is rejected with **"This preset was created using a newer firmware
+/// revision"** and the scene-selection ribbon refuses to open it (HW, before fw 1.8.58;
+/// gate kept). Any scene-related e2e step targeting such a fixture is silently invalid.
 ///
-/// The same fixtures also shared ONE `preset_id` across all four presets, which
-/// contradicts the documented invariant (`tmp-companion-data-model`: preset
-/// identity is "a UUID, unique per preset" and the join key for host-side
-/// metadata). Four presets sharing a key makes that mapping ambiguous.
+/// Fixtures must also not share a `preset_id` (`tmp-companion-data-model`: preset
+/// identity is "a UUID, unique per preset" and the join key for host-side metadata).
 ///
 #[test]
 fn e2e_fixtures_use_device_product_id_and_unique_preset_ids() {
@@ -1248,12 +1236,11 @@ fn e2e_fixtures_use_device_product_id_and_unique_preset_ids() {
 /// fixture the same defect class can hide in.
 ///
 /// `backup_read::tests::scenario_fixture_matches_scenario_presets_json` (the
-/// drift lock between this file and `scenario-presets.json`) is now only HALF
-/// blind: it compares decoded `BackupPresetRow`s, and that struct has carried
-/// `preset_id` since #155, so a stale `preset_id` now fails that equality
-/// compare. It stays blind to `product_id` — that field never made it onto the
-/// struct — and even for `preset_id` an equality compare can't check the things
-/// this raw-bytes gate exists for: that every `preset_id` is non-empty and that
+/// drift lock between this file and `scenario-presets.json`) is only HALF
+/// blind: it compares decoded `BackupPresetRow`s, and that struct carries
+/// `preset_id`, so a stale `preset_id` fails that equality compare. It stays blind to `product_id`
+/// — that field never made it onto the struct — and even for `preset_id` an equality compare can't
+/// check the things this raw-bytes gate exists for: that every `preset_id` is non-empty and that
 /// no two presets in the fixture share one. This test reads the raw `presetJson`
 /// column directly (mirroring `backup_read::read_backup_archive`'s own
 /// LZ4-frame + tar + `sqlite3` decode) instead of going through
@@ -1362,7 +1349,7 @@ fn backup_fixture_uses_device_product_id_and_unique_preset_ids() {
     }
 }
 
-/// NON-REGRESSION GATE (HW bisect 2026-08-09; fw 1.8.58): a preset whose
+/// NON-REGRESSION GATE (fw 1.8.58): a preset whose
 /// `ftsw` array carries a `func: "param"` entry with NO `valueType` field is rejected
 /// at its first load — the device substitutes an empty preset under the imported name
 /// (`presetError` 6). Every param-func footswitch entry in every committed fixture must
@@ -1409,11 +1396,10 @@ fn every_param_footswitch_in_every_fixture_carries_a_numeric_value_type() {
     );
 }
 
-/// NON-REGRESSION GATE (HW bisect 2026-08-18): every fixture ftsw ROW must carry at
-/// most ONE entry — a dual-entry row makes fw 1.8.45 silently replace the whole
-/// imported preset with an EMPTY body. See notes/gotchas.md's "A dual-entry footswitch
-/// row makes the firmware silently replace the whole imported preset with an EMPTY
-/// body" entry.
+/// NON-REGRESSION GATE (conservative): every fixture ftsw ROW must carry at most ONE
+/// entry. A dual-entry row is legal on fw 1.8.58;
+/// `footswitch::validate_import_body` still refuses it until a HW-checked emitter
+/// change. See notes/device/presets.md#footswitch-json.
 #[test]
 fn every_fixture_footswitch_row_carries_at_most_one_entry() {
     let mut singles = 0usize;
@@ -1427,7 +1413,7 @@ fn every_fixture_footswitch_row_carries_at_most_one_entry() {
         assert!(
             stacked.is_empty(),
             "{name} ({idx}): ftsw rows {stacked:?} stack multiple entries — see \
-             notes/gotchas.md's dual-entry footswitch discard entry"
+             notes/device/presets.md#footswitch-json"
         );
     }
     assert!(
@@ -1452,22 +1438,19 @@ fn every_fixture_footswitch_row_carries_at_most_one_entry() {
     assert_eq!(crate::footswitch::stacked_ftsw_rows(&forked), vec![2]);
 }
 
-/// NON-REGRESSION GATE for the fixture-scene corruption class (real 1.8.45 unit,
-/// 2026-07-28). The device silently DROPS a preset's ENTIRE `scenes[]` (and
-/// re-stamps `info.source_id` to its placeholder) the first time a scene is
-/// materialised (`loadScene`) and the preset saved, when the scenes are not
-/// fully device-conformant. HW isolation (`probe --scene-write-cell`, recall-only,
-/// no scene-edit, no write): the hand-built "E2E Reference" wiped on every
-/// recall+save while the device-authored "E2E Hiwatt 3S" survived identical ops;
-/// conformance-rebuilding Reference/Realistic made them survive. This corrupted
-/// the on-device fixture after every ONLINE level run (specs green, slot 400
-/// marker-less, teardown's guarded clear refusing) — the failure mode this gate
-/// exists to keep dead.
+/// NON-REGRESSION GATE for the fixture-scene corruption class (HW, before fw 1.8.58;
+/// gate kept). The device silently DROPS a preset's ENTIRE `scenes[]` (and re-stamps
+/// `info.source_id` to its placeholder) the first time a scene is materialised
+/// (`loadScene`) and the preset saved, when the scenes are not fully
+/// device-conformant (`probe --scene-write-cell`: a hand-built fixture wiped on every
+/// recall+save while the device-authored "E2E Hiwatt 3S" survived identical ops).
+/// That corrupts the on-device fixture after an ONLINE level run (specs green, slot
+/// marker-less, teardown's guarded clear refusing).
 ///
 /// What "conformant" means (oracle: the device-authored Hiwatt scenes):
 ///   * every scene carries the full 12-key shape (a 3-key sparse scene wipes);
 ///   * `splitMix` holds BOTH `mixPoints` and `splitPoints` (scene shape: objects
-///     keyed by nodeId — the missing `splitPoints` was the final discriminator);
+///     keyed by nodeId — a missing `splitPoints` alone breaks conformance);
 ///   * overlay numerics are floats (the device authors no int scene params);
 ///   * `ftswStates` is exactly as long as the preset's `ftsw` switch list.
 #[test]
@@ -1486,19 +1469,14 @@ fn e2e_fixture_scenes_are_device_conformant() {
         "splitMix",
         "uuid",
     ];
-    // Per-fixture expected scene count (listIndex → count), replacing a single
-    // cross-fixture sum: a failure now names the culprit fixture instead of just
-    // reporting the total drifted. A slot absent here (401, 405, 408) is expected
-    // to carry NO scenes. 406/407/409 are the P3 leveling-doctor-fixtures
-    // additions: 406 "E2E Combined Level" carries 3 (SCRATCH filler at wire index
-    // 0 + BASE SCENE + LEAD, both judged rows at index ≥1 — scene 0 of a 2-amp
-    // preset is never judged, since USB `loadScene(0)` can materialize a
-    // different amp state than the physical footswitch tap; see `danger.md`'s
-    // OPEN scene-0 item); 407 "E2E Doctor Oracle" carries 2 (SCRATCH filler + the
-    // scene-consistency oracle's own big-outputLevel-jump scene); 409
-    // "E2E Hiwatt Min" carries 2 (the minimal scene/overlay-conformance repro). 410
-    // "E2E Friedman 3S" (P4) carries 3, all judged FULL-overlay rows: Rhythm/Lead/
-    // Base Scene, each carrying only its own amp outputLevel overlay.
+    // Per-fixture expected scene count (listIndex → count), so a failure names the
+    // culprit fixture. A slot absent here (401, 405, 408) is expected to carry NO
+    // scenes. 406 "E2E Combined Level" carries 3 (SCRATCH filler at wire index
+    // 0 + BASE SCENE + LEAD, both judged rows at index ≥1); 407 "E2E Doctor Oracle" carries 2 (SCRATCH
+    // filler + the scene-consistency oracle's own big-outputLevel-jump scene); 409 "E2E Hiwatt
+    // Min" carries 2 (the minimal scene/overlay-conformance repro). 410 "E2E Friedman 3S" carries
+    // 3, all judged FULL-overlay rows: Rhythm/Lead/Base Scene, each carrying only its own amp
+    // outputLevel overlay.
     let expected_scenes: std::collections::HashMap<u32, usize> = [
         (400u32, 4usize),
         (402, 8),
@@ -1577,8 +1555,7 @@ fn e2e_fixture_scenes_are_device_conformant() {
 /// `offbranchSwitchNode` — that `scenario-presets.json` must actually carry. A
 /// mismatch fails SILENTLY as a flat response (the leveled-param predicate in
 /// `sim_device::model_lufs` simply never activates, or activates against a node
-/// that doesn't exist), which cost a wrong-root-cause debugging pass once
-/// (COVERAGE.md row 18's corrected cause). This gate makes that class loud.
+/// that doesn't exist; COVERAGE.md row 18). This gate makes that class loud.
 #[test]
 fn sidecar_references_resolve_against_the_fixtures() {
     let sidecar_raw = std::fs::read_to_string("../e2e/fixtures/scenario-loudness.json")
@@ -1606,8 +1583,8 @@ fn sidecar_references_resolve_against_the_fixtures() {
         // NON-VACUITY FLOOR: the length check only fires when the sidecar HAS a
         // `scenes` array, so a slot that simply drops its scene C table would sail
         // through — the fixture's scenes would then all model at the flat base C, a
-        // silently flat response of exactly the kind COVERAGE row 18's corrected cause
-        // was. So a fixture that carries scenes MUST have a sidecar array (the converse
+        // silently flat response of exactly the kind COVERAGE row 18 describes. So a
+        // fixture that carries scenes MUST have a sidecar array (the converse
         // is not required: a scene-free fixture legitimately declares none).
         let fixture_scenes = p["scenes"].as_array().map_or(0, Vec::len);
         let sidecar_scenes = entry.get("scenes").and_then(|v| v.as_array());
@@ -1687,7 +1664,7 @@ fn sidecar_references_resolve_against_the_fixtures() {
     // (e) NON-VACUITY FLOOR for `leveledParams`. Everything above only checks entries
     // that EXIST — delete a slot's whole `leveledParams` array and every assertion here
     // passes while the offline model silently reverts to the flat C law for that slot.
-    // That is not hypothetical: it is COVERAGE row 18's corrected cause verbatim (400
+    // That is not hypothetical: it is COVERAGE row 18's cause (400
     // declared none, `model_lufs` returned the same C at every probe, and the solve took
     // its no-authority `flat_response` exit without ever probing the wet floor).
     //
@@ -1719,11 +1696,10 @@ fn sidecar_references_resolve_against_the_fixtures() {
 /// ("every structural fact is pinned by a test") is unverifiable prose — a row and the
 /// spec that's supposed to prove it can drift apart with nothing failing.
 ///
-/// PER-ROW, NOT UNIONED. The gate used to pool every citation in `e2e/specs/` into one
-/// set, so row N passed as long as ANY spec file mentioned N — a row whose Spec cell
-/// named `a.spec.ts` while only `b.spec.ts` cited it read green, which is precisely the
-/// drift the gate exists to catch (row 16 was in that state: cell → `level-fs-preset24
-/// .spec.ts`, citation → `level-setup.spec.ts`).
+/// PER-ROW, NOT UNIONED. Pooling every citation in `e2e/specs/` into one set would pass
+/// row N as long as ANY spec file mentioned N — a row whose Spec cell named `a.spec.ts`
+/// while only `b.spec.ts` cited it would read green, which is precisely the drift the
+/// gate exists to catch.
 ///
 /// Returns row → the spec filenames its cell names. A cell may name SEVERAL (rows 18
 /// and 37 legitimately do), and one may sit inside a parenthetical sentence rather
@@ -1877,9 +1853,8 @@ fn coverage_rows_marked_playwright_covered_are_cited_by_some_spec() {
 
 /// Locate `scripts/e2e.sh`'s default-SPECS resolve line and parse the space-separated
 /// spec names out of its literal `SPECS=(…)` — shared by the two gates below so the
-/// parse itself cannot drift between them (it did once: see the mirror gate's own
-/// history). Takes the file's already-read text rather than a path so a caller that
-/// needs the raw text too (for a different reason) only reads the file once.
+/// parse itself cannot drift between them. Takes the file's already-read text rather than a path so
+/// a caller that needs the raw text too (for a different reason) only reads the file once.
 fn parse_e2e_default_online_specs(sh: &str) -> Vec<&str> {
     let set_line = sh
         .lines()
@@ -1897,20 +1872,15 @@ fn parse_e2e_default_online_specs(sh: &str) -> Vec<&str> {
 }
 
 /// Every `*.online.spec.ts` must appear EITHER in `scripts/e2e.sh`'s default online
-/// SPECS line OR in [`ON_DEMAND_ONLINE_SPECS`] below. `doctor-apply.online` sat
-/// outside the hand-maintained literal and "had never run in either tier despite
-/// existing to be the one-off HW validation" (e2e.sh's own comment) — this gate makes
-/// that ACCIDENTAL failure mode impossible to repeat, while still allowing a spec to
-/// be DELIBERATELY on-demand-only (trade T1, ONLINE e2e consolidation) as long as
-/// that's a conscious, reviewed addition to the allowlist below, not a silent drop.
+/// SPECS line OR in [`ON_DEMAND_ONLINE_SPECS`] below, so no online spec can silently
+/// drop out of both tiers, while a spec may still be DELIBERATELY on-demand-only as
+/// long as that's a conscious, reviewed addition to the allowlist below.
 #[test]
 fn every_online_spec_is_in_the_default_online_set() {
     // On-demand-only BY DESIGN, not by accident: each entry here must already be
     // documented at its own exclusion site in `scripts/e2e.sh` (a "run it explicitly
     // with…" note) and in its own spec file's header. Adding an entry here is how a
-    // future spec opts OUT of the default online sweep — do so deliberately. Empty:
-    // `doctor-apply.online` once rejoined the default set, then left the suite for good
-    // with the Doctor write path (Doctor never writes to the unit, the owner's decision).
+    // future spec opts OUT of the default online sweep — do so deliberately.
     const ON_DEMAND_ONLINE_SPECS: &[&str] = &[];
 
     let sh = std::fs::read_to_string("../scripts/e2e.sh").expect("read scripts/e2e.sh");
@@ -2192,8 +2162,7 @@ fn gate_policy_covers_every_class_and_names_only_known_specs() {
 /// `scripts/validate-hbe.sh` carries an executable SHELL MIRROR of
 /// [`slot::SCRATCH_SLOTS`] (its own guard refuses slots outside it). Its comment
 /// says "update this line in the SAME commit" — this gate enforces that instead of
-/// trusting it: the mirror drifted to 400–405 once while the zone was 400–409, which
-/// would have refused four legitimate scratch slots.
+/// trusting it (a stale mirror refuses legitimate scratch slots).
 #[test]
 fn validate_hbe_scratch_slots_mirror_matches_the_rust_declaration() {
     let sh = std::fs::read_to_string("../scripts/validate-hbe.sh").expect("read validate-hbe.sh");

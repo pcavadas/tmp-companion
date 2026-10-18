@@ -345,8 +345,8 @@ describe("useUpdater — manual check()", () => {
   });
 });
 
-// #311: with auto-install on, a manual Check while the startup check is still
-// pending used to reach start() twice — two concurrent downloads.
+// With auto-install on, a manual Check while the startup check is still
+// pending must not reach start() twice (two concurrent downloads).
 describe("useUpdater — overlapping checks with auto-install (#311)", () => {
   it("two checks resolving together start ONE download", async () => {
     const u = mkUpdate("1.1.0", null);

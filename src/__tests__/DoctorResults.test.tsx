@@ -4,7 +4,7 @@
 // loudness, band picture or venue icons, the folded clean row, the "Scenes" and
 // "Footswitches" rows, errors worded by typed kind, the reference and "To sound like …",
 // the wide window's side panel, and the footer. Doctor never writes: no command is sent
-// from this page. The stopped-check titles are the #190 gate.
+// from this page. It pins the stopped-check titles too.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, screen, within } from "@testing-library/react";

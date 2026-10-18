@@ -4,11 +4,10 @@
 
 use super::*;
 
-/// Burst shapes for [`Session::connect_slotread`] (field-8 investigation).
+/// Burst shapes for [`Session::connect_slotread`] (`probe --slotread-x`).
 #[derive(Clone, Copy, Debug)]
 pub enum SlotReadBurst {
-    /// Full Pro Control burst, read appended last (the classic AC1 spike — 0/25 on
-    /// 1.8.45 while its window was silent).
+    /// Full Pro Control burst, read appended last.
     Classic,
     /// Read injected right after `connection_request` + the My Presets list
     /// request, BEFORE the flood; the standard burst remainder follows.
@@ -30,10 +29,9 @@ impl Session {
     /// ONLY for pure measure/capture sessions: connections that (a) never read
     /// handshake- or push-accumulated data (`list_my_presets` / `active_preset_name` /
     /// `confirm_active` / slot reads) and (b) never write-then-save. The trimmed
-    /// windows are HW-validated capture-byte-identical on those paths (fw 1.8.45,
-    /// ~10 sessions incl. ×0.1); write/save sessions keep the full windows because
-    /// their device-side timing cliffs (the ~700 ms scene-write window, chunked
-    /// ftsw edits) were NOT part of that A/B — do not widen the lean set without a
+    /// windows are HW-validated capture-byte-identical on those paths; write/save
+    /// sessions keep the full windows because their timing (the 750 ms session lapse,
+    /// chunked ftsw edits) was NOT part of that A/B — do not widen the lean set without a
     /// dedicated write-lands HW bisect.
     pub fn connect_lean() -> Result<Session, String> {
         Ok(Self::connect_inner(false, None, false, true)?)
@@ -45,10 +43,10 @@ impl Session {
         Ok(Self::connect_inner(true, None, false, false)?)
     }
 
-    /// AC1 spike: run the handshake with an extra slot-addressed read
-    /// request injected INSIDE the burst (the only window the device answers
-    /// data requests). The reply (presetDataChanged 9 or exportPresetResponse 116) is
-    /// then harvested from the accumulated streams by the caller.
+    /// Run the handshake with an extra slot-addressed read request injected INSIDE the
+    /// burst, so its reply rides the same kept-alive pump. The reply (presetDataChanged 9
+    /// or exportPresetResponse 116) is then harvested from the accumulated streams by the
+    /// caller.
     pub fn connect_with_burst_request(extra: &[u8]) -> Result<Session, String> {
         Ok(Self::connect_inner(
             false,
@@ -59,10 +57,9 @@ impl Session {
     }
 
     /// Slot-read investigation (`probe --slotread-x`): connect with the
-    /// slot-addressed read injected at a chosen position in the burst. The
-    /// classic AC1 spike appends it LAST, behind the three preset lists + the ~17 KB
-    /// ProductProfile. (The suspected "ProductProfile collision" was the inactivity
-    /// drop: the device never interleaves replies.) `Early` fires the read before the
+    /// slot-addressed read injected at a chosen position in the burst. `Classic`
+    /// appends it LAST, behind the three preset lists + the ~17 KB ProductProfile (the
+    /// device never interleaves replies). `Early` fires the read before the
     /// flood requests, `Minimal` never sends the flood at all.
     /// Read-only — sends NO LoadPreset.
     pub fn connect_slotread(variant: SlotReadBurst, extra: &[u8]) -> Result<Session, String> {
@@ -105,12 +102,10 @@ impl Session {
     /// `probe --fw`; leveling uses the lean [`Session::connect`] (no fw
     /// request) since it doesn't need it.
     ///
-    /// The request rides the batch-2 group, BEFORE `current_preset_data_request`
-    /// — sent after that batch-3 request, its reply queues behind the ~1.2 s
+    /// The request is sent unbatched (answered at once) BEFORE the batch-3 drain request
+    /// `current_preset_data_request` — sent after it, its reply queues behind the ~1.2 s
     /// handshake drain and a short window misses it, so it can't reuse the generic
-    /// `extra_burst` slot (which fires last). INFERRED from the same queueing
-    /// measured on a delayed `currentPresetInfoRequest`; `currentFwRequest` itself
-    /// was not measured.
+    /// `extra_burst` slot (which fires last) (static RE, fw 1.8.58; drain timing HW).
     ///
     /// Typed, because its caller tells the failures apart: the monitor's stored connect error
     /// is what `connect_device` reports, and the frontend shows "please connect" for a
@@ -148,9 +143,7 @@ impl Session {
     /// Construct a `Session` over an arbitrary [`HidTransport`] WITHOUT the device
     /// handshake — the test seam that lets `sim_device::SimDevice` (an in-memory fake)
     /// stand in for real hardware, so the held-session edit/level orchestration is
-    /// exercised end-to-end in `cargo test`. `batch` starts at 4 (the post-handshake
-    /// value) to mirror a connected session; structural edits and setters carry no
-    /// `batchStatus`, so the exact value is immaterial to the paths under test.
+    /// exercised end-to-end in `cargo test`.
     #[cfg(test)]
     pub(crate) fn from_transport(hid: Box<dyn HidTransport>) -> Session {
         Session {
@@ -209,12 +202,10 @@ impl Session {
         self.send_and_collect(&proto::current_preset_info_request(2), hs(base[1]))?;
         self.send_and_collect(&proto::settings_field66(2), hs(base[1]))?;
         self.send_and_collect(&proto::userir_field2(2), hs(base[1]))?;
-        // Firmware read rides the batch-2 group (no batchStatus), BEFORE the
-        // batch-3 current_preset_data_request — sent after that, the
-        // `currentFwResponse` reply queues behind the ~1.2 s handshake drain and
-        // this short pump misses it (INFERRED: only a delayed
-        // `currentPresetInfoRequest` was measured, not `currentFwRequest`).
-        // The reply is a tiny single 0x35 frame, so a short pump suffices.
+        // Firmware read sent unbatched (answered at once) BEFORE the batch-3 drain
+        // request — sent after it, the `currentFwResponse` reply queues behind the
+        // ~1.2 s handshake drain and this short pump misses it. The reply is a tiny
+        // single 0x35 frame, so a short pump suffices.
         if request_firmware {
             self.send_and_collect(&proto::current_fw_request(), FW_READ_MS)?;
         }
@@ -226,10 +217,9 @@ impl Session {
         if fetch_preset_json {
             self.pump_collect_alive(HANDSHAKE_PRESET_JSON_MS)?;
         }
-        // AC1 spike: inject a slot-addressed read inside the burst window. The
-        // device only answers data requests while actively streaming this burst
-        // (a drain drops it to the silent standalone state), so we send WITHOUT
-        // draining and tolerate concurrent handshake streams in reassembly.
+        // Inject a slot-addressed read inside the burst, so its reply rides the same
+        // kept-alive pump; send WITHOUT draining and tolerate concurrent handshake
+        // streams in reassembly.
         if let Some(extra) = extra_burst {
             self.send_and_collect_alive(&extra, EXTRA_BURST_MS)?;
         }

@@ -7,10 +7,11 @@
 //! for the caller to re-import (the OFFLINE in-place path). The diff primitive powers
 //! dry-run previews and verify-after-restore.
 //!
-//! **Completeness caveat (AC1):** USB cannot read a complete preset, so a snapshot
-//! captured `source = "usb-partial"` is only as complete as the partial it came
-//! from. A faithful backup needs `source = "offline-file"` (a `.preset`). `source`
-//! records which, so a restore never silently over-promises.
+//! **Completeness caveat:** a kept-alive `presetDataRequest` (field 8) read is whole on
+//! fw 1.8.58, but a session lapse can cut it, so a snapshot captured
+//! `source = "usb-partial"` may be incomplete. A faithful backup needs
+//! `source = "offline-file"` (a `.preset`). `source` records which, so a restore never
+//! silently over-promises.
 //!
 //! Persistence mirrors `profiles`: pure `*_from_path` / `*_to_path` helpers carry
 //! the logic so they unit-test without a Tauri `AppHandle`. No retention policy,
@@ -32,7 +33,7 @@ use serde::{Deserialize, Serialize};
 pub enum SnapshotSource {
     /// A complete `.preset` decode — the only fidelity safe to re-import.
     OfflineFile,
-    /// A USB read that can be incomplete (AC1).
+    /// A USB read that a session lapse can cut.
     UsbPartial,
     /// Any other value found in an older or hand-edited snapshot file. Never restorable.
     #[serde(other)]
@@ -60,16 +61,16 @@ pub struct PresetSnapshot {
 
 /// Prepare a snapshot for re-import to the device: validate it is a *faithful*
 /// (offline-file) backup and return the raw `.preset` bytes to import. **Refuses
-/// a `usb-partial` snapshot** — re-importing a partial would overwrite the slot
-/// with truncated data (AC1). The caller pushes these bytes through the AC7
-/// in-place path (`replace_inplace::replace_inplace_core`, via `probe --restore`) so the restore lands on the
-/// snapshot's original slot and keeps its Song binding — NOT a bare append.
+/// a `usb-partial` snapshot** — re-importing a cut read would overwrite the slot
+/// with truncated data. The caller pushes these bytes through the in-place path
+/// (`replace_inplace::replace_inplace_core`, via `probe --restore`) so the restore
+/// lands on the snapshot's original slot and keeps its Song binding — NOT a bare append.
 pub fn restore_bytes(snapshot: &PresetSnapshot) -> Result<Vec<u8>, String> {
     if snapshot.source != SnapshotSource::OfflineFile {
         return Err(format!(
             "refusing to restore a {:?} snapshot to the device: only a complete \
              'offline-file' backup is safe to re-import (a partial would overwrite the \
-             slot with truncated data — AC1)",
+             slot with truncated data)",
             snapshot.source
         ));
     }
@@ -78,10 +79,9 @@ pub fn restore_bytes(snapshot: &PresetSnapshot) -> Result<Vec<u8>, String> {
 
 /// The Tone Master Pro `.preset` codec: a fixed 3-byte repeating XOR ("JLD"). It's a
 /// trivial obfuscation, not encryption — the same constant for every `.preset` and the
-/// device, long since reverse-engineered (see the `tmp-protocol` skill). Committed
-/// directly rather than recovered at runtime: there's nothing to protect and the
-/// dynamic-recovery dance only added a "decode a file first" footgun (it blocked the
-/// online e2e seeder, which has no `.preset` to learn from).
+/// device, long since reverse-engineered (see the `tmp-companion-protocol` skill).
+/// Committed directly rather than recovered at runtime: there's nothing to protect, and
+/// the online e2e seeder has no `.preset` to learn it from.
 const PRESET_XOR_KEY: [u8; 3] = *b"JLD";
 
 /// A `.preset` file is its compact JSON XOR'd with [`PRESET_XOR_KEY`]. The XOR is
@@ -109,7 +109,7 @@ pub fn snapshot_filename(s: &PresetSnapshot) -> String {
 
 /// Write `snapshot` into `dir` (created as needed); returns the file path. Atomic: this
 /// snapshot IS the revert safety net, so a crash mid-write must never leave a truncated
-/// one for `bulk_revert` to restore from (#280).
+/// one for a revert to restore from.
 pub fn save_snapshot_to_dir(dir: &Path, snapshot: &PresetSnapshot) -> Result<PathBuf, String> {
     let path = dir.join(snapshot_filename(snapshot));
     let json =
@@ -249,7 +249,7 @@ mod tests {
         assert!(name.ends_with("_le1_slot11.json"));
     }
 
-    // AC5: snapshot a preset, "edit" a copy, restore → back to the pre-edit state.
+    // Snapshot a preset, "edit" a copy, restore → back to the pre-edit state.
     #[test]
     fn backup_snapshot_then_restore_restores_state() {
         let original = sample();
@@ -333,7 +333,7 @@ mod tests {
         assert!(restore_bytes(&odd).is_err());
     }
 
-    // #278: the `.preset` codec is self-inverse on ANY bytes, not only on JSON, and keeps
+    // The `.preset` codec is self-inverse on ANY bytes, not only on JSON, and keeps
     // the length (a `.preset` file is exactly as long as its JSON).
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]

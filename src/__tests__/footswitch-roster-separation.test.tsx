@@ -1,20 +1,16 @@
-// src/__tests__/footswitch-roster-separation.test.tsx — BUG→GATE: pins the
+// src/__tests__/footswitch-roster-separation.test.tsx — pins the
 // Level/Doctor footswitch-roster SEPARATION through the REAL wiring (backup mock →
 // `libraryScan` → `usePresetData` → the view), not via directly-injected props.
 //
-// History: the BUG 1 fix (a footswitch with no level-class parameter, e.g. "PHASER",
-// must not silently vanish from the Level list) was first implemented by widening
-// `footswitchesPerIndex` itself in `libraryScan.ts`. That map is threaded to BOTH
-// tabs — Level's own list AND Doctor's SELECT list (`DoctorView.tsx`'s `handleCheck`
-// deliberately reuses the levelable-only filter, per its own "ponytail" comment) — so
-// widening it silently changed what Doctor offers for diagnosis too, with no test
-// catching it. The fix instead moved to a per-CALLER option on `usePresetData`
-// (`footswitchRoster: "all"` for Level, the default "levelable" for Doctor), and
-// `footswitchesPerIndex` itself stayed levelable-only. This spec renders BOTH real
-// views off the SAME backup fixture (one levelable "Solo" + one bare "Tuner" switch)
-// and asserts the two lists disagree exactly as intended — so a future change that
-// re-collapses them (by widening the shared map, or by dropping the option) fails
-// here instead of needing another by-hand catch.
+// Level shows EVERY footswitch (one with no level-class parameter, e.g. "PHASER", is
+// shown disabled with a reason, never dropped); Doctor's SELECT list stays
+// levelable-only (`DoctorView.tsx`'s `handleCheck`). `footswitchesPerIndex`
+// (`libraryScan.ts`) is threaded to BOTH tabs, so it stays levelable-only, and Level opts
+// into the full roster per CALLER (`usePresetData`'s `footswitchRoster: "all"`). This spec
+// renders BOTH real views off the SAME backup fixture (one levelable "Solo" + one bare
+// "Tuner" switch) and asserts the two lists disagree exactly as intended — so a change
+// that re-collapses them (by widening the shared map, or by dropping the option) fails
+// here.
 
 import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
@@ -105,7 +101,7 @@ describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression gu
     // Both switches render as rows…
     expect(await screen.findByText("Solo")).toBeInTheDocument();
     expect(await screen.findByText("Tuner")).toBeInTheDocument();
-    // …but "Tuner" is disabled with a short reason (BUG 1's required behaviour),
+    // …but "Tuner" is disabled with a short reason (the required behaviour),
     // never silently omitted.
     expect(screen.getByText("No volume knob to level")).toBeInTheDocument();
 
@@ -135,7 +131,7 @@ describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression gu
     // The levelable switch is offered as its own checkable "sound"…
     expect(await screen.findByText("Solo")).toBeInTheDocument();
     // …the bare one is not shown here at all (not even disabled) — Doctor's SELECT
-    // list stays exactly what it was before the Level-side fix.
+    // list stays levelable-only.
     expect(screen.queryByText("Tuner")).toBeNull();
     expect(screen.queryByText("No volume knob to level")).toBeNull();
   });

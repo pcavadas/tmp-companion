@@ -1,8 +1,8 @@
 // src/views/copy/useCopyLibrary.ts — the Copy view's read-path data layer.
 //
 // Builds the `CopyPreset[]` the Copy feature needs (slot + name + on-unit flag + the
-// routed signal graph + real CPU) from the SAME module-scoped device backup the Presets
-// tab uses (`libraryScan`), so opening Copy never triggers a second ~22 s read. The
+// routed signal graph + real CPU) from the SAME module-scoped device backup the Level
+// view uses (`libraryScan`), so opening Copy never triggers a second ~22 s read. The
 // preset list paints instantly; each preset's graph fills in when the backup settles.
 
 import {

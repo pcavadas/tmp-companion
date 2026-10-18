@@ -1,9 +1,9 @@
-// src/views/level/useFootswitchSceneContexts.ts — the Set-up step's per-preset
-// footswitch scene-context cache (D3). INSTANT-FIRST, like `useSceneHandles`: the fetchFn
-// answers from the startup backup scan's `fsSceneContextsByIndex` and falls back to
-// `list_footswitch_scene_contexts` (a real device read — one field-8 fetch, plus a
-// multi-second whole-library backup re-read when a large preset's `ftsw` tail is cut, see
-// `lib/invoke`) only when the scan has NO ENTRY for the slot.
+// src/views/level/useFootswitchSceneContexts.ts — the Set-up step's per-preset footswitch
+// scene-context cache. INSTANT-FIRST, like `useSceneHandles`: the fetchFn answers from the
+// startup backup scan's `fsSceneContextsByIndex` and falls back to
+// `list_footswitch_scene_contexts` (a real device read — one `presetDataRequest` (field 8)
+// fetch, plus a multi-second whole-library backup re-read when a large preset's `ftsw` tail
+// is cut, see `lib/invoke`) only when the scan has NO ENTRY for the slot.
 //
 // The suggested scene is the footswitch row's DEFAULT measurement context, so the Set-up
 // step resolves it for every footswitch row as soon as it opens (`SetupPage`'s warm

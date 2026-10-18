@@ -1,7 +1,7 @@
 // Locks the untested-firmware page (a caution PageState): title + the below-floor version
 // and the tested floor in the body, "Use it anyway" wired to its handler, and no "Check
-// again" (#305: while connected it could only re-serve the cached version, so it could
-// change nothing) — the caption says the page re-checks when the unit restarts.
+// again" (while connected it could only re-serve the cached version) — the caption
+// says the page re-checks when the unit restarts.
 
 import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";

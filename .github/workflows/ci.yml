@@ -44,8 +44,7 @@ jobs:
             libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev \
             librsvg2-dev libasound2-dev
         # webkit2gtk/xdo/appindicator/rsvg are Tauri's Linux webview stack; asound is
-        # for cpal, which is an unconditional dependency and must compile even though
-        # the re-amp paths are macOS-only today.
+        # cpal's ALSA backend (the re-amp audio path on Linux).
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -53,7 +52,7 @@ jobs:
       - name: Build frontend (also produces dist/ for tauri-build)
         run: bun run build
 
-      # Every gate runs on both legs. The frontend ones are mostly platform-agnostic,
+      # Every gate runs on every leg. The frontend ones are mostly platform-agnostic,
       # but the typecheck and build are not: Linux filesystems are case-sensitive
       # where macOS is not, so a wrong-case import (`./Foo` for `foo.ts`) passes on
       # macOS and fails only here. Keeping the leg uniform costs little (the Vitest
@@ -97,6 +96,12 @@ jobs:
       - name: Rust format check
         working-directory: src-tauri
         run: cargo fmt --check
+
+      - name: Rustdoc links (private items included)
+        working-directory: src-tauri
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --document-private-items --lib
 
   e2e:
     # The offline suite needs no device — it drives the real UI in headless Chromium
@@ -146,10 +151,7 @@ jobs:
           fi
 
       # Both OSes take scripts/e2e.sh's default worker count (`TMP_E2E_WORKERS:-3`, the one
-      # place that default lives). Linux used to run serialized because the 3-worker suite
-      # intermittently blew level-fs-preset24's 240 s test timeout on ubuntu-latest; that
-      # spec (55 CPU-bound captures in one test) is gone, its proof moved to the Rust gate
-      # `the_footswitch_rows_still_converge_after_a_base_boost`.
+      # place that default lives).
       - name: Offline e2e (SimDevice)
         run: bun run e2e
 
@@ -158,7 +160,7 @@ jobs:
     # continue-on-error so a broken bundler config never blocks the signed macOS
     # DMG — which also means it produces a green RELEASE with a silently missing
     # Linux asset. This job is what catches that on the PR instead of at release
-    # time. See notes/linux-packaging.md for the full pipeline rationale; keep
+    # time. See notes/releasing.md for the full pipeline rationale; keep
     # this job's steps in sync with release.yml's build-deb/build-rpm (same
     # bundler invocation, with temporary versions and artifacts for repository upgrade tests).
     strategy:
@@ -281,7 +283,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # The Windows twin of bundle-linux's rationale: release.yml's build-nsis is
+  # Same rationale as bundle-linux: release.yml's build-nsis is
   # continue-on-error, so a broken NSIS bundler config (config, icon, WebView2
   # setting) would produce a green release with a silently missing .exe — this
   # job catches that on the PR instead of at release time. Keep its steps in
@@ -390,14 +392,14 @@ jobs:
 
       - uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6
 
-  leak-guard:
-    # Belt-and-braces for the pre-commit hook: block private tooling content
-    # in tracked files. Pure grep — no macOS/HID/bun needed.
+  docs:
+    # The docs link gate the pre-commit hook and scripts/gates.sh run: every markdown
+    # link, anchor and `.md` path mention resolves. Node is preinstalled on the runner.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Scan tracked files for private-project markers
-        run: bash scripts/leak-guard.sh --all
+      - name: Check markdown links, anchors and .md mentions
+        run: bash scripts/check-docs.sh

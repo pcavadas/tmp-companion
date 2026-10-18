@@ -1,12 +1,10 @@
-//! Typed errors in place of string matching (#269).
+//! Typed errors in place of string matching.
 //!
-//! Most of the backend still returns `Result<_, String>`, and the frontend shows that text
-//! verbatim. Where code had to tell one failure KIND from another, it used to compare or
-//! search the text (`e == CANCELLED`, `e.contains("no signal captured")`,
-//! `e.contains("0xe00002c5")`, `e.contains("no TMP found")`). Rewording a message broke
-//! that silently, and a cancel whose restore also failed stopped reading as a cancel. The
-//! types here carry the kind instead; each one's `Display` is the exact text the old string
-//! carried, so what the user reads (and what tests assert on) is unchanged.
+//! Most of the backend returns `Result<_, String>`, and the frontend shows that text
+//! verbatim. Where code must tell one failure KIND from another, these types carry the kind,
+//! so rewording a message cannot silently break the check and a cancel whose restore also
+//! failed still reads as a cancel. Each one's `Display` is the text the user reads (and
+//! tests assert on).
 //!
 //! - [`LevelError`]: the leveling and measurement paths (`leveller`, `audio::reamp_capture`,
 //!   `device_gate::sleep_or_cancel`). Cancel and silent-capture are variants, and
@@ -137,7 +135,7 @@ impl SkipKind {
 }
 
 /// A refusal to level one sound (or a whole batch): its [`SkipKind`] and the free-text reason
-/// (`Display`), which is the exact text the untyped `String` carried before.
+/// (`Display`), the text the frontend shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     pub kind: SkipKind,
@@ -167,7 +165,7 @@ impl From<Refusal> for String {
     }
 }
 
-/// A leveling/measurement failure. `Display` is the historical message text.
+/// A leveling/measurement failure. `Display` is the user-facing message text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LevelError {
     /// A cooperative cancel (Stop) was observed at a checkpoint. Displays `cancelled`.

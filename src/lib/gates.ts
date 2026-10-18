@@ -5,8 +5,8 @@
 // permanent accept in localStorage. Keep every read/write keyed through these constants
 // so the gate can't drift across call sites and tests.
 //
-// (The leveling wizard's "Back up" step is ALWAYS step 1 — gated per-run by an
-// acknowledgment checkbox, never persisted — so there is no Level-warning dismiss key.)
+// (The leveling run's backup acknowledgment is a checkbox in the Set up footer, ticked per
+// run and never persisted — so there is no Level-warning dismiss key.)
 
 /** localStorage — disclaimer permanently acknowledged ("Don't show again"). */
 export const DISCLAIMER_PERM_KEY = "tmp_disclaimer_perm";

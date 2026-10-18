@@ -18,7 +18,7 @@ import {
   soundBox,
 } from "../fixtures/scenario";
 
-// New P4-B (rebuilt-fixture) coverage that lives at the SETUP step (before any run) or is
+// Coverage that lives at the SETUP step (before any run) or is
 // provable via a raw command invoke plus /sim/events, rather than through a post-run
 // Summary render. A raw invoke carries no Channel, so its streamed rows go nowhere; the
 // page does receive them (.claude/rules/e2e.md's "Events and Channels reach the page").
@@ -27,9 +27,8 @@ import {
 // class wah (WAH, sw8), the unlabeled raw-dB Boost (sw2), the wet-mix SPRING (sw3), and the
 // isolated/shared_with_base/lowers_only scene-overlay spread across its 4 scenes.
 //
-// PR #144 REWORK: the verify-only footswitch default + its "Make level-neutral" opt-in,
-// and the scene row's match/offset target-mode chip, are BOTH GONE — every row (main
-// sound/scene/footswitch) levels against ONE leveling handle (D2). A main sound defaults to
+// Every row (main sound/scene/footswitch) levels against ONE leveling handle. A main sound
+// defaults to
 // the preset's own level, a scene to the amp(s) its run drives; footswitch rows always
 // carry a real pre-seeded handle (no default of their own).
 //
@@ -45,8 +44,6 @@ interface BatchLevelRun<R> {
   rows: R[];
   reampStillOn: boolean;
 }
-
-// openLevel now lives in ../fixtures/scenario.ts (shared with level-defaults.spec.ts).
 
 /** A Set up row's dropdown: `kind` is "target" | "block" | "knob" | "scene", `key` the
  *  row's `data-setup-row` hook (`setupRowHookKey`, leveling.ts). */
@@ -77,16 +74,14 @@ test.describe("Level Setup — Other-class filtering, unlabeled naming (list-lev
   // COVERAGE rows 22, 19 — unlabeled switch rendering, plus the UI manifestation of the
   // Other-class case.
   //
-  // BUG→GATE (user-reported, 2026-08-19, "Friedman HBE"): a footswitch with no level-class
-  // parameter used to be filtered out of the Level tab ENTIRELY — the user's "Phaser" switch
-  // simply was not there, with nothing saying why. Hiding a control the player can see on the
-  // unit is the bug, not the fix: the roster must show every block-acting switch, and a switch
-  // that cannot be leveled must SAY SO instead of vanishing.
+  // A footswitch with no level-class parameter ("Friedman HBE"'s "Phaser") must not
+  // vanish from the Level tab with nothing saying why.
+  // The roster shows every block-acting switch, and a switch that cannot be leveled SAYS SO.
   //
-  // So the tree now renders the FULL roster (`usePresetData`'s `footswitchRoster: "all"`,
+  // So the tree renders the FULL roster (`usePresetData`'s `footswitchRoster: "all"`,
   // which `LevelView` opts into) while SELECTABILITY still comes from the one shared
   // `footswitchLevelable` predicate — a non-levelable row is present, labelled "no level
-  // control", and its checkbox is disabled. That keeps the danger.md Pick trap closed from the
+  // control", and its checkbox is disabled. That keeps danger.md's dropdown rule closed from the
   // other side: the row can never be picked, so it can never fall back to `options[0]`.
   // The Doctor's own list is deliberately NOT changed (it stays levelable-only — a
   // non-levelable switch has no sound of its own to diagnose); the separation is pinned by
@@ -107,14 +102,14 @@ test.describe("Level Setup — Other-class filtering, unlabeled naming (list-lev
     await openPreset(page, SCENARIO[0].name);
 
     // The collapsed breakdown counts the WHOLE roster — all 6 block-acting switches, not just
-    // the levelable ones. Only DRIVE and the unlabeled Boost stay levelable: WAH and WAH SWEEP
-    // both act on the all-Other-class ACD_CryBabyQ535 and carry zero level candidates, and
-    // SPRING and VERB KILL both act on ACD_TMSpring63, whose only classified param is `mix`
-    // (WetMix) — issue 3 ("hide Mix everywhere") drops WetMix from the candidate gate
-    // regardless of the acting switch's own `func` (SPRING is "on-off", VERB KILL is "param";
-    // both go through the SAME per-node `level_candidates_for_node` enumeration in
-    // `enumerate_block_footswitches`, so both lose their sole candidate together). All four
-    // non-levelable rows are counted here precisely because the user must see that they exist.
+    // the levelable ones. Only DRIVE and the unlabeled Boost stay levelable: WAH and WAH
+    // SWEEP both act on the all-Other-class ACD_CryBabyQ535 and carry zero level candidates,
+    // and SPRING and VERB KILL both act on ACD_TMSpring63, whose only classified param is
+    // `mix` (WetMix) — WetMix is never a leveling candidate, regardless of the acting
+    // switch's own `func` (SPRING is "on-off", VERB KILL is "param"; both go through the SAME
+    // per-node `level_candidates_for_node` enumeration in `enumerate_block_footswitches`, so
+    // both lose their sole candidate together). All four non-levelable rows are counted here
+    // precisely because the user must see that they exist.
     await expect(page.getByText("4 scenes, 6 footswitches")).toBeVisible({
       timeout: 60_000,
     });
@@ -123,14 +118,14 @@ test.describe("Level Setup — Other-class filtering, unlabeled naming (list-lev
     // ("Boost", from ACD_Boost) — never a blank row, never an arbitrary options[0].
     await expect(page.getByText("Boost", { exact: true })).toBeVisible();
 
-    // WAH IS present — the user-reported bug was that it was not.
+    // WAH IS present (the user-reported bug).
     await expect(page.getByText("WAH", { exact: true })).toBeVisible();
-    // WAH/WAH SWEEP (Other-class) and SPRING/VERB KILL (WetMix-only, issue 3) all say WHY
+    // WAH/WAH SWEEP (Other-class) and SPRING/VERB KILL (WetMix-only) all say WHY
     // they cannot be leveled rather than disappearing. Counted, so a regression that drops
     // one row is caught too.
     await expect(page.getByText("No volume knob to level")).toHaveCount(4);
     // …and none of the four can be selected: no pick, so no `options[0]` fallback is
-    // reachable (danger.md's Pick trap, closed from the absence side as before).
+    // reachable (danger.md's dropdown rule, closed from the absence side).
     await expect(page.getByRole("checkbox", { disabled: true })).toHaveCount(4);
   });
 });
@@ -146,9 +141,7 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
   });
 
   // COVERAGE rows 10, 12, 13 — all Setup-time (the picker's candidate annotations), never a
-  // run. Row 9 (the old target-mode chip's offset mode) is GONE with the chip itself — PR
-  // #144 replaced it with the combined D2 handle picker, so there is no more "match target
-  // vs keep offset" choice to assert. 400's 4 scenes carry all three overlay scopes for the
+  // run. 400's 4 scenes carry all three overlay scopes for the
   // ACD_Boost handle: Rhythm/Lead/Ceiling are FULL overlays (isolated), Shared is
   // bypass-only (shared_with_base); Ceiling's amp `outputLevel` overlay sits at 1.0 (the
   // range top) — the lowers_only headroom case.
@@ -228,21 +221,19 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     await closeList(page);
   });
 
-  // Two BUG→GATEs on one row, 402 "E2E Edge" scene 3 "Solo" (P4-C): `ACD_Boost` is bypassed
+  // Two gates on one row, 402 "E2E Edge" scene 3 "Solo": `ACD_Boost` is bypassed
   // in BASE, un-bypassed ONLY by Solo's bypass-only overlay, targeted by no footswitch or
   // EXP assign, and bypassed (or overlay-absent, inheriting base) in every OTHER scene — see
   // `scene_jobs::shared_write_is_scene_local` and `fixture_gates.rs`'s
   // `fx_edge_keeps_the_eq_ring_and_eight_scenes`.
-  //  * PRESELECT (issue 5, "Boost preselect", 2026-08-29): every scene row used to default
-  //    its handle to the amp's output level even when the scene's whole reason to exist is
-  //    turning ON a base-bypassed block, so leveling the amp barely moved the sound Solo
-  //    adds. `scene_handle_rows_scanned` now stamps `enables_block: true` on Boost's
+  //  * PRESELECT: a scene whose whole reason to exist is turning ON a base-bypassed block
+  //    must not default its handle to the amp's output level (leveling the amp barely moves
+  //    the sound Solo adds). `scene_handle_rows_scanned` stamps `enables_block: true` on Boost's
   //    candidate for Solo (wire `enablesBlock`) and Set up's preselect (`useSetupRows`)
   //    seeds THAT handle — never overriding a user's own choice.
-  //  * OFFER (user-reported "Friedman HBE" preset 28, 2026-08-22): the picker used to
-  //    disable a bypass-only handle UNCONDITIONALLY as "shared with the base preset", even
-  //    when the leak-to-base write is provably audible in exactly ONE scene. The fix
-  //    (`scene_write_verdict_for_param`'s `WriteDirect{lands_on_base:true}` arm) must offer
+  //  * OFFER (user-reported, "Friedman HBE"): a bypass-only handle whose leak-to-base write
+  //    is provably audible in exactly ONE scene is not "shared with the base preset":
+  //    `scene_write_verdict_for_param`'s `WriteDirect{lands_on_base:true}` arm must offer
   //    the handle ENABLED here — the write-lands-on-base + run-completes half of this gate
   //    is the raw-invoke test below ("402 Solo: leveling Boost's gain...").
   // The preselect is read FIRST, before either dropdown is opened, so the row shows exactly
@@ -285,7 +276,7 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
       "the Solo write is provably scene-local — no shared note",
     ).toHaveCount(0);
     // ENABLED, not just unwarned: clicking it must actually pick it (never blocked — the
-    // DANGER-rule Pick trap forbids a click that silently no-ops on a disabled option).
+    // danger.md dropdown rule forbids a click that silently no-ops on a disabled option).
     await boostOption.click();
     await expect(trigger(page, "block", "s402:3")).toHaveText("Boost");
     await expect(trigger(page, "knob", "s402:3")).toHaveText("Gain");
@@ -374,20 +365,17 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
     await page.close();
   });
 
-  // COVERAGE rows 15, 16/17/20's Setup-time half, post-PR-#144: the backend dropped the
-  // verify-only footswitch mode entirely, so there is no more "Verify only" tag or
-  // "Make level-neutral" opt-in to flip — every row is PRE-SEEDED with the tone-safe
+  // COVERAGE rows 16/17/20's Setup-time half: there is no "Verify only" tag or
+  // "Make level-neutral" opt-in — every row is PRE-SEEDED with the tone-safe
   // `defaultParamIndex` candidate (leveling.ts's `chosenFrom`) at Setup-open time, shown
   // non-interactively when it's the row's only option (mirrors BlockLevelPick's own
   // doc: "a `wet_mix` candidate is flagged...", "the single best candidate...").
-  // REWRITTEN (was: "SPRING pre-seeds Mix") — issue 3 ("Mix is never a leveling control",
-  // 2026-08-29) removed WetMix from `is_levelable_param`, so SPRING's sole candidate
-  // (`ACD_TMSpring63.mix`) no longer exists as a level control at all. SPRING can no longer
-  // be pre-seeded with anything — it joins the BUG-1 "no level control" pattern instead
-  // (disabled row, click is a no-op, never reaches Setup). This rewrite IS the issue-3 gate
-  // for the footswitch pre-seed lane; Boost's own pre-seed (unaffected — `gain` is `level_db`,
-  // never WetMix) stays as the positive control proving the describe block's premise still
-  // holds for a switch that DOES carry a real level control.
+  // Mix is never a leveling control (WetMix is not in `is_levelable_param`), so SPRING's sole
+  // candidate (`ACD_TMSpring63.mix`) is not a level control at all: SPRING follows the "no
+  // level control" pattern (disabled row, click is a no-op, never reaches Setup). This is
+  // the Mix gate for the footswitch pre-seed lane; Boost's own pre-seed (`gain` is
+  // `level_db`, never WetMix) is the positive control for a switch that DOES carry a real
+  // level control.
   test("400: Boost pre-seeds Gain; SPRING has no level control now that Mix is hidden everywhere", async ({
     page,
   }) => {
@@ -427,7 +415,7 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
 
     // Footswitch hooks are keyed by DEVICE SWITCH NUMBER (`setupRowHookKey`,
     // leveling.ts): `f400:sw2` = Boost (COVERAGE.md row 20). Footswitch rows always carry a
-    // real pre-seeded handle (D2: no default of their own) — its block, and the pre-picked
+    // real pre-seeded handle (no default of their own) — its block, and the pre-picked
     // KNOB ("Gain").
     const boostRow = page.locator('[data-setup-row="f400:sw2"]');
     await expect(boostRow.getByText("Verify only")).toHaveCount(0);

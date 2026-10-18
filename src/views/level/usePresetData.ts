@@ -1,4 +1,4 @@
-// src/views/level/usePresetData.ts — the Presets-view read-path data layer.
+// src/views/level/usePresetData.ts — the preset-list read-path data layer (Level, Doctor, Copy).
 //
 // Owns the My-Presets list, the profile/target store, the row selection, and the
 // derived profile/target lookups — plus the connected-edge refresh. The active
@@ -54,13 +54,13 @@ export function toPresetRow(p: PresetEntry): PresetRow {
 }
 
 export interface UsePresetDataOptions {
-  /** Which footswitch roster THIS caller's own `footswitchInfo` (and hence its
-   *  selection mechanics — `childKeys`, `chosenFrom`, whole-preset ticking) is built
-   *  from: `"levelable"` (default) is the pre-BUG-1 behaviour — a switch with zero
-   *  level_params is invisible to this view's tree entirely, which is what Doctor's
-   *  own SELECT list still relies on (a non-levelable FS has nothing to diagnose as
-   *  its own sound). `"all"` is Level's BUG-1 fix: the FULL roster, so a non-levelable
-   *  switch still gets a row (disabled, with a reason) instead of vanishing.
+  /** Which footswitch roster THIS caller's own `footswitchInfo` (and hence its selection
+   *  mechanics — `childKeys`, `chosenFrom`, whole-preset ticking) is built from:
+   *  `"levelable"` (default) — a switch with zero level_params is invisible to this view's
+   *  tree entirely, which is what Doctor's own SELECT list relies on (a non-levelable FS
+   *  has nothing to diagnose as its own sound). `"all"` is Level's choice: the FULL roster,
+   *  so a non-levelable switch still gets a row (disabled, with a reason) instead of
+   *  vanishing.
    *
    *  This is a per-CALLER choice, not a data-layer one, because `footswitchInfo` here
    *  drives BOTH the rendered rows AND their `fswKey` addressing (childKeys/toggle) —
@@ -99,10 +99,10 @@ export function usePresetData(
   // by 0-based LIST INDEX (= backup device slot − 1).
   const lib = useSyncExternalStore(subscribeLibraryScan, getLibraryScan);
   const { sceneInfo, ready } = lib;
-  // Per-caller roster (see `UsePresetDataOptions.footswitchRoster`'s doc): Doctor
-  // takes the default `footswitchesPerIndex` (levelable-only, unchanged from before
-  // BUG 1); Level opts into the full `allFootswitchesByIndex` roster so a
-  // non-levelable switch still gets a row (disabled) instead of vanishing.
+  // Per-caller roster (see `UsePresetDataOptions.footswitchRoster`'s doc): Doctor takes the
+  // default `footswitchesPerIndex` (levelable-only); Level opts into the full
+  // `allFootswitchesByIndex` roster so a non-levelable switch still gets a row (disabled)
+  // instead of vanishing.
   const footswitchInfo =
     footswitchRoster === "all"
       ? lib.allFootswitchesByIndex
@@ -286,7 +286,7 @@ export function usePresetData(
     });
   }, []);
 
-  // Drop just the given scene keys from the selection (BUG-4: the leveling flow prunes
+  // Drop just the given scene keys from the selection (the leveling flow prunes
   // exactly what a run leveled, leaving un-run sounds ticked).
   const deselectKeys = useCallback((keys: string[]) => {
     if (keys.length === 0) return;

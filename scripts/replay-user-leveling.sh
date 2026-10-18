@@ -15,10 +15,10 @@
 #   2. starts `e2e_server` in ONLINE mode itself (`TMP_E2E_ONLINE=1`, this worktree's
 #      derived port — see `scripts/e2e.sh`'s port-stride comment, mirrored below) with
 #      `TMP_E2E_VALIDATE_LOG`/`TMP_E2E_VALIDATE_WAV_DIR` exported INTO its environment —
-#      that process is what runs the strict re-measures and emits the P5 expectation log
-#      (`.claude/rules/e2e.md`'s "External validation (P5)");
+#      that process is what runs the strict re-measures and emits the expectation log
+#      (`.claude/rules/e2e.md`'s external-validation section);
 #   3. confirms the server is GENUINELY online from the SERVER LOG's own
-#      "seeded snapshot from the real device" line (CLAUDE.md: the runner's stdout never
+#      "seeded snapshot from the real device" line (AGENTS.md: the runner's stdout never
 #      carries it) AND `/health`'s `online:true` — refuses to continue otherwise;
 #   4. reads the whole library ONCE (`read_library_via_backup`, non-destructive) and
 #      refuses to run unless every target slot's NAME matches the table below (danger.md:
@@ -39,48 +39,22 @@
 #      Ctrl-C — in-band first (`e2e_reamp_off` over the bridge), falling back to a fresh
 #      `probe --reamp-off` process with a loud banner if the bridge is unreachable.
 #
-# THE STIMULUS PRECEDENCE TRAP — READ BEFORE RUNNING: `run_e2e_server` unconditionally
-# DEFAULTS `TMP_E2E_STIMULUS` to the bundled `guitar-humbucker.wav` the instant it starts,
-# UNLESS the var is already SET (even to "") in its environment — and
-# `resolve_stimulus_with_capture`'s precedence chain (`src-tauri/src/commands/
-# level_preset.rs`, "ORDER IS LOAD-BEARING") checks `TMP_E2E_STIMULUS` FIRST, before the
-# profile's stored Tier-2 DI capture, the topology WAV, or `TMP_LEVELLER_STIMULUS` (in
-# that order). Left alone (the harness's default), EVERY command below — leveling AND
-# re-measure alike — would silently use guitar-humbucker.wav regardless of the
-# `profileId`/`topologyId` we pass. That is NOT faithful to the real session, so this
-# script exports `TMP_E2E_STIMULUS=""` (empty, not unset) into the server's env below:
-# `run_e2e_server`'s default-set is skipped (`var().is_err()` is false for an empty
-# string), and the resolver's own `!p.is_empty()` guard then falls through to the
-# `profileId` branch, giving `level_preset`/`level_scenes_apply_batched`/
-# `level_footswitches_apply` the REAL "Maverick bridge" DI capture, verbatim, exactly as
-# the UI would for this profile.
-#
-# CORRECTION (HW, 2026-08-19): the last clause above was WRONG, and it cost a whole
-# acceptance run. The `profileId` branch cannot win under the MockRuntime — see
-# `LEVEL_TOPOLOGY_ID` below for why and for the routing that replaces it. The leveling
-# commands are no longer passed `$TOPOLOGY_ID` at all.
-#
-# `e2e_measure_sound` (the P5 re-measure step) has NO `profileId` param at all — only
-# `topologyId`, whose normal resolution (`topology_wav_path`) goes through Tauri's
-# `app.path().resolve(_, BaseDirectory::Resource)`, which a maintainer's own comment in
-# `e2e_server.rs` states "can't resolve bundle resources" under the MockRuntime this
-# harness runs on. Rather than accept that as a hard limit on P5 validation, this script
-# closes the gap with the ONE remaining rung of the same precedence chain:
-# `TMP_LEVELLER_STIMULUS`, which sits after `topology_id` but is NOT feature-gated, so it
-# is live for `e2e_measure_sound` too. The server is started with
-# `TMP_LEVELLER_STIMULUS=<profile capture WAV path>` (see `PROFILE_CAPTURE_WAV` below —
-# `profiles::capture_wav_path_in`'s exact on-disk path for this profile id, existence
-# checked before anything else runs), and every `e2e_measure_sound` call in `measure_row`
-# passes `topologyId:""` — empty, not the real "guitar-filtertron" — so
-# `.filter(|t| !t.is_empty())` drops it and resolution falls through past the broken
-# `topology_wav_path` call straight to `TMP_LEVELLER_STIMULUS`. `e2e_measure_sound`'s own
-# capture call passes `calibration_lufs: None` unconditionally (not wired to the profile
-# at all), so this path never risks the double-rescale a `TMP_E2E_STIMULUS`-hijack
-# workaround would have caused — the SAME DI-capture bytes leveling used are injected
-# verbatim for the re-measure too, by construction, not by trusting `topology_wav_path`.
-# This is a deliberate, one-line deviation from "pass topologyId on every command that
-# accepts it" for `e2e_measure_sound` specifically; every OTHER command still gets the
-# real `$TOPOLOGY_ID`.
+# STIMULUS ROUTING — READ BEFORE RUNNING. `resolve_stimulus_with_capture`
+# (`src-tauri/src/commands/level_preset.rs`, "ORDER IS LOAD-BEARING") tries, in order,
+# `TMP_E2E_STIMULUS`, the profile's stored DI capture, the topology WAV, then
+# `TMP_LEVELLER_STIMULUS`. Under the MockRuntime this harness runs on, the profile branch
+# never wins (its `app_config_dir` is not the real one) and a topology id never reaches the
+# user's capture, so every command is routed to `TMP_LEVELLER_STIMULUS` = the profile's
+# capture WAV (`PROFILE_CAPTURE_WAV` below):
+#   - the server starts with `TMP_E2E_STIMULUS=""` (empty, not unset: `run_e2e_server`
+#     defaults it to guitar-humbucker.wav only when unset, and the resolver skips an empty
+#     value);
+#   - every leveling command and every `e2e_measure_sound` call passes `topologyId:""`,
+#     which drops the topology branch (`.filter(|t| !t.is_empty())`);
+#   - leveling passes `calibrationLufs:null` (`LEVEL_CALIBRATION_LUFS` below), and
+#     `e2e_measure_sound`'s capture passes `calibration_lufs: None`, so the capture is
+#     injected verbatim for both.
+# Leveling and re-measure share one stimulus by construction.
 #
 # THE TABLE — the whole replay at a glance; change a target here, nowhere else. Columns:
 #   slot|kind|id1|id2|id3|id4|target
@@ -148,7 +122,9 @@ ok()   { printf '\033[32m✓ %s\033[0m\n' "$*"; }
 err()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; }
 # shellcheck disable=SC2329,SC2317  # only called from cleanup(), itself invoked via `trap`
 warn() { printf '\033[33m⚠ %s\033[0m\n' "$*"; }
-gap()  { sleep 5; }  # HID open-lockout hygiene between device-touching calls — danger.md
+# A settle gap between device processes: macOS can release an exited process's exclusive
+# HID handle late, and the next open then fails 0xe00002c5 (another handle holds the seize).
+gap()  { sleep 5; }
 
 usage() {
   local last
@@ -196,24 +172,12 @@ PROFILE_ID="9a57daa8-b8b3-4a29-a39b-0759eb468d28"
 TOPOLOGY_ID="guitar-filtertron"
 CALIBRATION_LUFS="-22.182825"
 
-# THE LEVELING COMMANDS' OWN STIMULUS ROUTING — deliberately NOT `$TOPOLOGY_ID`.
-#
-# `resolve_stimulus_with_capture`'s profile_id branch calls
-# `profiles::existing_capture_for`, which resolves `app.path().app_config_dir()`. Under the
-# MockRuntime this harness runs on, that is NOT the real `dev.tmpcompanion.app` directory,
-# so the branch returns None even though the capture file is present on disk (the existence
-# check below passes and proves nothing about it). Resolution then reaches
-# `if let Some(tid) = topology_id.filter(|t| !t.is_empty()) { return topology_wav_path(..) }`
-# — an unconditional return — and "guitar-filtertron" canonicalises to "guitar-singlecoil",
-# which DOES resolve. The result: every leveling command solved against a bundled SYNTHETIC
-# sample while `e2e_measure_sound` judged the outcome against the real DI capture. Two
-# different stimuli through a nonlinear amp, and the whole verdict was an artefact
-# (HW, 2026-08-19 — every one of 13 rows landed 0.7-4.4 dB quiet, in one direction).
-#
-# Passing an EMPTY topology id drops that branch (`.filter(|t| !t.is_empty())`) and lets
-# resolution fall through to `TMP_LEVELLER_STIMULUS` — the profile capture exported into the
-# server's env — which is the SAME file `measure_row` already routes to. Leveling and
-# re-measure then share one stimulus by construction.
+# THE LEVELING COMMANDS' OWN STIMULUS ROUTING — deliberately NOT `$TOPOLOGY_ID` (see the
+# header's STIMULUS ROUTING). Under the MockRuntime the profile branch returns None even
+# though the capture file is on disk (the existence check below proves nothing about it),
+# and "guitar-filtertron" canonicalises to "guitar-singlecoil", a bundled SYNTHETIC sample:
+# leveling would solve against it while `e2e_measure_sound` judges against the real DI
+# capture (two stimuli through a nonlinear amp — HW: every row landed 0.7-4.4 dB quiet).
 #
 # `calibrationLufs` must go null with it. `resolve_stimulus_for_leveling` returns
 # `if from_capture { None } else { calibration_lufs }`, so the real app NULLS calibration
@@ -358,7 +322,7 @@ cleanup() {
     warn "in-band reamp-off unavailable or failed — falling back to a fresh probe process"
     sleep 3
     if ! ( cd "$SRC_TAURI" && "$PROBE_BIN" --reamp-off ) >"$OUT_DIR/reamp-off-fallback.log" 2>&1; then
-      err "reamp-off did not confirm — waiting out the HID lockout and retrying ONCE…"
+      err "reamp-off did not confirm — waiting for the seize to be released and retrying ONCE…"
       sleep 30
       if ! ( cd "$SRC_TAURI" && "$PROBE_BIN" --reamp-off ) >>"$OUT_DIR/reamp-off-fallback.log" 2>&1; then
         err "########################################################################"
@@ -387,22 +351,8 @@ kill_port "$PORT"
 # ── start the ONLINE e2e_server ourselves ────────────────────────────────────────────
 : > "$SERVER_LOG"
 log "starting e2e_server ONLINE on :${PORT}"
-# TMP_E2E_STIMULUS="" (empty, NOT unset) — see the header's "STIMULUS PRECEDENCE TRAP"
-# note: this defeats run_e2e_server's unconditional guitar-humbucker.wav default while
-# also defeating resolve_stimulus_with_capture's own e2e-first short-circuit, letting the
-# real profile/topology precedence chain run exactly as the UI would drive it for the
-# leveling commands (level_preset/level_scenes_apply_batched/level_footswitches_apply).
-#
-# TMP_LEVELLER_STIMULUS=<profile capture WAV> — this is what makes the RE-MEASURE step
-# (e2e_measure_sound, which has no profileId param at all) inject the SAME bytes leveling
-# used, without ever calling topology_wav_path (broken under MockRuntime — see header).
-# It sits AFTER profile_id/topology_id in the precedence chain, so it changes nothing for
-# leveling; measure_row (below) pairs this with topologyId:"" so the empty topology_id is
-# filtered out by resolve_stimulus_with_capture's `.filter(|t| !t.is_empty())` and
-# resolution falls through past topology_wav_path to this var. And because
-# e2e_measure_sound's own capture call passes `calibration_lufs: None` unconditionally
-# (never wired to the profile's calibration at all), the capture is injected verbatim
-# either way — no rescale risk, unlike the rejected TMP_E2E_STIMULUS-hijack workaround.
+# TMP_E2E_STIMULUS="" and TMP_LEVELLER_STIMULUS=<profile capture WAV>: see the header's
+# STIMULUS ROUTING.
 TMP_E2E_ONLINE=1 TMP_E2E_PORT="$PORT" TMP_E2E_STIMULUS="" \
   TMP_LEVELLER_STIMULUS="$PROFILE_CAPTURE_WAV" \
   TMP_E2E_VALIDATE_LOG="$VALIDATE_LOG" TMP_E2E_VALIDATE_WAV_DIR="$VALIDATE_WAV_DIR" \
@@ -411,7 +361,7 @@ TMP_E2E_ONLINE=1 TMP_E2E_PORT="$PORT" TMP_E2E_STIMULUS="" \
 SERVER_PID=$!
 disown "$SERVER_PID" 2>/dev/null || true
 
-# Ready-gate: the SERVER LOG's own seed line (never the runner's stdout — CLAUDE.md's
+# Ready-gate: the SERVER LOG's own seed line (never the runner's stdout — AGENTS.md's
 # stale-server false-green trap) AND /health's online:true. Refuses to continue otherwise
 # — a silent fall back to an offline/fake server would fabricate every LUFS.
 log "waiting for the real-device handshake…"
@@ -548,11 +498,8 @@ measure_row() {
   lev_json="null"
   [ "$grp" = "-" ] || lev_json="$(jq -nc --arg g "$grp" --arg n "$node" --arg p "$param" \
     '{groupId:$g, nodeId:$n, parameterId:$p}')"
-  # topologyId:"" (deliberate deviation from "pass topologyId on every command that
-  # accepts it" — see the header's STIMULUS PRECEDENCE TRAP note): e2e_measure_sound has
-  # no profileId param, so an empty topology_id is what routes its OWN resolve_stimulus
-  # call past the broken-under-MockRuntime topology_wav_path and onto TMP_LEVELLER_STIMULUS
-  # (the profile capture WAV, exported into the server's env above) instead.
+  # topologyId:"" — see the header's STIMULUS ROUTING: an empty topology id routes this
+  # re-measure onto TMP_LEVELLER_STIMULUS (the profile capture WAV).
   body="$(jq -nc \
     --argjson slot "$slot" --argjson scene "$scene_json" --argjson sw "$sw_json" \
     --argjson lev "$lev_json" \

@@ -1,7 +1,7 @@
-// The ONE list of Tauri commands this app registers (#270).
+// The ONE list of Tauri commands this app registers.
 //
 // Plain `//` comments only: `build.rs` `include!`s this file to hand the same names to
-// `tauri_build`'s app manifest (#268), and an inner `//!` doc is illegal there.
+// `tauri_build`'s app manifest, and an inner `//!` doc is illegal there.
 //
 // Three readers, one list:
 // - `bootstrap::run` registers it on the real (Wry) runtime;

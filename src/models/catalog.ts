@@ -18,7 +18,7 @@ import { DASH } from "../lib/format";
 import { LINEAGE_BY_BID } from "./lineage";
 import { cpuForBid } from "./cpu";
 // The id-suffix rule lives in the zero-import `deviceId` leaf (shared with cpu and
-// blockArt), so catalog no longer reaches the block-art tables at all.
+// blockArt), so catalog never reaches the block-art tables.
 import { resolveDeviceId } from "./deviceId";
 
 export type Channels = "mono" | "stereo";
@@ -70,7 +70,7 @@ export interface ModelRecord {
   search: string;
 }
 
-// ── Taxonomy (ordering + grouping rules; ported from catalog-tax.jsx) ─────────
+// ── Taxonomy (ordering + grouping rules) ─────────
 
 /** Top-level category order — render the rail / "all" grouping in exactly this order. */
 export const CAT_ORDER = [

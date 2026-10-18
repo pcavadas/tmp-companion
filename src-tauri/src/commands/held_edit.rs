@@ -10,18 +10,17 @@ use crate::{
 #[cfg(test)]
 use crate::{commands::bulk_replace::plan_identity_verdict, ListIndex};
 
-/// Edit ONE preset on a HELD session (the validated fast path, E1): load it, re-arm so
+/// Edit ONE preset on a HELD session (the validated fast path): load it, re-arm so
 /// the session re-attaches to it, confirm attachment, replace every pre-discovered
 /// target node, and (if `save`) persist — all WITHOUT reopening the connection. The
 /// session's live-controller heartbeat (established once by `begin_live_edit`) must
 /// already be warm; this keeps it warm for the next preset. The re-arm
 /// (`connection_request` + `preset_list_request` + `current_preset_info_request`) is
-/// what re-attaches the edit context to the just-loaded preset — my earlier
-/// "load+edit in one session is rejected" finding was missing it (HW-proven:
-/// 3/3 presets attached + confirmed + persisted on one connection, ~3.4 s/preset vs
-/// ~8 s for the two-connection path). Echo-gated waits (E3) exit each settle window on
-/// the device's echo. SAME safety gate as [`replace_one_live`]: a save only when the
-/// active preset matches the target AND every replace returns `nodeReplaced` (40).
+/// what re-attaches the edit context to the just-loaded preset (HW: one connection
+/// loads, re-arms and edits; ~3.4 s/preset vs ~8 s for the two-connection path).
+/// Echo-gated waits exit each settle window on the device's echo. Safety gate: a save
+/// only when the active preset matches the target AND every replace returns
+/// `nodeReplaced` (40).
 pub(crate) fn held_replace_one(
     s: &mut Session,
     plan: &ReplacePlan,
@@ -124,7 +123,7 @@ pub(crate) fn held_replace_one(
     })
 }
 
-/// Run a bulk replace across `plans` on ONE held session (the E1 architecture):
+/// Run a bulk replace across `plans` on ONE held session:
 /// connect once, warm the live-controller heartbeat once (`begin_live_edit`), then
 /// `held_replace_one` each preset — no reopens, no inter-preset settles. A per-preset
 /// failure degrades to an `error`/`skipped` row (the session stays alive); only a
@@ -190,7 +189,7 @@ mod plan_identity_tests {
         (item, sim.events())
     }
 
-    /// #169: a different preset swapped into the slot after discovery shares the node
+    /// A different preset swapped into the slot after discovery shares the node
     /// ids the plan targets, so only `preset_id` tells them apart. Nothing may be edited
     /// or saved.
     #[test]

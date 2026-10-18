@@ -10,10 +10,10 @@
 // then separately try device" would need its own retry plumbing.
 //
 // `candidatesFor` returns an EXPLICIT fetch-state discriminant rather than
-// `SceneHandleCandidate[] | "loading" | "error" | undefined` — the old shape let a
-// bare `undefined` ("not fetched yet") and an empty/mismatched list ("fetched,
-// this handle is gone") collapse into the same falsy check, so a carried-forward
-// VALID handle rendered "(removed)" until the fetch resolved (BUG→GATE). Naming
+// `SceneHandleCandidate[] | "loading" | "error" | undefined`: that shape lets a bare
+// `undefined` ("not fetched yet") and an empty/mismatched list ("fetched, this handle
+// is gone") collapse into the same falsy check, so a carried-forward VALID handle would
+// render "(removed)" until the fetch resolved. Naming
 // "unfetched" as its own state is what Set up's Block and Knob dropdowns
 // (`setupControls`) derive `stale` from: a knob is stale only once the list is read.
 

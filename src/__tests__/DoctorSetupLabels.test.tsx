@@ -1,6 +1,6 @@
-// src/__tests__/DoctorSetupLabels.test.tsx — BUG→GATE (issue 2), Doctor's sound names.
-// Same mislabel as Level's Set up (see SetupPage.labels.test.tsx): a hardcoded "Whole
-// preset" for every base row shadowed `chosenFrom`'s own answer for a multi-scene preset.
+// src/__tests__/DoctorSetupLabels.test.tsx — Doctor's sound names. Same rule as Level's
+// Set up (see SetupPage.labels.test.tsx): no hardcoded "Whole preset" for a base row may
+// shadow `chosenFrom`'s own answer for a multi-scene preset.
 // `chosenFrom` names every main sound "Main sound" (look B's one name), and Doctor renders
 // a sound's own name verbatim wherever it names one: the Check page's rows (and the
 // Results rows, from the same `soundNameOf`). The Instrument page is per PRESET in look B

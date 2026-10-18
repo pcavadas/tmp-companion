@@ -192,8 +192,8 @@ describe("CatalogView — sidebar, search, Sound, count", () => {
   });
 });
 
-// #303: Stereo on → a category with no stereo models used to lock the grid on
-// "No models match" with the active filter disabled, so it couldn't be turned off.
+// Stereo on → a category with no stereo models must not lock the grid on
+// "No models match" with the active filter disabled (it could never be turned off).
 describe("regression: an active Stereo filter stays changeable in a mono-only category (#303)", () => {
   it("keeps the chosen Stereo segment enabled, and All clears it", async () => {
     const user = userEvent.setup();

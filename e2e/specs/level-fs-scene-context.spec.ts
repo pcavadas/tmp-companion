@@ -16,7 +16,7 @@ import {
   summaryDone,
 } from "../fixtures/scenario";
 
-// PR #144 NEW COVERAGE — the D3 scene context (Set up's "Level it in scene" dropdown, a
+// The footswitch scene context (Set up's "Level it in scene" dropdown, a
 // footswitch row's `scene:<rowKey>` Select) drives `FootswitchLevelJob.sceneContext` on the
 // wire, and a USER OVERRIDE of the auto-suggested scene must actually ride the call — not
 // just the suggestion happening to be right. E2E Combined Level (406)'s BOOST switch
@@ -26,15 +26,15 @@ import {
 // in — allowed, flagged under the row, never blocked) and proves the override — not the
 // suggestion — is what the backend actually recalls before capturing.
 //
-// Danger.md's latch nuance is the physics this pins: `loadScene` mid-engage is INAUDIBLE (the
-// active scene latches at ENGAGE), so the scene recall MUST happen before `ReAmp(true)`, not
-// merely "at some point in the run" — a `LoadScene` fired AFTER the engage would be a bug that
-// captures the wrong scene's audio while reporting the requested one.
+// The scene recall MUST happen BEFORE `ReAmp(true)`, so the whole capture hears that scene
+// (one engage per scene, danger.md) — a `LoadScene` fired AFTER the engage would capture
+// the wrong scene's audio while reporting the requested one.
 //
 // Observation: the WIRE WRITES the run makes are this file's proof — `/sim/events`'
 // ordering, as `.claude/rules/e2e.md` prescribes — not the row the run streams back.
 // COVERAGE row 39 — the scene-that-enables-an-FS third of 406's combined-leveling trio
-// (BOOST/LEAD), driven through the real wizard UI with the D3 override riding the wire.
+// (BOOST/LEAD), driven through the real wizard UI with the scene-context override riding
+// the wire.
 test.describe("Level Setup — footswitch scene-context override rides the wire (406, UI-driven)", () => {
   test.afterEach(async ({ page }) => {
     await reampOff(page);
@@ -130,8 +130,8 @@ test.describe("Level Setup — footswitch scene-context override rides the wire 
     const from = (await simEvents(page)).length;
 
     await startLeveling(page).click();
-    // Per this file's header, the per-row OUTCOME is not observable offline (the Channel
-    // seam) — wait for the terminal state without asserting what it says.
+    // The proof is the wire writes (file header) — wait for the terminal state without
+    // asserting what it says.
     await expect(summaryDone(page)).toBeVisible({ timeout: 240_000 });
 
     const events = (await simEvents(page)).slice(from);
@@ -149,22 +149,22 @@ test.describe("Level Setup — footswitch scene-context override rides the wire 
     ).toBeGreaterThanOrEqual(0);
     expect(
       scratchIdx,
-      "SCRATCH must be recalled BEFORE the engage (re-amp latches the active scene at " +
-        "engage — danger.md)",
+      "SCRATCH must be recalled BEFORE the engage (one engage per scene, recalled " +
+        "first — danger.md)",
     ).toBeLessThan(reAmpIdx);
 
     // BOOST's block (`ACD_KingOfTone`) is bypassed in base and LEAD is the one scene that
-    // enables it, so under the assign gate (user directive, 2026-08-19) BOOST — a bare
+    // enables it, so under the assign gate BOOST — a bare
     // on-off with no `param` fn of its own — plans `Bake`, not `Assign`. A Bake's own save
     // mirrors the solved value into every scene whose overlay RESTATES base
     // (`footswitch.rs`'s `mirror_scenes`), and LEAD does exactly that here — so a LATE
     // `LoadScene(2)`, once every measurement capture is already complete, is the Bake
-    // persisting correctly, not a leak. What the override actually promises is narrower and
-    // UNCHANGED: LEAD must never be the scene ACTIVE AT AN ENGAGE (danger.md: re-amp
-    // latches the active scene at engage) — the override, not the suggestion, must be what
-    // every CAPTURE hears. Scoping the check to everything up to and including the LAST
-    // engage (there is one per measurement probe, all at SCRATCH) keeps that promise exactly
-    // as strong as it was, without failing on the Bake's own after-the-fact mirror write.
+    // persisting correctly, not a leak. What the override actually promises is narrower:
+    // LEAD must never be the scene ACTIVE AT AN ENGAGE (the recall comes before the engage,
+    // so the whole capture hears it) — the override, not the suggestion, must be what every
+    // CAPTURE hears. Scoping the check to everything up to and including the LAST engage
+    // (there is one per measurement probe, all at SCRATCH) keeps that promise without
+    // failing on the Bake's own after-the-fact mirror write.
     const engageIndices = events
       .map((e, i) => (isReAmpOn(e) ? i : -1))
       .filter((i) => i >= 0);

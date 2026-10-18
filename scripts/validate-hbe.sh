@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# validate-hbe.sh — P5's attended, standalone external-validation run (the Friedman HBE
+# validate-hbe.sh — the attended, standalone external-validation run (the Friedman HBE
 # case). An ORCHESTRATION WRAPPER over exactly the same contract the online e2e lane
 # uses: it drives `probe`, the probe's measurement seams emit the JSON-lines expectation
 # log (`src-tauri/src/validate_log.rs`), and `scripts/level-validate.sh --expectations`
@@ -19,14 +19,12 @@
 #   4. levels the base (`probe --levelpreset … save`), optionally the FS scenes
 #      (`probe --level-preset-scenes`) and optionally block-acting footswitches
 #      (`probe --level-footswitch … --commit`);
-#   5. (no wait after a save: on fw 1.8.58 a save is durable the moment it returns —
-#      fw 1.8.58);
+#   5. (no wait after a save: a save is durable the moment it returns, fw 1.8.58);
 #   6. re-measures each leveled foundation, EMITTING one expectation row + WAV per sound:
 #      base/scenes via `probe --measure-scene … --target … --dump-wav`, footswitches via
-#      `probe --measure-footswitch … --target … --dump-wav` (P5 closed that hole; FS rows
-#      are now externally validated like every other row);
+#      `probe --measure-footswitch … --target … --dump-wav`;
 #   7. hands the whole log to `scripts/level-validate.sh --expectations` and branches its
-#      0/1/3 exit explicitly — a SKIP is reported as SKIPPED, never as a target miss;
+#      0/1/3/4 exit explicitly — a SKIP is reported as SKIPPED, never as a target miss;
 #   8. clears the scratch slot back to empty (`probe --clear`, name-guarded — skip with
 #      `--no-clear` to leave the imported preset for inspection);
 #   9. GUARANTEED re-amp OFF on a fresh connection, via a trap that runs on every exit
@@ -184,9 +182,8 @@ run_probe() {
   ( cd "$SRC_TAURI" && "$PROBE_BIN" "$@" )
 }
 
-# HID open-lockout hygiene: leave the line quiet between probe invocations (each is its
-# own fresh connection/open). Conservative on purpose — `danger.md`: "every failed open
-# attempt appears to RESET the lockout", so a script that hammers retries never recovers.
+# A gap so the previous session's handle closes (0xe00002c5 = another handle holds the
+# seize); each probe invocation is its own fresh connection/open.
 gap() { sleep 5; }
 
 SCRIPT_LABEL="$REPO (validate-hbe: $PRESET_FILE → slot $SLOT)"
@@ -203,13 +200,13 @@ FAILED=0
 cleanup() {
   local code=$?
   trap - EXIT INT TERM
-  # A gap BEFORE the OFF: the last step may have closed a session moments ago, and a
-  # fresh open inside the lockout window fails (and each failed open re-arms it —
-  # danger.md). One retry after a LONGER quiet, then a banner; never a retry loop.
+  # A gap BEFORE the OFF so the previous session's handle closes (0xe00002c5 = another
+  # handle holds the seize). One retry after a LONGER quiet, then a banner; never a retry
+  # loop.
   log "cleanup — guaranteed re-amp OFF…"
   sleep 3
   if ! run_probe --reamp-off >"$OUT_DIR/reamp-off.log" 2>&1; then
-    err "reamp-off did not confirm — waiting out the HID lockout and retrying ONCE…"
+    err "reamp-off did not confirm — waiting for the seize to be released and retrying ONCE…"
     sleep 30
     if ! run_probe --reamp-off >>"$OUT_DIR/reamp-off.log" 2>&1; then
       err "########################################################################"
@@ -260,8 +257,7 @@ log "[3] confirm read (probe --slot-json $((SLOT + 1)))…"
 run_probe --slot-json "$((SLOT + 1))" >"$OUT_DIR/slot.json" 2>"$OUT_DIR/slot-json.log" \
   || { err "confirm read failed (see $OUT_DIR/slot-json.log)"; exit 1; }
 # Prefer `jq -r .info.displayName` (the preset's user-visible name — `info` carries no
-# bare "name" field; fw 1.8.45's info keys are author/created_at/displayName/preset_id/
-# product_id/source_id/timestamp/version). Fall back to a first-match sed scan if jq
+# bare "name" field). Fall back to a first-match sed scan if jq
 # isn't present; a WRONG name here only makes the final `--clear` guard refuse (safe), it
 # can never make it clear the wrong thing — `--clear`'s own expect-name check is the
 # actual safety backstop, this is just aiming it correctly.
@@ -329,7 +325,7 @@ PY
     fi
   fi
   # A count match only proves enumeration; a SKIPped row was enumerated and never leveled,
-  # and its re-measure can still land in tolerance by luck (HW: Friedman scene 3, 2026-09-02).
+  # and its re-measure can still land in tolerance by luck (HW).
   if [ "$FAILED" -eq 0 ] && grep -q '\[SKIP:' "$OUT_DIR/level-scenes.log"; then
     err "a scene row was SKIPped — enumerated but never leveled:"
     grep '\[SKIP:' "$OUT_DIR/level-scenes.log" >&2

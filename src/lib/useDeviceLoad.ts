@@ -1,7 +1,6 @@
 // src/lib/useDeviceLoad.ts — shared read-only load state machine for the
-// device-backed views (Presets, Songs, Copy). Each used to declare an identical
-// `LoadPhase` union + the same `loading → ready | error` refresh dance; that
-// pattern lives here once.
+// device-backed views (Level, Songs, Copy): the `LoadPhase` union + the
+// `loading → ready | error` refresh dance, in one place.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 

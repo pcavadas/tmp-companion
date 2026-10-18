@@ -1,56 +1,42 @@
 # TMP Companion
 
-A macOS desktop app that interoperates with a Fender Tone Master Pro **you own**,
-over USB, to read, level, copy, and back up **your own** presets. It is an
-independent, unaffiliated project — see [NOTICE](NOTICE) and [INTEROP.md](INTEROP.md).
+A desktop app that interoperates with a Fender Tone Master Pro **you own**, over USB, to read, level, check and copy **your own** presets.
+It is an independent, unaffiliated project — see [NOTICE](NOTICE) and [INTEROP.md](INTEROP.md).
 
 Built with [Tauri 2](https://tauri.app) (Rust backend + React/TypeScript frontend).
-Ships on macOS, universal (Apple Silicon & Intel) — CoreAudio for re-amp
-measurement, IOKit for exclusive USB-HID access. Also publishes an **alpha**
-`.deb`/`.rpm` for Linux (hidraw + ALSA) — see
-[notes/linux-packaging.md](notes/linux-packaging.md) and
-[CONTRIBUTING.md](CONTRIBUTING.md) — and an **unsigned** `setup.exe` for
-Windows (Win32 HID + WASAPI).
+Ships on macOS, universal (Apple Silicon & Intel) — CoreAudio for re-amp measurement, IOKit for exclusive USB-HID access.
+Also publishes an **alpha** `.deb`/`.rpm` for Linux (hidraw + ALSA) and an **unsigned** `setup.exe` for Windows (Win32 HID + WASAPI) — see [notes/releasing.md](notes/releasing.md).
 
 ## Features
 
-Click-only five-tab UI:
+Click-only six-tab UI:
 
-- **Level** — even out preset loudness to a LUFS target by re-amping a synthetic
-  stimulus through each preset's DSP chain and measuring the processed output, then
-  writing the solved level back (opt-in). Per-instrument profiles and per-scene
-  leveling included.
+- **Level** — even out preset loudness to a LUFS target by re-amping a synthetic stimulus through each preset's DSP chain and measuring the processed output, then saving the solved level back automatically, once you confirm you've backed up with Pro Control.
+  Per-instrument profiles and per-scene and per-footswitch leveling included.
+- **Doctor** — check selected sounds for tonal problems from the same re-amp captures and describe each fix as a step to make on the unit.
+  It never writes to the unit.
 - **Copy** — copy signal-chain blocks between presets.
 - **Songs** — device-backed song / setlist browsing and editing.
-- **Catalog** — a reference of amp / cab / effect models with original artwork and
-  per-block DSP cost.
-- **Settings** — loudness targets, instrument profiles, calibration, playback-level
-  compensation.
+- **Catalog** — a reference of amp / cab / effect models with original artwork and per-block DSP cost.
+- **Settings** — loudness targets, instrument profiles, calibration, playback-level compensation.
 
-Everything acts on your own device and your own presets. It does not publish,
-upload, or share presets.
+Everything acts on your own device and your own presets.
+It does not publish or share presets; a bug report carries one only if you choose to include it.
 
 ## Download
 
-Grab the latest `.dmg` from the [Releases](https://github.com/pcavadas/tmp-companion/releases)
-page. macOS 12+ — a universal build for **Apple Silicon & Intel**.
+Grab the latest `.dmg` from the [Releases](https://github.com/pcavadas/tmp-companion/releases) page.
+macOS 12+ — a universal build for **Apple Silicon & Intel**.
 
-The app is code-signed and notarized, so it opens normally — just copy
-**TMP Companion.app** to `/Applications` and launch it.
+The app is code-signed and notarized, so it opens normally — just copy **TMP Companion.app** to `/Applications` and launch it.
 
-An **alpha** `.deb`/`.rpm` for Linux is built in the same release run and published
-whenever that build succeeds — the Linux jobs are non-blocking, so an occasional
-release may carry the DMG alone. See
-[notes/linux-packaging.md](notes/linux-packaging.md) for what "alpha" means here
-and why there's no AppImage.
+An **alpha** `.deb`/`.rpm` for Linux is built in the same release run and published whenever that build succeeds — the Linux jobs are non-blocking, so an occasional release may carry the DMG alone.
+See [notes/releasing.md](notes/releasing.md) for what "alpha" means here and why there's no AppImage.
 
-An **unsigned** `setup.exe` for Windows is published the same way — the Windows
-job is non-blocking too, so a release may carry it or not. There is no
-code-signing certificate: SmartScreen will warn on first launch ("More info" →
-"Run anyway"), and Windows installs update by hand (no updater feed).
+An **unsigned** `setup.exe` for Windows is published the same way — the Windows job is non-blocking too, so a release may carry it or not.
+There is no code-signing certificate: SmartScreen will warn on first launch ("More info" → "Run anyway"), and Windows installs update by hand (no updater feed).
 
-Plug in your Tone Master Pro and close Fender's Pro Control first — the app needs
-exclusive USB access.
+Plug in your Tone Master Pro and close Fender's Pro Control first — the app needs exclusive USB access.
 
 ## Build & run
 
@@ -73,16 +59,15 @@ bun run lint                          # strict eslint (--max-warnings 0)
 cd src-tauri && cargo test --lib      # Rust unit tests
 ```
 
-> Run `bun run build` before the Rust checks in a fresh clone — Tauri's build step
-> needs `dist/` to exist.
-
 ## For contributors & agents
 
-Working in this repo (human or AI agent)? Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) — it links the architecture map, the topic deep-dives, and the legal posture.
+Working in this repo?
+Humans start with [`CONTRIBUTING.md`](CONTRIBUTING.md); coding agents start with [`AGENTS.md`](AGENTS.md).
+The doc index is [`notes/README.md`](notes/README.md).
 
-Behaviour is firmware-version dependent; validated on Tone Master Pro firmware **1.7.75** and **1.8.45**.
+Behaviour is firmware-version dependent; validated on Tone Master Pro firmware **1.8.58**.
 
 ## License
 
-[MIT](LICENSE). Independent and unaffiliated with Fender; third-party names are
-used nominatively — see [NOTICE](NOTICE).
+[MIT](LICENSE).
+Independent and unaffiliated with Fender; third-party names are used nominatively — see [NOTICE](NOTICE).

@@ -1,8 +1,8 @@
 //! OFFLINE preset-library ingestion.
 //!
 //! The canonical full-preset source is a **folder of `.preset` files** produced by
-//! Pro Control's one-shot "export to folder" (there is no reliable complete-preset
-//! read over USB). This module
+//! Pro Control's one-shot "export to folder" (a USB `presetDataRequest` (field 8) read is
+//! whole only while the session is kept alive). This module
 //! decodes that folder into an in-memory [`Library`] of [`LibraryRecord`]s, indexes
 //! each via [`crate::search::index_preset`], and **reconciles** the files against
 //! the live device slot list so a record can be addressed for a write.
@@ -34,8 +34,7 @@ pub fn decode_preset_bytes(bytes: &[u8]) -> Result<String, String> {
 /// A preset doc's identity uuid (`info.preset_id`) — the ONE home of that JSON
 /// walk, shared by the library ingest and the e2e stray-sweep ownership guard.
 /// Returns `None` for a missing OR EMPTY id — an empty string is not an identity
-/// and must never compare equal to another empty (the vacuous-pass hazard the
-/// #155 guards document).
+/// and must never compare equal to another empty (a guard would pass vacuously).
 pub(crate) fn preset_id_of(value: &Value) -> Option<&str> {
     value
         .pointer("/info/preset_id")
@@ -106,7 +105,7 @@ impl LibraryRecord {
 /// The ingested + reconciled preset library held in app state.
 #[derive(Debug, Clone, Default)]
 pub struct Library {
-    /// The imported export folder — shown in the Library panel header (Phase 1 UI).
+    /// The imported export folder.
     #[allow(dead_code)]
     pub folder: PathBuf,
     pub records: Vec<LibraryRecord>,

@@ -1,7 +1,7 @@
 // Regression: the top-level ErrorBoundary must catch a render crash and show the
-// "Something went wrong" page (not a blank tree), and log what was thrown. Locks Fix 3 —
-// before it, an uncaught render error (e.g. a Rules-of-Hooks violation) unmounted the
-// whole React root → blank window with no on-disk trace. Look B draws no raw message:
+// "Something went wrong" page (not a blank tree), and log what was thrown — an uncaught
+// render error (e.g. a Rules-of-Hooks violation) would unmount the whole React root →
+// blank window with no on-disk trace. Look B draws no raw message:
 // the page says the details are saved for a bug report, and they are (the log).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -74,8 +74,8 @@ describe("ErrorBoundary", () => {
   });
 
   it("logs a thrown NON-Error (a bare string) as its text, and never draws it", () => {
-    // A rejected backend command used to reach JS as a bare string; a render
-    // that rethrows one must still record what went wrong.
+    // A non-Error value (a bare string) rethrown by a render must still record what
+    // went wrong.
     function ThrowsString(): never {
       const thrown: unknown = "the unit stopped answering";
       throw thrown;

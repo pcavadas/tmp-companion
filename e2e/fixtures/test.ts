@@ -34,7 +34,7 @@ export const test = base.extend({
     await page.addInitScript(`window.__E2E_PORT__ = ${JSON.stringify(PORT)};`);
     await page.addInitScript({ path: BRIDGE });
     await use(page);
-    // #279: a request the offline fake does not model is answered with nothing, so a new
+    // A request the offline fake does not model is answered with nothing, so a new
     // product request would otherwise pass here without ever being exercised. Every kind
     // outside the fake's census fails the test that sent it (online: nothing to check).
     // The server answers `/sim/state` in both modes, so a failed read fails the test too.

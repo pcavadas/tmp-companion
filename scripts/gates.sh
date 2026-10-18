@@ -8,9 +8,9 @@
 #
 #   scripts/gates.sh                 run the gates for the current change scope,
 #                                    write a green stamp on full pass
-#   scripts/gates.sh --check         exit 0 iff a green stamp matches this tree,
-#                                    else non-zero (used by the pre-push hook +
-#                                    the Claude gh-pr PreToolUse hook)
+#   scripts/gates.sh --check         exit 0 iff the docs links are clean AND a green
+#                                    stamp matches this tree, else non-zero (used by
+#                                    the pre-push hook + the Claude gh-pr PreToolUse hook)
 #   scripts/gates.sh --check-online  exit 0 iff an ONLINE stamp matches this tree
 #                                    AND covers every spec in the canonical online
 #                                    set (see --online-spec-set)
@@ -24,7 +24,7 @@
 #                                    stderr (read-only). TMP_GATES_CHANGED_FILES
 #                                    (newline-separated paths) replaces the diff;
 #                                    TMP_GATES_LANE=remote reads a class's
-#                                    `<class>@remote` policy row first (the twin)
+#                                    `<class>@remote` policy row first
 #   scripts/gates.sh --release-base  print the last release tag (v*) behind HEAD
 #   scripts/gates.sh --device-changes [--since <ref>]
 #                                    list each commit since <ref> (default: the last
@@ -32,10 +32,6 @@
 #                                    with its files and their classes, then the
 #                                    online specs that range requires (read-only;
 #                                    the release run's report)
-#
-# PRs run the OFFLINE gates only: the PR hook checks the green stamp alone. The
-# online suite runs at release, on the unit (scripts/pre-release.sh), over every
-# device-facing change merged since the last release.
 #   scripts/gates.sh --record-online [--run <fields>] <spec>...
 #                                    MERGE the specs that passed into this tree's
 #                                    ONLINE stamp, plus one `#run <time> <fields>`
@@ -49,12 +45,24 @@
 #                                    runner — snapshot the key before a long run and
 #                                    compare it after, to detect a mid-run edit)
 #
+# PRs run the OFFLINE gates only (see scripts/pre-release.sh for the online run).
+#
 # ── Scope detection ────────────────────────────────────────────────────────
 # Changed files = the working tree vs origin/main (merge-base) + untracked. The
 # union is classified:
-#   docs-only (*.md, docs/, notes/)     → no gates (near-instant)
-#   frontend  (src/, e2e/, ts/js/json)  → bun lint + typecheck + test + fmt-check
-#   rust      (src-tauri/)              → cargo clippy (e2e feat) + fmt + test --lib
+#   always (every run and --check)      → docs links (scripts/check-docs.sh), ~1 s;
+#                                          prose is outside the stamp key, so a
+#                                          stamp cannot vouch for it
+#   docs-only (*.md, docs/, notes/)     → nothing more
+#   e2e/fixtures/COVERAGE.md            → cargo test --lib fixture_gates (it parses
+#                                          the file: code, not prose)
+#   frontend  (src/, e2e/, *.ts, *.tsx, → bun lint + typecheck + test + fmt-check
+#              *.config.*, tsconfig*.json,
+#              package.json, index.html)
+#   rust      (src-tauri/)              → cargo clippy (e2e feat) + fmt + rustdoc
+#                                          links (report-only) + test --lib
+#                                          (default and e2e feature) + ffmpeg meter
+#                                          parity (only where ffmpeg is on PATH)
 #   e2e-relev (any code side, e2e/,      → offline e2e (bun run e2e)
 #              scripts/e2e.sh)
 #   *.sh / gate TSVs touched            → shellcheck (only if installed) +
@@ -145,7 +153,7 @@ green_stamp="$stamp_dir/green-$KEY"
 online_stamp="$stamp_dir/online-$KEY"
 
 write_stamp() { # <stamp-path> <prefix> [content]  — one stamp per tree; orphan the
-                 # stale ones. No content → empty file (green stamp path, unchanged).
+                 # stale ones. No content → empty file (the green stamp).
   mkdir -p "$stamp_dir"
   rm -f "$stamp_dir/$2"-*
   if [ -n "${3:-}" ]; then
@@ -193,7 +201,7 @@ classify_path() {
 }
 
 # <class> — the policy row to read for it: `<class>@<lane>` when TMP_GATES_LANE names a lane
-# that has its own row for the class (the remote twin runs a different runner than the unit),
+# that has its own row for the class (the remote lane runs a different runner than the unit),
 # else the class itself.
 policy_class() {
   local class rest
@@ -322,8 +330,21 @@ EOF
   printf '%s device-facing change(s) since %s\n' "$n" "$1"
 }
 
+# The docs link gate: quiet on success, the failures and exit 1 otherwise. Absent in the
+# shell specs' scratch repos, which copy gates.sh alone.
+docs_gate() {
+  local out
+  if [ ! -f scripts/check-docs.sh ]; then return 0; fi
+  if ! out="$(/bin/bash scripts/check-docs.sh 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    printf '\ngates: FAILED at docs links — fix them, then re-run scripts/gates.sh\n' >&2
+    exit 1
+  fi
+}
+
 case "$MODE" in
   --check)
+    docs_gate
     if [ -f "$green_stamp" ]; then exit 0; fi
     printf 'gates: no fresh green stamp for this tree — run scripts/gates.sh\n' >&2
     exit 1
@@ -435,6 +456,9 @@ SPECS
 esac
 
 # ── run mode ───────────────────────────────────────────────────────────────
+docs_gate
+printf 'gates: docs links clean\n'
+
 if [ -f "$green_stamp" ]; then
   printf 'gates: already green for this tree\n'
   exit 0
@@ -455,14 +479,17 @@ want_frontend=0
 want_rust=0
 want_e2e=0
 want_shell=0
+want_coverage=0
 
 while IFS= read -r f; do
   if [ -z "$f" ]; then continue; fi
   case "$f" in
+    e2e/fixtures/COVERAGE.md)    docs_only=0; want_coverage=1 ;;  # parsed by fixture_gates
     *.md | docs/* | notes/*) ;;                # docs — no gate on their own
     *) docs_only=0 ;;
   esac
   case "$f" in
+    e2e/fixtures/COVERAGE.md)    ;;
     src-tauri/*)                 want_rust=1; want_e2e=1 ;;
     src/* | e2e/*)               want_frontend=1; want_e2e=1 ;;
     scripts/e2e.sh)              want_e2e=1 ;;
@@ -590,6 +617,9 @@ if [ "$want_rust" -eq 1 ]; then
   ensure_dist
   run_gate "clippy (e2e feature)" sh -c 'cd src-tauri && cargo clippy --all-targets --features e2e -- -D warnings'
   run_gate "rustfmt --check"      sh -c 'cd src-tauri && cargo fmt --check'
+  # Rustdoc over private items too (almost everything is pub(crate)): a broken intra-doc
+  # link is a stale pointer in a comment, so it fails the gate like any other warning.
+  run_gate "rustdoc links"        sh -c 'cd src-tauri && RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --lib'
   run_gate "rust tests"           sh -c 'cd src-tauri && cargo test --lib'
   # ALSO under `--features e2e`: some guards only COMPILE there. `settle_ms`'s offline-collapse
   # branch is the one that matters — regress its predicate to `!e2e_online()` and the settles
@@ -604,6 +634,9 @@ if [ "$want_rust" -eq 1 ]; then
   else
     printf 'gates: meter parity (ffmpeg) skipped — ffmpeg is not on PATH\n'
   fi
+elif [ "$want_coverage" -eq 1 ]; then
+  ensure_dist
+  run_gate "fixture gates (COVERAGE.md)" sh -c 'cd src-tauri && cargo test --lib fixture_gates'
 fi
 
 if [ -n "$fe_pid" ]; then

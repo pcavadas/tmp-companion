@@ -201,7 +201,7 @@ mod tests {
         let sim = SimDevice::new().with_song(1, |song| song.rows[0] = Some(row(1, "")));
         let mut s = sim_session(&sim);
         s.load_song(1, 1, 1).unwrap();
-        // The companion's old order: tap, then enable → the song keeps 120.
+        // Tap before enable → the song keeps 120.
         s.set_tap_tempo_bpm(140.0).unwrap();
         s.set_song_bpm_active(1, true).unwrap();
         assert_eq!(sim.song(1).unwrap().bpm, 120);

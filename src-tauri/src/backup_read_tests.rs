@@ -5,15 +5,15 @@ fn ds(n: u32) -> DeviceSlot {
     DeviceSlot::try_from(n).unwrap()
 }
 
-/// The truncation fallback: a slot-addressed field-8 read of a LARGE preset is cut
-/// before its `ftsw`/`scenes` tail (per-slot-deterministic — a re-read cannot lengthen
-/// it), so the caller re-reads the COMPLETE body off a device backup. The read must be
+/// The truncation fallback: a session lapse can cut a slot-addressed `presetDataRequest`
+/// (field 8) read before its `ftsw`/`scenes` tail, so the caller re-reads the COMPLETE body
+/// off a device backup. The read must be
 /// NAME-GUARDED in the same address space as the writes it feeds (danger.md): a second
 /// connection sits between whatever named the slot and this transfer, and a body taken
 /// from the wrong slot would drive footswitch writes and a save against another preset.
 #[test]
 fn backup_slot_read_returns_the_complete_body_and_refuses_a_slot_that_moved() {
-    // A body whose tail sections are exactly what a truncated field-8 read loses.
+    // A body whose tail sections are exactly what a truncated stored-row read loses.
     let preset_json = r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[{"nodeId":"ACD_Comp","FenderId":"ACD_Comp","dspUnitParameters":{"bypass":false}}]}},"ftsw":[[{"func":"on-off","groupId":"G1","nodeId":"ACD_Comp"}],[]],"info":{"displayName":"Big Rig"},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
     let archive = build_backup_archive(&format!(
         "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
@@ -63,8 +63,8 @@ fn backup_slot_read_accepts_on_matching_name_and_preset_id() {
 }
 
 /// Same slot, SAME NAME, but a different `preset_id` in the body — only the identity
-/// guard can catch this (the name guard alone would pass it). Proves the fallback for
-/// issue #155: a slot+name match is not enough when the caller can name an id.
+/// guard can catch this (the name guard alone would pass it): a slot+name match is not
+/// enough when the caller can name an id.
 #[test]
 fn backup_slot_read_refuses_a_same_name_row_whose_preset_id_differs() {
     let preset_json = r#"{"info":{"displayName":"Big Rig","preset_id":"aaaaaaaa-0000-0000-0000-000000000001"},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
@@ -316,9 +316,9 @@ fn backup_row_carries_routed_graph() {
         .iter()
         .find(|p| p.name == "Copy Test")
         .expect("the row is present");
-    // Block roster survives (the pre-existing field) …
+    // Block roster survives …
     assert_eq!(row.blocks.len(), 2, "two-block roster");
-    // … AND the new routed graph carries the topology the frontend renders.
+    // … AND the routed graph carries the topology the frontend renders.
     assert_eq!(row.graph.template.as_deref(), Some("gtrSeries"));
     assert!(
         !row.graph.stages.is_empty(),
@@ -647,8 +647,7 @@ fn backup_carries_settings_bytes_when_present() {
 }
 
 /// An archive WITHOUT a `settingsBackup` entry (e.g. the e2e fixture) decodes fine
-/// and leaves `settings_bytes` `None` — the existing behavior this change must not
-/// disturb.
+/// and leaves `settings_bytes` `None`.
 #[test]
 fn backup_settings_bytes_none_without_settings_entry() {
     let archive = build_backup_archive(
@@ -1077,7 +1076,7 @@ fn typed_rows_refuse_negative_and_null_slots() {
     assert_eq!(null.unwrap_err(), "slot is NULL");
 }
 
-// ─── archive decode error paths and the decompression cap (#278) ─────────────
+// ─── archive decode error paths and the decompression cap ───────────────────
 
 const LZ4_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
 

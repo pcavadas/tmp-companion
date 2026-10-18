@@ -61,7 +61,7 @@ pub(super) enum PersistedRead {
 /// it).
 pub(super) fn persisted_value(saved: &serde_json::Value, w: &PersistedWrite) -> PersistedRead {
     let Some(scene) = w.overlay else {
-        // `audioGraph` heads the document, so a tail truncation never reaches it — but a
+        // `audioGraph` heads the document, so a read cut short never loses it — but a
         // read that lost it lost everything, and must not be read as a wiped write.
         if !saved.get("audioGraph").is_some_and(|g| g.is_object()) {
             return PersistedRead::Unverifiable;
@@ -77,14 +77,9 @@ pub(super) fn persisted_value(saved: &serde_json::Value, w: &PersistedWrite) -> 
     // only write the policy lets through there lands on BASE and arrives with `overlay:
     // None` (above), so a value reported as written INTO one is by definition not persisted.
     //
-    // `Unknown` is the arm that must NOT collapse into that miss (HW, 2026-08-19): it means
-    // the `scenes` section never arrived, and `scenes` sits at the document tail, so it is
-    // exactly what a truncated field-8 read loses. "Friedman HBE" truncates at 21044 B before
-    // its scenes, and the run duly warned that scene 3's `ACD_TwinReverb65NoFx/outputLevel`
-    // "solved 0.7814 but the saved preset holds no such value" — while that scene's own
-    // re-measure of the SAVED state read -22.99 LUFS against its -23 target, i.e. the write
-    // had persisted perfectly. A false "did not persist" is worse than no check: it teaches
-    // the user to distrust correct results, and the external judge SKIPS a good row.
+    // `Unknown` is the arm that must NOT collapse into that miss: it means the `scenes`
+    // section never arrived, and `scenes` sits at the document tail, so it is exactly what a
+    // read cut short loses (see `verify_persisted_writes`).
     match overlay_param(saved, scene, &w.node_id, &w.parameter_id) {
         SceneParamRead::Value(v) => match v.as_f64() {
             Some(v) => PersistedRead::Value(v),
@@ -146,11 +141,13 @@ pub(crate) fn persist_mismatches(
 
 /// Post-save param-level verify: RE-READ the preset and confirm every solved write survived
 /// the batch-end save, stamping `persist_mismatch` on each outcome. Cheap and audio-free —
-/// one field-8 read per preset per run, after all capture work — and the one thing that stops
+/// one `presetDataRequest` (field 8) read per preset per run, after all capture work — and
+/// the one thing that stops
 /// a summary from reporting pre-wipe numbers as persisted. `writes` pairs a scene slot with
 /// the values solved for it; scenes that wrote nothing are not checked.
 ///
-/// `force_bypass_restore` is A5/F2's DETECTION half: `(group_id, node_id, expected_bypass)` for
+/// `force_bypass_restore` is the isolation cleanup's DETECTION half: `(group_id, node_id,
+/// expected_bypass)` for
 /// every node a trade's base isolation forced — this function otherwise reads only
 /// `node_param_f64` numeric values (`persist_mismatches`), so a silently DROPPED inverse write
 /// (the pedal saved forced OFF) would be invisible without it. A mismatch here is loud: it
@@ -168,14 +165,9 @@ pub(super) fn verify_persisted_writes(
     // `save_deferred_scene_writes` has just closed its session and `read_saved_preset` sleeps
     // only AFTER itself, so the opening gap is the caller's to provide.
     // COMPLETE-OR-FAIL, not the plain read: this verifier compares SCENE OVERLAYS, which sit
-    // at the tail of the document, and a field-8 stream that truncates before `scenes` makes
-    // every checked scene look unwritten. HW, 2026-08-19: "Friedman HBE" truncates at 21044 B
-    // before its scenes section, and the run duly warned that scene 3's
-    // `ACD_TwinReverb65NoFx/outputLevel` "solved 0.7814 but the saved preset holds no such
-    // value" — while that scene's own re-measure of the SAVED state read -22.99 LUFS against
-    // its -23 target, i.e. the write had persisted perfectly. A false "did not persist" is
-    // worse than no check: it teaches the user to distrust correct results, and the external
-    // judge SKIPS the row rather than passing it.
+    // at the tail of the document. A lapse mid-stream can cut the reply (the device sends it
+    // whole, fw 1.8.58); a cut before `scenes` makes every scene look unwritten, and a false
+    // "did not persist" teaches the user to distrust correct results.
     let saved = match read_saved_preset_complete(slot) {
         Ok(p) => p,
         Err(e) => {
@@ -212,7 +204,7 @@ pub(super) fn verify_persisted_writes(
             "slot {slot} scene {scene}: the leveled value is UNCONFIRMED, not lost — {detail}"
         );
     }
-    // A5/F2 DETECTION: confirm every isolated node's bypass came back to what the pre-run
+    // Confirm every isolated node's bypass came back to what the pre-run
     // saved document held. A mismatch here means the trade's inverse-write cleanup silently
     // dropped — the saved preset now carries this pedal forced OFF — so it is stamped on the
     // BASE outcome (the only row a base isolation fact can attach to) and logged loudly.
@@ -259,7 +251,7 @@ pub(crate) fn verify_fs_persisted_writes(
     if writes.is_empty() {
         return;
     }
-    // COMPLETE-OR-FAIL for the same reason as the scene twin above: a truncated document
+    // COMPLETE-OR-FAIL for the same reason as the scene twin above: a cut-short document
     // reports a write that landed as a write that vanished.
     let saved = match read_saved_preset_complete(slot) {
         Ok(p) => p,
@@ -297,9 +289,9 @@ pub(crate) fn verify_fs_persisted_writes(
 /// write, where `Some(true)` is a lost write, `Some(false)` a kept one, and `None` means the
 /// re-read cannot speak to it.
 ///
-/// That third state is the gate (HW, 2026-08-19). A field-8 read of a large preset is
-/// tail-truncated, and the sections these writes live in — `ftsw` for an Assign, `audioGraph`
-/// for a Bake — can simply be missing. Grading a missing SECTION as a missing VALUE reports a
+/// That third state is the gate. A read cut short by a lapse loses the document's tail, and
+/// the sections these writes live in — `ftsw` for an Assign, `audioGraph` for a Bake — can
+/// simply be missing. Grading a missing SECTION as a missing VALUE reports a
 /// write that landed as a write that vanished, which is worse than no check at all: it
 /// teaches the user to distrust correct results. Second line of defence behind the
 /// complete-or-fail read; it holds even for a document that arrives whole but short.
@@ -418,19 +410,15 @@ mod persist_verify_tests {
         assert_eq!(mixed[0].0, 1);
     }
 
-    /// GATE for the false "did not persist" incident (HW, 2026-08-19, "Friedman HBE"): the
-    /// field-8 read of a large preset truncates at ~21044 B, BEFORE `scenes`. The run then
-    /// warned that scene 3's `ACD_TwinReverb65NoFx/outputLevel` "solved 0.7814 but the saved
-    /// preset holds no such value" — while that same scene's re-measure of the SAVED device
-    /// state read -22.99 LUFS against its -23 target, i.e. the write had persisted perfectly.
-    /// The external judge duly SKIPped a row that should have passed.
+    /// GATE for a false "did not persist": a saved-preset re-read cut short BEFORE `scenes`
+    /// must not report a scene write that persisted as lost.
     ///
     /// A document that cannot answer must be reported as UNCONFIRMED, never as a lost write.
     /// This is the second line of defence behind `read_saved_preset_complete`: it holds even
     /// for a document that arrives whole and still carries no `scenes`.
     #[test]
     fn a_truncated_reread_is_unconfirmed_not_a_lost_write() {
-        // Exactly what the HBE re-read returned: everything up to the tail, `scenes` gone.
+        // A re-read cut before the tail: everything up to it, `scenes` gone.
         let mut truncated = saved_preset();
         truncated.as_object_mut().expect("object").remove("scenes");
 
@@ -448,7 +436,7 @@ mod persist_verify_tests {
         assert_eq!(check.unverifiable[0].0, 0);
 
         // The base write in the SAME document is still fully checkable — `audioGraph` heads
-        // the document, so a tail truncation never costs it. Grading it as unverifiable too
+        // the document, so a cut tail never costs it. Grading it as unverifiable too
         // would throw away a real check.
         let base = persist_mismatches(&truncated, &[write(crate::session::BASE_SCENE_SLOT, 0.55)]);
         assert!(base.unverifiable.is_empty(), "{base:?}");
@@ -478,11 +466,10 @@ mod persist_verify_tests {
         assert!(real.unverifiable.is_empty(), "{real:?}");
     }
 
-    /// GATE for the shared-base scene write (offline profiling, 2026-10-10, slot 402 "Solo"):
-    /// a scene whose overlay is bypass-only (Scene Edit off) has no knob to land in, so the
-    /// write-landing policy sends it to the SHARED base value. Graded against the scene's
-    /// overlay, the run warned "solved 3.0000 but the saved preset holds no such value" for a
-    /// write that had persisted. The value must be read where it LANDED.
+    /// GATE for the shared-base scene write: a scene whose overlay is bypass-only (Scene Edit
+    /// off) has no knob to land in, so the write-landing policy sends it to the SHARED base
+    /// value. Graded against the scene's overlay, a write that persisted would read as lost.
+    /// The value must be read where it LANDED.
     #[test]
     fn a_shared_base_scene_write_is_graded_against_base_not_its_overlay() {
         // Base amp bypassed; scene 0 pins its own `outputLevel` (Full overlay); scene 1's
@@ -534,9 +521,9 @@ mod persist_verify_tests {
     }
 
     /// GATE for the scene half of the capture-level re-assert: with no trade, a scene batch's
-    /// captures assert the preset's own saved level rather than `None`. On fw 1.8.58 the
-    /// recall serves that same value, so this pins a defensive choice (the fw 1.8.45 recall
-    /// served a pre-save level for a while after a save). The mechanism it feeds is proven by
+    /// captures assert the preset's own saved level rather than `None` — a defensive choice
+    /// (a base recall can re-apply a stale snapshot level, see `recall_reassert_save`). The
+    /// mechanism it feeds is proven by
     /// the FS twin (`a_capture_renders_at_the_run_level_not_the_recall_reverted_one`).
     #[test]
     fn a_scene_batch_captures_at_the_saved_level_when_no_trade_holds_one() {
@@ -572,7 +559,7 @@ mod persist_verify_tests {
     }
 
     /// The FS-lane half of the same gate. An Assign write is read out of `ftsw` and a Bake
-    /// write out of `audioGraph`; either section can be missing from a truncated re-read, and
+    /// write out of `audioGraph`; either section can be missing from a cut-short re-read, and
     /// a missing SECTION must never be graded as a missing VALUE.
     #[test]
     fn a_truncated_reread_leaves_fs_verdicts_unknown_rather_than_lost() {
@@ -607,7 +594,7 @@ mod persist_verify_tests {
             vec![(0, Some(false)), (1, Some(false))],
         );
 
-        // `ftsw` gone (the tail a truncated read loses): the ASSIGN becomes unknown, while
+        // `ftsw` gone (the tail a cut-short read loses): the ASSIGN becomes unknown, while
         // the bake — read from the head of the document — is still fully checked.
         let mut no_ftsw = full.clone();
         no_ftsw.as_object_mut().expect("object").remove("ftsw");

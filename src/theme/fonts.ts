@@ -1,12 +1,11 @@
-// src/theme/fonts.ts — the three font families, bundled (#268).
+// src/theme/fonts.ts — the three font families, bundled.
 //
-// Self-hosted from the @fontsource packages instead of the Google Fonts stylesheets
-// index.html used to load: no network on first paint, no request to Google on every
-// launch, and a CSP that can stay `font-src 'self'`. Only the faces the tokens use
-// (`FONT_SERIF` / `FONT_SANS` / `FONT_MONO` in ./tokens), in the latin and latin-ext
-// subsets, so accented preset and song names still render in the brand face. The
-// subset files carry `unicode-range`, so the webview fetches a face only when text
-// needs it.
+// Self-hosted from the @fontsource packages, not Google Fonts: no network on first
+// paint, no request to Google on every launch, and a CSP that can stay `font-src
+// 'self'`. Only the faces the tokens use (`FONT_SERIF` / `FONT_SANS` / `FONT_MONO` in
+// ./tokens), in the latin and latin-ext subsets, so accented preset and song names
+// still render in the brand face. The subset files carry `unicode-range`, so the
+// webview fetches a face only when text needs it.
 
 import "@fontsource/inter/latin-400.css";
 import "@fontsource/inter/latin-ext-400.css";

@@ -1,12 +1,11 @@
-// Guards the explicit block-art `variant` contract (#318) and the per-instance SVG
+// Guards the explicit block-art `variant` contract and the per-instance SVG
 // ids the art engine mints.
 //
-// 1. Art used to be chosen by regex/`.includes` on the display caption (`short`).
-//    The `ART_VARIANT` table replaced those matches; this pins it, row by row,
-//    against the caption rules it replaced (scoped to the form-factor each rule's
-//    renderer actually saw), so the refactor provably changed no pick. A new row
-//    whose caption happens to contain e.g. "BOG" no longer changes its art — but
-//    a variant added or dropped without updating this oracle fails here.
+// 1. The `ART_VARIANT` table picks the art; this pins it, row by row, against the
+//    regex/`.includes` caption rules in `legacyVariant` (scoped to the form-factor
+//    each rule's renderer saw). A row whose caption happens to contain e.g. "BOG"
+//    never changes its art — but a variant added or dropped without updating this
+//    oracle fails here.
 // 2. Every BlockArt / HalfStackArt instance must define its gradient/clip/pattern
 //    ids under its own prefix: two tiles on one screen sharing an id makes one
 //    tile's `url(#…)` paint the other's defs.
@@ -33,7 +32,7 @@ function allSpecs(): BlockArtSpec[] {
   return out;
 }
 
-/** The caption rules the renderers applied before #318, verbatim, scoped to the
+/** The caption rules `ART_VARIANT` replaced, verbatim, scoped to the
  *  form-factor whose renderer evaluated them. */
 function legacyVariant(art: BlockArtSpec): ArtVariant | undefined {
   const lab = art.short;

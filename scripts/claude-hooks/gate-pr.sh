@@ -4,17 +4,13 @@
 #
 # On `gh pr create` / `gh pr merge`:
 #   - require scripts/gates.sh --check green (fresh green stamp for this tree)
-# PRs run the offline gates only. The online suite runs at release, on the unit
-# (scripts/pre-release.sh), over every device-facing change merged since the last
-# release — so no PR waits on the device.
+# PRs run the offline gates only (see scripts/pre-release.sh for the online run).
 # Exit 2 = block + show stderr to Claude.
 #
 # Reads the tool-call JSON on stdin. bash 3.2-safe. Resolves the repo from the
 # hook payload's own `cwd` (falling back to the process cwd, then
-# CLAUDE_PROJECT_DIR), because gates.sh stamps are per-worktree: in a worktree
-# session CLAUDE_PROJECT_DIR still points at the MAIN checkout, so using it
-# checked a tree that wasn't the one being PR'd — a green worktree got blocked
-# by the main checkout's missing stamp.
+# CLAUDE_PROJECT_DIR), because gates.sh stamps are per-worktree and in a worktree
+# session CLAUDE_PROJECT_DIR points at the MAIN checkout.
 
 set -euo pipefail
 
@@ -35,10 +31,7 @@ if ! printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+([^[:space:]]+[[:space:]]+)*pr
 fi
 
 # Prefer the hook payload's own `cwd` (the session dir = the worktree actually being
-# PR'd) over the process cwd, so this doesn't rest on an unverified assumption about
-# which directory Claude Code spawns PreToolUse hooks in — if it spawns them in the
-# project dir instead, resolving via process cwd alone would be a silent no-op that
-# still gates the wrong tree while looking correct. Both fall back to
+# PR'd) over the process cwd, which may be the project dir. Both fall back to
 # CLAUDE_PROJECT_DIR when neither is inside a repo.
 hook_cwd="$(printf '%s' "$input" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("cwd",""))' 2>/dev/null || true)"
 repo=""

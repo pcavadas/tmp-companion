@@ -1,7 +1,7 @@
 // src/__tests__/liveMeterStore.test.tsx — the live meter's ~5 Hz ticks re-render only
-// its reader (RunPage), never a LevelView-level consumer of `useLevelingFlow`: the meter
-// used to ride the wizard store, so every tick re-rendered LevelView, the preset list's
-// shell and the footer. Also pins the hook's return as stable across a re-render, so
+// its reader (RunPage), never a LevelView-level consumer of `useLevelingFlow`: a meter on
+// the wizard store would re-render LevelView, the preset list's shell and the footer on
+// every tick. Also pins the hook's return as stable across a re-render, so
 // LevelView's `handleLevel` callback is not rebuilt each time.
 
 import { act, render, renderHook } from "@testing-library/react";

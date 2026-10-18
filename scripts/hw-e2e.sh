@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tier-3 hardware end-to-end smoke for the TMP Companion — drives the REAL Tone Master
+# Attended hardware end-to-end smoke for the TMP Companion — drives the REAL Tone Master
 # Pro over USB and asserts the Level and Copy happy paths work end-to-end.
 #
 # ATTENDED + NON-DESTRUCTIVE BY DEFAULT. Every phase is read-only or a DRY run (the Level
@@ -47,9 +47,11 @@ FAIL=0
 say() { printf '%s\n' "$*"; }
 ok()   { PASS=$((PASS+1)); say "  ✓ $1"; }
 bad()  { FAIL=$((FAIL+1)); say "  ✗ $1"; }
-gap()  { sleep 2; }  # leave the HID line quiet between opens (open-lockout hygiene)
+# A settle gap between device processes: macOS can release an exited process's exclusive
+# HID handle late, and the next open then fails 0xe00002c5 (another handle holds the seize).
+gap()  { sleep 2; }
 
-say "=== TMP Companion — Tier-3 hardware e2e (non-destructive) ==="
+say "=== TMP Companion — hardware e2e (non-destructive) ==="
 say "src-tauri: $SRC_TAURI"
 say "artifacts: $OUT"
 

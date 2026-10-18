@@ -5,9 +5,7 @@
 //! "Developing on Linux" section calls for: it prints what `cpal` actually sees
 //! on the host (device names, the exact ALSA PCM id behind each name on Linux,
 //! channel counts, sample rates, and — the thing `audio::pick_config` cares
-//! about — sample formats), so the Linux re-amp port can be designed from
-//! measurement rather than a CoreAudio-shaped guess. See `audio.rs::enumerate`
-//! and `audio.rs::find_tmp`, which this is the first caller of.
+//! about — sample formats). See `audio::enumerate` and `audio::find_tmp`.
 
 use crate::audio::{self, AudioDevice};
 
@@ -77,8 +75,8 @@ fn format_device(d: &AudioDevice, picked: bool) -> String {
 fn linux_asound_report() -> String {
     // Fender's vendor id. HW-observed (fw 1.8.58): the TMP enumerates on TWO USB
     // product ids — 0x0044 carries HID control and is MIDI-only with no PCM, while
-    // 0x0047 is the 4-in/4-out USB-audio card (see notes/gotchas.md, "The TMP's audio
-    // interface is USB id 1ed8:0047"). Walk every card the vendor id owns rather than
+    // 0x0047 is the 4-in/4-out USB-audio card (notes/device/reamp-audio.md#linux-alsa).
+    // Walk every card the vendor id owns rather than
     // assuming which product id carries PCM.
     const FENDER_VID: u16 = 0x1ED8;
 

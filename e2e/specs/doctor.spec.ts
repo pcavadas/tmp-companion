@@ -26,24 +26,12 @@ import {
 // plain-words fixes) are backend-validated in doctor.rs unit tests and the probe/HW lane,
 // not here. Doctor never writes to the unit, so there is nothing to read back.
 //
-// ONLINE e2e suite consolidation (8→4 files): this file's first test below now runs
-// OFFLINE ONLY (test.skip'd online) — its online-specific assertions (the E2E Edge
-// EQ-ring finding + its notch prescription) moved to `doctor.online.spec.ts`, which runs
-// Edge alone online; the proof that the ring stays on its own preset's rows is Vitest's
-// (`DoctorResults.test.tsx`, "keeps a ringing finding on its own preset's rows"). The
-// offline FLOW proof here (select → check → Results, three presets' rows render) is
-// unaffected. It also reads E2E Rig's two footswitch advisories
-// off the same Results page — zero device captures (a backup-scan read only), so they need
-// no Doctor run of their own.
-//
-// ONLINE seeding note (kept for the file's own online-tier assertions, if any are ever
-// re-added): scripts/e2e.sh seeds the scenario via `probe --seed-scenario` BEFORE the
-// server starts (so the server's handshake snapshots the seeded presets) and POSTs
-// `e2e_mark_seeded`, which arms the server's verified-seed flag; `ensureScenario` here
-// always calls `e2e_seed_scenario` online, which fast-no-ops on that flag and only pays
-// the full ownership-verified in-process seed on direct playwright runs (or after a
-// clear). If the runner's seed fails all attempts, check nothing else holds the device
-// (Pro Control, a stale server/app), then rerun.
+// The first test below runs OFFLINE ONLY (test.skip'd online): the online Doctor coverage
+// is `doctor.online.spec.ts` (407's spectral oracle and 402's EQ ring, by raw invoke); the
+// proof that the ring stays on its own preset's rows is Vitest's (`DoctorResults.test.tsx`,
+// "keeps a ringing finding on its own preset's rows"). It also reads E2E Rig's two
+// footswitch advisories off the same Results page — zero device captures (a backup-scan
+// read only), so they need no Doctor run of their own.
 /** Open a Results row whichever way the window lays it out: under the row on a narrow
  *  window (`aria-expanded`), or in the panel beside the list on a wide one
  *  (`aria-current`). Playwright's Desktop Chrome viewport is 1280 wide, past
@@ -67,14 +55,11 @@ test.describe("Doctor — select, check, results", () => {
   test("checks three presets end to end and lands on Results", async ({
     page,
   }) => {
-    // OFFLINE ONLY (trade, ONLINE e2e consolidation): the online-only assertions this
-    // test used to carry now live in `doctor.online.spec.ts`, which runs the identical
-    // 3-preset selection — see this file's own header. Running this flow online too
-    // would just duplicate that run's device time for no extra proof; the FLOW itself
-    // is identical in both tiers, so nothing online-specific is lost.
+    // OFFLINE ONLY (see this file's header): the select → check → Results FLOW is
+    // identical in both tiers.
     test.skip(
       await isOnline(page),
-      "online half moved to doctor.online.spec.ts",
+      "offline only — online Doctor coverage is doctor.online.spec.ts",
     );
     // ~29 real sounds across the three intact fixtures (E2E Rig + Pedalboard + Edge, base +
     // scenes + footswitches) at ~12-18 s/capture online, plus the pristine-check reseed and
@@ -139,8 +124,8 @@ test.describe("Doctor — select, check, results", () => {
 
     // COVERAGE row 21 — E2E Edge's OUT2 footswitch routes off USB 1/2, so its isolated
     // capture is silent. Doctor reports that as the typed no-signal kind, worded by the
-    // preset's silence hint, never the generic "Couldn't check this sound." (an untyped
-    // analysis error used to land there).
+    // preset's silence hint, never the generic "Couldn't check this sound." (the untyped
+    // analysis-error wording).
     await expect(
       page
         .locator(`[data-result-row^="${String(picked[2].slot)}|"]`)
@@ -149,8 +134,8 @@ test.describe("Doctor — select, check, results", () => {
       "Nothing came out of USB 1/2, so there was nothing to hear.",
     );
 
-    // COVERAGE rows 32, 33 (the footswitch advisories), on the same Results page — they
-    // used to pay a whole Doctor run of their own on E2E Rig. Deterministic offline: the
+    // COVERAGE rows 32, 33 (the footswitch advisories), on the same Results page — no
+    // Doctor run of their own on E2E Rig. Deterministic offline: the
     // "Footswitches" row's hints are a BACKUP-SCAN read (zero device captures), not
     // diagnosis content, so this is an exception to this file's "diagnosis content is
     // sound-dependent, never asserted directly" rule. E2E Rig's row says how many switches,
@@ -191,7 +176,7 @@ test.describe("Doctor — select, check, results", () => {
   // scale_stimulus scales body and preamble uniformly, so coverage is level-invariant
   // offline however quiet the scene. This row is backend/online only.
 
-  // COVERAGE row 47 — a mid-run Stop (#190). Every capture is held for a minute, so the
+  // COVERAGE row 47 — a mid-run Stop. Every capture is held for a minute, so the
   // only way to reach Results inside the 15 s below is a cancel served WHILE
   // `doctor_check` is still running — the bridge's side lane (`e2e_server.rs`
   // `e2e_is_side_lane`); queued behind the run it would land minutes later. The sounds

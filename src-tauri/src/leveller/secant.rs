@@ -13,9 +13,14 @@ pub(crate) enum Flatness {
     /// values that both fall below [`KNOB_LOG_FLOOR`] collapse to the SAME coordinate `-60`
     /// — a degenerate pair with a non-finite slope, which turns into a graceful
     /// `unconverged` rather than a divide-by-zero.
+    ///
+    /// [`FsParamTarget::to_coord`]: super::footswitch::FsParamTarget::to_coord
+    /// [`KNOB_LOG_FLOOR`]: super::footswitch::KNOB_LOG_FLOOR
     SolveCoord,
     /// A knob-search coordinate ([`knob_search_space`]), LUFS per knob unit: a pair less
     /// than `1e-9` apart has no slope, and `|slope| < 1e-4` is flat.
+    ///
+    /// [`knob_search_space`]: super::knob::knob_search_space
     Knob,
     /// The scene lane's applied gain in dB: the response must RISE, by more than 0.05 LU per
     /// dB — a falling or ~zero slope is no usable response.

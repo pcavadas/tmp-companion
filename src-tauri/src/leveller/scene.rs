@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// Per-scene outcome of [`level_scenes_live_batched`].
+/// Per-scene outcome of a scene batch run.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct BatchedSceneOutcome {
     pub scene_slot: u32,
@@ -88,34 +88,33 @@ pub struct SceneJob {
     /// block param `knobs[0]` addresses. `None` = the amp-`outputLevel` joint-k path (every
     /// existing caller), which keeps joint-k, the amplitude-bounds requirement, and the
     /// rebalance flow. `Some` switches the scene onto the generic param-space secant
-    /// ([`solve_footswitch`]'s loop) with THIS param's class, range and wet floor — and
+    /// ([`solve_footswitch_seeded`]'s loop) with THIS param's class, range and wet floor — and
     /// `knobs` then holds exactly one [`KnobTarget`] for it, so the persist-verify and
     /// deferred-save machinery need no special case.
     pub handle: Option<FsParamTarget>,
     /// This scene's PREPASS reading, when the run measured every sound's ceiling BEFORE any
     /// write (the reordered run — see [`prepass_scene_ceilings`]). `Some` makes
     /// [`scene_prologue`] consume the reading instead of taking its own capture, so the
-    /// per-scene solve costs exactly what it always did and the batch simply pays its
-    /// as-is captures up front. `None` (every legacy caller: the rebalance flow, the
-    /// redistribution runner, the probe benches) keeps the measure-inside-the-solve order
-    /// byte-for-byte.
+    /// per-scene solve costs the same and the batch simply pays its as-is captures up
+    /// front. `None` (the rebalance flow, the redistribution runner, the probe benches)
+    /// keeps the measure-inside-the-solve order.
     pub prepass: Option<ScenePrepass>,
     /// Isolation bypass writes `(group_id, node_id, forced_bypass)` this job's every capture
-    /// and write must re-assert — "base means base": preset 28's TubeScreamer is saved ON, so
+    /// and write must re-assert — "base means base": a drive saved ON in base means
     /// an un-isolated base capture would measure it and silently under-isolate. Empty for every
     /// scene job (a scene rides its own overlay). Non-empty only for a BASE job
     /// (`scene_slot == session::BASE_SCENE_SLOT`), derived once by the app command
     /// (`doctor_force_bypass`) and threaded through `measure_scene_asis`/`apply_levels`/
     /// `apply_first_verified`/`correct_iter`'s trailing `force_bypass` parameter at every site
     /// this job reaches one. The device working copy the isolation writes land in must be
-    /// clean again before the batch's terminal save — see `danger.md`'s PHASE-1/trade-hold
-    /// cleanup choreography; this field only carries WHAT to force, not when to undo it.
+    /// clean again before the batch's terminal save — see the PHASE-1/trade-hold cleanup in
+    /// `commands::level_scenes` and `run_scene_jobs`; this field only carries WHAT to force,
+    /// not when to undo it.
     pub force_bypass: Vec<(String, String, bool)>,
 }
 
-/// One scene's PREPASS measurement: the reading every solve used to take as its own first
-/// step, hoisted OUT of the solve so a batch can know every sound's ceiling before it writes
-/// anything.
+/// One scene's PREPASS measurement: the solve's first reading, taken OUT of the solve so a
+/// batch can know every sound's ceiling before it writes anything.
 ///
 /// WHY THE ORDER MATTERS. The benefit-aware headroom trade
 /// ([`crate::headroom_trade::plan_headroom_trade`]) has to compare EVERY sound's ceiling
@@ -123,9 +122,6 @@ pub struct SceneJob {
 /// `presetLevel`/`outputLevel` pair — a decision that changes what every later sound must be
 /// solved to. Measuring inside each solve makes that decision impossible without either
 /// re-measuring (double the captures) or guessing.
-///
-/// It carries no more than the old inline capture produced (`asis` + `spread`), so nothing
-/// downstream had to change shape.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScenePrepass {
     /// AS-IS loudness at the scene's authored knob values (LUFS).
@@ -212,8 +208,7 @@ pub fn prepass_scene_ceilings(
                 });
                 // Mirror the `fs prepass` line so a clamped SCENE row leaves the same
                 // explainable trail its footswitch sibling already does. The absence of this
-                // line is not evidence the prepass measured nothing — it was twice read that
-                // way during this investigation.
+                // line is not evidence the prepass measured nothing.
                 if let Some(ceiling) = scene_ceiling_lufs(job) {
                     log::info!(
                         "scene prepass scene={} ceiling={ceiling:.2} LUFS target={:.2} \
@@ -285,16 +280,12 @@ pub fn scene_ceiling_lufs(job: &SceneJob) -> Option<f64> {
     Some(asis + 20.0 * (LEVEL_MAX as f64 / max_cur).log10())
 }
 
-/// ONE-SHOT open-loop per-scene leveling — the validated replacement for
-/// [`level_scenes_live_batched`] (HW). The active amp's `outputLevel` is
+/// ONE-SHOT open-loop per-scene leveling (HW-validated). The active amp's `outputLevel` is
 /// LINEAR in dB (`captured_LUFS = 20·log10(outputLevel) + C`, ~25 LU authority), so —
 /// exactly like `presetLevel` — there is no need for a closed loop: measure ONCE at a
-/// reference level via an ISOLATED fresh re-amp capture, solve `C`, set the exact
-/// level. The BatchedLive runner's shared continuous stream MIS-MEASURED scenes
-/// (returning impossible loudness, e.g. -6.96 LUFS on a knob whose true range is
-/// -40..-14), which made the trust-region loop clamp on garbage; the isolated
-/// measurement (`measure_knob_at`) reads correctly. Same signature + outcome shape as
-/// `level_scenes_live_batched` so the command path is a drop-in swap. Per-scene
+/// reference level via an ISOLATED fresh re-amp capture (`measure_knob_at`), solve `C`,
+/// set the exact level. A shared continuous stream mis-measures scenes; the isolated
+/// capture reads correctly. Per-scene
 /// isolation rides `set_knob`'s Scene Edit; `presetLevel` (the Base) must be leveled
 /// FIRST (it is a global multiplier over every scene). With `save`, every scene's
 /// write accumulates UNSAVED in the working copy and ONE `saveCurrentPreset` at
@@ -303,26 +294,25 @@ pub fn scene_ceiling_lufs(job: &SceneJob) -> Option<f64> {
 /// is recalled first so the save stamps the preset's original active scene. A
 /// per-scene failure becomes a failed outcome, never aborting the run.
 ///
-/// ONE per-row variation rides this runner, defaulted OFF so an existing caller's batch is
-/// byte-identical: [`SceneJob::handle`] — the user named their OWN control for that scene, so
-/// it is solved by [`handle_one_scene`] (the generic param secant) instead of the amp
-/// joint-k. The amp `outputLevel` remains the ONLY control this lane touches when no handle
+/// ONE per-row variation rides this runner, defaulted OFF: [`SceneJob::handle`] — the user
+/// named their OWN control for that scene, so it is solved by [`handle_one_scene`] (the
+/// generic param secant) instead of the amp joint-k. The amp `outputLevel` remains the
+/// ONLY control this lane touches when no handle
 /// is given; a handle is an explicit, per-row user choice.
 /// THE LEVEL EVERY CAPTURE IN A SCENE BATCH MUST RENDER AT. Each per-scene capture recalls
-/// its scene first, and the recall runs the device's own level-apply — so a capture renders
-/// at whatever level that apply serves, not at the one this run means.
+/// its scene first, and a base recall while base is current re-applies the base snapshot's
+/// `presetLevel` (see `recall_reassert_save`) — so a capture can render at a level this run
+/// does not mean.
 ///
 /// Two ways that diverges, and BOTH need the same re-assert:
 ///  · a landed headroom trade holds a RAISED `presetLevel` UNSAVED in the working copy until
 ///    this batch's one save — without the re-assert every scene is solved against the
 ///    pre-raise sound;
-///  · with no trade, the recall serves the SAVED level; asserting it is defensive on fw
-///    1.8.58 (fw 1.8.45 served a pre-save level for a while after a save: HW 2026-08-19, a
-///    whole footswitch batch measured 5.53 dB quiet).
+///  · with no trade, the snapshot can still hold a level older than the saved row (a save
+///    does not refresh it), so asserting the saved level is defensive.
 ///
 /// The trade's unsaved raise wins when there is one; otherwise the preset's own SAVED level,
-/// read from the complete field-8 doc the caller already holds (the fresher of the device's
-/// two stores). Rendering is then independent of commit timing.
+/// read from the complete `presetDataRequest` (field 8) doc the caller already holds.
 ///
 /// COUPLED WITH THE PREPASS. `prepass_scene_ceilings` must be given the SAME level, or the
 /// as-is reading it produces and the post-apply captures compared against it render
@@ -350,11 +340,11 @@ pub fn level_scenes_oneshot(
     restore_scene: Option<u32>,
     saved: Option<&serde_json::Value>,
     hold: Option<&TradeHold>,
-    // A5/F2: `(group, node, ORIGINAL saved bypass)` for a base-requested job's own isolation
+    // `(group, node, ORIGINAL saved bypass)` for a base-requested job's own isolation
     // (empty on every run that never isolated anything) — see `run_scene_jobs`'s param doc.
     isolation_restore: &[(String, String, bool)],
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
-    // B6: forwarded to `run_scene_jobs` verbatim — see its own doc.
+    // Forwarded to `run_scene_jobs` verbatim — see its own doc.
     on_tail: impl FnMut(&str),
     cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, LevelError> {
@@ -424,26 +414,26 @@ fn rollback_scene_knobs(
 /// silent-data-loss class this design exists to prevent) exists exactly once.
 ///
 /// CALLER CONTRACT: the preset must already be current — every caller runs
-/// `prepass_scene_docs` (which loads it) right before this. Re-loading here was
-/// pure churn the user SAW: the unit flashing back to the preset (base scene)
-/// between the prepass and the first scene measure, once per dispatched scene.
+/// `prepass_scene_docs` (which loads it) right before this. Re-loading here would
+/// flash the unit back to the preset's base scene between the prepass and the first
+/// scene measure, once per dispatched scene.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_scene_jobs(
     slot: ListIndex,
     jobs: &[SceneJob],
     save: bool,
     restore_scene: Option<u32>,
-    // The run's ONE pre-run field-8 read — the same doc every solve's `set_knobs` decided its
-    // write landing from, so the post-save readers look for each value where it landed
-    // (`write_overlay`).
+    // The run's ONE pre-run `presetDataRequest` (field 8) read — the same doc every solve's
+    // `set_knobs` decided its write landing from, so the post-save readers look for each
+    // value where it landed (`write_overlay`).
     saved: Option<&serde_json::Value>,
     // `hold`: the UNSAVED base pair a headroom trade raised, if one ran. The batch's ONE save
-    // recalls the preset's original scene first, and that recall runs the device's own
-    // level-apply — silently reverting an unsaved `presetLevel` right before the save persists
-    // it (HW). Re-asserting it is what makes the trade's two halves land TOGETHER; `None`
-    // (every untraded run) is byte-identical to the previous behaviour.
+    // recalls the preset's original scene first, and a base recall while base is current
+    // reverts an unsaved `presetLevel` to the base snapshot right before the save persists
+    // it (see `recall_reassert_save`). Re-asserting it is what makes the trade's two halves
+    // land TOGETHER; `None` on every untraded run.
     hold: Option<&TradeHold>,
-    // A5/F2 (TRADE-PATH GAP): when the BASE job itself is one of `jobs` (base_requested — not
+    // When the BASE job itself is one of `jobs` (base_requested — not
     // stripped as anchor-only upstream), its own solve routes through `jointk_one_scene` →
     // `apply_levels(defer: true)`, which re-asserts `job.force_bypass` on EVERY capture and
     // never undoes it — that seam exists to keep the isolation alive across a multi-capture
@@ -469,7 +459,7 @@ pub(super) fn run_scene_jobs(
     // just as unsaved and just as load-bearing as the scene overlays, so the post-save re-read
     // has to cover them too.
     let mut written: Vec<PersistedWrite> = hold.map(|h| h.writes.clone()).unwrap_or_default();
-    // A5/F2 DETECTION: the union of both isolation-restore sources — the trade hold's own
+    // The union of both isolation-restore sources — the trade hold's own
     // expectations (see `TradeHold::force_bypass_restore`'s doc) AND this run's own
     // `isolation_restore` (the base-requested path, cleaned up below).
     let force_bypass_restore = union_isolation_restore(
@@ -494,8 +484,7 @@ pub(super) fn run_scene_jobs(
             // The reason reaches the wizard over the progress Channel, and the batch FILTERS
             // skipped rows out of the array it returns — so without this line a skipped scene
             // leaves no trace a later reader can find, and a preset that levels 2 of its 4
-            // scenes looks like a clean run in the log. HW (2026-09-01, real "Friedman HBE"):
-            // two of four scenes skipped and the log recorded only the two that ran.
+            // scenes looks like a clean run in the log.
             log::warn!("scene {} SKIPPED (not leveled): {reason}", job.scene_slot);
             let outcome = failed_scene_outcome(
                 job.scene_slot,
@@ -593,7 +582,7 @@ pub(super) fn run_scene_jobs(
     // Guaranteed fresh re-amp OFF (each `measure_knob_at`/`apply_level` already
     // disengages, but an interrupted capture can strand it).
     reamp_off_fresh("run_scene_jobs");
-    // A5/F2 (TRADE-PATH GAP): undo the base-requested isolation HERE, straight after the last
+    // Undo the base-requested isolation HERE, straight after the last
     // capture and BEFORE the one save below — this is the only place left that can, since every
     // capture in the loop above re-asserted `force_bypass` and dropped its own session without
     // ever clearing it (see the param doc). FAILURE here is not survivable: the working copy
@@ -630,7 +619,7 @@ pub(super) fn run_scene_jobs(
     // is REPORTED on every path, the stopped one included: a save that fails (its retry
     // too) marks every written scene `persist_mismatch`, and a save that lands is re-read
     // so a value it did not keep is marked the same way. Nothing here sends a load: the
-    // save is the first device command after the re-amp OFF, as it always was.
+    // save is the first device command after the re-amp OFF.
     if save && attempted {
         on_tail("Saving preset…");
         let saved_result = save_deferred_scene_writes(slot, restore_scene, &reasserts);
@@ -646,7 +635,7 @@ pub(super) fn run_scene_jobs(
             },
         );
     }
-    // ⟦3b⟧ CANCELLED BEFORE THE FIRST SOLVE. Nothing was deferred, so `save && attempted` above
+    // CANCELLED BEFORE THE FIRST SOLVE. Nothing was deferred, so `save && attempted` above
     // is false and NO `save_deferred_scene_writes` ran — which makes this reload safe under
     // danger.md's "never a load in front of the deferred save": there are no deferred writes
     // to wipe. What there CAN be is a landed headroom trade's raised `presetLevel` + solved
@@ -658,14 +647,14 @@ pub(super) fn run_scene_jobs(
         }
     }
     if stopped {
-        // ⟦3a⟧ A STOPPED RUN THAT SAVED RETURNS ITS OUTCOMES — never a bare cancel, whose
+        // A STOPPED RUN THAT SAVED RETURNS ITS OUTCOMES — never a bare cancel, whose
         // results the command drops. The save above persisted every scene this run already
         // reported, and its verdict (`persist_mismatch`) is on those outcomes: dropping them
         // would hide a save that did not hold behind "Everything matched so far stays saved."
         //
         // With a LANDED TRADE it is also the disclosure. The save persisted the raised
         // `presetLevel` + the base fader that holds base on target. Backing the trade out HERE
-        // was the alternative and it is WRONG: every scene this run already solved was solved
+        // would be WRONG: every scene this run already solved was solved
         // AT the raised level, so lowering `presetLevel` again would leave those persisted
         // values off target by exactly `raise_db` while the run reported them on target —
         // silently wrong numbers, the one outcome this codebase refuses. Skipped benefiting
@@ -721,12 +710,12 @@ pub(super) fn report_batch_save(
 
 /// The scene batch's ONE persist: recall the preset's original active scene (a save stamps
 /// `lastLoadedScene` + switch states from the working state), then ONE `saveCurrentPreset`
-/// persisting every accumulated unsaved scene overlay. HW (`probe --defer-scenes`, fw
-/// 1.8.45): unsaved scene-edit writes survive scene recalls and reconnects; re-recalling a
-/// written scene does NOT revert it; base recall = wire slot 8; the single save persists ALL
-/// accumulated overlays. One retry on a fresh connection (the realistic failure is the
-/// open, not the save itself). The connection never toggles re-amp, so the post-re-amp
-/// save-drop cannot bite.
+/// persisting every accumulated unsaved scene overlay. Under MAINTAIN CHANGES unsaved
+/// scene-edit writes survive scene recalls and reconnects, re-recalling a written scene
+/// does NOT revert it, and the single save persists ALL accumulated overlays (HW,
+/// `probe --defer-scenes`; static RE, fw 1.8.58); base recall = wire slot 8. One retry on a
+/// fresh connection (the realistic failure is the open, not the save itself). The
+/// connection never toggles re-amp, so a capture's silent window cannot lapse it.
 pub(super) fn save_deferred_scene_writes(
     slot: ListIndex,
     restore_scene: Option<u32>,
@@ -914,7 +903,7 @@ pub(super) struct Prologue {
 ///
 /// `intended_preset_level` rides through to [`measure_scene_asis`] — the run's own solved or
 /// UNSAVED-held `presetLevel`, re-asserted after the scene recall so the reading describes
-/// the level the run is actually working at rather than the one the device has saved. It has
+/// the level the run is actually working at rather than a stale snapshot level. It has
 /// no effect on a CONSUMED prepass reading (that capture was already taken).
 pub(super) fn scene_prologue(
     job: &SceneJob,
@@ -1052,13 +1041,12 @@ pub(super) fn jointk_one_scene(
     floor: f32,
     // The run's own `presetLevel` — its solved value, or the UNSAVED raise a headroom trade is
     // holding — re-asserted on the as-is capture below (`measure_scene_asis`). `None` = assert
-    // nothing. STALE CLAIM CORRECTED (2026-08-29): `apply_first_verified`/`correct_iter` do NOT
-    // route through `capture_on_session` (that seam is Doctor's + the isolated-block-knob
-    // paths) — they capture through `apply_levels`' own `engage_measure_disengage`, and DO
-    // thread `intended_preset_level` through it (`LevelOptions::intended_preset_level`, set
-    // below). What is NOT threaded into those two is `force_bypass` from a caller-supplied
-    // literal here — they take it from `job.force_bypass` instead (A4: base's isolation lives
-    // on the job, not a parallel parameter chain).
+    // nothing. `apply_first_verified`/`correct_iter` do NOT route through `capture_on_session`
+    // (that seam is Doctor's + the isolated-block-knob paths) — they capture through
+    // `apply_levels`' own `engage_measure_disengage`, and DO thread `intended_preset_level`
+    // through it (`LevelOptions::intended_preset_level`, set below). They take `force_bypass`
+    // from `job.force_bypass`, not from a caller-supplied literal here (base's isolation
+    // lives on the job, not a parallel parameter chain).
     intended_preset_level: Option<f32>,
 ) -> Result<SceneSolve, LevelError> {
     let prologue = match scene_prologue_or_silent(job, stimulus, intended_preset_level, || {
@@ -1137,8 +1125,8 @@ pub(super) fn jointk_one_scene(
     // below target). The open-loop `clamped` flag is deliberately DROPPED here — a scene whose
     // first solve wanted `outputLevel > 1.0` but whose verify+correct then landed a valid point
     // within `ACCEPT_TOL_LU` HAS reached target (it just started far below), so it is "done", not
-    // clamped. Keying the flag on `clamped ||` over-reported those as clamped (a stale edge flag,
-    // exactly the redistribution's once-clamped-now-rescued scenes).
+    // clamped. Keying the flag on `clamped ||` would over-report those as clamped (a stale edge
+    // flag, exactly the redistribution's once-clamped-now-rescued scenes).
     let clamped = clamp_reason.is_some() || (best_lufs - target_lufs).abs() > ACCEPT_TOL_LU;
     let (pinned, clamp_kind) = joint_clamp_report(
         &best_levels,
@@ -1215,7 +1203,7 @@ pub enum PinnedBound {
 /// [`rebalance_one_scene`]) need exactly this pair, and forking the four lines twice is how
 /// the two lanes drift about when a cause may be named at all.
 ///
-/// ⟦8⟧ Only name a cause when a bound ACTUALLY pinned the solve (or a routing failure fired).
+/// Only name a cause when a bound ACTUALLY pinned the solve (or a routing failure fired).
 /// An amp-`outputLevel` lane has no wet floor, so the only causes here are routing and the
 /// ordinary headroom clamp — but a row that merely ran out of secant captures MID-RANGE has
 /// neither. Telling the user "its level control is already maxed out" about a fader sitting
@@ -1269,7 +1257,7 @@ fn stored_effective_value(
 /// value — JSON float formatting only, far below any audible step.
 const ASIS_SEED_VALUE_TOL: f64 = 1e-6;
 
-/// The JOB-local half of the scene handle lane's as-is seed gate (#196): is the prologue's
+/// The JOB-local half of the scene handle lane's as-is seed gate: is the prologue's
 /// `measure_scene_asis` reading exactly what `measure_knob_at(stimulus, knob, kt.current,
 /// &job.force_bypass, saved, intended_preset_level)` would capture? The reading is either the
 /// prologue's own capture or the batch's PHASE-1 prepass capture of the same seam
@@ -1288,8 +1276,9 @@ const ASIS_SEED_VALUE_TOL: f64 = 1e-6;
 ///   copy and keeps a clean one, which already equals it), so the two agree exactly when
 ///   `kt.current` IS the stored row's effective value for this scene — which is NOT a given:
 ///   `handle_scene_job` falls back to BASE's value (or 0.0) when the live scene doc lacks the
-///   node (a lean field-3 push truncates large graphs), and the scene may overlay something
-///   else. Writes this run made since are the batch half's job ([`asis_reuse_batch_ok`]).
+///   node (a lapse can cut a lean `currentPresetDataChanged` push), and the scene may
+///   overlay something else. Writes this run made since are the batch half's job
+///   ([`asis_reuse_batch_ok`]).
 /// * BOUNDS — `kt.current` must lie inside the handle's own bounds, so seed 1 can never
 ///   become a best point the solve could not have probed itself.
 ///
@@ -1363,8 +1352,8 @@ fn asis_reuse_batch_ok(jobs: &[SceneJob], job: &SceneJob, hold: Option<&TradeHol
 /// Correction budget for the scene HANDLE lane's param secant — half [`FS_CORRECT_MAX`].
 /// Each iterate is a fresh-connect re-amp capture (~10 s) and a scene batch pays it up to 9
 /// times over, so the footswitch lane's 16 would put a whole-preset handle run past 20
-/// minutes; 8 still covers the HW-observed worst case (the Hiwatt `volume` cliff converged
-/// in ~4 Illinois-damped bracket iterates), and a well-behaved knob exits on its first
+/// minutes; 8 still covers the HW-observed worst case (a `volume` cliff converged in ~4
+/// Illinois-damped bracket iterates), and a well-behaved knob exits on its first
 /// in-tolerance iterate either way. A row that runs out reports honestly — it lands off
 /// target and `handle_one_scene` marks it clamped against [`ACCEPT_TOL_LU`], never
 /// silently as done.
@@ -1407,7 +1396,7 @@ pub(super) fn handle_one_scene(
     saved: Option<&serde_json::Value>,
     // The run's own `presetLevel` (see `jointk_one_scene`'s parameter of the same name),
     // asserted on the as-is capture AND on every solve capture — each `measure_knob_at` here
-    // recalls the knob's scene, which reverts the level exactly like the as-is recall does.
+    // recalls the knob's scene, which can revert the level exactly like the as-is recall.
     intended_preset_level: Option<f32>,
     // The batch-level half of the as-is seed gate ([`asis_reuse_batch_ok`]): no trade hold
     // and no other row of this batch writes the handle's node.
@@ -1482,7 +1471,7 @@ pub(super) fn handle_one_scene(
         opts,
         false,
         saved,
-        // A4: "base means base" applies to a handle-driven base row too — the user's own
+        // "Base means base" applies to a handle-driven base row too — the user's own
         // control is still measured/written with base's isolation asserted.
         &job.force_bypass,
     )?;
@@ -1526,11 +1515,9 @@ pub(super) fn handle_one_scene(
 /// 2 dB move. Below it a flat response is ambiguous with noise, so no retry fires.
 pub(super) const SUSPECT_DROP_MIN_DB: f64 = 2.0;
 
-/// One `set_knobs` batch's targets: each knob paired with its level. (Superseded
-/// `merge_repair_targets`, which also appended per-scene writes re-asserting params the
-/// Scene Edit reseed would wipe — dead, and HW-proven not to land (8/8 failed): `set_knobs`
-/// now enables Scene Edit ONLY where the node has no overlay, the one case where the reseed
-/// has nothing to lose, so there is nothing left to repair.)
+/// One `set_knobs` batch's targets: each knob paired with its level. `set_knobs` enables
+/// Scene Edit ONLY where the node has no overlay, the one case where the reseed has nothing
+/// to lose, so no re-assert of other params is needed.
 pub(super) fn zip_targets<'a>(
     knobs: &[&'a LevelKnob],
     levels: &[f32],
@@ -1543,11 +1530,11 @@ pub(super) fn zip_targets<'a>(
         .collect()
 }
 
-/// First verified apply with a ONE-SHOT dropped-write retry (scene paths). The device can
-/// silently drop a scene write (the ~700 ms post-`loadScene` acceptance window, HW
-/// `probe --bisect-scene`); without the retry a single drop reads as a flat response →
-/// `correct_iter` sees no slope → a false, non-deterministic "clamped at <as-is>" (HW: the
-/// user's first-run Arpeges clamp that succeeded on re-run). One re-apply — a fresh scene
+/// First verified apply with a ONE-SHOT dropped-write retry (scene paths). The device
+/// silently drops a write sent after the 750 ms session lapse; without the retry a single
+/// drop reads as a flat response → `correct_iter` sees no slope → a false,
+/// non-deterministic "clamped at `<as-is>`" (HW: a first-run clamp that succeeds on
+/// re-run). One re-apply — a fresh scene
 /// recall + write + verify — disambiguates: a drop lands on the retry; a genuine
 /// no-authority amp stays flat and takes the honest clamp downstream. Returns
 /// `(verify_lufs, retry_writes)`.
@@ -1561,7 +1548,7 @@ pub(super) fn apply_first_verified(
     expected_db: f64,
     baseline_lufs: f64,
     saved: Option<&serde_json::Value>,
-    // A4: the job's isolation list — empty for every scene job, the base row's own list when
+    // The job's isolation list — empty for every scene job, the base row's own list when
     // this apply is base's (both a plain base solve and the headroom trade's hold).
     force_bypass: &[(String, String, bool)],
 ) -> Result<(Option<f64>, u32), LevelError> {
@@ -1631,10 +1618,10 @@ pub(super) fn correct_iter(
     floor: f32,
     // The run's own `presetLevel`, re-asserted on every corrective capture — see
     // [`LevelOptions::intended_preset_level`]. Each iterate re-applies through
-    // `apply_levels`, whose `set_knobs` recalls the scene and reverts an unsaved level, so
-    // omitting it here reverts the whole loop to measuring the SAVED level.
+    // `apply_levels`, whose `set_knobs` recalls the scene, which can revert an unsaved level,
+    // so omitting it here can leave the whole loop measuring a stale level.
     intended_preset_level: Option<f32>,
-    // A4: the job's isolation list, forwarded to every `apply` inside the loop below — same
+    // The job's isolation list, forwarded to every `apply` inside the loop below — same
     // contract as `apply_first_verified`'s.
     force_bypass: &[(String, String, bool)],
 ) -> Result<Correction, LevelError> {

@@ -147,7 +147,7 @@ let cancelRequested = false;
 // Bumped by `resetLevelFlow` so a run still awaiting a command from before the reset can
 // never publish into the fresh state.
 let generation = 0;
-// BUG-4: once a run has leveled at least one sound, closing the flow (Done) must DESELECT
+// Once a run has leveled at least one sound, closing the flow (Done) must DESELECT
 // exactly the keys it leveled — and ACCUMULATE them across Try again rounds (each run adds
 // its keys here), so the next Level can't silently re-run everything. A Cancel BEFORE any
 // run leaves these empty, preserving the selection.
@@ -171,7 +171,7 @@ export function openSetup(options: SetupOption[]): void {
   set({ chosen: options, stage: "setup" });
 }
 
-/** Close the flow. Returns the keys a run leveled since it opened (BUG-4: the caller
+/** Close the flow. Returns the keys a run leveled since it opened (the caller
  *  deselects exactly these), or an empty list when nothing ran. Refused mid-run. */
 export function closeFlow(): string[] {
   if (running) return [];

@@ -117,7 +117,7 @@ mod trace;
 // The remote tier's re-amp audio client (`TMP_E2E_REMOTE_AUDIO`): e2e builds and tests only.
 #[cfg(any(feature = "e2e", test))]
 mod remote_audio;
-// P5 external validation: the JSON-lines expectation log the measurement seams append
+// External validation: the JSON-lines expectation log the measurement seams append
 // to when `TMP_E2E_VALIDATE_LOG` is set. Inert (and unallocating) otherwise.
 mod validate_log;
 mod watcher;
@@ -171,7 +171,7 @@ mod lock_ok_tests {
     }
 }
 
-/// Shared device session. `None` until the user connects. Behind an `Arc<Mutex>`
+/// Shared device session. `None` until a connection opens. Behind an `Arc<Mutex>`
 /// so blocking HID work can run off the UI thread via `spawn_blocking`.
 #[derive(Default)]
 pub(crate) struct AppState {
@@ -186,9 +186,9 @@ use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 /// borrow the device through `DEVICE_OP_LOCK` + pause/ack.
 pub(crate) static MONITOR_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// A command (holding [`DEVICE_OP_LOCK`]) asks the persistent device monitor to
+/// A command (holding `DEVICE_OP_LOCK`) asks the persistent device monitor to
 /// yield its exclusive HID seize so the command can open its own connection
-/// without a `0xe00002c5` collision. Set true while a command's [`MonitorPauseGuard`]
+/// without a `0xe00002c5` collision. Set true while a command's `MonitorPauseGuard`
 /// is alive; cleared on its Drop. The monitor polls this every pump iteration.
 pub(crate) static MONITOR_PAUSE_REQ: AtomicBool = AtomicBool::new(false);
 /// The monitor has dropped its `Session` (its seize is free) in response to a pause

@@ -5,8 +5,8 @@ import { expect, type Page } from "@playwright/test";
 // fixed presets in both modes (deterministic — same blocks every run, validated against).
 // OFFLINE they are baked into the backup fixture + the startup snapshot, so `ensureScenario`
 // finds them and skips. ONLINE they start empty, so `ensureScenario` imports the identical
-// committed presetJsons (`e2e_seed_scenario` → `scenario-presets.json`). `clearScenario`
-// returns the unit to net-zero.
+// committed presetJsons (`e2e_seed_scenario` → `scenario-presets.json`). They stay
+// resident between runs; `clearScenario` empties them only with TMP_E2E_CLEAR_SCENARIO=1.
 // This worker's own bridge (per-worktree base + parallel index) — see fixtures/port.ts.
 import { SERVER } from "./port";
 
@@ -16,8 +16,7 @@ export interface Preset {
 }
 
 /** A leveling candidate block, as `list_level_blocks` reports it — shared by every leveling
- *  spec that reads a block back directly (the online Friedman/Plumes arcs, the Preset24
- *  persisted-Twin read). */
+ *  spec that reads a block back directly. */
 export interface LevelBlock {
   group_id: string;
   node_id: string;
@@ -28,24 +27,7 @@ export interface LevelBlock {
 // Role-based names (not slot numbers): the device stores these at userSlot = listIndex + 1
 // (401/402/.../411), so a slot-numbered name would read off-by-one in the backup view.
 // WHICH USE CASE EACH FIXTURE CARRIES: e2e/fixtures/COVERAGE.md (the matrix), pinned by
-// `src-tauri/src/fixture_gates.rs`. In brief — Rig: scene overlays, footswitch classes
-// and the two Doctor damage signatures; Pedalboard: scene-free, the Copy source, EXP + link
-// groups + a second-bank switch; Edge: gtrSplit, 8 scenes, the baked 2.6 kHz EQ-ring Doctor
-// oracle and the off-USB lane, plus (P4-C) a `shared_write_is_scene_local` Boost/Solo
-// anatomy — bypassed in base, un-bypassed ONLY by scene 3 "Solo"; Parallel: both lane amps live (joint-k / rebalance);
-// Hiwatt 3S: a VERBATIM device export (the scene-conformance oracle — do not edit);
-// Preset24: the stale-load / saturated-pedal footswitch fixture (e2e_server_tests.rs's base-boost gates; level.online.spec.ts's T5 online),
-// amended for the Plumes leveling regression (presetLevel 0.27, Twin outputLevel 0.28, Rat
-// base-ON at 0.62 — see COVERAGE.md and scenario-loudness.json's own "405" comment).
-// P3 additions (ADDITIONS, not replacements — 404/405 stay untouched structurally by P3):
-// Combined Level: the new-flow leveling fixture (FS-alone, scene-alone "BASE SCENE",
-// scene-that-enables-an-FS, parallel Deluxe Reverb + Marshall Plexi, a post-cab compressor).
-// Doctor Oracle: 13 mixed-shape footswitches, one per Doctor spectral check, all
-// enabled-neutral in base. Preset24 Min / Hiwatt Min: the smallest presets still reproducing each incident's own
-// bug class. Friedman 3S (P4, slot 410): a 3-FULL-overlay-scene (Rhythm/Lead/Base Scene)
-// TubeScreamer->MarshallPlexi->CabSimTMS chain — the catalog-verified stand-in for a Friedman
-// HBE-class 3-scene preset (no such amp is cataloged; MarshallPlexi is the closest high-gain
-// British-voiced substitute).
+// `src-tauri/src/fixture_gates.rs`. Hiwatt 3S (404) is a VERBATIM device export — do not edit.
 export const SCENARIO: Preset[] = [
   { slot: 400, name: "E2E Rig" },
   { slot: 401, name: "E2E Pedalboard" },
@@ -97,14 +79,9 @@ export async function listPresets(page: Page): Promise<Preset[]> {
  *  spec save, see `e2e_server.rs`'s `note_structural_save`) — so per-spec calls don't
  *  re-pay the multi-second in-process device verify.
  *
- *  Mode is read from the SERVER via `isOnline`, never `process.env.TMP_E2E_ONLINE` —
- *  the same trap `clearScenario` below already avoids (its own comment: "Ask the
- *  SERVER, never `process.env.TMP_E2E_ONLINE`"). The Playwright process's env is no mode
- *  signal — a `process.env` read here always took the offline branch online too, a
- *  presence-only check that a structurally mutilated preset trivially passes, so
- *  `e2e_seed_scenario` (and its re-verify) was never even invoked online
- *  (2026-08-01 incident, third and final link — see the registry in
- *  `notes/user-journeys.md`, which also records the first occurrence of this class). */
+ *  Mode is read from the SERVER via `isOnline`, never `process.env.TMP_E2E_ONLINE`: a
+ *  `process.env` read takes the offline branch online too, a presence-only check that a
+ *  structurally mutilated preset trivially passes. */
 export async function ensureScenario(page: Page): Promise<void> {
   if (!(await isOnline(page))) {
     const list = await listPresets(page);
@@ -119,8 +96,7 @@ export async function ensureScenario(page: Page): Promise<void> {
 
 /** Open the Level tab on a fresh page and wait for the connected header. Dismisses the
  *  one-shot startup backup disclaimer when present (localStorage-gated — only the first
- *  load). Shared by every spec that opens Level cold (was a byte-identical local copy in
- *  level-defaults.spec.ts and level-setup.spec.ts). */
+ *  load). Shared by every spec that opens Level cold. */
 export async function openLevel(page: Page): Promise<void> {
   await page.goto("/");
   const disclaimer = page.getByRole("button", { name: /backed up/i });
@@ -249,7 +225,8 @@ export async function runBaseLevel(
 }
 
 /** Choose each preset in `presets` WHOLE on the Level tab by name (filter → its
- *  "Choose <name>" checkbox → clear filter) — the Level twin of `selectPresetsForCheck`. */
+ *  "Choose <name>" checkbox → clear filter) — the Level counterpart of
+ *  `selectPresetsForCheck`. */
 export async function selectPresetsForLevel(
   page: Page,
   presets: Preset[],
@@ -386,7 +363,7 @@ export async function reampState(
   };
 }
 
-/** Standing re-amp-OFF safety gate (PR #81 class), checked BEFORE the spec's own reampOff
+/** Standing re-amp-OFF safety gate, checked BEFORE the spec's own reampOff
  *  teardown rescue, so a run that strands the unit re-amp-engaged (input-muted) fails HERE.
  *  The oracle is the DEVICE: its Mixer store (the audio path) must read OFF, and the
  *  Settings flag too when it answers. A missing Mixer reply fails — never read silence as
@@ -461,7 +438,8 @@ export const simInjectUnreachable = (
   kind: "drop-first-structural" | "bare-confirms",
 ): Promise<void> => simInject(page, kind, {}, "unreachable");
 
-/** Unverified on fw 1.8.58: `stale-push-after-save` (seen once on an older firmware),
+/** Tagged unverified: `stale-push-after-save` (fw 1.8.58 answers a same-slot save with
+ *  `presetChanged` (field 25) and no document push; static RE + HW),
  *  `reamp-off-never-lands` (no OFF clears the re-amp latch). */
 export const simInjectUnverified = (
   page: Page,
@@ -542,10 +520,9 @@ export async function isOnline(page: Page): Promise<boolean> {
 /** End-of-scenario teardown. OFFLINE it asserts the fake's server never aborted
  *  (`expectNoServerAborts`). ONLINE the fixtures stay RESIDENT in the scratch slots
  *  (400-410): the run-start pristine-checking seed self-repairs anything a run leveled,
- *  so clearing here only forces the next run to re-import everything (~2 min of device
- *  churn per run for nothing — adversarial-reviewed 2026-08-01). Set
- *  TMP_E2E_CLEAR_SCENARIO=1 (or run `probe --clear <slot> <name>` per slot) for the
- *  on-demand net-zero clean.
+ *  so clearing here would only force the next run to re-import everything (~2 min of
+ *  device churn). Set TMP_E2E_CLEAR_SCENARIO=1 (or run `probe --clear <slot> <name>` per
+ *  slot) for the on-demand net-zero clean.
  *  Recovery always runs: stray sweep + recall 001 + re-amp OFF. Best-effort — the backend
  *  guard refuses any slot not holding the scenario name, so a real preset is never cleared.
  *
@@ -553,14 +530,14 @@ export async function isOnline(page: Page): Promise<boolean> {
  *  `/sim/reset` before EVERY test, and that rebuilds the whole SimDevice from scratch —
  *  presets, scenes, songs, setlists, the re-amp latch and any armed capture fault — then
  *  reinstalls the 400-410 snapshot. So isolation between tests comes from the reset, not
- *  from this teardown, and the 7 bridged commands here were pure cost. Two things that do
+ *  from this teardown. Two things that do
  *  survive the reset are deliberately unaffected: the cumulative re-amp counters (every
  *  spec baseline-DIFFS them via `expectReampBalanced`) and `SCENARIO_VERIFIED` (read only
  *  by `e2e_seed_scenario`, which offline is unreachable because `ensureScenario` above
  *  early-returns once the reset has put the presets back). */
 export async function clearScenario(page: Page): Promise<void> {
   // Ask the SERVER, never `process.env.TMP_E2E_ONLINE` — the Playwright process's env is
-  // no mode signal (same trap documented in level.spec.ts's merged idempotency test). An env check here would read
+  // no mode signal. An env check here would read
   // "offline" during an ONLINE run and skip the device recovery — no re-amp OFF, leaving
   // the unit input-muted.
   if (!(await isOnline(page))) {

@@ -1,11 +1,10 @@
 //! Parameter-classification table: annotates block parameters for the leveling
 //! picker and gates which params may be swept for loudness. Single source of
 //! truth is the checked-in `src/models/param-class.json` (repo-root, frontend
-//! `src/`), parsed once here — Rust is now the ONLY classifier. There used to be
-//! a hand-mirrored TS copy (`src/views/level/paramClass.ts`); it was deleted once
-//! `footswitch::LevelParamCandidate`/`scene_jobs::SceneHandleCandidate` started
-//! shipping [`ParamClass`] itself on the wire, so drift is no longer possible —
-//! the frontend reads the verdict off the candidate, it never re-derives one.
+//! `src/`), parsed once here — Rust is the ONLY classifier.
+//! `footswitch::LevelParamCandidate`/`scene_jobs::SceneHandleCandidate` ship
+//! [`ParamClass`] itself on the wire, so the frontend reads the verdict off the
+//! candidate and never re-derives one.
 //!
 //! **This table ANNOTATES; it never guesses intent.** A param absent from both
 //! `defaults` and `blockOverrides` classifies as [`ParamClass::Other`] — silence
@@ -17,35 +16,32 @@
 //! * The PICKERS all enumerate through `footswitch::level_candidates_for_node`
 //!   (which gates on `footswitch::is_levelable_param` → `classify`): the footswitch
 //!   picker (`footswitch::enumerate_block_footswitches`), the scene HANDLE picker
-//!   (`commands/level_scenes.rs`), and — since the substring-rule retirement — the
-//!   preset block-knob picker (`session::extract_level_candidates`, behind
-//!   `list_level_blocks`). A control offered in one place is offered in all of them.
+//!   (`commands/level_scenes.rs`), and the preset block-knob picker
+//!   (`session::extract_level_candidates`, behind `list_level_blocks`). A control offered in one place is offered in all of them.
 //! * The SOLVES all refuse through `leveller::FsParamTarget` — one wording from
 //!   `refuse_if_not_a_level_control`, one range from `ParamInfo.range` — in the FS
 //!   solve, the preset block-knob lane (`commands/level_preset.rs`) and the
 //!   per-scene handle solve.
 //!
-//! The legacy name-substring rule (`session::is_level_param`) is no longer a picker
-//! gate. It survives only inside `session::extract_level_blocks`, a VALUE LOOKUP
+//! The name-substring rule (`session::is_level_param`) is not a picker gate. It
+//! lives only inside `session::extract_level_blocks`, a VALUE LOOKUP
 //! whose callers each narrow to one known control (the amp's `outputLevel`) or print
 //! a probe diagnostic — nothing there decides what a user may choose.
 //!
 //! What is deliberately OUTSIDE the table: the amp `outputLevel` joint-k path
-//! (`scene_jobs::build_scene_jobs`, `probe_api/level.rs`, the legacy
-//! `level_scenes_apply`). That solve is the closed-form `k = 10^((target−measured)/20)`,
+//! (`scene_jobs::build_scene_jobs`, `probe_api/level.rs`,
+//! `level_scenes_apply_batched`). That solve is the closed-form `k = 10^((target−measured)/20)`,
 //! which is only valid for an amplitude control multiplying the whole summed output —
-//! `solve_joint_k_at` hard-errors outside `0..1` — so it keeps `scene_bench::knob_bounds`
-//! and `LEVEL_MIN`/`LEVEL_MAX`. `knob_bounds` therefore stays; it is not a leftover.
+//! `solve_joint_k_at` hard-errors outside `0..1` — so it keeps `scene_jobs::knob_bounds`
+//! and `LEVEL_MIN`/`LEVEL_MAX`.
 //!
 //! Two proven traps drove the `blockOverrides` shape:
 //! - `level` on `ACD_TMRumbleV3` is an amp KNOB, not a level control — sweeping
 //!   it for loudness is wrong even though `level` is a `level_linear` default
-//!   everywhere else (`notes/leveling.md`: "`level` on `ACD_TMRumbleV3` is an amp
-//!   knob but NOT the output leveling control — it must not be changed").
+//!   everywhere else (`notes/leveling-scenes.md#amp-choice`).
 //! - Generic names collide across block families: `gain` means drive on most
-//!   amps/pedals, but on `ACD_Boost` it is measured RAW dB (fw 1.8.45,
-//!   HW-verified): the block's base value 2.5 is +2.5 dB, writes of
-//!   0/2.5/5/7 were all accepted by `changeParameter`, and the captured loudness
+//!   amps/pedals, but on `ACD_Boost` it is measured RAW dB (HW): the block's base
+//!   value 2.5 is +2.5 dB, writes of 0/2.5/5/7 were all accepted by `changeParameter`, and the captured loudness
 //!   tracked the write ~1:1 dB→LUFS. That is why `ACD_Boost.gain` gets its own
 //!   `blockOverrides` entry (`level_db`) instead of falling through to a
 //!   `defaults` guess.
@@ -66,11 +62,10 @@
 //! duplicated so the one suffix-collapse rule can't drift between amp
 //! classification and parameter classification.
 //!
-//! **Ranges on `level_db` entries are conservative and UNVERIFIED** except
-//! where noted above: `ACD_Boost.gain`'s `[0, 12]` extrapolates past the
-//! HW-observed 0..7 sweep to leave sweep headroom, and `makeupgaindb`'s
-//! `[0, 24]` is an unverified placeholder pending its own HW pass. Treat both
-//! as safe-but-not-confirmed bounds, not measured ceilings.
+//! **Ranges on `level_db` entries are conservative and UNVERIFIED**:
+//! `ACD_Boost.gain`'s `[0, 12]` extends past the HW-observed 0..7 sweep, and
+//! `makeupgaindb`'s `[0, 24]` is a placeholder. Treat both as
+//! safe-but-not-confirmed bounds, not the controls' real ranges.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -306,11 +301,9 @@ mod tests {
         assert_eq!(info.class, ParamClass::Other);
     }
 
-    // One canonical id per amp category `scene_jobs::is_amp_category` names. This USED
-    // to be mirrored verbatim in `paramClass.test.ts`, back when the TS side ran its own
-    // copy of this classifier; that file is gone now that the wire carries `class`
-    // directly (see the module header), so this is the sole pin. Catalog caveat,
-    // recorded honestly: every "Combo Amps"/"Half Stacks" id in `tmp-model-guide.json`
+    // One canonical id per amp category `scene_jobs::is_amp_category` names — the
+    // sole pin, since the wire carries `class` directly (see the module header).
+    // Catalog caveat: every "Combo Amps"/"Half Stacks" id in `tmp-model-guide.json`
     // also carries "Amp Heads", so only a dropped "Amp Heads" or "Bass Amps" category is
     // actually caught today.
     #[test]

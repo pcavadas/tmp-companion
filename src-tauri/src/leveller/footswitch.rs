@@ -33,8 +33,7 @@ pub struct FootswitchLevelResult {
     pub clamped: bool,
     /// Off target but the knob still had room: the bounded secant spent its
     /// `MEASURE_CORRECT_MAX` captures mid-range (a compressed / noisy response), so the best
-    /// point found is reported and a RE-RUN can improve it. Previously collapsed into
-    /// `clamped` with no reason — three states behind one flag.
+    /// point found is reported and a RE-RUN can improve it.
     pub unconverged: bool,
     pub clamp_reason: Option<String>,
     /// The clamp's pinned bound IS the wet/mix floor ([`WET_FLOOR_FRACTION`] × the anchor):
@@ -130,20 +129,19 @@ pub(crate) const WET_FLOOR_FRACTION: f32 = 0.25;
 ///
 /// * [`crate::param_class::ParamClass::Other`] ⇒ `solve_footswitch` REFUSES — sweeping a
 ///   non-level control changes the effect, not the volume.
-/// * `range` replaces the old hard-coded `[0, 1]` everywhere the FS solve reasons about
-///   knob bounds (seeds, secant clamp, bracket extremes, the pinned-at-a-bound verdict).
-///   Params are not all `[0,1]`: `ACD_Boost.gain` is raw dB over `[0, 12]` (HW-verified fw
-///   1.8.45). For a `[0,1]` param every derived number is byte-identical to before.
+/// * `range` is the param's own range everywhere the FS solve reasons about knob bounds
+///   (seeds, secant clamp, bracket extremes, the pinned-at-a-bound verdict). Params are not
+///   all `[0,1]`: `ACD_Boost.gain` is raw dB (HW), with its own `ParamInfo.range`.
 /// * [`crate::param_class::ParamClass::WetMix`] ⇒ the solved value is floored at
 ///   [`WET_FLOOR_FRACTION`] × `authored`.
 ///
-/// Shared by every USER-CHOSEN-PARAM lane, not just footswitches (the name is historical):
+/// Shared by every USER-CHOSEN-PARAM lane, not just footswitches:
 /// the preset block-knob lane (`commands/level_preset.rs`) and the scene HANDLE lane
 /// ([`SceneJob::handle`], `commands/level_scenes.rs`) build one too, so the refusal wording,
 /// the bounds and the wet floor are identical wherever a user names a control.
 ///
 /// The amp `outputLevel` JOINT-K path is untouched by any of this — it is the closed-form
-/// amplitude solve (`solve_joint_k_at`), not a search, and keeps `scene_bench::knob_bounds`
+/// amplitude solve (`solve_joint_k_at`), not a search, and keeps `scene_jobs::knob_bounds`
 /// and `LEVEL_MIN`/`LEVEL_MAX`.
 #[derive(Debug, Clone)]
 pub struct FsParamTarget {
@@ -160,11 +158,9 @@ pub struct FsParamTarget {
 /// The knob value [`FsParamTarget::to_coord`]/[`FsParamTarget::coord_to_value`] floor a
 /// `LevelLinear` param's log-knob coordinate at, so `coord = 20*log10(v)` stays finite at
 /// `v = 0` and the inverse map never produces a real, paid capture at a knob value that's
-/// audibly indistinguishable from the quiet extreme. Named once so the several doc sites
-/// that used to re-explain the bare literal `1e-3` now point here instead. The legacy
-/// bounds-shape-discriminated coordinate maps (`knob_to_coord`/`coord_to_knob`,
-/// `level_preset_block`'s local `to_c`/`from_c`) keep their own `f32` `eps` literals —
-/// swapping this `f64` const in there is not a pure no-op, so they're left alone.
+/// audibly indistinguishable from the quiet extreme. The block-knob coordinate maps
+/// (`knob_to_coord`/`coord_to_knob`, `level_preset_block`'s `to_c`/`from_c`) keep their own
+/// `f32` floor.
 pub(super) const KNOB_LOG_FLOOR: f64 = 1e-3;
 
 impl FsParamTarget {
@@ -184,8 +180,8 @@ impl FsParamTarget {
     /// `authored` starts from the BASE graph value — for an existing param assign that's the
     /// switch-OFF `valueB`, not what the player actually dialed in while engaged. A
     /// hand-authored assign engaging mix 0.9 over a near-dry base 0.05 would otherwise floor
-    /// at 0.0125 and could be gutted to near-silence — the exact incident (chorus mix→0) the
-    /// floor exists to prevent. Base-anchoring stays as the FLOOR of the max: it's what
+    /// at 0.0125 and could be gutted to near-silence (a chorus mix → 0) — what the floor
+    /// exists to prevent. Base-anchoring stays as the FLOOR of the max: it's what
     /// keeps a re-run from ratcheting (max(base, previous solve), base intact) stable across
     /// runs. Applied by `solve_footswitch` itself from the `current_value` it already
     /// receives, so no call site can forget it.
@@ -209,10 +205,10 @@ impl FsParamTarget {
             .unwrap_or_else(|| node_id.to_string())
     }
 
-    /// Resolve straight off the SAVED (field-8) preset: the node's FenderId (falling back to
-    /// the node id when the graph carries none) and its authored value for `param`. The one
-    /// constructor every production call site uses — each already holds the preset that the
-    /// batch's single field-8 read produced.
+    /// Resolve straight off the SAVED (`presetDataRequest`) preset: the node's FenderId
+    /// (falling back to the node id when the graph carries none) and its authored value for
+    /// `param`. The one constructor every production call site uses — each already holds the
+    /// preset that the batch's single saved-preset read produced.
     pub fn from_preset(preset: &serde_json::Value, node_id: &str, param: &str) -> Self {
         let authored =
             crate::audiograph::node_param_f64(preset, node_id, param).unwrap_or(0.0) as f32;
@@ -315,14 +311,14 @@ impl FsParamTarget {
         (0.05..=0.95).contains(&frac) && (target_lufs - l_a_lufs).abs() >= FS_MIN_SEED_GAP_LU
     }
 
-    /// Solve-COORD-space value for `v`. [`ParamClass::LevelLinear`] interpolates in
+    /// Solve-COORD-space value for `v`. [`LevelLinear`] interpolates in
     /// LOG-KNOB space (`coord = 20*log10(v)`, floored at `v = `[`KNOB_LOG_FLOOR`]` so the 0
     /// bound stays finite) where the documented law `L = 20*log10(v) + C` is a straight
-    /// line, making the secant EXACT and ending the ~1 LU/capture knob-space creep (HW,
-    /// MythicDrive FS: −30 → −22 → −24 → −25 → −26 over 5 captures). `LevelDb` is already
-    /// ~1:1 dB→LU (raw space IS log space) and `WetMix` has no known law — both keep the
-    /// identity map, so their solve behavior is byte-identical to the validated one.
-    /// (`Other` never reaches the solve.)
+    /// line, making the secant EXACT where a knob-space secant creeps ~1 LU/capture (HW).
+    /// `LevelDb` is already ~1:1 dB→LU (raw space IS log space) and `WetMix` has no known
+    /// law — both keep the identity map. (`Other` never reaches the solve.)
+    ///
+    /// [`LevelLinear`]: crate::param_class::ParamClass::LevelLinear
     ///
     /// Two other sites in this file build a coordinate map with the SAME log-vs-identity
     /// shape but a DIFFERENT discriminator, deliberately not merged with this one: the
@@ -423,9 +419,8 @@ pub(super) fn fs_trust_clamp(raw: f64, p0: f64, p1: f64, span: f64) -> f64 {
 /// BOTH points to clear the same side, so swapping which argument is `_a` vs `_b`
 /// changes nothing about the result. A knob whose useful range is a small slice of
 /// `[0, 1]` (e.g. a compressor already saturated by 0.75) can seed a pair that reads flat
-/// even though a reachable, non-flat point exists further out — the minimum-viable fix
-/// for THAT specific pathology (full false-position/Illinois-damping bracketing
-/// deferred) is one more sample at 1.0 (target needs MORE loudness than either seed) or
+/// even though a reachable, non-flat point exists further out — the fix for THAT specific
+/// pathology is one more sample at 1.0 (target needs MORE loudness than either seed) or
 /// 0.0 (target needs LESS), so the existing plain secant gets a genuine slope instead of
 /// an honest-but-avoidable "no authority" clamp. Gated on flatness specifically (not
 /// merely "unbracketed") so an ordinary out-of-bracket-but-sloped pair — which the plain
@@ -489,16 +484,16 @@ pub(super) fn param_fn_present(
 /// connection's working-copy edits; the batch write session's reload discards ALL accumulated
 /// sweep pollution at once.
 ///
-/// `scene` is the SCENE CONTEXT the switch's sound is measured in (D3): `None` = base — the
-/// historical path, byte-identical. `Some(i)` routes through [`measure_fs_state`]'s
+/// `scene` is the SCENE CONTEXT the switch's sound is measured in: `None` = base.
+/// `Some(i)` routes through [`measure_fs_state`]'s
 /// HW-validated `loadScene → write → engage` composition instead, because a scene-context
 /// measurement must write on the LIVE RENDERED LAYER: the persistent, overlay-aware `set_knobs`
 /// path `arm_measurement` uses would REFUSE outright on a `BypassOnly` scene, and this is a
 /// throwaway measurement, not a write the preset should keep.
 ///
 /// `intended_preset_level` is the run's OWN `presetLevel`, asserted on every capture (see
-/// [`arm_measurement`] step 1b and [`measure_fs_state`]): without it the capture renders at
-/// the level the DEVICE HAS SAVED, because this path recalls a scene (base included) and
+/// [`arm_measurement`] step 1b and [`measure_fs_state`]): without it the capture can render
+/// at a stale base-snapshot level, because this path recalls a scene (base included) and
 /// then writes a BLOCK param — it never writes `presetLevel` the way the base lane
 /// incidentally does. `None` = assert nothing.
 pub(crate) fn measure_fs_at(
@@ -587,18 +582,18 @@ fn capture_fs_at_in(
 /// bound. Every write lands on the throwaway connection's working copy; the command's
 /// reload discards them.
 ///
-/// `scene` is the SCENE CONTEXT the sound is measured in: `None` = base (the historical
-/// behaviour, `BASE_SCENE_SLOT`), `Some(i)` = that 0-based `scenes[]` wire index. The bare
-/// `change_parameter` writes below act on the LIVE RENDERED LAYER under a scene recall
-/// (HW, fw 1.8.45: writing a param that the scene carries a Full overlay for measured a
-/// −11 LU drop — the overlay does NOT mask the write), which is what makes a per-scene FS
-/// ceiling readable at all. These are measurement-only writes on a throwaway connection;
+/// `scene` is the SCENE CONTEXT the sound is measured in: `None` = base
+/// (`BASE_SCENE_SLOT`), `Some(i)` = that 0-based `scenes[]` wire index. The bare
+/// `change_parameter` writes below act on the LIVE RENDERED LAYER under a scene recall (a
+/// scene-context write to a param in a Full overlay lands in that overlay and is heard at
+/// once — static RE, fw 1.8.58), which is what makes a per-scene FS ceiling readable at
+/// all. These are measurement-only writes on a throwaway connection;
 /// PERSISTENT scene-scoped writes still go through the overlay-aware `set_knobs`.
 ///
 /// `intended_preset_level` is the run's OWN `presetLevel`, written straight after the recall
-/// — which is what reverts it (the recall runs the device's own level-apply, see
-/// `recall_reassert_save`) — and before the param writes. `None` = assert nothing, i.e. the
-/// capture renders at the level the device has saved. No settle is added: `setPresetLevel` is
+/// (a base recall while base is current re-applies the base snapshot's level, see
+/// `recall_reassert_save`) and before the param writes. `None` = assert nothing, i.e. the
+/// capture renders at whatever level the recall leaves. No settle is added: `setPresetLevel` is
 /// one more command in the run of writes the trailing `SETTLE_AFTER_SET_MS` already covers,
 /// so no idle gap grows.
 pub(super) fn measure_fs_state(
@@ -633,7 +628,7 @@ pub(super) fn measure_fs_state(
 /// The measurement inputs for ONE footswitch sound's PREPASS CEILING read. Built by the
 /// caller that owns the preset document, so this module never re-derives switch state.
 pub struct FsCeilingProbe<'a> {
-    /// THE SCENE CONTEXT this sound is measured in (D3): a 0-based `scenes[]` wire slot, or
+    /// THE SCENE CONTEXT this sound is measured in: a 0-based `scenes[]` wire slot, or
     /// `None` = the preset's BASE sound. The capture recalls it before engaging, so the ceiling
     /// describes the switch AS IT SOUNDS THERE — the same context its solve measures in, or the
     /// two describe different sounds.
@@ -682,9 +677,9 @@ impl FsCeilingProbe<'_> {
 /// the caller decides how much to trust a hot one.
 ///
 /// `intended_preset_level` is the run's OWN `presetLevel` (see [`measure_fs_state`]). A
-/// ceiling read at the device's STALE saved level is the whole reading off by the difference
-/// — HW: 10.2 dB, which made `fs_target_beyond_ceiling` fire on every row of the batch and
-/// clamp sounds that were comfortably in reach. `None` = assert nothing.
+/// ceiling read at a stale level is the whole reading off by the difference (10.2 dB on HW —
+/// enough for `fs_target_beyond_ceiling` to clamp sounds that are in reach). `None` = assert
+/// nothing.
 pub fn measure_fs_ceiling(
     probe: &FsCeilingProbe<'_>,
     stimulus: &[f32],
@@ -836,12 +831,12 @@ pub(super) fn switch_at_target(measured: f64, target: f64, clamped: bool) -> boo
 ///
 /// `param` is the CLASSIFIED target ([`FsParamTarget`]) — it supplies the solve's bounds,
 /// the not-a-level-control refusal and the wet floor. Build it with
-/// [`FsParamTarget::from_preset`] off the batch's single field-8 read.
+/// [`FsParamTarget::from_preset`] off the batch's single saved-preset read.
 #[allow(clippy::too_many_arguments)]
 ///
 /// `intended_preset_level` is the run's OWN `presetLevel`, re-asserted on EVERY capture of
 /// the solve for the same reason the isolation list is re-sent on every capture: each one
-/// recalls a scene, and the recall runs the device's own level-apply. Solving against a
+/// recalls a scene, and a base recall can re-apply a stale snapshot level. Solving against a
 /// stale level solves the wrong sound. `None` = assert nothing.
 pub fn measure_footswitch(
     switch: u32,
@@ -868,7 +863,7 @@ pub fn measure_footswitch(
         || reamp_off_fresh("measure_footswitch"),
         // EVERY capture of this row recalls `scene` before engaging — the isolation list and
         // the intended `presetLevel` are both re-sent per capture for the same reason (a
-        // recall re-asserts its own bypass state AND runs the device's level-apply). Far
+        // recall re-asserts its own bypass state AND can re-apply a stale level). Far
         // steps take a short window ([`CoarseFs`]), picking up from the prepass probe's miss.
         {
             let mut coarse = CoarseFs::new(target_lufs, probe.map(|p| p.lufs));
@@ -897,9 +892,9 @@ fn coarse_far_lu() -> f64 {
 /// reading that lands inside the acceptance band (within [`coarse_far_lu`] for the row's first
 /// reading, which also decides the at-target skip), or that hears no signal, is re-measured
 /// full at the same value before anyone sees it, so the solve never accepts, skips or
-/// verdicts on a short reading. Offline
-/// replay of the 2026-10-17 HW bench (155 captures, 405 + 410): about −30% of the footswitch
-/// step, every accepted reading full. Off with `TMP_FS_COARSE=0` (bench A/B).
+/// verdicts on a short reading. It saves about 30% of the footswitch step (offline replay of
+/// a 155-capture HW bench), every accepted reading full. Off with `TMP_FS_COARSE=0` (bench
+/// A/B).
 pub(crate) struct CoarseFs {
     target: f64,
     last_lufs: Option<f64>,
@@ -998,9 +993,8 @@ pub(super) fn solve_footswitch_with(
 /// ARGUMENT of every call, not state captured once: each capture recalls a scene (base
 /// included) and a recall RE-ASSERTS that scene's own bypass state, so a once-only forced
 /// write is silently reverted for captures 2..N and every later point measures a
-/// NON-isolated sound. (It used to be sent only on the first successful capture, on the
-/// since-corrected assumption that working-copy edits alone survive the reconnects — they
-/// do, but the recall undoes them.) Injectable — `reamp_off` too (see
+/// NON-isolated sound (working-copy edits survive the reconnects, but the recall undoes
+/// them). Injectable — `reamp_off` too (see
 /// [`solve_param_secant`]) — so the loop + its outcome verdict are unit tested without a
 /// device.
 ///
@@ -1060,11 +1054,8 @@ pub(super) fn solve_footswitch(
 }
 
 /// What the param-space secant ACTUALLY found — the solve's own vocabulary, with no wire
-/// shape attached. [`solve_param_secant`] used to return a [`FootswitchLevelResult`], which
-/// forced its non-footswitch caller (the scene HANDLE lane) to hand it a fake `switch` and an
-/// empty engaged-bypass list and then throw six report-only fields away. Each caller now maps
-/// this into its own shape: [`solve_footswitch`] via [`ParamSolve::into_fs_result`], the scene
-/// lane into a [`SceneSolve`].
+/// shape attached. Each caller maps this into its own shape: [`solve_footswitch_seeded`] via
+/// [`ParamSolve::into_fs_result`], the scene HANDLE lane into a [`SceneSolve`].
 pub(super) struct ParamSolve {
     /// The value to write — the best point the search reached, always inside the param's
     /// [`FsParamTarget::bounds`] (the wet floor included), so it is always writable. ONE
@@ -1145,14 +1136,12 @@ pub struct SeedPoint {
     pub spread: f64,
 }
 
-/// [`solve_footswitch`]'s loop with the CAPTURE BUDGET as an argument — the seam the scene
+/// [`solve_footswitch_seeded`]'s loop with the CAPTURE BUDGET as an argument — the seam the scene
 /// handle lane reuses. Every correction iterate is a fresh-connect re-amp capture (~10 s),
 /// and the two lanes' cost profiles differ: a footswitch batch pays it per switch
 /// ([`FS_CORRECT_MAX`]), a scene batch per scene and up to 9 of them
 /// ([`SCENE_HANDLE_CORRECT_MAX`]). Nothing else about the solve differs, so the budget is
-/// the ONLY thing threaded — inheriting the footswitch cap silently would have re-inflated
-/// per-scene cost toward the legacy 80–93 s regime the scene lane's own
-/// `MEASURE_CORRECT_MAX` was set to avoid.
+/// the ONLY thing threaded — inheriting the footswitch cap would inflate per-scene cost.
 ///
 /// `measure(v)` captures at knob value `v`; whatever isolation that needs (a footswitch's
 /// engaged-bypass list, a scene recall) is the CALLER's closure to carry — the solve itself
@@ -1172,8 +1161,8 @@ pub struct SeedPoint {
 /// other seed is ignored (the probe then owns seed 1). It does NOT
 /// anchor the wet floor (that stays `current_value`'s job) and it is never the routing probe:
 /// the caller's capture already proved signal. The scene HANDLE lane passes its as-is
-/// reading here when [`asis_seed_context_matches`] proves the contexts identical; `None`
-/// everywhere else keeps the fixed-seed path byte-for-byte.
+/// reading here when `scene::asis_seed_context_matches` proves the contexts identical;
+/// `None` everywhere else keeps the fixed-seed path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn solve_param_secant(
     stimulus: &[f32],
@@ -1269,10 +1258,9 @@ pub(super) fn solve_param_secant(
         // `level`/`volume` at 0 IS deep digital silence on the real unit — DATA the secant
         // needs, not a fatal abort). See `FS_SILENT_GEOMETRY_LUFS`'s doc: seed 2, the
         // bracket-expansion probe, and the correction loop below each convert a later
-        // silence into a pseudo point instead of propagating the error (HW-reproduced, fw
-        // 1.8.45, preset "TR+BD2+BMP": Plumes `level` knob, seeds 0.25/0.75 read the
-        // compressed plateau, a −26 target extrapolated a negative knob value, clamped to
-        // 0.0, and 0.0 is silent).
+        // silence into a pseudo point instead of propagating the error (HW: a Plumes `level`
+        // knob whose seeds read the compressed plateau extrapolates a negative knob value,
+        // clamped to 0.0, and 0.0 is silent).
         // Floor-guarded (the flat-but-finite silent-inject case); the NO_SIGNAL arm below
         // stays separate — genuine silence is the routing clamp, not a floor read.
         let l = match require_live(|| measure_at(v), stimulus) {
@@ -1299,11 +1287,9 @@ pub(super) fn solve_param_secant(
     // Seed 2: probe → LAW → fixed-fraction ladder. `law_predicted` returns the linear-law
     // candidate (or `None` for a `WetMix`/no-known-law param, which always takes the fixed
     // fallback); `seed2_plausible` is the acceptance gate — see both methods' docs for the
-    // law itself, the accuracy band it's validated against (HW, MythicDrive FS: −30 → −22
-    // → −24 → −25 → −26 over 5 captures on the OLD knob-space secant this replaces), and
-    // why a rejected/wrong prediction degrades to the old fixed complement fraction (0.75
-    // if seed 1 sits in the lower half of the range, else 0.25) rather than ever doing
-    // worse than the pre-existing behavior.
+    // law itself, the accuracy band it's validated against (HW), and why a rejected/wrong
+    // prediction degrades to the fixed complement fraction (0.75 if seed 1 sits in the lower
+    // half of the range, else 0.25).
     let fixed_fallback = || {
         if v_a <= param.at_fraction(0.5) {
             param.at_fraction(0.75)
@@ -1338,9 +1324,8 @@ pub(super) fn solve_param_secant(
     // device round-trips on BOTH seeded paths — probe-as-seed-1+seed2, or fixed-seed1+
     // seed2. It is NOT the count on the probe-ERROR path (probe fails, falls through to a
     // fresh fixed seed 1, then seed 2 — 3 round-trips: the failed probe, seed 1, seed 2);
-    // that extra failed round-trip is deliberately left uncounted here, pre-existing
-    // accounting this change doesn't touch. A caller-supplied `known_seed` was NOT paid by
-    // this solve, so only seed 2 counts on that path.
+    // that extra failed round-trip is deliberately left uncounted here. A caller-supplied
+    // `known_seed` was NOT paid by this solve, so only seed 2 counts on that path.
     let mut iterations = if seed1_paid_here { 2u32 } else { 1u32 };
     let err = |l: f64| (l - target_lufs).abs();
     let tol = solve_accept_tol();
@@ -1410,13 +1395,12 @@ pub(super) fn solve_param_secant(
         //   * pair STRADDLES the target → keep the bracket (replace the same-side
         //     endpoint) with Illinois damping — a repeat on one side halves the retained
         //     endpoint's offset so a stale far end can't pin the interpolation. This is
-        //     what converges on a steep-taper cliff (HW, Hiwatt fs12: the UniVibe
-        //     `volume` measures −45.6 LUFS at 0.25 but −16.9 at 0.61, a >60 LU/knob-unit
-        //     cliff around the −20 target; the plain sliding secant zig-zagged across it
-        //     and stopped 3.1 LU hot — caught by the strict e2e re-measure).
-        //   * pair does NOT straddle → the plain slide (drop the older point), unchanged
-        //     from the validated behavior; the first crossing iterate forms a straddling
-        //     consecutive pair, which flips the loop into bracket mode by itself.
+        //     what converges on a steep-taper cliff (HW: a UniVibe `volume` measures
+        //     −45.6 LUFS at 0.25 but −16.9 at 0.61, a >60 LU/knob-unit cliff; the plain
+        //     sliding secant zig-zags across it and stops 3.1 LU hot).
+        //   * pair does NOT straddle → the plain slide (drop the older point); the first
+        //     crossing iterate forms a straddling consecutive pair, which flips the loop
+        //     into bracket mode by itself.
         if err(best_lufs) > tol {
             if (p1.1 - p0.1).abs() < KNOB_TOL_LU {
                 // The seed pair itself is flat (and the expansion probe didn't land
@@ -1556,21 +1540,22 @@ pub struct FsPendingWrite {
 }
 
 /// Write every pending footswitch value on ONE live-edit session and persist with ONE
-/// `saveCurrentPreset` — the per-preset single save (a batch of switches used to reload
-/// and save once EACH: N base flashes + N saves of user-visible churn). Session shape
+/// `saveCurrentPreset` — the per-preset single save (not a reload + save per switch: N
+/// base flashes + N saves of user-visible churn). Session shape
 /// per the chunked-edit rules: establish a LIVE CONTROLLER (`begin_live_edit` warmup),
 /// then load (discarding ALL the measurement pollution the batch's sweeps accumulated),
 /// then keep the session live with heartbeat bursts right up to each chunked `ftsw`
 /// edit (chunked edits are silently DROPPED if the session lapses — a passive sleep
 /// lets it lapse; HW `probe --repro-chunked`). Each write keeps its confirm gate
-/// (field-54 echo / read-back, retry-once, never save on `presetError`); ANY
+/// (`setFootswitchAssignment` (54) echo / read-back, retry-once, never save on
+/// `presetError`); ANY
 /// unconfirmed write aborts BEFORE the save, so nothing half-applied persists.
 ///
 /// A `FsWrite::Bake` persists the solved value with `changeParameter`, which lands in
 /// whatever scene the connection currently holds — and the load below activates the preset's
 /// SAVED `lastLoadedScene`, not base (HW). Hence the mandatory base recall: without it a
-/// scened preset's bake landed in that scene's overlay while BASE — the state the leveler
-/// measured, and the one the switch's off position renders — kept its old value.
+/// scened preset's bake lands in that scene's overlay while BASE — the state the leveler
+/// measured, and the one the switch's off position renders — keeps its old value.
 pub fn write_footswitch_values(
     slot: ListIndex,
     pending: &[FsPendingWrite],
@@ -1589,13 +1574,10 @@ pub fn write_footswitch_values(
 /// order (load → warmup → BASE recall → confirm-gated writes → ONE save) is unit-tested
 /// against `SimDevice` with no real HID open.
 ///
-/// The recall is issued ONCE, before the loop, never per item: `load_scene` reverts prior
-/// UNSAVED writes to the recalled context, so a per-item recall would undo the earlier
-/// bakes. The ~700 ms post-`loadScene` acceptance cliff that once argued against recalling
-/// at all here is a SCENE-OVERLAY phenomenon (it gates writes needing the per-node Scene
-/// Edit arming); these are base-context writes with no arming. RE-VERIFY ON HW for a
-/// multi-switch batch: if a later item's bake stops landing, that cliff applies to base
-/// writes too and the fix is to split the batch, not to drop the recall.
+/// The recall is issued ONCE, before the loop, never per item: a recall can undo earlier
+/// UNSAVED writes (every one under DISCARD CHANGES; an unsaved `presetLevel` on a base →
+/// base recall), so a per-item recall would put the earlier bakes at risk. These are
+/// base-context writes with no Scene Edit arming.
 pub(super) fn write_fs_values_on_session(
     s: &mut Session,
     slot: ListIndex,
@@ -1821,10 +1803,9 @@ mod fs_solve_noise_tests {
         )
     }
 
-    // #236: with σ = 0.12 LU capture noise a converged footswitch solve must exit early and
-    // never end `unconverged` on noise alone. Measured when this gate landed, 200 targets:
-    // the old 0.1 LU band averaged 3.33 captures per solve (the 16-iterate budget absorbing
-    // the noise-chasing), the shared 0.25 LU band 2.25.
+    // With σ = 0.12 LU capture noise a converged footswitch solve must exit early and
+    // never end `unconverged` on noise alone (200 targets: the shared 0.25 LU band averages
+    // 2.25 captures per solve, a 0.1 LU band 3.33).
     #[test]
     fn noisy_converged_solves_exit_early_and_rarely_read_unconverged() {
         let (mean_captures, miss_rate) = noisy_solve_stats(200);

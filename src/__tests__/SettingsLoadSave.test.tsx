@@ -1,13 +1,13 @@
-// Settings — the never-silent load/save (#300) and click-only reorder + slider
-// cancel (#302), on the look B pages.
+// Settings — the never-silent load/save and click-only reorder + slider
+// cancel, on the look B pages.
 //
-//   • #300: a failed get_store shows a danger Notice with "Try again" and offers no Add
+//   • a failed get_store shows a danger Notice with "Try again" and offers no Add
 //     (an add against the initial empty arrays would overwrite the whole stored list);
 //     a failed save_targets is reported and the list re-reads to what is stored. The
 //     page names what failed, never the backend's text (that goes to the log). On
 //     Instruments with the unit away, the failed-save Notice also says why Record is
 //     off, so the page shows one Notice, not two.
-//   • #302: targets reorder by ⋯ Move up / Move down; the slider's pointercancel
+//   • targets reorder by ⋯ Move up / Move down; the slider's pointercancel
 //     ends the drag without committing and restores the starting value.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

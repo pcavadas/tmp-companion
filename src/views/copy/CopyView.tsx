@@ -158,8 +158,9 @@ export function CopyView({
           item.graph,
         );
         patchLibraryGraph(item.slot, patch);
-        // BUG-2: a live block edit pushes no device field-3, so optimistically
-        // repaint the hero when we just edited the ACTIVE preset (no device re-read).
+        // A live block edit pushes no `currentPresetDataChanged` (field 3), so
+        // optimistically repaint the hero when we just edited the ACTIVE preset (no device
+        // re-read).
         if (item.slot === activeSlot) patchLiveGraph(patch);
       }
       dispatch({ type: "saveSettled" });

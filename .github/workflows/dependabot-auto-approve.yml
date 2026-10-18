@@ -4,8 +4,8 @@ name: Dependabot auto-approve
 # bot-authored PRs ("Review skipped: bot user not eligible for review"), so its PRs
 # would otherwise sit forever at REVIEW_REQUIRED. Auto-approve every Dependabot PR so
 # it satisfies the protect-main review gate. The required status checks (build-test,
-# commitlint, e2e) still gate the actual merge, so a bump that breaks the build can't
-# land regardless of the approval — that (not the update type) is the safety net.
+# commitlint, e2e, docs, remote-lane) still gate the actual merge, so a bump that breaks the
+# build can't land regardless of the approval — that (not the update type) is the safety net.
 #
 # Intentionally no `actions/checkout` and no third-party actions: this workflow never
 # runs PR-controlled code, so the write-scoped GITHUB_TOKEN on a `pull_request` event

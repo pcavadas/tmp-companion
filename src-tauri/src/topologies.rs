@@ -22,8 +22,8 @@
 /// string signal goes through a resonant 2nd-order low-pass — the pickup's
 /// loaded electrical resonance (coil inductance against cable + pot
 /// capacitance). A real pickup is a low-pass with a resonant hump, not a
-/// band-pass: the old band-passed-noise recipe put far too much energy above
-/// 2.5 kHz and mis-levelled bright presets (hardware A/B against real DIs).
+/// band-pass: a stimulus with much energy above 2.5 kHz mis-levels bright
+/// presets (hardware A/B against real DIs).
 #[derive(Debug, Clone, Copy)]
 pub struct Topology {
     /// Stable id == WAV file stem == profile reference key, for CANONICAL
@@ -52,9 +52,8 @@ pub struct Topology {
     pub pick_softness: f32,
 }
 
-/// The shipped catalog — **one stimulus per pickup character**. The output-level
-/// axis (low/med/high) was removed once Tier-2 calibration began measuring real
-/// output directly: calibration sets *level*, so a topology only needs to set
+/// The shipped catalog — **one stimulus per pickup character**. Calibration
+/// measures real output directly and sets *level*, so a topology only needs to set
 /// *spectrum*. `peak` is a single per-character default that drives the amp
 /// for UNcalibrated profiles; a calibrated profile overrides it (see
 /// `read_stimulus_calibrated`).
@@ -266,8 +265,7 @@ mod tests {
 
     /// The committed stimuli must keep a real pickup's spectral balance: most
     /// power below 1.25 kHz and only a trace above 2.5 kHz. Real humbucker and
-    /// single-coil DIs carry ≲1 % above 2.5 kHz; the old band-passed-noise WAVs
-    /// carried 50–90 % there, which mis-levelled bright presets on hardware.
+    /// single-coil DIs carry ≲1 % above 2.5 kHz.
     #[test]
     fn every_stimulus_has_a_pickup_like_spectrum() {
         for t in TOPOLOGIES {

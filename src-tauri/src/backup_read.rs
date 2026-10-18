@@ -26,14 +26,12 @@ pub struct BackupPresetRow {
     pub slot: i64,
     pub name: String,
     /// The preset doc's identity uuid (`info.preset_id`), parsed from the SAME
-    /// `presetJson` every other field on this row comes from. The ONLY stable
-    /// identity a cross-connection lookup can key on — slot is positional and
-    /// `displayName` is user-editable and duplicable (`slot_write.rs`'s
-    /// preset_id-over-displayName precedent — which REFUSES outright on an absent
-    /// id; this row's callers instead warn-and-accept on slot+name alone, a
-    /// deliberate divergence, since a user-facing read refusing here would
-    /// re-break the Hiwatt truncated-read case `slot_read.rs`'s cut-order note
-    /// documents). `None` for an unparseable row, for a
+    /// `presetJson` every other field on this row comes from. Slot is positional and
+    /// `displayName` duplicable; the id survives edits and renames, but every save mints
+    /// a new one and an import keeps any id, so ids can repeat (static RE + HW, fw
+    /// 1.8.58). Callers of this row warn and accept on slot+name when it is absent —
+    /// unlike `slot_write.rs`, which refuses — so a truncated read stays usable.
+    /// `None` for an unparseable row, for a
     /// body without the key, or for an EMPTY id — normalized away at the
     /// `crate::library::preset_id_of` chokepoint so a `Some("")` can never compare
     /// equal to another `Some("")` and pass a guard vacuously (the hazard
@@ -50,7 +48,7 @@ pub struct BackupPresetRow {
     /// `presetJson` audioGraph at backup time — so per-scene leveling never has to
     /// run a live block-discovery session. Empty for a scene-less/unparseable row.
     pub amp_candidates: Vec<LevelBlockArg>,
-    /// A7: how many DISTINCT `amp_candidates` nodes are NOT bypassed in the BASE graph —
+    /// How many DISTINCT `amp_candidates` nodes are NOT bypassed in the BASE graph —
     /// the redistribute single-amp gate's narrower signal. `amp_candidates` is deliberately
     /// over-inclusive (an amp-flip preset — amp A live in scene 0, B in scene 1 — needs its
     /// bypassed-in-base amp as a candidate too, so a global bypass filter in
@@ -67,7 +65,7 @@ pub struct BackupPresetRow {
     /// extracted from the SAME `presetJson` audioGraph via the same decoder the live
     /// active read uses ([`session::extract_active_graph`]). Lets the "Copy blocks
     /// between presets" frontend render each NON-active preset's real signal path
-    /// without a per-preset device round-trip. A default (empty) [`ActiveGraph`] for an
+    /// without a per-preset device round-trip. A default (empty) `ActiveGraph` for an
     /// unparseable row.
     pub graph: session::ActiveGraph,
     /// Block-acting footswitches (on/off + parameter change) with leveling-candidate
@@ -92,7 +90,7 @@ pub struct BackupPresetRow {
     /// live device read (mirroring `scene_handles`'s own discriminator).
     pub base_handles: Vec<SceneHandleCandidate>,
     /// Per FS scene (wire index), that scene's saved overlay as Doctor node overrides
-    /// ([`crate::scene_jobs::scene_node_overrides`]) — what a Doctor scene sound
+    /// (`crate::scene_jobs::scene_node_overrides`) — what a Doctor scene sound
     /// is diagnosed on top of the base graph. Empty for a scene-less/unparseable row.
     pub scene_overrides: Vec<Vec<crate::doctor::NodeOverride>>,
     /// Per footswitch, the scenes that enable it and the one the Set-up step preselects as
@@ -114,7 +112,7 @@ pub struct BackupPresetRow {
     pub rebalanceable: bool,
 }
 
-/// A7, PURE: [`BackupPresetRow::base_active_amp_count`]'s derivation — DISTINCT
+/// PURE: [`BackupPresetRow::base_active_amp_count`]'s derivation — DISTINCT
 /// `amp_candidates` (group, node) pairs NOT bypassed in `graph`'s base `dspUnitParameters`.
 /// Extracted so the redistribute single-amp gate's narrower signal is unit-testable with no
 /// DB/backup scan in the loop. See the field's own doc for why a global bypass filter can't
@@ -154,7 +152,7 @@ mod base_active_amp_count_tests {
         }
     }
 
-    // A9: both amps active in base → both count.
+    // Both amps active in base → both count.
     #[test]
     fn both_active_amps_count() {
         let graph = serde_json::json!({ "audioGraph": { "guitarNodes": { "G1": [
@@ -167,7 +165,7 @@ mod base_active_amp_count_tests {
         assert_eq!(base_active_amp_count(&graph, &candidates), 2);
     }
 
-    // A9: THE redistribute-gate case — a bypassed second amp (an amp-flip preset's other lane,
+    // THE redistribute-gate case — a bypassed second amp (an amp-flip preset's other lane,
     // live only in some scene) must NOT count as base-active, so the gate can offer
     // redistribution on a genuinely single-live-amp base.
     #[test]
@@ -318,9 +316,7 @@ impl Drop for TempDb {
 ///
 /// `create_new(true)` is where the safety lives, not the name: it is `O_EXCL`, so the
 /// open FAILS on an existing path — including a symlink someone planted to redirect
-/// our write onto a file of their choosing. The old path was `<pid>-<blob len>`,
-/// which any local process could predict and pre-create, and which two concurrent
-/// reads of the same backup also collided on. The suffix below only makes a retry
+/// our write onto a file of their choosing. The suffix below only makes a retry
 /// converge; the guarantee comes from `O_EXCL` refusing to reuse a path, so a
 /// collision is answered by taking a different one rather than by trusting entropy.
 /// `0600` keeps the preset library — a user's own work — unreadable by other local
@@ -464,10 +460,10 @@ struct BackupEntries {
 /// archive is device- or file-supplied, and an LZ4 frame can expand ~250× (a run of
 /// zeros), so a few MiB of crafted input could otherwise ask for gigabytes. A real
 /// backup is far below this: a 25-preset library came off the wire as 2.2 MiB, mostly
-/// `acdDefaultsBackup` and user IR files rather than presets (`notes/gotchas.md`, the
-/// backup-stream entry), and the whole tar plus its extracted entries sits in memory at
-/// once. 256 MiB leaves two orders of magnitude for a full library and a full IR store,
-/// while keeping the worst case a fraction of a machine's RAM.
+/// `acdDefaultsBackup` and user IR files rather than presets
+/// (`notes/device/presets.md#device-backup`), and the whole tar plus its extracted entries sits
+/// in memory at once. 256 MiB leaves two orders of magnitude for a full library and a full IR
+/// store, while keeping the worst case a fraction of a machine's RAM.
 const MAX_BACKUP_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The tar/LZ4 half of a backup read: blob → the user-preset DB on a temp path. Shared
@@ -588,8 +584,8 @@ fn read_tar_entry<R: std::io::Read>(
 
 /// The COMPLETE saved `presetJson` for ONE user slot, off a device backup — the
 /// canonical full-preset source when a slot-addressed field-8 read comes back
-/// TAIL-TRUNCATED (on fw 1.8.58 a cut is the device's inactivity drop, which the
-/// kept-alive read no longer hits — this stays the fallback for any partial).
+/// TAIL-TRUNCATED (on fw 1.8.58 a cut is the device's 750 ms inactivity drop, which a
+/// kept-alive read does not hit — this is the fallback for any cut read).
 ///
 /// `device_slot` is the DB `slot`, a 1-based [`DeviceSlot`] (see [`BackupPresetRow::slot`]).
 /// IDENTITY-GUARDED (danger.md's address-space rule): the caller states the slot,
@@ -856,7 +852,7 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             .as_ref()
             .map(|v| filter_amp_candidates(session::extract_level_blocks(v)))
             .unwrap_or_default();
-        // A7: distinct `amp_candidates` node ids NOT bypassed in the base graph — see the
+        // Distinct `amp_candidates` node ids NOT bypassed in the base graph — see the
         // field's own doc for why this is narrower than `amp_candidates.len()` and why a
         // global bypass filter can't live in `filter_amp_candidates` itself.
         let base_active_amp_count = parsed_graph
@@ -894,10 +890,9 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
         // Set-up step picker candidates — same source document, so the instant-first path
         // never needs a live device read for a preset the backup already covers. Empty vecs
         // for an unparseable row (no `parsed_graph`), matching every other derivation above.
-        // ONE graph walk (`scan_node_graph`) feeds BOTH derivations — `scene_handle_rows` and
-        // `base_handle_candidates` (Base) and `scene_handle_rows` (Scene) used to each rebuild their own nodeId→params map and
-        // roster on this SAME preset, back-to-back; the scan is shared and passed by
-        // reference into both `*_scanned` cores instead.
+        // ONE graph walk (`scan_node_graph`) feeds BOTH derivations —
+        // `base_handle_candidates` (Base) and `scene_handle_rows` (Scene) — passed by
+        // reference into both `*_scanned` cores.
         // What a run drives per scene, through the run's own planner — see the field's doc.
         let drive = parsed_graph
             .as_ref()
@@ -979,7 +974,7 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
 ///
 /// Amp identity/param via the same predicates the scene leveller uses
 /// (`is_amp_model_id` / `is_amp_output_level_param`).
-// ponytail: misses a zeroed amp in SERIES with a live one (all-active-zero rule);
+// Misses a zeroed amp in SERIES with a live one (all-active-zero rule);
 // refine to lane-aware if a real preset ever hits it.
 pub(crate) fn silence_hint(v: &serde_json::Value) -> Option<&'static str> {
     const EPS: f64 = 1e-3;
@@ -1068,13 +1063,12 @@ fn is_active_amp_node(v: &serde_json::Value, group_id: &str, node_id: &str) -> b
     false
 }
 
-/// The device mixer's `USB 3` strip — the dry-instrument send's OWN fader, mute
-/// and Pre/Post — decoded from a `settingsBackup` JSON (`mixerSaveData.usb3`, the
-/// bytes [`BackupReadResult::settings_bytes`] persists to `support/device-settings.json`).
-/// `None` when the snapshot lacks the strip. The Tier-2 calibration pre-flight
-/// (#124) reads it: a muted strip is no dry send at all (a fw 1.8.58 unit shipped
-/// with USB 3/4 muted), and `POST` makes the fader scale the send `PRE` sends at a
-/// fixed 0 dBFS reference.
+/// The device mixer's `USB 3` strip — the dry-instrument send's OWN fader, mute and Pre/Post —
+/// decoded from a `settingsBackup` JSON (`mixerSaveData.usb3`, the bytes
+/// [`BackupReadResult::settings_bytes`] persists to `support/device-settings.json`). `None` when
+/// the snapshot lacks the strip. The calibration pre-flight reads it: a muted strip is no dry send
+/// at all (a fw 1.8.58 unit shipped with USB 3/4 muted), and `POST` makes the fader scale the send
+/// `PRE` sends at a fixed 0 dBFS reference.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Usb3Strip {
     pub mute: bool,
@@ -1086,8 +1080,7 @@ pub(crate) struct Usb3Strip {
 
 /// Read a persisted settings snapshot (`support/device-settings.json`) into its JSON
 /// text — `None` for an absent path or unreadable file. The shared front half of every
-/// settings-snapshot pre-flight (#124's [`usb3_strip`], gap 2's
-/// [`scene_change_behavior`]).
+/// settings-snapshot pre-flight ([`usb3_strip`], [`scene_change_behavior`]).
 pub(crate) fn read_settings_snapshot(path: Option<&std::path::Path>) -> Option<String> {
     path.and_then(|p| std::fs::read_to_string(p).ok())
 }
@@ -1107,12 +1100,13 @@ pub(crate) fn usb3_strip(settings_json: &str) -> Option<Usb3Strip> {
 
 /// The global `Scene Change Behavior` setting (manual p.35), decoded from the same
 /// `settingsBackup` JSON [`usb3_strip`] reads (top-level `sceneChangeBehavior`).
-/// Ordinals HW-pinned (touchscreen vs stored value read side by side, fw 1.8.45):
-/// `0 = Retain / MAINTAIN CHANGES` (the factory default), `1 = Revert / DISCARD
-/// CHANGES`. Under `Discard` every scene recall reverts that scene's UNSAVED edits —
-/// exactly what a batched leveling run accumulates until its one deferred save
-/// (`notes/device-manual-gaps.md` gap 2), so the leveling pre-run guard
-/// (`scene_discard_guard`) refuses on it.
+/// Ordinals: `0 = Retain / MAINTAIN CHANGES` (the factory default), `1 = Revert /
+/// DISCARD CHANGES` (static RE + HW, fw 1.8.58). Under `Discard` every scene recall
+/// rebuilds base and every overlay from the stored preset, discarding ALL unsaved block,
+/// overlay and footswitch edits; only the preset's global fields (`presetLevel`, bpm, …)
+/// survive (static RE, fw 1.8.58). A batched leveling run accumulates exactly such edits
+/// until its one deferred save, so the leveling pre-run guard (`scene_discard_guard`)
+/// refuses on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SceneChangeBehavior {
     Retain,

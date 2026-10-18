@@ -1,7 +1,6 @@
 // src/__tests__/DialogEscape.test.tsx — the DS Dialog shell has no keyboard
-// shortcuts (this is a click-only app): Escape must not close a dialog, and
-// removing that listener must not touch the backdrop-click path it used to
-// sit alongside.
+// shortcuts (this is a click-only app): Escape must not close a dialog, and the
+// backdrop-click path still closes it.
 
 import { describe, it, expect, vi } from "vitest";
 import { screen, fireEvent } from "@testing-library/react";

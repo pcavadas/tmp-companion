@@ -5,8 +5,8 @@ use super::*;
 
 impl Session {
     /// Diagnostic: send `body`, collect the reply, and return a dump of the reply
-    /// streams (count + per-stream top-level field numbers, with songMessage[11] /
-    /// setlistMessage[12] / presetMessage[2] expanded to their inner field numbers).
+    /// streams (count + per-stream top-level field numbers, with `songMessage[11]` /
+    /// `setlistMessage[12]` / `presetMessage[2]` expanded to their inner field numbers).
     /// Used to tell a silent-ignore (no reply) from an error reply.
     pub fn send_and_dump(&mut self, body: &[u8], ms: u64) -> Result<String, String> {
         self.raw.clear();
@@ -34,7 +34,7 @@ impl Session {
     /// Push-listener experiment (probe --listen): park on the open post-handshake
     /// connection and print every inbound message stream as it completes, with a
     /// first-seen timestamp — the discovery tool for the unit's unsolicited pushes
-    /// (PresetLoaded 2[11], SceneLoaded 2[102], CurrentPresetInfoChanged 2[22], …)
+    /// (PresetLoaded `2[11]`, SceneLoaded `2[102]`, CurrentPresetInfoChanged `2[22]`, …)
     /// fired by footswitch taps / scene recalls / preset changes ON THE UNIT.
     /// `hb_ms` > 0 sends a ConnectionHeartbeat every `hb_ms` MILLISECONDS (set 0 to
     /// test whether pushes flow without one). Pro Control holds the live-controller
@@ -152,9 +152,9 @@ impl Session {
             .join(" ")
     }
 
-    #[cfg(test)] // the in-burst slot-read spike; only the wire golden runs it
+    #[cfg(test)] // the in-burst slot read; only the wire golden runs it
     pub(super) fn try_export_json(&self) -> Option<Vec<u8>> {
-        // Largest wins: a complete multi-packet stream beats a truncated/early one.
+        // Largest wins: a complete multi-packet stream beats a cut-short/early one.
         self.streams()
             .iter()
             .filter_map(|s| proto::export_response_preset_json(&s.body))
@@ -163,7 +163,8 @@ impl Session {
 
     /// Diagnostic: sizes of every reassembled presetDataChanged(9) and
     /// exportPresetResponse(116) presetJson payload, plus the raw report count.
-    /// Distinguishes a device-side truncation cap from a host reassembly split.
+    /// Distinguishes a lapse-cut stream from a host reassembly split (the device sends it
+    /// whole, fw 1.8.58).
     pub fn slot_read_diagnostics(&self) -> String {
         let streams = self.streams();
         let mut f9 = Vec::new();
@@ -184,7 +185,7 @@ impl Session {
     }
 
     /// Diagnostic for active-graph discovery: report every current-preset JSON
-    /// carrier separately. A larger truncated compressed field-3 payload can be
+    /// carrier separately. A larger cut-short compressed field-3 payload can be
     /// less useful than a smaller raw field-79 payload, so size alone is not
     /// enough to understand a missing active-preset signal chain graph.
     pub fn active_graph_diagnostics(&self) -> String {

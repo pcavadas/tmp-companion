@@ -30,7 +30,7 @@ pub(crate) fn preset_level(preset: &Value) -> Option<f64> {
 /// A node carries two identifiers, and they answer different questions:
 /// - the **model** (`FenderId`, e.g. `ACD_TubeScreamer`) says WHICH block it is;
 /// - the **instance** (`nodeId`) says WHICH COPY it is. The firmware mints it per group as the
-///   model id, then `<model>_1`, `<model>_2`… for repeats ([`mint_node_id`]).
+///   model id, then `<model>_1`, `<model>_2`… for repeats (`mint_node_id`).
 ///
 /// Model-level work (migration, bulk replace by model, block counts, block templates) matches
 /// with [`Node::matches_model`]; instance-level work (live edits, insert anchors, scene
@@ -95,7 +95,7 @@ pub fn instance_id(node: &Value) -> Option<&str> {
 }
 
 /// The firmware's id for a new node of model `model` in a group already using `ids`
-/// (fw 1.8.58 `FUN_00c7fd80`): the model id, or the first free `<model>_<n>`. The simulator's
+/// (static RE + HW, fw 1.8.58): the model id, or the first free `<model>_<n>`. The simulator's
 /// insert/replace mints with it, so it mints the way the unit does and two blocks in one group
 /// never share an id (a duplicate id at load orphans the first unit).
 #[cfg(any(test, feature = "e2e"))]
@@ -302,7 +302,7 @@ mod tests {
         list.iter().map(|s| s.to_string()).collect()
     }
 
-    // AC1 — bypass flips for every matching block; others untouched.
+    // Bypass flips for every matching block; others untouched.
     #[test]
     fn set_bypass_for_block_type() {
         let mut p = serde_json::json!({
@@ -327,7 +327,7 @@ mod tests {
         );
     }
 
-    // AC3 — a preset without the block type is skipped (op → None).
+    // A preset without the block type is skipped (op → None).
     #[test]
     fn skip_presets_without_block() {
         use crate::bulkrun::{Operation, PresetTarget};
@@ -346,7 +346,7 @@ mod tests {
         assert_eq!(op.transform(&t).unwrap(), None);
     }
 
-    // AC2 — bypassing a block in the fixture re-encodes losslessly.
+    // Bypassing a block in the fixture re-encodes losslessly.
     #[test]
     fn bypass_reencode_roundtrips() {
         let xor = crate::backup::xor_jld;

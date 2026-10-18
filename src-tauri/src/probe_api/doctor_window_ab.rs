@@ -1,20 +1,16 @@
 //! `probe --doctor-window-ab` — capture-WINDOW A/B evidence arm.
 //!
-//! The ORIGINAL Doctor capture window was the full 6 s stimulus + 2500 ms tail
-//! ([`ORACLE_TAIL_MS`] — pinned here, deliberately NOT `leveller::DOCTOR_TAIL_MS`,
-//! which became the shorter production value once this arm's 2026-07-16 run
-//! validated the shrink: 6 slots incl. two wet, 0 verdict flips, Δtilt ≤ 0.08,
-//! band deltas within wash-preset run variance). The production window is now
-//! 3 s stim + a GRAPH-GATED tail (`leveller::DOCTOR_STIM_MS`/`doctor::doctor_tail_ms`
-//! — 300 ms `DOCTOR_TAIL_DRY_MS` for a known-dry chain, else the full 1500 ms
-//! `DOCTOR_TAIL_MS`); re-run this arm against the SAME original oracle to
-//! re-validate any future window change. Per the repo's hard-won lesson (.claude/rules/leveling-dsp.md's
-//! capture-window note): a capture-window change is a RE-BASELINE, validated
-//! only against a full-capture oracle — never self-consistently (a level→verify
-//! round-trip that reuses the same short method would hide the very offset it's
-//! supposed to catch). This arm produces that oracle-anchored evidence; it does
-//! NOT change the production window itself. Attended — a supervisor drives it on
-//! real hardware later and reads the deltas.
+//! The oracle Doctor capture window is the full 6 s stimulus + 2500 ms tail
+//! ([`ORACLE_TAIL_MS`] — pinned here, deliberately NOT `leveller::DOCTOR_TAIL_MS`). The
+//! production window (HW-validated against it: 6 slots incl. two wet, 0 verdict flips, Δtilt
+//! ≤ 0.08) is 3 s stim + a GRAPH-GATED tail
+//! (`leveller::DOCTOR_STIM_MS`/`doctor::doctor_tail_ms` — 300 ms `DOCTOR_TAIL_DRY_MS` for a
+//! known-dry chain, else the full 1500 ms `DOCTOR_TAIL_MS`); re-run this arm against the
+//! SAME original oracle to re-validate any future window change. A capture-window change is
+//! a RE-BASELINE, validated only against a full-capture oracle — never self-consistently (a
+//! level→verify round-trip that reuses the same short method would hide the very offset it's
+//! supposed to catch). This arm produces that oracle-anchored evidence; it does NOT change
+//! the production window itself. Attended, on real hardware.
 //!
 //! Usage:
 //! ```text
@@ -27,8 +23,8 @@
 //! `commands/doctor.rs`; 4 s-stim + the pinned 1.5 s [`SHORT_TAIL_MS`])
 //! via `leveller::doctor_capture` (LOADS the probed slots — accepted for this
 //! attended arm, same recipe as `--doctor-calib`), builds each capture's
-//! `SoundProfile` off ONE shared post-onset body PSD (the Task-1 seams,
-//! `doctor::body_psd` + `SoundProfile::from_capture_with_psd`), and reports per
+//! `SoundProfile` off ONE shared post-onset body PSD (`doctor::body_psd` +
+//! `SoundProfile::from_capture_with_psd`), and reports per
 //! (slot, variant) band dB / deviation / tilt slope / tail ratio / spread /
 //! fired-verdict-kind list, then the b/c DELTAS vs the oracle (band dB per band,
 //! tilt, tail ratio, and whether the fired-verdict SET changed — the headline).

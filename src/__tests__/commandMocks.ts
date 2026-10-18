@@ -67,7 +67,7 @@ export const makeStore = (over: Partial<Store> = {}): Store => ({
   ...over,
 });
 
-/** A clean Tier-2 calibration capture. */
+/** A clean calibration capture. */
 export const makeCalibrateResult = (
   over: Partial<CalibrateResult> = {},
 ): CalibrateResult => ({

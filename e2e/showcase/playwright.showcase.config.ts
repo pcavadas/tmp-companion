@@ -12,7 +12,8 @@ const VITE = process.env.TMP_E2E_VITE_PORT ?? "1421";
 // non-personal `e2e/fixtures/showcase/` library, and at the app's native 900×680 window
 // size so each captured tab fills the site's screenshot frame (aspect 432/326). The cargo
 // server is NOT reused (`reuseExistingServer:false`) — a plain gate server lacks the
-// showcase env — so stop any stale server on :7600 first. One worker, one project.
+// showcase env — so stop any stale server on this worktree's TMP_E2E_PORT first. One worker,
+// one project.
 export default defineConfig({
   testDir: ".",
   fullyParallel: false,

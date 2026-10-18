@@ -120,7 +120,7 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/Guitar.preset")
     }
 
-    // AC1 — indexing the Guitar fixture yields the expected facets. Auto-skips when
+    // Indexing the Guitar fixture yields the expected facets. Auto-skips when
     // the gitignored fixture is absent (fresh worktree), per repo convention.
     #[test]
     fn index_extracts_facets_from_fixture() {

@@ -1,6 +1,6 @@
-// src/__tests__/SetupPage.sceneHandlePreselect.test.tsx — issue 5: a scene whose
+// src/__tests__/SetupPage.sceneHandlePreselect.test.tsx — a scene whose
 // overlay un-bypasses a block the base graph keeps bypassed (Solo un-bypassing
-// ACD_Boost, the plan's own example) should default its leveling handle to THAT
+// ACD_Boost) should default its leveling handle to THAT
 // block's own control, not the amp's output level — the amp barely moves the sound the
 // scene actually turns on. `SceneHandleCandidate.enablesBlock` is the backend's
 // signal; SetupPage must preselect the first such candidate once the row's

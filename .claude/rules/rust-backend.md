@@ -5,11 +5,14 @@ paths:
 
 # Rust backend rules
 
-Applies while editing `src-tauri/`. Device-destructive and re-amp rules are in `danger.md` (always loaded); wire-format detail is the `tmp-companion-protocol` skill.
+Applies while editing `src-tauri/`.
+Device-destructive and re-amp rules are in `danger.md` (always loaded); wire-format detail is the `tmp-companion-protocol` skill.
 
 ## Formatting — nothing does this for you
 
-`main` is fmt-clean and CI's build-test gate runs `cargo fmt --check`, but **no local hook formats Rust**. Run `cargo fmt` before pushing any Rust change — extracted or moved code inherits its old nesting indentation and fails the gate otherwise. Single-file `rustfmt <file>` ERRORS on `async fn` without `--edition 2021` (bare rustfmt defaults to edition 2015).
+`main` is fmt-clean and CI's build-test gate runs `cargo fmt --check`, but **no local hook formats Rust**.
+Run `cargo fmt` before pushing any Rust change — extracted or moved code inherits its old nesting indentation and fails the gate otherwise.
+Single-file `rustfmt <file>` ERRORS on `async fn` without `--edition 2021` (bare rustfmt defaults to edition 2015).
 
 ## Module docs are the authority
 
@@ -17,22 +20,41 @@ Every backend module carries a `//!` header, and for the bulk/offline feature mo
 
 ## Wire protocol
 
-- **Setters/commands and the heartbeat OMIT `batchStatus`** — only _requests_ include it. `SetReAmpMode`, `SetPresetLevel`, `LoadPreset`, `SaveCurrentPreset` sent with a `batchStatus` are **silently ignored** by the device.
-- **`batchStatus`: 0/absent answers at once, 1/2 only queue, 3 drains the queue, ≥4 is dropped** (fw 1.8.58 static RE, HW-confirmed). The queue outlives a session, so a 1/2 left behind is answered on the NEXT session. After the handshake, a request that needs its reply uses `proto::BATCH_DRAIN` or none; `extra_burst` debug-asserts it. [→ model](../../notes/protocol.md#handshake-batchstatus-grouping)
-- **Live setters + import framing are byte-exact from a real Pro Control capture** — a PC rename is `renameCurrentPreset(13)` + `saveCurrentPreset(14)`; send both to persist. [→ evidence](../../notes/gotchas.md#live-setters--import-framing-byte-exact-from-a-real-pro-control-capture)
-- **LIVE per-node structural edits** go through `copy_apply` and the probe's `replace_many_held`, sharing the `nodeReplaced(40)`/`nodeRemoved(36)`/`nodeInserted(33)` confirm gate, never-save-on-`presetError`(53), and no blind re-send: `copy_apply` reads an unconfirmed first edit back from the working copy and re-sends only one that visibly did not land (`replace_many_held` never re-sends). The old cold-first-edit drop is a fw 1.8.45 belief with no cited HW evidence; fw 1.8.58 has no silent-drop path for a correctly framed edit (INFERRED). [→ evidence](../../notes/gotchas.md#live-per-node-structural-edits-the-protocol-behind-the-block-edit-features)
-- **Firmware version read is in-burst `currentFwRequest`, NO `batchStatus`, in the batch-2 group** — after `userir_field2`, BEFORE `current_preset_data_request(batch=3)`. Sent after batch-3, its reply is INFERRED to queue behind the ~1.2 s handshake drain, so a short window misses it. Only the drain (567 frames at 2.143 ms) and the queueing that answers a post-handshake `currentPresetInfoRequest` a fixed ~1.1 s late are device-measured ([→ evidence](../../notes/gotchas.md#savecurrentpreset-is-durable-when-it-returns-a-same-slot-loadpreset-right-after-it-is-a-no-op-fw-1858)); `currentFwRequest` itself was not measured, and that the old "the device drops the reply" was this queueing is likewise inferred; `session/handshake.rs`'s two handshake comments are aligned to this in [#328](https://github.com/pcavadas/tmp-companion/pull/328). Standalone after the burst gives a ConnectionError.
-- **Preset-list reassembly needs both stream rules.** `list_my_presets` tries `streams()` and `streams_final()` and keeps the longest decoded record set. [→ evidence](../../notes/gotchas.md#preset-list-reassembly-also-needs-both-stream-rules)
-- **`connect_for_discovery` (field-78) was effectively DEAD on fw 1.8.45** — it killed field-3 delivery for the whole session while its window was silent; kept alive it delivers on fw 1.8.58. [→ evidence](../../notes/gotchas.md#connect_for_discovery-field-78-is-effectively-dead-on-fw-1845)
-- **Boot-window `IOHIDDeviceSetReport failed: 0xe00002d6` is NOT an error** — the HID interface enumerates ~20 s before the USB stack accepts reports. [→ evidence](../../notes/gotchas.md#boot-window-iohiddevicesetreport-failed-0xe00002d6-kioreturntimeout-is-not-an-error--its-device-not-ready-yet)
-- **Serde casing exception (Copy):** `copy_apply`'s `CopyJob`/`CopyOp`/`CopyRepl` use **camelCase** nested keys because each field carries an explicit `#[serde(rename = "…")]` that OVERRIDES the enum's `rename_all = "snake_case"`. Verify a wire shape against the per-field attrs, not the enum-level `rename_all`.
+- **`batchStatus` (field 10) follows [request batching](../../notes/device/session.md#request-batching)**: after the handshake, a request uses `proto::BATCH_DRAIN` or none, and `extra_burst` debug-asserts it.
+- **A Pro Control rename is `renameCurrentPreset` (13) + `saveCurrentPreset` (14)**: send both to persist; the byte-exact setter and import framing is the `tmp-companion-protocol` skill.
+  [→](../../notes/device/session.md#pro-control-framing)
+- **Live per-node structural edits** go through `copy_apply` and the probe's `replace_many_held`, sharing the `nodeReplaced` (40) / `nodeRemoved` (36) / `nodeInserted` (33) confirm gate and never saving after a `presetError` (53).
+  `copy_apply` reads an unconfirmed first edit back from the working copy and re-sends only one that visibly did not land; `replace_many_held` never re-sends.
+  No handler drops a correctly framed structural edit, so a missing confirm is one still queued, a lapse, a backup freeze or an insert abort, and a blind re-send duplicates it [RE, inferred].
+  [→](../../notes/device/structural-edits.md#confirms)
+- **The firmware version read is an in-burst `currentFwRequest` with no `batchStatus`**, sent after `userir_field2` and before the batch-3 `current_preset_data_request`; sent after it, its reply queues behind the ~1.2 s handshake drain.
+  [→](../../notes/device/session.md#handshake)
+- **Preset-list reassembly needs both stream rules:** `list_my_presets` tries `streams()` and `streams_final()` and keeps the longest decoded record set.
+  [→](../../notes/device/presets.md#preset-lists)
+- **`connect_for_discovery` waits out the handshake drain's `currentPresetDataChanged` (field 3)** (~2 s) for block enumeration, keeping OUT traffic flowing.
+- **Boot-window `IOHIDDeviceSetReport failed: 0xe00002d6` is not an error**: the HID interface enumerates ~20 s before the device accepts reports.
+  [→](../../notes/device/session.md#boot-window)
+- **Serde casing exception (Copy):** `copy_apply`'s `CopyJob` / `CopyOp` / `CopyRepl` use camelCase nested keys because each field's explicit `#[serde(rename = "…")]` overrides the enum's `rename_all = "snake_case"`.
+  Verify a wire shape against the per-field attributes, not the enum-level `rename_all`.
 
 ## Connection and state
 
-- **Never wait silently for a reply.** fw 1.8.58 drops the HID client after 0.75 s with no inbound frame and discards the reply in flight; a lapsed client ignores writes. Use `pump_collect_alive` / `send_and_collect_alive` / `pump_until_stable` for reply waits; `pump_silent` only where the silence is the point (drains, `lapse`). `TrackedHid` reopens a lapsed client before any write. [→ evidence](../../notes/gotchas.md#the-device-drops-the-hid-client-after-075-s-with-no-inbound-frame--and-discards-the-reply-in-flight-fw-1858-static-re--hw-ab)
-
-- **`connect_device` releases any old HID seize before enabling the monitor.** It does not acquire a UI-owned session. [→ evidence](../../notes/gotchas.md#connect_device-releases-any-old-hid-seize-before-enabling-the-monitor)
-- **Connection-perf fast paths:** `list_presets` answers from the startup snapshot with no HID or device-op lock. [→ evidence](../../notes/protocol.md#connection-perf-fast-paths)
-- **Scene policy is pure-lazy, no cache** — no eager startup sweep. [→ evidence](../../notes/gotchas.md#scene-policy-is-pure-lazy-no-cache)
-- **Logging:** `Builder::new()` already ships the default `[Stdout, LogDir]` targets and `.target()` **APPENDS** — you must `.clear_targets()` before re-adding, or every line double-logs. Runtime code uses `log::*`; the `probe`/`gen_samples` CLIs keep `println!` because stdout _is_ their interface.
-- **macOS ships; Linux ships alpha `.deb`/`.rpm`; Windows ships an alpha, unsigned `setup.exe`.** `core-foundation-sys` is `cfg(target_os = "macos")` (raw bindings only; `core-foundation` is not a dependency); `libc` is Linux-only (`hid.rs`'s hidraw transport); `windows-sys` by Windows (`hid.rs`'s Win32 HID transport). `hid.rs` and `audio.rs` each carry one `imp` per platform and NOTHING above that seam is platform-gated — `hid.rs` has IOKit / hidraw / Win32 `imp`s, `audio.rs` has CoreAudio / ALSA `hw:` / WASAPI `imp`s (ALSA resolves the device via `/proc/asound`; I32↔f32 conversion at the stream-callback boundary covers the integer-only hosts — the TMP's `hw:` interface has no F32 format). The `sqlite3` CLI is NOT a dependency: backup DBs are read in-process via `rusqlite` (bundled). `watcher.rs` (hotplug) has macOS and Linux `imp`s only — a no-op elsewhere. `release.yml` builds a Linux `.deb`/`.rpm` alongside the macOS DMG (never blocking it) and, after the release lands, `publish-windows` uploads an unsigned Windows NSIS `setup.exe` — no Windows signing cert, no updater feed. Linux pipeline: `notes/linux-packaging.md`; Windows: `CONTRIBUTING.md`'s Developing on Windows.
+- **Never wait silently for a reply.**
+  The device drops the client after 750 ms with no host OUT report and discards the reply in flight, and a lapsed client ignores writes.
+  Use `pump_collect_alive` / `send_and_collect_alive` / `pump_until_stable` for reply waits, and `pump_silent` only where the silence is the point (drains, `lapse`); `TrackedHid` reopens a lapsed client before any write.
+  [→](../../notes/device/session.md#session-lapse)
+- **Serialize every device operation** through `device_gate::DEVICE_OP_LOCK`, taken inside each device command's `spawn_blocking`; the seize is exclusive and two overlapping commands collide on `0xe00002c5`.
+  [→](../../notes/device/session.md#exclusive-seize)
+- **`connect_device` releases any old HID seize before enabling the monitor**; it does not acquire a UI-owned session.
+  `list_presets` answers from the monitor's startup snapshot with no HID access or device-op lock.
+  [→](../../notes/device/session.md#fast-and-slow-paths)
+- **Scene reads are lazy, with no cache and no eager startup sweep.**
+  [→](../../notes/device/presets.md#device-backup)
+- **Logging:** `Builder::new()` already ships the default `[Stdout, LogDir]` targets and `.target()` appends, so call `.clear_targets()` before re-adding or every line double-logs.
+  Runtime code uses `log::*`; the `probe` / `gen_samples` CLIs keep `println!` because stdout is their interface.
+- **Platforms:** `hid.rs` and `audio.rs` each carry one `imp` per platform (IOKit / hidraw / Win32 HID; CoreAudio / ALSA `hw:` / WASAPI), and nothing above that seam is platform-gated.
+  `core-foundation-sys` is macOS-only (raw bindings; `core-foundation` is not a dependency), `libc` is Linux-only and `windows-sys` Windows-only.
+  ALSA resolves the device through `/proc/asound`, and I32↔f32 conversion at the stream callback covers the integer-only `hw:` interface.
+  Backup DBs are read in-process with bundled `rusqlite`; the `sqlite3` CLI is not a dependency.
+  `watcher.rs` (hotplug) uses a non-seizing `IOHIDManager` on macOS and a 1 s presence poll on Linux and Windows (plus Configuration Manager notifications on Windows).
+  Release and packaging facts are in [`notes/releasing.md`](../../notes/releasing.md); Windows development setup is in [`CONTRIBUTING.md`](../../CONTRIBUTING.md).

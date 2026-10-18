@@ -16,11 +16,8 @@ import { MoreMenu } from "../../ui/MoreMenu";
 import { MenuDivider, MenuItem, Slider } from "../../ui/primitives";
 import { fmtLufs } from "../../lib/format";
 
-// Slider domain: v ∈ [−29 .. −13], with NO upper clamp — any value in range is valid
-// (the old ≈ −20.7 ceiling warning was removed). PR2 re-baseline: +3.0103 (rounded to
-// +3) from the mono-era [−32, −16] domain, so the same slider position is the same
-// audible loudness under the 2-ch BS.1770 convention — convention-adjusted, pending
-// hardware re-validation.
+// Slider domain: v ∈ [−29 .. −13] LU (2-ch BS.1770), with NO upper clamp — any value in
+// range is valid.
 const TMIN = -29;
 const TMAX = -13;
 

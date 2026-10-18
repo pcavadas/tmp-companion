@@ -9,22 +9,23 @@ use super::*;
 /// edit buffer may be mutated during capture, but it must not remain dirty.
 ///
 /// fw 1.8.58 skips a same-slot `loadPreset` while the working copy's dirty flag is clear,
-/// keeping the working copy. Every edit the callers make sets the flag
-/// (HW 2026-10-10, `probe --restore-check`), but a clear flag can still hide a stale
-/// working copy, and reading `isDirty` costs ~1.1 s. So the restore always loads a
-/// neighbour slot first, which forces the reload (+0.34 s on HW: 1.67 s vs 1.33 s).
+/// keeping the working copy. Every edit the callers make sets the flag (HW, fw 1.8.58,
+/// `probe --restore-check`), but a clear flag can still hide a stale working copy, and
+/// reading `isDirty` costs ~1.1 s. So the restore always loads a neighbour slot first,
+/// which forces the reload (+0.34 s, HW).
 ///
 /// It ends with [`Session::lapse`] for the reason [`load_preset_isolated`] does, and here
 /// the queued copy is the one the restore exists to discard: without it a Doctor discard
-/// read back the applied block (online e2e, 3/3 at a 100 ms settle, HW 2026-10-14).
+/// reads back the applied block (HW, fw 1.8.58).
 pub(crate) fn restore_saved_preset(slot: ListIndex) -> Result<(), String> {
     // NOT `sleep_or_cancel`: this runs AFTER a cancel to clean up. Bailing here would leave
     // the edit buffer dirty at the measurement level — the whole point of the restore.
     let mut s = Session::connect_lean()?;
     let via = reload_stored_on(&mut s, slot)?;
     crate::device_gate::settle(Duration::from_millis(settle_after_load_ms()));
-    // The handshake's own field-3 reply (the DIRTY working copy this restore discards) is
-    // still queued behind its ~1.2 s drain, and the next session would read it first.
+    // The handshake's own `currentPresetDataChanged` (field 3) reply (the DIRTY working copy
+    // this restore discards) is still queued behind its ~1.2 s drain, and the next session
+    // would read it first.
     s.lapse()?;
     log::info!("restored stored preset slot={slot} after unsaved measurement (via {via})");
     Ok(())
@@ -33,14 +34,12 @@ pub(crate) fn restore_saved_preset(slot: ListIndex) -> Result<(), String> {
 /// Reload the stored row after a save that persisted a NEW `presetLevel` while base is the
 /// active scene, so a later base recall plays the saved level instead of an old one.
 ///
-/// fw 1.8.58 (static RE, `tmp-audit` COMPANION_QUESTIONS Q41; HW 2026-10-17, slot 401):
-/// the unit keeps a base snapshot whose `presetLevel` changes only on a real load, a scene
+/// The unit keeps a base snapshot whose `presetLevel` changes only on a real load, a scene
 /// recall or a base structural edit. `setPresetLevel` and a save leave it alone, and a
 /// `loadScene(8)` while base is current (Scene Change Behavior "MAINTAIN CHANGES") re-applies
 /// it. So right after a level + save on base, tapping the base scene plays the level of the
 /// preset's last real load until something reloads it, and a save from that state would
-/// store the old level again. Slot 401, levelled to −20 and saved, played −27.5 (its old
-/// 0.32) on that recall and −19.8 after a real reload.
+/// store the old level again (static RE + HW, fw 1.8.58).
 ///
 /// A save that stamped a non-base scene needs nothing: its pre-save recall left base, and a
 /// recall from a scene refreshes the snapshot with the live level. The save has already
@@ -82,8 +81,8 @@ pub(super) fn reload_stored_on(s: &mut Session, slot: ListIndex) -> Result<ListI
 /// Load `slot` on its own lean connection so it is the device's current preset. A rich
 /// harvest (`discover_blocks_rich`, `prepass_scene_docs`) keeps the LATEST preset push it
 /// collects, and a push of the previously-current preset can still land after its buffer
-/// clear: online e2e (2026-10-10, fw 1.8.58) slot 410's block discovery, run right after a
-/// save on another slot, returned that slot's blocks. With the target already current,
+/// clear: a block discovery run right after a save on another slot can return that slot's
+/// blocks (HW, fw 1.8.58). With the target already current,
 /// every push the harvest can see is the target's. A bare load on purpose: a same-slot
 /// no-op still leaves the target current, and a neighbour load would add its own pushes.
 pub(crate) fn make_current(slot: ListIndex) -> Result<(), String> {
@@ -96,32 +95,31 @@ pub(crate) enum CancelMode {
     /// The settle wakes on a Stop and the load returns [`LevelError::Cancelled`]: the
     /// step ahead of a capture, where nothing is engaged or written yet.
     Abortable,
-    /// The settle always runs to its end: cleanup, reloads, and the legacy seams that
-    /// never polled for a Stop here.
+    /// The settle always runs to its end: cleanup and reloads.
     Cleanup,
 }
 
 /// THE latch-rule load: open a lean connection, load `slot`, settle
-/// [`settle_after_load_ms`], let the session lapse, and drop the connection. `danger.md`: a `set_preset_level`
-/// after a load on the same connection is overridden by the load's own level-apply, and a
-/// load + engage on one connection captured silence (fw 1.8.45), so every leveling path
-/// loads in its own connection and measures or writes on a fresh one; the device keeps the
-/// loaded preset current across reconnects. One home so the settle length and the
-/// connection shape change in one place.
+/// [`settle_after_load_ms`], let the session lapse, and drop the connection. Every leveling
+/// path loads on its own connection and measures or writes on a fresh one — the
+/// conservative shape; on fw 1.8.58 a set or an engage after a load on one connection works
+/// while OUT traffic keeps the session live. The device keeps the loaded preset current
+/// across reconnects. One home so the settle length and the connection shape change in one
+/// place.
 ///
 /// Every session that ends here ends with [`Session::lapse`]: a lean session is shorter
 /// than the device's ~1.2 s handshake drain, and the unit keeps sending a queue across a
 /// reconnect inside its inactivity drop, so the next session would receive the rest of
-/// this one's replies ahead of its own — last of all, this handshake's field-3 copy of the
-/// PRE-load working copy (HW 2026-10-14, fw 1.8.58: a reopen 0–500 ms after the close got
-/// it every time; after 0.75 s of host silence the unit had discarded the queue). Host
+/// this one's replies ahead of its own — last of all, this handshake's
+/// `currentPresetDataChanged` copy of the PRE-load working copy (HW, fw 1.8.58: a reopen
+/// 0–500 ms after the close gets it; after 0.75 s of host silence the unit has discarded
+/// the queue). Host
 /// silence past the drop is what makes the unit discard it, so the lapse IS the fix; it
 /// costs the part of [`HID_INACTIVITY_DROP_MS`] + 100 ms the settle has not already spent.
 ///
 /// [`HID_INACTIVITY_DROP_MS`]: crate::session::HID_INACTIVITY_DROP_MS
 pub(crate) fn load_preset_isolated(slot: ListIndex, mode: CancelMode) -> Result<(), LevelError> {
-    // The connection is held through the settle and dropped after it, as every inline
-    // copy of this sequence did.
+    // The connection is held through the settle and dropped after it.
     let mut s = Session::connect_lean()?;
     s.load_preset(slot)?;
     match mode {

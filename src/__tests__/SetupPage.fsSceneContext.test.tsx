@@ -1,13 +1,9 @@
-// src/__tests__/SetupPage.fsSceneContext.test.tsx — BUG→GATE #286: a footswitch row's
-// measurement scene came from a lazy read fired only when its scene picker was opened, so
-// the same selection measured the switch in base or in its enabling scene depending on a
-// click. The suggested scene now comes from the startup backup scan for every footswitch
-// row up front, and Start waits for it. Look B: the "Level it in scene" dropdown shows it;
-// an unread one stays empty, the row says so, and the footer's link points at it.
-//
-// (#284, the re-run that reset every sound to the first target and instrument, lived here
-// too while the Summary reopened Set up; Try again no longer does, so its gate moved to
-// `useLevelingFlow-try-again.test.ts`.)
+// src/__tests__/SetupPage.fsSceneContext.test.tsx — a footswitch row's suggested
+// measurement scene comes from the startup backup scan for every footswitch row up front,
+// never from a lazy read fired when its picker opens (the same selection would measure in
+// base or in its enabling scene depending on a click), and Start waits for it. Look B: the
+// "Level it in scene" dropdown shows it; an unread one stays empty, the row says so, and
+// the footer's link points at it.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";

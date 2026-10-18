@@ -11,7 +11,7 @@
 // Each row's caption is chosen from typed fields only (`diags`, `errorKind`, `status`), never
 // from the backend's text. The title says how many rows need a look, or that there is
 // nothing to change — and never claims "nothing to change in these sounds" while a sound
-// went unchecked (#190).
+// went unchecked.
 
 import type {
   DoctorCheckResult,
