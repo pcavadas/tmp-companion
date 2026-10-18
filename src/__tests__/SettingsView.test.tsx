@@ -2,9 +2,9 @@
 // Playback, and About and updates.
 //
 //   • Targets render from the store as rows with a slider and a "−26.0 dB" value; "Add
-//     target" (in the page head) appends a row in rename mode and persists via
-//     save_targets (no ceiling clamp — the value seeds at −19.0, PR2 re-baseline: +3
-//     from the mono-era −22.0). Deleting the last target shows the empty state.
+//     target" (in the page head) appends a row in rename mode and persists via save_targets
+//     (no ceiling clamp — the value seeds at −19.0). Deleting the last target shows the
+//     empty state.
 //   • Playback: "How loud you play" persists via set_playback_level, "How your speakers
 //     are connected" via set_playback_channels; one body line under each.
 //   • About and updates: "TMP Companion {version}", a manual check (busy, then "Up to
@@ -150,7 +150,7 @@ describe("SettingsView — loudness targets", () => {
     const input = await screen.findByDisplayValue("New target");
     expect(input).toHaveAccessibleName("Target name");
 
-    // Persisted: a 4th target seeded at −19.0 (PR2 re-baseline), no clamp.
+    // Persisted: a 4th target seeded at −19.0, no clamp.
     const saved = lastArgs("save_targets");
     expect(saved?.targets).toHaveLength(4);
     expect(saved?.targets[3]).toEqual({ name: "New target", lufs: -19.0 });

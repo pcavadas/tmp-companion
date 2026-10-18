@@ -1,4 +1,4 @@
-// src/ui/InlineEdit.tsx — the ONE inline text editor (#314): Songs' setlist-title
+// src/ui/InlineEdit.tsx — the ONE inline text editor: Songs' setlist-title
 // rename, Settings' target-name rename, and Songs' new-setlist field.
 //
 // It owns its draft (seeded from `initial` on mount — callers mount it only while

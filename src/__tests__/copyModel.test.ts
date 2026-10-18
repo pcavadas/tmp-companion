@@ -131,8 +131,8 @@ describe("applyEditOp / isEdited — any replace is an edit", () => {
   });
 });
 
-// The device's insertNode field-2 inserts the new block BEFORE the referenced node
-// (HW-verified fw 1.8.45), and field-2 omitted appends. So diffToOps anchors each insert
+// The `insertNode` (field 34) anchor (field 2) inserts the new block BEFORE the referenced
+// node, and an omitted anchor appends (static RE, fw 1.8.58). So diffToOps anchors each insert
 // on its in-array SUCCESSOR (`before`), in the successor's group, or null to append.
 describe("diffToOps — insert anchoring (before-the-successor)", () => {
   it("insert BEFORE the amp anchors on the amp itself, in the amp's group", () => {
@@ -288,8 +288,8 @@ describe("diffToOps — bracket-and-delete + net-no-op", () => {
 
 // ── post-save read-back reconciliation ────────────────────────────────────────
 // The read-back `copy_apply` returns is whatever preset document the held session still had
-// buffered after the save, NOT a fresh read. On the unit (2026-09-02, fw 1.8.45) that was the
-// LOAD-TIME graph, and preferring it patched the cache back to the pre-edit blocks. The edit
+// buffered after the save, NOT a fresh read. A stale one is the LOAD-TIME graph, and
+// preferring it would patch the cache back to the pre-edit blocks. The edit
 // the device acked is the truth; the read-back is adopted only when it shows those blocks.
 describe("copyModel — post-save read-back reconciliation", () => {
   const chain = (
@@ -338,7 +338,7 @@ describe("copyModel — post-save read-back reconciliation", () => {
   });
 
   it("compares each group as a multiset: a duplicated model the device placed elsewhere still matches", () => {
-    // Online 2026-09-03: chained inserts of one model into a group already holding it —
+    // HW: chained inserts of one model into a group already holding it —
     // the device anchors on ITS pick among the duplicates, so the projected order differs.
     const optimistic = chain([
       ["G1", "n1", "ACD_TS"],

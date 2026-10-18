@@ -629,8 +629,8 @@ export function Checkbox({
 export interface CheckboxMarkProps {
   checked?: boolean;
   indeterminate?: boolean;
-  /** Not selectable at all (e.g. a footswitch with no level control to adjust —
-   *  BUG 1) — an empty, greyed box regardless of `checked`/`indeterminate`. The
+  /** Not selectable at all (e.g. a footswitch with no level control to adjust) — an
+   *  empty, greyed box regardless of `checked`/`indeterminate`. The
    *  enclosing row owns the click no-op; this is display-only. */
   disabled?: boolean;
 }

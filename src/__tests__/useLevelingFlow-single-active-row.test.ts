@@ -1,13 +1,11 @@
 // src/__tests__/useLevelingFlow-single-active-row.test.ts — BUG→GATE: at most ONE
 // run row is ever "active" at a time.
 //
-// Real incident: a batch measuring several scenes/footswitches streams per-row
-// `active` progress over a Tauri Channel, but the old `batchResolve` only ever SET a
-// row active and never cleared the PREVIOUS one — so once the backend named a new
-// row active before the prior one resolved, both rows (then more) stayed "active"
-// forever. `RunBody` renders `leveling · <liveLufs>` for EVERY active row off ONE
-// shared `liveLufs` value, so the screenshot showed four rows reading the identical
-// live LUFS while the header said it was measuring only one.
+// A batch measuring several scenes/footswitches streams per-row `active` progress over
+// a Tauri Channel. A resolver that SETS a row active without clearing the PREVIOUS one
+// leaves several rows "active" once the backend names a new row before the prior one
+// resolves — and every active row reads the ONE shared live meter value, so several rows
+// show the identical live LUFS while the header says only one is measuring.
 //
 // This test drives `useLevelingFlow` directly (device calls mocked) and proves the
 // invariant at the STATE layer: exactly one row carries `status === "active"` after

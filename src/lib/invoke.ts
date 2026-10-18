@@ -193,17 +193,18 @@ export const cancelSceneLeveling = (): Promise<void> =>
 /** Per-scene handle candidates for the Set-up step's scene control picker — every
  * FS scene's controls in ONE call, so a scene row's picker fetches lazily (on first
  * open) and caches per preset rather than firing per row. No scene is recalled on the
- * unit and nothing is measured — but it is NOT always just one field-8 read: on a
- * truncated body (the `scenes` tail cut off) the backend falls back to a synchronous
- * whole-library device-backup transfer (multi-second) before it can answer. */
+ * unit and nothing is measured — but it is NOT always just one `presetDataRequest`
+ * (field 8) read: on a truncated body (the `scenes` tail cut off) the backend falls back
+ * to a synchronous whole-library device-backup transfer (multi-second) before it can
+ * answer. */
 export const listSceneLevelHandles = (
   slot: number,
 ): Promise<SceneHandleRow[]> =>
   invokeCommand("list_scene_level_handles", { slot });
 
-/** Which scenes enable each footswitch of `slot` (D3) — the Set-up step's per-footswitch
+/** Which scenes enable each footswitch of `slot` — the Set-up step's per-footswitch
  * scene-context picker source. No scene is recalled on the unit and nothing is measured —
- * but it is NOT always just one field-8 read: on a truncated body (the `ftsw` tail cut
+ * but it is NOT always just one `presetDataRequest` read: on a truncated body (the `ftsw` tail cut
  * off) the backend falls back to a synchronous whole-library device-backup transfer
  * (multi-second) before it can answer. */
 export const listFootswitchSceneContexts = (
@@ -292,7 +293,7 @@ export const setPresetInstrument = (
   profileId: string,
 ): Promise<void> => invokeCommand("set_preset_instrument", { slot, profileId });
 
-/** Settings — Tier-2 calibration: capture dry instrument for `secs` (clamped
+/** Settings — calibration: capture dry instrument for `secs` (clamped
  * 2..30), store K-weighted LUFS, return it + clip/stimulus-ceiling caveats.
  * DEVICE WRITE (persists calibration). Use a countdown, NOT window.confirm. */
 export const calibrateProfile = (
@@ -331,9 +332,9 @@ export const readActivePreset = (): Promise<ActiveGraph> =>
   invokeCommand("read_active_preset");
 
 /** LevelView — the monitor's CURRENT cached graph (the snapshot kept current by
- * every field-3 push). A cheap, no-device-I/O read used to seed the hero when a
- * fresh mount has no graph (e.g. a graphless connect + an idle device). Returns
- * null when the cache itself has no graph. */
+ * every `currentPresetDataChanged` (field 3) push). A cheap, no-device-I/O read used to
+ * seed the hero when a fresh mount has no graph (e.g. a graphless connect + an idle
+ * device). Returns null when the cache itself has no graph. */
 export const currentGraph = (): Promise<ActiveGraph | null> =>
   invokeCommand("current_graph");
 

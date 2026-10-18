@@ -8,7 +8,7 @@
 //   • getStore() → { profiles, targets, playback_level, playback_channels } on mount,
 //     with listPickupTopologies() for the instrument types, pickups and captions.
 //   • saveTargets / saveProfiles / setPlaybackLevel / setPlaybackChannels to persist.
-//   • calibrateProfile(profileId, 8) for an instrument recording (Tier-2 calibration:
+//   • calibrateProfile(profileId, 8) for an instrument recording (calibration:
 //     the backend clamps 2..30 s and returns the measured loudness); on resolve the
 //     store is re-read so the row shows what was saved.
 //

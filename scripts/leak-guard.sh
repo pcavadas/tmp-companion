@@ -5,9 +5,9 @@
 # tmp-companion is public; separate private tooling shares its Claude skills
 # folder with it locally via a symlink, so it is easy to accidentally stage
 # private content. This guard scans for unambiguous markers of that private
-# tooling — its infrastructure, private skill names, names this repo has
-# retired, and local-only Claude paths — and refuses the commit / fails CI if
-# any appears in tracked content.
+# tooling — its infrastructure, private skill names, the private RE corpus and
+# sibling project names, names this repo has retired, and local-only Claude
+# paths — and refuses the commit / fails CI if any appears in tracked content.
 #
 #   scripts/leak-guard.sh          scan STAGED content    (git pre-commit hook)
 #   scripts/leak-guard.sh --all    scan ALL tracked files (CI, belt-and-braces)
@@ -22,13 +22,16 @@ set -euo pipefail
 self="scripts/leak-guard.sh"
 
 # Fingerprints of the PRIVATE tooling (POSIX extended regex, '|').
-# Targets that project's own infrastructure, skill names, and repo path — NOT the
+# Targets that project's own infrastructure, skill names, repo paths, the private
+# RE corpus (its repo, report and evidence paths) and sibling projects — NOT the
 # device firmware-binary names (`tm-stomp-server`, `tone-master-stomp-client`) or
 # the Ghidra RE provenance, which are this repo's ESTABLISHED public data-lineage
 # (see Cargo.toml, proto.rs, model-cpu.json, block-classification.md, …). Matching
 # those would false-positive on ~12 legitimately-public files. The retired names
-# are the remote e2e tier's earlier identifiers, which `remote` replaced.
-pattern='LD_PRELOAD|qt_metacall|vtable\+0x|populator_stub|populator-gap|harness/stubs|nam-patcher|unsquashfs|microVM|firmware/[0-9][A-Za-z0-9._-]*/recon|Documents/Personal/tmp|tmp-binary-re|tmp-firmware-pipeline|tmp-vm-runtime|tmp-stub-catalog|tmp-device-platform|tmp-emulator-touchscreen-driving|TMP_E2E_TWIN|twin_audio|TwinRig|TwinHid|TwinAddr|e2e-twin|playwright\.twin|hid/twin\.rs|/twin/audio|offline_twin|\.claude/plans|\.claude/projects/.+/memory'
+# are the remote e2e tier's retired `twin` identifiers. The deployed report
+# endpoint host (`tmp-companion-reports.` + workers.dev) and `pcavadas/tmp-companion`
+# are public config and must NOT match.
+pattern='LD_PRELOAD|qt_metacall|vtable\+0x|populator_stub|populator-gap|harness/stubs|nam-patcher|unsquashfs|microVM|firmware/[0-9][A-Za-z0-9._-]*/recon|Documents/Personal/tmp|tmp-binary-re|tmp-firmware-pipeline|tmp-vm-runtime|tmp-stub-catalog|tmp-device-platform|TMP_E2E_TWIN|twin_audio|TwinRig|TwinHid|TwinAddr|e2e-twin|playwright\.twin|hid/twin\.rs|/twin/audio|offline_twin|\.claude/plans|\.claude/projects/.+/memory|tmp-audit|tmp-emulator|COMPANION_QUESTIONS|VirtualTMP|versions/1\.8\.[0-9]+/(reports|evidence|analysis|decompiled)|pcavadas/tmp([^-A-Za-z0-9_]|$)|tmp-companion-reports([^.]|$)'
 
 mode="${1:-staged}"
 status=0

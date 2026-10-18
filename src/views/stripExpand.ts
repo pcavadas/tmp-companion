@@ -85,7 +85,7 @@ export function toStripRoute<B>(
  *  pass through untouched — a dual-cab there keeps its single (cab1-named) tile,
  *  the graceful fallback, since a `split` branch can't nest another split. */
 export function expandDualCab(stages: StripStage[]): StripStage[] {
-  // ponytail: series-only — the device never nests a dual-cab inside a split
+  // Known limit: series-only — the device never nests a dual-cab inside a split
   // branch (or inputs/outputs/lanes), so those keep the single cab1-named tile.
   // Upgrade path if that changes: recurse into split.a/split.b here.
   return stages.flatMap((st) =>

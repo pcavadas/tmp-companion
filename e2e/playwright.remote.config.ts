@@ -14,7 +14,7 @@ const VITE = process.env.TMP_E2E_VITE_PORT ?? "1821";
 
 export default defineConfig({
   testDir: "./specs",
-  // Refuses any adopted server that is not a remote server (#193's mode check).
+  // Refuses any adopted server that is not a remote server (assert-mode.ts).
   globalSetup: "./fixtures/assert-mode.ts",
   metadata: {
     expectOnline: true,

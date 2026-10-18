@@ -1,12 +1,12 @@
 // src/__tests__/InstrumentRow.test.tsx — a Settings instrument row (look B) and its
-// recording (Tier-2 calibration) flow. REAL timers throughout: the countdown is
+// recording (calibration) flow. REAL timers throughout: the countdown is
 // 3 × 850 ms.
 //
 // - #301: every recording attempt has its own token. Cancel while recording, start
 //   again, THEN let the cancelled capture resolve: the new countdown must keep running
 //   into its own recording, and the stale result must not apply (no second
 //   onCalibrated, no idle flip).
-// - BUG-6: unmounting mid-recording can't setState / fire onCalibrated after unmount.
+// - Unmounting mid-recording can't setState / fire onCalibrated after unmount.
 // - #361: a refused take's caveats, in words (no LU figure), and the row always says
 //   what leveling uses.
 // - Look B: the status Badge, the caption ("Bass VI", never "Bass VI · Bass VI"),

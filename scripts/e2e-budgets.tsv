@@ -3,7 +3,7 @@
 # Format: <spec file> TAB <seconds> [TAB # note]. `#` starts a comment line. The seconds are a file's
 # summed test durations (scripts/e2e-budgets.mjs), not wall clock.
 #
-# EVIDENCE: each budget is about TWICE the time measured on 2026-10-13 in a Linux cloud
+# EVIDENCE: each budget is about TWICE the time measured in a Linux cloud
 # container (3 workers, a green 30-test run, 4.7 min wall), rounded up, with a 30 s floor so
 # a few-second file is not flagged on noise. The measured seconds are in the comments.
 # Re-measure and update a row when a spec legitimately grows; never just raise it to quiet

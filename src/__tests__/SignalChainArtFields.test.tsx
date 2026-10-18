@@ -1,7 +1,7 @@
 // Strip↔Catalog parity: the signal-chain strip must feed BlockArt the SAME
-// art-derived prop set the Catalog does. The bug was that the strip dropped the
-// pedal-specific fields (footswitch/accent/lab), so a Boss BD-2 rendered with the
-// default round footswitch instead of its plate. We mock BlockArt and capture the
+// art-derived prop set the Catalog does: a strip that drops the pedal-specific fields
+// (footswitch/accent/lab) renders a Boss BD-2 with the default round footswitch instead
+// of its plate. We mock BlockArt and capture the
 // props each tile passes — covering the whole path (adapter → StripBlock →
 // BlockTile → BlockArt) without asserting brittle SVG geometry.
 

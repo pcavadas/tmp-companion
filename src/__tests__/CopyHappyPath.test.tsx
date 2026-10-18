@@ -19,7 +19,7 @@ import { CopyView } from "../views/copy";
 // CopyView reuses the ONE module-scoped libraryScan that lives under views/level
 // (useCopyLibrary imports it from there) — reset it between tests so each run scans fresh.
 import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
-// The 3-block series preset + backup row are shared with CopyView.test.tsx's BUG-2 lock.
+// The 3-block series preset + backup row are shared with CopyView.test.tsx's hero-patch lock.
 import { backupRow, seriesGraph } from "./copyFixtures";
 import {
   callsOf,
@@ -200,10 +200,9 @@ describe("CopyView — full happy path (Step 1 → Step 2 → save → done)", (
   });
 
   it("keeps the saved edit when the post-save read-back is the pre-edit graph (stale, no refetch)", async () => {
-    // HW 2026-09-02 (fw 1.8.45): after "Saved to the unit." the graph copy_apply handed
-    // back was the LOAD-TIME document (the held session's buffer, not a fresh read), and
-    // preferring it patched the cache back to the original blocks — the re-opened editor
-    // listed a deleted block again. The read-back here is exactly that: the pre-edit
+    // A stale read-back is the LOAD-TIME document (the held session's buffer, not a fresh
+    // read); preferring it would patch the cache back to the original blocks, so the
+    // re-opened editor would list a deleted block again. The read-back here is the pre-edit
     // roster (Twin still in place) while the acked edit replaced Twin with DynaComp.
     installInvoke(false, seriesGraph("Clean Verse", 1));
     const user = userEvent.setup();

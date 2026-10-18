@@ -105,11 +105,10 @@ describe("RunPage: the sound in progress", () => {
     expect(screen.queryByText(/[−-]\d+\.\d/)).toBeNull();
   });
 
-  // GATE (user report, preset 30 "Plumes+BD2+OCD", registry 2026-08-20): the ceiling
-  // prepass measures every footswitch row before anything is solved, and one row used to
-  // hold the highlight while the unit stepped through four. The highlight now follows the
-  // row the backend announces, and the now line names THAT sound; its caption ("measuring")
-  // is the backend's and never reaches the screen.
+  // GATE (user report, "Plumes+BD2+OCD"): the ceiling prepass measures every footswitch
+  // row before anything is solved; the highlight follows the row the backend announces
+  // (never one row held while the unit steps through four), and the now line names THAT
+  // sound; its caption ("measuring") is the backend's and never reaches the screen.
   it("follows the row the backend announces, in the now line and the row", () => {
     const items = [
       sound({ key: "f0", sceneName: "Pinions" }),
@@ -125,7 +124,7 @@ describe("RunPage: the sound in progress", () => {
     expect(screen.queryByText(/measuring|leveling/)).toBeNull();
   });
 
-  // Issue 6b (registry 2026-08-29): a batch's save/verify tail has no row of its own, so the
+  // A batch's save/verify tail has no row of its own, so the
   // page must not look idle; it says the preset is finishing, never the backend's word.
   it("a batch's save tail reads as the preset finishing", () => {
     renderWithTheme(

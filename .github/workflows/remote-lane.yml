@@ -4,7 +4,7 @@ name: remote-lane
 # device-facing code, on a remote device that lives outside this repository. This job only
 # decides and dispatches: it reads which online specs the diff requires from the gate
 # policy (`gates.sh --required-online`, the same mapping the release run uses, read with
-# TMP_GATES_LANE=remote so the twin's own runner rows apply), and either
+# TMP_GATES_LANE=remote so the remote lane's own runner rows apply), and either
 # posts a passing `remote-lane` status at once ("not needed") or asks the runner named by the
 # TWIN_LANE_REPO variable (on the TWIN_LANE_REF branch, if set) to run exactly those specs on
 # the PR's head commit. That run posts the final `remote-lane` status back on the same commit.

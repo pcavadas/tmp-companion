@@ -1,7 +1,7 @@
 // src/__tests__/CopyView.test.tsx — the Copy feature: the save-diff model (the
 // load-bearing logic — it maps the staged edits onto real device ops), a render smoke,
-// and the view's live-device regressions: BUG-7 (the "Loaded" badge follows the live
-// preset) and BUG-2 (a save to the active preset optimistically repaints the hero).
+// and the view's live-device regressions: the "Loaded" badge follows the live preset, and
+// a save to the active preset optimistically repaints the hero.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
@@ -441,9 +441,10 @@ describe("CopyView — live device", () => {
     });
   });
 
-  // A live structural edit pushes NO device field-3, so the hero (driven by useLiveDevice's
-  // graph) would stay stale until the monitor reconnects. CopyView must patch the live graph
-  // optimistically when the edited target IS the active preset — no device re-read.
+  // A live structural edit pushes NO `currentPresetDataChanged` (field 3), so the hero
+  // (driven by useLiveDevice's graph) would stay stale until the monitor reconnects.
+  // CopyView must patch the live graph optimistically when the edited target IS the active
+  // preset — no device re-read.
   describe("regression: BUG-2 saving to the active preset optimistically repaints the hero", () => {
     // The post-save read-back the device returns on the item's `graph` field: the EDITED
     // roster (Twin → DynaComp) under a distinct name so the hero assertion is unambiguous.

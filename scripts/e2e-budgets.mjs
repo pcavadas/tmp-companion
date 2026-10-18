@@ -9,7 +9,7 @@
 // tests of one file run in order in one worker (`fullyParallel: false`), so the sum is that
 // file's share of a worker, independent of how the files were spread across workers.
 //
-// PHASES (#198). `scripts/e2e.sh` also passes the build's seconds (`--build-secs`: the cold
+// PHASES. `scripts/e2e.sh` also passes the build's seconds (`--build-secs`: the cold
 // or incremental compile, outside every timed test) and the Playwright run's wall seconds
 // (`--run-secs`). The report prints those beside the summed test time and writes all three to
 // `e2e-phases.json` next to the report, so a slow run says WHICH phase grew: the compile, the

@@ -10,8 +10,8 @@
 # line prints only ONE decimal, which caps any comparison at ~0.1 LU and hides the real
 # agreement. The full-precision integrated value comes out of the filter's own metadata
 # instead (`ebur128=metadata=1` + `ametadata=print:key=lavfi.r128.I`); the LAST value
-# emitted is the final integrated loudness, at ~0.001 LU resolution. That is what let
-# meter-parity's tolerance drop from 0.1 to 0.02 LU.
+# emitted is the final integrated loudness, at ~0.001 LU resolution, which is what
+# meter-parity's 0.02 LU tolerance rests on.
 #
 # This file defines functions only — it runs nothing and sets no options. It must stay
 # safe to source under the callers' `set -euo pipefail`, so every function that can fail

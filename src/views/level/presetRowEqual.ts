@@ -1,4 +1,4 @@
-// src/views/level/presetRowEqual.ts — the `memo` equality for `PresetRow` (#315).
+// src/views/level/presetRowEqual.ts — the `memo` equality for `PresetRow`.
 //
 // PresetList hands every row the list-wide selection Set, and each tick builds a fresh
 // one, so a plain shallow `memo` would re-render all ~500 rows per click. This compares

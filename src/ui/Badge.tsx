@@ -3,7 +3,7 @@
 // 18 high, `radiusSmall`, 12 px/500, sentence case, no border. Five tones: `neutral`
 // (`segmentTrack` fill, `text`), `good`, `caution`, `danger` (their `*Fill` and text
 // colour) and `accent` ("Changed" in Copy only; `accentFill` and `link`). Optional 11 px
-// leading icon. At most one badge per row. It replaced the old Tag and the mono chips.
+// leading icon. At most one badge per row.
 
 import type { ReactNode } from "react";
 

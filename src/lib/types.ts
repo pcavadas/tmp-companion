@@ -90,9 +90,9 @@ export interface LevelJob {
   /** Pickup topology (or alias) id → its bundled stimulus WAV (an alias
    * resolves to its parent topology's WAV). */
   topology_id: string | null;
-  /** Tier-2 measured dry-instrument loudness (K-weighted LUFS). */
+  /** Measured dry-instrument loudness (K-weighted LUFS). */
   calibration_lufs: number | null;
-  /** Chosen instrument profile id — backend resolves its Tier-2 calibration capture
+  /** Chosen instrument profile id — backend resolves its calibration capture
    * WAV as the re-amp stimulus when present. */
   profile_id: string | null;
   /** Explicit stimulus override (wins over topology_id). */
@@ -194,7 +194,7 @@ export interface FootswitchLevelJobWire {
   levNodeId: string;
   levParameterId: string;
   targetLufs: number;
-  /** THE SCENE CONTEXT this switch's sound is measured and solved in (D3): a 0-based
+  /** THE SCENE CONTEXT this switch's sound is measured and solved in: a 0-based
    *  `scenes[]` wire slot, or omitted/null = the preset's BASE sound. Mirrors
    *  `FootswitchLevelJob::scene_context`. */
   sceneContext?: number | null;
@@ -476,7 +476,7 @@ export interface SceneHandleRow {
   allCandidates: SceneHandleCandidate[];
 }
 
-/** One switch's SCENE-CONTEXT answer for the leveling picker (D3) — mirrors
+/** One switch's SCENE-CONTEXT answer for the leveling picker — mirrors
  * `footswitch::FsSceneContext`, camelCase wire form. PICKER-PRESELECT ONLY: both fields
  * are derived from a cache the real device ignores on recall, so neither may ever decide
  * what a run WRITES — they only drive the wizard's default pick. */
@@ -510,21 +510,21 @@ export interface Profile {
   /** K-weighted loudness (LUFS) of the dry instrument; null until calibrated. */
   calibration_lufs: number | null;
   /** A recording of the player is stored, so leveling re-amps it instead of the
-   * test signal. Filled by `get_store`; the backend ignores it on save (#361). */
+   * test signal. Filled by `get_store`; the backend ignores it on save. */
   has_capture?: boolean;
 }
 
 /** How far a calibration take clipped (mirrors stimulus::ClipVerdict). */
 export type ClipVerdict = "clean" | "mild" | "severe";
 
-/** What one Tier-2 calibration measured + its quality caveats (mirrors
+/** What one calibration measured + its quality caveats (mirrors
  * lib::CalibrateResult). */
 export interface CalibrateResult {
   /** Measured dry-instrument loudness (K-weighted LUFS), stored on the profile
    * unless `kept_previous_capture`. */
   lufs: number;
   /** How far the unit's dry USB 3 send flat-topped on hard picks: a `mild` take is
-   * stored, a `severe` one is not (#361). */
+   * stored, a `severe` one is not. */
   clip: ClipVerdict;
   /** This take was stored as the profile's recording; leveling re-amps it. */
   capture_stored: boolean;
@@ -751,7 +751,8 @@ export type SkipKind =
 
 /** Combined connect result: firmware + active graph in one handshake (mirrors
  * lib.rs ConnectResult). The graph is null when no preset is loaded or the
- * handshake's field-3 stream was truncated before a complete audioGraph. */
+ * handshake's `currentPresetDataChanged` (field 3) stream was truncated before a
+ * complete audioGraph. */
 export interface ConnectResult {
   firmware: string | null;
   graph: ActiveGraph | null;
@@ -787,7 +788,7 @@ export interface LivePresetEvent {
 export const BASE_SCENE_SLOT = 8;
 
 /** `tmp://live-scene` — the unit's current scene. Emitted by BOTH the SceneLoaded(102)
- * echo (fast path — its embedded name is authoritative) and the field-3
+ * echo (fast path — its embedded name is authoritative) and the `currentPresetDataChanged`
  * `lastLoadedScene` (authoritative index, same document as the scene rows); last-writer
  * wins. `key` is `"base"` for the base scene (the wire's constant base slot), else the
  * numeric 0-based FS scene index into `scenes[]`. `name` null if absent/truncated. */
@@ -805,8 +806,8 @@ export interface SceneListRow {
 }
 
 /** `tmp://scene-list` — the ACTIVE preset's live scene rows. Canonical source: the
- * field-3 preset JSON (`scenes[].sceneName` slot-ordered + `ftsw`, one document),
- * which arrives on every device change AND in the connect handshake;
+ * `currentPresetDataChanged` preset JSON (`scenes[].sceneName` slot-ordered + `ftsw`,
+ * one document), which arrives on every device change AND in the connect handshake;
  * sceneListResponse(125) is only a preset-switch top-up. Also returned by the
  * `requestSceneList` command (a manual top-up). */
 export interface SceneListEvent {
@@ -833,7 +834,7 @@ export interface LiveLufsEvent {
   momentary: number;
 }
 
-// ─── Device-backup fast library read (the Presets-tab two-phase load) ──────────
+// ─── Device-backup fast library read (the startup two-phase load) ──────────
 
 /** One scene of a backup-read preset (mirrors `lib::SceneInfo`): name + 1-based
  * footswitch tag (`null` when the scene has no footswitch). Same shape as the live
@@ -891,11 +892,12 @@ export interface BackupPresetRow {
    * `exp_mute` = an exp-pedal binding zeroes an amp outputLevel at one end (silence
    * only when a physical pedal sits there). Refines the "not on USB 1/2" verdict. */
   silence_hint: SilenceHint | null;
-  /** Per-scene leveling-handle candidates (`lib::backup_read::BackupPresetRow.scene_handles`),
-   * extracted from the SAME presetJson `list_scene_level_handles` reads live — the Set-up
-   * step's scene control picker resolves off this INSTANTLY instead of firing that command's
-   * live field-8 read on first open (device fallback stays wired for a row this doesn't
-   * cover). Empty for a scene-less/unparseable row. */
+  /** Per-scene leveling-handle candidates
+   * (`lib::backup_read::BackupPresetRow.scene_handles`), extracted from the SAME presetJson
+   * `list_scene_level_handles` reads live — the Set-up step's scene control picker resolves
+   * off this INSTANTLY instead of firing that command's live `presetDataRequest` (field 8)
+   * read on first open (device fallback stays wired for a row this doesn't cover). Empty
+   * for a scene-less/unparseable row. */
   scene_handles: SceneHandleRow[];
   /** Base-row leveling-handle candidates (`lib::backup_read::BackupPresetRow.base_handles`,
    * GUITAR-ONLY — only the guitar chain reaches the USB-Out the leveler measures), same
@@ -994,7 +996,7 @@ export type CopyAnchor =
   { kind: "node"; nodeId: string } | { kind: "inserted"; key: string };
 
 /** One structural op applied to a target preset (`lib::CopyOp`). `nodeId` / `group`
- * address the existing block. An insert lands BEFORE `before` (field-34 insertNode),
+ * address the existing block. An insert lands BEFORE `before` (`insertNode`, field 34),
  * or appends at the group end when `before` is null; `key` names it for a later insert
  * that anchors on it. */
 export type CopyOp =
@@ -1067,7 +1069,7 @@ export interface BackupReadResult {
   setlist_songs: BackupSetlistSong[];
 }
 
-/** `tmp://backup-progress` (`session::BackupProgress`) — drives the Presets-tab scan
+/** `tmp://backup-progress` (`session::BackupProgress`) — drives the preset list's scan
  * strip. `phase` is `"building"` (device assembling the archive, before chunks) or
  * `"streaming"` (chunks arriving — `percent` is exact). */
 export interface BackupProgress {
@@ -1104,7 +1106,7 @@ export interface DoctorInputArg {
   tag: string | null;
   topologyId: string | null;
   calibrationLufs: number | null;
-  /** Instrument profile id (null when "none"): when it has a stored Tier-2 DI
+  /** Instrument profile id (null when "none"): when it has a stored DI
    *  capture, the Doctor reads that WAV verbatim and diagnoses in CAPTURE
    *  threshold space; else the synthetic topology sample. */
   profileId: string | null;

@@ -44,8 +44,7 @@ jobs:
             libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev \
             librsvg2-dev libasound2-dev
         # webkit2gtk/xdo/appindicator/rsvg are Tauri's Linux webview stack; asound is
-        # for cpal, which is an unconditional dependency and must compile even though
-        # the re-amp paths are macOS-only today.
+        # cpal's ALSA backend (the re-amp audio path on Linux).
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -53,7 +52,7 @@ jobs:
       - name: Build frontend (also produces dist/ for tauri-build)
         run: bun run build
 
-      # Every gate runs on both legs. The frontend ones are mostly platform-agnostic,
+      # Every gate runs on every leg. The frontend ones are mostly platform-agnostic,
       # but the typecheck and build are not: Linux filesystems are case-sensitive
       # where macOS is not, so a wrong-case import (`./Foo` for `foo.ts`) passes on
       # macOS and fails only here. Keeping the leg uniform costs little (the Vitest
@@ -146,10 +145,7 @@ jobs:
           fi
 
       # Both OSes take scripts/e2e.sh's default worker count (`TMP_E2E_WORKERS:-3`, the one
-      # place that default lives). Linux used to run serialized because the 3-worker suite
-      # intermittently blew level-fs-preset24's 240 s test timeout on ubuntu-latest; that
-      # spec (55 CPU-bound captures in one test) is gone, its proof moved to the Rust gate
-      # `the_footswitch_rows_still_converge_after_a_base_boost`.
+      # place that default lives).
       - name: Offline e2e (SimDevice)
         run: bun run e2e
 
@@ -281,7 +277,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # The Windows twin of bundle-linux's rationale: release.yml's build-nsis is
+  # Same rationale as bundle-linux: release.yml's build-nsis is
   # continue-on-error, so a broken NSIS bundler config (config, icon, WebView2
   # setting) would produce a green release with a silently missing .exe — this
   # job catches that on the PR instead of at release time. Keep its steps in

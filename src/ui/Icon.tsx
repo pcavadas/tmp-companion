@@ -1,11 +1,11 @@
-// src/ui/Icon.tsx — line-icon set, ported verbatim from chrome.jsx.
+// src/ui/Icon.tsx — the line-icon set.
 //
-// 24×24 viewBox, Lucide-aligned. Implemented ONCE here; import everywhere.
-// Light-only app — no sun/moon (the dark toggle was removed). Adds the prototype
-// page icons: gauge · cable · music · spinner · warn-tri · info · refresh · grip ·
-// trash · lock, and look B's chev-updown (Select) · minus (a mixed Checkbox) · alert
-// (danger Notice and PageState) · stop (the leveling run's Stop) · headphones, speaker
-// and pulse (Doctor's Quiet, Rehearsal and Stage volumes).
+// 24×24 viewBox, Lucide-aligned. Implemented ONCE here; import everywhere. Light-only
+// app — no sun/moon. Includes the page icons: gauge · cable · music · spinner ·
+// warn-tri · info · refresh · grip · trash · lock, and look B's chev-updown (Select) ·
+// minus (a mixed Checkbox) · alert (danger Notice and PageState) · stop (the leveling
+// run's Stop) · headphones, speaker and pulse (Doctor's Quiet, Rehearsal and Stage
+// volumes).
 
 import type { IconName } from "./iconNames";
 

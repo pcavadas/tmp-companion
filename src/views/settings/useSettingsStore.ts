@@ -152,7 +152,7 @@ export function useSettingsStore(): SettingsStore {
       return;
     }
     // A pickup change can unlink an instrument's stored recording, so re-read the
-    // derived `has_capture` flags (#361). Only the flags change; a newer save wins.
+    // derived `has_capture` flags. Only the flags change; a newer save wins.
     try {
       const stored = await getStore();
       if (saveSeqRef.current !== seq) return;

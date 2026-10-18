@@ -35,7 +35,7 @@ forceTauri();
 function renderView(connected: boolean) {
   const r = renderWithTheme(<DoctorView connected={connected} />);
   // The backup scan is App-owned in production; seed it here when connected so the
-  // view's scene/graph data populates (the view no longer triggers the scan).
+  // view's scene/graph data populates (the view does not trigger the scan).
   if (connected) void ensureLibraryScan();
   return r;
 }

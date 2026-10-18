@@ -3,7 +3,7 @@
 //
 // Dialog: portals to document.body with an accessible name; the app root (`#root`) is
 // `inert` while any dialog is open and only loses it when the LAST stacked dialog closes;
-// a child's `autoFocus` keeps focus (the card no longer steals it).
+// a child's `autoFocus` keeps focus (the card never steals it).
 // Menu: portals out of an `overflow: auto` scroller (not clipped) and flips above a
 // trigger at the window bottom; `role` comes from the caller; one outside click both
 // closes the menu AND reaches the clicked control (no click-eating Scrim).

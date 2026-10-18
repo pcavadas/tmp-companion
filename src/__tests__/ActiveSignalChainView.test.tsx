@@ -270,8 +270,9 @@ describe("ActiveSignalChainView — cab tiles match Pro Control", () => {
 
 describe("ActiveSignalChainView — slot badge", () => {
   it("uses the live active index when the live-switch graph has no slot", () => {
-    // On a live preset switch the field-3 graph carries no slot; the badge must
-    // come from the live-preset index (activeListIndex), passed as `slot`.
+    // On a live preset switch the `currentPresetDataChanged` (field 3) graph carries no
+    // slot; the badge must come from the live-preset index (activeListIndex), passed as
+    // `slot`.
     const noSlot: ActiveGraph = {
       ...seriesGraph([blk("ACD_KlonCentaur")]),
       slot: null,

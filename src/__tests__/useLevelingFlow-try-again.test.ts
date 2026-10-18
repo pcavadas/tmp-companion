@@ -10,7 +10,7 @@
 // Also pinned here: a Stop lands on the Summary by itself (no "Leveling stopped" screen and
 // no Continue), the Summary's footswitch scene pick rides the Try again, a scene tried
 // again without its main sound still anchors on it, and Done deselects every sound any run
-// of the flow resolved (BUG-4, accumulating across Try again rounds).
+// of the flow resolved (accumulating across Try again rounds).
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";

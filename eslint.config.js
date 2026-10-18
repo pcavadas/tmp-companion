@@ -119,20 +119,15 @@ export default tseslint.config(
   {
     // process.env.TMP_E2E_ONLINE is no mode signal in the Playwright test
     // process — each config pins it on its own e2e_server — so a spec/fixture
-    // that reads it directly silently takes the offline branch even online. HW-reproduced twice: a since-removed Doctor apply spec's original
-    // describe-level `test.skip(!process.env.TMP_E2E_ONLINE)` (always true) and
-    // `ensureScenario` (`e2e/fixtures/scenario.ts`) gating its online/offline
-    // check the same way, which silently skipped `e2e_seed_scenario` online and
-    // let a mutilated preset pass the (offline) presence-only check. The correct
-    // pattern — ask the server via its `/health` endpoint — already lives in the
-    // same file as `isOnline(page)`, used by `clearScenario`.
+    // that reads it directly silently takes the offline branch even online
+    // (e.g. skipping the online seed check). Ask the server via its `/health`
+    // endpoint instead: `isOnline(page)` in `e2e/fixtures/scenario.ts`.
     files: ["e2e/**/*.{ts,tsx}"],
     rules: {
       "no-restricted-syntax": [
         "error",
         {
-          // Dot form: process.env.TMP_E2E_ONLINE — the form both historical
-          // occurrences used.
+          // Dot form: process.env.TMP_E2E_ONLINE.
           selector:
             "MemberExpression[object.object.name='process'][object.property.name='env'][property.name='TMP_E2E_ONLINE']",
           message:
@@ -152,11 +147,10 @@ export default tseslint.config(
 
   {
     // Error text on screen goes through `errMsg` (src/lib/format.ts), never a
-    // hand-rolled `e instanceof Error ? e.message : "generic"`: a command
-    // rejection used to arrive as a bare string, so that idiom showed the generic
-    // fallback and threw the backend's real reason away (the old Doctor fix cards
-    // always read "Couldn't apply this fix."). `invoke` now wraps rejections in
-    // `CommandError`, and `errMsg` handles every shape a `catch` can receive.
+    // hand-rolled `e instanceof Error ? e.message : "generic"`: a non-Error
+    // rejection (a bare string) would show the generic fallback and throw the
+    // backend's real reason away. `invoke` wraps rejections in `CommandError`, and
+    // `errMsg` handles every shape a `catch` can receive.
     files: ["src/views/**/*.{ts,tsx}", "src/App.tsx"],
     rules: {
       "no-restricted-syntax": [
@@ -173,7 +167,7 @@ export default tseslint.config(
 
   {
     // The block-art modules must NOT import catalog.ts or cpu.ts (catalog imports
-    // cpu). That edge once closed the module-init cycle blockArt → catalog → cpu →
+    // cpu). That edge closes the module-init cycle blockArt → catalog → cpu →
     // blockArt (a TDZ "cannot access before initialization" crash), and it would
     // pull the catalog into every art lookup. The id-suffix rule all three need
     // lives in the zero-import `./deviceId` leaf instead. Cross-cutting form+art

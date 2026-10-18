@@ -1,7 +1,7 @@
 // src/main.tsx — React entry point.
 //
 // Mounts the single-window App inside React.StrictMode + the shared ThemeProvider
-// (the one authoritative provider — App no longer wraps its own).
+// (the one authoritative provider).
 
 import React from "react";
 import ReactDOM from "react-dom/client";

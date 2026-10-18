@@ -1,5 +1,5 @@
 // src/ui/ProgressBar.tsx — a thin determinate progress bar (terracotta fill on a
-// faint track). Used by the Presets-tab scan strip + the leveling setup/run bars.
+// faint track). Used by the preset list's scan strip + the leveling setup/run bars.
 // `percent` is clamped 0..100; the fill animates its width (respects the global
 // reduced-motion preference via the same CSS the app already honours).
 

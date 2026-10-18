@@ -1,8 +1,8 @@
-// src/ui/LoudnessMeter.tsx — the run screen's one live meter (look B).
+// src/ui/LoudnessMeter.tsx — the run screen's one live meter.
 //
 // A 340×4 `track` with an `accent` fill for the loudness now, a 2 px `text` tick at the
 // target with the target's name centred under it (12/600), "Quieter" at the left end and
-// "Louder" at the right. No dB or LUFS on screen (voice rule 2): the meter shows where
+// "Louder" at the right. No dB or LUFS on screen: the meter shows where
 // the sound is against its target, not a number. `role="meter"`; the value is the fill
 // as a % of the bar, and `aria-valuetext` says where it is against the target in words.
 //

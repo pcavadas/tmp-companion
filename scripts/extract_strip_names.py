@@ -6,12 +6,12 @@ WHY THIS EXISTS
 `strip_name` is the footswitch SCRIBBLE-STRIP name — what the unit prints under a
 switch when its `customLabel` is empty. It is `info.displayNames.name8` in the
 firmware's per-block CDD records, the sibling of `name32`, which the catalog already
-carries as `pro_control_name`. The original catalog extraction took `name32` and
-dropped `name8`; rows then displayed a de-camel-cased FenderId ("Blues Driver")
+carries as `pro_control_name`. The catalog extraction takes `name32` and drops
+`name8`; without this, rows display a de-camel-cased FenderId ("Blues Driver")
 where the hardware says "Sapphire OD".
 
 The catalog is GENERATED (see `.claude/rules/models-catalog.md`), and its generator
-(`expand_catalog.py`) lives outside this repo — so a regen would silently drop
+lives outside this repo — so a regen would silently drop
 `strip_name` again. Run this after any regen to put it back, then re-derive the
 frontend's slim catalog (`python3 scripts/slim_model_guide.py`) and re-run
 `bun run test` (the strip-name gate in `src/__tests__/leveling-order.test.ts` is what
@@ -21,7 +21,7 @@ USAGE
 -----
     python3 scripts/extract_strip_names.py <path-to-firmware-CDD-JSONs-dir>
 
-e.g. .../firmware/1.8.45/rootfs/home/root/tm-stomp-cdd/JSONs
+e.g. <firmware rootfs>/home/root/tm-stomp-cdd/JSONs
 
 The firmware tree is NOT vendored (it is not ours to redistribute); only the extracted
 names land in the repo, exactly as `block_name` / `pro_control_name` already do.

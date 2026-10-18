@@ -4,7 +4,7 @@
 // A 30 px compact Row with the grey `rowSelected` fill, indented 64 px under the preset's
 // name. The WHOLE row is one role="checkbox" button named "Choose <sound> in <preset>"
 // (unique on the page): a box, the sound's name (13/400) and, for a footswitch, a caption
-// at the right ("footswitch 3"). A footswitch with no volume knob to level (BUG 1) is
+// at the right ("footswitch 3"). A footswitch with no volume knob to level is
 // disabled: an empty grey box, the name in `textDisabled`, the caption saying why, and
 // the click does nothing.
 
@@ -25,7 +25,7 @@ export interface SceneRowProps {
   caption?: string;
   selected: boolean;
   onToggle: () => void;
-  /** Not selectable at all (BUG 1 — a footswitch with no volume knob to level): greyed
+  /** Not selectable at all (a footswitch with no volume knob to level): greyed
    *  out, the box renders empty, and the click is a no-op. `caption` is expected to
    *  carry the reason in this state. */
   disabled?: boolean;

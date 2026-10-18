@@ -65,10 +65,10 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     await clearScenario(page); // leaves the unit on preset 001
   });
 
-  // #295 rides along: tabs unmount on switch, and the Songs tab repaints from the startup
+  // Tabs unmount on switch, and the Songs tab repaints from the startup
   // library scan. A setlist renamed here must come back under its NEW name after a tab
   // round-trip — a stale old name sits on a slot that every later setlist write would then
-  // address. (It was its own test, which paid a second page load and library scan.)
+  // address.
   test("create / rename / delete a song; create / rename / delete a setlist that keeps its new name across a tab switch", async ({
     page,
   }) => {
@@ -138,7 +138,7 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
       timeout: 30_000,
     });
 
-    // Leave the tab and come back: the rail shows the new name, not the scan's (#295).
+    // Leave the tab and come back: the rail shows the new name, not the scan's.
     await page.getByRole("button", { name: "Copy", exact: true }).click();
     await page.getByRole("button", { name: "Songs", exact: true }).click();
     await expect(page.getByText(SETLIST_NEW, { exact: true })).toBeVisible({

@@ -1,7 +1,7 @@
 // src/__tests__/setupPageTestUtils.tsx — render Level's Set up page with sensible
 // defaults, and drive its dropdowns by their e2e hooks (`data-select="<tid>"` on a
-// trigger, `data-select-option="<tid>:<value>"` on an option). Replaces
-// pickCardTestUtils.tsx: the look B `Select` needs no dialog card to portal into.
+// trigger, `data-select-option="<tid>:<value>"` on an option). The look B `Select` needs
+// no dialog card to portal into.
 
 import { vi } from "vitest";
 import { screen } from "@testing-library/react";

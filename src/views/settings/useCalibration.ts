@@ -1,6 +1,5 @@
-// src/views/settings/useCalibration.ts — one instrument row's Tier-2 calibration (its
-// "recording", on screen) as a single tagged union (#313, after #301's per-attempt token
-// fix):
+// src/views/settings/useCalibration.ts — one instrument row's calibration (its
+// "recording", on screen) as a single tagged union, with a per-attempt token:
 //   idle{result, warnings} → countdown{n} 3·2·1 → recording{secs} → idle | error
 // so an impossible mix of flags (a countdown showing a stale result, an error beside a
 // warning) cannot be expressed. A failed attempt carries no text: the page says the
@@ -18,7 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { calibrateProfile, logUnlessCommandError } from "../../lib/invoke";
 import type { CalibrateResult, Profile } from "../../lib/types";
 
-// Tier-2 capture length passed to calibrate_profile (backend clamps 2..30).
+// Capture length passed to calibrate_profile (backend clamps 2..30).
 export const CALIBRATE_SECS = 8;
 
 export type Calibration =
@@ -34,8 +33,8 @@ export type Calibration =
 
 const IDLE: Calibration = { kind: "idle", result: null, warnings: [] };
 
-/** What leveling re-amps for this instrument, shown on the row at all times
- *  (#361): the player's stored recording, or the synthetic test tone. */
+/** What leveling re-amps for this instrument, shown on the row at all times: the
+ *  player's stored recording, or the synthetic test tone. */
 export function stimulusSource(profile: Profile): string {
   return profile.has_capture === true
     ? "Leveling uses your recording."
@@ -44,7 +43,7 @@ export function stimulusSource(profile: Profile): string {
 
 /** The take's non-fatal caveats, one line each — empty when it was clean.
  *
- * #361: the unit's dry USB 3 send clips on hard picks from a normal guitar, so a
+ * The unit's dry USB 3 send clips on hard picks from a normal guitar, so a
  * mildly clipped take is stored without comment. A take past the severity rule is
  * explained as hard picks being too loud for the unit's USB recording. Never tell the
  * player to play softer and never point at the unit's mixer meter (its RMS ballistics

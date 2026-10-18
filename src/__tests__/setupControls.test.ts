@@ -1,6 +1,5 @@
 // src/__tests__/setupControls.test.ts — Set up's Block and Knob dropdowns, render-free
-// (`setupControls.ts`). Ported from FlatLevelPick.test.tsx (the one combined picker this
-// pair replaced) and extended to the look B defaults.
+// (`setupControls.ts`), with the look B defaults.
 //
 // The DANGER rule this guards (danger.md's Pick trap): a dropdown NEVER shows a value
 // other than the one the run will use. So the default shows what it drives (Block

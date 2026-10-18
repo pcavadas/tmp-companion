@@ -25,7 +25,7 @@ export type DeviceStatusState =
 
 export interface DeviceStatusProps {
   state: DeviceStatusState;
-  /** Firmware the connected unit reported (e.g. "1.8.45"); null when unknown. */
+  /** Firmware the connected unit reported (e.g. "1.8.58"); null when unknown. */
   firmwareVersion: string | null;
 }
 

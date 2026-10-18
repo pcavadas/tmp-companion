@@ -540,14 +540,13 @@ export function removeEditBlock(edit: PresetEdit, uid: string): PresetEdit {
 // ── diff → device ops (the save) ─────────────────────────────────────────────
 // Walk the edited graph in signal order. For each ORIGINAL node still present that was
 // replaced → Replace. For each ORIGINAL node now absent → Remove. For each INSERTED
-// block → Insert anchored BEFORE the next block IN ITS OWN DEVICE GROUP. The device's
-// `insertNode` field-2 means "insert BEFORE this node" (HW-verified, fw 1.8.45 — a
-// short-anchor insert "before X" landed the new block ahead of X), field-2 must name a
-// node in the SAME group as the insert, and OMITTING it appends at the group end. A
-// visual series can span groups (amp in G1, pedals in G4), so the in-array successor may
-// be in another group — we skip those and anchor on the next SAME-group successor, or
-// append when the insert is last in its group (HW-verified: cross-group anchoring made
-// the device drop the insert). Consecutive inserts are emitted RIGHT-TO-LEFT so each
+// block → Insert anchored BEFORE the next block IN ITS OWN DEVICE GROUP. The
+// `insertNode` (field 34) anchor (field 2) must name a node in the SAME group; the new
+// block lands before it, and OMITTING it appends at the group end (static RE, fw 1.8.58).
+// A visual series can span groups (amp in G1, pedals in G4), so the in-array successor
+// may be in another group — we skip those and anchor on the next SAME-group successor,
+// or append when the insert is last in its group (a cross-group anchor aborts the device
+// server). Consecutive inserts are emitted RIGHT-TO-LEFT so each
 // one's successor is already on the device when it anchors. Order: removes, replaces,
 // then inserts — each anchor names a block by its original nodeId or an earlier insert's
 // key, and the backend resolves it to the id the device holds now (a replace or insert
@@ -588,14 +587,14 @@ export function diffToOps(edit: PresetEdit): CopyOp[] {
       }
     }
     // Inserts RIGHT-TO-LEFT: anchor each BEFORE the next block IN ITS OWN DEVICE GROUP.
-    // `insertNode` field-2 (the "before" anchor) must name a node in the SAME group as the
-    // insert — a visual series can span groups (e.g. an amp in G1 then pedals in G4), so
-    // the in-array successor may belong to a different group; fw 1.8.58 aborts on an
-    // anchor its group lacks. So skip past other-group blocks to the next SAME-group
-    // successor; none after it → append at the group end (before = null). The successor
-    // is named by its original nodeId, or — when it is itself new, and so already
-    // inserted by this right-to-left walk — by its key; the backend maps either to the
-    // device's current id.
+    // `insertNode`'s anchor (field 2, the "before" node) must name a node in the SAME group
+    // as the insert — a visual series can span groups (e.g. an amp in G1 then pedals in
+    // G4), so the in-array successor may belong to a different group; fw 1.8.58 aborts on
+    // an anchor its group lacks. So skip past other-group blocks to the next SAME-group
+    // successor; none after it → append at the group end (before = null). The successor is
+    // named by its original nodeId, or — when it is itself new, and so already inserted by
+    // this right-to-left walk — by its key; the backend maps either to the device's current
+    // id.
     for (let i = arr.length - 1; i >= 0; i--) {
       const b = arr[i];
       if (b.nodeId != null) continue; // original/surviving tile — not an insert
@@ -642,8 +641,8 @@ export function groupRoster(graph: ActiveGraph): Map<string, string[]> {
 /** True when both graphs carry the same blocks per group, as a MULTISET — within-group
  *  order is not compared: the unit accepts several blocks of one model in a group, and
  *  with a node id being its FenderId an insert anchored on a duplicated model lands where
- *  the device decides (online 2026-09-03: four TubeScreamers in one group, the device's
- *  order ≠ the projected one). A multiset match still proves the read is the post-edit
+ *  the device decides (HW: four TubeScreamers in one group, the device's order ≠ the
+ *  projected one). A multiset match still proves the read is the post-edit
  *  document (a stale one has different blocks, a partial fewer), and adopting it hands the
  *  cache the device's real order. */
 export function sameRoster(a: ActiveGraph, b: ActiveGraph): boolean {
@@ -665,11 +664,11 @@ export function sameRoster(a: ActiveGraph, b: ActiveGraph): boolean {
  *  device's working copy, re-prompted by `copy_apply` after the last confirmed op and
  *  BEFORE the save — is adopted ONLY when it shows exactly those blocks (it then contributes
  *  the device's real node ids and params, which a later edit of an inserted block needs). A
- *  read-back that disagrees is never the truth: the earlier buffer-scraped one (2026-09-02,
- *  fw 1.8.45) was the LOAD-TIME graph, and preferring it patched the cache back to the
- *  pre-edit blocks. Whether a read-back is verifiable at all is the backend's call
- *  (`copy_apply` omits `graph` for an edit the roster cannot see, e.g. a same-model
- *  re-stamp) — this only checks the one it was handed. */
+ *  read-back that disagrees is never the truth: a stale buffered one is the LOAD-TIME graph,
+ *  and preferring it would patch the cache back to the pre-edit blocks. Whether a read-back
+ *  is verifiable at all is the backend's call (`copy_apply` omits `graph` for an edit the
+ *  roster cannot see, e.g. a same-model re-stamp) — this only checks the one it was
+ *  handed. */
 export function reconcileReadBack(
   optimistic: ActiveGraph,
   readBack: ActiveGraph | undefined,

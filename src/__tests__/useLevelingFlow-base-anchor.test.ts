@@ -1,8 +1,7 @@
-// src/__tests__/useLevelingFlow-base-anchor.test.ts — A7/A8: the scene-group dispatch
-// keeps the wizard's Base job alive through the batch as a `baseAnchor` so the
-// headroom trade (`headroom_trade.rs`, PR #144) can fire on a wizard run — it was
-// previously unreachable because the wizard levels Base via the separate `levelPreset`
-// lane and the batch never carried a base job at all.
+// src/__tests__/useLevelingFlow-base-anchor.test.ts — the scene-group dispatch keeps
+// the wizard's Base job alive through the batch as a `baseAnchor` so the headroom trade
+// (`headroom_trade.rs`) can fire on a wizard run: the wizard levels Base via the separate
+// `levelPreset` lane, so without the anchor the batch carries no base job at all.
 //
 // Drives `useLevelingFlow` with `level_preset` + `level_scenes_apply_batched` mocked and
 // asserts the batch call:

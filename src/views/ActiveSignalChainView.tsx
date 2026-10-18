@@ -28,9 +28,9 @@ export interface SceneTag {
 
 export interface ActiveSignalChainViewProps {
   graph: ActiveGraph | null;
-  /** The live active My-Presets index (0-based) for the slot badge. Authoritative
-   *  over `graph.slot`, which is `null` on a live switch (field-3 carries no slot).
-   *  Falls back to `graph.slot` at startup before the first live-preset event. */
+  /** The live active My-Presets index (0-based) for the slot badge. Authoritative over
+   *  `graph.slot`, which is `null` on a live switch (`currentPresetDataChanged` carries no
+   *  slot). Falls back to `graph.slot` at startup before the first live-preset event. */
   slot?: number | null;
   /** The active preset's identity (slot + name) is still arriving — ghost the
    *  slot badge + name as two skeleton bars. */

@@ -2,8 +2,8 @@ name: release
 
 # Manual only: releases are batched and started by hand from the Actions tab
 # (release → Run workflow, on `main`). There is deliberately no `push:` trigger:
-# every merge used to queue a run that waited on the `release` environment's
-# approval, and each newer run cancelled the one before it.
+# every merge would queue a run waiting on the `release` environment's approval,
+# each cancelling the one before it.
 on:
   workflow_dispatch:
 
@@ -19,9 +19,9 @@ permissions:
 
 # Keep husky's git hooks OFF every job here: `bun install` (prepare → husky) wires
 # .husky/pre-push into the checkout, so semantic-release's `git push --tags`
-# re-ran the LOCAL gate suite here and died — every tag push failed since the
-# hook landed (#84). ci.yml on the PR is the authoritative gate; HUSKY=0 makes
-# the prepare install a no-op so pushes from this job stay hook-free.
+# would run the LOCAL gate suite here and fail. ci.yml on the PR is the
+# authoritative gate; HUSKY=0 makes the prepare install a no-op so pushes from
+# this job stay hook-free.
 env:
   HUSKY: "0"
 
@@ -37,8 +37,7 @@ jobs:
   # `contents: write` even though this job writes NOTHING: semantic-release runs
   # verifyAuth (`git push --dry-run … HEAD:main`) unconditionally, BEFORE its
   # dry-run branch, so a read-only GITHUB_TOKEN gets a 403 and the whole run dies
-  # with EGITNOPERMISSION — which is exactly what happened on the first real run
-  # of this job (#173). Dry-run still skips tag creation, the real push and every
+  # with EGITNOPERMISSION. Dry-run still skips tag creation, the real push and every
   # publish plugin, so the elevated token is only ever spent on that dry-run push
   # probe and the GitHub plugin's read-only permission check.
   resolve-version:
@@ -59,9 +58,8 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # PRs run the offline gates only; the online suite runs before a release, on the
-      # unit, through scripts/pre-release.sh. This lists the same report on the run's
-      # summary: every merged change since the last tag that touched device-facing code.
+      # scripts/pre-release.sh's report, on the run's summary: every merged change
+      # since the last tag that touched device-facing code.
       - name: List device-facing changes since the last release
         run: |
           {
@@ -313,8 +311,7 @@ jobs:
   release:
     needs: [resolve-version, build-deb, build-rpm]
     # Runs whether the Linux jobs succeeded, failed (continue-on-error), or were
-    # skipped (nothing releasable) — this job's own behavior is unchanged from
-    # before the Linux jobs existed either way. Only a cancelled run, or a genuine
+    # skipped (nothing releasable). Only a cancelled run, or a genuine
     # resolve-version failure (as opposed to "nothing to release"), skips it.
     if: ${{ !cancelled() && needs.resolve-version.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: macos-14 # macOS-only crate; ARM host cross-builds the universal (arm64+x86_64) binary

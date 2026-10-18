@@ -206,7 +206,7 @@ export function useDoctorFlow({
           topologyId: profile?.topology_id ?? null,
           calibrationLufs: profile?.calibration_lufs ?? null,
           // The chosen profile's id (null when "none") — the backend picks up its
-          // Tier-2 DI capture as the verbatim stimulus + CAPTURE diagnosis space.
+          // DI capture as the verbatim stimulus + CAPTURE diagnosis space.
           profileId: profile?.id ?? null,
           nodes: graphByIndex.get(o.slot)?.nodes ?? [],
           footswitches: footswitchesByIndex.get(o.slot) ?? [],

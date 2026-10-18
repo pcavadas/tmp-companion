@@ -24,7 +24,7 @@
 #                                    stderr (read-only). TMP_GATES_CHANGED_FILES
 #                                    (newline-separated paths) replaces the diff;
 #                                    TMP_GATES_LANE=remote reads a class's
-#                                    `<class>@remote` policy row first (the twin)
+#                                    `<class>@remote` policy row first
 #   scripts/gates.sh --release-base  print the last release tag (v*) behind HEAD
 #   scripts/gates.sh --device-changes [--since <ref>]
 #                                    list each commit since <ref> (default: the last
@@ -32,10 +32,6 @@
 #                                    with its files and their classes, then the
 #                                    online specs that range requires (read-only;
 #                                    the release run's report)
-#
-# PRs run the OFFLINE gates only: the PR hook checks the green stamp alone. The
-# online suite runs at release, on the unit (scripts/pre-release.sh), over every
-# device-facing change merged since the last release.
 #   scripts/gates.sh --record-online [--run <fields>] <spec>...
 #                                    MERGE the specs that passed into this tree's
 #                                    ONLINE stamp, plus one `#run <time> <fields>`
@@ -49,12 +45,18 @@
 #                                    runner — snapshot the key before a long run and
 #                                    compare it after, to detect a mid-run edit)
 #
+# PRs run the OFFLINE gates only (see scripts/pre-release.sh for the online run).
+#
 # ── Scope detection ────────────────────────────────────────────────────────
 # Changed files = the working tree vs origin/main (merge-base) + untracked. The
 # union is classified:
 #   docs-only (*.md, docs/, notes/)     → no gates (near-instant)
-#   frontend  (src/, e2e/, ts/js/json)  → bun lint + typecheck + test + fmt-check
+#   frontend  (src/, e2e/, *.ts, *.tsx, → bun lint + typecheck + test + fmt-check
+#              *.config.*, tsconfig*.json,
+#              package.json, index.html)
 #   rust      (src-tauri/)              → cargo clippy (e2e feat) + fmt + test --lib
+#                                          (default and e2e feature) + ffmpeg meter
+#                                          parity (only where ffmpeg is on PATH)
 #   e2e-relev (any code side, e2e/,      → offline e2e (bun run e2e)
 #              scripts/e2e.sh)
 #   *.sh / gate TSVs touched            → shellcheck (only if installed) +
@@ -145,7 +147,7 @@ green_stamp="$stamp_dir/green-$KEY"
 online_stamp="$stamp_dir/online-$KEY"
 
 write_stamp() { # <stamp-path> <prefix> [content]  — one stamp per tree; orphan the
-                 # stale ones. No content → empty file (green stamp path, unchanged).
+                 # stale ones. No content → empty file (the green stamp).
   mkdir -p "$stamp_dir"
   rm -f "$stamp_dir/$2"-*
   if [ -n "${3:-}" ]; then
@@ -193,7 +195,7 @@ classify_path() {
 }
 
 # <class> — the policy row to read for it: `<class>@<lane>` when TMP_GATES_LANE names a lane
-# that has its own row for the class (the remote twin runs a different runner than the unit),
+# that has its own row for the class (the remote lane runs a different runner than the unit),
 # else the class itself.
 policy_class() {
   local class rest

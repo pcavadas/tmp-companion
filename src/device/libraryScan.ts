@@ -56,13 +56,12 @@ export interface LibraryScan {
    *  footswitch count + the Level flow levels them with no extra device read.
    *  Doctor's own SELECT list is built off this filtered map too (a non-levelable FS
    *  row has nothing to diagnose as its own sound — see `DoctorView.tsx`'s
-   *  `handleCheck`). The Level list itself now needs the FULL roster instead (BUG 1 —
-   *  a switch with no level candidate must still show up, disabled with a reason, not
-   *  vanish): `usePresetData`'s `footswitchRoster: "all"` option (Level opts in;
-   *  Doctor does not) swaps its OWN `footswitchInfo` for `allFootswitchesByIndex`
-   *  below rather than this field being widened — widening THIS field silently
-   *  changed what Doctor offers for diagnosis once (caught in review), so don't
-   *  repeat that: this stays the levelable-only source of truth. */
+   *  `handleCheck`). The Level list itself needs the FULL roster instead (a switch
+   *  with no level candidate must still show up, disabled with a reason, not vanish):
+   *  `usePresetData`'s `footswitchRoster: "all"` option (Level opts in; Doctor does
+   *  not) swaps its OWN `footswitchInfo` for `allFootswitchesByIndex` below rather than
+   *  this field being widened — widening THIS field would silently change what Doctor
+   *  offers for diagnosis: this stays the levelable-only source of truth. */
   footswitchesPerIndex: Map<number, FootswitchInfo[]>;
   /** Every per-preset block-acting footswitch — INCLUDING one with zero level
    *  candidates (e.g. an Other-class-only param, or a plain on/off toggle) — keyed by
@@ -70,7 +69,7 @@ export interface LibraryScan {
    *  derivation needs every switch that can toggle a block, not just the levelable
    *  subset; `footswitchesPerIndex` hid an Other-class-only switch from it entirely.
    *  Also the source `usePresetData`'s `footswitchRoster: "all"` option threads to
-   *  Level, so the Level list can show a non-levelable switch disabled (BUG 1). */
+   *  Level, so the Level list can show a non-levelable switch disabled. */
   allFootswitchesByIndex: Map<number, FootswitchInfo[]>;
   /** Per-preset block roster (exact node FenderIds) keyed by 0-based LIST INDEX —
    *  read from the same backup. Drives the per-preset CPU total. */
@@ -273,7 +272,7 @@ export async function ensureLibraryScan(): Promise<void> {
       // Doctor's SELECT list is built off `footswitchesPerIndex` too (see its own
       // doc) — keep it levelable-only here; `allFootswitchesByIndex` carries the full
       // roster for Doctor's damage detector AND (via `usePresetData`'s
-      // `footswitchRoster: "all"` option) for Level's own list (BUG 1).
+      // `footswitchRoster: "all"` option) for Level's own list.
       if (p.footswitches.length > 0) allFsw.set(p.slot - 1, p.footswitches);
       const levelable = p.footswitches.filter((f) => f.level_params.length > 0);
       if (levelable.length > 0) fsw.set(p.slot - 1, levelable);
@@ -383,7 +382,7 @@ export function patchLibraryGraph(listIndex: number, graph: ActiveGraph): void {
  *  every song slot, so `songPresetSlots` (keyed by song slot) would join the Presets axis
  *  against WRONG bindings. `null` renders as "unknown, reconnect to refresh", never as a
  *  confident zero. The preset list itself is unaffected, so `presets`/`ready` are kept.
- *  ponytail: a precise old→new slot remap is the upgrade path if the Presets axis needs
+ *  Known limit: a precise old→new slot remap is the upgrade path if the Presets axis needs
  *  to survive edits without a reconnect re-scan. */
 export function invalidateSongPresetJoin(): void {
   // Also held after a FAILED scan, so a retry's result can't drop it.

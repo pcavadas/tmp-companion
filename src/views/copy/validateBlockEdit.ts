@@ -1,17 +1,17 @@
 // src/views/copy/validateBlockEdit.ts — firmware-faithful pre-flight validation
 // for the Copy tab's block edits.
 //
-// The device's `NodeSelectionRestrictions` (5 rules: a CPU cap + 4 block-count /
-// coexistence caps) are enforced ONLY in the `tone-master-stomp-client` GUI layer —
-// `tm-stomp-server` enforces none of them and cannot reject an over-cap edit. So
-// THIS module is UX only (up-front grey-out + a save-gate warning): the checkpoint
-// of record is the Rust `copy_apply` guard, which covers every writer. Getting this
+// The firmware's `NodeSelectionRestrictions` (5 rules: a CPU cap + 4 block-count /
+// coexistence caps): `tm-stomp-server` enforces none of the 4 count caps, and its CPU
+// check is fatal (an over-budget insert aborts the server). So THIS module is UX only
+// (up-front grey-out + a save-gate warning): the checkpoint of record is the Rust
+// `blockcaps` guard on every apply path. Getting this
 // wrong just means a stale hint, not an unsafe write — but it should still match the
 // firmware's own predicates so the feedback is trustworthy. The words for each reason are
 // in ./copyText (`REASON_TEXT`).
 //
 // `block-classification.json` is the byte-exact extraction of the 3 hardcoded id
-// sets the firmware uses (see that file's `_comment` + the plan doc). Membership is
+// sets the firmware uses (see that file's `_comment`). Membership is
 // EXACT-STRING ONLY — no `resolveDeviceId` / suffix-stripping — because the suffix
 // itself is the classification signal (e.g. a `…CabIRConvRvb` reverb combo is both a
 // convolution reverb AND a cabinet; its `…NoFxCabIR` sibling is a cabinet only).

@@ -12,8 +12,8 @@
 // The list is a SCENE TREE: each preset row is a parent of its sounds (the main sound,
 // each scene, each footswitch). The row checkbox chooses the whole preset, the caret opens
 // it to choose sounds one by one, and the preset's NAME opens a preset that has scenes or
-// chooses any other (it does NOT recall the preset on the unit — app-driven recall was
-// removed; recall is owned by Pro Control / the footswitches). What to level is chosen
+// chooses any other (it does NOT recall the preset on the unit — recall is owned by Pro
+// Control / the footswitches). What to level is chosen
 // here, once; Set up only configures it, and its backup acknowledgment gates the run.
 //
 // HARD RULES: every device WRITE (leveling save) fires only after the backup
@@ -47,9 +47,9 @@ const NO_SAVED_INSTRUMENTS: Partial<Record<number, string>> = {};
 // concludes the picture is stale (the diagram-fail state).
 const DIAGRAM_GRACE_MS = 1400;
 // A scene event's graph may arrive BEFORE the scene push (the unit's tap burst is
-// field-3 → SceneLoaded); a graph no older than this slack at scene-event time
-// counts as the recall's redraw, so only a genuinely older picture trips the
-// diagram-fail watchdog.
+// `currentPresetDataChanged` (field 3) → SceneLoaded); a graph no older than this slack
+// at scene-event time counts as the recall's redraw, so only a genuinely older picture
+// trips the diagram-fail watchdog.
 const GRAPH_FRESH_SLACK_MS = 1000;
 
 export interface LevelViewProps {
@@ -97,7 +97,7 @@ export function LevelView({
     targetLufsByName,
     rememberInstrument,
     refresh,
-    // BUG 1: Level's own list/selection needs the FULL footswitch roster (a switch
+    // Level's own list/selection needs the FULL footswitch roster (a switch
     // with no level control still gets a row, disabled with a reason) — Doctor keeps
     // the default levelable-only roster (see `UsePresetDataOptions`'s doc).
   } = usePresetData(connected, { footswitchRoster: "all" });

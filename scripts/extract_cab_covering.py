@@ -35,7 +35,7 @@ from pathlib import Path
 DEFAULT_BIN = Path("tone-master-stomp-client")
 OUT = Path(__file__).resolve().parent.parent / "src/models/cabCovering.generated.ts"
 
-# Slug covering token / family base → a companion ToneId (src/ui/blockart/shared.tsx).
+# Slug covering token / family base → a companion ToneId (src/ui/blockart/shared.ts).
 # Only the families that appear in a covering-changing record are needed.
 FAMILY_BASE_TONE = {
     "65_twin_reverb": "blackface",

@@ -289,7 +289,7 @@ export function IRBody({ uid, label = "IR" }: { uid: string; label?: string }) {
   const boxW = wide ? 40 : 23;
   const fontSize = wide ? 8 : 11;
   // centre the stamp on the cab's vertical midline (chassis y6..58 → cy 32), not
-  // high on the face (was y21.5 → cy29). Box + text share that centre line.
+  // high on the face. Box + text share that centre line.
   const boxH = 15;
   const cy = 32;
   return (

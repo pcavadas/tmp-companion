@@ -24,7 +24,7 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
   });
 
   // The startup backup read streams at ~27 KiB/s whatever the library holds, so its length is
-  // the archive's, not the preset count's: 2.2 MiB took 85 s (HW 2026-09-02, fw 1.8.45).
+  // the archive's, not the preset count's (HW: 2.2 MiB ≈ 85 s).
   const SCAN_MS = 180_000;
 
   test("delete/insert/replace across two presets, re-edit shows the saved path, no refetch", async ({
@@ -145,8 +145,8 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
     // The heavy library backup was read exactly once — every edit patched the cache.
     expect(backupCalls).toBe(1);
 
-    // NOT IMPLEMENTED: a read-back of the saved presets ships as a separately-designed
-    // follow-up (notes/user-journeys.md's Copy registry).
+    // NOT IMPLEMENTED: a read-back of the saved presets after a reload
+    // (notes/user-journeys.md's Copy registry).
 
     // ONLINE ONLY: this test's own edits above left T2 (402, E2E Edge) structurally
     // mutated. The next run's pristine-checking seed (e2e_seed.rs's ChainDrift

@@ -1,8 +1,7 @@
-// src/__tests__/SelectStaleValue.test.tsx — the danger.md Pick/BlockPick trap, ported
-// from PickStaleValue.test.tsx to the look B `Select` (which replaces Pick): a stored
-// `value` the current `options` no longer contain must DISPLAY that value, never
-// silently fall back to `options[0]` — the documented incident ("a store without a
-// Crunch target displayed Rhythm while the run got crunch, a silent −30 fallback").
+// src/__tests__/SelectStaleValue.test.tsx — danger.md's dropdown rule, on the look B
+// `Select`: a stored `value` the current `options` no longer contain must DISPLAY that
+// value, never silently fall back to `options[0]` ("a store without a Crunch target
+// displayed Rhythm while the run got crunch, a silent −30 fallback").
 // Select goes one step further than Pick did: an EMPTY value shows a placeholder too
 // (Pick showed options[0] for it), so a dropdown never shows a value it won't use.
 
