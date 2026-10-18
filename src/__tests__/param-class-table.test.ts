@@ -103,7 +103,7 @@ describe("param-class.json", () => {
 
   it("gives every level_db entry an explicit range", () => {
     // Mirrors `param_class::table()`'s own assertion. A dB param has no universal range
-    // (`ACD_Boost.gain` is [0,12], `makeupgaindb` [0,24]), so a missing one degenerates to
+    // (`ACD_Boost.gain` is [0,10], `makeupgaindb` [-30,30]), so a missing one degenerates to
     // (0,0) — every seed and bracket point at 0.0, a silently dead solve. Checked here too
     // so the failure surfaces in `bun run test`, not only on the first Rust `classify()`.
     const bad = allEntries()

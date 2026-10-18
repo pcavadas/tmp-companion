@@ -240,7 +240,7 @@ export function useSetupRows({
   }, [fsSlots, fetchFsContextFor]);
 
   /** The knob a row levels with: its choice, else its default — for a scene, the block
-   *  the scene turns on (issue 5's preselect) before the amp. */
+   *  the scene turns on (the enabling-block preselect) before the amp. */
   const handleFor = (o: SetupOption): BlockLevelHandle | null => {
     const chosen = rows[o.key]?.handle;
     if (chosen !== undefined) return chosen;

@@ -778,7 +778,7 @@ pub fn fs_result_from_ceiling(
 ///
 /// `(lo, hi)` are the PARAM's own bounds (`FsParamTarget::bounds`) — "pinned at a bound"
 /// means pinned at the end of THAT param's range, which is `[0, 1]` for most controls but
-/// `[0, 12]` for a raw-dB one. `LEVEL_MIN`/`LEVEL_MAX` stay reserved for the preset/scene
+/// `[0, 10]` for `ACD_Boost.gain`. `LEVEL_MIN`/`LEVEL_MAX` stay reserved for the preset/scene
 /// lanes' amplitude knobs.
 pub(super) fn classify_fs_outcome(
     best_v: f32,

@@ -35,7 +35,7 @@ function boostCandidate(enablesBlock: boolean): SceneHandleCandidate {
     fenderId: "ACD_Boost",
     parameterId: "gain",
     class: "level_db",
-    range: [0, 12],
+    range: [0, 10],
     current: 6,
     scope: "isolated",
     headroom: "full",

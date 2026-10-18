@@ -916,7 +916,7 @@ fn the_fs_prepass_reads_the_ceiling_at_the_handles_top_bound() {
 /// it ships a bare on-off, so leveling `ACD_Boost.gain` writes the block directly
 /// (`FsLevelPlan::Bake`) rather than adding a function to the switch (a two-entry row, which
 /// `validate_import_body` still refuses — conservatively, since it is legal on fw 1.8.58). `gain`
-/// is the raw-dB `[0, 12]` param the write must carry unclamped.
+/// is the raw-dB `[0, 10]` param the write must carry unclamped.
 ///
 /// It drives the batch's own WRITER (`leveller::write_footswitch_values`, the half of
 /// `run_footswitch_batch` after the solve) with the planner's `FsWrite::Bake` and a fixed

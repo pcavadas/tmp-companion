@@ -65,7 +65,7 @@ export interface RunState {
   total: number;
   phase: RunPhase;
   /** A batch-wide caption ("Saving…" / "Verifying…") from a `SceneLevelProgressItem.tail`
-   *  (issue 6b) — the deferred-save/persist-verify phase AFTER every scene in the group
+   *  — the deferred-save/persist-verify phase AFTER every scene in the group
    *  already resolved, so no row's own status can show it. While set, `RunPage`'s now
    *  line says the preset is finishing (the backend's own word is not shown). Cleared on
    *  the run's completion and whenever a NEW row goes active, so it can't outlive the

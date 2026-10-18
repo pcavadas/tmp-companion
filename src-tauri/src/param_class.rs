@@ -62,10 +62,10 @@
 //! duplicated so the one suffix-collapse rule can't drift between amp
 //! classification and parameter classification.
 //!
-//! **Ranges on `level_db` entries are conservative and UNVERIFIED**:
-//! `ACD_Boost.gain`'s `[0, 12]` extends past the HW-observed 0..7 sweep, and
-//! `makeupgaindb`'s `[0, 24]` is a placeholder. Treat both as
-//! safe-but-not-confirmed bounds, not the controls' real ranges.
+//! **Ranges on `level_db` entries are the firmware's control ranges**, in the raw dB the
+//! device stores: `ACD_Boost.gain` is `[0, 10]` and `makeupgaindb` (Studio Compressor) is
+//! `[-30, 30]` (the fw 1.8.58 control definitions, static RE). The stored values are plain
+//! dB, e.g. a Boost `gain` of 2.5 and a Studio Compressor `thresholddb` of −37 (HW).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -130,8 +130,8 @@ fn table() -> &'static RawTable {
                  module's own tests, plus src/__tests__/param-class-table.test.ts, which \
                  parses the same file and pins its class spellings against the TS union)",
             );
-        // A dB param has NO universal range (`ACD_Boost.gain` is [0,12], `makeupgaindb`
-        // [0,24]) — a missing `range` would otherwise fall back to a degenerate (0,0),
+        // A dB param has NO universal range (`ACD_Boost.gain` is [0,10], `makeupgaindb`
+        // [-30,30]) — a missing `range` would otherwise fall back to a degenerate (0,0),
         // placing every seed and bracket point at 0.0: a silently dead solve instead of a
         // loud table error. `[0,1]` IS the universal range for the normalized classes, so
         // only `level_db` requires the field.
@@ -218,7 +218,7 @@ mod tests {
     fn default_level_db() {
         let info = classify("ACD_SomeBlock", "makeupgaindb");
         assert_eq!(info.class, ParamClass::LevelDb);
-        assert_eq!(info.range, (0.0, 24.0));
+        assert_eq!(info.range, (-30.0, 30.0));
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
     fn block_override_gain_is_raw_db() {
         let info = classify("ACD_Boost", "gain");
         assert_eq!(info.class, ParamClass::LevelDb);
-        assert_eq!(info.range, (0.0, 12.0));
+        assert_eq!(info.range, (0.0, 10.0));
     }
 
     #[test]

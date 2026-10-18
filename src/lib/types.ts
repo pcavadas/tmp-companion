@@ -440,7 +440,7 @@ export interface SceneHandleCandidate {
    * recognises as a candidate at all. */
   class: ParamClass;
   /** The param's usable [lo, hi] — NOT always [0,1] (e.g. ACD_Boost.gain is raw dB over
-   * [0,12]). For a wet_mix the low bound is already raised to the wet floor. */
+   * [0,10]). For a wet_mix the low bound is already raised to the wet floor. */
   range: [number, number];
   /** The value AUTHORED IN THAT SCENE (overlay if present, else base). */
   current: number;

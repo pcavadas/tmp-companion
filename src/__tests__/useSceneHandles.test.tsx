@@ -46,7 +46,7 @@ const BOOST_CANDIDATE: SceneHandleCandidate = {
   fenderId: "ACD_Boost",
   parameterId: "gain",
   class: "level_db",
-  range: [0, 12],
+  range: [0, 10],
   current: 5.0,
   scope: "isolated",
   headroom: "full",

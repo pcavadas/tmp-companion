@@ -2355,14 +2355,14 @@ fn solve_footswitch_refuses_a_param_that_is_not_a_level_control() {
     );
 }
 
-// BOUNDS: params are not all `[0,1]`. On a raw-dB `[0, 12]` control the seeds land
-// at a quarter/three quarters of THAT range (3.0 / 9.0), the secant clamps to it, and a
+// BOUNDS: params are not all `[0,1]`. On a raw-dB `[0, 10]` control the seeds land
+// at a quarter/three quarters of THAT range (2.5 / 7.5), the secant clamps to it, and a
 // solved value above 1.0 survives instead of being silently pinned.
 #[test]
 fn solve_footswitch_solves_in_the_params_own_db_range() {
     let param = FsParamTarget::new("ACD_Boost", "gain", 2.5);
     assert_eq!(param.info.class, crate::param_class::ParamClass::LevelDb);
-    assert_eq!(param.bounds(), (0.0, 12.0));
+    assert_eq!(param.bounds(), (0.0, 10.0));
     let seen: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
     // ~1:1 dB→LUFS, HW-verified for this block: -30 LUFS at 0 dB.
     let r = solve_footswitch(0, &[], &[], -22.0, "baked", None, &param, |_, v| {
@@ -2370,24 +2370,24 @@ fn solve_footswitch_solves_in_the_params_own_db_range() {
         Ok(fs_loud(-30.0 + f64::from(v)))
     })
     .expect("solve");
-    // Seed 1 is the fixed quarter across the range (3.0). Seed 2 is the
+    // Seed 1 is the fixed quarter across the range (2.5). Seed 2 is the
     // LAW-PREDICTED point, not the fixed three-quarters mark: `LevelDb` is ~1:1
-    // dB→LUFS (identity `to_coord`/`coord_to_value`), so predicting from seed 1's -27.0 dB
-    // reading toward the -22.0 target lands EXACTLY on 3.0 + (-22.0 - (-27.0)) =
+    // dB→LUFS (identity `to_coord`/`coord_to_value`), so predicting from seed 1's -27.5 dB
+    // reading toward the -22.0 target lands EXACTLY on 2.5 + (-22.0 - (-27.5)) =
     // 8.0 (the prediction is exact here).
     assert_eq!(
         seen.borrow()[..2],
-        [3.0, 8.0],
+        [2.5, 8.0],
         "seed 1 is the fixed quarter-range point; seed 2 is law-predicted"
     );
     assert!(
         (r.final_value - 8.0).abs() < 0.05,
         "target -22 needs +8 dB, a value above the [0,1] range: {r:?}"
     );
-    assert!(!r.clamped && !r.unconverged, "8 dB is well inside [0,12]");
+    assert!(!r.clamped && !r.unconverged, "8 dB is well inside [0,10]");
 }
 
-// ...and the bound-hit verdict follows the range too: pinned at 12.0 with the target
+// ...and the bound-hit verdict follows the range too: pinned at 10.0 with the target
 // still louder is UNREACHABLE, not an exhausted search.
 #[test]
 fn solve_footswitch_clamps_at_the_db_range_ceiling() {
@@ -2397,7 +2397,7 @@ fn solve_footswitch_clamps_at_the_db_range_ceiling() {
     })
     .expect("solve");
     assert!(
-        (r.final_value - 12.0).abs() < 1e-3,
+        (r.final_value - 10.0).abs() < 1e-3,
         "the solve must pin at the param's own ceiling: {r:?}"
     );
     assert!(

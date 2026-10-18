@@ -1813,7 +1813,7 @@ mod tests {
         assert_eq!(info.class, crate::param_class::ParamClass::LevelDb);
         assert_eq!(
             info.range,
-            (0.0, 12.0),
+            (0.0, 10.0),
             "the SOLVE's bounds come from the table, never from the observed value"
         );
 
