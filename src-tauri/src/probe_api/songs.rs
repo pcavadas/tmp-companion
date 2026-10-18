@@ -149,7 +149,7 @@ pub fn probe_set_song_notes(name: &str, notes: &str) -> Result<String, String> {
 
 /// `--active-slot` — read-only: what a plain handshake shows about the active preset
 /// (the `PresetLoaded` echo, the current-preset name, the strict My Presets list) and
-/// the restore target [`Session::active_slot_live`] derives from it.
+/// the restore target `Session::active_slot_live` derives from it.
 pub fn probe_active_slot() -> Result<String, String> {
     let mut s = Session::connect()?;
     let started = std::time::Instant::now();
@@ -180,7 +180,7 @@ pub fn probe_active_slot() -> Result<String, String> {
     Ok(out)
 }
 
-/// `--song-bpm <name> <bpm>` — set a song's numeric BPM via [`converge_song_bpm`]
+/// `--song-bpm <name> <bpm>` — set a song's numeric BPM via `converge_song_bpm`
 /// (resolve slot by name, then run the shared ritual). Verify by re-read.
 pub fn probe_set_song_bpm(name: &str, bpm: f32) -> Result<String, String> {
     let songs = read_song_list()?;

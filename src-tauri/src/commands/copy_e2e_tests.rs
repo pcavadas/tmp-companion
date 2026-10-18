@@ -265,9 +265,9 @@ mod copy_level_e2e_tests {
     fn copy_cold_first_edit_silent_drop_is_retried_then_saved() {
         // The first structural edit after a fresh load is silently DROPPED; the read-back
         // shows `n2` still there with its old model, so the held path re-sends it once and
-        // then confirms + saves. The shape is `drop-first-structural`, tagged `unreachable`:
-        // fw 1.8.58 has no silent-drop path for a correctly framed edit (static RE). It stays
-        // as coverage of the not-landed branch of the read-back.
+        // then confirms + saves. The shape is `drop-first-structural`, tagged `unreachable`: fw
+        // 1.8.58 has no silent-drop path for a correctly framed edit (static RE, inferred). It
+        // stays as coverage of the not-landed branch of the read-back.
         let (item, ev) = run_copy(
             SimDevice::new()
                 .with_preset_json(&padded_two_node_doc())

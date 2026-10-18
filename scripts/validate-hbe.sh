@@ -206,7 +206,7 @@ cleanup() {
   log "cleanup — guaranteed re-amp OFF…"
   sleep 3
   if ! run_probe --reamp-off >"$OUT_DIR/reamp-off.log" 2>&1; then
-    err "reamp-off did not confirm — waiting out the HID lockout and retrying ONCE…"
+    err "reamp-off did not confirm — waiting for the seize to be released and retrying ONCE…"
     sleep 30
     if ! run_probe --reamp-off >>"$OUT_DIR/reamp-off.log" 2>&1; then
       err "########################################################################"

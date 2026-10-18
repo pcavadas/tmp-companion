@@ -65,7 +65,7 @@ pub struct BackupPresetRow {
     /// extracted from the SAME `presetJson` audioGraph via the same decoder the live
     /// active read uses ([`session::extract_active_graph`]). Lets the "Copy blocks
     /// between presets" frontend render each NON-active preset's real signal path
-    /// without a per-preset device round-trip. A default (empty) [`ActiveGraph`] for an
+    /// without a per-preset device round-trip. A default (empty) `ActiveGraph` for an
     /// unparseable row.
     pub graph: session::ActiveGraph,
     /// Block-acting footswitches (on/off + parameter change) with leveling-candidate
@@ -90,7 +90,7 @@ pub struct BackupPresetRow {
     /// live device read (mirroring `scene_handles`'s own discriminator).
     pub base_handles: Vec<SceneHandleCandidate>,
     /// Per FS scene (wire index), that scene's saved overlay as Doctor node overrides
-    /// ([`crate::scene_jobs::scene_node_overrides`]) — what a Doctor scene sound
+    /// (`crate::scene_jobs::scene_node_overrides`) — what a Doctor scene sound
     /// is diagnosed on top of the base graph. Empty for a scene-less/unparseable row.
     pub scene_overrides: Vec<Vec<crate::doctor::NodeOverride>>,
     /// Per footswitch, the scenes that enable it and the one the Set-up step preselects as
@@ -112,7 +112,7 @@ pub struct BackupPresetRow {
     pub rebalanceable: bool,
 }
 
-/// A7, PURE: [`BackupPresetRow::base_active_amp_count`]'s derivation — DISTINCT
+/// PURE: [`BackupPresetRow::base_active_amp_count`]'s derivation — DISTINCT
 /// `amp_candidates` (group, node) pairs NOT bypassed in `graph`'s base `dspUnitParameters`.
 /// Extracted so the redistribute single-amp gate's narrower signal is unit-testable with no
 /// DB/backup scan in the loop. See the field's own doc for why a global bypass filter can't
@@ -460,10 +460,10 @@ struct BackupEntries {
 /// archive is device- or file-supplied, and an LZ4 frame can expand ~250× (a run of
 /// zeros), so a few MiB of crafted input could otherwise ask for gigabytes. A real
 /// backup is far below this: a 25-preset library came off the wire as 2.2 MiB, mostly
-/// `acdDefaultsBackup` and user IR files rather than presets (`notes/gotchas.md`, the
-/// backup-stream entry), and the whole tar plus its extracted entries sits in memory at
-/// once. 256 MiB leaves two orders of magnitude for a full library and a full IR store,
-/// while keeping the worst case a fraction of a machine's RAM.
+/// `acdDefaultsBackup` and user IR files rather than presets
+/// (`notes/device/presets.md#device-backup`), and the whole tar plus its extracted entries sits
+/// in memory at once. 256 MiB leaves two orders of magnitude for a full library and a full IR
+/// store, while keeping the worst case a fraction of a machine's RAM.
 const MAX_BACKUP_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The tar/LZ4 half of a backup read: blob → the user-preset DB on a temp path. Shared

@@ -86,7 +86,7 @@ fn find_setlist_slot(setlists: &[session::SetlistRecord], name: &str) -> Result<
 /// `--add-setlist <name>` — create a setlist, verify it appears.
 ///
 /// `addSetlist` works from a bare connection (the earlier "failures" were a
-/// truncating multi-packet READ, not a write problem — see [`read_setlist_list`]).
+/// truncating multi-packet READ, not a write problem — see `read_setlist_list`).
 pub fn probe_add_setlist(name: &str) -> Result<String, String> {
     {
         let mut s = Session::connect()?;

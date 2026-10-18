@@ -74,7 +74,7 @@ fn read_sweep(report_path: &str) -> Result<Sweep, String> {
 /// `FACTORY_CONTRAST_DB`, the cut-through advisory and the gates. Each gate is
 /// rank-transferred from the shipped one through `baseline_path`, a sweep of
 /// the same presets through the stimulus the shipped constants came from
-/// ([`crate::benchmark::transfer_gate`]), so every rule keeps its healthy
+/// (`crate::benchmark::transfer_gate`), so every rule keeps its healthy
 /// false-alarm rate. Paste `GUITAR_STIM_REF` from `print_guitar_stim_ref`
 /// instead (bit-exact from the WAV); this arm's copy went through JSON and may
 /// differ in the last ulp.

@@ -288,7 +288,7 @@ fn fx_rig_carries_the_scene_and_damage_cases() {
         1.0,
         "scene 2 'Ceiling' is the headroom lowers_only / scene-clamp row"
     );
-    // COVERAGE rows 6/8/9's real load-bearing fact — NOT "four distinct ceilings" (two of
+    // COVERAGE row 6's real load-bearing fact — NOT "four distinct ceilings" (two of
     // the sidecar Cs are equal on purpose). What every spec keys on is that scene 2 is the
     // UNIQUE clamper: it alone sits at the knob's top with zero boost headroom, so it alone
     // clamps at every shipped target, and the other three keep room to be re-levelled into
@@ -716,7 +716,7 @@ fn base_node_bypass(p: &serde_json::Value, node_id: &str) -> Option<bool> {
 /// — both judged rows sitting at wire index ≥ 1 (index 0 stays an unjudged filler:
 /// scene 0 of a 2-amp preset is never judged, since USB `loadScene(0)` can
 /// materialize a different amp state than the physical footswitch press — open:
-/// notes/open-questions.md).
+/// notes/open-questions.md#scene-0-via-footswitch).
 #[test]
 fn fx_combined_level_carries_the_leveling_use_cases() {
     let cabs = cab_model_ids();
@@ -852,7 +852,7 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
 
     // Base precondition: amp+cab live, defect blocks ENABLED-NEUTRAL via single-entry
     // ftsw rows (a dual-entry row is legal on fw 1.8.58 but still refused,
-    // conservatively — see notes/gotchas.md's "A dual-entry footswitch row…" entry).
+    // conservatively — see notes/device/presets.md#footswitch-json).
     // The fixture carries no bypassed-in-base block (comp1, the removed spiky rule's
     // on-off target, must not come back).
     assert_eq!(base_node_bypass(&p, "ACD_HiwattDR103CanMod"), Some(false));
@@ -867,7 +867,7 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
     assert_eq!(
         base_node_bypass(&p, "comp1"),
         None,
-        "comp1 (the removed spiky rule's target, #241) must not come back"
+        "comp1 (the removed spiky rule's target) must not come back"
     );
 
     // Neutrality: an enabled block must be transparent, or base fires verdicts.
@@ -982,8 +982,8 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
         Some(0.9),
         "WASHED's decay is pre-baked in base (inaudible at mix 0) — the switch \
          only moves wetdrymix, keeping the row single-entry. 0.9 (with the \
-         switch's 0.9 mix) puts the aligned tail ratio well past the -10 dB \
-         gate; at decay 0.7 / mix 0.65 it sat 0.4 dB over it (HW 2026-08-25)"
+         switch's 0.9 mix) puts the aligned tail ratio past the \
+         `GUITAR.wash_tail_db` gate (HW)"
     );
 
     // The per-defect param table (label -> node -> (param, valueA, valueB)).
@@ -1053,8 +1053,8 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
         assert_eq!(
             entries.len(),
             1,
-            "ftsw[{idx}] ({label}): exactly ONE entry per row — fw 1.8.45 discards \
-             the whole import on a dual-entry row"
+            "ftsw[{idx}] ({label}): exactly ONE entry per row — \
+             `footswitch::validate_import_body` refuses a dual-entry row"
         );
         let e = &entries[0];
         assert_eq!(e["func"], "param", "ftsw[{idx}] ({label})");
@@ -1104,8 +1104,8 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
 /// the SMALLEST preset still reproducing each bug class, ALONGSIDE the originals
 /// (404/405 stay untouched). Pins each repro's own structural shape; size is bounded
 /// elsewhere (the 16 KiB per-fixture stored-row read budget gate,
-/// `e2e_fixtures_stay_inside_the_field8_ read_budget`) rather than compared against its original
-/// here.
+/// `e2e_fixtures_stay_inside_the_field8_read_budget`) rather than compared against its
+/// original here.
 #[test]
 fn fx_minimal_incident_repros_pin_their_incident_shape() {
     // 408 "E2E Preset24 Min" — the stale-load (base save -> FS batch load) bug class
@@ -1179,8 +1179,8 @@ fn fx_minimal_incident_repros_pin_their_incident_shape() {
 ///
 /// Every preset the device itself creates uses `info.product_id` **`tmStomp`**; a
 /// `"pro"` preset is rejected with **"This preset was created using a newer firmware
-/// revision"** and the scene-selection ribbon refuses to open it (HW, fw 1.8.45; gate
-/// kept). Any scene-related e2e step targeting such a fixture is silently invalid.
+/// revision"** and the scene-selection ribbon refuses to open it (HW, before fw 1.8.58;
+/// gate kept). Any scene-related e2e step targeting such a fixture is silently invalid.
 ///
 /// Fixtures must also not share a `preset_id` (`tmp-companion-data-model`: preset
 /// identity is "a UUID, unique per preset" and the join key for host-side metadata).
@@ -1352,7 +1352,7 @@ fn backup_fixture_uses_device_product_id_and_unique_preset_ids() {
     }
 }
 
-/// NON-REGRESSION GATE (fw 1.8.58; HW bisect on fw 1.8.45): a preset whose
+/// NON-REGRESSION GATE (fw 1.8.58): a preset whose
 /// `ftsw` array carries a `func: "param"` entry with NO `valueType` field is rejected
 /// at its first load — the device substitutes an empty preset under the imported name
 /// (`presetError` 6). Every param-func footswitch entry in every committed fixture must
@@ -1400,10 +1400,9 @@ fn every_param_footswitch_in_every_fixture_carries_a_numeric_value_type() {
 }
 
 /// NON-REGRESSION GATE (conservative): every fixture ftsw ROW must carry at most ONE
-/// entry. A dual-entry row is legal on fw 1.8.58 (it gutted imports on fw 1.8.45);
+/// entry. A dual-entry row is legal on fw 1.8.58;
 /// `footswitch::validate_import_body` still refuses it until a HW-checked emitter
-/// change. See notes/gotchas.md's "A dual-entry footswitch row is legal on fw 1.8.58"
-/// entry.
+/// change. See notes/device/presets.md#footswitch-json.
 #[test]
 fn every_fixture_footswitch_row_carries_at_most_one_entry() {
     let mut singles = 0usize;
@@ -1417,7 +1416,7 @@ fn every_fixture_footswitch_row_carries_at_most_one_entry() {
         assert!(
             stacked.is_empty(),
             "{name} ({idx}): ftsw rows {stacked:?} stack multiple entries — see \
-             notes/gotchas.md's dual-entry footswitch discard entry"
+             notes/device/presets.md — Footswitch JSON"
         );
     }
     assert!(
@@ -1442,8 +1441,8 @@ fn every_fixture_footswitch_row_carries_at_most_one_entry() {
     assert_eq!(crate::footswitch::stacked_ftsw_rows(&forked), vec![2]);
 }
 
-/// NON-REGRESSION GATE for the fixture-scene corruption class (HW, fw 1.8.45; gate
-/// kept). The device silently DROPS a preset's ENTIRE `scenes[]` (and re-stamps
+/// NON-REGRESSION GATE for the fixture-scene corruption class (HW, before fw 1.8.58;
+/// gate kept). The device silently DROPS a preset's ENTIRE `scenes[]` (and re-stamps
 /// `info.source_id` to its placeholder) the first time a scene is materialised
 /// (`loadScene`) and the preset saved, when the scenes are not fully
 /// device-conformant (`probe --scene-write-cell`: a hand-built fixture wiped on every
@@ -1479,11 +1478,11 @@ fn e2e_fixture_scenes_are_device_conformant() {
     // 0 + BASE SCENE + LEAD, both judged rows at index ≥1 — scene 0 of a 2-amp
     // preset is never judged, since USB `loadScene(0)` can materialize a
     // different amp state than the physical footswitch press; open:
-    // notes/open-questions.md); 407 "E2E Doctor Oracle" carries 2 (SCRATCH filler + the
-    // scene-consistency oracle's own big-outputLevel-jump scene); 409
-    // "E2E Hiwatt Min" carries 2 (the minimal scene/overlay-conformance repro). 410
-    // "E2E Friedman 3S" carries 3, all judged FULL-overlay rows: Rhythm/Lead/
-    // Base Scene, each carrying only its own amp outputLevel overlay.
+    // notes/open-questions.md#scene-0-via-footswitch); 407 "E2E Doctor Oracle" carries 2 (SCRATCH
+    // filler + the scene-consistency oracle's own big-outputLevel-jump scene); 409 "E2E Hiwatt
+    // Min" carries 2 (the minimal scene/overlay-conformance repro). 410 "E2E Friedman 3S" carries
+    // 3, all judged FULL-overlay rows: Rhythm/Lead/Base Scene, each carrying only its own amp
+    // outputLevel overlay.
     let expected_scenes: std::collections::HashMap<u32, usize> = [
         (400u32, 4usize),
         (402, 8),
@@ -1671,7 +1670,7 @@ fn sidecar_references_resolve_against_the_fixtures() {
     // (e) NON-VACUITY FLOOR for `leveledParams`. Everything above only checks entries
     // that EXIST — delete a slot's whole `leveledParams` array and every assertion here
     // passes while the offline model silently reverts to the flat C law for that slot.
-    // That is not hypothetical: it is COVERAGE row 18's corrected cause verbatim (400
+    // That is not hypothetical: it is COVERAGE row 18's cause (400
     // declared none, `model_lufs` returned the same C at every probe, and the solve took
     // its no-authority `flat_response` exit without ever probing the wet floor).
     //

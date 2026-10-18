@@ -113,7 +113,7 @@ fn channels_in(body: &[u8]) -> Vec<ChannelState> {
 /// `masterVolume` is a GLOBAL setting: the caller MUST restore the original value,
 /// or the unit is left quieter than its owner set it.
 ///
-/// Calls [`Session::begin_live_edit`] before writing. Whether a USB `SetMasterLevel`
+/// Calls `Session::begin_live_edit` before writing. Whether a USB `SetMasterLevel`
 /// lands is unconfirmed (HW: no observable change on a warmed session).
 pub fn probe_set_master_level(level: f32) -> Result<String, String> {
     // Guard a fat-fingered magnitude (`5` for `0.5`). The field is a 0..1
@@ -201,7 +201,7 @@ pub fn probe_mixer_state() -> Result<String, String> {
             } else {
                 "no TMS-5 reply on this attempt (fw 1.8.58 serves TMS 5 on an open client — \
                  check the session was not lapsed) — `settingsBackup.mixerSaveData` from a \
-                 device backup is the fallback (see open-questions.md A1)"
+                 device backup is the fallback"
             }
         );
         return Ok(out);

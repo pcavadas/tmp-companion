@@ -1072,8 +1072,8 @@ pub fn move_setlist_song(setlist_slot: u64, old_pos: u64, new_pos: u64) -> Vec<u
     len_delimited(12, &len_delimited(15, &inner))
 }
 
-/// Decode a `presetDataChanged` body (TMS[2] → presetDataChanged[9] →
-/// presetJson[3]) to the raw `presetJson` bytes.
+/// Decode a `presetDataChanged` body (`TMS[2]` → `presetDataChanged[9]` →
+/// `presetJson[3]`) to the raw `presetJson` bytes.
 pub fn preset_data_changed_json(tms_body: &[u8]) -> Option<Vec<u8>> {
     let top = parse(tms_body);
     let pm = first_bytes(&top, 2)?;
@@ -1084,8 +1084,8 @@ pub fn preset_data_changed_json(tms_body: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Decode an `exportPresetResponse` body (the reassembled TMS stream) to the
-/// raw `presetJson` bytes. Walks TMS[2] → exportPresetResponse[116] →
-/// presetJson[1]. The caller decides whether those bytes are LZ4-block
+/// raw `presetJson` bytes. Walks `TMS[2]` → `exportPresetResponse[116]` →
+/// `presetJson[1]`. The caller decides whether those bytes are LZ4-block
 /// compressed (like `currentPresetDataChanged`) or already plaintext JSON.
 pub fn export_response_preset_json(tms_body: &[u8]) -> Option<Vec<u8>> {
     let top = parse(tms_body);
@@ -1096,7 +1096,7 @@ pub fn export_response_preset_json(tms_body: &[u8]) -> Option<Vec<u8>> {
     first_bytes(&resp_fields, 1).map(|b| b.to_vec())
 }
 
-/// Decode a `nextEmptyPresetSlotResponse` body (TMS[2] → field 82 → presetSlot[1]
+/// Decode a `nextEmptyPresetSlotResponse` body (`TMS[2]` → field 82 → `presetSlot[1]`
 /// varint). Paired with [`request_next_empty_preset_slot`], kept as documented wire
 /// format.
 #[cfg_attr(
@@ -1115,8 +1115,8 @@ pub fn next_empty_preset_slot_response(tms_body: &[u8]) -> Option<u64> {
 }
 
 /// Decode a `songPresetListResponse` body to its raw record field-sets, or `None`
-/// when the body is not the reply for `song_slot`. Walks TMS → songMessage[11] →
-/// songPresetListResponse[13]{ songSlot[1], repeated record[2] } and returns each
+/// when the body is not the reply for `song_slot`. Walks TMS → `songMessage[11]` →
+/// `songPresetListResponse[13]{ songSlot[1], repeated record[2] }` and returns each
 /// record's parsed fields (`SongPresetListRecord.proto`). The slot check matters
 /// because a stale queued request for another song can be answered on this
 /// session (fw 1.8.58: queued batch items survive a lapse and reply to whoever is
@@ -1387,7 +1387,7 @@ type StrictListDecode = (Vec<(u32, Val)>, Vec<Vec<(u32, Val)>>);
 
 /// Strictly decode a COMPLETE list response into its repeated record field-sets, or
 /// `None` if the reassembled body is truncated / not the expected response. Walks
-/// TMS[`tms_field`] → response[`resp_field`] → repeated record[2], strict-parsing at
+/// `TMS[tms_field]` → `response[resp_field]` → repeated `record[2]`, strict-parsing at
 /// every level (so a tail-truncated multi-packet read is rejected, not clipped).
 fn list_records_strict(
     tms_body: &[u8],
@@ -1420,22 +1420,22 @@ pub fn is_my_presets_list(resp_fields: &[(u32, Val)]) -> bool {
     first_varint(resp_fields, 1).unwrap_or(LIST_ENUM_MY_PRESETS) == LIST_ENUM_MY_PRESETS
 }
 
-/// Strict, completeness-validated `presetListResponse` decode (TMS[2]→resp[5]→rec[2]),
+/// Strict, completeness-validated `presetListResponse` decode (`TMS[2]`→`resp[5]`→`rec[2]`),
 /// gated to the My Presets list via [`is_my_presets_list`].
 pub fn preset_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
     let (resp, recs) = list_records_strict(tms_body, 2, 5)?;
     is_my_presets_list(&resp).then_some(recs)
 }
-/// Strict, completeness-validated `songListResponse` decode (TMS[11]→resp[3]→rec[2]).
+/// Strict, completeness-validated `songListResponse` decode (`TMS[11]`→`resp[3]`→`rec[2]`).
 pub fn song_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
     list_records_strict(tms_body, 11, 3).map(|(_, recs)| recs)
 }
-/// Strict, completeness-validated `setlistListResponse` decode (TMS[12]→resp[3]→rec[2]).
+/// Strict, completeness-validated `setlistListResponse` decode (`TMS[12]`→`resp[3]`→`rec[2]`).
 pub fn setlist_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
     list_records_strict(tms_body, 12, 3).map(|(_, recs)| recs)
 }
 /// Strict, completeness-validated `setlistSongListResponse` decode
-/// (TMS[12]→resp[13]{ setlistSlot[1], rec[2] }), gated to `setlist_slot` for the
+/// (`TMS[12]`→`resp[13]{ setlistSlot[1], rec[2] }`), gated to `setlist_slot` for the
 /// same stale-reply reason as [`song_preset_list_records`].
 pub fn setlist_song_list_records_strict(
     tms_body: &[u8],

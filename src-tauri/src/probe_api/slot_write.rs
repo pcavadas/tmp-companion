@@ -28,7 +28,7 @@ pub fn probe_connect_and_list() -> Result<Vec<PresetEntry>, String> {
 /// HW PROBE (WRITE): set the global `sceneChangeBehavior` (SettingsMessage field 83,
 /// TMS 3). `value`: 0 = Retain (MAINTAIN CHANGES), 1 = Revert (DISCARD CHANGES)
 /// (static RE + HW, fw 1.8.58). Read it back with `--settings-read`
-/// (`footswitchSettingsRequest` (47) → field 12). Calls [`Session::begin_live_edit`]
+/// (`footswitchSettingsRequest` (47) → field 12). Calls `Session::begin_live_edit`
 /// before writing.
 ///
 /// GLOBAL setting — the caller MUST restore the original value.
@@ -38,7 +38,7 @@ pub fn probe_set_scene_change_behavior(value: u64) -> Result<String, String> {
     if value > 1 {
         return Err(format!(
             "refusing sceneChangeBehavior={value}: the Behavior enum has exactly two \
-             keys (Retain, Revert) in the 1.8.45 client's MOC table"
+             keys (Retain, Revert)"
         ));
     }
     let mut s = Session::connect()?;
@@ -506,7 +506,7 @@ pub fn probe_map_slots() -> Result<String, String> {
         empty_list.iter().take(12).collect::<Vec<_>>(),
         song_rows,
     );
-    out += "note: requestNextEmptyPresetSlot (81→82) is dead on 1.7.75 — scratch slots are \
+    out += "note: requestNextEmptyPresetSlot (81→82) is unused here — scratch slots are \
             found by observation (import then re-list), not prediction. To pin the \
             list↔userSlot numbering, assign a known preset to a song and compare its \
             list index with the userPresetSlot reported above.\n";
@@ -675,7 +675,7 @@ pub fn probe_save_load_test(
 /// an `outputLevel` control) and ≥1 footswitch scene — e.g. the e2e "E2E Rig"
 /// after `probe --seed-scenario` (e.g. "E2E Parallel" at 403, whose amp id is short
 /// enough to fit a single-report `changeParameter`). It reads the slot's current values,
-/// applies three DISTINCTIVE test values (base 0.30, scene[1] 0.66, presetLevel 0.42) all
+/// applies three DISTINCTIVE test values (base 0.30, `scene[1]` 0.66, presetLevel 0.42) all
 /// on ONE live-edit session, saves ONCE, reconnects, reads back, and asserts. Then —
 /// name-guarded — it restores the originals, leaving the slot as found.
 ///
@@ -997,17 +997,17 @@ pub(crate) fn confirm_slot_name(slot: ListIndex, expect_name: &str) -> Result<()
 
 /// Write ONE block parameter to a preset and persist it (`probe --set-scene-param`) —
 /// the repair seam for a preset whose scene overlay drifted. Routes through the
-/// leveller's own [`leveller::apply_level`] write path, so `scene = Some(n)` gets the
+/// leveller's own `leveller::apply_level` write path, so `scene = Some(n)` gets the
 /// supported per-scene treatment (scene recall → per-block Scene Edit →
 /// `changeParameter`) and `scene = None` writes the base/global value. `verify: false`,
 /// so no stimulus is read and re-amp is never engaged — this is a pure write.
 ///
-/// Scene-write facts (HW):
+/// Scene-write facts:
 /// * `set_node_scene_edit(node, true)` **alone** reseeds that node's scene overlay from
-///   BASE. With an overlay already in the target scene, the write lands on it without
-///   the enable, and the enable is harmful; with NO overlay, a write without the enable
-///   lands on BASE — the enable is what materialises the overlay. So enable Scene Edit
-///   ONLY for a node with no overlay in that scene.
+///   BASE (HW). Without the enable, a write lands in the overlay when the entry has more
+///   than one key or the param is `bypass` on an existing entry, and on BASE otherwise
+///   (static RE, fw 1.8.58; HW for a Full and a `{bypass}`-only overlay). So enable Scene
+///   Edit ONLY for a node with no overlay in that scene (`scene_write_verdict_for_param`).
 /// * `change_parameter` carries real-unit values VERBATIM. `tapTimeBPM` is a DERIVED
 ///   mirror of the block's rate — the PERIOD IN SECONDS, not BPM — so writes to it
 ///   never stick.
@@ -1015,7 +1015,7 @@ pub(crate) fn confirm_slot_name(slot: ListIndex, expect_name: &str) -> Result<()
 ///   active scene's overlay, not base: a preset loads into its saved `lastLoadedScene`.
 ///   Base is a scene recall (wire slot 8), never an omission.
 ///
-/// Known limit: single-param, [0,1]-only — the diagnostic's limits, not the device's.
+/// Known limit: single-param, `[0,1]`-only — the diagnostic's limits, not the device's.
 pub fn probe_set_scene_param(
     slot: ListIndex,
     expect_name: &str,

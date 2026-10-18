@@ -50,7 +50,7 @@ bad()  { FAIL=$((FAIL+1)); say "  ✗ $1"; }
 # A gap so the previous session's handle closes (0xe00002c5 = another handle holds the seize).
 gap()  { sleep 2; }
 
-say "=== TMP Companion — Tier-3 hardware e2e (non-destructive) ==="
+say "=== TMP Companion — hardware e2e (non-destructive) ==="
 say "src-tauri: $SRC_TAURI"
 say "artifacts: $OUT"
 

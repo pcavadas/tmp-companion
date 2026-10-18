@@ -14,10 +14,9 @@ pub fn probe_dump_preset_data(slot: Option<ListIndex>, out_path: &str) -> Result
     let raw = Session::connect()?.capture_full_preset_json(slot, 2000)?;
     std::fs::write(out_path, &raw).map_err(|e| format!("write {out_path}: {e}"))?;
     let text = String::from_utf8_lossy(&raw);
-    // A healthy dense-heartbeat field-3 is ~17 KB and routinely truncates only at
-    // the LAST scene's uuid — so a full serde parse fails even though `ftsw` and
-    // most of `scenes` ARE present. Detect presence by raw key search (reliable);
-    // report the full-parse result separately. `ftsw` (footswitch→scene map) sorts
+    // A lapse mid-stream cuts a field-3 read, `scenes` first — so a full serde parse can fail
+    // even though `ftsw` and most of `scenes` ARE present. Detect presence by raw key search
+    // (reliable); report the full-parse result separately. `ftsw` (footswitch→scene map) sorts
     // well before `scenes`, so its presence is the FS-tag go/no-go.
     let complete = serde_json::from_str::<serde_json::Value>(&text).is_ok();
     let has_ftsw = text.contains("\"ftsw\"");

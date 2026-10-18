@@ -469,8 +469,7 @@ export function buildSetupChoices(
  *
  *  Rank order: 0 base, 1 base-context footswitch, 2 scene, 3 scene-context footswitch — the
  *  split is per-row, not "all footswitches early" or "all footswitches late". HW evidence
- *  (the online 410 arc) is in `notes/gotchas.md`'s "A scene renders the base chain's ON
- *  blocks" entry.
+ *  (the online 410 arc) is in `notes/device/scenes.md#footswitch-state-on-recall`.
  *
  *  The rank only orders rows WITHIN one preset; `sortRunItems` below is the whole run
  *  order (presets in first-appearance order, then this rank). `chosenFrom` emits that

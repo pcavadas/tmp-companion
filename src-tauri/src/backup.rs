@@ -70,7 +70,7 @@ pub fn restore_bytes(snapshot: &PresetSnapshot) -> Result<Vec<u8>, String> {
         return Err(format!(
             "refusing to restore a {:?} snapshot to the device: only a complete \
              'offline-file' backup is safe to re-import (a partial would overwrite the \
-             slot with truncated data — AC1)",
+             slot with truncated data)",
             snapshot.source
         ));
     }

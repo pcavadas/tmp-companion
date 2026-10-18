@@ -553,7 +553,7 @@ export function removeEditBlock(edit: PresetEdit, uid: string): PresetEdit {
 // mints one: the FenderId, suffixed `_1`, `_2`… when the group already uses
 // it, fw 1.8.58 static RE). The right-to-left emit + remove-then-insert order is what
 // makes the user's "insert A before B, insert C after B, remove B → exactly [A, C]"
-// case correct (see copyModel.test.ts "INV-A"). See notes/write-safety.md.
+// case correct (see copyModel.test.ts "INV-A"). See notes/device/presets.md#node-ids.
 
 export function diffToOps(edit: PresetEdit): CopyOp[] {
   const removes: CopyOp[] = [];

@@ -8,7 +8,7 @@ use crate::slot::{DeviceSlot, ListIndex};
 
 /// One probe insert's result, printed by [`probe_insert_active`]. Its own shape
 /// rather than `BulkReplaceItem`: the probe reports outcomes (rejected, unconfirmed,
-/// inserted+saved, a dry revert) the UI's three-way [`crate::ItemOutcome`] has no word for.
+/// inserted+saved, a dry revert) the UI's three-way `crate::ItemOutcome` has no word for.
 struct InsertItem {
     outcome: String,
     detail: String,
@@ -404,7 +404,7 @@ fn held_insert_one(
     }
 }
 
-/// [`blockcaps::check_insert`] against the buffered load-time document; `Ok` carries the
+/// `blockcaps::check_insert` against the buffered load-time document; `Ok` carries the
 /// group's count of `fender_id` for [`Session::insert_node_once`].
 fn insert_guard(
     s: &mut Session,
@@ -444,10 +444,10 @@ fn describe_graph(s: &Session) -> String {
 /// --insert <fenderId> [--before <id>]) [--commit]`): does a field-2 working-copy re-prompt sent on Copy's
 /// EXACT held-session shape — load + `connection_request`/list/info re-arm, one confirmed
 /// structural edit, then `Session::live_preset_value` (the `live_ftsw` wire shape: NO
-/// re-arm, batch 3, heartbeat-pumped) — answer with the POST-edit roster? The recorded
-/// pre-edit result (`notes/write-safety.md`) came from the `--insert-map` DRY arm, whose
-/// re-prompt re-sent `connection_request` on the live session (the field-2 then goes
-/// unanswered) and read its buffer without clearing it. Prints the roster before, the re-prompt's
+/// re-arm, batch 3, heartbeat-pumped) — answer with the POST-edit roster? The
+/// `--insert-map` DRY arm's pre-edit roster came from a re-prompt that re-sent
+/// `connection_request` on the live session (the field-2 then goes unanswered) and read
+/// its buffer without clearing it. Prints the roster before, the re-prompt's
 /// roster twice (repeatability) with payload growth per pump then reverts by reload (DRY),
 /// or runs the PRODUCT seam — `Session::live_audio_graph` then the immediate rename/save —
 /// and reads the slot back over field-8 to prove the save persists the edit (COMMIT).

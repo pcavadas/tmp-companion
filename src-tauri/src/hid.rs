@@ -448,9 +448,11 @@ mod imp {
     /// thread.
     ///
     /// On persistent `kIOReturnExclusiveAccess` this re-ENUMERATES (fresh
-    /// manager + device copy) between attempts instead of only re-opening. A
-    /// persistent 0xe00002c5 means another handle holds the seize (Pro Control, or
-    /// an overlapping `Session` in this process); waiting helps only while that
+    /// manager + device copy) between attempts instead of only re-opening — a
+    /// defensive measure: a stale device ref once kept failing 0xe00002c5 while a
+    /// fresh enumeration opened at once (HW, before fw 1.8.58). A persistent
+    /// 0xe00002c5 means another handle holds the seize (Pro Control, or an
+    /// overlapping `Session` in this process); waiting helps only while that
     /// handle is closing. Genuine contention persists across every attempt and
     /// still surfaces the error (~3 s).
     ///
@@ -605,9 +607,8 @@ mod imp {
             // Tear down in spec order: unschedule, one short run-loop turn,
             // close. NOTE — do NOT add a "drain until quiet" pump here: on a
             // live-cadence (heartbeat) session, pumping ~1.5 s without
-            // heartbeats before close reliably WEDGED the device's next
-            // exclusive open (HW A/B, before fw 1.8.58: 4/4 clean without the
-            // drain, 0xe00002c5 with it).
+            // heartbeats before close made the next exclusive open fail
+            // 0xe00002c5 (HW, before fw 1.8.58: 4/4 clean without the drain).
             // SAFETY: runs on the worker thread that opened and scheduled `device` (IOKit's
             // threading rule); each ref is released exactly once, here, and `recv` is freed
             // only after the device is unscheduled and closed, so no callback can reach it.

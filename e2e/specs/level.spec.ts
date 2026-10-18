@@ -63,7 +63,10 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   }) => {
     // OFFLINE ONLY (see this file's header): the FLOW itself (all three row kinds in Set
     // up, the bake/assign mechanism never leaking, a terminal Summary) is proven offline.
-    test.skip(await isOnline(page), "trade T2 — see this file's own header");
+    test.skip(
+      await isOnline(page),
+      "offline only — see this file's own header",
+    );
     // ~18-23 re-amp captures (E2E Rig base + all scenes + all footswitches) — the budget
     // matches the terminal wait below, with headroom on top.
     test.setTimeout(1_500_000);
@@ -123,7 +126,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     // OFFLINE ONLY: a pure list read with no device truth (the backup scan decodes the
     // same fixture blob offline or on; `e2e_server_tests.rs`'s
     // `the_fixture_enumeration_reads_eleven_child_rows` pins it at the command level).
-    test.skip(await isOnline(page), "moved to level.online.spec.ts");
+    test.skip(await isOnline(page), "offline only — a pure list read");
     await ensureScenario(page);
     await page.goto("/");
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer

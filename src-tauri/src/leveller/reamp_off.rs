@@ -9,7 +9,8 @@ use super::*;
 /// ([`ReampOffOutcome::still_on`], `reamp_still_on` on the wire), never this text. Re-amp
 /// replaces Inputs 1 and 2, so the guitar goes unheard until it is off. A USB unplug/replug
 /// does NOT clear it (nothing resets re-amp when a connection closes); a restart does (the
-/// firmware forces it off at boot) — static evidence, fw 1.8.58: `notes/gotchas.md`.
+/// firmware forces it off at boot) — static evidence, fw 1.8.58:
+/// `notes/device/reamp-audio.md#stuck-re-amp`.
 pub(crate) const REAMP_STILL_ON_WARNING: &str =
     "Re-amp may still be on. Restart your Tone Master Pro.";
 
@@ -124,9 +125,8 @@ impl<T> BatchLevelRun<T> {
 /// ConnectionError(0) and is discarded (HW, fw 1.8.58). `TrackedHid` reopens a client
 /// after 600 ms of silence, which covers the known lapse shapes. A unit stranded re-amp-ON
 /// is input-muted; a developer recovers it with `probe --reamp-off`, a user by restarting
-/// the unit — a USB unplug/replug does not clear it (`danger.md`, `notes/gotchas.md`). `tag`
-/// names the
-/// calling lane in the log lines.
+/// the unit — a USB unplug/replug does not clear it (`notes/device/reamp-audio.md#stuck-re-amp`).
+/// `tag` names the calling lane in the log lines.
 ///
 /// The OFF is read back: after it, the Mixer store is read on the same session
 /// ([`Session::read_reamp_state`]), and a store still ON (or silent) climbs a ladder —
@@ -519,7 +519,7 @@ mod reamp_off_ladder_tests {
     }
 
     /// The user's recovery is a restart of the unit: a USB unplug/replug does not clear a
-    /// stuck re-amp (static evidence, fw 1.8.58 — `notes/gotchas.md`).
+    /// stuck re-amp (static evidence, fw 1.8.58 — `notes/device/reamp-audio.md#stuck-re-amp`).
     #[test]
     fn the_stuck_reamp_warning_says_restart_never_replug() {
         assert!(REAMP_STILL_ON_WARNING.contains("Restart your Tone Master Pro"));

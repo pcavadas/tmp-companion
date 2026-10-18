@@ -12,9 +12,9 @@
 //! - a REJECTED edit replies `presetError`(53) and must NEVER be followed by a save
 //!   (an unconfirmed save corrupted a real preset — `confirm_structural_edit`),
 //! - a structural edit can be armed to be silently DROPPED ([`Injection::DropFirstStructural`]).
-//!   fw 1.8.58 has no silent-drop path for a correctly framed edit (INFERRED): a missing
-//!   confirm is a confirm queued behind the FIFO, a lapse (which draws ConnectionError), a
-//!   backup freeze, or an insert abort, so the held-session path recovers by read-back, never
+//!   fw 1.8.58 has no silent-drop path for a correctly framed edit (static RE, inferred): a
+//!   missing confirm is a confirm queued behind the FIFO, a lapse (which draws ConnectionError),
+//!   a backup freeze, or an insert abort, so the held-session path recovers by read-back, never
 //!   by blind re-send (`apply_copy_op`'s `recover_unconfirmed`),
 //! - a `replaceNode` naming a node its group lacks gets `presetError` 14 on the device, like
 //!   an over-budget replace, with no `nodeReplaced` and no dirty flag (static RE, fw 1.8.58).
@@ -66,7 +66,7 @@
 //! recorded on the [`SimEvent`] but models no behavioural difference — its device semantics
 //! are unknown (`proto::set_footswitch_assignment`) and production always sends `false`.
 //!
-//! **Scene recall semantics (static RE + HW, fw 1.8.58):** a `loadScene` recall merges a
+//! **Scene recall semantics (static RE, fw 1.8.58):** a `loadScene` recall merges a
 //! bypass-only overlay (`{bypass: …}`) onto base key by key, and replaces the node's whole
 //! `dspUnitParameters` with any other overlay. Known deviation: the fake renders a
 //! non-bypass overlay PER PARAM, falling through to base for a param it omits (what the
@@ -378,8 +378,9 @@ impl Injection {
     ///   (static RE), and only a replace does — an over-budget insert aborts the server and a
     ///   remove always confirms.
     /// - `unreachable`: no fw 1.8.58 path drops a correctly framed structural edit
-    ///   (INFERRED); a write to a lapsed session draws `ConnectionError(0)` (device-confirmed),
-    ///   so a lapse drop is not silent. Confirms carry the node JSON (static RE).
+    ///   (static RE, inferred); a write to a lapsed session draws `ConnectionError(0)`
+    ///   (device-confirmed), so a lapse drop is not silent. Confirms carry the node JSON
+    ///   (static RE).
     /// - `unverified`: never seen on fw 1.8.58, where a same-slot save sends `presetChanged`
     ///   (25) and then the CHANGE push (static RE).
     /// - `not-device-shaped`: the server never truncates a push; a lapse cuts frames with no
@@ -4345,7 +4346,7 @@ mod physics_tests {
         // `measure_mono(&cap.channel(0), ..)` re-check, only in the real path.
         let rate = 48_000u32;
         let cap = scale_stimulus(&tone(rate), rate, -20.0);
-        assert_eq!(cap.channels, 2, "the sim emits dual-mono (D1)");
+        assert_eq!(cap.channels, 2, "the sim emits dual-mono");
         let measured = crate::leveller::processed_lufs(Ok(cap)).unwrap();
         assert!(
             (measured + 20.0).abs() < 0.05,
@@ -5024,8 +5025,8 @@ mod scene_context_tests {
             sim.rendered_bypass("G1", "fx"),
             Some(true),
             "the overlay's own bypass=true must govern (FS inactive, block silent) even \
-             though this fixture's ftswStates[0] — a cache the real device ignores on \
-             recall — claims the switch is active"
+             though this fixture's ftswStates[0] — which a recall applies to footswitch \
+             isActive only, never to bypass — claims the switch is active"
         );
     }
 
@@ -5159,7 +5160,7 @@ mod ftsw_tests {
     /// the read-back helpers match on. Carries `valueType` (numeric) because the real
     /// composer (`leveller.rs`) does too — on fw 1.8.58 its absence makes the device reject
     /// an IMPORTED preset at its first load (empty substitute, `presetError` 6; see
-    /// `notes/gotchas.md`).
+    /// `notes/device/presets.md#rejected-at-load`).
     const PARAM_FN: &str = r#"{"func":"param","groupId":"G1","nodeId":"n1","parameterId":"level","valueA":0.7,"valueB":0.2,"valueType":2}"#;
 
     /// The field-3 body the fake would push for the current slot, parsed.

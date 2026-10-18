@@ -186,9 +186,9 @@ use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 /// borrow the device through `DEVICE_OP_LOCK` + pause/ack.
 pub(crate) static MONITOR_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// A command (holding [`DEVICE_OP_LOCK`]) asks the persistent device monitor to
+/// A command (holding `DEVICE_OP_LOCK`) asks the persistent device monitor to
 /// yield its exclusive HID seize so the command can open its own connection
-/// without a `0xe00002c5` collision. Set true while a command's [`MonitorPauseGuard`]
+/// without a `0xe00002c5` collision. Set true while a command's `MonitorPauseGuard`
 /// is alive; cleared on its Drop. The monitor polls this every pump iteration.
 pub(crate) static MONITOR_PAUSE_REQ: AtomicBool = AtomicBool::new(false);
 /// The monitor has dropped its `Session` (its seize is free) in response to a pause

@@ -365,7 +365,7 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
     await page.close();
   });
 
-  // COVERAGE rows 15, 16/17/20's Setup-time half: there is no "Verify only" tag or
+  // COVERAGE rows 16/17/20's Setup-time half: there is no "Verify only" tag or
   // "Make level-neutral" opt-in — every row is PRE-SEEDED with the tone-safe
   // `defaultParamIndex` candidate (leveling.ts's `chosenFrom`) at Setup-open time, shown
   // non-interactively when it's the row's only option (mirrors BlockLevelPick's own

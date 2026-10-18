@@ -59,7 +59,7 @@ test.describe("Doctor — select, check, results", () => {
     // identical in both tiers.
     test.skip(
       await isOnline(page),
-      "online half moved to doctor.online.spec.ts",
+      "offline only — online Doctor coverage is doctor.online.spec.ts",
     );
     // ~29 real sounds across the three intact fixtures (E2E Rig + Pedalboard + Edge, base +
     // scenes + footswitches) at ~12-18 s/capture online, plus the pristine-check reseed and

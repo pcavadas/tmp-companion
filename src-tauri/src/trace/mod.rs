@@ -22,10 +22,10 @@
 //! THE SEAMS. [`open`] wraps every rig's transport open (`rig::Rig::open_transport`, the
 //! one path `session::open_transport` takes), so every session (command lane, monitor lane,
 //! probe) is recorded below `TrackedHid` and its auto-reopens are on the wire record too.
-//! [`settle`] is called from `device_gate::settle_ms`; [`capture`] wraps every rig's
+//! [`settle`] is called from `device_gate::settle_ms`; [`capture()`] wraps every rig's
 //! capture (`audio::reamp_capture`); [`record_field8`]
 //! follows the seed's stored-row reads; [`record_cmd`] is for the e2e server's `/invoke`
-//! route. The event table and file layout are in `notes/e2e-test-plan.md` ("Recording").
+//! route. The event table and file layout are in `notes/e2e-recording.md`.
 //!
 //! PRIVACY. A trace holds the owner's preset names and bodies, and captures are the
 //! device's DSP output. Traces, WAVs and stored-row files stay on the machine that made

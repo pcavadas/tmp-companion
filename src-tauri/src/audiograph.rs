@@ -30,7 +30,7 @@ pub(crate) fn preset_level(preset: &Value) -> Option<f64> {
 /// A node carries two identifiers, and they answer different questions:
 /// - the **model** (`FenderId`, e.g. `ACD_TubeScreamer`) says WHICH block it is;
 /// - the **instance** (`nodeId`) says WHICH COPY it is. The firmware mints it per group as the
-///   model id, then `<model>_1`, `<model>_2`… for repeats ([`mint_node_id`]).
+///   model id, then `<model>_1`, `<model>_2`… for repeats (`mint_node_id`).
 ///
 /// Model-level work (migration, bulk replace by model, block counts, block templates) matches
 /// with [`Node::matches_model`]; instance-level work (live edits, insert anchors, scene

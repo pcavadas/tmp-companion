@@ -264,7 +264,7 @@ impl Psd {
     /// bin) for bins
     /// `from..=to` ONLY (the rest of the returned full-length vec stays at a
     /// `NEG_INFINITY` sentinel — computing the whole spectrum wasted ~9× the
-    /// sort work on bins [`Psd::find_peaks`] never reads, with the costliest
+    /// sort work on bins `Psd::find_peaks` never reads, with the costliest
     /// windows at the unused near-Nyquist end): for the bin at frequency `f`,
     /// the median of `log_psd` over `[f/2^(1/2), f·2^(1/2)]` (± 1/2 octave =
     /// 1 octave total). Median (not mean) so the envelope doesn't follow a
@@ -490,7 +490,7 @@ impl Psd {
 
     /// Find localized spectral peaks of an arbitrary dB `series` on this PSD's
     /// bin grid (one value per bin — the production caller passes
-    /// [`Psd::transfer_db`]; [`Psd::find_peaks`] passes the raw log-PSD):
+    /// [`Psd::transfer_db`]; `Psd::find_peaks` passes the raw log-PSD):
     /// `series` minus a [`Psd::octave_envelope`] (so the envelope doesn't
     /// follow the peak itself), contiguous bins whose excess clears
     /// `min_height_db` become ONE peak (center = the run's maximum bin,
@@ -592,7 +592,7 @@ fn fit_apron(lo_bin: usize, hi_bin: usize, _n: usize) -> (usize, usize) {
     (lo_bin, hi_bin)
 }
 
-/// A localized spectral peak found by [`Psd::find_peaks`]: center frequency,
+/// A localized spectral peak found by `Psd::find_peaks`: center frequency,
 /// height above the smoothed spectral envelope (dB), and quality factor
 /// (center / half-height width, [`Psd::peak_q`]).
 #[derive(Debug, Clone, Copy, PartialEq)]

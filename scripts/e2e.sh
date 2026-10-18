@@ -506,7 +506,7 @@ else
   fi
 fi
 
-# ── this run's evidence folder (notes/e2e-test-plan.md, "Recording") ─────────────
+# ── this run's evidence folder (notes/e2e-recording.md) ──────────────────────────
 # Created before the first seed. The root lives in the git common dir by default, outside
 # the hashed tree, so writing evidence never changes the tree key this run stamps.
 if ! EVIDENCE_ROOT="$(evidence_root "$REPO")"; then
@@ -562,7 +562,7 @@ fi
 # KNOWN TRADE-OFF: copy runs AFTER doctor, so the hardware check that doctor's
 # `SCENARIO_VERIFIED` re-verify catches a live copy mutation within one server process
 # needs a manual `scripts/e2e.sh online copy doctor.online` (the fix itself is gated by
-# Rust tests; see notes/user-journeys.md's bug→gate registry).
+# Rust tests).
 case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(doctor.online level.online songs copy); FULL_SET=1 ;; esac
 
 # NOT-ONLINE GUARD: `level` and `doctor` are offline-only (use *.online), and `level-rerun`
@@ -571,13 +571,13 @@ case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(doctor.online level.online song
 for s in "${SPECS[@]:-}"; do
   case "$s" in
     level)
-      err "spec 'level' has no online tests — renamed/absorbed into level.online (ONLINE e2e consolidation). Use: scripts/e2e.sh online level.online"
+      err "spec 'level' has no online tests — the online leveling spec is level.online. Use: scripts/e2e.sh online level.online"
       exit 2 ;;
     doctor)
-      err "spec 'doctor' has no online tests — renamed/absorbed into doctor.online (ONLINE e2e consolidation). Use: scripts/e2e.sh online doctor.online"
+      err "spec 'doctor' has no online tests — the online Doctor spec is doctor.online. Use: scripts/e2e.sh online doctor.online"
       exit 2 ;;
     level-rerun)
-      err "spec 'level-rerun' no longer exists — its online tests were absorbed into level.online's idempotency test, and its offline test was merged into level.spec.ts (offline suite consolidation). Use: scripts/e2e.sh online level.online"
+      err "spec 'level-rerun' does not exist — re-run idempotency is level.online's idempotency test online and level.spec.ts offline. Use: scripts/e2e.sh online level.online"
       exit 2 ;;
   esac
 done

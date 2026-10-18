@@ -1212,7 +1212,7 @@ pub fn validate_import_body(p: &Value) -> Result<(), String> {
     if !stacked.is_empty() {
         return Err(format!(
             "import refused: footswitch rows {stacked:?} stack more than one entry — the \
-             firmware would replace the whole preset with an empty body"
+             app does not import that footswitch shape"
         ));
     }
     Ok(())
@@ -1291,7 +1291,7 @@ mod tests {
         assert_eq!(
             rows[1].suggested,
             Some(0),
-            "issue 4: several enabling scenes preselect the FIRST rather than falling back to \
+            "several enabling scenes preselect the FIRST rather than falling back to \
              base — the player's most common path to this switch"
         );
         assert!(rows[2].enabling_scenes.is_empty());

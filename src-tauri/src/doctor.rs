@@ -80,8 +80,8 @@ const LABELS_7: [&str; 7] = [
 /// itself is deterministic per sound, and capture-space is discriminated by the
 /// `fizzy` rule's [`FIZZY_MIN_FLATNESS`] gate, not a second threshold table.
 /// These values are not calibrated on DI captures (open:
-/// notes/open-questions.md). Any recalibration pass edits values here and nowhere else.
-/// (`benchmark.rs`'s leave-one-out re-derives a held-out copy in memory to
+/// notes/open-questions.md#capture-space-doctor-thresholds). Any recalibration pass edits values
+/// here and nowhere else. (`benchmark.rs`'s leave-one-out re-derives a held-out copy in memory to
 /// estimate these values' false-positive rate; it never ships one.)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thresholds {
@@ -147,7 +147,7 @@ pub struct Thresholds {
 /// rank-transferred the same way. The tilt-space gates are deliberately loose:
 /// they fire only in CONSENSUS with `*_centered_db` (see [`Thresholds`]'s
 /// doc); `buried_db` stays `INFINITY` (bass-only). The derivation lives in
-/// `notes/doctor-calibration.md`.
+/// `notes/doctor.md`.
 pub const GUITAR: Thresholds = Thresholds {
     muddy_db: 0.8,
     boomy_db: 4.1,
@@ -295,7 +295,7 @@ impl PlaybackOffsets {
 ///
 /// The dark/bright tilt rules stay SPL-blind too, though the same contour
 /// change tilts a tone −0.67 dB/oct darker at Stage; see
-/// notes/doctor-calibration.md. The anchor (Rehearsal = the calibration
+/// notes/doctor.md. The anchor (Rehearsal = the calibration
 /// monitoring level) is still an assumption until a sweep records monitor SPL.
 const STAGE_OFFSETS: PlaybackOffsets = PlaybackOffsets {
     boomy_db: -0.7,
@@ -406,7 +406,7 @@ pub struct SoundProfile {
     /// short-term spread can't tell a floor from a live capture of the 3 s Doctor
     /// stimulus (both read ≈ 0).
     pub momentary_spread_lu: f64,
-    /// Post-stimulus tail RMS vs body RMS, in dB (see [`tail_energy_ratio`]).
+    /// Post-stimulus tail RMS vs body RMS, in dB (see `tail_energy_ratio`).
     pub tail_ratio_db: f64,
     /// Spectral flatness (SFM, `psd::Psd::flatness`) of the top octave
     /// (6–12 kHz), `0..1`. Separates NOISE-like HF hash (fizz, high on a real DI
@@ -445,7 +445,7 @@ impl SoundProfile {
     /// played pad) so band powers measure the SOUND, not the silence.
     /// LUFS/spread (whole-buffer, time-domain — leading silence dilutes them
     /// uniformly and the gated LUFS discards it anyway) and `tail_ratio_db`
-    /// (already onset-aware, see [`tail_energy_ratio`]) are unchanged by which
+    /// (already onset-aware, see `tail_energy_ratio`) are unchanged by which
     /// PSD is passed in.
     #[allow(clippy::too_many_arguments)]
     pub fn from_capture_with_psd(
@@ -702,12 +702,12 @@ pub const FIZZY_MIN_FLATNESS: f64 = 0.35;
 
 // ─── localized peak (resonant/boxy) constants ────────────────────────────────
 
-/// The frequency range [`RuleMetrics::peaks`] scans — every EQ-10-drivable
+/// The frequency range `RuleMetrics::peaks` scans — every EQ-10-drivable
 /// band the `resonant` rule can target sits inside it.
 const RESONANT_SCAN_LO_HZ: f64 = 200.0;
 const RESONANT_SCAN_HI_HZ: f64 = 8_000.0;
 
-/// [`crate::psd::Psd::find_peaks`]'s detection floor: well below both rule
+/// `crate::psd::Psd::find_peaks`'s detection floor: well below both rule
 /// gates below so a below-threshold peak is still CANDIDATE data the rules can
 /// compare against, rather than invisible to `find_peaks` entirely. An
 /// arbitrary "clearly a bump, not noise" floor — not HW-calibrated (only the
@@ -1263,7 +1263,7 @@ fn factory_percentile(contrast_db: f64) -> f64 {
 /// [`GUITAR_TARGET`]'s doc for the same caveat on the target curve) — the
 /// contrast itself is still computed and returned for every family.
 ///
-/// This is an ESTIMATE card, not a [`Diag`]: it never enters [`diagnose`] or
+/// This is an ESTIMATE card, not a [`Diag`]: it never enters `diagnose` or
 /// `apply_thresholds`, fires no rule, and has no [`Rx`].
 ///
 /// Returns `None` when `profile.bands` is too short for `family`'s layout, or
@@ -1306,7 +1306,7 @@ pub fn cut_through(profile: &SoundProfile, family: Family) -> Option<CutThrough>
 }
 
 /// RMS of a sample window, in f64 (0.0 for an empty window). The ONE copy of the
-/// formula shared by [`tail_energy_ratio`] and the `--doctor-calib` noise-floor
+/// formula shared by `tail_energy_ratio` and the `--doctor-calib` noise-floor
 /// metric — a precision/edge-case fix must not drift between them.
 /// RMS of `[start, end)` across `channels`, combined in the power domain (the
 /// square root of the channels' mean RMS²). One channel is exactly [`rms_f64`].
@@ -1341,7 +1341,7 @@ pub(crate) fn rms_f64(samples: &[f32]) -> f64 {
 /// clock. The one home for the (rate, layout) pairing shared by the DI
 /// calibration readout and the `--doctor-calib` sweep. NOT used by the live
 /// `doctor_check` gate — that reads the CAPTURED OUTPUT's own coverage
-/// ([`output_coverage`]), since the input stimulus can't see amp-created
+/// (`output_coverage`), since the input stimulus can't see amp-created
 /// distortion HF.
 pub fn band_coverage(samples: &[f32], family: Family) -> Vec<bool> {
     coverage(&crate::psd::welch_psd(samples, 48_000.0).band_powers(family.bands()))
@@ -1453,7 +1453,7 @@ pub fn tail_energy_ratio(
     tail_energy_ratio_ch(&[samples], rate, body_len, body_start, tail_ms)
 }
 
-/// [`tail_energy_ratio`] over every channel of a capture, combined in the
+/// `tail_energy_ratio` over every channel of a capture, combined in the
 /// POWER domain: each window's RMS² is the mean of the channels' RMS²,
 /// so a decorrelated stereo tail keeps its full energy instead of losing 3 dB
 /// to a sample-wise average. One channel (or dual mono) reads exactly as the
@@ -1779,7 +1779,7 @@ const OTHER_EQ_IDS: [&str; 4] = [
 const HIGH_LOW_PASS: &str = "ACD_HighLowPass";
 /// The five-band parametric EQ the narrow-ring notch uses. Live controlIds
 /// `filterN{frequency,gaindb,q}` are HW write-verified (1 kHz/+12 dB/Q8 in →
-/// 1008 Hz/q 7.5 measured, `notes/doctor-calibration.md`); band
+/// 1008 Hz/q 7.5 measured, `notes/doctor.md`); band
 /// 1 defaults to a high-pass, bands 2–4 to peaks, so only 2–4 carry a notch.
 const PARAM_EQ: &str = "ACD_FiveBandParamEQ";
 const COMPRESSOR: &str = "ACD_DynaComp"; // classic 2-knob pedal comp, schema-verified
@@ -2556,7 +2556,7 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode]) -> Vec<Rx> {
     generate_rx_sized(diag_key, nodes, 0.0)
 }
 
-/// [`generate_rx`] for a finding `margin_db` past its gate (its severity): the
+/// `generate_rx` for a finding `margin_db` past its gate (its severity): the
 /// muddy and harsh EQ cuts grow with the measured excess ([`sized_cut_db`]); every
 /// other prescription ignores it.
 ///
@@ -2816,7 +2816,7 @@ fn consensus(
 /// Diagnose one sound with an explicit stimulus `kind` (picks the threshold
 /// table) and optional band `coverage` — per-band excitation of whatever
 /// coverage source the caller supplies (the input stimulus via [`coverage`],
-/// or the captured output via [`output_coverage`]): a band-keyed rule whose
+/// or the captured output via `output_coverage`): a band-keyed rule whose
 /// primary band is UNCOVERED is skipped — a sparse capture must not produce
 /// verdicts in bands it never excited. `coverage = None` disables gating
 /// (all bands treated as covered). The localized `resonant`/`boxy` rules read
@@ -3417,7 +3417,7 @@ pub struct LevelingDamageHint {
 
 /// The wet-mix base (`valueB`) must clear this to call the drop material — a
 /// base already near zero has nothing to delete. The materiality floor;
-/// how far `valueA` must fall below `valueB` is [`leveller::WET_FLOOR_FRACTION`]
+/// how far `valueA` must fall below `valueB` is `leveller::WET_FLOOR_FRACTION`
 /// (below), not a number invented here.
 const DELETED_EFFECT_BASE_MIN: f64 = 0.15;
 /// Minimum relative move (of the base) to count as a genuine sweep for
@@ -3433,12 +3433,12 @@ const SWEPT_OTHER_ABS_FLOOR: f64 = 1e-3;
 /// `func: "param"` assignments with both `valueA`/`valueB` present are
 /// candidates (an `on-off` function carries neither). The classifier keys on
 /// the ACTED-ON block's `fender_id`, exactly like
-/// [`crate::footswitch::is_levelable_param`] (kept private there — this
+/// `crate::footswitch::is_levelable_param` (kept private there — this
 /// re-derives the classification rather than depending on it, since the
 /// predicate answers a different question: "may the CURRENT leveler write
 /// this" vs "does an EXISTING assignment match a damage shape"). The
 /// `DeletedEffect` threshold IS the leveler's own wet-floor invariant, negated:
-/// [`leveller::WET_FLOOR_FRACTION`] is the floor the CURRENT leveler refuses to
+/// `leveller::WET_FLOOR_FRACTION` is the floor the CURRENT leveler refuses to
 /// cross, so `valueA` sitting below `WET_FLOOR_FRACTION × valueB` is a value the
 /// current leveler would never have written — a 94% wet kill (`0.05` vs base
 /// `0.90`) matches this.
@@ -3597,10 +3597,9 @@ pub fn scene_consistency(
                 ),
                 &gap,
             )],
-            // Scene 0 is open (notes/open-questions.md): a USB loadScene(0) can
-            // materialize a different amp state than the physical footswitch
-            // press, so its reading isn't trustworthy enough to act on — ask
-            // for ears instead.
+            // Scene 0 is open (notes/open-questions.md#scene-0-via-footswitch): a USB
+            // loadScene(0) can materialize a different amp state than the physical footswitch
+            // press, so its reading isn't trustworthy enough to act on — ask for ears instead.
             Some(0) => vec![advisory(
                 &format!(
                     "Couldn't confirm the reading for {worst_name}. Check it by ear before you change it."
@@ -5470,8 +5469,8 @@ mod tests {
 
     #[test]
     fn scene_zero_worst_gets_verify_by_ear_advisory() {
-        // Scene 0 is open (notes/open-questions.md): a worst scene at wire index 0 gets a
-        // verify-by-ear advisory (distinct copy from the plain louder advisory).
+        // Scene 0 is open (notes/open-questions.md#scene-0-via-footswitch): a worst scene at wire
+        // index 0 gets a verify-by-ear advisory (distinct copy from the plain louder advisory).
         let scenes = vec![other("Lead", Some("FS1"), -14.0, Some(0))];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("6 dB jump flags");

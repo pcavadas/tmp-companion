@@ -321,7 +321,7 @@ cleanup() {
     warn "in-band reamp-off unavailable or failed — falling back to a fresh probe process"
     sleep 3
     if ! ( cd "$SRC_TAURI" && "$PROBE_BIN" --reamp-off ) >"$OUT_DIR/reamp-off-fallback.log" 2>&1; then
-      err "reamp-off did not confirm — waiting out the HID lockout and retrying ONCE…"
+      err "reamp-off did not confirm — waiting for the seize to be released and retrying ONCE…"
       sleep 30
       if ! ( cd "$SRC_TAURI" && "$PROBE_BIN" --reamp-off ) >>"$OUT_DIR/reamp-off-fallback.log" 2>&1; then
         err "########################################################################"

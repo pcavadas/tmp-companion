@@ -149,8 +149,8 @@ test.describe("Level Setup — footswitch scene-context override rides the wire 
     ).toBeGreaterThanOrEqual(0);
     expect(
       scratchIdx,
-      "SCRATCH must be recalled BEFORE the engage (re-amp latches the active scene at " +
-        "engage — danger.md)",
+      "SCRATCH must be recalled BEFORE the engage (one engage per scene, recalled " +
+        "first — danger.md)",
     ).toBeLessThan(reAmpIdx);
 
     // BOOST's block (`ACD_KingOfTone`) is bypassed in base and LEAD is the one scene that

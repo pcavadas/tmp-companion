@@ -81,9 +81,9 @@ pub use scene::*;
 pub(crate) use secant::*;
 pub use trade::*;
 
-// Post-load DSP settle before a capture: 200 ms (HW, fw 1.8.58: every capture within
-// 0.01 LU of a 400 ms settle; `notes/perf.md`). TMP_SETTLE_AFTER_LOAD_MS is the
-// diagnostic env override for bisects.
+// Post-load DSP settle before a capture: 200 ms (HW, fw 1.8.58: every capture within 0.01 LU of a
+// 400 ms settle; `notes/leveling.md#re-validating-a-timing-change`). TMP_SETTLE_AFTER_LOAD_MS is
+// the diagnostic env override for bisects.
 const SETTLE_AFTER_LOAD_MS: u64 = 200;
 pub(crate) fn settle_after_load_ms() -> u64 {
     std::env::var("TMP_SETTLE_AFTER_LOAD_MS")
@@ -103,7 +103,7 @@ pub(crate) const SETTLE_AFTER_REAMP_MS: u64 = 500;
 // ── Leveling-speed bisect knobs ──────────────────────────────────────────────────────
 // Diagnostic env overrides for the waits around a capture, read per use like
 // `TMP_SETTLE_AFTER_LOAD_MS`. They exist to HW-bisect each wait against the full-capture
-// oracle (`notes/perf.md`'s re-validation oracles); a shortened default lands only with
+// oracle (`notes/leveling.md#re-validating-a-timing-change`); a shortened default lands only with
 // that evidence. The defaults (HW, fw 1.8.58): every capture within 0.01 LU of longer
 // waits, identical iteration counts, every ffmpeg-judge row passing, no floor reads.
 
@@ -421,10 +421,10 @@ impl LevelKnob {
 pub(crate) const KNOB_TOL_LU: f64 = 0.3;
 /// THE acceptance band — "on target" means the same thing in every lane: the base lane's
 /// idempotency skip ([`already_on_target`]) and verify correction, every scene at-target
-/// check, and every footswitch at-target check. About 2σ of the ~0.12 LU run-to-run capture
-/// noise (`notes/gotchas.md`): a perfectly converged point reads inside it ~96% of the time,
-/// where a 0.1 LU band (under σ) reads it inside only ~60% and the loop keeps buying
-/// captures to chase noise.
+/// check, and every footswitch at-target check. About 2σ of the ~0.12 LU run-to-run capture noise
+/// (`notes/device/reamp-audio.md#capture-window`): a perfectly converged point reads inside it
+/// ~96% of the time, where a 0.1 LU band (under σ) reads it inside only ~60% and the loop keeps
+/// buying captures to chase noise.
 pub(crate) const ACCEPT_TOL_LU: f64 = 0.25;
 const KNOB_MAX_ITERS: u32 = 6;
 

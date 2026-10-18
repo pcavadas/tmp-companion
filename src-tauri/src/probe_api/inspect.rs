@@ -339,7 +339,7 @@ pub fn probe_saved_blocks() -> Result<String, String> {
          user-named:      {}\n\
          dual-cabs:       {}\n\
          sample (named):\n{sample}\n\
-         NOTE: read-only; this is the exact path list_saved_blocks serves the UI.\n",
+         NOTE: read-only; the --replace saved-block path uses the same decode.\n",
         blocks.len(),
         named.len(),
         dual.len(),
@@ -348,7 +348,7 @@ pub fn probe_saved_blocks() -> Result<String, String> {
 
 /// Fast full-library read via the device backup (`probe --device-backup`): one
 /// `BackupRequest` streams a GNU-tar + LZ4-frame archive of `/data`, decoded in
-/// memory (see [`read_backup_archive`]). Replaces ~500 per-preset round-trips with
+/// memory (see `read_backup_archive`). Replaces ~500 per-preset round-trips with
 /// one stream + one local SQLite read, and yields COMPLETE presets (not the
 /// USB-partial slot-read). Prints live transfer progress (the same `BackupProgress`
 /// that drives the UI's `tmp://backup-progress` bar).

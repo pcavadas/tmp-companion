@@ -7,8 +7,8 @@ use crate::{
     AppState, ListIndex, Serialize, Session, State,
 };
 
-/// The block content a copy [`CopyOp`] applies — the SAME three "with a block"
-/// variants `ReplArg` supports (no `Remove`; that is a [`CopyOp::Remove`] op).
+/// The block content a copy `CopyOp` applies — the SAME three "with a block"
+/// variants `ReplArg` supports (no `Remove`; that is a `CopyOp::Remove` op).
 /// Nested keys arrive camelCase, so `fenderId` is renamed.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -284,7 +284,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
 
     // Apply each op in order. An unconfirmed FIRST edit with no presetError is read back
     // before anything is re-sent (`apply_copy_op`). fw 1.8.58 has no silent-drop path for a
-    // correctly framed edit (static RE): a missing confirm is a confirm queued behind the
+    // correctly framed edit (static RE, inferred): a missing confirm is a confirm queued behind the
     // FIFO, a lapse (which draws ConnectionError), a backup freeze, or an insert abort.
     // Recover by read-back, never by blind re-send.
     let total = job.ops.len();
@@ -477,9 +477,9 @@ fn insert_precheck(
     // An IR/saved INSERT addresses the node it adds by FenderId (a node id is its
     // FenderId only for the first instance of a model in a group: fw 1.8.58 mints
     // `X`, `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
-    // `notes/write-safety.md`), so a group that ALREADY holds that model would make the
-    // follow-up swap ambiguous (it could re-point an existing block). (A cap-legal
-    // case: two cabinets in one group.) Refuse, never guess.
+    // `notes/device/presets.md#node-ids`), so a group that ALREADY holds that model would
+    // make the follow-up swap ambiguous (it could re-point an existing block). (A cap-legal case:
+    // two cabinets in one group.) Refuse, never guess.
     let ambiguous = !matches!(repl, CopyRepl::Model { .. })
         && before.is_none_or(|ids| ids.iter().any(|id| id == repl.insert_fender_id()));
     if ambiguous {
@@ -709,10 +709,10 @@ struct AppliedOp<'a> {
 /// (`nodeReplaced`(40) / `nodeRemoved`(36) / `nodeInserted`(33)).
 ///
 /// `recover_unconfirmed`: an edit with no confirm and no `presetError` is READ BACK from
-/// the working copy before anything is re-sent, and a landed edit is never re-sent (fw
-/// 1.8.58 has no silent-drop path for a correctly framed edit, static RE). A replace mints
-/// a new node id, so a blind re-send would name a node that is already gone, and a replace
-/// naming a node that is gone draws `presetError` 14 (static RE, fw 1.8.58). See
+/// the working copy before anything is re-sent, and a landed edit is never re-sent (fw 1.8.58 has
+/// no silent-drop path for a correctly framed edit, static RE, inferred). A replace mints a new
+/// node id, so a blind re-send would name a node that is already gone, and a replace naming a
+/// node that is gone draws `presetError` 14 (static RE, fw 1.8.58). See
 /// [`replace_read_back`]; a remove re-sends only when the read shows the node still there;
 /// an insert reads against `before` (its group's FenderIds before the op), see
 /// [`Session::insert_landed`]. Never on a `presetError`.
@@ -852,7 +852,7 @@ fn apply_copy_replace(
 /// node it just added and apply the IR-file link / saved-block swap to it. A node's id is
 /// its FenderId only for the first instance of a model in a group (fw 1.8.58 mints `X`,
 /// `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
-/// `notes/write-safety.md`), so the new node is addressed as
+/// `notes/device/presets.md#node-ids`), so the new node is addressed as
 /// `repl.insert_fender_id()` directly — no before/after roster diff (`insert_node`'s
 /// `clear_raw` empties the session buffer such a diff would read, and a partial "before"
 /// read could diff out an EXISTING node and point the IR/block swap at it).

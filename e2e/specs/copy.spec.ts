@@ -145,8 +145,7 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
     // The heavy library backup was read exactly once — every edit patched the cache.
     expect(backupCalls).toBe(1);
 
-    // NOT IMPLEMENTED: a read-back of the saved presets after a reload
-    // (notes/user-journeys.md's Copy registry).
+    // NOT IMPLEMENTED: a read-back of the saved presets after a reload.
 
     // ONLINE ONLY: this test's own edits above left T2 (402, E2E Edge) structurally
     // mutated. The next run's pristine-checking seed (e2e_seed.rs's ChainDrift

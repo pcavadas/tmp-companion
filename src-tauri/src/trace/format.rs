@@ -9,7 +9,7 @@
 //! on; it is only used to escape strings and to read lines back.
 //!
 //! A cut last line is legal: the e2e server is killed rather than stopped, so its
-//! writer can die mid-line. [`read_trace`] drops that line.
+//! writer can die mid-line. `read_trace` drops that line.
 
 use std::fmt::Write as _;
 

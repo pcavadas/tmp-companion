@@ -39,7 +39,7 @@ pub(super) fn measure_at_level(
 // (a near-stationary DI capture) can't discriminate, so it DISARMS the trip.
 //
 // There is no level-shift rescue: the floor is post-DSP, so `presetLevel` scales it by
-// the same 20·log10 a real signal follows (`notes/gotchas.md`'s floor-read entry), and a
+// the same 20·log10 a real signal follows (`notes/device/reamp-audio.md#silent-captures`), and a
 // "did the capture track the level change" confirm passes a floor read as real.
 
 /// Trip gate: a capture whose momentary spread is at or below this is suspected of being
@@ -180,9 +180,9 @@ pub struct MeasuredC {
     pub captures: u32,
 }
 
-/// Two reference captures at different `presetLevel`s must solve the same `C` within this
-/// (LU) or a third capture decides. ~2.5σ of the ~0.12 LU run-to-run capture noise, far
-/// under the ~3 LU outliers on record (`notes/leveling.md`).
+/// Two reference captures at different `presetLevel`s must solve the same `C` within this (LU) or
+/// a third capture decides. ~2.5σ of the ~0.12 LU run-to-run capture noise
+/// (`notes/device/reamp-audio.md#capture-window`), far under the ~3 LU outliers seen on the unit.
 pub(crate) const C_AGREE_TOL_LU: f64 = 0.3;
 
 /// The cross-check capture's level: −3 dB from the reference (×0.7), or +3 dB when that
@@ -407,17 +407,15 @@ pub(crate) fn capture_on_session(
     if let Some(ref_level) = ref_level {
         set_knob(s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0), None)?;
     }
-    // NAKED-SHAPE idle breaker: with no isolation write and no reference level, this
-    // seam has sent nothing itself before the engage, which would otherwise land on a
-    // ~600 ms idle gap after the caller's `load_scene` recall and read the device's
-    // stationary output floor instead of the stimulus. `Session::heartbeat` is the
-    // designed keep-alive and writes nothing: with the default settles, recall → 150 → hb →
-    // 100 → engage keeps every idle gap ≤300 ms (see `notes/perf.md`).
-    // HW evidence, the two candidate mechanisms, and why the timing is two-sided:
-    // gotchas.md "An engage after a naked scene recall latches silence".
+    // NAKED-SHAPE idle breaker: with no isolation write and no reference level, this seam has
+    // sent nothing itself before the engage, which would otherwise land on a ~600 ms idle gap
+    // after the caller's `load_scene` recall and read the device's stationary output floor
+    // instead of the stimulus. `Session::heartbeat` is the designed keep-alive and writes
+    // nothing: with the default settles, recall → 150 → hb → 100 → engage keeps every idle gap
+    // ≤300 ms (`notes/device/reamp-audio.md#idle-gap-before-an-engage`).
     //
     // PRODUCTION fix, not harness-only: the naked shape is reached by
-    // `capture_asis_full` (probe --measure-scene / --measure-current), by
+    // `capture_asis_full` (probe --measure-scene / --measure-current)
     // and `measure_sound_asis_strict`'s scene rows (empty bypass, no reference level). Two
     // shapes over-fire benignly toward the proven-green timing: caller-side
     // `fs_params` writes (invisible here — the line is already warm) and the
@@ -1032,7 +1030,7 @@ pub(super) fn arm_measurement(
 ///
 /// BASE ARM ONLY: with `writes` empty, interleave `heartbeat → settle → heartbeat` before the
 /// final settle, or the trailing settles leave a ~600 ms idle gap that latches the floor.
-/// [→ evidence](../../../notes/gotchas.md#an-engage-after-a-naked-scene-recall-latches-silence--break-the-idle-with-heartbeats)
+/// [→ evidence](../../../notes/device/reamp-audio.md#idle-gap-before-an-engage)
 pub(super) fn arm_pair_measurement(
     s: &mut Session,
     scene: Option<u32>,
@@ -1251,10 +1249,9 @@ mod floor_guard_tests {
         assert!(!floor_suspect(0.08, STATIONARY_STIM_LU)); // stationary stimulus disarms
     }
 
-    // BUG→GATE (#234): the floor is post-DSP, so `presetLevel` scales it by the same 20·log10
-    // a real signal follows (`notes/gotchas.md`). The old level-shift confirm accepted such a
-    // floor as "ultra-compressed but real"; now a floor that stays flat through the retry is
-    // the honest error, whatever level it was read at.
+    // The floor is post-DSP, so `presetLevel` scales it by the same 20·log10 a real signal
+    // follows (`notes/device/reamp-audio.md#silent-captures`): a floor that stays flat through
+    // the retry is an error, whatever level it was read at.
     #[test]
     fn a_floor_that_scales_with_preset_level_is_rejected() {
         let mut calls = 0;

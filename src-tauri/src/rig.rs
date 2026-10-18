@@ -6,12 +6,12 @@
 //!
 //! WHO GETS WHICH RIG. Device work runs on one blocking thread per command
 //! (`device_gate::with_released_seize_blocking`), so the rig is PER THREAD, like
-//! `session::reamp`'s `REAMP_UNSETTLED`: [`scoped`] installs one for a closure and every
+//! `session::reamp`'s `REAMP_UNSETTLED`: `scoped` installs one for a closure and every
 //! `Session::connect*`, `audio::reamp_capture`, settle and abort check inside it — however
 //! deep — goes to that rig. A thread with nothing installed gets the build's default:
 //! - production and the ONLINE e2e tier (`TMP_E2E_ONLINE=1`): [`DeviceRig`], the real
 //!   seized HID and Core Audio / ALSA / WASAPI streams;
-//! - an e2e build with `TMP_E2E_REMOTE`: [`RemoteRig`], the remote device over
+//! - an e2e build with `TMP_E2E_REMOTE`: `RemoteRig`, the remote device over
 //!   `hid::remote::RemoteHid` (captures over `remote_audio` when `TMP_E2E_REMOTE_AUDIO` is
 //!   set, refused otherwise; settles at full length). The remote device counts as online
 //!   everywhere else (`e2e_online`), since its state is device state, not SimDevice's;

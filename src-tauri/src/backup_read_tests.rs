@@ -5,9 +5,9 @@ fn ds(n: u32) -> DeviceSlot {
     DeviceSlot::try_from(n).unwrap()
 }
 
-/// The truncation fallback: a slot-addressed `presetDataRequest` (field 8) read of a LARGE
-/// preset is cut before its `ftsw`/`scenes` tail (per-slot-deterministic — a re-read cannot
-/// lengthen it), so the caller re-reads the COMPLETE body off a device backup. The read must be
+/// The truncation fallback: a session lapse can cut a slot-addressed `presetDataRequest`
+/// (field 8) read before its `ftsw`/`scenes` tail, so the caller re-reads the COMPLETE body
+/// off a device backup. The read must be
 /// NAME-GUARDED in the same address space as the writes it feeds (danger.md): a second
 /// connection sits between whatever named the slot and this transfer, and a body taken
 /// from the wrong slot would drive footswitch writes and a save against another preset.

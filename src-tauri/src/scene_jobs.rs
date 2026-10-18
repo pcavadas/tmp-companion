@@ -1032,7 +1032,7 @@ pub(crate) fn prepass_scene_docs(
 /// overlay merges key-level onto the cloned `audioGraph.splitMix`. On a recall the device
 /// merges only a `{bypass}` overlay key by key and replaces the node's whole param object
 /// with any other overlay (static RE, fw 1.8.58); this merge keeps base keys either way
-/// (open: notes/open-questions.md).
+/// (open: notes/open-questions.md#scene-write-landing-shapes).
 pub(crate) fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::Value) {
     for key in crate::audiograph::GRAPHS {
         let overlay_groups = scene.get(key).and_then(|g| g.as_object());
@@ -1104,7 +1104,7 @@ pub(crate) fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &se
 /// `Full`. The classifier here tests for the bypass family ([`BYPASS_ONLY_KEYS`]), not the
 /// key count, so it differs from the device at edge shapes — a one-key non-bypass entry
 /// classifies `Full`, a `{bypass, bypassType}` entry `BypassOnly` (open:
-/// notes/open-questions.md).
+/// notes/open-questions.md#scene-write-landing-shapes).
 ///
 /// A BYPASS-ONLY overlay's whole permitted key set — the block's per-scene STATE keys;
 /// NONE of these is a knob, so an overlay whose keys are a subset of these carries no
@@ -1880,7 +1880,7 @@ pub(crate) fn saved_scene_docs_refusal(
 // `scene_jobs::` path.
 
 /// One control a scene row could be leveled on, with the two annotations the picker cannot
-/// derive on its own. `class`/`range` come from [`crate::param_class`]; `current` is the
+/// derive on its own. `class`/`range` come from `crate::param_class`; `current` is the
 /// value AUTHORED IN THAT SCENE (overlay if present, else base).
 ///
 /// Block DISPLAY info is `groupId`/`nodeId`/`fenderId` only — the frontend owns the

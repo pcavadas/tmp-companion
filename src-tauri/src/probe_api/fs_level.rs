@@ -18,7 +18,7 @@ use crate::{
 
 /// Probe entry: sends a chunked `set_footswitch_assignment` (1) BEFORE any audio, (2) after
 /// ONE re-amp CoreAudio capture, (3) after a SECOND capture — reporting the device's reply
-/// fields each time ([54] = landed, [] = dropped). Known limit: hard-wired to slot 23 / FS6,
+/// fields each time (`[54]` = landed, [] = dropped). Known limit: hard-wired to slot 23 / FS6,
 /// outside `SCRATCH_SLOTS`; restores after each set.
 pub fn probe_repro_chunked() -> Result<String, String> {
     let slot = ListIndex(23);

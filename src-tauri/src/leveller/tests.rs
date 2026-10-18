@@ -1038,7 +1038,7 @@ fn lufs_at_level_is_solve_levels_own_predicted() {
     assert_eq!(super::lufs_at_level(c, lvl), predicted);
 }
 
-// (A3) A base block knob write must recall base explicitly — a preset loads
+// A base block knob write must recall base explicitly — a preset loads
 // into its saved lastLoadedScene, not necessarily base (HW), so a bare write
 // with no recall would silently land wherever that saved scene left it. This
 // is the reported bug's exact shape: preset 28 (the e2e `E2E Hiwatt 3S` fixture)
@@ -2631,7 +2631,7 @@ fn write_fs_values_bakes_into_base_not_the_saved_scene() {
 
 // THE WRITER side of the param-func-without-valueType HW finding (the device rejects a
 // WHOLE imported preset at load when any `func: "param"` ftsw entry lacks `valueType` —
-// see `notes/gotchas.md`'s entry of the same name). Pins the
+// see `notes/device/presets.md#footswitch-json`). Pins the
 // ASSIGN branch's composed functionJson (the literal wire string a test can parse, per
 // `SimEvent::SetFootswitchAssignment`'s own doc) directly, so a refactor that threads
 // `FootswitchWriteSpec` "faithfully" but drops the field fails HERE instead of only
@@ -2672,8 +2672,8 @@ fn write_fs_values_assign_composes_a_numeric_value_type() {
     assert!(
         json["valueType"].is_number(),
         "the composed param functionJson must carry a NUMERIC valueType, not omit it \
-         or carry a string — its absence makes fw 1.8.45 silently discard the whole \
-         preset on a later import: {sent}"
+         or carry a string — its absence makes the firmware reject the whole \
+         imported preset at its first load: {sent}"
     );
 }
 
@@ -2734,7 +2734,7 @@ fn write_fs_values_mirrors_the_bake_and_restores_the_saved_scene() {
     );
 }
 
-// (A3, presetLevel lane) The reported measurement bug: `measure_c`'s captures set
+// (presetLevel lane) The reported measurement bug: `measure_c`'s captures set
 // `presetLevel` with NO scene recall, so on a preset whose saved `lastLoadedScene` is a
 // FS scene (HW: preset 28, scene 3) the "base" ceiling `C` was measured in that scene —
 // a different sound than the one being leveled. Base is a recall (wire slot 8), never an

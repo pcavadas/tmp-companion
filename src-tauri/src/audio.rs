@@ -95,8 +95,8 @@ pub struct AudioDevice {
 /// wrapper, a `surroundNN:` hint…) can share the exact same display name, and
 /// merging those by name alone would union their channel/rate/format ranges
 /// into a chimera that describes none of them (HW-observed: `hw:CARD=Pro_1,
-/// DEV=0`'s real S32_LE/4ch/[44100,96000] getting merged with an unrelated
-/// hint into a bogus 64ch/F32/[4000,4294967295] entry). `driver` is the exact
+/// DEV=0`'s real `S32_LE/4ch/[44100,96000]` getting merged with an unrelated
+/// hint into a bogus `64ch/F32/[4000,4294967295]` entry). `driver` is the exact
 /// ALSA pcm_id, so it disambiguates; two entries with the same name AND driver
 /// really are the same device's input/output view.
 pub fn enumerate() -> Vec<AudioDevice> {
@@ -290,7 +290,7 @@ impl Capture {
     /// channels 0/1) for the standard BS.1770 stereo measure (`lufs::measure_stereo`)
     /// — dry channel 2+ is excluded exactly like `stereo_mix`/`loudest_channel`.
     /// `None` for a genuinely 1-channel capture: the caller falls back to
-    /// [`lufs::measure_mono`] on channel 0 rather than duplicating it into fake
+    /// `lufs::measure_mono` on channel 0 rather than duplicating it into fake
     /// dual-mono, which would invent the +3.01 dB the hardware never produced.
     pub fn processed_stereo(&self) -> Option<Vec<f32>> {
         if self.channels < 2 {
@@ -2208,7 +2208,7 @@ pub(crate) fn estimate_signal_start(capture: &[f32], rate: u32) -> Option<usize>
 /// Doctor callers do not use this as their primary onset estimate — its
 /// confidence gate is a corr floor + lag ceiling, neither of which detects a
 /// PEAKLESS correlation curve (measured flat, 0.27–0.37 over every lag 0–250 ms,
-/// on a 65%-wet reverb chain). [`leveller::doctor_onset`] tries
+/// on a 65%-wet reverb chain). `leveller::doctor_onset` tries
 /// [`estimate_signal_start`] first and falls back to this correlator.
 pub(crate) fn estimate_onset(stimulus: &[f32], capture: &[f32], rate: u32) -> (usize, bool) {
     let hop = (rate as usize * ONSET_HOP_MS / 1000).max(1);

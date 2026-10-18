@@ -524,7 +524,7 @@ pub(crate) fn load_and_filter_amp_candidates(
 /// Closed-loop block-control leveling on the real device: enumerate `slot` to
 /// find the chosen block's current value (for sensible search bounds), then drive
 /// it via `ChangeParameter` in a closed loop to `target_lufs`. Amplitude params
-/// (current value in 0..1) search [0,1]; dB-unit params (e.g. an IR `outputlevel`)
+/// (current value in 0..1) search `[0,1]`; dB-unit params (e.g. an IR `outputlevel`)
 /// search a ±range around the current value. Stimulus via `TMP_LEVELLER_STIMULUS`.
 pub fn probe_level_block(
     slot: ListIndex,

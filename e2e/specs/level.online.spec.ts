@@ -19,8 +19,8 @@ import {
 // ONLINE Level. Two arcs, run back-to-back in one session so a 27↔28 see-saw regression
 // surfaces in a single run: the 410 arc (below) — Friedman-shape (410)'s consolidated
 // base+footswitches+scenes arc + idempotency, the TRADE/see-saw CONTROL, lane order base →
-// footswitches → scenes matching production's own `runRank` (notes/gotchas.md's "A scene
-// renders the base chain's ON blocks" entry). The 405 journey — Plumes-shape (405)'s
+// footswitches → scenes matching production's own `runRank`
+// (notes/device/scenes.md#footswitch-state-on-recall). The 405 journey — Plumes-shape (405)'s
 // first-run BOOST journey via the wizard UI.
 // SELF-CALIBRATE: every target/precondition below is derived at RUNTIME from the device's own
 // as-is reading or solved `constant_c`, never a fixture constant — a sim-model magnitude (e.g.

@@ -3,7 +3,7 @@
 //!
 //! The load-bearing USB-protocol invariants (batchStatus grouping, re-amp latch
 //! rules, the HID seize, slot +1 addressing, the capture window) are written up
-//! in `notes/protocol.md`.
+//! in `notes/device/` (`session.md`, `presets.md`, `reamp-audio.md`).
 //!
 //! Builds on `hid` (transport) + `proto` (wire codec). Replicates the request
 //! sequence that is known-good against a real device. The

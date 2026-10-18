@@ -5,7 +5,7 @@
 # MANIFEST.json when it ends. Sourced by scripts/e2e.sh; tested offline by
 # scripts/e2e-evidence.spec.sh. Other device scripts reuse it with their own <mode>.
 #
-# Layout and the trace format: notes/e2e-test-plan.md, "Recording". The root defaults to
+# Layout and the trace format: notes/e2e-recording.md. The root defaults to
 # `$(git rev-parse --git-common-dir)/tmp-evidence`: inside .git, so it is never tracked,
 # never part of `gates.sh --key`, shared by every worktree and kept when a worktree is
 # removed. Raw evidence never leaves this machine.

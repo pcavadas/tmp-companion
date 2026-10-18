@@ -89,7 +89,7 @@ jobs:
   # Alpha Linux artifact, built in the same run as the macOS release but never
   # blocking it (continue-on-error): a broken Linux bundle should cost this run
   # its Linux asset, not the signed/notarized macOS DMG. See
-  # notes/linux-packaging.md for the full pipeline rationale.
+  # notes/releasing.md for the full pipeline rationale.
   build-deb:
     needs: resolve-version
     if: needs.resolve-version.outputs.version != ''

@@ -3,6 +3,19 @@
 //! neither. Run from `src-tauri/` so the bundled stimulus WAVs resolve. Bare
 //! `probe` connects and lists My Presets.
 //!
+//! DESTRUCTIVE arms — no `SCRATCH_SLOTS` guard; back the unit up first:
+//! - LOAD every preset in turn: `--scenes`, `--scenes-full`. LOAD each probed slot:
+//!   `--doctor-window-ab` (as do the other measuring arms).
+//! - SAVE in place on the named slot: `--insert-active --commit`, `--insert-map --commit`,
+//!   `--reprompt-map --commit`, `--bulk-replace --commit`, `--replace-held --commit`,
+//!   `--bulk-replace-saved --commit`, `--ftsw-validate --commit`, `--level-footswitch
+//!   --commit`, `--clear-ftsw`, `--bake-validate`, `--set-param-save … save`,
+//!   `--scene-write-cell`, `--defer-scenes`, `--bisect-scene … save`, `--levelpreset` /
+//!   `--live-lufs … save`, `--level-preset-scenes` / `--jointk-scenes … 1`, `--redistribute`,
+//!   `--save-load-test --commit`, `--bulk-apply`.
+//! - Library and global writes: `--clear`, `--import`, `--replace-inplace`, `--restore`, the
+//!   Song/Setlist editors (`--add-song` …), `--set-scene-behavior`, `--set-master`.
+//!
 //! Exits non-zero on failure so it can gate dev scripts. `probe --help` lists every command
 //! flag (the `ARMS` dispatch table, in dispatch order) and every modifier flag
 //! (`OPTION_FLAGS`); an unrecognised `--flag` exits 2 instead of falling through to the
@@ -2401,18 +2414,18 @@ fn arm_set_param(args: &[String]) -> bool {
             Some(v) => v,
             None => {
                 eprintln!(
-                    "[probe] usage: --set-param <slot 400..402> <group> <node> <param> <value>"
+                    "[probe] usage: --set-param <slot 400..410> <group> <node> <param> <value>"
                 );
                 std::process::exit(2);
             }
         };
         let (Some(g), Some(n), Some(p)) = (args.get(i + 2), args.get(i + 3), args.get(i + 4))
         else {
-            eprintln!("[probe] usage: --set-param <slot 400..402> <group> <node> <param> <value>");
+            eprintln!("[probe] usage: --set-param <slot 400..410> <group> <node> <param> <value>");
             std::process::exit(2);
         };
         let Some(v) = args.get(i + 5).and_then(|v| v.parse::<f32>().ok()) else {
-            eprintln!("[probe] usage: --set-param <slot 400..402> <group> <node> <param> <value>");
+            eprintln!("[probe] usage: --set-param <slot 400..410> <group> <node> <param> <value>");
             std::process::exit(2);
         };
         eprintln!("[probe] set {g}/{n}/{p} = {v} on slot {slot}…");
@@ -2463,12 +2476,12 @@ fn arm_switch_template(args: &[String]) -> bool {
         let slot = match args.get(i + 1).and_then(|v| v.parse().ok()) {
             Some(v) => v,
             None => {
-                eprintln!("[probe] usage: --switch-template <slot 400..402> <templateType>");
+                eprintln!("[probe] usage: --switch-template <slot 400..410> <templateType>");
                 std::process::exit(2);
             }
         };
         let Some(t) = args.get(i + 2) else {
-            eprintln!("[probe] usage: --switch-template <slot 400..402> <templateType>");
+            eprintln!("[probe] usage: --switch-template <slot 400..410> <templateType>");
             std::process::exit(2);
         };
         eprintln!("[probe] switching slot {slot} template → {t}…");

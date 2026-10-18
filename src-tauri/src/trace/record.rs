@@ -313,7 +313,7 @@ impl Recorder {
     }
 
     /// Wait (up to `wait`) until the writer has written every line queued before this
-    /// call. A capture still being metered is not waited for (see [`Recorder::drain`]).
+    /// call. A capture still being metered is not waited for (see `Recorder::drain`).
     pub(crate) fn flush(&self, wait: Duration) {
         let (tx, rx) = bounded(1);
         if self.tx.send_timeout(Msg::Flush(tx), wait).is_ok() {

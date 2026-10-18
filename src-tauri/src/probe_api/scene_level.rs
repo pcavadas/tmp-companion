@@ -9,9 +9,9 @@ use crate::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use crate::slot::ListIndex;
 use crate::stimulus::read_stimulus_calibrated;
 // Every scene-leveling entry point below ENUMERATES scenes via the complete-JSON
-// fallback (`read_preset_scenes_complete`), not the raw field-8 partial: the scene-tail
-// cut is per-slot-deterministic (notes/gotchas.md's field-8 entry) and a probe run that
-// levels off a truncated scene list silently mislevels or drops a scene. The
+// fallback (`read_preset_scenes_complete`), not the raw field-8 read: a session lapse
+// cuts that read, `scenes` first (notes/device/presets.md#reading-presets), and a probe
+// run that levels off a cut scene list silently mislevels or drops a scene. The
 // save-bearing `probe_level_preset_scenes` also classifies off the COMPLETE saved doc
 // (`read_saved_preset_complete`, backup fallback) — off the raw partial, every tail
 // scene past the cut refused as `SceneOverlay::Unknown` (HW); the read-only bench/scan

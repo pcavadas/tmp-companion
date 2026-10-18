@@ -1,6 +1,6 @@
 use std::path::Path;
 
-// The one app command list, shared with `bootstrap::run` and the e2e server (#270).
+// The one app command list, shared with `bootstrap::run` and the e2e server.
 include!("src/app_commands.rs");
 
 /// The callback `with_app_commands!` expands into: the bare command names.
@@ -13,7 +13,7 @@ macro_rules! command_names {
 /// Every app command, by name. Declaring them in the app manifest makes `tauri_build`
 /// generate an `allow-<command>` / `deny-<command>` permission for each, so
 /// `capabilities/default.json` (not just the plugins' permissions) governs what the
-/// webview may invoke (#268). Without a manifest every registered command is callable.
+/// webview may invoke. Without a manifest every registered command is callable.
 const APP_COMMANDS: &[&str] = with_app_commands!(command_names!());
 
 fn main() {

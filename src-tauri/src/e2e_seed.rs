@@ -365,7 +365,7 @@ fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
 }
 
 /// Every value leveling can write — a leveling-class parameter (`param_class` not
-/// [`ParamClass::Other`]) in a base block, a scene overlay, or a `param` footswitch's
+/// `ParamClass::Other`) in a base block, a scene overlay, or a `param` footswitch's
 /// `valueA`/`valueB` — holds the fixture's value wherever BOTH sides carry it (numbers
 /// within [`PRISTINE_TOL`]). Only shared keys and leveling-class parameters count: the
 /// device normalizes an import (parameters a model lacks dropped, its own defaults added,
@@ -468,10 +468,9 @@ fn leveled_values(doc: &serde_json::Value) -> std::collections::HashMap<String, 
 // before it returns.
 
 /// Where the empty-body substitution is written up — quoted in the hard error so the
-/// next encounter starts from the written-up evidence. Section TITLE, not
-/// the anchor slug: the title is what survives a heading reflow.
-const DISCARD_GOTCHA: &str = "notes/gotchas.md — \"A body rejected at load becomes a \
-                              silent empty preset that keeps its name\"";
+/// next encounter starts from the written-up evidence. Section TITLE, not the anchor
+/// slug: the title is what survives a heading reflow.
+const DISCARD_GOTCHA: &str = "notes/device/presets.md — Rejected at load";
 
 /// Does `body` carry the firmware's EMPTY substitute rather than the import? Two
 /// independent signatures, either conclusive on a slot we imported THIS run:
@@ -494,8 +493,8 @@ fn body_was_discarded(body: &[u8], fixture_json: &str) -> bool {
 /// `Ok(None)` from `read_slot_preset_json` means "the device did not answer this read",
 /// not "the slot is empty" (the documented back-to-back read unreliability; see
 /// `body_names`) — settling 300 ms and re-reading once resolves that. A SHORT/truncated
-/// body is a DIFFERENT class and is NOT retried here: the stored-row partial truncates at a
-/// per-slot-deterministic size, so a re-read cannot lengthen it. Shared by
+/// body is a DIFFERENT class and is NOT retried here: a session lapse cut it, and the
+/// caller's checks judge the body it got. Shared by
 /// `verify_landed_imports` and `seed_scenario_core`'s per-target classify pass.
 fn paced_retry_read(s: &mut Session, list_index: ListIndex) -> Option<Vec<u8>> {
     crate::device_gate::settle(std::time::Duration::from_millis(300));
