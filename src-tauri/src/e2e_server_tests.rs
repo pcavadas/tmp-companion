@@ -5895,8 +5895,10 @@ fn sim_state_counts_server_aborts() {
     assert_eq!(state["server_aborts"], serde_json::json!(0), "{state}");
     let mut s = crate::session::Session::connect().expect("connect");
     // A scene index past a scened preset's scene count aborts the server (static RE).
+    // Sent raw: `Session::load_scene` refuses it before it reaches the fake.
     s.load_preset(ListIndex(403)).expect("load 403");
-    let _ = s.load_scene(50);
+    assert!(s.load_scene(50).is_err(), "the session guard refuses it");
+    let _ = s.send_and_collect(&crate::proto::load_scene(50), 300);
     drop(s);
     let (_, state) = route_json(&webview, "GET", "/sim/state", serde_json::json!({}));
     assert_eq!(state["server_aborts"], serde_json::json!(1), "{state}");
