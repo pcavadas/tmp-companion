@@ -340,6 +340,8 @@ fn extract_active_graph_amp_half_stack_keeps_cab_id_but_no_split() {
     // …but the dual-cab SPLIT fields are suppressed (dual-mic, not dual-cab).
     assert_eq!(g.nodes[0].cab_sim_id2, None);
     assert_eq!(g.nodes[0].cab_sim2_enabled, None);
+    // The second mic still takes a second cabinet-cap slot (fw 1.8.58).
+    assert!(g.nodes[0].second_cab_slot);
 }
 
 #[test]
@@ -953,6 +955,7 @@ fn push_split_drops_stage_only_when_both_lanes_empty() {
         cab_sim_id: None,
         cab_sim_id2: None,
         cab_sim2_enabled: None,
+        second_cab_slot: false,
         params: std::collections::HashMap::new(),
     };
     push_split(&mut stages, Vec::new(), vec![node]);

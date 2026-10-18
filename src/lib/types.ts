@@ -641,6 +641,9 @@ export interface GraphNode {
   cab_sim_id2?: string;
   /** Whether this CabSim runs two cabinets in parallel (`cabsim2enabled`). */
   cab_sim2_enabled?: boolean;
+  /** Whether this node takes a second cabinet-cap slot: `cabsim2enabled` on any node,
+   *  an amp's second mic as much as a CabSim's second cab. Omitted when false. */
+  second_cab_slot?: boolean;
   /** Allowlisted numeric params (reverb-mix + EQ-10 band gains) harvested from
    *  `dspUnitParameters` — Doctor's value-aware prescriptions read these.
    *  Always present server-side (empty map when none). */

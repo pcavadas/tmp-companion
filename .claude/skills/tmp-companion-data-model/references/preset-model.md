@@ -89,7 +89,7 @@ Detail behind the numbered constraints in `SKILL.md`.
 
 1. **Convolution-reverb limit — 1 per preset.**
    The cap is on the shared **FFT convolution engine**, so membership is an `acdCategory` union, not a category name: standalone convolutions (`ACD_TMSpring63`/`65`, `Cathedral`, `HallOfDoom`, `EtherealHall`, and the room/plate/chamber models) **and** amps with baked-in convolution spring reverb (Deluxe / Princeton / Twin / Super Reverb, blackface and brownface — the `…CabIRConvRvb` ids).
-   The shipped set (`block-classification.json`) has **19** members.
+   The shipped set (`block-classification.json`) has **20** members.
    That is why those amps ship `NoFx` / `Normal` (reverb-free) variants — to free the one convolution slot.
 2. **Cabinet limit — 2 cabinet-category blocks per preset.**
    The control app counts combos, half-stacks, bass amps, Cabinet blocks and IR blocks; heads and `ACD_ExternalCab` don't count, and any counted block with its second cab or mic (`cabsim2enabled`) on counts 2 [HW+RE].

@@ -341,6 +341,7 @@ fn nodes_from(preset: &serde_json::Value) -> Vec<doctor::DoctorNode> {
             bypassed,
             cab_sim_id: None,
             cab_sim2_enabled: None,
+            second_cab_slot: false,
             params: std::collections::HashMap::new(),
         });
     });

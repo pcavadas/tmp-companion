@@ -37,7 +37,7 @@ function block(model: string, opts: Partial<EditBlock> = {}): EditBlock {
     model,
     change: null,
     bypassed: false,
-    cabSim2Enabled: opts.cabSim2Enabled,
+    secondCabSlot: opts.secondCabSlot,
   };
 }
 
@@ -93,7 +93,7 @@ describe("checkOp — cabinet cap (max 2, dual-cab = 2 slots)", () => {
   });
 
   it("a lone dual-cab node (counts as 2) is fine on its own — no room for a 2nd cab though", () => {
-    const counts = baseCounts(graph([block(CAB_1, { cabSim2Enabled: true })]));
+    const counts = baseCounts(graph([block(CAB_1, { secondCabSlot: true })]));
     expect(counts.cabinet).toBe(2);
     // the dual-cab node already occupies both slots, so a 2nd cabinet errs
     expect(checkOp(counts, CAB_2, "before")).toBe(
@@ -103,7 +103,7 @@ describe("checkOp — cabinet cap (max 2, dual-cab = 2 slots)", () => {
 
   it("a dual-cab node plus one more single cabinet errs (3rd slot)", () => {
     const counts = baseCounts(
-      graph([block(CAB_1, { cabSim2Enabled: true }), block(CAB_2)]),
+      graph([block(CAB_1, { secondCabSlot: true }), block(CAB_2)]),
     );
     expect(checkOp(counts, CAB_3, "before")).toBe(
       "ComboHalfStackCabinetsLimit",
@@ -174,8 +174,26 @@ describe("checkOp — FXLoopCoexistence (bidirectional)", () => {
   });
 
   it("mono FxLoop3 + FxLoop4 together is fine (no stereo coexistence rule between two monos)", () => {
-    const counts = baseCounts(graph([block(FX_MONO_A), block(FX_MONO_B)]));
+    const counts = baseCounts(graph([block(FX_MONO_A)]));
     expect(checkOp(counts, FX_MONO_B, "before")).toBeNull();
+    expect(checkEdit(edit([block(FX_MONO_A), block(FX_MONO_B)]))).toBeNull();
+  });
+
+  it("no FX loop may appear twice (fw 1.8.58)", () => {
+    for (const id of [
+      "ACD_FxLoop1",
+      "ACD_FxLoop2",
+      FX_MONO_A,
+      FX_MONO_B,
+      FX_STEREO,
+    ]) {
+      const counts = baseCounts(graph([block(id)]));
+      expect(checkOp(counts, id, "before")).toBe("FXLoopCoexistence");
+      expect(
+        checkOp(counts, id, "replace", { anchor: { model: id } }),
+      ).toBeNull();
+      expect(checkEdit(edit([block(id), block(id)]))).toBe("FXLoopCoexistence");
+    }
   });
 
   it("replacing the mono anchor with stereo is fine when it's the only mono present", () => {
@@ -251,6 +269,59 @@ describe("checkOp — CPU budget (per op, like the device)", () => {
     );
     expect(checkOp(withOne, "ACD_NotARealBlock", "before")).toBe(
       "ProcessorUtilization",
+    );
+  });
+});
+
+// fw 1.8.58 client rules, the cabinet weights confirmed on the unit's own screen.
+describe("fw 1.8.58 cabinet and convolution caps", () => {
+  const AMP_COMBO = "ACD_TwinReverb65NoFxCabIR";
+  const STANDALONE_CAB_MODEL = "ACD_Fen57Champ";
+  const EXTERNAL_CAB = "ACD_ExternalCab";
+
+  it("an amp with its second mic takes two cabinet slots", () => {
+    const counts = baseCounts(
+      graph([block(AMP_COMBO, { secondCabSlot: true })]),
+    );
+    expect(counts.cabinet).toBe(2);
+    expect(checkOp(counts, "ACD_CabSimTMS", "after")).toBe(
+      "ComboHalfStackCabinetsLimit",
+    );
+    const oneMic = baseCounts(graph([block(AMP_COMBO)]));
+    expect(checkOp(oneMic, "ACD_CabSimTMS", "after")).toBeNull();
+  });
+
+  it("External Cab neither counts nor is ever refused", () => {
+    const counts = baseCounts(graph([block(EXTERNAL_CAB), block(AMP_COMBO)]));
+    expect(counts.cabinet).toBe(1);
+    expect(checkOp(counts, CAB_1, "after")).toBeNull();
+    const full = baseCounts(graph([block(CAB_1), block(CAB_2), block(CAB_3)]));
+    expect(checkOp(full, EXTERNAL_CAB, "after")).toBeNull();
+    expect(checkOp(full, GLOOPER, "after")).toBe("ComboHalfStackCabinetsLimit");
+  });
+
+  it("standalone cabinet models count toward the cap", () => {
+    const counts = baseCounts(
+      graph([block(STANDALONE_CAB_MODEL), block(CAB_1)]),
+    );
+    expect(checkOp(counts, CAB_2, "after")).toBe("ComboHalfStackCabinetsLimit");
+  });
+
+  it("the convolution cap counts presence, not members", () => {
+    const two = baseCounts(
+      graph([block(CONV_STANDALONE), block(CONV_STANDALONE_2)]),
+    );
+    expect(
+      checkOp(two, CONV_STANDALONE, "replace", {
+        anchor: { model: CONV_STANDALONE_2 },
+      }),
+    ).toBeNull();
+    expect(checkOp(two, GLOOPER, "after")).toBeNull();
+    const princeton = baseCounts(
+      graph([block("ACD_PrincetonReverb68CabIRConvRvb")]),
+    );
+    expect(checkOp(princeton, CONV_STANDALONE, "after")).toBe(
+      "ConvolutionReverbLimit",
     );
   });
 });

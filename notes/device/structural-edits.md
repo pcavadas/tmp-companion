@@ -64,4 +64,4 @@ The unit's block picker allows a row only while the chain's cab weight plus the 
 - Heads, effects and `ACD_ExternalCab` weigh 0 [HW+RE].
 
 A chain already over the cap greys every picker row, effects included, except External Cabinet, until cab blocks are removed [HW].
-`blockcaps.rs` copies the caps with membership sets from older firmware (`src/models/block-classification.json`), so it counts `ACD_ExternalCab` and adds the second-cab weight only to a standalone `ACD_CabSimTMS`.
+`blockcaps.rs` copies the fw 1.8.58 caps and sets (`src/models/block-classification.json`), plus 7 amp+cab ids the client cannot classify, and weights any `cabsim2enabled` member 2.

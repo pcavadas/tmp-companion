@@ -89,7 +89,7 @@ export function TargetEditCard({
     pick != null &&
     openBlock != null &&
     checkOp(counts, pick.model, "replace", {
-      anchor: { model: openBlock.model, dualCab: openBlock.cabSim2Enabled },
+      anchor: { model: openBlock.model, dualCab: openBlock.secondCabSlot },
     }) == null;
 
   // The open block's tile (the strip draws it pressed): the menu's anchor.

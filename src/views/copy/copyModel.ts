@@ -60,6 +60,9 @@ export interface EditBlock {
   cabSimId?: string;
   cabSimId2?: string;
   cabSim2Enabled?: boolean;
+  /** Whether the block takes a second cabinet-cap slot (`GraphNode.second_cab_slot`);
+   *  a replace carries it onto the replacement, like the dual-cab fields. */
+  secondCabSlot?: boolean;
 }
 
 /** One ordered stage of a path: a `series` run, or a `split` with two parallel
@@ -162,6 +165,7 @@ function toEditBlock(n: GraphNode, newUid: () => string): EditBlock {
     cabSimId: n.cab_sim_id,
     cabSimId2: n.cab_sim_id2,
     cabSim2Enabled: n.cab_sim2_enabled,
+    secondCabSlot: n.second_cab_slot,
   };
 }
 
