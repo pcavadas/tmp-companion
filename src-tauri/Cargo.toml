@@ -48,7 +48,7 @@ tauri-build = { version = "2", features = [] }
 # `backup_read`). `std` only: the default `fork`/`timeout` features add a subprocess
 # runner the in-process properties don't need.
 [dev-dependencies]
-proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 
 [dependencies]
 tauri = { version = "2", features = ["image-png"] }
