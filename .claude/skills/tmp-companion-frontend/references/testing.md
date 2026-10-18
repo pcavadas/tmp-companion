@@ -47,15 +47,15 @@ A command outside the registry (a plugin's own IPC) resolves `null`. setup.ts al
 
 ## The test kit
 
-| Helper                                           | Where             | What it does                                                                                                                                                                                                                     |
-| ------------------------------------------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `renderWithTheme(ui)`                            | `testKit.tsx`     | `render` inside `ThemeProvider` (as RTL's `wrapper`, so `rerender(ui)` keeps it)                                                                                                                                                 |
-| `toRgb(light.x)`                                 | `testKit.tsx`     | a hex token as jsdom reports it in `element.style` — assert colours by token, not value                                                                                                                                          |
-| `mockCommands`, `callsOf`, `fired`, `rejectWith` | `commandMocks.ts` | typed per-test command overrides and call reads; `rejectWith(reason)` rejects with `reason` unchanged — pass a bare string to mimic a backend `Err`                                                                              |
-| `make*()`                                        | `commandMocks.ts` | complete typed shapes: command returns (`makeStore`, `makeLevelResult`, `makeBackupRead`, …) and the Level wizard's inputs (`makeSetupOption`, `makeSceneOption`, `makeFootswitchOption`, `makeChoices`, `makeLevelingFlowDeps`) |
-| `withoutAmpCandidates(row)`                      | `commandMocks.ts` | a backup row with no `amp_candidates` key, so a scene run takes the live `list_level_blocks` fallback                                                                                                                            |
-| `mockLiveEvents()`                               | `commandMocks.ts` | the captured `listen` callbacks, cleared before each test; push with `act(() => { live.get("tmp://live-preset")?.({ payload }) })`                                                                                               |
-| `forceTauri()`                                   | `commandMocks.ts` | makes `isTauri()` true (sets `window.__TAURI_INTERNALS__`) so the live bridges and the library scan run; returns the undo, so `beforeEach(forceTauri)` scopes it to one `describe`                                               |
+| Helper | Where | What it does |
+|---|---|---|
+| `renderWithTheme(ui)` | `testKit.tsx` | `render` inside `ThemeProvider` (as RTL's `wrapper`, so `rerender(ui)` keeps it) |
+| `toRgb(light.x)` | `testKit.tsx` | a hex token as jsdom reports it in `element.style` — assert colours by token, not value |
+| `mockCommands`, `callsOf`, `fired`, `rejectWith` | `commandMocks.ts` | typed per-test command overrides and call reads; `rejectWith(reason)` rejects with `reason` unchanged — pass a bare string to mimic a backend `Err` |
+| `make*()` | `commandMocks.ts` | complete typed shapes: command returns (`makeStore`, `makeLevelResult`, `makeBackupRead`, …) and the Level wizard's inputs (`makeSetupOption`, `makeSceneOption`, `makeFootswitchOption`, `makeChoices`, `makeLevelingFlowDeps`) |
+| `withoutAmpCandidates(row)` | `commandMocks.ts` | a backup row with no `amp_candidates` key, so a scene run takes the live `list_level_blocks` fallback |
+| `mockLiveEvents()` | `commandMocks.ts` | the captured `listen` callbacks, cleared before each test; push with `act(() => { live.get("tmp://live-preset")?.({ payload }) })` |
+| `forceTauri()` | `commandMocks.ts` | makes `isTauri()` true (sets `window.__TAURI_INTERNALS__`) so the live bridges and the library scan run; returns the undo, so `beforeEach(forceTauri)` scopes it to one `describe` |
 
 Never `vi.mock("../lib/invoke")` to force `isTauri`, nor re-mock `@tauri-apps/api/event` per file: both are in the kit.
 A hook test that drives commands (`useLevelingFlow-*.test.ts`) goes through `mockCommands` too, so the real wrappers and their `Channel`s run — stream progress with `args.onResult.onmessage(item)` inside the handler.

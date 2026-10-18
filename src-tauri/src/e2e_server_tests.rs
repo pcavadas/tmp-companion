@@ -1123,8 +1123,7 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
 /// default of 1.0 throughout, exactly as before the Plumes-regression amendment.)
 ///
 /// `Saved` (not `ChangeParameter`) is the discriminator because the ceiling prepass engages once
-/// per row on EVERY run regardless of the fix (a known, accepted cost — see `CLAUDE.md`'s
-/// trade-offs) and writes its own throwaway `ChangeParameter` at the handle's top bound; only the
+/// per row on EVERY run regardless of the fix (a known, accepted cost) and writes its own throwaway `ChangeParameter` at the handle's top bound; only the
 /// actual write session (`write_footswitch_values`, gated on `pending` being non-empty) ever
 /// emits `Saved`.
 ///

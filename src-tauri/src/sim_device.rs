@@ -4399,7 +4399,7 @@ mod physics_tests {
         );
     }
 
-    // ── saturated-pedal response shape (notes/leveling.md §preset-024) ──────────────
+    // ── saturated-pedal response shape (notes/leveling.md#saturated-amp-response) ──────────────
 
     #[test]
     fn saturated_pedal_response_is_silent_at_and_below_the_noise_floor() {

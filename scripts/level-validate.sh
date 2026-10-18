@@ -27,7 +27,7 @@
 #           number.
 #   WARN  — `engaged` is "floor_suspect": the capture is FLAT but LOUD. That is the known
 #           false positive of `leveller::is_engaged`'s spread arm (FLOOR_TRIP_LU, 0.4 LU)
-#           on a compressed chain (CLAUDE.md), not a failed inject, and failing it hard
+#           on a compressed chain (notes/device/reamp-audio.md#silent-captures), not a failed inject, and failing it hard
 #           would sink a correct online run. The row is still MEASURED and still PASS/FAILs
 #           on ffmpeg's own number — only the engage proof is downgraded to advisory, and
 #           the verdict column carries `[WARN engage floor_suspect]`.

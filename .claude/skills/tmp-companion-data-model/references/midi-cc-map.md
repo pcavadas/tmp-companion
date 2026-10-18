@@ -17,12 +17,12 @@ It matches the fw 1.8.58 CC dispatch (static RE).
 504 presets across 4 banks — banks 0–2 hold 128 each, bank 3 holds 120 (see the table below).
 Each preset is recalled by sending a Bank Select (CC 0) followed by a Program Change.
 
-| Preset range | Bank Select CC 0 value | PC#   |
-| ------------ | ---------------------- | ----- |
-| 1–128        | 0                      | 1–128 |
-| 129–256      | 1                      | 1–128 |
-| 257–384      | 2                      | 1–128 |
-| 385–504      | 3                      | 1–120 |
+| Preset range | Bank Select CC 0 value | PC# |
+|---|---|---|
+| 1–128 | 0 | 1–128 |
+| 129–256 | 1 | 1–128 |
+| 257–384 | 2 | 1–128 |
+| 385–504 | 3 | 1–120 |
 
 (PC values are 1-indexed per Fender's table — the wire value is `PC# - 1` for standard MIDI implementations.) The device resolves preset = wire program + 1 + 128 × bank and rejects numbers above 504.
 The address is a position: after a reorder, a PC recalls whatever now sits at that number (static RE, fw 1.8.58).
@@ -31,49 +31,49 @@ The address is a position: after a reorder, a PC recalls whatever now sits at th
 
 From OM p.43.
 
-| CC # | Value range                               | Function                                                |
-| ---- | ----------------------------------------- | ------------------------------------------------------- |
-| 0    | 0–3                                       | Bank Change (= Bank Select MSB)                         |
-| 1    | 0–127                                     | Expression Pedal 1                                      |
-| 2    | 0–127                                     | Expression Pedal 2                                      |
-| 3    | 0–127                                     | **MIDI Expression Pedal 3** (virtual; no physical jack) |
-| 4    | 0–127                                     | **MIDI Expression Pedal 4** (virtual; no physical jack) |
-| 7    | 0–127                                     | Master Volume                                           |
-| 20   | 0-63 OFF, 64-127 ON                       | FS Mode Enable                                          |
-| 21   | 0-63 OFF, 64-127 ON                       | Effects Footswitch 1                                    |
-| 22   | 0-63 OFF, 64-127 ON                       | Effects Footswitch 2                                    |
-| 23   | 0-63 OFF, 64-127 ON                       | Effects Footswitch 3                                    |
-| 24   | 0-63 OFF, 64-127 ON                       | Effects Footswitch 4                                    |
-| 26   | 0-63 OFF, 64-127 ON                       | Effects Footswitch 5                                    |
-| 27   | 0-63 OFF, 64-127 ON                       | Effects Footswitch 6                                    |
-| 28   | 0-63 OFF, 64-127 ON                       | Effects Footswitch 7                                    |
-| 29   | 0-63 OFF, 64-127 ON                       | Effects Footswitch 8                                    |
-| 30   | 0-7 enables FS 1-8; 10-17 disables FS 1-8 | Effects Footswitch Selection (bulk enable/disable)      |
-| 64   | 64–127                                    | Tap Tempo                                               |
-| 65   | 0-63 OFF, 64-127 ON                       | Toe Switch                                              |
-| 66   | 0-63 OFF, 64-127 ON                       | Amp Control 1 (tip of AMP CTRL TRS jack)                |
-| 67   | 0-63 OFF, 64-127 ON                       | Amp Control 2 (ring of AMP CTRL TRS jack)               |
-| 68   | 0-63 OFF, 64-127 ON                       | Tuner (toggle on/off)                                   |
-| 69   | 64–127                                    | Next Song                                               |
-| 70   | 64–127                                    | Previous Song                                           |
-| 103  | 64–127                                    | Looper REC/DUB                                          |
-| 104  | 64–127                                    | Looper PLAY/STOP                                        |
-| 105  | 64–127                                    | Looper 1-SHOT                                           |
-| 106  | 64–127                                    | Looper UNDO                                             |
-| 107  | 64–127                                    | Looper 1/2 SPEED                                        |
-| 108  | 64–127                                    | Looper REVERSE                                          |
-| 109  | 64–127                                    | Looper VOLUME UP                                        |
-| 110  | 64–127                                    | Looper VOLUME DOWN                                      |
+| CC # | Value range | Function |
+|---|---|---|
+| 0 | 0–3 | Bank Change (= Bank Select MSB) |
+| 1 | 0–127 | Expression Pedal 1 |
+| 2 | 0–127 | Expression Pedal 2 |
+| 3 | 0–127 | **MIDI Expression Pedal 3** (virtual; no physical jack) |
+| 4 | 0–127 | **MIDI Expression Pedal 4** (virtual; no physical jack) |
+| 7 | 0–127 | Master Volume |
+| 20 | 0-63 OFF, 64-127 ON | FS Mode Enable |
+| 21 | 0-63 OFF, 64-127 ON | Effects Footswitch 1 |
+| 22 | 0-63 OFF, 64-127 ON | Effects Footswitch 2 |
+| 23 | 0-63 OFF, 64-127 ON | Effects Footswitch 3 |
+| 24 | 0-63 OFF, 64-127 ON | Effects Footswitch 4 |
+| 26 | 0-63 OFF, 64-127 ON | Effects Footswitch 5 |
+| 27 | 0-63 OFF, 64-127 ON | Effects Footswitch 6 |
+| 28 | 0-63 OFF, 64-127 ON | Effects Footswitch 7 |
+| 29 | 0-63 OFF, 64-127 ON | Effects Footswitch 8 |
+| 30 | 0-7 enables FS 1-8; 10-17 disables FS 1-8 | Effects Footswitch Selection (bulk enable/disable) |
+| 64 | 64–127 | Tap Tempo |
+| 65 | 0-63 OFF, 64-127 ON | Toe Switch |
+| 66 | 0-63 OFF, 64-127 ON | Amp Control 1 (tip of AMP CTRL TRS jack) |
+| 67 | 0-63 OFF, 64-127 ON | Amp Control 2 (ring of AMP CTRL TRS jack) |
+| 68 | 0-63 OFF, 64-127 ON | Tuner (toggle on/off) |
+| 69 | 64–127 | Next Song |
+| 70 | 64–127 | Previous Song |
+| 103 | 64–127 | Looper REC/DUB |
+| 104 | 64–127 | Looper PLAY/STOP |
+| 105 | 64–127 | Looper 1-SHOT |
+| 106 | 64–127 | Looper UNDO |
+| 107 | 64–127 | Looper 1/2 SPEED |
+| 108 | 64–127 | Looper REVERSE |
+| 109 | 64–127 | Looper VOLUME UP |
+| 110 | 64–127 | Looper VOLUME DOWN |
 
 ## MIDI Out jack modes
 
 Configurable in Global Settings → I/O → MIDI → "MIDI OUT":
 
-| Mode            | Behavior                                                                               |
-| --------------- | -------------------------------------------------------------------------------------- |
-| `Out` (default) | Only MIDI messages **generated by TMP** are sent to the MIDI OUT jack                  |
-| `Thru`          | Only MIDI messages **received at MIDI IN** are sent to the MIDI OUT jack (passthrough) |
-| `Merge`         | Both received and generated messages are merged onto the MIDI OUT jack                 |
+| Mode | Behavior |
+|---|---|
+| `Out` (default) | Only MIDI messages **generated by TMP** are sent to the MIDI OUT jack |
+| `Thru` | Only MIDI messages **received at MIDI IN** are sent to the MIDI OUT jack (passthrough) |
+| `Merge` | Both received and generated messages are merged onto the MIDI OUT jack |
 
 ## Receive channel & filtering
 

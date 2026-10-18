@@ -41,9 +41,8 @@ The held-out benchmark runs in `cargo test --lib` (`benchmark::held_out_baseline
 
 False positives on 248 healthy guitar sounds (count; 95% Wilson upper bound):
 
-<!-- prettier-ignore -->
 | Rule | Shipped (in-sample) | `maxPlusMargin` | `p75Consensus` | `targetOnly` |
-| --- | --- | --- | --- | --- |
+|---|---|---|---|---|
 | muddy | 24 (≤14.0%) | 0 (≤1.5%) | 37 (≤19.9%) | 21 (≤12.6%) |
 | boomy | 5 (≤4.6%) | 0 (≤1.5%) | 36 (≤19.4%) | 8 (≤6.2%) |
 | harsh | 8 (≤6.2%) | 1 (≤2.2%) | 43 (≤22.5%) | 8 (≤6.2%) |

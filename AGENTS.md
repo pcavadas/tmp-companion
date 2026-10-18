@@ -90,7 +90,7 @@ Read [`.claude/rules/danger.md`](.claude/rules/danger.md) before touching the de
 - **Block art is original SVG through the BlockArt engine**, never an `<img>` of a vendor PNG (Fender IP).
 - **`ui/primitives.tsx` is deliberately not split**: `Modal` renders `Button`, so a split reintroduces a circular import; `ui/Dialog.tsx` stays button-free.
 - **`blockArt.ts` must not import `catalog.ts`**: that closes a module-init cycle (a TDZ crash), and `no-restricted-imports` in `eslint.config.js` enforces it.
-- **Shared seams:** `backup::xor_jld` + `library::decode_preset_bytes` (`.preset` codec), `replace_inplace::replace_inplace_core`, `audiograph::for_each_node` / `for_each_node_mut` + `node_id`.
+- **Shared seams:** `backup::xor_jld` + `library::decode_preset_bytes` (`.preset` codec), `replace_inplace::replace_inplace_core`, `audiograph::for_each_node` / `for_each_node_mut`, `instance_id` and `mint_node_id`.
 - **Connection is fully automatic**: there are no Connect or Disconnect buttons.
 - **Editing `index.html` reloads the whole webview** in `tauri dev` (not HMR), re-running connect-on-mount.
 

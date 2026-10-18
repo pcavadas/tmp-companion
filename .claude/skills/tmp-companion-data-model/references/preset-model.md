@@ -11,20 +11,20 @@ This file holds the lookup-shaped detail behind its sections: the full 12-templa
 `audioGraph.template` carries the firmware id (firmware data, fw 1.8.58).
 Topologies are read off the p.18 thumbnails: `■` = one element, `[a/b]` = a parallel group (upper lane / lower lane), `⇒` = lanes merge.
 
-| #   | Template                         | Firmware id      | Lanes       | Topology                                                                                     |
-| --- | -------------------------------- | ---------------- | ----------- | -------------------------------------------------------------------------------------------- |
-| 1   | `Instrument Series`              | `gtrSeries`      | 1           | `■–■–■–■–■` — pure series                                                                    |
-| 2   | `Instrument Parallel 1`          | `gtrParallel1`   | 1           | `■–■–[■/■]–■–■` — one split→mix section                                                      |
-| 3   | `Instrument Parallel 2`          | `gtrParallel2`   | 1           | `■–[■/■]–■–[■/■]–■` — **two** split→mix sections                                             |
-| 4   | `Instrument Split`               | `gtrSplit`       | 1 in, 2 out | `■–` then two lanes of 3 that **never merge** (no mixer)                                     |
-| 5   | `Mic/Line Series`                | `micSeries`      | 1           | identical shape to #1                                                                        |
-| 6   | `Mic/Line Parallel 1`            | `micParallel1`   | 1           | identical shape to #2                                                                        |
-| 7   | `Mic/Line Split`                 | `micSplit`       | 1 in, 2 out | identical shape to #4                                                                        |
-| 8   | `Instrument + Mic/Line Series`   | `gtrMicSeries`   | 2           | two rows of 5, fully independent, **never merge**                                            |
-| 9   | `Instrument + Mic/Line Parallel` | `gtrMicParallel` | 2           | two independent rows, each `■–■–[■/■]–■–■`, **never merge**                                  |
-| 10  | `Instrument + Mic/Line Mix 1`    | `gtrMicMix`      | 2 ⇒ 1       | two rows of 3 `⇒` one shared final element                                                   |
-| 11  | `Instrument + Mic/Line Mix 2`    | `gtrMicMix2`     | 2 ⇒ 1       | **asymmetric** — instrument lane `■–[■/■]–■`, mic lane `■–■–■`, `⇒` one shared final element |
-| 12  | `Instrument + Mic/Line Mix 3`    | `gtrMicMix3`     | 2 ⇒ 1       | **symmetric** — both lanes `■–[■/■]–■`, `⇒` one shared final element                         |
+| # | Template | Firmware id | Lanes | Topology |
+|---|---|---|---|---|
+| 1 | `Instrument Series` | `gtrSeries` | 1 | `■–■–■–■–■` — pure series |
+| 2 | `Instrument Parallel 1` | `gtrParallel1` | 1 | `■–■–[■/■]–■–■` — one split→mix section |
+| 3 | `Instrument Parallel 2` | `gtrParallel2` | 1 | `■–[■/■]–■–[■/■]–■` — **two** split→mix sections |
+| 4 | `Instrument Split` | `gtrSplit` | 1 in, 2 out | `■–` then two lanes of 3 that **never merge** (no mixer) |
+| 5 | `Mic/Line Series` | `micSeries` | 1 | identical shape to #1 |
+| 6 | `Mic/Line Parallel 1` | `micParallel1` | 1 | identical shape to #2 |
+| 7 | `Mic/Line Split` | `micSplit` | 1 in, 2 out | identical shape to #4 |
+| 8 | `Instrument + Mic/Line Series` | `gtrMicSeries` | 2 | two rows of 5, fully independent, **never merge** |
+| 9 | `Instrument + Mic/Line Parallel` | `gtrMicParallel` | 2 | two independent rows, each `■–■–[■/■]–■–■`, **never merge** |
+| 10 | `Instrument + Mic/Line Mix 1` | `gtrMicMix` | 2 ⇒ 1 | two rows of 3 `⇒` one shared final element |
+| 11 | `Instrument + Mic/Line Mix 2` | `gtrMicMix2` | 2 ⇒ 1 | **asymmetric** — instrument lane `■–[■/■]–■`, mic lane `■–■–■`, `⇒` one shared final element |
+| 12 | `Instrument + Mic/Line Mix 3` | `gtrMicMix3` | 2 ⇒ 1 | **symmetric** — both lanes `■–[■/■]–■`, `⇒` one shared final element |
 
 There is no `Mic/Line Parallel 2` and no 13th/14th template.
 

@@ -12,9 +12,8 @@ Cells are separated by single spaces with no padding; keep the `prettier-ignore`
 
 ## The fixtures
 
-<!-- prettier-ignore -->
 | Slot | Name | Template | Scenes | Role |
-| --- | --- | --- | ---: | --- |
+|---|---|---|---:|---|
 | 400 | `E2E Rig` | `gtrSeries` | 4 | The scene/overlay + footswitch + damage-signature fixture. Two amps with an amp flip across scenes, a post-amp raw-dB boost, a wet-mix block and an all-Other-class block. |
 | 401 | `E2E Pedalboard` | `gtrSeries` | 0 | The SCENE-FREE fixture: copy/import. EXP volume + wah with a toe assign, a param radio link group, a second-bank switch, a tempo-synced block. |
 | 402 | `E2E Edge` | `gtrSplit` | 8 | Split-output edge cases at scale. Carries the Doctor's ONLINE oracle (a baked 2.6 kHz EQ ring), a saved non-base `lastLoadedScene`, a near-silent scene, the off-USB lane that makes a footswitch off-branch, and an `ACD_Boost` bypassed in base and un-bypassed only by scene 3 "Solo"'s bypass-only overlay (row 12b). |
@@ -31,9 +30,8 @@ Cells are separated by single spaces with no padding; keep the `prettier-ignore`
 
 Every guitar amp in every fixture reaches a cabinet ([`notes/e2e-fixtures.md`](../../notes/e2e-fixtures.md#the-cab-rule)); `fixture_gates::every_guitar_amp_in_every_fixture_reaches_a_cab` enforces it.
 
-<!-- prettier-ignore -->
 | Slot | Amp(s) | How the rule is met |
-| --- | --- | --- |
+|---|---|---|
 | 400 | `ACD_JC120`, `ACD_TwinReverb65NoFx` | Both heads share one downstream `ACD_CabSimTMS` in `G1`. |
 | 401 | `ACD_MarshallPlexi` | `ACD_CabSimTMS` downstream in `G1`. |
 | 402 | `ACD_JC120` | `ACD_CabSimTMS` downstream in `G1` (pre-split, so both output lanes inherit it). |
@@ -50,9 +48,8 @@ Every guitar amp in every fixture reaches a cabinet ([`notes/e2e-fixtures.md`](.
 
 `Offline` rows reproduce on the SimDevice capture model; `Online` rows need the real device ([`notes/e2e-fixtures.md`](../../notes/e2e-fixtures.md#tiers)).
 
-<!-- prettier-ignore -->
 | # | Use case | Fixture | Structural fact that carries it | Tier | Spec |
-| --- | --- | --- | --- | --- | --- |
+|---|---|---|---|---|---|
 | 1 | Base `presetLevel` solve | 400 `E2E Rig` | `audioGraph.presetLevel` 0.32 with sidecar base C −15 → every shipped default (−23/−21/−19) solves below 1.0. | Offline | `level.spec.ts` ("levels a preset with base + scenes + footswitches end to end", indirect — 400's base solving is a precondition, not asserted in isolation) |
 | 2 | Base solve that CLAMPS | 401, 403 | Sidecar base C −20 on both: −23/−21 solve, −19 needs `presetLevel` > 1. | Offline | `level-defaults.spec.ts` ((a) "base at the loud default now reaches it via the amp-fader boost", (b) "clamp loop: clamped at Lead says so with no button, then levels at Crunch") |
 | 3 | Block-knob WRITE + persist (preset lane) | 400 | `ACD_Boost.gain` (`level_db`, range `[0,12]`) and `ACD_TMSpring63.mix` (`wet_mix`) are the two non-`level_linear` knob classes in one chain. | Offline (skip + write) · **Online** (gain solve tracking) | Command layer: `e2e_server_tests.rs::bake_path_footswitch_rerun_skips_the_persist_when_already_at_target` (a re-run at the stored gain skips the bake write and leaves `ftsw` untouched) and `e2e_server_tests.rs::the_footswitch_rows_still_converge_after_a_base_boost` (write + persist on 405's curve-backed pedals, re-measured at target from the saved state); the wet-mix half is row 18. 400's sidecar declares `leveledParams` for `ACD_TMSpring63.mix` only, so the offline model is FLAT in `ACD_Boost.gain`: every target converges to the same C and no offline target forces a genuine gain write. Gain's solve tracking is online-only |

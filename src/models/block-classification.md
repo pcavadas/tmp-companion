@@ -20,11 +20,11 @@ normalize / strip suffixes / append `NoFx` before lookup — the suffix is the c
 
 ## The three caps
 
-| Cap                         | Max | Form in the client                         |
-| --------------------------- | --- | ------------------------------------------ |
-| ConvolutionReverbLimit      | 1   | hardcoded `QString` literal `std::set`     |
-| ComboHalfStackCabinetsLimit | 2   | category-enum classifier + explicit id set |
-| GlooperEffectsLimit         | 2   | direct compare vs one literal              |
+| Cap | Max | Form in the client |
+|---|---|---|
+| ConvolutionReverbLimit | 1 | hardcoded `QString` literal `std::set` |
+| ComboHalfStackCabinetsLimit | 2 | category-enum classifier + explicit id set |
+| GlooperEffectsLimit | 2 | direct compare vs one literal |
 
 Formula (all three): `(candidate∈set) − (replaced∈set on a replace) + existing < MAX+1`. A dual-cab
 node (`cab_sim2_enabled`) counts as **2** toward the cabinet cap. FXLoopCoexistence: the stereo

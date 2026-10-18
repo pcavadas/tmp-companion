@@ -129,12 +129,12 @@ Its cost and the drain are [handshake](../../../../notes/device/session.md#hands
 TMS-native diagnostic / factory surface, all under `TestMessage` (the top-level oneof category, `TestMessage.proto`). 51 sub-types in total; the four most general-purpose are below.
 The rest cover XMOS programming, SD card test, rear-panel pad / phantom / instrument-select / impedance switching, CPU temperature, brightness, MIDI output — see `TestMessage.proto:55-108` for the full catalog.
 
-| Message                 | Request fields    | Response                                         | Use case                                                         |
-| ----------------------- | ----------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
-| `LoopbackTest`          | `string data = 1` | server echoes the same `LoopbackTest` back       | generic HID round-trip parity / latency check                    |
-| `MidiLoopbackRequest`   | `bool dummy = 1`  | `MidiLoopbackResponse { uint32 statusEnum = 1 }` | MIDI loopback hardware test (rear-panel MIDI in→out)             |
-| `SystemInfoRequest`     | (no fields)       | `SystemInfoResponse`                             | firmware/hardware version reporting                              |
-| `CpuTemperatureRequest` | (no fields)       | `CpuTemperatureResponse`                         | thermal telemetry — pair with high-load presets for parity tests |
+| Message | Request fields | Response | Use case |
+|---|---|---|---|
+| `LoopbackTest` | `string data = 1` | server echoes the same `LoopbackTest` back | generic HID round-trip parity / latency check |
+| `MidiLoopbackRequest` | `bool dummy = 1` | `MidiLoopbackResponse { uint32 statusEnum = 1 }` | MIDI loopback hardware test (rear-panel MIDI in→out) |
+| `SystemInfoRequest` | (no fields) | `SystemInfoResponse` | firmware/hardware version reporting |
+| `CpuTemperatureRequest` | (no fields) | `CpuTemperatureResponse` | thermal telemetry — pair with high-load presets for parity tests |
 
 All are `TestMessage`-routed (top-level oneof field 1); the request carries no `batchStatus` echo requirement.
 None have a Mustang-LT-style `QASlots*` equivalent — TMS rolls factory tests under `TestMessage.testControl` / `testOutput` / `setTestAppMode` (`TestMessage.proto:59,58,100`) instead of an LT-style QA slot model.

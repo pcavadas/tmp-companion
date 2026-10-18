@@ -213,9 +213,8 @@ The nominal loudness levels are Quiet 60, Rehearsal 70 and Stage 80 phon.
 
 For each ⅓-octave point `f` inside an analysis band, the gain the ear adds going from 70 to 80 phon, relative to 1 kHz, is `(L_f(f,70) − 70) − (L_f(f,80) − 80)`; the band value is the mean over its points:
 
-<!-- prettier-ignore -->
 | Band | Lows | Low-mids | Mids | High-mids | Highs | Air |
-| --- | --- | --- | --- | --- | --- | --- |
+|---|---|---|---|---|---|---|
 | 70 → 80 phon (dB) | +3.39 | +1.77 | +0.39 | −0.23 | −0.39 | +0.18 |
 | tilt-split local | +0.71 | 0.00 | −0.35 | 0.00 | +0.71 | +1.95 |
 | median-centered | +3.00 | +1.38 | 0.00 | −0.62 | −0.78 | −0.21 |
@@ -224,9 +223,8 @@ That vector runs through the rule metrics themselves (`tilt_split`, whose Theil�
 The fizzy metric (Air − Highs) moves +0.57.
 70 → 60 phon mirrors 70 → 80 within 0.03 dB, so Quiet is Stage negated:
 
-<!-- prettier-ignore -->
 | Gate | Stage | Quiet |
-| --- | --- | --- |
+|---|---|---|
 | boomy local / centered | −0.7 / −3.0 | +0.7 / +3.0 |
 | muddy local / centered | 0.0 / −1.4 | 0.0 / +1.4 |
 | fizzy | −0.6 | +0.6 |

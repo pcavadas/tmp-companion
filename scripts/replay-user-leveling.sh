@@ -18,7 +18,7 @@
 #      that process is what runs the strict re-measures and emits the expectation log
 #      (`.claude/rules/e2e.md`'s external-validation section);
 #   3. confirms the server is GENUINELY online from the SERVER LOG's own
-#      "seeded snapshot from the real device" line (CLAUDE.md: the runner's stdout never
+#      "seeded snapshot from the real device" line (AGENTS.md: the runner's stdout never
 #      carries it) AND `/health`'s `online:true` — refuses to continue otherwise;
 #   4. reads the whole library ONCE (`read_library_via_backup`, non-destructive) and
 #      refuses to run unless every target slot's NAME matches the table below (danger.md:
@@ -360,7 +360,7 @@ TMP_E2E_ONLINE=1 TMP_E2E_PORT="$PORT" TMP_E2E_STIMULUS="" \
 SERVER_PID=$!
 disown "$SERVER_PID" 2>/dev/null || true
 
-# Ready-gate: the SERVER LOG's own seed line (never the runner's stdout — CLAUDE.md's
+# Ready-gate: the SERVER LOG's own seed line (never the runner's stdout — AGENTS.md's
 # stale-server false-green trap) AND /health's online:true. Refuses to continue otherwise
 # — a silent fall back to an offline/fake server would fabricate every LUFS.
 log "waiting for the real-device handshake…"

@@ -119,12 +119,12 @@ SEED_LOG="$LOG_DIR/seed.log"
 RUN_DIR=""
 STAMPED=0
 # ── External validation (ONLINE only) ──────────────────────────────────────────
-# GATE SEMANTICS, stated identically here and in `.claude/rules/e2e.md`:
+# GATE SEMANTICS (canonical here; `.claude/rules/e2e.md` points to this header):
 #   ffmpeg ABSENT   ⇒ advisory. A loud, VISIBLE skip line in this lane summary. Never a
 #                     silent pass, but never red either — ffmpeg is not a build or CI
 #                     dependency of this app.
 #   ffmpeg PRESENT
-#     + rows emitted ⇒ a REAL GATE. A target miss flips `fail` red (CLAUDE.md: never
+#     + rows emitted ⇒ a REAL GATE. A target miss flips `fail` red (AGENTS.md: never
 #                      characterize or expected-fail a product bug to keep CI green).
 #     + no rows      ⇒ nothing was leveled+re-measured this run; logged and passed over.
 #
@@ -936,7 +936,7 @@ done
 KEY_END="$(bash "$REPO/scripts/gates.sh" --key)"
 # Device-session proof: the server this run talked to must have opened the real device.
 # Its own trace says which backend each open used, so a stale offline server answering on
-# the port (CLAUDE.md's fake-online trap) is a checked fact, not a log line to remember.
+# the port (AGENTS.md's fake-online trap) is a checked fact, not a log line to remember.
 on_device=0
 if evidence_server_touched_device "$RUN_DIR/trace"; then
   on_device=1

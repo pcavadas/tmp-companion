@@ -33,20 +33,20 @@ Location is image-only — the prose never says where it is.
 
 Both outputs carry an independent **instrument / line** switch and an independent **stereo / mono** switch (Global Settings → I/O → Outputs, p.33).
 
-| Destination                                                                 | Level              | Why                                                                         |
-| --------------------------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------- |
+| Destination | Level | Why |
+|---|---|---|
 | FR cabinet (Fender FR-10 / FR-12), PA, studio monitors, recording interface | **LINE** (default) | manual states it explicitly for "optimal signal-to-noise ratio" (pp. 40–41) |
-| Instrument amplifier (front end, or its FX return)                          | **INSTRUMENT**     | pp. 40–41                                                                   |
+| Instrument amplifier (front end, or its FX return) | **INSTRUMENT** | pp. 40–41 |
 
 Effects loops 3/4 default to **INSTRUMENT** level — see `global-settings.md` §2 Inputs for the rack-effects override.
 
 **Headroom is not symmetric between the two outputs** (p.46) — relevant whenever you split a rig across both:
 
-|                       | Max output, line | Max output, instrument |
-| --------------------- | ---------------- | ---------------------- |
-| `OUTPUT 1` balanced   | 23.8 dBu         | 14.1 dBu               |
-| `OUTPUT 1` unbalanced | 18.0 dBu         | 11.2 dBu               |
-| `OUTPUT 2`            | 15.8 dBu         | 10.9 dBu               |
+|  | Max output, line | Max output, instrument |
+|---|---|---|
+| `OUTPUT 1` balanced | 23.8 dBu | 14.1 dBu |
+| `OUTPUT 1` unbalanced | 18.0 dBu | 11.2 dBu |
+| `OUTPUT 2` | 15.8 dBu | 10.9 dBu |
 
 `OUTPUT 1` also has the ground-lift and the XLR pair; `OUTPUT 2` is ¼" only.
 
@@ -79,12 +79,12 @@ Requires an amp with a series effects loop.
 
 **The four cables, in signal order:**
 
-| #   | From                | To                    |
-| --- | ------------------- | --------------------- |
-| 1   | Guitar output       | TMP `INSTRUMENT`      |
-| 2   | TMP `FX LOOP: SEND` | Amp `INPUT`           |
-| 3   | Amp `FX LOOP SEND`  | TMP `FX LOOP: RETURN` |
-| 4   | TMP `OUTPUT`        | Amp `FX LOOP RETURN`  |
+| # | From | To |
+|---|---|---|
+| 1 | Guitar output | TMP `INSTRUMENT` |
+| 2 | TMP `FX LOOP: SEND` | Amp `INPUT` |
+| 3 | Amp `FX LOOP SEND` | TMP `FX LOOP: RETURN` |
+| 4 | TMP `OUTPUT` | Amp `FX LOOP RETURN` |
 
 Resulting topology: blocks placed **before** the FX-loop block in the signal path hit the amp's preamp (drives, wah, compressor); blocks placed **after** it sit in the amp's loop (delay, reverb, modulation).
 
@@ -128,14 +128,14 @@ TMP is a **4-in / 4-out** USB 2.0 interface.
 Two modes, in Global Settings → I/O → USB.
 **Reamp mode resets to OFF at power-off.**
 
-|                 | Standard (default)                                                        | Reamp                                               |
-| --------------- | ------------------------------------------------------------------------- | --------------------------------------------------- |
-| USB **out** 1/2 | processed stereo — one channel, or **both summed**, depending on template | same                                                |
-| USB **out** 3   | instrument channel, **dry** (pre-DSP, pre-Loops-1/2)                      | disabled                                            |
-| USB **out** 4   | mic/line channel, **dry**                                                 | disabled                                            |
-| USB **in** 1/2  | monitor mix from computer; routable to physical outs via Output Assign    | same                                                |
-| USB **in** 3    | disabled                                                                  | **→ instrument channel**, mutes the instrument jack |
-| USB **in** 4    | disabled                                                                  | **→ mic/line channel**, mutes the mic/line jack     |
+|  | Standard (default) | Reamp |
+|---|---|---|
+| USB **out** 1/2 | processed stereo — one channel, or **both summed**, depending on template | same |
+| USB **out** 3 | instrument channel, **dry** (pre-DSP, pre-Loops-1/2) | disabled |
+| USB **out** 4 | mic/line channel, **dry** | disabled |
+| USB **in** 1/2 | monitor mix from computer; routable to physical outs via Output Assign | same |
+| USB **in** 3 | disabled | **→ instrument channel**, mutes the instrument jack |
+| USB **in** 4 | disabled | **→ mic/line channel**, mutes the mic/line jack |
 
 Re-amp audio enters **at the first processing block** and **does not pass through analog loops 1/2** (they are pre-A/D).
 Both physical input jacks are muted while re-amp is on.
@@ -154,15 +154,15 @@ The host side still runs at 48 kHz.
 
 ## 5. Effects loops — the asymmetry that drives rigging
 
-|                         | Loops 1 & 2                                                | Loops 3 & 4                                                      |
-| ----------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------- |
-| Type                    | Mono, **analog relay**                                     | Digital send/return                                              |
-| Position                | **Fixed**, right after the instrument jack, **before A/D** | **Movable**, anywhere after Loop 2                               |
-| Path                    | Instrument only                                            | Instrument **or** Mic/Line                                       |
-| Config                  | Two mono                                                   | 2× mono, or **one stereo (Loop 3 = L, Loop 4 = R)** — per preset |
-| Level                   | —                                                          | Global instrument/line switch                                    |
-| In re-amp path?         | **No**                                                     | Yes                                                              |
-| On/off saved per preset | Yes                                                        | Yes                                                              |
+|  | Loops 1 & 2 | Loops 3 & 4 |
+|---|---|---|
+| Type | Mono, **analog relay** | Digital send/return |
+| Position | **Fixed**, right after the instrument jack, **before A/D** | **Movable**, anywhere after Loop 2 |
+| Path | Instrument only | Instrument **or** Mic/Line |
+| Config | Two mono | 2× mono, or **one stereo (Loop 3 = L, Loop 4 = R)** — per preset |
+| Level | — | Global instrument/line switch |
+| In re-amp path? | **No** | Yes |
+| On/off saved per preset | Yes | Yes |
 
 Loops 1/2 being pre-conversion is why they suit fuzzes and vintage wahs that want to see pickup impedance directly — and why they are invisible to USB re-amping.
 They are relays switched by the preset's top-level `fxLoop` object (`fxLoop1Enabled` / `fxLoop1Bypassed`, …), not audio-graph nodes.
@@ -196,21 +196,21 @@ Cabling any loop: TMP loop `SEND` → external unit input; external unit output 
 
 ## 7. Selected specifications (p.46)
 
-|                     |                                                                                                    |
-| ------------------- | -------------------------------------------------------------------------------------------------- |
-| Type / power        | PR 5642 · 40 W · 100–240 V, 50/60 Hz                                                               |
-| Dimensions / weight | 371 × 261.4 × 96.4 mm (14.6 × 10.3 × 3.8") · 4.0 kg (8.8 lb)                                       |
-| Instrument in       | 1 MΩ / 330 kΩ / 22 kΩ selectable, unbalanced. Max **11.2 dBu**, or **17.2 dBu with the −6 dB pad** |
-| Mic in (XLR)        | 1.8 kΩ balanced, max 15.7 dBu, +48 V switchable                                                    |
-| Line in (¼")        | 1 MΩ. Max 20.1 dBu balanced / 15.3 dBu unbalanced                                                  |
-| FX loop 3/4 returns | 10 kΩ. Max 15.8 dBu line / 10.9 dBu instrument                                                     |
-| FX loop 3/4 sends   | 170 Ω. Max 15.8 dBu line / 10.9 dBu instrument                                                     |
-| Aux in              | 10 kΩ unbalanced, max 9.8 dBu                                                                      |
-| Output 1 impedance  | 200 Ω line; 290 Ω balanced / 400 Ω unbalanced at instrument level                                  |
-| Output 2 impedance  | 170 Ω                                                                                              |
-| Headphones          | ≥16 Ω, 110 mW × 2                                                                                  |
-| Conversion          | 32-bit, **44.1 kHz**, 117 dB ADC / 112 dB DAC, 20 Hz–20 kHz +0.1/−0.7 dB                           |
-| USB clock           | 44.1 / 48 / 88.2 / 96 kHz, DAW-selectable                                                          |
+|  |  |
+|---|---|
+| Type / power | PR 5642 · 40 W · 100–240 V, 50/60 Hz |
+| Dimensions / weight | 371 × 261.4 × 96.4 mm (14.6 × 10.3 × 3.8") · 4.0 kg (8.8 lb) |
+| Instrument in | 1 MΩ / 330 kΩ / 22 kΩ selectable, unbalanced. Max **11.2 dBu**, or **17.2 dBu with the −6 dB pad** |
+| Mic in (XLR) | 1.8 kΩ balanced, max 15.7 dBu, +48 V switchable |
+| Line in (¼") | 1 MΩ. Max 20.1 dBu balanced / 15.3 dBu unbalanced |
+| FX loop 3/4 returns | 10 kΩ. Max 15.8 dBu line / 10.9 dBu instrument |
+| FX loop 3/4 sends | 170 Ω. Max 15.8 dBu line / 10.9 dBu instrument |
+| Aux in | 10 kΩ unbalanced, max 9.8 dBu |
+| Output 1 impedance | 200 Ω line; 290 Ω balanced / 400 Ω unbalanced at instrument level |
+| Output 2 impedance | 170 Ω |
+| Headphones | ≥16 Ω, 110 mW × 2 |
+| Conversion | 32-bit, **44.1 kHz**, 117 dB ADC / 112 dB DAC, 20 Hz–20 kHz +0.1/−0.7 dB |
+| USB clock | 44.1 / 48 / 88.2 / 96 kHz, DAW-selectable |
 
 Note the pad is exactly compensating: it attenuates 6 dB and raises max input by 6 dB.
 

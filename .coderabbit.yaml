@@ -98,7 +98,7 @@ reviews:
 knowledge_base:
   code_guidelines:
     enabled: true
-    # REVIEW.md and CLAUDE.md are both already in CodeRabbit's DEFAULT filePatterns, but
+    # REVIEW.md, AGENTS.md and CLAUDE.md are in CodeRabbit's DEFAULT filePatterns, but
     # the docs don't state whether an explicit list is additive to those defaults or
     # replaces them. Listing them here costs two lines and makes the question moot —
     # do not remove them on the assumption that the defaults still apply.
@@ -107,12 +107,12 @@ knowledge_base:
     # Enumerated explicitly — never a .claude/skills/** wildcard. The per-skill references/**
     # entries are listed because the skill bodies were split: lookup-shaped content moved there
     # to stay under the 5,000-token compaction re-injection cap, so review must follow it.
-    # Consequence of listing CLAUDE.md: it is an AUTHORITATIVE guideline when reviewing every
-    # other doc, so at profile: assertive a prose-doc PR has no fixed point — each rewrite
-    # yields fresh nits (#119: 19 of 24 commits touched one skill file). Reply-with-reason on
-    # doc nits instead of re-editing the prose.
+    # Consequence of listing AGENTS.md and CLAUDE.md: they are AUTHORITATIVE guidelines when
+    # reviewing every other doc, so at profile: assertive a prose-doc PR has no fixed point —
+    # each rewrite yields fresh nits. Reply-with-reason on doc nits instead of re-editing the prose.
     filePatterns:
-      - "REVIEW.md" # reviewer-facing: bug shape, ungated surfaces, what not to guess
+      - "REVIEW.md" # reviewer-facing: bug shape, destructive actions, what not to guess
+      - "AGENTS.md" # the canonical agent guide (CLAUDE.md imports it)
       - "CLAUDE.md"
       - ".claude/rules/**" # always-loaded danger rules + the path-scoped edit-time rules
       - ".claude/skills/tmp-companion-frontend/SKILL.md"

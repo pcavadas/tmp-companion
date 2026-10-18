@@ -3,8 +3,8 @@
 
 use super::*;
 
-/// `captured_LUFS = 20·log10(level) + C` — THE leveling physics identity (`CLAUDE.md`, "How
-/// leveling works"). ONE definition so the solver, the boost planner, its executor and the
+/// `captured_LUFS = 20·log10(level) + C` — THE leveling physics identity (`AGENTS.md`, "Leveling
+/// model"). ONE definition so the solver, the boost planner, its executor and the
 /// idempotency band cannot round it four different ways: the planner and executor recompute
 /// the SAME base as-is loudness, and a drift between them would move a boost's split with no
 /// lane noticing. `level` is floored at `1e-6`.
@@ -411,7 +411,7 @@ pub(crate) fn level_preset_impl(
         }
 
         // ⟦BOOST⟧ Plan the base pair off the SAME measurement, before any write (physics in
-        // `notes/leveling.md`'s BOOST section). `sounds` is empty: base has no OTHER sound's
+        // `headroom_trade.rs`'s module header). `sounds` is empty: base has no OTHER sound's
         // clamp to redistribute against here (that is `redistribute_clamped_headroom`'s lane)
         // — this planner only asks "can base's OWN gap be closed by moving both its own
         // controls together?". `base_amp` is `Some` only from `commands::level_preset`'s base

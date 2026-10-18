@@ -154,7 +154,7 @@ jobs:
     # continue-on-error so a broken bundler config never blocks the signed macOS
     # DMG — which also means it produces a green RELEASE with a silently missing
     # Linux asset. This job is what catches that on the PR instead of at release
-    # time. See notes/linux-packaging.md for the full pipeline rationale; keep
+    # time. See notes/releasing.md for the full pipeline rationale; keep
     # this job's steps in sync with release.yml's build-deb/build-rpm (same
     # bundler invocation, with temporary versions and artifacts for repository upgrade tests).
     strategy:
