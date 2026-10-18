@@ -7,7 +7,7 @@
 // without a trusted unit, so they're never gated.
 
 /** Lowest unit firmware the app has been tested against. */
-export const FW_MIN = "1.7";
+export const FW_MIN = "1.8.58";
 
 /** Tabs that work without a trusted unit — never gated by the firmware notice. */
 export const FW_UNGATED_TABS = new Set<string>(["catalog", "settings"]);

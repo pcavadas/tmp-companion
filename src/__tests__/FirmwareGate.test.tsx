@@ -11,7 +11,7 @@ import { FirmwareGate } from "../views/FirmwareGate";
 import { renderWithTheme } from "./testKit";
 
 function renderGate(onProceed = vi.fn()) {
-  renderWithTheme(<FirmwareGate detected="1.6.3" onProceed={onProceed} />);
+  renderWithTheme(<FirmwareGate detected="1.8.45" onProceed={onProceed} />);
   return { onProceed };
 }
 
@@ -23,7 +23,7 @@ describe("FirmwareGate", () => {
     ).toBeTruthy();
     expect(
       screen.getByText(
-        "Your Tone Master Pro runs firmware 1.6.3. TMP Companion is tested on 1.7 and later.",
+        "Your Tone Master Pro runs firmware 1.8.45. TMP Companion is tested on 1.8.58 and later.",
       ),
     ).toBeTruthy();
     expect(screen.queryByText("Untested firmware")).toBeNull(); // no kicker: the toolbar says it
