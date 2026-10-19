@@ -1870,6 +1870,10 @@ fn set_footswitch_assignment_refuses_a_malformed_param_entry_unsent() {
         .set_footswitch_assignment(2, 0, &bad.to_string(), false, None)
         .unwrap_err();
     assert!(err.contains("colorB"), "{err}");
+    let err = s
+        .set_footswitch_assignment(2, 0, "{not json", false, None)
+        .unwrap_err();
+    assert!(err.contains("not JSON"), "{err}");
     assert!(t.sent.lock().unwrap().is_empty());
     let good = crate::test_support::full_param().to_string();
     s.set_footswitch_assignment(2, 0, &good, false, None)
