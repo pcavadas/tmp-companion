@@ -174,6 +174,6 @@ A malformed `setFootswitchAssignment` (54) `functionJson` installs a default ent
 ### What the app enforces
 
 `footswitch::validate_import_body` refuses a param entry missing any required key or carrying a wrong type, a `valueA`/`valueB` that does not match its `valueType`, a row over 5 entries and, conservatively, any multi-entry row; it leaves on-off entries and the `exp` block unchecked.
-Lifting the multi-entry refusal needs a hardware check that a multi-entry row the app writes loads with every entry unchanged; the existing check loaded such a row but did not compare its entries.
+Lifting the multi-entry refusal needs a hardware check that a multi-entry row the app writes loads with every entry unchanged.
 `Session::set_footswitch_assignment` refuses a param entry that breaks the same rules before it is sent, so the unit never installs its default entry in its place.
 `fixture_gates.rs`'s `every_param_footswitch_in_every_fixture_carries_a_numeric_value_type` gates every committed fixture, with a negative check so it cannot pass vacuously, and `footswitch.rs`'s `validate_import_body_accepts_short_ftsw_and_float_version_fixtures` runs the full validator over every scenario fixture.
