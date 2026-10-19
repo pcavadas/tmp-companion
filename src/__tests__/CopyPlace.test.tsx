@@ -168,7 +168,7 @@ describe("TargetEditCard", () => {
     renderCard(e, { blocked: "ComboHalfStackCabinetsLimit" });
     expect(
       screen.getByText(
-        "Only two cabinets fit in a preset, and a block's second cab or mic counts as one.",
+        "Only two cabinets fit in a preset, and a block's second cab or mic counts as another cabinet.",
       ),
     ).toBeTruthy();
     const card = document.querySelector<HTMLElement>("[data-target-card]");

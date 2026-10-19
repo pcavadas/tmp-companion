@@ -24,7 +24,7 @@ export const REASON_TEXT: Record<BlockEditReason, string> = {
     "The stereo FX loop can't share a preset with a mono FX loop.",
   ConvolutionReverbLimit: "Only one convolution reverb fits in a preset.",
   ComboHalfStackCabinetsLimit:
-    "Only two cabinets fit in a preset, and a block's second cab or mic counts as one.",
+    "Only two cabinets fit in a preset, and a block's second cab or mic counts as another cabinet.",
   GlooperEffectsLimit: "Only two Glooper effects fit in a preset.",
 };
 
