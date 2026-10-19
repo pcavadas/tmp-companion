@@ -92,7 +92,7 @@ export function footswitchCandidatesFetch(
   };
 }
 
-/** Issue 5 (Boost preselect): a scene whose overlay un-bypasses a block the base
+/** Enabling-block preselect: a scene whose overlay un-bypasses a block the base
  *  graph keeps bypassed should default its leveling handle to THAT block's own
  *  control, not the amp's output level. */
 export function enablingBlockHandle(

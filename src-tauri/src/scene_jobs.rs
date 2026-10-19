@@ -1887,7 +1887,7 @@ pub struct SceneHandleCandidate {
     /// every numeric control of the block, annotated so the picker can sort and warn.
     pub(crate) class: param_class::ParamClass,
     /// The param's usable `[lo, hi]` — NOT `[0,1]` for every control (`ACD_Boost.gain` is
-    /// raw dB over `[0, 12]`). For a `wet_mix` the LOW bound is already raised to the wet
+    /// raw dB over `[0, 10]`). For a `wet_mix` the LOW bound is already raised to the wet
     /// floor, so the picker shows the range the solve may actually write.
     pub(crate) range: [f32; 2],
     pub(crate) current: f32,
@@ -1910,7 +1910,7 @@ pub struct SceneHandleCandidate {
     /// can only make the scene QUIETER — the picker should say so before the user finds out
     /// from a clamped row.
     pub(crate) headroom: String,
-    /// Issue 5 (Boost preselect): does THIS scene turn the block on? `true` iff the BASE graph
+    /// Enabling-block preselect: does THIS scene turn the block on? `true` iff the BASE graph
     /// has the node bypassed AND this scene's own overlay un-bypasses it (`Absent` — sharing
     /// base's bypass state — never counts, only a positive `bypass: false` in the scene's own
     /// `Full`/`BypassOnly` overlay does) AND the node has at least one leveling candidate
@@ -2117,7 +2117,7 @@ pub(crate) fn scene_handle_rows_scanned(
                 // hand, so the string-keyed wrapper's whole-graph `roster_entry` walk would
                 // be re-paid once per (scene, node) pair for an answer we resolved once.
                 let overlay = scene_overlay_for(preset, scene, (group_id, node_id, fender_id));
-                // Issue 5 (Boost preselect): does THIS scene turn the (base-bypassed) block
+                // Enabling-block preselect: does THIS scene turn the (base-bypassed) block
                 // on? Reuses `overlay` — no second bypass reader. `Absent` (the scene shares
                 // base's bypass state) and `Unknown` both answer "no" here, same as a
                 // positive `bypass: true`/missing key in a `Full`/`BypassOnly` overlay — only

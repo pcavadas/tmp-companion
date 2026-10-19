@@ -621,7 +621,7 @@ export async function runEngine(
       const resolveScene = batchResolve(byScene, envelope);
       markGroupActive(byScene, i);
       // Keep this preset's BASE job alive through the batch's prepass + headroom-trade
-      // phases (issue 1). The base row ran FIRST (base-first sort), so its target is known —
+      // phases. The base row ran FIRST (base-first sort), so its target is known —
       // look it up in `work`, never the group; a Try again without the main sound anchors
       // on the earlier run's row. Omit the key entirely (not `null`) when no base row was
       // chosen, or its target is no longer configured (the run refused it): no trade to

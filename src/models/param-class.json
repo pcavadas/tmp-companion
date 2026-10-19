@@ -30,7 +30,7 @@
     },
     "makeupgaindb": {
       "class": "level_db",
-      "range": [0, 24]
+      "range": [-30, 30]
     },
     "mix": {
       "class": "wet_mix",
@@ -74,7 +74,7 @@
     "ACD_Boost": {
       "gain": {
         "class": "level_db",
-        "range": [0, 12]
+        "range": [0, 10]
       }
     }
   }
