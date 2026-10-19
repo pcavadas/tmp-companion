@@ -412,7 +412,7 @@ pub fn probe_import_preset(path: &str) -> Result<String, String> {
 /// e.g. "Guitar") so a mistyped slot can't nuke an unrelated preset.
 /// `slot` is the 0-BASED list index — the same space as `PresetEntry.slot` (the
 /// guard's read) and `clear_user_preset`'s argument (the mutation), so guard and
-/// mutation act in ONE address space (the write-safety lesson). NB: `--export`
+/// mutation act in ONE address space (`danger.md`, slot addressing). NB: `--export`
 /// takes the 1-BASED device slot instead — this probe's list index + 1.
 pub fn probe_clear_preset(slot: ListIndex, expect_name: &str) -> Result<String, String> {
     let before = Session::connect()?.list_my_presets()?;
@@ -827,7 +827,7 @@ fn pass(ok: bool) -> &'static str {
 }
 
 /// Name-guard for a slot-keyed write: a slot is a position, not an identity — refuse
-/// unless it still holds the preset the caller named (the write-safety lesson). Opens
+/// unless it still holds the preset the caller named, since a list can shift. Opens
 /// its own connection (a non-destructive read before any mutation).
 fn guard_slot_name(slot: ListIndex, expected_name: &str) -> Result<(), String> {
     let name = Session::connect()?

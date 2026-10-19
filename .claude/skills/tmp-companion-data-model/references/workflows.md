@@ -2,6 +2,7 @@
 
 Source: Owner's Manual v1.8.
 Page refs are **printed** pages.
+Device facts tagged here are for firmware 1.8.58 unless a line says otherwise.
 
 `SKILL.md` says what the objects _are_; this file says what the user _does_.
 Use it to answer "how do I…" questions, to mirror device affordances in companion UI, and to know what state a user action leaves the unit in.
@@ -41,14 +42,14 @@ Two rules that bite:
 
 - **Presets always save to My Presets**, whether they came from My Presets, Factory or Cloud.
 - **There is no save prompt.**
-  Navigating away from an edited preset does not ask you to save, and loading another preset discards the unsaved edits (HW).
+  Navigating away from an edited preset does not ask you to save, and loading another preset discards the unsaved edits [HW].
   A scene change within the preset keeps them under `Scene Change Behavior: MAINTAIN CHANGES`, the default (`global-settings.md` §3).
 
 ### Reorder, favourite, search
 
 - **Reorder:** hold a preset for **one second**, then drag.
-  This **renumbers presets automatically** (p.9), and the device rewrites Song→preset bindings to follow the moved preset (HW + static RE).
-  MIDI Program Change addresses presets by position, so after a move a PC recalls whatever now sits at that number (static RE, fw 1.8.58).
+  This **renumbers presets automatically** (p.9), and the device rewrites Song→preset bindings to follow the moved preset ([song links](../../../../notes/device/presets.md#song-links)) [HW+RE].
+  MIDI Program Change addresses presets by position, so after a move a PC recalls whatever now sits at that number [RE].
 - **Favourite:** touch the star by the preset number.
   It turns blue and the preset is added to the **top** of Favorites.
   Favorites reorder independently but **keep their original numbers**.
@@ -241,7 +242,7 @@ A trash can deletes the assignment.
 
 **Field scope — switch-level vs function-level.**
 The manual (p.23) marks three rows verbatim "Common to all five footswitch assignments"; the rest are per-function.
-The firmware stores every one of these fields on each function entry (static RE, fw 1.8.58), so a switch-level field must carry the same value on every function of the switch:
+The firmware stores every one of these fields on each function entry, so a switch-level field must carry the same value on every function of the switch [RE]:
 
 | Field | Scope | Note |
 |---|---|---|

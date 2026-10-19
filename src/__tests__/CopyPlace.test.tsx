@@ -166,7 +166,11 @@ describe("TargetEditCard", () => {
   it("turns its edge danger and says why when the edit breaks a limit", () => {
     const e = editOf(["ACD_DynaComp"]);
     renderCard(e, { blocked: "ComboHalfStackCabinetsLimit" });
-    expect(screen.getByText("Only two cabinets fit in a preset.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Only two cabinets fit in a preset, and a block's second cab or mic counts as one.",
+      ),
+    ).toBeTruthy();
     const card = document.querySelector<HTMLElement>("[data-target-card]");
     expect(card?.style.border).toContain(toRgb(light.danger));
   });

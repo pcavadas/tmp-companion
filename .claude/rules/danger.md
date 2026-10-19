@@ -22,7 +22,7 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
   Prove the loaded working copy with `replace_inplace::load_and_prove` before every save; an import nothing saves over proves its landing with `replace_inplace::StoredProof`.
   [→](../../notes/device/presets.md#rejected-at-load)
 - **DANGER: every emitted param-func footswitch entry carries a numeric `valueType`** and the other required fields, or the imported preset is rejected at load.
-  `footswitch::validate_import_body` and `fixture_gates` also refuse a two-entry row (legal on the device, kept refused until a hardware-checked emitter change).
+  `footswitch::validate_import_body` and `fixture_gates` also refuse a two-entry row (legal on the device, refused as a conservative choice).
   [→](../../notes/device/presets.md#footswitch-json)
 - **DANGER: an `insertNode` (field 34) whose anchor is not a node id in its group, or that exceeds the CPU budget, aborts the device server.**
   Never assume a FenderId is a node id: anchor on the id the confirm returned (`copy_apply`'s `DeviceIds`), check every insert with `blockcaps::check_op`, and read an unconfirmed insert back (`Session::insert_landed`) instead of re-sending it.

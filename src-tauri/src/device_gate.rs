@@ -165,8 +165,8 @@ const PAUSE_WAIT_STEP_MS: u64 = 25;
 /// it clears the pause request (the monitor resumes + re-reads fresh state) and
 /// releases the device-op lock. So the monitor stays parked for exactly the command's
 /// release→work→reconnect window — it cannot interleave a seize between the command's
-/// own fresh connections (which would break the leveller's latch model). Runs on
-/// unwind too, so a command panic still resumes the monitor.
+/// own fresh connections (which would break the leveller's load-then-fresh-connection
+/// shape). Runs on unwind too, so a command panic still resumes the monitor.
 pub(crate) struct MonitorPauseGuard(
     #[expect(
         dead_code,

@@ -1,4 +1,4 @@
-//! Preset loads and restores: the latch-rule isolated load ([`load_preset_isolated`]), the
+//! Preset loads and restores: the isolated load on its own connection ([`load_preset_isolated`]), the
 //! stored-preset restore that discards unsaved edits ([`restore_saved_preset`]), and the
 //! restore-after-error wrappers every unsaved run ends through.
 
@@ -99,7 +99,7 @@ pub(crate) enum CancelMode {
     Cleanup,
 }
 
-/// THE latch-rule load: open a lean connection, load `slot`, settle
+/// THE isolated load: open a lean connection, load `slot`, settle
 /// [`settle_after_load_ms`], let the session lapse, and drop the connection. Every leveling
 /// path loads on its own connection and measures or writes on a fresh one — the
 /// conservative shape; on fw 1.8.58 a set or an engage after a load on one connection works

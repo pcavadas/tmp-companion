@@ -2878,7 +2878,7 @@ fn arm_pair_measurement_zero_write_base_arm_heartbeats_before_the_naked_engage()
             .iter()
             .any(|e| matches!(e, crate::sim_device::SimEvent::Heartbeat)),
         "a zero-write base measurement must heartbeat between its last write and the \
-         engage, or the naked ~600 ms idle gap latches the device's stationary floor: \
+         engage, or the naked ~600 ms idle gap can drop the engage and read the stationary floor: \
          {ev:?}"
     );
 }

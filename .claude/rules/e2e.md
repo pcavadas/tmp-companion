@@ -4,6 +4,9 @@ paths:
   - "scripts/e2e.sh"
   - "scripts/hw-e2e.sh"
   - "src-tauri/src/e2e_seed.rs"
+  - "src-tauri/src/e2e_server.rs"
+  - "src-tauri/src/e2e_server_tests.rs"
+  - "src-tauri/src/fixture_gates.rs"
 ---
 
 # e2e harness rules

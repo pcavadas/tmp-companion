@@ -55,7 +55,7 @@ The Doctor's threshold offsets use the same contours, derived per band ([doctor-
 The leveling default is the full capture (`audio::MeasureOpts::full`), because the window is load-bearing ([device/reamp-audio.md#capture-window](device/reamp-audio.md#capture-window)).
 The adaptive early-exit capture (`audio::MeasureOpts::adaptive`) is opt-in only; adopting it is a re-baseline and a product decision, not a drop-in speedup.
 A steady-state window did not beat the current window against real-DI playing on 12 presets (median error 1.60 vs 1.50 LU); the stimulus spectrum moves the error ~10× more [HW].
-Conclude a bias only from a many-sample A/B against the full-capture oracle ([leveling.md#re-validating-a-timing-change](leveling.md#re-validating-a-timing-change)).
+Run-to-run spread makes 2–3 captures meaningless, so conclude a bias only from a many-sample A/B against the full-capture oracle ([leveling.md#re-validating-a-timing-change](leveling.md#re-validating-a-timing-change)).
 
 ## Metering convention
 

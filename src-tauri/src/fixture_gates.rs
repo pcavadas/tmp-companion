@@ -34,9 +34,7 @@ fn fixtures() -> Vec<(u32, String, String, serde_json::Value)> {
     assert_eq!(
         out.len(),
         11,
-        "the scenario set is eleven presets at 400-410 (400-405 the original set, \
-         406-409 the P3 leveling-doctor-fixtures additions, 410 the P4 Friedman-HBE-class \
-         3-scene addition)"
+        "the scenario set is eleven presets at 400-410"
     );
     out
 }
@@ -1397,8 +1395,8 @@ fn every_param_footswitch_in_every_fixture_carries_a_numeric_value_type() {
 
 /// NON-REGRESSION GATE (conservative): every fixture ftsw ROW must carry at most ONE
 /// entry. A dual-entry row is legal on fw 1.8.58;
-/// `footswitch::validate_import_body` still refuses it until a HW-checked emitter
-/// change. See notes/device/presets.md#footswitch-json.
+/// `footswitch::validate_import_body` refuses it as a conservative choice. See
+/// notes/device/presets.md#footswitch-json.
 #[test]
 fn every_fixture_footswitch_row_carries_at_most_one_entry() {
     let mut singles = 0usize;

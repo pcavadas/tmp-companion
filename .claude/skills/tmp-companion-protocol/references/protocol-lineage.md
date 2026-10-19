@@ -4,6 +4,7 @@ TMP's USB protocol is not an independent design.
 It is a direct lineal descendant of the protocol Fender introduced for the **Mustang LT** family (and shipped under the internal `tone-sdk` C++ library after the 2018-era app rewrite).
 This reference captures what TMS inherited verbatim, what it added, and what it dropped.
 It exists so a future session does not need to re-derive the lineage from scratch.
+Device facts tagged here are for firmware 1.8.58 unless a line says otherwise.
 
 ## The evidence chain
 
@@ -24,7 +25,7 @@ It exists so a future session does not need to re-derive the lineage from scratc
 | Heartbeat | mandatory every 1 s (`ModalStatusMessage` per LT spec) | `ConnectionHeartbeat`, body `bool dummy = 1` (`ConnectionHeartbeat.proto`); the session lapses after 750 ms with no OUT report, so the app beats every 250 ms | same model |
 | Single-in-flight contract | enforced at `tone-sdk` "Send thread" (Medium post) | TMS has `batchStatus int32 = 10` outside the oneof (`FenderMessageTMS.proto:18`): a queue control, not a per-request counter — 1/2 queue, 3 drains the queue in order (see quick-reference) | same intent, different mechanism |
 | Source-of-truth | "hardware is single source of truth, app is companion" (Medium post) | every open session receives `PresetLoaded`/`SceneLoaded`/`CurrentPresetDataChanged` pushes on change; a lapsed one misses them until it reconnects (see `quick-reference.md`) | same philosophy |
-| Echo prevention | early LT app filtered `SetParameter` echoes; later firmware disabled echo (Medium post) | a `changeParameter` is broadcast back as `parameterChanged` (23) to every client, the sender included (static RE, fw 1.8.58) | a driver that mutates state receives its own echo |
+| Echo prevention | early LT app filtered `SetParameter` echoes; later firmware disabled echo (Medium post) | a `changeParameter` is broadcast back as `parameterChanged` (23) to every client, the sender included [RE] | a driver that mutates state receives its own echo |
 
 ## Added in TMS (no LT equivalent)
 
@@ -55,7 +56,8 @@ These message families appear in LT but are absent from TMS's extracted proto tr
   The absence is itself a finding: Pro Control rebuilds the UI from the preset JSON, it does not framebuffer-mirror.
 - **`ProcessorUtilization`** / `MemoryUsage`.
   LT exposes CPU/MEM telemetry.
-  TMS keeps its CPU budget firmware-internal — a static per-model cost table checked on edit, with no wire telemetry (static RE, fw 1.8.58) — so the companion enforces it itself (`blockcaps.rs`).
+  TMS keeps its CPU budget firmware-internal: a static per-model cost table checked on edit, with no wire telemetry [RE].
+  The companion checks it host-side too (`blockcaps.rs`).
 
 ## SDK architecture (from the Medium post)
 

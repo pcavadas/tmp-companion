@@ -1,8 +1,8 @@
 //! High-level TMP control session: handshake, preset enumeration, and the
 //! leveling primitives (load preset, toggle re-amp, set preset level, save).
 //!
-//! The load-bearing USB-protocol invariants (batchStatus grouping, re-amp latch
-//! rules, the HID seize, slot +1 addressing, the capture window) are written up
+//! The load-bearing USB-protocol invariants (batchStatus grouping, the re-amp engage
+//! and capture rules, the HID seize, slot +1 addressing, the capture window) are written up
 //! in `notes/device/` (`session.md`, `presets.md`, `reamp-audio.md`).
 //!
 //! Builds on `hid` (transport) + `proto` (wire codec). Replicates the request

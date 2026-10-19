@@ -14,8 +14,8 @@
 //      then the mentioning file's directory, then as the tail of a tracked path) and the
 //      anchor exists.
 //   3. `--strict` (report-only, never changes the exit code): stale-wording ban list in prose
-//      and comments — firmware 1.8.45 mentions, `#NNN` issue references in comments, and
-//      plan labels such as `R5` or `AC3`.
+//      and comments — firmware 1.8.45 mentions outside a tagged evidence clause, `#NNN`
+//      issue references in comments, and plan labels such as `R5` or `AC3`.
 //   4. Size caps, in bytes (SIZE_CAPS): AGENTS.md ≤ 10,240, CLAUDE.md ≤ 6,144,
 //      .claude/rules/danger.md ≤ 8,192 and every notes/**/*.md ≤ 20,480.
 //
@@ -302,15 +302,20 @@ function checkMentions(file, lineNo, text) {
 }
 
 // ── 3. strict ban list (report-only) ──────────────────────────────────────
+// An exact evidence tag (docs-writing.md); a ban carrying `tagged: true` passes when one
+// follows the match on its line, the evidence clause that names another firmware.
+const EVIDENCE_TAG = /\[(?:HW|RE|RE, inferred|RE, likely|HW\+RE)\]/;
 const BANS = [
-  [/\bfw\s*1\.8\.45\b/i, "firmware 1.8.45 mention"],
+  [/\bfw\s*1\.8\.45\b/i, "firmware 1.8.45 mention", { tagged: true }],
   [/(?<![\w&])#[0-9]{2,4}\b/, "issue/PR number"],
   [/\b(?:AC|PR|P|T|D|R|E)[0-9]\b/, "plan label"],
 ];
 function checkBans(file, lineNo, prose) {
-  for (const [re, what] of BANS) {
+  for (const [re, what, opts] of BANS) {
     const m = re.exec(prose);
-    if (m) warn(file, lineNo, `${what}: ${m[0]}`);
+    if (!m) continue;
+    if (opts?.tagged && EVIDENCE_TAG.test(prose.slice(m.index))) continue;
+    warn(file, lineNo, `${what}: ${m[0]}`);
   }
 }
 

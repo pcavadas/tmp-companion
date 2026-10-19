@@ -5186,8 +5186,9 @@ fn a_base_anchor_measures_the_isolated_base_and_never_persists_the_isolation() {
 
 /// A FOOTSWITCH ROW'S SCENE CONTEXT IS A MEASUREMENT ORDER, not a label. `measure_fs_state`
 /// recalls the context FIRST, then writes the switch's engaged state and the pinned handle,
-/// and only then engages: re-amp latches preset state AT ENGAGE (`danger.md`), so a recall or
-/// a write that goes out after it is simply not in the capture. `scene_context: None` recalls
+/// and only then engages: the leveller's conservative shape lands every recall and write
+/// before the one engage per capture
+/// (`notes/device/reamp-audio.md#edits-during-an-engage`). `scene_context: None` recalls
 /// BASE for the same reason — a preset loads into its saved `lastLoadedScene`, so "no scene"
 /// still costs an explicit recall or the sound measured is whatever the connection held.
 ///
@@ -5272,7 +5273,7 @@ fn an_fs_scene_context_recalls_its_scene_before_the_engage_and_base_without_one(
     let engaged = position(&scene_events, "re-amp engage", &engage);
     assert!(
         recall < write && write < engaged,
-        "recall → write → engage, in that order (re-amp latches at engage): {scene_events:?}"
+        "recall → write → engage, in that order (every edit before the engage): {scene_events:?}"
     );
 
     let (base_events, base_lufs) = read_in(None);

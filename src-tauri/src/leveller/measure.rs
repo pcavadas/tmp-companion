@@ -432,7 +432,7 @@ pub(crate) fn capture_on_session(
     // Settle UNCONDITIONALLY before the engage: the caller (or the loop above) may
     // have just issued bypass/param writes even when `ref_level` is `None` — and
     // `measure_fs_state` always settles after its
-    // writes for the same reason (the engage latches whatever the DSP holds).
+    // writes for the same reason (the conservative shape: every write lands before the engage).
     settle_or_cancel(pre_engage_settle_ms())?;
     let _ = s.set_reamp_mode(true)?;
     // Past the engage there is NO early return: re-amp is on, and leaving it on strands the
@@ -820,7 +820,7 @@ mod playback_channels_meter_tests {
     }
 }
 
-/// Engage re-amp on `s` (latching the already-set knob/scene), settle, capture the
+/// Engage re-amp on `s` once, after the knob/scene is already set, settle, capture the
 /// FULL stimulus + decay tail, measure the processed pair's integrated LUFS, then
 /// disengage. The shared tail of every isolated leveling measurement (the
 /// connect/load/set prefix differs per caller).
@@ -1029,7 +1029,8 @@ pub(super) fn arm_measurement(
 /// verbatim (`arm_measurement` has the write order), recalling `scene` when there is one.
 ///
 /// BASE ARM ONLY: with `writes` empty, interleave `heartbeat → settle → heartbeat` before the
-/// final settle, or the trailing settles leave a ~600 ms idle gap that latches the floor.
+/// final settle, or the trailing settles leave a ~600 ms idle gap, past the 300 ms bound,
+/// that can drop the engage so the capture reads the floor.
 /// [→ evidence](../../../notes/device/reamp-audio.md#idle-gap-before-an-engage)
 pub(super) fn arm_pair_measurement(
     s: &mut Session,

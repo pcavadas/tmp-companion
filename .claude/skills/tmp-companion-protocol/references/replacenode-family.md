@@ -4,6 +4,7 @@ TMS exposes a small family of messages for replacing a single block in the signa
 These map directly onto the `audioGraph.guitarNodes.G{1,2,…}[]` arrays in the decoded `presetJson` and are the cleanest known protocol-level lever for mutating the chain one slot at a time.
 
 This reference documents the block-mutation wire API.
+Device facts tagged here are for firmware 1.8.58 unless a line says otherwise.
 The `replaceNode` / `insertNode` / `removeNode` family is the SHIPPED mechanism behind the companion's Copy feature (`copyModel.ts` → `copy_apply` → `audiograph.rs`).
 
 ## The five messages
@@ -25,7 +26,7 @@ Surfaced as `PresetMessage.replaceNode = 39` (`PresetMessage.proto:178`).
 **Semantics:** swap the node at `destGroup[nodeIdToReplace]` for a fresh instance of model `fenderId`.
 The slot index is implicit — the array slot of the node currently bearing `nodeIdToReplace`.
 There is no explicit `index` field; identity comes from `nodeIdToReplace`.
-`replaceNode` carries ONLY the model id — it installs a fresh default-param instance and does NOT transfer the source block's parameter values; a same-model replace is therefore a model re-stamp, not a settings copy (HW).
+`replaceNode` carries ONLY the model id — it installs a fresh default-param instance and does NOT transfer the source block's parameter values; a same-model replace is therefore a model re-stamp, not a settings copy [HW].
 
 ### `ReplaceNodeWithBlock.proto`
 
@@ -57,7 +58,7 @@ Surfaced as `PresetMessage.nodeReplaced = 40` (`PresetMessage.proto:179`).
 
 **Semantics:** server → every-client broadcast after a successful `ReplaceNode` or `ReplaceNodeWithBlock`.
 Carries the **full JSON** of the new node — everything needed to render the new block (model name, parameter values, defaults, display strings) without a follow-up read.
-Re-key the node by `nodeJson["nodeId"]`, never by field 2 (static RE, fw 1.8.58).
+Re-key the node by `nodeJson["nodeId"]`, never by field 2 [RE].
 
 ### `UndoReplaceNode` / `UndoReplaceNodeResponse`
 
@@ -98,16 +99,18 @@ message InsertNode {
 }
 ```
 
-Surfaced as `PresetMessage.insertNode = 34`; the device confirms with `PresetMessage.nodeInserted = 33`, broadcast to every client: field 2 echoes the anchor, and field 3 is the new node's JSON, whose `"nodeId"` is the minted id (static RE + HW, fw 1.8.58).
+Surfaced as `PresetMessage.insertNode = 34`; the device confirms with `PresetMessage.nodeInserted = 33`, broadcast to every client: field 2 echoes the anchor, and field 3 is the new node's JSON, whose `"nodeId"` is the minted id [HW+RE].
 There is also `InsertNodeAtBlockIndex` (field 99, adds `index = 4`), but **Pro Control sends the bare field 34 for add-block**; field 99 is only the `probe --insert-map --at-index` dev tool, and it aborts the server over budget exactly like field 34.
 `groupId` is the group KEY, exactly like `replaceNode.destGroup`.
 
 **Semantics:** insert a fresh `fenderId` instance into `groupId`; the device fills the new model's default parameters.
-Omit field 2 to append at the end of the group, or set it to the **LIVE node id** of a node in the same group to insert immediately **BEFORE** that node (HW).
+Omit field 2 to append at the end of the group, or set it to the **LIVE node id** of a node in the same group to insert immediately **BEFORE** that node [HW].
 The anchor is matched against the group's CURRENT node ids.
-A replace or insert mints the new node's id from its FenderId: the FenderId itself if no node in the group holds it, else the first free `<FenderId>_1`, `_2`… (static RE + HW, fw 1.8.58) — so take the id from the confirm, and never anchor on a pre-edit id.
+A replace or insert mints the new node's id from its FenderId: the FenderId itself if no node in the group holds it, else the first free `<FenderId>_1`, `_2`… [HW+RE].
+So take the id from the confirm, and never anchor on a pre-edit id.
 A node id often equals its model's FenderId, but a second instance does not.
-`copy_apply` resolves each anchor through its `DeviceIds` and checks every insert with `blockcaps::check_op` first: on fw 1.8.58 an anchor that names no node in the group gets no reply and ABORTS the device server (static RE; [insert abort](../../../../notes/device/structural-edits.md#insert-abort)).
+An anchor that names no node in the group gets no reply and ABORTS the device server ([insert abort](../../../../notes/device/structural-edits.md#insert-abort)) [RE].
+`copy_apply` resolves each anchor through its `DeviceIds` and checks every insert with `blockcaps::check_op` first.
 The field-2 anchor MUST name a node in the **SAME group** as the insert — a visual signal-chain series can span device groups (e.g. amp in G1, pedals in G4), and an anchor in another group is a miss that aborts the server.
 So `diffToOps` anchors each insert before the next SAME-group block, else appends.
 
@@ -119,21 +122,22 @@ The load-bearing wire facts:
 
 - **`batchStatus`:** structural mutations (`replaceNode`=39, `removeNode`=35, `replaceNodeWithBlock`=100) are sent without one ([request batching](../../../../notes/device/session.md#request-batching)); an empty `connectionError` means the session had lapsed and the message was dropped.
 - **Pro Control's persist sequence (per node):** `nodeJsonRequest`(119) edit-context preamble → the no-batch mutation → `renameCurrentPreset`(13) → `saveCurrentPreset`(14); the code mirrors it.
-  `nodeJsonRequest` is a stateless read whose `nodeJsonResponse` (120) goes to every client, and `saveCurrentPreset` stores the whole working copy, structural edits included, so neither the preamble nor the rename is needed to persist (static RE, fw 1.8.58).
+  `nodeJsonRequest` is a stateless read whose `nodeJsonResponse` (120) goes to every client, and `saveCurrentPreset` stores the whole working copy, structural edits included, so neither the preamble nor the rename is needed to persist [RE].
 - **Confirm/reject gate:** save ONLY after `nodeReplaced`(40) / `nodeRemoved`(36); a `presetError`(53) means the device REJECTED the edit → ABORT, never save (you'd persist the wrong active preset's graph).
   A `presetError` can also mean an **invalid model id** — a `fenderId` the firmware doesn't ship rejects — or an unknown `nodeIdToReplace` (`presetError` 14, like an over-budget replace); use a FenderId read from a live node, not a guessed catalog/codename id.
   The session must be ATTACHED to the target preset — verify by the `PresetLoaded` slot echo (identity), NOT display-name equality (duplicate names + a load-that-didn't-take → wrong-preset edit).
 - **60-byte single-report limit:** a `replaceNode` body with a long id (e.g. a `…CabIR` node ≈ 61 B) overflows the single HID report — MUST use the chunked `0x33/0x34/0x35` framing (`transact_chunked`); the single-report path panics on long ids.
 - **User IR replacement = two edits:** `replaceNode`→`ACD_UserIRTMS`, then a STRING `changeParameter` (the `value` oneof's **`stringVal`, field 6**, not floatVal/5) setting the new node's `file` param to the chosen IR filename; verify by re-reading `nodeJsonResponse`(120).`nodeJsonString` before saving.
 - **`replaceNodeWithBlock`(100)** installs a user SAVED block / dual cab by its **library index** within `blockPresetsMap` (params are device-internal-by-index — there is no offline payload; faithful insert is live-only).
-  NOTE: `blockPresetsMap` is DOMINATED by device-default entries (HW: 464 total → 366 defaults, named `"<Model> - N"` / `"Factory Default"`, carrying only `name`+`favorite` — no structural `isDefault` flag), so a "user saved blocks" picker must filter by name heuristic or it shows hundreds of factory defaults; but the `index` still spans the WHOLE unfiltered map, so compute it against the full map, not the filtered view.
+  NOTE: `blockPresetsMap` is DOMINATED by device-default entries: 464 total, 366 of them defaults named `"<Model> - N"` / `"Factory Default"`, carrying only `name`+`favorite` and no structural `isDefault` flag [HW].
+  So a "user saved blocks" picker must filter by name heuristic or it shows hundreds of factory defaults; but the `index` still spans the WHOLE unfiltered map, so compute it against the full map, not the filtered view.
 - **Discovery RPCs:** `RequestAllBlockPresets`(135)→`AllBlockPresetsResponse`(136) and `UserIRListRequest` follow the `batchStatus` rule like any request; the code sends them as a standalone post-handshake transact.
 
 - **InsertNode (add a block) is sent BARE:** `insertNode`(34) takes **NO `nodeJsonRequest`(119) preamble** and NO `batchStatus`; confirm on **`nodeInserted`(33)**.
   Add-then-save = `insertNode`×N [+ a string `changeParameter`(12) for a UserIR `file` param] → `renameCurrentPreset`(13) → `saveCurrentPreset`(14).
   The device does NOT auto-push a fresh field-3 (`currentPresetDataChanged`) after an in-session insert, so VERIFY via `nodeInserted`(33) + a post-save field-8 slot read, not an in-session graph re-read.
   (If you do want to re-prompt the field-3 working-copy push, the trigger is `current_preset_data_request` — `PresetMessage` field **2**; `current_preset_info_request`, field **1**, is INERT for refresh.)
-  No handler drops a correctly framed structural edit: each confirms or fails loudly, and a missing confirm is one still queued behind the load's pushes, a session lapse, a backup freeze or an insert abort (static RE, fw 1.8.58).
+  No traced handler drops a correctly framed structural edit, so a missing confirm is one still queued behind the load's pushes, a session lapse, a backup freeze or an insert abort ([confirms](../../../../notes/device/structural-edits.md#confirms)) [RE, inferred].
   So an unconfirmed insert is read back (`Session::insert_landed`) and re-sent only if it visibly did not land — a blind retry duplicates it.
   Companion entry point: `probe --insert-active <id> [--group][--after][--slot][--commit]` (no `--commit` = dry, inserts then reloads to discard).
 

@@ -22,7 +22,7 @@ Never normalize, strip a suffix or append `NoFx` before a lookup: the suffix is 
 - Convolution: `(cand∈set) − (replaced∈set) + (any member present ? 1 : 0) < 2`, so the existing term is presence, not a count [RE].
 - Cabinets: each member node weighs `1 + (cabsim2enabled == true)`, an amp's second mic as much as a CabSim's second cab [HW+RE].
 - The cabinet check passes while the total stays under 3, and an exempt candidate (`ACD_ExternalCab`) always passes [HW+RE].
-- The host guard weighs a dual flag only on a cabinet member, the shape `Counts` holds.
+- The host guard adds the second-cab weight only to a `cabinetSet` member: `blockcaps::Counts` ignores a `cabsim2enabled` flag on any other node.
 - Glooper: a Glooper candidate plus the existing ones, minus a replaced one, stays under 3 [RE].
 - FX loops: no loop appears twice, and the stereo `ACD_FxLoop3_4` excludes the mono `ACD_FxLoop3` and `ACD_FxLoop4` [RE].
 - The client also limits loops by signal-chain line type [RE]; the companion does not mirror that part.
