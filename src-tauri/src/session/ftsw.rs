@@ -19,6 +19,29 @@ impl Session {
         swap: bool,
         batch: Option<u64>,
     ) -> Result<(), String> {
+        // A malformed `param` functionJson installs a default entry with no presetError
+        // (fw 1.8.58, static RE), silently replacing the switch's function.
+        let entry = serde_json::from_str::<serde_json::Value>(function_json).map_err(|why| {
+            format!("footswitch assignment refused: functionJson is not JSON ({why})")
+        })?;
+        if entry
+            .get("func")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            return Err(
+                "footswitch assignment refused: functionJson is not an object with a string func"
+                    .to_string(),
+            );
+        }
+        if entry["func"] == "param" {
+            if let Some(why) = crate::footswitch::param_entry_fault(&entry) {
+                return Err(format!(
+                    "footswitch assignment refused: {why} — the unit would install a default \
+                     entry instead"
+                ));
+            }
+        }
         self.clear_raw();
         self.send_chunked_collect(
             &proto::set_footswitch_assignment(

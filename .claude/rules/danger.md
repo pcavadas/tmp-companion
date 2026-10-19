@@ -28,7 +28,7 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
   Never assume a FenderId is a node id: anchor on the id the confirm returned (`copy_apply`'s `DeviceIds`), check every insert with `blockcaps::check_op`, and read an unconfirmed insert back (`Session::insert_landed`) instead of re-sending it.
   [→](../../notes/device/structural-edits.md#insert-abort)
 - **DANGER: send a `loadScene` only for a scene the preset has.**
-  On a preset with no scenes it swaps in the empty template under the preset's name; send every recall through `Session::load_scene` or `Session::recall_scene_doc`, which refuse an index past the unit's live scene list, never a raw `proto::load_scene`.
+  On a preset with no scenes it swaps in the empty template under the preset's name; send every recall through `Session::load_scene` or `Session::recall_scene_doc`, which refuse an index past the unit's live scene list, never a raw `proto::load_scene` (`src-tauri/clippy.toml` disallows it).
   [→](../../notes/device/scenes.md#scene-index-bounds)
 - **DANGER: a base recall after a `presetLevel` save plays the old level** until a real reload.
   Any path that saves `presetLevel` with base active must end with `leveller::reload_after_level_save`.

@@ -5888,6 +5888,7 @@ fn a_base_run_with_a_dropped_off_ends_with_reamp_read_back_off() {
 
 /// `/sim/state` counts the fake's server aborts (the offline e2e teardown asserts zero).
 #[test]
+#[allow(clippy::disallowed_methods)] // the raw recall the session refuses
 fn sim_state_counts_server_aborts() {
     let _g = serial();
     let (_app, webview) = reamp_webview();

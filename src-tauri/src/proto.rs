@@ -1577,6 +1577,7 @@ impl Reassembler {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // encodes the raw `loadScene` under test
 mod tests {
     use super::*;
 

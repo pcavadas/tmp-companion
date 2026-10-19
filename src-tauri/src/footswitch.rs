@@ -1205,7 +1205,7 @@ const MAX_ROW_ENTRIES: usize = 5;
 /// (static RE): every required key present with its JSON type, and `valueA`/`valueB`
 /// matching `valueType` (1 int and 2 float take a number or a boolean, 3 a boolean, 4 a
 /// string; any other number only logs). `None` = the entry loads.
-fn param_entry_fault(e: &Value) -> Option<String> {
+pub(crate) fn param_entry_fault(e: &Value) -> Option<String> {
     type Check = (&'static str, fn(&Value) -> bool, &'static str);
     let typed: [Check; 9] = [
         ("groupId", Value::is_string, "a string"),

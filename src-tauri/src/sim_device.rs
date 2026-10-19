@@ -5252,7 +5252,7 @@ mod ftsw_tests {
     /// composer (`leveller.rs`) does too — on fw 1.8.58 its absence makes the device reject
     /// an IMPORTED preset at its first load (empty substitute, `presetError` 6; see
     /// `notes/device/presets.md#rejected-at-load`).
-    const PARAM_FN: &str = r#"{"func":"param","groupId":"G1","nodeId":"n1","parameterId":"level","valueA":0.7,"valueB":0.2,"valueType":2}"#;
+    const PARAM_FN: &str = r#"{"func":"param","groupId":"G1","nodeId":"n1","parameterId":"level","valueA":0.7,"valueB":0.2,"valueType":2,"colorA":3,"colorB":0,"customLabel":"LVL","switchType":0,"isActive":false}"#;
 
     /// The field-3 body the fake would push for the current slot, parsed.
     fn rendered(sim: &SimDevice) -> serde_json::Value {
@@ -6114,6 +6114,7 @@ mod base_snapshot_tests {
 /// (`notes/device/structural-edits.md#confirms`, `notes/device/scenes.md#scene-index-bounds` and
 /// `#footswitch-state-on-recall`, `notes/device/reamp-audio.md#re-amp-toggle`).
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // sends raw `loadScene`s at the fake's bounds
 mod device_parity_tests {
     use super::*;
 

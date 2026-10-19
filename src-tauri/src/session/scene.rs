@@ -4,6 +4,13 @@
 
 use super::*;
 
+/// The `loadScene` body, for the two bounded recalls only: `clippy.toml` disallows
+/// `proto::load_scene` everywhere else, so no caller can skip [`Session::check_scene_index`].
+#[allow(clippy::disallowed_methods)]
+fn recall_body(scene_slot: u32) -> Vec<u8> {
+    proto::load_scene(scene_slot as u64)
+}
+
 impl Session {
     /// Activate scene `scene_slot` within the current preset — `loadScene`.
     /// Non-destructive (changes the active scene, not stored data); enables per-scene
@@ -16,7 +23,7 @@ impl Session {
     pub fn load_scene(&mut self, scene_slot: u32) -> Result<(), String> {
         self.check_scene_index(scene_slot)?;
         // Eager pump — same fire-and-forget rationale as `load_preset`.
-        self.transact_eager(&proto::load_scene(scene_slot as u64), LOAD_ECHO_MS)?;
+        self.transact_eager(&recall_body(scene_slot), LOAD_ECHO_MS)?;
         Ok(())
     }
 
@@ -29,7 +36,7 @@ impl Session {
     ) -> Result<Option<serde_json::Value>, String> {
         self.check_scene_index(scene_slot)?;
         self.raw.clear();
-        self.send_and_collect(&proto::load_scene(scene_slot as u64), LOAD_ECHO_MS)?;
+        self.send_and_collect(&recall_body(scene_slot), LOAD_ECHO_MS)?;
         for _ in 0..4 {
             self.heartbeat()?;
             self.pump_silent(RECALL_DOC_BEAT_MS)?;
