@@ -1,5 +1,6 @@
-//! Firmware-faithful pre-flight guard for the Tone Master Pro's 5 block-count caps
-//! (`NodeSelectionRestrictions`, decompiled from `tone-master-stomp-client`).
+//! Firmware-faithful pre-flight guard for the Tone Master Pro's 5 block restrictions — the
+//! CPU budget and 4 count caps (`NodeSelectionRestrictions`, decompiled from
+//! `tone-master-stomp-client`).
 //!
 //! **This is the SOLE enforcement of the 4 count caps.** The device audio engine
 //! (`tm-stomp-server`) does NOT enforce them and cannot reject an over-cap edit with a
@@ -67,7 +68,8 @@ impl std::fmt::Display for BlockCapError {
     }
 }
 
-/// The 3 extracted membership sets + the 2 FX-loop ids, parsed once from
+/// The membership sets (convolution, cabinet, cabinet exemptions, FX loops) and the
+/// Glooper and stereo/mono FX-loop ids, parsed once from
 /// `block-classification.json` (checked-in, RE-extracted — see the module docs).
 struct Sets {
     convolution: HashSet<String>,
@@ -156,8 +158,9 @@ fn costs() -> &'static Costs {
 }
 
 /// One graph node's identity + the properties the guard counts: its exact FenderId
-/// (used byte-verbatim — see module docs) and whether it's a dual-cab CabSimTMS node,
-/// which counts as 2 cabinet slots for `ComboHalfStackCabinetsLimit`.
+/// (used byte-verbatim — see module docs) and whether it takes a second cabinet slot
+/// (`cabsim2enabled` on any node: an amp's second mic or a CabSim's second cab), which
+/// weighs a cabinet member 2 for `ComboHalfStackCabinetsLimit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterEntry {
     pub group: String,
@@ -325,8 +328,10 @@ pub fn counts(roster: &[RosterEntry]) -> Counts {
 /// the candidate/replaced node takes a second cabinet slot (2 on the cabinet cap, for a
 /// cabinet member only, matching what [`Counts`] holds).
 ///
-/// Checked in firmware enum order (0..4); returns the FIRST violated reason, matching
-/// the TS `checkOp` sibling so the two guards never disagree on which reason to show.
+/// Checked in firmware enum order (0..4); returns the FIRST violated reason. The TS
+/// `checkOp` sibling applies the same rules, and its candidate always weighs one cabinet
+/// slot, as every caller here passes `cand_dual_cab = false` (`bulk_replace::blockcaps_check`
+/// names why, and the saved-block gap it leaves).
 pub fn check_op(
     counts: &Counts,
     candidate_id: &str,

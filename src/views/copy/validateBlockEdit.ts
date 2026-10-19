@@ -127,8 +127,8 @@ function fxLoopReason(present: Map<string, number>): BlockEditReason | null {
 }
 
 /** The anchor being replaced — only meaningful (and only read) when `mode ===
- *  "replace"`: its model frees its own count/coexistence slot, and its dual-cab
- *  flag is what `applyEditOp` carries onto the replacement (`copyModel.ts:454`). */
+ *  "replace"`: its model frees its own count/coexistence slot, and `dualCab` (its
+ *  second cab slot) frees two cabinet slots when it is a cabinet member. */
 export interface CheckOpOpts {
   anchor?: { model: string; dualCab?: boolean };
 }
@@ -136,8 +136,8 @@ export interface CheckOpOpts {
 /** The per-op guard behind the grey-out: would placing `candidateModel` via `mode`
  *  (against a graph currently at `counts`) violate a firmware cap? Mirrors the Rust
  *  `blockcaps::check_op` (fw 1.8.58 client predicates): `replace` frees the anchor's
- *  own slot (CPU, counts, FX loop), and its second-cab flag carries onto the
- *  replacement (`applyEditOp` spreads the anchor); `before`/`after` never do. A
+ *  own slot (CPU, counts, FX loop) and puts a fresh default-param instance in its place,
+ *  one cabinet slot whatever the anchor had; `before`/`after` never free one. A
  *  candidate a rule doesn't cover passes it, except that a cabinet count already over
  *  the cap refuses every candidate but an exempt one (`ACD_ExternalCab`). Returns the
  *  first violated reason, or `null` when the placement is fine. */
@@ -173,7 +173,10 @@ export function checkOp(
   if (conv > 1) return "ConvolutionReverbLimit";
 
   if (!CABINET_EXEMPT.has(candidateModel)) {
-    const candCabinet = cand.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
+    // A stock replacement is a fresh default-param instance: one slot, whatever the anchor
+    // had. A saved dual-cab block would weigh 2, but its metadata does not say so; the Rust
+    // guard shares that gap (`bulk_replace::blockcaps_check`).
+    const candCabinet = cand.cabinet ? 1 : 0;
     const anchorCabinet = anchorClass?.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
     if (counts.cabinet + candCabinet - anchorCabinet > 2) {
       return "ComboHalfStackCabinetsLimit";

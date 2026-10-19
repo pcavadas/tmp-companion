@@ -1959,6 +1959,10 @@ impl SimDevice {
             let json = load_echo_json(&mut st, slot0, false);
             let mut reports = vec![frame(&preset_loaded(dev_slot))];
             reports.extend(frame_multi(&current_preset_data_changed(&json)));
+            // The load's `sceneListResponse`(125) push, which proves the scene count on this
+            // connection (`TrackedHid::scene_count`). Known deviation: the unit also pushes
+            // `currentPresetInfoChanged`(22) and `sceneLoaded`(102), which the fake omits.
+            reports.extend(scene_list_reply(&mut st));
             return reports;
         }
         if proto::first_bytes(&f, F_CURRENT_PRESET_DATA_REQUEST).is_some() {
@@ -2117,12 +2121,7 @@ impl SimDevice {
             return vec![frame(&preset_level_changed(level))];
         }
         if proto::first_bytes(&f, F_SCENE_LIST_REQUEST).is_some() {
-            let mut list = Vec::new();
-            for scene in &working_scenes(&mut st) {
-                let name = scene["sceneName"].as_str().unwrap_or_default();
-                list.extend(proto::len_delimited(2, name.as_bytes()));
-            }
-            return frame_multi(&preset_message(F_SCENE_LIST_RESPONSE, &list));
+            return scene_list_reply(&mut st);
         }
         if let Some(ls) = proto::first_bytes(&f, F_LOAD_SCENE) {
             // LoadScene{ sceneSlot(1) } — the 0-based scenes[] wire index, OR the
@@ -3649,6 +3648,16 @@ fn render_json_stored_name(st: &mut SimState, slot0: u32) -> String {
                 .and_then(|n| n.as_str().map(String::from))
         })
         .unwrap_or_default()
+}
+
+/// A `sceneListResponse`(125) naming the current working copy's scenes.
+fn scene_list_reply(st: &mut SimState) -> Vec<Vec<u8>> {
+    let mut list = Vec::new();
+    for scene in &working_scenes(st) {
+        let name = scene["sceneName"].as_str().unwrap_or_default();
+        list.extend(proto::len_delimited(2, name.as_bytes()));
+    }
+    frame_multi(&preset_message(F_SCENE_LIST_RESPONSE, &list))
 }
 
 /// The current working copy's `scenes[]` (empty when it has none).

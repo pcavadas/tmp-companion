@@ -2104,6 +2104,25 @@ fn a_scene_count_serves_its_own_connection_only() {
     assert_eq!(recalls, 1, "the fresh connection's recall was never sent");
 }
 
+/// A preset load pushes `sceneListResponse` (125); on that connection it proves the
+/// scene count, so the next recall goes out with no `sceneListRequest` (126) first.
+#[test]
+#[allow(clippy::disallowed_methods)] // asserts on the raw `loadScene` body
+fn a_loads_scene_list_push_serves_the_next_recall_with_no_request() {
+    let load = proto::load_my_preset(ListIndex(3).device_slot());
+    let pushed = crate::test_support::scene_list_frames(&["A", "B"]);
+    let t = ScriptedTransport::device().with_reply_to(&load, vec![pushed]);
+    let mut s = session_over(&t, Vec::new());
+    s.transact_eager(&load, 50).unwrap();
+    s.load_scene(1).expect("bounded by the load's push");
+    assert!(s.load_scene(2).is_err());
+    let sent = t.sent.lock().unwrap();
+    assert!(!sent
+        .iter()
+        .any(|b| b.ends_with(&proto::scene_list_request())));
+    assert!(sent.iter().any(|b| b.ends_with(&proto::load_scene(1))));
+}
+
 /// A preset change on the open connection forgets the count: a host load or import, or
 /// a `presetLoaded` push (a load from the unit's own screen).
 #[test]

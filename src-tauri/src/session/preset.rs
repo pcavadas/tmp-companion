@@ -285,13 +285,12 @@ impl Session {
     /// `list_index` on it: the load → drop → reconnect → confirm shape of every save-over
     /// path. The caller ends the load's own connection with [`Self::lapse`].
     ///
-    /// The first connection opened after a load can still report the slot loaded BEFORE it
-    /// in its `PresetLoaded` echo (HW, fw 1.8.58: a load that landed reads stale on the
-    /// next connection, and right on one 16 s later). A session opened inside the unit's
-    /// 0.75 s drop inherits the last one's queued replies ahead of its own, so a refused
-    /// confirm lapses its connection and retries on a new one, [`LOAD_CONFIRM_ATTEMPTS`]
-    /// times in all. The echo still decides every attempt, and a load that really dropped
-    /// still refuses.
+    /// A connection opened within 750 ms of the load connection's last OUT report first gets
+    /// that connection's queued `PresetLoaded` (11) for the slot current before the load
+    /// (HW+RE, fw 1.8.58; `notes/device/presets.md#echo-of-the-previous-slot`). The caller's
+    /// [`Self::lapse`] rules that out, so the retry is defensive: a refused confirm lapses
+    /// its connection and retries on a new one, [`LOAD_CONFIRM_ATTEMPTS`] times in all. The
+    /// echo still decides every attempt, and a load that really dropped still refuses.
     pub fn connect_confirmed(
         list_index: ListIndex,
         expected_name: Option<&str>,

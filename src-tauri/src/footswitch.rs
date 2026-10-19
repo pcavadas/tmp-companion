@@ -1202,9 +1202,10 @@ pub(crate) fn stacked_ftsw_rows(p: &Value) -> Vec<usize> {
 const MAX_ROW_ENTRIES: usize = 5;
 
 /// What is wrong with one `func:"param"` `ftsw` entry, per fw 1.8.58's load-time checks
-/// (static RE): every required key present with its JSON type, and `valueA`/`valueB`
-/// matching `valueType` (1 int and 2 float take a number or a boolean, 3 a boolean, 4 a
-/// string; any other number only logs). `None` = the entry loads.
+/// (static RE): every required key present with its JSON type (`valueA` and `valueB` for
+/// any `valueType`), and `valueA`/`valueB` matching `valueType` (1 int and 2 float take a
+/// number or a boolean, 3 a boolean, 4 a string; any other number skips only that match).
+/// `None` = the entry loads.
 pub(crate) fn param_entry_fault(e: &Value) -> Option<String> {
     type Check = (&'static str, fn(&Value) -> bool, &'static str);
     let typed: [Check; 9] = [
@@ -1220,6 +1221,14 @@ pub(crate) fn param_entry_fault(e: &Value) -> Option<String> {
     ];
     if let Some((key, _, want)) = typed.iter().find(|(key, ok, _)| !ok(&e[*key])) {
         return Some(format!("{key} is not {want}"));
+    }
+    // `valueA` and `valueB` are required for every `valueType`; only their type check is
+    // limited to the four known types.
+    if let Some(key) = ["valueA", "valueB"]
+        .into_iter()
+        .find(|key| e.get(*key).is_none())
+    {
+        return Some(format!("{key} is missing"));
     }
     let value_type = e["valueType"].as_f64().filter(|t| t.fract() == 0.0);
     let (fits, want): (fn(&Value) -> bool, &str) = match value_type.map(|t| t as i64) {
@@ -1381,6 +1390,14 @@ mod tests {
         for (vt, a, b) in ok {
             let p = entry(vt, a, b);
             assert!(validate_import_body(&p).is_ok(), "{p}");
+        }
+        // An unknown valueType still needs both values present.
+        for missing in ["valueA", "valueB"] {
+            let mut e = full_param();
+            e["valueType"] = json!(0);
+            e.as_object_mut().unwrap().remove(missing);
+            let err = validate_import_body(&json!({"ftsw": [[e]]})).unwrap_err();
+            assert!(err.contains(missing), "{missing}: {err}");
         }
         let bad = [
             (json!(1), json!("3"), json!(1), "valueA"),
