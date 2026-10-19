@@ -1867,6 +1867,7 @@ impl SimDevice {
                 let json = load_echo_json(&mut st, current_slot, true);
                 let mut reports = vec![frame(&preset_loaded(dev_slot))];
                 reports.extend(frame_multi(&current_preset_data_changed(&json)));
+                reports.extend(scene_list_reply(&mut st));
                 return reports;
             }
             st.loaded_identity = Some(identity);

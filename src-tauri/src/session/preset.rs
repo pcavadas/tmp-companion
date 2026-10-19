@@ -15,7 +15,7 @@ pub(crate) const LOAD_CONFIRM_ATTEMPTS: u32 = 3;
 /// rule is testable without a device. `release` ends a refused attempt's connection.
 pub(crate) fn confirm_on_fresh_connection(
     mut connect: impl FnMut() -> Result<Session, String>,
-    mut release: impl FnMut(Session),
+    mut release: impl FnMut(Session) -> Result<(), String>,
     list_index: ListIndex,
     expected_name: Option<&str>,
     attempts: u32,
@@ -27,7 +27,9 @@ pub(crate) fn confirm_on_fresh_connection(
             Ok(()) => return Ok(s),
             Err(e) => refused = e,
         }
-        release(s);
+        // A failed release could open the next connection inside the 750 ms window, where
+        // the stale echo would refuse a load that landed: stop rather than retry.
+        release(s)?;
     }
     Err(format!(
         "{refused} (on {} fresh connections)",
@@ -297,9 +299,7 @@ impl Session {
     ) -> Result<Session, String> {
         confirm_on_fresh_connection(
             Session::connect,
-            |mut s| {
-                let _ = s.lapse();
-            },
+            |mut s| s.lapse(),
             list_index,
             expected_name,
             LOAD_CONFIRM_ATTEMPTS,

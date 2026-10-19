@@ -2123,6 +2123,18 @@ fn a_loads_scene_list_push_serves_the_next_recall_with_no_request() {
     assert!(sent.iter().any(|b| b.ends_with(&proto::load_scene(1))));
 }
 
+/// A same-slot load over a clean working copy is a no-op on the unit, yet its pushes still
+/// go out (static RE); the fake's no-op branch pushes the scene list too, so the reload
+/// proves the count and the next recall sends no `sceneListRequest`.
+#[test]
+fn a_no_op_reload_still_proves_the_scene_count() {
+    let sim = crate::sim_device::SimDevice::scened();
+    let mut s = Session::from_transport(Box::new(sim));
+    s.load_preset(ListIndex(0)).expect("load");
+    s.load_preset(ListIndex(0)).expect("no-op reload");
+    assert_eq!(s.reported_scene_count(), Some(8));
+}
+
 /// A preset change on the open connection forgets the count: a host load or import, or
 /// a `presetLoaded` push (a load from the unit's own screen).
 #[test]
@@ -2314,7 +2326,10 @@ fn a_stale_load_echo_is_retried_on_a_fresh_connection() {
                 echoes.pop().expect("one connection per attempt"),
             ))
         },
-        |_| released += 1,
+        |_| {
+            released += 1;
+            Ok(())
+        },
         ListIndex(26),
         Some("Friedman HBE"),
         super::preset::LOAD_CONFIRM_ATTEMPTS,
@@ -2325,6 +2340,27 @@ fn a_stale_load_echo_is_retried_on_a_fresh_connection() {
         released, 1,
         "the stale attempt's connection is released first"
     );
+}
+
+/// A release that fails could reopen inside the 750 ms window, where the stale echo would
+/// refuse a load that landed: the retry stops there and returns the release's error.
+#[test]
+fn a_failed_release_stops_the_confirm_retry() {
+    let mut connects = 0;
+    let e = super::preset::confirm_on_fresh_connection(
+        || {
+            connects += 1;
+            Ok(session_echoing(10))
+        },
+        |_| Err("lapse failed".to_string()),
+        ListIndex(26),
+        Some("Friedman HBE"),
+        super::preset::LOAD_CONFIRM_ATTEMPTS,
+    )
+    .err()
+    .expect("refused");
+    assert_eq!(connects, 1, "no retry after a failed release");
+    assert!(e.contains("lapse failed"), "{e}");
 }
 
 /// The retry never relaxes the guard: an echo that keeps naming another slot refuses after
@@ -2338,7 +2374,10 @@ fn an_echo_that_keeps_naming_another_slot_still_refuses() {
             connects += 1;
             Ok(session_echoing(10))
         },
-        |_| released += 1,
+        |_| {
+            released += 1;
+            Ok(())
+        },
         ListIndex(26),
         Some("Friedman HBE"),
         super::preset::LOAD_CONFIRM_ATTEMPTS,
