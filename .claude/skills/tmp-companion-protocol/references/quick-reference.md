@@ -91,7 +91,7 @@ Its cost and the drain are [handshake](../../../../notes/device/session.md#hands
 - **`LoadPreset` uses field 6 = `presetSlot`**, not field 1.
   Field 1 is `tabEnum` (0=NotSet, 1=UserPresets, 2=FavoritePresets, 3=CloudPresets, 4=FactoryPresets, 5=Songs, 6=Setlists).
   The 1-based `presetSlot = list index + 1` rule also holds for the Factory bank (`tabEnum=4`) [HW].
-  `presetListRequest{listEnum=4}` enumerates it.
+  `presetListRequest{listEnum=4}` enumerates it [HW].
 - **`PresetListResponse.record[]`** is a `repeated PresetListRecord { string displayName }`: the slot is the 0-based array index, and no preset id is sent.
   The empty-slot marker is `--` (also "Empty"); every slot-addressed setter and `songPresetListResponse.userPresetSlot` is 1-based.
 - **Preset CRUD setters** (byte-exact from a Pro Control capture; single-packet, no `batchStatus`): `renameCurrentPreset` (PresetMessage 13) `{displayName=f1}`; `moveUserPreset` (16) `{oldSlot=f1, newSlot=f2}`; `clearUserPreset` (15) `{userSlot=f1}`, a device slot.
@@ -103,7 +103,7 @@ Its cost and the drain are [handshake](../../../../notes/device/session.md#hands
   Extra `info` keys survive import and restore (the blob is stored verbatim) but are dropped by the next save, so `presetJson` is no durable channel for host metadata ([preset identity](../../../../notes/device/presets.md#preset-identity)).
 - **`exportPresetRequest`** (PresetMessage 115) `{listEnum=f1, presetSlot=f2}` → `exportPresetResponse` (116): the preset encrypted, then LZ4, so opaque without the device key.
   `requestNextEmptyPresetSlot` (81) is answered by a broadcast `nextEmptyPresetSlotResponse` (82).
-- **Song-preset binding** (`assignSongPreset` / `songPresetListResponse` records, SongMessage field 11): the wire record names a preset by `userPresetSlot` (1-based device slot) + `presetSceneSlot` (0-based scene index, 8 = the whole preset); the binding itself is the preset's `UserPresets` row, which a move carries ([song links](../../../../notes/device/presets.md#song-links)).
+- **Song-preset binding** (`assignSongPreset` / `songPresetListResponse` records, SongMessage field 11): the wire record names a preset by `userPresetSlot` (1-based device slot) + `presetSceneSlot` (0-based scene index, 8 = the whole preset); the binding itself is the preset's `UserPresets` row, which a move carries ([song links](../../../../notes/device/presets.md#song-links)) [HW+RE].
   The Song read is `songPresetListRequest` 12 → response 13; refusals and link rules are in [`notes/songs-setlists.md`](../../../../notes/songs-setlists.md).
 - **Song and setlist CRUD** (byte-exact from the device).
   Songs = `SongMessage` (TMS field 11): `addSong[4]{songName=1}`, `renameSong[7]{songSlot=1,songName=2}`, `removeSong[6]{songSlot=1}`, `songNotes[22]{songSlot=1,songNotes=2}`, `setSongBpmActive[23]{songSlot=1,active=2}`; list read `songListRequest[2]`→`songListResponse[3]`, record `{songName=1,songNotes=2,songBpmActive=3,songBpm=4}` (songName capped at 24 chars, accents folded to ASCII).

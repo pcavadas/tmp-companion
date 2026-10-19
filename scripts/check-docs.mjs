@@ -303,8 +303,14 @@ function checkMentions(file, lineNo, text) {
 
 // ── 3. strict ban list (report-only) ──────────────────────────────────────
 // An exact evidence tag (docs-writing.md); a ban carrying `tagged: true` passes when one
-// follows the match on its line, the evidence clause that names another firmware.
+// closes the match's own sentence, the evidence clause that names another firmware.
 const EVIDENCE_TAG = /\[(?:HW|RE|RE, inferred|RE, likely|HW\+RE)\]/;
+// A tag on a later sentence of the same line never covers the match.
+function tagEndsSentence(prose, from) {
+  const after = prose.slice(from);
+  const end = after.search(/[.!?](?=\s|$)/);
+  return EVIDENCE_TAG.test(end < 0 ? after : after.slice(0, end + 1));
+}
 const BANS = [
   [/\bfw\s*1\.8\.45\b/i, "firmware 1.8.45 mention", { tagged: true }],
   [/(?<![\w&])#[0-9]{2,4}\b/, "issue/PR number"],
@@ -314,7 +320,7 @@ function checkBans(file, lineNo, prose) {
   for (const [re, what, opts] of BANS) {
     const m = re.exec(prose);
     if (!m) continue;
-    if (opts?.tagged && EVIDENCE_TAG.test(prose.slice(m.index))) continue;
+    if (opts?.tagged && tagEndsSentence(prose, m.index)) continue;
     warn(file, lineNo, `${what}: ${m[0]}`);
   }
 }
