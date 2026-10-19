@@ -24,6 +24,16 @@ impl Session {
         let entry = serde_json::from_str::<serde_json::Value>(function_json).map_err(|why| {
             format!("footswitch assignment refused: functionJson is not JSON ({why})")
         })?;
+        if entry
+            .get("func")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            return Err(
+                "footswitch assignment refused: functionJson is not an object with a string func"
+                    .to_string(),
+            );
+        }
         if entry["func"] == "param" {
             if let Some(why) = crate::footswitch::param_entry_fault(&entry) {
                 return Err(format!(

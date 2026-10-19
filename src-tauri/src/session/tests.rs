@@ -1,9 +1,6 @@
 //! Session unit tests: the decoders, the handshake, keepalive and reopen behaviour, the
 //! list and slot reads, and the structural-edit confirm gate, over scripted transports.
 
-// Several tests send a raw `loadScene` to reach the fake past the session's bound.
-#![allow(clippy::disallowed_methods)]
-
 /// Device-shaped re-amp replies: proto3 omits a false flag, so a present reply without it
 /// is OFF, and a missing reply is no reading at all.
 #[test]
@@ -1874,6 +1871,12 @@ fn set_footswitch_assignment_refuses_a_malformed_param_entry_unsent() {
         .set_footswitch_assignment(2, 0, "{not json", false, None)
         .unwrap_err();
     assert!(err.contains("not JSON"), "{err}");
+    for odd in ["[]", "3", r#"{"nodeId":"amp"}"#] {
+        let err = s
+            .set_footswitch_assignment(2, 0, odd, false, None)
+            .unwrap_err();
+        assert!(err.contains("string func"), "{odd}: {err}");
+    }
     assert!(t.sent.lock().unwrap().is_empty());
     let good = crate::test_support::full_param().to_string();
     s.set_footswitch_assignment(2, 0, &good, false, None)
@@ -1944,6 +1947,7 @@ fn load_scene_refuses_a_scene_on_a_scene_less_preset_unsent() {
 /// The save choke point still refuses a working copy the unit swapped for its template
 /// (here a scene recall that reached the fake without the session's bounds check).
 #[test]
+#[allow(clippy::disallowed_methods)] // a raw `loadScene` past the session's bound
 fn a_template_substituted_by_a_scene_recall_blocks_the_save() {
     let sim = crate::sim_device::SimDevice::new();
     let mut s = Session::from_transport(Box::new(sim.clone()));
@@ -2039,6 +2043,7 @@ fn load_scene_refuses_an_index_past_the_scenes_unsent() {
 /// No `sceneListResponse` means no known scene count: the recall is refused, never sent
 /// on a guess, and the wait keeps the client alive past the inactivity drop.
 #[test]
+#[allow(clippy::disallowed_methods)] // a raw `loadScene` past the session's bound
 fn load_scene_refuses_when_the_scene_count_never_arrives() {
     let t = ScriptedTransport::device();
     let mut s = session_over(&t, Vec::new());
@@ -2067,6 +2072,7 @@ fn load_scene_waits_out_the_handshake_drain_for_the_scene_list() {
 /// trip, but never a fresh connection: the preset may have changed on the unit's own
 /// screen in between, so the new connection asks again (and refuses when unanswered).
 #[test]
+#[allow(clippy::disallowed_methods)] // a raw `loadScene` past the session's bound
 fn a_scene_count_serves_its_own_connection_only() {
     let list = crate::test_support::scene_list_frames(&["A", "B"]);
     let t = ScriptedTransport::device().with_reply_to(&proto::scene_list_request(), vec![list]);
