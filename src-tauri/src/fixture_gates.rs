@@ -974,14 +974,13 @@ fn fx_doctor_oracle_fires_nothing_in_base_and_carries_its_defect_table() {
     assert_eq!(hlp["lpforder"].as_i64(), Some(3), "hlp1.lpforder");
     let plate = dp("plate1");
     assert_eq!(plate["wetdrymix"].as_f64(), Some(0.0), "plate dry in base");
-    assert_eq!(
-        plate["decay"].as_f64(),
-        Some(0.9),
-        "WASHED's decay is pre-baked in base (inaudible at mix 0) — the switch \
-         only moves wetdrymix, keeping the row single-entry. 0.9 (with the \
-         switch's 0.9 mix) puts the aligned tail ratio past the \
-         `GUITAR.wash_tail_db` gate (HW)"
-    );
+    // WASHED's tail shape is pre-baked in base (inaudible at mix 0), so the switch only
+    // moves wetdrymix and the row stays single-entry. With the switch's 0.9 mix, decay,
+    // late-reflection balance and high EQ at their maximum put the aligned tail ratio
+    // ~1.7 dB past the `GUITAR.wash_tail_db` gate on the pitched-pluck stimulus (HW).
+    for (param, want) in [("decay", 1.0), ("earlylatebalance", 1.0), ("higheq", 1.0)] {
+        assert_eq!(plate[param].as_f64(), Some(want), "plate1.{param}");
+    }
 
     // The per-defect param table (label -> node -> (param, valueA, valueB)).
     // ONE param entry per switch row (the single-entry rule above); the
