@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Offline spec for online spec selection: `gates.sh --required-online` on fixed diffs, the
-# release report (`--release-base`, `--device-changes`, `--required-online --since`), and the
-# PR hook (scripts/claude-hooks/gate-pr.sh) fed real hook payloads: it checks the green
-# stamp alone, since PRs run the offline gates only.
+# Offline spec for online spec selection: `gates.sh --required-online` on fixed diffs
+# (comment-only edits included), the release report (`--release-base`, `--device-changes`,
+# `--required-online --since`), and the PR hook
+# (scripts/claude-hooks/gate-pr.sh) fed real hook payloads: it checks the green stamp
+# alone, since PRs run the offline gates only.
 #
 # Fixture: a scratch git repo holding this checkout's gates.sh, gate TSVs and hook, with a
 # `main` branch as the merge base. Each case checks out a fresh branch, adds or edits the
@@ -31,6 +32,41 @@ mkdir -p "$r/scripts/claude-hooks"
 cp "$script_dir/gates.sh" "$script_dir/gate-map.tsv" "$script_dir/gate-policy.tsv" "$r/scripts/"
 cp "$script_dir/claude-hooks/gate-pr.sh" "$r/scripts/claude-hooks/"
 chmod +x "$r/scripts/gates.sh"
+# Seed sources on main, so a case can edit an existing file's comments (the comment-only rule).
+mkdir -p "$r/src-tauri/src/commands" "$r/e2e/fixtures" "$r/scripts/lib"
+cat > "$r/src-tauri/src/commands/songs.rs" <<'RS'
+//! Songs commands.
+
+/// Lists the songs.
+pub fn list() -> u32 {
+    let url = "https://example.invalid/a"; // trailing note
+    let raw = r#"
+// inside a raw string
+"#;
+    /* inline */
+    42 + url.len() as u32 + raw.len() as u32
+}
+RS
+cat > "$r/e2e/fixtures/scenario.ts" <<'TS'
+/**
+ * Seeds the scenario.
+ */
+export function seed(): number {
+  // count
+  const s = `
+// inside a template
+`;
+  return s.length; // trailing
+}
+TS
+cat > "$r/scripts/lib/e2e-lane.sh" <<'SH'
+#!/bin/bash
+# The lane.
+echo hi
+cat <<EOF
+# heredoc body
+EOF
+SH
 (
   cd "$r"
   git init -q
@@ -148,6 +184,42 @@ check "unexercised file → ANY" "ANY" "$(required)"
 check "unexercised file prints an advisory" 1 "$(required_err | grep -c 'advisory (unexercised)')"
 diff_of scripts/hw-e2e.sh
 check "on-demand script → nothing, with an advisory" "|1" "$(required)|$(required_err | grep -c 'advisory (on-demand)')"
+
+# ── comment-only diffs: a seeded file whose edit touches only comments needs no spec ──
+# <path> <sed script> — a fresh branch off main with that seeded file rewritten by sed.
+edit_of() {
+  case_n=$((case_n + 1))
+  (
+    cd "$r"
+    git checkout -q -f main
+    git clean -qfdx
+    git checkout -q -b "case-$case_n"
+    sed -e "$2" "$1" > "$1.new"
+    mv "$1.new" "$1"
+  )
+}
+RS=src-tauri/src/commands/songs.rs
+edit_of "$RS" 's|^//! Songs commands\.|//! The songs commands.|; s|/// Lists the songs\.|/// Lists every song.|; s|/\* inline \*/|/* inline, reworded */|; s|^    42|        42|'
+check "comment-only Rust diff (and a re-indent) → nothing" "" "$(required)"
+check "the comment-only file is named" 1 "$(required_err | grep -c 'comment-only: src-tauri/src/commands/songs.rs')"
+check "comment-only Rust diff, fork file list (no diff) → songs" "songs" \
+  "$( (cd "$r" && TMP_GATES_CHANGED_FILES="$RS" /bin/bash scripts/gates.sh --required-online 2>/dev/null) | tr '\n' ' ' | sed 's/ $//')"
+edit_of "$RS" 's|/// Lists the songs\.|/// Lists every song.|; s|    42 +|    43 +|'
+check "Rust code + comment change → songs" "songs" "$(required)"
+edit_of "$RS" 's|// trailing note|// another note|'
+check "Rust trailing comment on a code line → songs" "songs" "$(required)"
+edit_of "$RS" 's|^// inside a raw string|// changed inside a raw string|'
+check "Rust comment-looking line inside a raw string → songs" "songs" "$(required)"
+edit_of e2e/fixtures/scenario.ts 's|Seeds the scenario\.|Seeds the whole scenario.|; s|// count|// the count|'
+check "comment-only TS diff → nothing, named" "|1" "$(required)|$(required_err | grep -c 'comment-only: e2e/fixtures/scenario.ts')"
+edit_of e2e/fixtures/scenario.ts 's|^// inside a template|// changed inside a template|'
+check "TS comment-looking line inside a template literal → all four" "$ALL" "$(required)"
+edit_of e2e/fixtures/scenario.ts 's|// trailing|// trailing, reworded|'
+check "TS trailing comment on a code line → all four" "$ALL" "$(required)"
+edit_of scripts/lib/e2e-lane.sh 's|^# The lane\.|# The unit lane.|'
+check "comment-only shell diff → all four (shell always counts)" "$ALL" "$(required)"
+edit_of scripts/lib/e2e-lane.sh 's|^# heredoc body|# changed heredoc body|'
+check "shell comment-looking line inside a heredoc → all four" "$ALL" "$(required)"
 
 # ── the PR hook, fed payloads ────────────────────────────────────────────────────
 stamp_dir() { (cd "$r" && printf '%s/tmp-gates' "$(git rev-parse --absolute-git-dir)"); }

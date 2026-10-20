@@ -18,6 +18,7 @@ Don't re-derive that scope table here; read `scripts/gates.sh`'s own header comm
 What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on top of a green `gates.sh` (each row is cumulative):
 
 - **Leveling-math or device-behaviour change** (solver, capture model, clamp or idempotency logic): on the PR, the required `remote-lane` status (`.github/workflows/remote-lane.yml`) runs the online specs the diff maps to against a remote device (10–45 min) and posts "not needed" at once for any other PR.
+  A modified Rust or TS/JS file whose diff changes only comments or whitespace maps to no spec (a shell file always counts) (`comment_only_diff` in `scripts/gates.sh`); a fork PR's file list carries no diff, so each of its files counts.
   The full online suite runs at release on the unit through `scripts/pre-release.sh` (`scripts/e2e.sh online release` over every device-facing change since the last release tag).
   To check a risky change on the unit before then, `scripts/e2e.sh online auto` runs exactly the specs `scripts/gates.sh --required-online` names for this diff; a passing run merges them into the tree's online stamp, which nothing on a PR checks.
 - **Release-risk change to the solve, save or idempotency path:** add `scripts/e2e.sh soak <N>` (N ≥ 5), the attended repeat lane for drift, engage drops and stochastic device-state bugs a single online run won't catch.

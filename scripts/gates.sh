@@ -23,6 +23,10 @@
 #                                    scripts/gate-policy.tsv; advisory lines go to
 #                                    stderr (read-only). TMP_GATES_CHANGED_FILES
 #                                    (newline-separated paths) replaces the diff;
+#                                    a modified source file whose diff changes only
+#                                    comments or whitespace requires nothing
+#                                    (comment_only_diff; never under
+#                                    TMP_GATES_CHANGED_FILES, which has no diff);
 #                                    TMP_GATES_LANE=remote reads a class's
 #                                    `<class>@remote` policy row first
 #   scripts/gates.sh --release-base  print the last release tag (v*) behind HEAD
@@ -260,6 +264,152 @@ escalate_session_timing() {
   fi
 }
 
+# ── comment-only diffs (--required-online only; the run mode's scope never reads this) ──
+# A modified Rust or TS/TSX/JS/MJS file whose diff changes only comments and whitespace
+# requires no online spec; a shell file always counts (shell quoting is too irregular to
+# scan safely). Both checks must pass; any doubt counts the file:
+#   1. COMMENT_LINES_AWK: every changed line of `git diff -w --ignore-blank-lines` is a
+#      whole comment line (`//`, `/*` or `*` with nothing after its `*/`).
+#      A line mixing code and a trailing comment counts.
+#   2. CODE_STREAM_AWK: the comment-stripped, whitespace-collapsed code of the base and
+#      worktree versions is identical. Strings, raw strings, templates and regex literals
+#      stay verbatim, so a comment-looking line inside one is code. The scanner exits 3 on
+#      what it cannot follow: a literal or comment still open at EOF, an unclosed
+#      single-line JS string or regex, JSX in a .tsx.
+# Added, deleted, renamed, mode-changed and binary files always count.
+# shellcheck disable=SC2016  # awk programs: the $ fields are awk's, not the shell's
+COMMENT_LINES_AWK='
+/^@@/ { h = 1; next }
+!h { next }
+/^[-+]/ {
+  s = substr($0, 2); sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s)
+  if (s == "") next
+  if (substr(s, 1, 2) == "//") next
+  if (substr(s, 1, 2) == "/*" || substr(s, 1, 1) == "*") {
+    k = index(s, "*/"); if (k == 0 || k == length(s) - 1) next
+  }
+  bad = 1; exit
+}
+END { exit bad }
+'
+# shellcheck disable=SC2016  # as above
+CODE_STREAM_AWK='
+function flush() {
+  if (started && pend == 2) buf = buf "\n"; else if (started && pend == 1) buf = buf " "
+  pend = 0
+}
+function code(s) { flush(); buf = buf s; started = 1 }
+function ws(k) { if (k > pend) pend = k; brk = 1 }
+function isid(ch) { return ch != "" && ch ~ /^[A-Za-z0-9_$]$/ }
+function prev(j) { return j > 1 ? substr(line, j - 1, 1) : "" }
+function top() { return substr(ts, length(ts), 1) }
+function pop() { ts = substr(ts, 1, length(ts) - 1) }
+function re_ok() {
+  if (last == "") return 1
+  if (isid(last)) return lw ~ /^(return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/
+  return last != ")" && last != "]"
+}
+BEGIN { st = "c"; ts = ""; last = ""; lw = "" }
+{
+  line = $0; n = length(line); cont = 0
+  i = 1
+  while (i <= n) {
+    c = substr(line, i, 1); d = substr(line, i + 1, 1)
+    if (st == "c") {
+      if (c == " " || c == "\t" || c == "\r" || c == "\f") { ws(1); i++; continue }
+      if (c == "/" && d == "/") { ws(1); i = n + 1; continue }
+      if (c == "/" && d == "*") { st = "bc"; bd = 1; ws(1); i += 2; continue }
+      if (lang == "rs" && c == "\047") {
+        if (d == "\\") {
+          k = index(substr(line, i + 3, 12), "\047")
+          if (k) { code(substr(line, i, k + 3)); i += k + 3; last = c; brk = 0; continue }
+        } else if (substr(line, i + 2, 1) == "\047") { code(substr(line, i, 3)); i += 3; last = c; brk = 0; continue }
+        code(c); last = c; brk = 0; i++; continue
+      }
+      if (lang == "rs" && (c == "r" || c == "b" || c == "c") && !isid(prev(i))) {
+        j = (c == "r") ? i : (d == "r" ? i + 1 : 0)
+        if (j) {
+          k = j + 1; h = 0
+          while (substr(line, k, 1) == "#") { h++; k++ }
+          if (substr(line, k, 1) == "\"") { code(substr(line, i, k - i + 1)); st = "raw"; rh = h; i = k + 1; continue }
+        }
+      }
+      if (c == "\"" || (lang != "rs" && c == "\047")) { code(c); st = "s"; q = c; i++; continue }
+      if (lang != "rs" && c == "`") { code(c); ts = ts "T"; st = "t"; i++; continue }
+      if (lang != "rs" && c == "/" && re_ok()) { code(c); st = "re"; cls = 0; i++; continue }
+      if (lang == "tsx" && c == "<" && re_ok() && d ~ /^[A-Za-z>]$/) bad = 1
+      if (lang != "rs" && ts != "" && top() == "E") {
+        if (c == "{") dep[length(ts)]++
+        else if (c == "}") {
+          if (dep[length(ts)] == 0) { pop(); code(c); st = "t"; i++; continue }
+          dep[length(ts)]--
+        }
+      }
+      code(c)
+      if (isid(c)) lw = (isid(last) && !brk) ? lw c : c
+      last = c; brk = 0; i++; continue
+    }
+    if (st == "bc") {
+      if (c == "*" && d == "/") { i += 2; if (--bd == 0) { st = "c"; ws(1) } continue }
+      if (lang == "rs" && c == "/" && d == "*") { bd++; i += 2; continue }
+      i++; continue
+    }
+    if (st == "s") {
+      if (c == "\\") { if (i == n) cont = 1; buf = buf c d; i += 2; continue }
+      buf = buf c; i++
+      if (c == q) { st = "c"; last = q; brk = 0 }
+      continue
+    }
+    if (st == "raw") {
+      if (c == "\"" && substr(line, i + 1, rh) == substr("################################", 1, rh)) {
+        buf = buf c substr(line, i + 1, rh); i += 1 + rh; st = "c"; last = c; brk = 0; continue
+      }
+      buf = buf c; i++; continue
+    }
+    if (st == "t") {
+      if (c == "\\") { buf = buf c d; i += 2; continue }
+      if (c == "`") { buf = buf c; pop(); st = "c"; last = c; brk = 0; i++; continue }
+      if (c == "$" && d == "{") { buf = buf c d; ts = ts "E"; dep[length(ts)] = 0; st = "c"; last = d; i += 2; continue }
+      buf = buf c; i++; continue
+    }
+    # st is re: a single-line JS regex literal
+    buf = buf c
+    if (c == "\\") { buf = buf d; i += 2; continue }
+    if (c == "[") cls = 1; else if (c == "]") cls = 0
+    else if (c == "/" && !cls) { st = "c"; last = c; brk = 0 }
+    i++
+  }
+  if (st == "c" || st == "bc") ws(2)
+  else if (st == "re" || (st == "s" && lang != "rs" && !cont)) { bad = 1; st = "c"; ws(2) }
+  else buf = buf "\n"
+  printf "%s", buf; buf = ""
+}
+END { if (bad || st != "c" || ts != "") exit 3 }
+'
+
+# <path> — succeed iff its diff against the base changes only comments and whitespace (see
+# above). TMP_GATES_CHANGED_FILES (a fork PR) is a file list with no diff, so every listed
+# file still counts there.
+comment_only_diff() {
+  local ref="${since:-$base}" lang old new
+  [ -z "${TMP_GATES_CHANGED_FILES:-}" ] && [ -n "$ref" ] || return 1
+  case "$1" in
+    *.rs) lang=rs ;;
+    *.tsx) lang=tsx ;;
+    *.ts | *.js | *.mjs) lang=js ;;
+    *) return 1 ;;
+  esac
+  [ "$(git diff --no-renames --name-status "$ref" -- "$1" 2>/dev/null)" = "M$TAB$1" ] || return 1
+  case "$(git diff --no-renames --no-ext-diff --no-textconv --no-color -U0 "$ref" -- "$1" 2>/dev/null | sed -n '1,/^@@/p')" in
+    '' | *'old mode'* | *'new mode'* | *Binary*) return 1 ;;
+  esac
+  git diff --no-renames --no-ext-diff --no-textconv --no-color -U0 -w --ignore-blank-lines "$ref" -- "$1" 2>/dev/null |
+    LC_ALL=C awk -v lang="$lang" "$COMMENT_LINES_AWK" || return 1
+  old="$(git show "$ref:$1" 2>/dev/null | LC_ALL=C awk -v lang="$lang" "$CODE_STREAM_AWK")" || return 1
+  new="$(LC_ALL=C awk -v lang="$lang" "$CODE_STREAM_AWK" < "$1")" || return 1
+  [ "$old" = "$new" ]
+}
+
 # Print the online specs the current diff requires, in canonical order, one per line; or
 # `ANY` (at least one online spec, the cheapest); or nothing. Advisory lines go to stderr.
 required_online() {
@@ -267,6 +417,10 @@ required_online() {
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     class="$(classify_path "$f")"
+    if [ "$class" != none ] && comment_only_diff "$f"; then
+      printf 'gates: comment-only: %s — no online spec\n' "$f" >&2
+      continue
+    fi
     if [ "$class" = unclassified ]; then
       printf 'gates: unclassified: %s — add a scripts/gate-map.tsv row; requiring every online spec\n' "$f" >&2
       need="$need $ONLINE_SPEC_SET"
