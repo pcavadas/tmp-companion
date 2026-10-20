@@ -217,7 +217,7 @@ check "TS comment-looking line inside a template literal → all four" "$ALL" "$
 edit_of e2e/fixtures/scenario.ts 's|// trailing|// trailing, reworded|'
 check "TS trailing comment on a code line → all four" "$ALL" "$(required)"
 edit_of scripts/lib/e2e-lane.sh 's|^# The lane\.|# The unit lane.|'
-check "comment-only shell diff → nothing, named" "|1" "$(required)|$(required_err | grep -c 'comment-only: scripts/lib/e2e-lane.sh')"
+check "comment-only shell diff → all four (shell always counts)" "$ALL" "$(required)"
 edit_of scripts/lib/e2e-lane.sh 's|^# heredoc body|# changed heredoc body|'
 check "shell comment-looking line inside a heredoc → all four" "$ALL" "$(required)"
 

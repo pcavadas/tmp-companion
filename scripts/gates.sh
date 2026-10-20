@@ -265,17 +265,17 @@ escalate_session_timing() {
 }
 
 # ── comment-only diffs (--required-online only; the run mode's scope never reads this) ──
-# A modified Rust, TS/TSX/JS/MJS or shell file whose diff changes only comments and
-# whitespace requires no online spec. Both checks must pass; any doubt counts the file:
+# A modified Rust or TS/TSX/JS/MJS file whose diff changes only comments and whitespace
+# requires no online spec; a shell file always counts (shell quoting is too irregular to
+# scan safely). Both checks must pass; any doubt counts the file:
 #   1. COMMENT_LINES_AWK: every changed line of `git diff -w --ignore-blank-lines` is a
-#      whole comment line (`//`, `/*` or `*` with nothing after its `*/`; `#` in shell).
+#      whole comment line (`//`, `/*` or `*` with nothing after its `*/`).
 #      A line mixing code and a trailing comment counts.
 #   2. CODE_STREAM_AWK: the comment-stripped, whitespace-collapsed code of the base and
-#      worktree versions is identical. Strings, raw strings, templates, regex literals and
-#      heredocs stay verbatim, so a comment-looking line inside one is code; shell strips
-#      whole-line comments only. The scanner exits 3 on what it cannot follow: a literal,
-#      comment or heredoc still open at EOF, an unclosed single-line JS string or regex,
-#      JSX in a .tsx, two heredocs on one line.
+#      worktree versions is identical. Strings, raw strings, templates and regex literals
+#      stay verbatim, so a comment-looking line inside one is code. The scanner exits 3 on
+#      what it cannot follow: a literal or comment still open at EOF, an unclosed
+#      single-line JS string or regex, JSX in a .tsx.
 # Added, deleted, renamed, mode-changed and binary files always count.
 # shellcheck disable=SC2016  # awk programs: the $ fields are awk's, not the shell's
 COMMENT_LINES_AWK='
@@ -284,7 +284,6 @@ COMMENT_LINES_AWK='
 /^[-+]/ {
   s = substr($0, 2); sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s)
   if (s == "") next
-  if (lang == "sh") { if (substr(s, 1, 1) == "#") next; bad = 1; exit }
   if (substr(s, 1, 2) == "//") next
   if (substr(s, 1, 2) == "/*" || substr(s, 1, 1) == "*") {
     k = index(s, "*/"); if (k == 0 || k == length(s) - 1) next
@@ -310,47 +309,9 @@ function re_ok() {
   if (isid(last)) return lw ~ /^(return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/
   return last != ")" && last != "]"
 }
-function heredoc(j,   s, f) {
-  s = substr(line, j + 2); hdash = 0
-  if (substr(s, 1, 1) == "-") { hdash = 1; s = substr(s, 2) }
-  sub(/^[ \t]+/, "", s); f = substr(s, 1, 1)
-  if (f == "\047" || f == "\"" || f == "\\") s = substr(s, 2)
-  if (match(s, /^[A-Za-z_][A-Za-z0-9_]*/)) { if (hpend) bad = 1; hpend = 1; hterm = substr(s, 1, RLENGTH) }
-  else if (s !~ /^[0-9$(]/) bad = 1
-}
-function sh_line(   c, d, s) {
-  if (st == "hd") {
-    s = line; if (hdash) sub(/^\t+/, "", s)
-    flush(); buf = buf line
-    if (s == hterm) { st = hret; if (st == "c") ws(2); else buf = buf "\n" } else buf = buf "\n"
-    return
-  }
-  if (st == "c" && (line ~ /^[ \t\r]*$/ || (line ~ /^[ \t]*#/ && !(NR == 1 && line ~ /^#!/)))) { ws(2); return }
-  i = 1
-  while (i <= n) {
-    c = substr(line, i, 1); d = substr(line, i + 1, 1)
-    if (st == "c") {
-      if (c == " " || c == "\t" || c == "\r") { ws(1); i++; continue }
-      if (c == "#" && (i == 1 || prev(i) ~ /^[ \t;&|]$/)) { code(substr(line, i)); i = n + 1; continue }
-      if (c == "\\") { code(c d); i += 2; continue }
-      if (c == "\047") { code(c); st = (prev(i) == "$") ? "ansi" : "sq"; i++; continue }
-      if (c == "\"") { code(c); st = "dq"; i++; continue }
-      if (c == "<" && d == "<" && substr(line, i + 2, 1) != "<") heredoc(i)
-      code(c); i++; continue
-    }
-    if (st == "sq") { buf = buf c; if (c == "\047") st = "c"; i++; continue }
-    if (c == "\\") { buf = buf c d; i += 2; continue }
-    if (st == "dq" && c == "<" && d == "<" && substr(line, i + 2, 1) != "<") heredoc(i)
-    buf = buf c; i++
-    if ((st == "dq" && c == "\"") || (st == "ansi" && c == "\047")) st = "c"
-  }
-  if (st == "c") ws(2); else buf = buf "\n"
-  if (hpend) { hret = st; st = "hd"; hpend = 0 }
-}
 BEGIN { st = "c"; ts = ""; last = ""; lw = "" }
 {
   line = $0; n = length(line); cont = 0
-  if (lang == "sh") { sh_line(); printf "%s", buf; buf = ""; next }
   i = 1
   while (i <= n) {
     c = substr(line, i, 1); d = substr(line, i + 1, 1)
@@ -423,7 +384,7 @@ BEGIN { st = "c"; ts = ""; last = ""; lw = "" }
   else buf = buf "\n"
   printf "%s", buf; buf = ""
 }
-END { if (bad || st != "c" || ts != "" || hpend) exit 3 }
+END { if (bad || st != "c" || ts != "") exit 3 }
 '
 
 # <path> — succeed iff its diff against the base changes only comments and whitespace (see
@@ -436,7 +397,6 @@ comment_only_diff() {
     *.rs) lang=rs ;;
     *.tsx) lang=tsx ;;
     *.ts | *.js | *.mjs) lang=js ;;
-    *.sh) lang="sh" ;;
     *) return 1 ;;
   esac
   [ "$(git diff --no-renames --name-status "$ref" -- "$1" 2>/dev/null)" = "M$TAB$1" ] || return 1
