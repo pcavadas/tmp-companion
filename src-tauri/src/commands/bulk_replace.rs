@@ -20,11 +20,14 @@ pub enum ReplArg {
         file: String,
     },
     /// Saved block (user block / dual cab) — `replaceNodeWithBlock` by the device
-    /// library `index`.
+    /// library `index`. `dual_cab` is the library entry's `dualCabsEnabled`, which the
+    /// installed node's `cabsim2enabled` takes, so the block-count cap can weigh it.
     Saved {
         #[serde(rename = "fenderId")]
         fender_id: String,
         index: u64,
+        #[serde(rename = "dualCab")]
+        dual_cab: bool,
     },
     /// Remove the block from the chain — `removeNode` (the device re-links).
     Remove,
@@ -222,21 +225,18 @@ pub(crate) fn blockcaps_replaced<'a>(
 }
 
 /// Cap-check ONE candidate insert/replace against the running pre-edit `counts`.
-/// `candidate_id = None` is a bare Remove — no candidate to check; removing a node can
-/// only shrink counts, never push a cap over its max. `replaced` is the (fender_id,
-/// dual_cab) of the node a Replace targets, from [`blockcaps_replaced`] (`None` for
-/// an Insert/Remove). `cand_dual_cab` is always `false`: the wire format
-/// (`CopyRepl`/`ReplArg`) never carries a candidate's dual-cab flag — a fresh Model/Ir
-/// insert is never dual by construction; a `Saved` (device-library) block COULD be
-/// dual, but that's only knowable by reading the library entry, which the copy/replace
-/// wire protocol doesn't surface. Known residual gap (documented, not silently assumed).
+/// `candidate = None` is a bare Remove — no candidate to check; removing a node can
+/// only shrink counts, never push a cap over its max. `candidate` and `replaced` are
+/// `(fender_id, dual_cab)` pairs: the candidate's from [`repl_arg_candidate`] (a fresh
+/// Model/Ir block is never dual; a `Saved` block carries its library entry's flag), the
+/// replaced node's from [`blockcaps_replaced`] (`None` for an Insert/Remove).
 pub(crate) fn blockcaps_check(
     counts: &blockcaps::Counts,
-    candidate_id: Option<&str>,
+    candidate: Option<(&str, bool)>,
     is_replace: bool,
     replaced: Option<(&str, bool)>,
 ) -> Result<(), String> {
-    let Some(candidate_id) = candidate_id else {
+    let Some((candidate_id, cand_dual)) = candidate else {
         return Ok(());
     };
     let (replaced_id, replaced_dual) = replaced.map_or((None, false), |(id, d)| (Some(id), d));
@@ -245,7 +245,7 @@ pub(crate) fn blockcaps_check(
         candidate_id,
         replaced_id,
         is_replace,
-        false,
+        cand_dual,
         replaced_dual,
     )
     .map_err(|reason| reason.to_string())
@@ -257,24 +257,29 @@ pub(crate) fn blockcaps_check(
 /// cumulatively, not each against the stale pre-edit snapshot).
 pub(crate) fn blockcaps_advance(
     counts: &mut blockcaps::Counts,
-    candidate_id: Option<&str>,
+    candidate: Option<(&str, bool)>,
     replaced: Option<(&str, bool)>,
 ) {
-    if let Some(id) = candidate_id {
-        counts.add(id, false); // see `blockcaps_check`'s doc on `cand_dual_cab`.
+    if let Some((id, dual)) = candidate {
+        counts.add(id, dual);
     }
     if let Some((id, dual)) = replaced {
         counts.remove(id, dual);
     }
 }
 
-/// The FenderId a [`ReplArg`] would insert, or `None` for `Remove` (no candidate to
-/// cap-check — see [`blockcaps_check`]).
-pub(crate) fn repl_arg_fender_id(repl: &ReplArg) -> Option<&str> {
+/// The `(fender_id, dual_cab)` a [`ReplArg`] would insert, or `None` for `Remove` (no
+/// candidate to cap-check — see [`blockcaps_check`]).
+pub(crate) fn repl_arg_candidate(repl: &ReplArg) -> Option<(&str, bool)> {
     match repl {
-        ReplArg::Model { fender_id }
-        | ReplArg::Ir { fender_id, .. }
-        | ReplArg::Saved { fender_id, .. } => Some(fender_id.as_str()),
+        ReplArg::Model { fender_id } | ReplArg::Ir { fender_id, .. } => {
+            Some((fender_id.as_str(), false))
+        }
+        ReplArg::Saved {
+            fender_id,
+            dual_cab,
+            ..
+        } => Some((fender_id.as_str(), *dual_cab)),
         ReplArg::Remove => None,
     }
 }

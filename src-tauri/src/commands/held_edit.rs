@@ -3,7 +3,7 @@ use crate::{
     commands::bulk_replace::blockcaps_advance, commands::bulk_replace::blockcaps_check,
     commands::bulk_replace::blockcaps_pre_edit_roster, commands::bulk_replace::blockcaps_replaced,
     commands::bulk_replace::confirm_plan_identity, commands::bulk_replace::error_item,
-    commands::bulk_replace::repl_arg_fender_id, commands::bulk_replace::BulkReplaceItem,
+    commands::bulk_replace::repl_arg_candidate, commands::bulk_replace::BulkReplaceItem,
     commands::bulk_replace::ItemOutcome, commands::bulk_replace::ReplArg,
     commands::bulk_replace::ReplacePlan, proto, Session,
 };
@@ -71,13 +71,13 @@ pub(crate) fn held_replace_one(
     if let Err(detail) = confirm_plan_identity(s, plan) {
         return Ok(error_item(list_index, name, detail));
     }
-    let candidate_id = repl_arg_fender_id(repl);
+    let candidate = repl_arg_candidate(repl);
 
     // SAFETY 2 — only persist if EVERY replace is confirmed (nodeReplaced/40).
     let mut applied = 0usize;
     for (group, node_id) in &plan.targets {
         let replaced = blockcaps_replaced(&roster, group, node_id);
-        if let Err(reason) = blockcaps_check(&counts, candidate_id, true, replaced) {
+        if let Err(reason) = blockcaps_check(&counts, candidate, true, replaced) {
             return Ok(BulkReplaceItem {
                 slot: list_index,
                 name: name.clone(),
@@ -88,9 +88,9 @@ pub(crate) fn held_replace_one(
             });
         }
         let confirmed = match repl {
-            ReplArg::Saved { fender_id, index } => {
-                s.replace_node_with_block(group, node_id, fender_id, *index)?
-            }
+            ReplArg::Saved {
+                fender_id, index, ..
+            } => s.replace_node_with_block(group, node_id, fender_id, *index)?,
             ReplArg::Model { fender_id } => s.replace_node(group, node_id, fender_id)?,
             ReplArg::Ir { file, .. } => s.replace_node_with_ir(group, node_id, file)?,
             ReplArg::Remove => s.remove_node(group, node_id)?,
@@ -103,7 +103,7 @@ pub(crate) fn held_replace_one(
                 detail: format!("device rejected replace of {group}/{node_id} (presetError / no nodeReplaced) — NOT saved"),
             });
         }
-        blockcaps_advance(&mut counts, candidate_id, replaced);
+        blockcaps_advance(&mut counts, candidate, replaced);
         applied += 1;
     }
     if save {
@@ -213,6 +213,60 @@ mod plan_identity_tests {
         let (item, ev) = run(sim, &plan(Some("pid-planned")));
         assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
         assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
+    }
+
+    /// Two single cabinets fill the cap; replacing one with a saved block weighs that
+    /// block's `dualCabsEnabled`, which the installed node's `cabsim2enabled` takes [HW].
+    fn replace_a_cab_with_saved(dual_cab: bool) -> (BulkReplaceItem, Vec<SimEvent>) {
+        let sim = SimDevice::new().with_preset_json(
+            r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
+                {"FenderId":"ACD_AC30BrilliantCabIR","nodeId":"n1","dspUnitParameters":{"bypass":false}},
+                {"FenderId":"ACD_CabSimTMS","nodeId":"n2","dspUnitParameters":{"bypass":false}}
+            ]}},"info":{"displayName":"Stadium Lead","preset_id":"pid-planned"},"scenes":[{"sceneName":"PAD"}],"zzTail":"PAD"}"#
+                .replace("PAD", &"x".repeat(120))
+                .as_str(),
+        );
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let repl = ReplArg::Saved {
+            fender_id: "ACD_CabSimTMS".into(),
+            index: 1,
+            dual_cab,
+        };
+        let item = held_replace_one(&mut s, &plan(Some("pid-planned")), &repl, true).unwrap();
+        (item, sim.events())
+    }
+
+    #[test]
+    fn a_saved_dual_cab_block_over_the_cabinet_cap_is_refused_before_the_device() {
+        let (item, ev) = replace_a_cab_with_saved(true);
+        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
+        assert!(
+            item.detail.contains("ComboHalfStackCabinetsLimit"),
+            "{}",
+            item.detail
+        );
+        assert!(
+            !ev.iter().any(|e| matches!(
+                e,
+                SimEvent::ReplaceWithBlock { .. } | SimEvent::Renamed(_) | SimEvent::Saved(_)
+            )),
+            "an over-cap saved block must never reach the device: {ev:?}"
+        );
+    }
+
+    #[test]
+    fn a_saved_single_cab_block_in_the_same_spot_passes_the_cap() {
+        let (item, ev) = replace_a_cab_with_saved(false);
+        assert!(
+            !item.detail.contains("ComboHalfStackCabinetsLimit"),
+            "{}",
+            item.detail
+        );
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, SimEvent::ReplaceWithBlock { .. })),
+            "{ev:?}"
+        );
     }
 
     #[test]

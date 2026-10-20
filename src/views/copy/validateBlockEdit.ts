@@ -174,8 +174,7 @@ export function checkOp(
 
   if (!CABINET_EXEMPT.has(candidateModel)) {
     // A stock replacement is a fresh default-param instance: one slot, whatever the anchor
-    // had. A saved dual-cab block may weigh 2; its library entry's `dualCabsEnabled` is not
-    // passed to the check, a gap the Rust guard shares (`bulk_replace::blockcaps_check`).
+    // had. The frontend sends no saved block, so a candidate is never dual.
     const candCabinet = cand.cabinet ? 1 : 0;
     const anchorCabinet = anchorClass?.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
     if (counts.cabinet + candCabinet - anchorCabinet > 2) {

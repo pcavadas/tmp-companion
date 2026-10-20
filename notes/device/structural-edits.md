@@ -62,8 +62,9 @@ The unit's block picker allows a row only while the chain's cab weight plus the 
 
 - A combo, half-stack, bass amp, cabinet (`ACD_CabSimTMS` or a standalone cab model such as `ACD_Diezel412FV`) or IR block weighs 1, plus 1 when its second cab or mic (`cabsim2enabled`) is on [HW+RE].
 - Heads, effects and `ACD_ExternalCab` weigh 0 [HW+RE].
+- A saved block installed by `replaceNodeWithBlock` (100) takes its library entry's `dualCabsEnabled` as the new node's `cabsim2enabled` [HW].
 
 A chain already over the cap greys every picker row, effects included, except External Cabinet, until cab blocks are removed [HW].
 `blockcaps.rs` reads the four caps and their membership sets from `src/models/block-classification.json`, copied from the unit's client.
 Its `cabinetSet` also holds 7 amp+cab ids the client cannot classify, counted as the fail-closed choice ([provenance](../../src/models/block-classification.md#why-literal-extraction-not-acdcategory--regex)).
-A `cabinetSet` member with `cabsim2enabled` on weighs 2, and every other member 1.
+A `cabinetSet` member with `cabsim2enabled` on weighs 2, and every other member 1; a saved candidate weighs by its `dualCabsEnabled`.
