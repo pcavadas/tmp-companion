@@ -1,7 +1,7 @@
 # MIDI CC Map
 
 Reproduced from the MIDI Implementation Chart in the Owner's Manual (p.43), plus surrounding semantic notes from pp.42-43.
-It matches the fw 1.8.58 CC dispatch (static RE).
+It matches the fw 1.8.58 CC dispatch [RE].
 
 ## Contents
 
@@ -26,7 +26,7 @@ Each preset is recalled by sending a Bank Select (CC 0) followed by a Program Ch
 
 (PC values are 1-indexed per Fender's table — the wire value is `PC# - 1` for standard MIDI implementations.)
 The device resolves preset = wire program + 1 + 128 × bank and rejects numbers above 504.
-The address is a position: after a reorder, a PC recalls whatever now sits at that number (static RE, fw 1.8.58).
+The address is a position: after a reorder, a PC recalls whatever now sits at that number [RE].
 
 ## Control Change (CC) — Full Table
 

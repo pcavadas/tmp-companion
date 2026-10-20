@@ -200,7 +200,7 @@ impl Session {
 
     /// The working copy's dirty flag, from the latest `currentPresetInfoChanged` (field
     /// 22) `isDirty`. fw 1.8.58 fills it from the same flag that decides whether a
-    /// same-slot `loadPreset` really reloads (fw 1.8.58; `getPresetInfo` copies `+0x686`).
+    /// same-slot `loadPreset` really reloads (static RE).
     pub(crate) fn active_preset_dirty(&self) -> Option<bool> {
         self.push_bodies()
             .iter()

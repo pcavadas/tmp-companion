@@ -60,5 +60,4 @@ Device ops run on a FIFO queue: an action taken while another op runs waits its 
 
 ## Song links
 
-A song row references the preset's stored row, not its `preset_id`, so a preset move carries its song links ([device/presets.md#preset-identity](device/presets.md#preset-identity)).
-In-place edits (live edits, then `saveCurrentPreset` to the same slot) and `replace_inplace`'s re-import keep a slot's song link.
+What a song row binds to, why a preset move carries it, and which edits keep it are in [device/presets.md#song-links](device/presets.md#song-links).

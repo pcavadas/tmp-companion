@@ -54,7 +54,7 @@ The production leveller guards every measurement (`leveller::measure_floor_guard
 `leveller::is_engaged` keys on that spread, so a stationary stimulus can still read `FLOOR/SILENT`; do not retune the threshold without captures that separate a failed inject from a stationary stimulus.
 `probe --stim-ab` is the diagnostic sweep.
 A capture of true digital silence ("no signal captured") is a muted path, not a dropped engage: `outputLevel` 0 ([outputLevel 0](#outputlevel-0)) or a USB 1/2 strip muted or soloed away ([Output routing](#output-routing)); `probe --channels <list index>` shows which USB channels carry signal, and a power cycle is never the cure.
-Right after a preset load a capture carries a residual of about −97 to −116 dBFS whatever preceded the load, measured on older firmware [HW].
+Right after a preset load a capture carries a residual of about −97 to −116 dBFS whatever preceded the load, measured on fw 1.8.45 [HW].
 It is not Preset Spillover surviving the reload, and its cause is unmeasured, so allow for it in any near-silence check right after a load.
 
 ### Inputs the stimulus misses
@@ -143,6 +143,6 @@ Pinning 100 % permanently is wrong: the same slider can keep a Windows monitorin
 
 A leveling capture integrates a 6 s stimulus plus a 0.8 s tail, and that window is load-bearing [HW].
 Presets are not stationary under gated integrated LUFS: delay and reverb presets build up at the start and decay in the tail, so an early exit, a dropped tail or a skipped preroll each shift the reading preset-dependently (clean +0.30, delay +0.16, reverb −0.02 LU) [HW].
-The adaptive early-exit capture is opt-in (`audio::MeasureOpts::adaptive`); leveling uses `MeasureOpts::full`, and how to validate a change against the full-capture oracle is in [Leveling](../leveling.md).
-HW LUFS varies ~0.12 LU run to run on these presets, so a bias needs a many-sample A/B, never 2–3 captures [HW].
+HW LUFS varies ~0.12 LU run to run on these presets [HW].
+Which capture leveling uses, and how to test a timing change against the full-capture oracle, are in [Capture window](../leveling-calibration.md#capture-window).
 `audio::LiveReamp` keeps a bounded ring (`LIVE_RING_SECS`): an unbounded capture buffer exhausts the Mac's memory, so never accumulate captures without a bound, and reuse one stream pair per preset rather than one per scene.

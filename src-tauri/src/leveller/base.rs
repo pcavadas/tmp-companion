@@ -62,8 +62,8 @@ pub fn apply_level(
 
 /// Multi-knob Conn-3 seam: set every `(knob, value)` in `targets` (all belonging to
 /// the same scene) on a fresh connection — the joint-k apply for a parallel-merged
-/// scene's lane amps — optionally verify (one fresh re-amp capture, latching the
-/// whole set) and save. `apply_level` is the one-element case. See `apply_level`'s
+/// scene's lane amps — optionally verify (one fresh re-amp capture, engaged after the
+/// whole set is written) and save. `apply_level` is the one-element case. See `apply_level`'s
 /// notes on `reload_preset`.
 pub fn apply_levels(
     slot: ListIndex,
@@ -94,7 +94,7 @@ pub fn apply_levels(
 
     let mut verify_lufs = None;
     let mut s = Session::connect()?;
-    set_knobs(&mut s, targets, saved)?; // set before any re-amp engage (latched)
+    set_knobs(&mut s, targets, saved)?; // set before any re-amp engage (conservative shape)
                                         // Re-assert the run's own `presetLevel` AFTER `set_knobs` — its scene recall can
                                         // re-apply a stale base-snapshot level and leave the verify capture rendering at
                                         // it (see `LevelOptions::intended_preset_level`). Skipped when a PresetLevel

@@ -2,6 +2,7 @@
 
 Source: Owner's Manual v1.8, printed pp. 2, 4, 33, 37–41, 46.
 Page refs are **printed** pages.
+Device facts tagged here are for firmware 1.8.58 unless a line says otherwise.
 
 Companion to `SKILL.md` (product data model).
 This file answers the _rigging_ questions: which jack goes where, what level to set, and how to get the unit into a given live or studio configuration.
@@ -145,11 +146,12 @@ Two modes, in Global Settings → I/O → USB.
 Re-amp audio enters **at the first processing block** and **does not pass through analog loops 1/2** (they are pre-A/D).
 Both physical input jacks are muted while re-amp is on.
 
-> **USB out 3 (dry instrument) carries a fixed +11.95 dB trim and clamps at 24-bit full scale**, so hot pickups played hard clip it while the A/D and the preset input stay intact, and the unit's mixer meter does not show it (static RE + HW, fw 1.8.58) — never roll the guitar volume back to avoid it, that just under-drives the amp and darkens the tone.
+> **USB out 3 (dry instrument) carries a fixed +11.95 dB trim and clamps at 24-bit full scale**, so hot pickups played hard clip it while the A/D and the preset input stay intact, and the unit's mixer meter does not show it [HW+RE].
+> Never roll the guitar volume back to avoid it: that just under-drives the amp and darkens the tone.
 > **The re-amp inject is NOT AGC'd** — its amplitude directly drives the block's nonlinearity, so a hotter injected signal genuinely drives the chain harder; do not apply gain processing to the injected track expecting the device to compensate.
 >
 > > From the Mac's perspective USB out 3 is input channel index 2; useful for measuring a real instrument's output level (the profile calibration that records the player's DI level).
-> > Any apparent flattening of input-level changes on the re-amp inject is the amp model's own compression, not normalization (HW: a clean preset gave ~1.65 LU output per 6 dB input, linearizing toward −6 LU/6 dB at low drive).
+> > Any apparent flattening of input-level changes on the re-amp inject is the amp model's own compression, not normalization: a clean preset gave ~1.65 LU output per 6 dB input, linearizing toward −6 LU/6 dB at low drive [HW].
 > > This is the foundation of instrument-aware leveling.
 
 **Clocks are separate specs (p.46):** internal A/D–D/A conversion is **44.1 kHz / 32-bit**; the USB audio clock is **44.1 / 48 / 88.2 / 96 kHz, DAW-selectable**.
@@ -172,7 +174,7 @@ The host side still runs at 48 kHz.
 
 Loops 1/2 being pre-conversion is why they suit fuzzes and vintage wahs that want to see pickup impedance directly — and why they are invisible to USB re-amping.
 They are relays switched by the preset's top-level `fxLoop` object (`fxLoop1Enabled` / `fxLoop1Bypassed`, …), not audio-graph nodes.
-Loops 3/4 are DSP blocks (`ACD_FxLoop3` / `ACD_FxLoop4` / `ACD_FxLoop3_4`) with their own ADC/DAC channels, so gear on them is in the re-amp path (static RE, fw 1.8.58).
+Loops 3/4 are DSP blocks (`ACD_FxLoop3` / `ACD_FxLoop4` / `ACD_FxLoop3_4`) with their own ADC/DAC channels, so gear on them is in the re-amp path [RE].
 
 Cabling any loop: TMP loop `SEND` → external unit input; external unit output → TMP loop `RETURN`.
 

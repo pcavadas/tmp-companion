@@ -6,6 +6,7 @@ description: "Product-facing data model for the Fender Tone Master Pro, from the
 # TMP product-facing data model
 
 The domain dictionary for TMP's ubiquitous language — what a preset, scene or block _is_ in product terms — from Fender's Owner's Manual + Model Guide, so the companion code carries the right meaning.
+Device facts tagged here are for firmware 1.8.58 unless a line says otherwise.
 `AGENTS.md` is the agent guide and wins any disagreement here; device behaviour is in `notes/device/` and the wire encoding is the `tmp-companion-protocol` skill.
 
 ## Preset object
@@ -13,7 +14,7 @@ The domain dictionary for TMP's ubiquitous language — what a preset, scene or 
 A preset = signal-path template + blocks + per-preset settings + footswitch assigns + EXP assigns + scenes.
 
 > **`presetJson.info.preset_id` is a UUID, not a stable identity.**
-> Every `saveCurrentPreset` re-mints it, a save to the same slot included; import and restore keep whatever id the body carries, and nothing checks uniqueness, so two slots can share one (static RE + HW, fw 1.8.58).
+> Every `saveCurrentPreset` re-mints it, a save to the same slot included; import and restore keep whatever id the body carries, and nothing checks uniqueness, so two slots can share one [HW+RE].
 > Use it only as a per-slot "has this body changed since I read it" check, which is what `bulk_replace.rs`, `backup_read.rs` and `commands/presets.rs` do.
 > On every save the firmware re-serializes `info` to 8 fixed keys, so keys injected into `info` survive an import but vanish on the next save — host-side metadata belongs in a **sidecar** keyed by slot.
 > The on-device DB stores `presetJson` as **plaintext JSON**; only the exported `.preset` file is encoded, and that is **XOR-only** — go through the shared seams `backup::xor_jld` and `library::decode_preset_bytes`, never a second codec (LZ4 wraps the bytes solely inside `importPresetRequest.presetJson`).
@@ -58,10 +59,11 @@ Tables: `references/workflows.md` §4.
 
 **Field scope — switch-level vs function-level.**
 `Type` and `Block` are **per function**; `Color (Active/Inactive)`, `Switch` (latching/momentary) and `Custom Label` are **switch-level** in the UI, one value shared by every function on that footswitch.
-The firmware stores all of them on each function entry (static RE, fw 1.8.58), so a switch-level field must carry the same value on every function of the switch.
+The firmware stores all of them on each function entry, so a switch-level field must carry the same value on every function of the switch [RE].
 
 **Switch Link** is a mutual-exclusion group of up to **8 footswitches**, stored as `linkGroup` on each function entry (0 = none).
-Pressing an inactive entry with a non-zero `linkGroup` first turns off, and executes, every active entry of the same group on the other switches (static RE, fw 1.8.58; that the UI's Switch Link row writes `linkGroup` is inferred).
+Pressing an inactive entry with a non-zero `linkGroup` first turns off, and executes, every active entry of the same group on the other switches [RE].
+That the UI's Switch Link row writes `linkGroup` is inferred [RE, inferred].
 
 **Footswitch-gated parameters default to OFF** — a block parameter can store `0` and only reach its real value via a `Parameter Change` function, so a "silent" effect in the preset JSON may be _gated off_, not absent.
 
@@ -86,9 +88,9 @@ A **4-in / 4-out** USB 2.0 audio interface, 44.1 / 48 / 88.2 / 96 kHz DAW-select
 Channel maps for standard vs reamp mode, the reamp/AGC model and the PRE/POST fader detail: `references/setup-recipes.md` §4.
 
 > **The USB clock rate is not the internal rate.**
-> The DSP and its I²S run at a fixed **44.1 kHz**; the USB side converts the host rate to and from it with a synchronous SRC, pitch-exact and slip-free at all four rates, and the global `sampleRate` setting is only stored and echoed (static RE + HW, fw 1.8.58).
+> The DSP and its I²S run at a fixed **44.1 kHz**; the USB side converts the host rate to and from it with a synchronous SRC, pitch-exact and slip-free at all four rates, and the global `sampleRate` setting is only stored and echoed [HW+RE].
 > So re-amp capture above ~22 kHz is anti-alias skirt, not preset tone — load-bearing for spectrum / EQ-match / Doctor-PSD work.
-> The **host Core Audio rate stays 48 kHz**: what `audio.rs` requires, not a bug to "fix" (`.claude/rules/danger.md`, "48 kHz stimulus required").
+> The **host Core Audio rate stays 48 kHz**: what `audio.rs` requires, not a bug to "fix" ([sample rate](../../../notes/device/reamp-audio.md#sample-rate)).
 
 ## Firmware-enforced constraints
 

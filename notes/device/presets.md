@@ -12,7 +12,7 @@ The device's `userSlot` is the 0-based list index + 1 [HW].
 `session/preset.rs` owns the translation: `load_preset`, `save_current_preset`, `clear_user_preset` and `move_user_preset` take a 0-based `ListIndex` and send `+1`.
 An empty slot lists as `--` (or "Empty").
 `requestNextEmptyPresetSlot` (81) is answered by a broadcast field 82 (−1 when full) [RE]; the app does not use it.
-`moveUserPreset` (16) draws no `presetError`, and a list read on the same connection served the pre-move order on older firmware, so verify a move on a fresh connection [HW].
+`moveUserPreset` (16) draws no `presetError`, and a list read on the same connection served the pre-move order on fw 1.8.45, so verify a move on a fresh connection [HW].
 
 ### Address spaces
 
@@ -81,10 +81,11 @@ Never add a preset load before `save_deferred_scene_writes`: its unsaved writes 
 
 ## Parameter ranges
 
-A float `changeParameter` (12) stores its value verbatim, outside the block's control range too: `ACD_Boost.gain` (range 0–10 dB) kept 12 and −2, and Studio Compressor `makeupgaindb` (range −30…+30 dB) kept 35 and −35, read back from the working copy [HW].
+`ACD_Boost.gain` has a control range of 0–10 dB and Studio Compressor `makeupgaindb` one of −30…+30 dB [RE].
+A float `changeParameter` (12) stores its value verbatim, outside the block's control range too: `ACD_Boost.gain` kept 12 and −2, and `makeupgaindb` kept 35 and −35, read back from the working copy [HW].
 The firmware's block definitions are the only source of the control ranges [RE].
 A write stays in range only where the app bounds it: the leveling solves clamp to `param_class::ParamInfo.range` (from `src/models/param-class.json`), and the amp `outputLevel` writes clamp to `LEVEL_MIN`/`LEVEL_MAX`.
-The probe's `probe_set_param` checks only that the value is finite, so it can store an out-of-range value [HW].
+The probe's `probe_set_param` checks only that the value is finite, so it can store an out-of-range value.
 Unknown: whether the DSP clamps the audio of such a value, and what a save or the unit's own UI does with it.
 
 ## Loading
@@ -159,7 +160,8 @@ The app's link-safe edits keep the slot and its scene names: live `changeParamet
 
 ## Footswitch JSON
 
-Every entry in a `ftsw` row needs `func` [RE].
+An empty `{}` entry loads, and the factory presets carry them [HW].
+Any other entry in a `ftsw` row needs `func` [RE].
 A `func: "param"` entry needs `groupId`, `nodeId`, `parameterId`, `valueType`, `valueA`, `valueB`, `colorA`, `colorB`, `customLabel`, `switchType` and `isActive`, with string fields as strings, numbers as numbers and `isActive` a boolean; `linkGroup` is optional [RE].
 `valueA` and `valueB` must match `valueType`: 1 integer and 2 float each take any number or a boolean, 3 takes a boolean only, 4 a string [RE].
 A missing `valueType` rejects the whole body at load [HW+RE]; a `valueType` of 0 or an unknown value only logs [RE].
@@ -172,5 +174,6 @@ A malformed `setFootswitchAssignment` (54) `functionJson` installs a default ent
 ### What the app enforces
 
 `footswitch::validate_import_body` refuses a param entry missing any required key or carrying a wrong type, a `valueA`/`valueB` that does not match its `valueType`, a row over 5 entries and, conservatively, any multi-entry row; it leaves on-off entries and the `exp` block unchecked.
+Lifting the multi-entry refusal needs a hardware check that a multi-entry row the app writes loads with every entry unchanged.
 `Session::set_footswitch_assignment` refuses a param entry that breaks the same rules before it is sent, so the unit never installs its default entry in its place.
-`fixture_gates.rs`'s `every_param_footswitch_in_every_fixture_carries_a_numeric_value_type` gates every committed fixture, with a negative check so it cannot pass vacuously.
+`fixture_gates.rs`'s `every_param_footswitch_in_every_fixture_carries_a_numeric_value_type` gates every committed fixture, with a negative check so it cannot pass vacuously, and `footswitch.rs`'s `validate_import_body_accepts_short_ftsw_and_float_version_fixtures` runs the full validator over every scenario fixture.

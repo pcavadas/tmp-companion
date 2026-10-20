@@ -2,6 +2,7 @@
 
 Companion to `SKILL.md` (product data model).
 This file holds the lookup-shaped detail behind its sections: the full 12-template topology table (`### Signal-path templates (12)`), the per-preset settings enumeration, how scenes are stored, and the full text of the numbered firmware-enforced constraints.
+Device facts tagged here are for firmware 1.8.58 unless a line says otherwise.
 
 ---
 
@@ -42,7 +43,7 @@ Position in the chain is the only differentiator — relevant to `SignalChainVie
 On every save the firmware re-serializes `info` to exactly these fields, dropping anything else: `author`, `created_at`, `displayName`, `preset_id`, `product_id`, `source_id`, `timestamp`, `version`.
 Injected keys therefore survive an import or restore but vanish on the next save.
 Every save also mints a fresh `preset_id`, a save to the same slot included; import, move and restore keep the body's id, so ids can repeat across slots.
-The 256 factory ids are distinct (static RE + HW, fw 1.8.58).
+The 256 factory ids are distinct [HW+RE].
 
 **Reaching the template picker:** `Preset Settings → Signal Path Type`, or touch `INSTRUMENT` / `MIC/LINE` at the far left of Preset View.
 
@@ -55,11 +56,11 @@ The 256 factory ids are distinct (static RE + HW, fw 1.8.58).
   The 6 explicit options simulate the input impedance the modeled amp/effect would present.
 - **Signal Path Type**: one of the 12 templates above
 - **Output Assign**: 3×3 matrix `[Upper Path / Lower Path / USB 1-2] × [Headphones / Output 1 / Output 2]` — independently togglable.
-  Stored as the preset's `outputMixerSettings` sources `instrumentOutput`, `comboOutput` and `USB12Input`; every load copies them over the global mixer's `instrumentActive`, `micActive` and `usb12Active` (HW), so the USB 1/2 routing can change with each preset loaded.
+  Stored as the preset's `outputMixerSettings` sources `instrumentOutput`, `comboOutput` and `USB12Input`; every load copies them over the global mixer's `instrumentActive`, `micActive` and `usb12Active`, so the USB 1/2 routing can change with each preset loaded [HW].
   That `Upper Path` / `Lower Path` are the instrument and mic/line channels is inferred from those key names.
 - **Preset MIDI**: up to 5 messages sent on preset load, each `(channel, PC#, CC#, CC value)`
 - **Preset Spillover**: on/off (`audioGraph.spillover`) — do delay/reverb tails continue across preset changes.
-  The OUTGOING preset's flag decides: on, its DSP keeps sounding with zero input until the next preset load deletes it; off, its output is cut within ~0.1 ms (static RE, fw 1.8.58).
+  The OUTGOING preset's flag decides: on, its DSP keeps sounding with zero input until the next preset load deletes it; off, its output is cut within ~0.1 ms [RE].
   The setting does not apply to scene recalls (p.17).
 - **AMP CTRL 1/2**: maps to the rear-panel AMP CTRL TRS jack (tip=AC1, ring=AC2) — wiring and insert-cable detail in `setup-recipes.md` §6
 - **Tap tempo scope**: per-preset BPM **or** global tempo (Global Settings → Footswitch → Tap Tempo)
@@ -68,14 +69,14 @@ The 256 factory ids are distinct (static RE + HW, fw 1.8.58).
 
 ## Scene storage — overlays and the Scene Edit flag
 
-Each `scenes[N]` carries per-node overlays keyed by group and `nodeId`, plus `ftswStates` (static RE, fw 1.8.58):
+Each `scenes[N]` carries per-node overlays keyed by group and `nodeId`, plus `ftswStates` [RE].
+Where a scene-context `changeParameter` lands and what a recall renders are in [Scene-write landing](../../../../notes/device/scenes.md#scene-write-landing).
+The storage shape:
 
 - **The overlay's shape IS the Scene Edit flag.**
   An overlay with more than one key is a full snapshot (Scene Edit ENABLED: the block's knobs are isolated from base in that scene); a `{bypass}`-only overlay is Scene Edit DISABLED (knobs shared with base, only on/off scene-tracked); no overlay renders base.
   Base blocks carry no flag.
-- **Where a `changeParameter` lands in scene N:** in the overlay when the param is `bypass` on an existing entry, or the entry has more than one key; otherwise on base, so every scene sharing that block gets it.
-- **Recall:** a `{bypass}`-only overlay merges that one key onto base; any other overlay replaces the node's whole `dspUnitParameters` object.
-- **Defaults (HW):** a scene added after the blocks exist leaves them unflagged in it; a block added after scenes exist is flagged in every existing scene, snapshotting its add-time values — which is why a scene can show a block's defaults while base was tuned later.
+- **Defaults:** a scene added after the blocks exist leaves them unflagged in it; a block added after scenes exist is flagged in every existing scene, snapshotting its add-time values, which is why a scene can show a block's defaults while base was tuned later [HW].
 - **`ftswStates`:** every recall writes the target scene's `ftswStates` into the footswitches' `isActive` flags.
   That sets each switch's LED and what its next press does; what is heard at the recall comes only from the node overlays.
   A scene footswitch ignores its stored `isActive`: it counts as active while its scene is current, and a press of it then loads base (scene 8).

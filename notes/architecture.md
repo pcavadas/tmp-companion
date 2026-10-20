@@ -52,7 +52,7 @@ Backend, `src-tauri/src/`:
 - `audiograph.rs`: the node walks (`for_each_node`, `for_each_node_mut`, `Node::matches_instance`, `mint_node_id`) the scan and edit modules share.
 - `scene_jobs.rs`: scene-leveling job planning and the scene-overlay classifier.
 - `stimulus.rs`: stimulus resolution, WAV I/O and dry-DI capture.
-- `blockcaps.rs`: the sole enforcement of the block-count caps and the CPU budget; every apply path calls `blockcaps::check_op`.
+- `blockcaps.rs`: the only host-side guard for the four block-count caps and the CPU budget, and the only enforcement of the count caps; every apply path calls `blockcaps::check_op`.
 - `slot.rs`: the 0-based list index and the 1-based device slot as two types, and `SCRATCH_SLOTS`, the one declaration of the scratch zone.
 - `replace_inplace.rs`: in-place re-import that keeps a slot's song link, and the load proof every import → load → save path uses.
 - `backup.rs`, `backup_read.rs`, `library.rs`: the `.preset` codec and the backup scan.

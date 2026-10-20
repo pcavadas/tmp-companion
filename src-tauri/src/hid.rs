@@ -449,8 +449,8 @@ mod imp {
     ///
     /// On persistent `kIOReturnExclusiveAccess` this re-ENUMERATES (fresh
     /// manager + device copy) between attempts instead of only re-opening — a
-    /// defensive measure: a stale device ref once kept failing 0xe00002c5 while a
-    /// fresh enumeration opened at once (HW, before fw 1.8.58). A persistent
+    /// defensive measure: on fw 1.8.58 every open succeeds first try
+    /// (`notes/device/session.md#exclusive-seize`). A persistent
     /// 0xe00002c5 means another handle holds the seize (Pro Control, or an
     /// overlapping `Session` in this process); waiting helps only while that
     /// handle is closing. Genuine contention persists across every attempt and

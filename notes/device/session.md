@@ -43,7 +43,9 @@ There is no device-side open lockout: 1,060 open → request → close cycles at
 The two holders are Pro Control (the `busy` connect error, "Another app is using your Tone Master Pro") and an overlapping `Session` in this process, which `Hid::open`'s error names.
 A `connect_device` that acquired before releasing would collide with its own stale handle, so it clears `AppState.session` first, then sets `MONITOR_ENABLED` and waits for the monitor's startup snapshot.
 Two device commands run at once also collide, so every device command takes the process-global `DEVICE_OP_LOCK` (`device_gate.rs`) inside its `spawn_blocking`; front-end serialization alone is not enough, because `with_released_seize`'s release → work → reconnect lets two operations overlap.
-`hid.rs` retries the same device reference 6 × 80 ms, then re-enumerates 3 × 400 ms (`ENUM_RETRY_DELAY_MS`), because a stale macOS IOHIDDevice reference can keep failing `0xe00002c5` while a fresh enumeration opens at once [HW].
+`hid.rs` retries the same device reference 6 × 80 ms, then re-enumerates 3 × 400 ms (`ENUM_RETRY_DELAY_MS`).
+On fw 1.8.45 a stale macOS IOHIDDevice reference kept failing `0xe00002c5` while a fresh enumeration opened at once [HW].
+On fw 1.8.58 the re-enumeration is defensive: each of the 1,060 open cycles opened first try.
 Sessions reopen with no fixed gap; the UI's drop-then-reopen waits on `hid::wait_released`.
 
 ### Diagnosing `0xe00002c5`

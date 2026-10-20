@@ -64,12 +64,12 @@ cargo run --bin probe  # headless device checks (unit plugged in, Pro Control cl
 ## Device danger summary
 
 Read [`.claude/rules/danger.md`](.claude/rules/danger.md) before touching the device; the facts behind it are in [`notes/device/`](notes/device/).
-It covers saves (permanent: the Pro Control backup is the only way back), slot addressing (`userSlot` = list index + 1), the same-slot load, bodies rejected at load, the insert abort, `presetLevel` on recall, scene context, the 750 ms session lapse, silent captures and the guaranteed re-amp OFF.
+It includes saves (permanent; only a Pro Control backup undoes one), slot addressing (`userSlot` = list index + 1), the same-slot load, bodies rejected at load, the insert abort, scene context, the 750 ms session lapse and the guaranteed re-amp OFF.
 Serialize every device operation through `device_gate::DEVICE_OP_LOCK`; the HID seize is exclusive, so Pro Control must be closed.
 
 ## Invariants no single module can state
 
-- **`blockcaps.rs` is the sole enforcement of the five block rules** (the CPU budget and four count caps): the device enforces none of the count caps, so any new apply path must call it.
+- **`blockcaps.rs` is the only host-side guard for the five block rules** (the CPU budget and four count caps) and the only enforcement of the count caps, so any new apply path must call it.
 - **`SCRATCH_SLOTS` (`slot.rs`) is the one declaration of the scratch zone**, not a universal guard: `probe_import_file` and the in-place replace path guard an empty target slot instead, so an import can land at any empty user slot.
 - **Block art is original SVG through the BlockArt engine**, never an `<img>` of a vendor PNG (Fender IP).
 - **`ui/primitives.tsx` is deliberately not split**: `Modal` renders `Button`, so a split reintroduces a circular import; `ui/Dialog.tsx` stays button-free.
@@ -91,19 +91,19 @@ Scenes and footswitches: [`notes/leveling-scenes.md`](notes/leveling-scenes.md);
 
 ## Read by path
 
-Claude Code loads these itself; other agents read the file a path or task routes to.
+Claude Code loads these itself; other agents follow these routes.
 Paths are under `src-tauri/src/` unless they name another root.
 
 - Before touching the device → [`danger.md`](.claude/rules/danger.md)
 - `src-tauri/**/*.rs` → [`rust-backend.md`](.claude/rules/rust-backend.md)
 - `session/**`, `hid.rs`, `hid/**`, `monitor.rs`, `device_gate.rs` → [`device-session.md`](.claude/rules/device-session.md)
-- `commands/{copy_apply,bulk_replace,presets}.rs`, `replace_inplace.rs`, `slot*.rs`, `backup*.rs`, `blockcaps.rs`, `audiograph.rs`, `bulkrun.rs`, `preset_io.rs`, `library.rs`, `paramedit.rs`, `commands/held_edit.rs`, `e2e_seed.rs` → [`device-presets.md`](.claude/rules/device-presets.md)
+- `commands/{copy_apply,bulk_replace,presets}.rs`, `replace_inplace.rs`, `slot*.rs`, `backup*.rs`, `blockcaps.rs`, `audiograph.rs`, `bulkrun.rs`, `preset_io.rs`, `library.rs`, `paramedit.rs`, `commands/held_edit.rs`, `e2e_seed.rs`, `param_class.rs` → [`device-presets.md`](.claude/rules/device-presets.md)
 - `leveller/**`, `scene_jobs*.rs`, `scenes.rs`, `footswitch.rs`, `commands/level_*.rs`, `session/reamp.rs` → [`device-scenes.md`](.claude/rules/device-scenes.md)
 - `leveller/**`, `lufs.rs`, `audio.rs`, `psd.rs`, `doctor*.rs`, `commands/level_*.rs`, `commands/doctor*.rs`, `stimulus.rs`, `profiles.rs`, `topologies.rs`, `headroom_trade.rs` → [`leveling-dsp.md`](.claude/rules/leveling-dsp.md)
 - `commands/{songs,setlists}.rs`, `song_io.rs`, `setlist_io.rs`, `session/songs.rs`, `probe_api/{songs,setlists}.rs`, `src/views/songs/**` → [`songs.md`](.claude/rules/songs.md)
 - `bin/probe.rs`, `probe_api/**`, `sim_device.rs` → [`device-probe.md`](.claude/rules/device-probe.md)
 - `src/**/*.{ts,tsx}` → [`frontend.md`](.claude/rules/frontend.md); `src/theme/**`, `src/ui/**` → [`theme-ds.md`](.claude/rules/theme-ds.md); `src/models/**`, `src/ui/blockart/**` → [`models-catalog.md`](.claude/rules/models-catalog.md)
-- `e2e/**`, `scripts/e2e.sh`, `scripts/hw-e2e.sh`, `e2e_seed.rs` → [`e2e.md`](.claude/rules/e2e.md); `**/*.sh` → [`shell-scripts.md`](.claude/rules/shell-scripts.md)
+- `e2e/**`, `scripts/e2e.sh`, `scripts/hw-e2e.sh`, `e2e_seed.rs`, `e2e_server*.rs`, `fixture_gates.rs` → [`e2e.md`](.claude/rules/e2e.md); `**/*.sh` → [`shell-scripts.md`](.claude/rules/shell-scripts.md)
 - `notes/**`, `**/*.md` → [`docs-writing.md`](.claude/rules/docs-writing.md); `docs/**` → [`docs-site.md`](.claude/rules/docs-site.md); `src-tauri/icons/**` → [`app-icon.md`](.claude/rules/app-icon.md)
 
 Skills, by task:

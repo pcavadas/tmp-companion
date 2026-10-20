@@ -2,6 +2,7 @@
 
 Source: Owner's Manual v1.8.
 Page refs are **printed** pages.
+Device facts tagged here are for firmware 1.8.58 unless a line says otherwise.
 
 `workflows.md` covers editing a preset (presets, blocks, cabinets, footswitches, EXP); this file covers playing and maintaining the unit, and indexes every screen.
 
@@ -32,7 +33,8 @@ The **Song BPM** control occupies the **bottom-right cell** of the assignment gr
 1. **Touch the virtual footswitch** to enable Song BPM.
 2. **Touch the virtual scribble strip** to set the value with a gradient slider.
 
-Once enabled it **overrides all saved preset tempos** for every preset in that song, **also responds to the Tap Tempo footswitch** (a tap writes the song's BPM only while Song BPM is on, and turning it on re-applies the stored BPM — static RE + HW, fw 1.8.58), and appears in the Preset View lower ribbon and on the Tap scribble strip.
+Once enabled it **overrides all saved preset tempos** for every preset in that song, **also responds to the Tap Tempo footswitch**, and appears in the Preset View lower ribbon and on the Tap scribble strip.
+A tap writes the song's BPM only while Song BPM is on, and turning Song BPM on re-applies the stored BPM [HW+RE].
 Default is **off**.
 
 ### Song Notes
@@ -44,7 +46,7 @@ They render **in parentheses on a second, smaller line** beneath the song name i
 ### Manage
 
 More Options (`⋯`) → **delete, duplicate or rename** a song.
-Deleting a song also removes its preset bindings and every setlist membership, and later songs shift down by one (static RE, fw 1.8.58).
+Deleting a song also removes its preset bindings and every setlist membership, and later songs shift down by one [RE].
 Editing a preset from within Songs mode and saving it **overwrites every use of that preset**.
 
 ### Navigate
@@ -142,7 +144,7 @@ Footswitches rebind to **Fender Studio Pro** transport control:
 2. **Tone Master Pro Control desktop app** (Mac/PC, over USB) — does "select, edit, **backup/restore** and share your presets" (p.1).
 
 The manual never enumerates what "settings" covers.
-Both routes build the same archive: the whole user database (presets, **Songs, Setlists** and setlist membership), the global settings JSON, the user IR list and IR files, and the block-preset defaults (static RE, fw 1.8.58).
+Both routes build the same archive: the whole user database (presets, **Songs, Setlists** and setlist membership), the global settings JSON, the user IR list and IR files, and the block-preset defaults [RE].
 
 ### Firmware update (p.44)
 

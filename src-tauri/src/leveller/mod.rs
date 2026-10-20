@@ -16,7 +16,7 @@
 //!
 //! Layout: one file per lane, behind this module's flat API (every lane's items are
 //! re-exported here, so callers keep addressing them as `leveller::…`):
-//!   - `load` — the latch-rule isolated load and the stored-preset restores.
+//!   - `load` — the isolated load on its own connection and the stored-preset restores.
 //!   - `measure` — the floor guard, `C` measurement and the shared capture seams.
 //!   - `doctor_capture` — the Doctor's stimulus window, onset split and captures.
 //!   - `reamp_off` — the guaranteed re-amp OFF and the run-end guard.

@@ -60,8 +60,10 @@ So an `insertNode` past the cabinet cap over USB is accepted with a `nodeInserte
 
 The unit's block picker allows a row only while the chain's cab weight plus the candidate's stays at 2 or less, and the same check gates the "+ Add Mic" button [HW+RE]:
 
-- A combo, half-stack, bass amp, Cabinet (`ACD_CabSimTMS`) or IR block weighs 1, plus 1 when its second cab or mic (`cabsim2enabled`) is on [HW+RE].
+- A combo, half-stack, bass amp, cabinet (`ACD_CabSimTMS` or a standalone cab model such as `ACD_Diezel412FV`) or IR block weighs 1, plus 1 when its second cab or mic (`cabsim2enabled`) is on [HW+RE].
 - Heads, effects and `ACD_ExternalCab` weigh 0 [HW+RE].
 
 A chain already over the cap greys every picker row, effects included, except External Cabinet, until cab blocks are removed [HW].
-`blockcaps.rs` copies the fw 1.8.58 caps and sets (`src/models/block-classification.json`), plus 7 amp+cab ids the client cannot classify, and weights any `cabsim2enabled` member 2.
+`blockcaps.rs` reads the four caps and their membership sets from `src/models/block-classification.json`, copied from the unit's client.
+Its `cabinetSet` also holds 7 amp+cab ids the client cannot classify, counted as the fail-closed choice ([provenance](../../src/models/block-classification.md#why-literal-extraction-not-acdcategory--regex)).
+A `cabinetSet` member with `cabsim2enabled` on weighs 2, and every other member 1.

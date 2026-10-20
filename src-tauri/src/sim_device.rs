@@ -64,9 +64,10 @@
 //!
 //! **Scene recall semantics (static RE, fw 1.8.58):** a `loadScene` recall merges a
 //! bypass-only overlay (`{bypass: …}`) onto base key by key, and replaces the node's whole
-//! `dspUnitParameters` with any other overlay. Known deviation: the fake renders a
-//! non-bypass overlay PER PARAM, falling through to base for a param it omits (what the
-//! device renders there is unknown); nothing is retained from the scene recalled before
+//! `dspUnitParameters` with any other overlay, so a param that overlay omits plays the
+//! block's built-in default (`notes/device/scenes.md#scene-write-landing`). Known
+//! deviation: the fake renders a non-bypass overlay PER PARAM, falling through to base for
+//! a param it omits instead of the block default; nothing is retained from the scene recalled before
 //! ([`SimState::rendered_param`] / [`SimState::rendered_bypass`], resolved fresh on every
 //! call, never cached). Every recall applies the target scene's `scenes[].ftswStates` to the
 //! footswitches' `isActive` flags (LED and next-press state) only — never to bypass or DSP.
@@ -665,7 +666,7 @@ struct SimState {
     /// song row, slot)`, what a `loadPreset` is compared against. Set by a real load AND by a
     /// save, which moves it to `(1, 0, 0, saved slot)`. `None` until the first load.
     loaded_identity: Option<(u64, u32, u32, u32)>,
-    /// The working copy's dirty flag (`CurrentPresetModel +0x686`): set by
+    /// The working copy's dirty flag (the firmware's current-preset model): set by
     /// every working-copy edit, cleared by a real load and by a save. While it is clear, a
     /// `loadPreset` of [`SimState::loaded_identity`] is a NO-OP that keeps the working copy.
     dirty: bool,
@@ -6110,7 +6111,7 @@ mod base_snapshot_tests {
     }
 }
 
-/// The fw 1.8.58 behaviours the fake once deviated from, one test per fact
+/// Parity checks against fw 1.8.58 behaviours the fake models, one test per fact
 /// (`notes/device/structural-edits.md#confirms`, `notes/device/scenes.md#scene-index-bounds` and
 /// `#footswitch-state-on-recall`, `notes/device/reamp-audio.md#re-amp-toggle`).
 #[cfg(test)]
