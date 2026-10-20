@@ -112,13 +112,18 @@ export async function openLevel(page: Page): Promise<void> {
  *  rows (scenes/footswitches) that preset also has selected. */
 export const baseRowKey = (slot: number): string => `p${String(slot)}`;
 
+/** How long a page's startup backup scan may take on the unit. The backup streams at a
+ *  fixed ~27 KiB/s, so its length is the archive's (user IR files included), not the preset
+ *  count's: a 2.8 MB archive holding 3 MB of user IRs reads in ~105 s (HW). */
+export const BACKUP_SCAN_MS = 180_000;
+
 /** Open a preset on the Level (or Doctor) list with its caret ("Open <name>"). The caret
  *  is there only once the backup scan has read the preset's scenes and footswitches, so
- *  this also waits for the scan. */
+ *  this also waits for the scan, up to [`BACKUP_SCAN_MS`]. */
 export async function openPreset(page: Page, name: string): Promise<void> {
   await page
     .getByRole("button", { name: `Open ${name}`, exact: true })
-    .click({ timeout: 60_000 });
+    .click({ timeout: BACKUP_SCAN_MS });
 }
 
 /** The list's checkbox for one sound of a preset ("Choose Rhythm in E2E Rig"). */

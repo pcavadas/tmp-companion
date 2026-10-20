@@ -75,7 +75,8 @@ It tries a floor-relative energy step first, falls back to the envelope correlat
 - **The tail length is pinned.**
   `reamp_capture` keeps whatever frames arrive in `play + tail` ms, and the tail length moves the ratio ~0.3 dB per 100 ms [HW], so the tail window is pinned to the recipe's tail (`DOCTOR_TAIL_MS`) after the body end.
 - **The first capture after other device activity reads ~0.3 dB off**, a device-side cold-capture offset; warm runs spread σ ≈ 0.05 dB [HW].
-  The oracle wash fixture sits at mix 0.9 / decay 0.9 to keep a 1.6 dB margin over the gate on a cold capture; decay is the lever, because the body gets wetter with the tail as mix rises.
+  The oracle wash fixture sits at mix 0.9 with decay, `earlylatebalance` and `higheq` at 1.0, reading −6.7 to −6.8 dB on the pitched-pluck stimulus, a 1.7 dB margin over the gate [HW].
+  Those three are the levers, because the body gets wetter with the tail as mix rises; at decay 1.0 alone the tail reads −8.3 to −8.4 dB, and the damping and diffusion controls only shorten it [HW].
 
 ## Calibrated DI captures
 
