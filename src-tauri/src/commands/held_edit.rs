@@ -171,7 +171,7 @@ mod plan_identity_tests {
     use crate::sim_device::{SimDevice, SimEvent};
 
     /// The sim's default two-node graph, under a given `info.preset_id`. The trailing
-    /// `scenes` padding keeps `info` clear of the ≤60 B the session's field-3
+    /// `zzTail` padding keeps `info` clear of the ≤60 B the session's field-3
     /// reassembly drops off every document's tail (see `sim_device`'s `ftsw_tests` note).
     fn doc_with_id(id: &str) -> String {
         format!(
@@ -179,7 +179,7 @@ mod plan_identity_tests {
                 {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false,"outputLevel":0.5}}}},
                 {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
             ]}}}},"info":{{"displayName":"Stadium Lead","preset_id":"{id}"}},
-            "scenes":[{{"sceneName":"{pad}"}}]}}"#,
+            "zzTail":"{pad}"}}"#,
             pad = "x".repeat(120)
         )
     }
@@ -252,7 +252,7 @@ mod plan_identity_tests {
             r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
                 {"FenderId":"ACD_AC30BrilliantCabIR","nodeId":"n1","dspUnitParameters":{"bypass":false}},
                 {"FenderId":"ACD_CabSimTMS","nodeId":"n2","dspUnitParameters":{"bypass":false}}
-            ]}},"info":{"displayName":"Stadium Lead","preset_id":"pid-planned"},"scenes":[{"sceneName":"PAD"}],"zzTail":"PAD"}"#
+            ]}},"info":{"displayName":"Stadium Lead","preset_id":"pid-planned"},"zzTail":"PAD"}"#
                 .replace("PAD", &"x".repeat(120))
                 .as_str(),
         );

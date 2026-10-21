@@ -211,6 +211,56 @@ mod copy_level_e2e_tests {
         assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
     }
 
+    /// A two-scene preset whose scene 0 has no entry for `n2`, loaded into scene 1. When
+    /// `canonical`, every node has an entry in every scene, as the firmware expects.
+    fn scene_gap_doc(canonical: bool) -> String {
+        let n2 = if canonical {
+            r#","n2":{"dspUnitParameters":{"bypass":false}}"#
+        } else {
+            ""
+        };
+        format!(
+            r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[
+                {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false}}}},
+                {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
+            ]}}}},"info":{{"displayName":"Stadium Lead"}},"lastLoadedScene":1,
+            "scenes":[
+                {{"sceneName":"A","guitarNodes":{{"G1":{{"n1":{{"dspUnitParameters":{{"bypass":false}}}}{n2}}}}}}},
+                {{"sceneName":"B","guitarNodes":{{"G1":{{"n1":{{"dspUnitParameters":{{"bypass":false}}}},
+                    "n2":{{"dspUnitParameters":{{"bypass":false}}}}}}}}}}
+            ],"zzTail":"{pad}"}}"#,
+            pad = "x".repeat(120)
+        )
+    }
+
+    /// The unit confirms a replace of a node some other scene has no entry for, and a save
+    /// made with a scene current then stores the pre-edit block [HW, fw 1.8.58]. The
+    /// stored-copy proof turns that into an error, never "updated".
+    #[test]
+    fn copy_replace_lost_by_a_scene_current_save_is_an_error() {
+        let sim = SimDevice::new()
+            .with_preset_json(&scene_gap_doc(false))
+            .with_saved_scene(5, Some(1));
+        let (item, ev) = run_copy(sim, &one_replace_job(5, "Stadium Lead"), true);
+        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
+        assert!(
+            item.detail.contains("did not store the edit"),
+            "{}",
+            item.detail
+        );
+        assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
+    }
+
+    /// The same replace on a preset that keeps the firmware's scene invariant is stored.
+    #[test]
+    fn copy_replace_on_a_canonical_scene_preset_is_stored() {
+        let sim = SimDevice::new()
+            .with_preset_json(&scene_gap_doc(true))
+            .with_saved_scene(5, Some(1));
+        let (item, _) = run_copy(sim, &one_replace_job(5, "Stadium Lead"), true);
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
+    }
+
     #[test]
     fn copy_multi_op_applies_remove_replace_insert_in_order_then_saves() {
         let job = CopyJob {

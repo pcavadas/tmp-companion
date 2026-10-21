@@ -539,6 +539,9 @@ enum WorkingEdit {
         node_id: String,
         fender_id: String,
         new_id: String,
+        /// Whether the replace also re-keyed the node's entry in every scene (a confirmed
+        /// replace does; one that missed a scene's entry does not, fw 1.8.58).
+        scenes_rekeyed: bool,
     },
     Insert {
         group: String,
@@ -611,6 +614,10 @@ struct SimState {
     unanswered_saved_read: bool,
     /// Confirmed structural edits since the last load — see [`WorkingEdit`].
     working_edits: Vec<WorkingEdit>,
+    /// Replaces since the last load that changed the live graph but not the preset's scene
+    /// state, as `(group, new node id)` ([`scene_state_misses`]). A save made while a
+    /// scene is current stores none of them.
+    scene_unsynced: Vec<(String, String)>,
     /// Per slot, the structural edits its saves have persisted, applied on top of the slot's
     /// own document before [`SimState::working_edits`]. Without it a re-opened Copy edit
     /// would name a node id the stored document never got, which the fake answers with a
@@ -838,6 +845,7 @@ impl Default for SimState {
             lost_save: false,
             unanswered_saved_read: false,
             working_edits: Vec::new(),
+            scene_unsynced: Vec::new(),
             saved_edits: HashMap::new(),
             string_params: std::collections::BTreeMap::new(),
             pending_pushes: Vec::new(),
@@ -1907,6 +1915,7 @@ impl SimDevice {
             // A real load re-instantiates the stored preset: the working copy starts clean.
             st.template_substituted = false;
             st.working_edits.clear();
+            st.scene_unsynced.clear();
             st.string_params.clear();
             // A tab-5 load makes its song active when the row it names is bound to this
             // preset (a mismatch clears it: presetError 6 on the unit); any other load
@@ -2138,6 +2147,16 @@ impl SimDevice {
             if st.lost_save {
                 return Vec::new();
             }
+            // A save made while a scene is current stores the scene state's copy of the block
+            // chain, which a replace that missed it never reached (static RE + HW, fw 1.8.58).
+            if st.current_scene.is_some() && !st.scene_unsynced.is_empty() {
+                let unsynced = std::mem::take(&mut st.scene_unsynced);
+                st.working_edits.retain(|e| {
+                    !matches!(e, WorkingEdit::Replace { group, new_id, .. }
+                        if unsynced.iter().any(|(g, id)| g == group && id == new_id))
+                });
+            }
+            st.scene_unsynced.clear();
             let current = st.current_slot;
             let mut stored = st.saved_edits.get(&current).cloned().unwrap_or_default();
             if slot0 == current {
@@ -3730,18 +3749,57 @@ fn confirm_replace(
 ) -> Vec<Vec<u8>> {
     let new_id =
         crate::audiograph::mint_node_id(&working_group_ids(st, &group, Some(&node_id)), &fender_id);
+    // A replace re-keys the node in every scene that is not current; when one has no entry
+    // for it, the live graph is replaced but the scene state is not (static RE, fw 1.8.58), and
+    // the unit still confirms it [HW]. A later save made with a scene current then loses it.
+    let missed = scene_state_misses(st, &group, &node_id);
     let reply = node_json_payload(&group, &fender_id, &new_id);
-    confirm_structural(
+    let reply = confirm_structural(
         st,
         F_NODE_REPLACED,
         reply,
         WorkingEdit::Replace {
-            group,
+            group: group.clone(),
             node_id,
             fender_id,
-            new_id,
+            new_id: new_id.clone(),
+            scenes_rekeyed: !missed,
         },
-    )
+    );
+    let landed = st.working_edits.last().is_some_and(
+        |e| matches!(e, WorkingEdit::Replace { new_id: n, group: g, .. } if *n == new_id && *g == group),
+    );
+    if missed && landed {
+        st.scene_unsynced.push((group, new_id));
+    }
+    reply
+}
+
+/// Whether a scene other than the current one has no entry for `group`/`node_id` in the
+/// working copy: the preset breaks the firmware's assumption that every node has an entry in
+/// every scene (device-made presets can, fw 1.8.58).
+fn scene_state_misses(st: &mut SimState, group: &str, node_id: &str) -> bool {
+    let slot0 = st.current_slot;
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&render_json(st, slot0, true)) else {
+        return false;
+    };
+    let graph = if group.starts_with('M') {
+        "micNodes"
+    } else {
+        "guitarNodes"
+    };
+    let current = st.current_scene.map(|c| c as usize);
+    doc.get("scenes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != current)
+        .any(|(_, scene)| {
+            scene
+                .pointer(&format!("/{graph}/{group}/{node_id}"))
+                .is_none()
+        })
 }
 
 /// `NodeInserted`/`NodeReplaced { group = 1, nodeJson = 3 }` — the new node's JSON
@@ -3805,7 +3863,11 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
             node_id,
             fender_id,
             new_id,
+            scenes_rekeyed,
         } => {
+            if *scenes_rekeyed {
+                rekey_scene_entries(v, group, Some(node_id), Some(new_id));
+            }
             if let Some(nodes) = group_nodes_mut(v, group, false) {
                 if let Some(node) = nodes
                     .iter_mut()
@@ -3825,6 +3887,7 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
             if let Some(nodes) = group_nodes_mut(v, group, false) {
                 nodes.retain(|n| audiograph::instance_id(n) != Some(node_id.as_str()));
             }
+            rekey_scene_entries(v, group, Some(node_id), None);
         }
         WorkingEdit::Insert {
             group,
@@ -3852,6 +3915,46 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
                     }),
                 );
             }
+            // An insert seeds the new node an entry in every scene (static RE, fw 1.8.58).
+            rekey_scene_entries(v, group, None, Some(new_id));
+        }
+    }
+}
+
+/// Keep every scene's entries in step with a structural edit, as the unit does: `from` →
+/// `to` moves a node's entry (a replace), `None` → `to` seeds a base-bypass entry (an
+/// insert), `from` → `None` drops it (a remove). A scene with no map for the group is left
+/// as it is.
+fn rekey_scene_entries(
+    v: &mut serde_json::Value,
+    group: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+) {
+    let graph = if group.starts_with('M') {
+        "micNodes"
+    } else {
+        "guitarNodes"
+    };
+    let Some(scenes) = v
+        .get_mut("scenes")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for scene in scenes {
+        let Some(entries) = scene
+            .get_mut(graph)
+            .and_then(|g| g.get_mut(group))
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        let moved = from.and_then(|f| entries.remove(f));
+        if let Some(to) = to {
+            let entry = moved
+                .unwrap_or_else(|| serde_json::json!({ "dspUnitParameters": { "bypass": false } }));
+            entries.insert(to.to_string(), entry);
         }
     }
 }
@@ -6184,9 +6287,11 @@ mod device_parity_tests {
         "ftsw":[[{"func":"onOff","groupId":"G1","nodeId":"fx","isActive":false}],
                 [{"func":"scene","sceneSlot":1,"isActive":false}]],
         "scenes":[
-            {"sceneName":"A","guitarNodes":{"G1":{"fx":{"dspUnitParameters":{"bypass":true}}}},
+            {"sceneName":"A","guitarNodes":{"G1":{"n1":{"dspUnitParameters":{"bypass":false}},
+                "fx":{"dspUnitParameters":{"bypass":true}}}},
              "ftswStates":[true,false]},
-            {"sceneName":"B","guitarNodes":{},"ftswStates":[false,true]}
+            {"sceneName":"B","guitarNodes":{"G1":{"n1":{"dspUnitParameters":{"bypass":false}},
+                "fx":{"dspUnitParameters":{"bypass":false}}}},"ftswStates":[false,true]}
         ]}"#;
 
     /// The bytes of `field` inside `body`.

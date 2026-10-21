@@ -62,8 +62,10 @@ const RIG: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
     {"FenderId":"ACD_JC120","nodeId":"ACD_JC120","dspUnitParameters":{"bypass":false,"outputLevel":0.4}}
 ]}},
 "scenes":[
-    {"guitarNodes":{"G1":{"ACD_JC120":{"dspUnitParameters":{"bypass":false,"outputLevel":0.6}}}}},
-    {"guitarNodes":{"G1":{"ACD_TubeScreamer":{"dspUnitParameters":{"bypass":true}}}}}
+    {"guitarNodes":{"G1":{"ACD_TubeScreamer":{"dspUnitParameters":{"bypass":false}},
+        "ACD_JC120":{"dspUnitParameters":{"bypass":false,"outputLevel":0.6}}}}},
+    {"guitarNodes":{"G1":{"ACD_TubeScreamer":{"dspUnitParameters":{"bypass":true}},
+        "ACD_JC120":{"dspUnitParameters":{"bypass":false}}}}}
 ],
 "ftsw":[[{"func":"onOff","nodeId":"ACD_TubeScreamer"}]]}"#;
 
