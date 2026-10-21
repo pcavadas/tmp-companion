@@ -329,9 +329,8 @@ pub fn counts(roster: &[RosterEntry]) -> Counts {
 /// cabinet member only, matching what [`Counts`] holds).
 ///
 /// Checked in firmware enum order (0..4); returns the FIRST violated reason. The TS
-/// `checkOp` sibling applies the same rules, and its candidate always weighs one cabinet
-/// slot, as every caller here passes `cand_dual_cab = false` (`bulk_replace::blockcaps_check`
-/// names why, and the saved-block gap it leaves).
+/// `checkOp` sibling applies the same rules; its candidate always weighs one cabinet slot,
+/// because the frontend only ever sends a stock model, which is never dual.
 pub fn check_op(
     counts: &Counts,
     candidate_id: &str,

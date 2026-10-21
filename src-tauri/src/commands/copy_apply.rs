@@ -26,11 +26,14 @@ pub enum CopyRepl {
         file: String,
     },
     /// Saved block (user block / dual cab) — `replaceNodeWithBlock` by the device
-    /// library `index`.
+    /// library `index`. `dual_cab` is the library entry's `dualCabsEnabled`, which the
+    /// installed node's `cabsim2enabled` takes, so the block-count cap can weigh it.
     Saved {
         #[serde(rename = "fenderId")]
         fender_id: String,
         index: u64,
+        #[serde(rename = "dualCab")]
+        dual_cab: bool,
     },
 }
 
@@ -42,6 +45,15 @@ impl CopyRepl {
             CopyRepl::Model { fender_id } => fender_id,
             CopyRepl::Ir { .. } => "ACD_UserIRTMS",
             CopyRepl::Saved { fender_id, .. } => fender_id,
+        }
+    }
+
+    /// The block-cap candidate: the fender id and whether it takes a second cabinet slot
+    /// (only a dual-cab saved block does).
+    fn cap_candidate(&self) -> (&str, bool) {
+        match self {
+            CopyRepl::Saved { dual_cab, .. } => (self.insert_fender_id(), *dual_cab),
+            CopyRepl::Model { .. } | CopyRepl::Ir { .. } => (self.insert_fender_id(), false),
         }
     }
 }
@@ -291,7 +303,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     for (i, op) in job.ops.iter().enumerate() {
         let first = i == 0;
 
-        let (candidate_id, is_replace, target) = cap_inputs(op);
+        let (candidate, is_replace, target) = cap_inputs(op);
         // The group's FenderIds before this op, for an insert's anchor check, its IR/saved
         // address check, and an insert's or replace's read-back. `None` when the ops so far
         // cannot be modelled: the group's contents are then unknown.
@@ -317,7 +329,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
             }
         };
         let replaced = target.and_then(|(g, n)| blockcaps_replaced(&roster, g, n));
-        if let Err(reason) = blockcaps_check(&counts, candidate_id, is_replace, replaced) {
+        if let Err(reason) = blockcaps_check(&counts, candidate, is_replace, replaced) {
             return Ok(error_item(
                 list_index,
                 &name,
@@ -336,7 +348,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         };
         match apply_copy_op(s, op, first, &applied) {
             Ok(true) => {
-                blockcaps_advance(&mut counts, candidate_id, replaced);
+                blockcaps_advance(&mut counts, candidate, replaced);
                 // Every new block's id — the confirm's, else a read — so later ops in the
                 // group can address it and tell it apart from the next new block.
                 let minted = match op {
@@ -390,21 +402,24 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     })
 }
 
+/// A block-cap candidate: its fender id and whether it takes a second cabinet slot.
+type Candidate<'a> = (&'a str, bool);
+
 /// One op's block-cap inputs: `(candidate, is_replace, target)`. Remove has no candidate
 /// (only shrinks — never a cap check); Replace subtracts its target's contribution, Insert
 /// doesn't (mirrors the TS `checkOp` mode-aware formula).
-fn cap_inputs(op: &CopyOp) -> (Option<&str>, bool, Option<(&str, &str)>) {
+fn cap_inputs(op: &CopyOp) -> (Option<Candidate<'_>>, bool, Option<(&str, &str)>) {
     match op {
         CopyOp::Replace {
             group,
             node_id,
             repl,
         } => (
-            Some(repl.insert_fender_id()),
+            Some(repl.cap_candidate()),
             true,
             Some((group.as_str(), node_id.as_str())),
         ),
-        CopyOp::Insert { repl, .. } => (Some(repl.insert_fender_id()), false, None),
+        CopyOp::Insert { repl, .. } => (Some(repl.cap_candidate()), false, None),
         CopyOp::Remove { group, node_id } => {
             (None, false, Some((group.as_str(), node_id.as_str())))
         }
@@ -840,9 +855,9 @@ fn apply_copy_replace(
 ) -> Result<bool, String> {
     match repl {
         CopyRepl::Model { fender_id } => s.replace_node(group, node_id, fender_id),
-        CopyRepl::Saved { fender_id, index } => {
-            s.replace_node_with_block(group, node_id, fender_id, *index)
-        }
+        CopyRepl::Saved {
+            fender_id, index, ..
+        } => s.replace_node_with_block(group, node_id, fender_id, *index),
         CopyRepl::Ir { file, .. } => s.replace_node_with_ir(group, node_id, file),
     }
 }
@@ -885,9 +900,9 @@ fn apply_copy_insert(
             // string `file` param), full-fidelity.
             s.replace_node_with_ir(group, insert_id, file)
         }
-        CopyRepl::Saved { fender_id, index } => {
-            s.replace_node_with_block(group, insert_id, fender_id, *index)
-        }
+        CopyRepl::Saved {
+            fender_id, index, ..
+        } => s.replace_node_with_block(group, insert_id, fender_id, *index),
     }
 }
 

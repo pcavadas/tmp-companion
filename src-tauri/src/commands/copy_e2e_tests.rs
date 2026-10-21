@@ -12,7 +12,7 @@ mod audition_copy_tests {
                 { "kind": "replace", "group": "G1", "nodeId": "ACD_TwinReverb",
                   "repl": { "kind": "model", "fenderId": "ACD_HiwattDR103CanMod" } },
                 { "kind": "replace", "group": "M1", "nodeId": "ACD_CabSimTMS",
-                  "repl": { "kind": "saved", "fenderId": "ACD_CabSimTMS", "index": 3 } },
+                  "repl": { "kind": "saved", "fenderId": "ACD_CabSimTMS", "index": 3, "dualCab": true } },
                 { "kind": "insert", "group": "G1", "key": "cb1", "before": { "kind": "node", "nodeId": "ACD_Comp" },
                   "repl": { "kind": "ir", "fenderId": "ACD_UserIRTMS", "file": "Oversize.wav" } },
                 { "kind": "insert", "group": "G2", "before": null,
@@ -45,11 +45,17 @@ mod audition_copy_tests {
         let CopyOp::Replace { repl, .. } = &job.ops[1] else {
             panic!("replace")
         };
-        let CopyRepl::Saved { fender_id, index } = repl else {
+        let CopyRepl::Saved {
+            fender_id,
+            index,
+            dual_cab,
+        } = repl
+        else {
             panic!("saved repl")
         };
         assert_eq!(fender_id, "ACD_CabSimTMS");
         assert_eq!(*index, 3);
+        assert!(*dual_cab);
 
         // op2: insert BEFORE a FenderId → ir (file)
         let CopyOp::Insert {
@@ -472,6 +478,53 @@ mod copy_level_e2e_tests {
             "an over-cap insert must never reach the device, let alone save: {ev:?}"
         );
     }
+    #[test]
+    fn copy_apply_weighs_a_saved_dual_cab_insert_at_two_cabinet_slots() {
+        // One cabinet in the preset: a saved single-cab insert fits (1 + 1), a saved
+        // dual-cab one does not (1 + 2), so the guard must read the op's `dualCab`.
+        let run = |dual_cab: bool| {
+            let sim = SimDevice::new().with_preset_json(
+                r#"{"audioGraph":{"guitarNodes":{"G1":[
+                    {"FenderId":"ACD_AC30BrilliantCabIR","nodeId":"n1"}
+                ]}}}"#,
+            );
+            let mut s = Session::from_transport(Box::new(sim.clone()));
+            let job = CopyJob {
+                list_index: ListIndex(5),
+                name: "Stadium Lead".into(),
+                ops: vec![CopyOp::Insert {
+                    group: "G1".into(),
+                    key: None,
+                    before: None,
+                    repl: CopyRepl::Saved {
+                        fender_id: "ACD_CabSimTMS".into(),
+                        index: 1,
+                        dual_cab,
+                    },
+                }],
+            };
+            let item = copy_apply_one(&mut s, &job, false).unwrap();
+            (item, sim.events())
+        };
+        let (dual, ev) = run(true);
+        assert_eq!(dual.outcome, ItemOutcome::Error);
+        assert!(
+            dual.detail.contains("ComboHalfStackCabinetsLimit"),
+            "detail: {}",
+            dual.detail
+        );
+        assert!(
+            !ev.iter().any(|e| matches!(e, SimEvent::Insert { .. })),
+            "an over-cap saved insert must never reach the device: {ev:?}"
+        );
+        let (single, _) = run(false);
+        assert!(
+            !single.detail.contains("ComboHalfStackCabinetsLimit"),
+            "detail: {}",
+            single.detail
+        );
+    }
+
     // ── Pre-save working-copy read-back: adopted only when it shows the acked edit ──
 
     /// The fake's default two-node graph, padded past the session reader's documented tail

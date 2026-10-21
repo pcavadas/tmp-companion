@@ -427,6 +427,7 @@ pub fn probe_bulk_replace_saved(
     let repl = ReplArg::Saved {
         fender_id: dual.fender_id.clone(),
         index: dual.index as u64,
+        dual_cab: dual.dual_cabs_enabled,
     };
     let to_id = dual.fender_id.clone();
     std::thread::sleep(std::time::Duration::from_millis(600));
