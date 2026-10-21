@@ -223,12 +223,19 @@ pub struct CopyApplyItem {
 /// `error`/`skipped`/`rejected` row and the run CONTINUES; an empty `ops` list →
 /// `skipped`.
 #[tauri::command]
-pub(crate) async fn copy_apply(
+pub(crate) async fn copy_apply<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     jobs: Vec<CopyJob>,
     save: bool,
     on_result: tauri::ipc::Channel<CopyApplyItem>,
 ) -> Result<Vec<CopyApplyItem>, String> {
+    // DISCARD CHANGES drops a base edit at the recall back to the preset's scene, so a replace
+    // that must step through base is refused under it (`save_proof::scene_to_step_out_of`).
+    let scene_discard = crate::commands::level_scenes::scene_discard_guard(
+        crate::commands::presets::device_settings_path(&app).as_deref(),
+    )
+    .is_err();
     with_released_seize(state.session.clone(), move || {
         // ONE held session for the whole run: connect once, warm
         // the live-controller heartbeat once (`begin_live_edit`), then `copy_apply_one`
@@ -238,12 +245,14 @@ pub(crate) async fn copy_apply(
         s.begin_live_edit()?;
         let mut out = Vec::with_capacity(jobs.len());
         for job in &jobs {
-            let item = copy_apply_one(&mut s, job, save).unwrap_or_else(|e| CopyApplyItem {
-                slot: job.list_index,
-                name: job.name.clone(),
-                outcome: ItemOutcome::Error,
-                detail: e,
-                graph: None,
+            let item = copy_apply_one(&mut s, job, save, scene_discard).unwrap_or_else(|e| {
+                CopyApplyItem {
+                    slot: job.list_index,
+                    name: job.name.clone(),
+                    outcome: ItemOutcome::Error,
+                    detail: e,
+                    graph: None,
+                }
             });
             let _ = on_result.send(item.clone());
             out.push(item);
@@ -261,7 +270,12 @@ pub(crate) async fn copy_apply(
 /// preset), applies each op (an unconfirmed first op is READ BACK before any re-send — see
 /// [`apply_copy_op`]), and saves ONLY when every op confirmed AND no `presetError`. An
 /// empty op list → skipped.
-fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyApplyItem, String> {
+fn copy_apply_one(
+    s: &mut Session,
+    job: &CopyJob,
+    save: bool,
+    scene_discard: bool,
+) -> Result<CopyApplyItem, String> {
     let list_index = job.list_index;
     let name = job.name.clone();
     if job.ops.is_empty() {
@@ -297,6 +311,34 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     // The pre-edit document `save_proof` tells the edited nodes apart by (same buffer).
     let pre = s.current_preset_value()?;
     let mut ids = DeviceIds::new(&roster);
+    // A replace of a block some other scene has no entry for is stored only when made on
+    // base [HW]: step out to base for the edits and back before the save.
+    let replace_targets: Vec<save_proof::NodeRef> = job
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            CopyOp::Replace { group, node_id, .. } => Some((group.clone(), node_id.clone())),
+            _ => None,
+        })
+        .collect();
+    let step_out = save_proof::scene_to_step_out_of(&pre, &replace_targets);
+    if let Some(scene) = step_out {
+        if scene_discard {
+            return Ok(error_item(
+                list_index,
+                &name,
+                format!(
+                    "a block you're replacing has no setting in one of this preset's scenes, so \
+                     the change has to be made on the base scene and then scene {} recalled, \
+                     which DISCARD CHANGES would undo. On the unit's touchscreen, set SETTINGS \
+                     → Scene Change Behavior to MAINTAIN CHANGES, then unplug and replug \
+                     the USB cable and try again — not edited",
+                    scene + 1
+                ),
+            ));
+        }
+        save_proof::step_to_base(s)?;
+    }
 
     // Apply each op in order. An unconfirmed FIRST edit with no presetError is read back
     // before anything is re-sent (`apply_copy_op`). fw 1.8.58 has no silent-drop path for a
@@ -389,6 +431,9 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         }
     }
 
+    if let Some(scene) = step_out {
+        save_proof::step_back(s, scene)?;
+    }
     let graph = if save {
         match save_copy_target(s, &roster, &pre, job)? {
             Ok(graph) => graph,

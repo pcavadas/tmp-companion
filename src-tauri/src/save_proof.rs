@@ -78,13 +78,74 @@ pub(crate) fn edited_nodes(
     edited
 }
 
-/// `Ok` when `stored` holds `live`'s block roster and each `edited` node's live parameters;
-/// otherwise the first difference, worded for the item's detail.
+/// The scene a replace of `targets` must step out of and back into: the working copy's current
+/// scene, when some OTHER scene has no entry for a target node. The firmware expects every
+/// node to have an entry in every scene; a replace of one that lacks it is confirmed but not
+/// stored by a save made with a scene current [HW, fw 1.8.58], while the same replace made on
+/// base (`loadScene` 8) and saved after the recall back is [HW]. `None`: base is current, or
+/// every scene has an entry for every target.
+pub(crate) fn scene_to_step_out_of(pre: &Value, targets: &[NodeRef]) -> Option<u32> {
+    let scenes = pre.get("scenes").and_then(Value::as_array)?;
+    let current = usize::try_from(pre.get("lastLoadedScene").and_then(Value::as_u64)?).ok()?;
+    if current >= scenes.len() {
+        return None;
+    }
+    let missing = |(group, id): &NodeRef| {
+        let graph = if group.starts_with('M') {
+            "micNodes"
+        } else {
+            "guitarNodes"
+        };
+        scenes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != current)
+            .any(|(_, scene)| scene.pointer(&format!("/{graph}/{group}/{id}")).is_none())
+    };
+    targets
+        .iter()
+        .any(missing)
+        .then(|| u32::try_from(current).ok())
+        .flatten()
+}
+
+/// Recall base (scene 8) on the held session before a replace that
+/// [`scene_to_step_out_of`] names, keeping the session alive (no idle gap over 300 ms).
+pub(crate) fn step_to_base(s: &mut Session) -> Result<(), String> {
+    recall(s, session::BASE_SCENE_SLOT)
+}
+
+/// Recall `scene` again after the edits, before the save, so the preset keeps opening on it.
+/// Under MAINTAIN CHANGES the recall keeps the base edits; under DISCARD it drops them, so
+/// that case is refused before the step out.
+pub(crate) fn step_back(s: &mut Session, scene: u32) -> Result<(), String> {
+    recall(s, scene)
+}
+
+fn recall(s: &mut Session, scene: u32) -> Result<(), String> {
+    s.load_scene(scene)?;
+    s.heartbeat()?;
+    s.pump_silent(150)?;
+    s.heartbeat()
+}
+
+/// `Ok` when `stored` holds `live`'s block roster, its current scene and each `edited` node's
+/// live parameters; otherwise the first difference, worded for the item's detail.
 pub(crate) fn check_stored(
     live: &Value,
     stored: &Value,
     edited: &BTreeSet<NodeRef>,
 ) -> Result<(), String> {
+    if let Some(scene) = live.get("lastLoadedScene") {
+        if stored.get("lastLoadedScene") != Some(scene) {
+            return Err(format!(
+                "the stored preset opens on scene {} where the edited preset is on {scene}",
+                stored
+                    .get("lastLoadedScene")
+                    .map_or_else(|| "none".to_string(), Value::to_string)
+            ));
+        }
+    }
     let (want, got) = (roster(live), roster(stored));
     if want != got {
         return Err(format!(

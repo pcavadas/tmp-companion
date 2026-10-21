@@ -47,6 +47,9 @@ On a 3-scene preset loaded into scene 1, with the cab stored under the non-minte
 
 In each case the stored copy kept the pre-edit node (a first save stored it as a bare `{bypass}` node), while the confirms and the working copy (fields 2/3) showed the edit.
 After `loadScene(8)` (base), the same saved-block replace and save persisted the block with every parameter [HW].
+On a device-made 4-scene preset opened on scene 3, `loadScene(8)` → `replaceNode` → `loadScene(3)` → save stored the replacement and kept `lastLoadedScene` 3, and left every scene's entries as they were, so entries keyed by the replaced node's old id stay behind unused [HW].
+So `copy_apply` and `held_replace_one` make a replace on base whenever some other scene has no entry for its node (`save_proof::scene_to_step_out_of`), and recall the preset's scene before the save; Copy refuses that case under DISCARD CHANGES, whose recall would drop the edit.
+A stock `ACD_CabSimTMS` replacing a standalone cab model took over that cab's model, mic and filters as both of its cabs, with `cabsim2enabled` on [HW].
 So every structural save is proven against the stored copy: `save_proof` reads the slot back with field 8 and compares it with the working copy read just before the save, and a mismatch is an error, never "updated".
 
 ### Three keyed places

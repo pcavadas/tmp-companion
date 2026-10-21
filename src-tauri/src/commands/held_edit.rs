@@ -74,6 +74,13 @@ pub(crate) fn held_replace_one(
         return Ok(error_item(list_index, name, detail));
     }
     let candidate = repl_arg_candidate(repl);
+    // A replace of a block some other scene has no entry for is stored only when made on
+    // base [HW]: step out to base for the edits and back before the save. This path has no
+    // settings snapshot to refuse DISCARD CHANGES by; the stored-copy proof reports it.
+    let step_out = save_proof::scene_to_step_out_of(&pre, &plan.targets);
+    if step_out.is_some() {
+        save_proof::step_to_base(s)?;
+    }
 
     // SAFETY 2 — only persist if EVERY replace is confirmed (nodeReplaced/40).
     let mut applied = 0usize;
@@ -107,6 +114,9 @@ pub(crate) fn held_replace_one(
         }
         blockcaps_advance(&mut counts, candidate, replaced);
         applied += 1;
+    }
+    if let Some(scene) = step_out {
+        save_proof::step_back(s, scene)?;
     }
     if save {
         // The working copy the stored copy must match, read before the save.
@@ -243,6 +253,40 @@ mod plan_identity_tests {
             item.detail
         );
         assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
+    }
+
+    /// A replace of a block another scene has no entry for is made on base and the
+    /// preset's scene recalled before the save, so the save stores it [HW].
+    #[test]
+    fn a_replace_of_a_block_missing_a_scene_entry_steps_through_base() {
+        let doc = format!(
+            r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[
+                {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false}}}},
+                {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
+            ]}}}},"info":{{"displayName":"Stadium Lead","preset_id":"pid-planned"}},
+            "lastLoadedScene":1,"scenes":[
+                {{"sceneName":"A","guitarNodes":{{"G1":{{"n1":{{"dspUnitParameters":{{"bypass":false}}}}}}}}}},
+                {{"sceneName":"B","guitarNodes":{{"G1":{{"n1":{{"dspUnitParameters":{{"bypass":false}}}},
+                    "n2":{{"dspUnitParameters":{{"bypass":false}}}}}}}}}}
+            ],"zzTail":"{pad}"}}"#,
+            pad = "x".repeat(120)
+        );
+        let sim = SimDevice::new()
+            .with_preset_json(&doc)
+            .with_saved_scene(5, Some(1));
+        let (item, ev) = run(sim, &plan(Some("pid-planned")));
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
+        let at = |want: &SimEvent| ev.iter().position(|e| e == want).unwrap_or(usize::MAX);
+        let replace = ev
+            .iter()
+            .position(|e| matches!(e, SimEvent::Replace { .. }))
+            .expect("the replace was sent");
+        assert!(at(&SimEvent::LoadScene(8)) < replace, "{ev:?}");
+        assert!(replace < at(&SimEvent::LoadScene(1)), "{ev:?}");
+        assert!(
+            at(&SimEvent::LoadScene(1)) < at(&SimEvent::Saved(5)),
+            "{ev:?}"
+        );
     }
 
     /// Two single cabinets fill the cap; replacing one with a saved block weighs that

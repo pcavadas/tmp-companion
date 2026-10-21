@@ -3752,7 +3752,8 @@ fn confirm_replace(
     // A replace re-keys the node in every scene that is not current; when one has no entry
     // for it, the live graph is replaced but the scene state is not (static RE, fw 1.8.58), and
     // the unit still confirms it [HW]. A later save made with a scene current then loses it.
-    let missed = scene_state_misses(st, &group, &node_id);
+    // A replace made on base edits base itself, which such a save keeps [HW].
+    let missed = st.current_scene.is_some() && scene_state_misses(st, &group, &node_id);
     let reply = node_json_payload(&group, &fender_id, &new_id);
     let reply = confirm_structural(
         st,
