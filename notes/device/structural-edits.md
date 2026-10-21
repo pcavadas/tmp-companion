@@ -47,7 +47,8 @@ On a 3-scene preset loaded into scene 1, with the cab stored under the non-minte
 
 In each case the stored copy kept the pre-edit node (a first save stored it as a bare `{bypass}` node), while the confirms and the working copy (fields 2/3) showed the edit.
 After `loadScene(8)` (base), the same saved-block replace and save persisted the block with every parameter [HW].
-On a device-made 4-scene preset opened on scene 3, `loadScene(8)` → `replaceNode` → `loadScene(3)` → save stored the replacement and kept `lastLoadedScene` 3, and left every scene's entries as they were, so entries keyed by the replaced node's old id stay behind unused [HW].
+On a device-made 4-scene preset opened on scene 3, `loadScene(8)` → `replaceNode` (`ACD_MarG12H30BB` → `ACD_CabSimTMS`) → `loadScene(3)` → save stored the replacement and kept `lastLoadedScene` 3, and left every scene's entries as they were, so entries keyed by the replaced node's old id stay behind unused [HW].
+That preset already held a second cab and the new `ACD_CabSimTMS` landed dual, so the app now refuses that exact replace for the cabinet cap; the unit itself took it.
 So `copy_apply` and `held_replace_one` make a replace on base whenever some other scene has no entry for its node (`save_proof::scene_to_step_out_of`), and recall the preset's scene before the save; Copy refuses that case under DISCARD CHANGES, whose recall would drop the edit.
 A stock `ACD_CabSimTMS` replacing a standalone cab model took over that cab's model, mic and filters as both of its cabs, with `cabsim2enabled` on [HW].
 That happens only for `replaceNode` (39) over a node whose id is `ACD_` + a cab on the firmware's 68-entry list (`cabsimCarryOver` in `src/models/block-classification.json`); any other replace, and every insert or saved-block replace, gives the block's on-load default (static RE, fw 1.8.58).
