@@ -24,6 +24,7 @@ import {
   type EditGraph,
   type EditMode,
   type PresetEdit,
+  stockReplaceIsDual,
 } from "./copyModel";
 
 const CONV_SET = new Set<string>(blockClassification.convolutionSet);
@@ -130,7 +131,7 @@ function fxLoopReason(present: Map<string, number>): BlockEditReason | null {
  *  "replace"`: its model frees its own count/coexistence slot, and `dualCab` (its
  *  second cab slot) frees two cabinet slots when it is a cabinet member. */
 export interface CheckOpOpts {
-  anchor?: { model: string; dualCab?: boolean };
+  anchor?: { model: string; dualCab?: boolean; nodeId?: string | null };
 }
 
 /** The per-op guard behind the grey-out: would placing `candidateModel` via `mode`
@@ -174,8 +175,10 @@ export function checkOp(
 
   if (!CABINET_EXEMPT.has(candidateModel)) {
     // A stock replacement is a fresh default-param instance: one slot, whatever the anchor
-    // had. The frontend sends no saved block, so a candidate is never dual.
-    const candCabinet = cand.cabinet ? 1 : 0;
+    // had, except a stock Cabinet over a cab model, which lands dual (`stockReplaceIsDual`).
+    // The frontend sends no saved block.
+    const candDual = stockReplaceIsDual(candidateModel, anchor?.nodeId);
+    const candCabinet = cand.cabinet ? (candDual ? 2 : 1) : 0;
     const anchorCabinet = anchorClass?.cabinet ? (anchor?.dualCab ? 2 : 1) : 0;
     if (counts.cabinet + candCabinet - anchorCabinet > 2) {
       return "ComboHalfStackCabinetsLimit";

@@ -16,6 +16,7 @@
 // after a block) or a target block's menu (Replace) — or removes a target block. `change` drives the edit badge ("replaced" → ⟳, "added" → +) and the
 // copied-in styling; `nodeId === null` marks an inserted (not-yet-on-device) block.
 
+import blockClassification from "../../models/block-classification.json";
 import { chargedTotal } from "../../models/cpu";
 import type {
   ActiveGraph,
@@ -61,8 +62,27 @@ export interface EditBlock {
   cabSimId2?: string;
   cabSim2Enabled?: boolean;
   /** Whether the block takes a second cabinet-cap slot (`GraphNode.second_cab_slot`);
-   *  a replace drops it, since the replacement is a fresh default-param instance. */
+   *  a replace drops it, since the replacement is a fresh default-param instance, unless
+   *  it is a stock Cabinet over a cab model (`stockReplaceIsDual`). */
   secondCabSlot?: boolean;
+}
+
+const CABSIM_CARRY_OVER = new Set<string>(blockClassification.cabsimCarryOver);
+
+/** Whether replacing the block `anchorNodeId` with the stock `model` lands with a second
+ *  cab: a stock `ACD_CabSimTMS` over a cabinet model whose node id is on the firmware's
+ *  list takes that cab as both cabs, second cab on (HW + static RE, fw 1.8.58). Any other
+ *  replace is the model's on-load default, a single cab. Mirrors the Rust
+ *  `blockcaps::stock_cabsim_replace_is_dual`. */
+export function stockReplaceIsDual(
+  model: string,
+  anchorNodeId: string | null | undefined,
+): boolean {
+  return (
+    model === "ACD_CabSimTMS" &&
+    anchorNodeId != null &&
+    CABSIM_CARRY_OVER.has(anchorNodeId)
+  );
 }
 
 /** One ordered stage of a path: a `series` run, or a `split` with two parallel
@@ -516,8 +536,10 @@ export function applyEditOp(
   if (mode === "replace") {
     // A replace is always an edit, even a same-model pick: the device installs a fresh
     // instance with the model's default params (`replaceNode`), so only the anchor's
-    // place carries over, never its cab fields or second cab slot. An inserted block (no
-    // nodeId) stays "added" since it's net-new; an original block becomes "replaced".
+    // place carries over, never its cab fields or second cab slot, except that a stock
+    // Cabinet over a cab model takes that cab as both cabs (`stockReplaceIsDual`). An
+    // inserted block (no nodeId) stays "added" since it's net-new; an original block
+    // becomes "replaced".
     const change: Change = anchor.nodeId == null ? "added" : "replaced";
     arr[i] = {
       uid: anchor.uid,
@@ -526,6 +548,9 @@ export function applyEditOp(
       model,
       change,
       bypassed: false,
+      ...(stockReplaceIsDual(model, anchor.nodeId)
+        ? { secondCabSlot: true }
+        : {}),
     };
   } else {
     const inserted: EditBlock = {

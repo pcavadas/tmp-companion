@@ -23,6 +23,7 @@ Never normalize, strip a suffix or append `NoFx` before a lookup: the suffix is 
 - Cabinets: each member node weighs `1 + (cabsim2enabled == true)`, an amp's second mic as much as a CabSim's second cab [HW+RE].
 - The cabinet check passes while the total stays under 3, and an exempt candidate (`ACD_ExternalCab`) always passes [HW+RE].
 - The host guard adds the second-cab weight only to a `cabinetSet` member: `blockcaps::Counts` ignores a `cabsim2enabled` flag on any other node.
+- `cabsimCarryOver` is not a client set: it is the server's cab list (static RE, fw 1.8.58), the 68 node ids whose stock `replaceNode` into `ACD_CabSimTMS` lands dual with the old cab on both sides. Any other replaced node gives the block's on-load default, the factory single cab unless the user changed it.
 - Glooper: a Glooper candidate plus the existing ones, minus a replaced one, stays under 3 [RE].
 - FX loops: no loop appears twice, and the stereo `ACD_FxLoop3_4` excludes the mono `ACD_FxLoop3` and `ACD_FxLoop4` [RE].
 - The client also limits loops by signal-chain line type [RE]; the companion does not mirror that part.

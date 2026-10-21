@@ -229,8 +229,9 @@ pub(crate) fn blockcaps_replaced<'a>(
 /// Cap-check ONE candidate insert/replace against the running pre-edit `counts`.
 /// `candidate = None` is a bare Remove — no candidate to check; removing a node can
 /// only shrink counts, never push a cap over its max. `candidate` and `replaced` are
-/// `(fender_id, dual_cab)` pairs: the candidate's from [`repl_arg_candidate`] (a fresh
-/// Model/Ir block is never dual; a `Saved` block carries its library entry's flag), the
+/// `(fender_id, dual_cab)` pairs: the candidate's from [`repl_arg_candidate`] and
+/// [`replace_candidate`] (a fresh Model/Ir block is single except a stock `ACD_CabSimTMS`
+/// over a carried-over cab; a `Saved` block carries its library entry's flag), the
 /// replaced node's from [`blockcaps_replaced`] (`None` for an Insert/Remove).
 pub(crate) fn blockcaps_check(
     counts: &blockcaps::Counts,
@@ -271,6 +272,22 @@ pub(crate) fn blockcaps_advance(
     if let Some((id, dual)) = replaced {
         counts.remove(id, dual);
     }
+}
+
+/// A REPLACE candidate weighed against the node it replaces: a stock `ACD_CabSimTMS` over a
+/// cabinet model the firmware carries over lands dual (`blockcaps::stock_cabsim_replace_is_dual`;
+/// the on-load default is not read, so the factory single cab stands for it otherwise).
+pub(crate) fn replace_candidate<'a>(
+    candidate: Option<(&'a str, bool)>,
+    stock: bool,
+    old_node_id: &str,
+) -> Option<(&'a str, bool)> {
+    candidate.map(|(id, dual)| {
+        let carries_over = stock
+            && id == "ACD_CabSimTMS"
+            && blockcaps::stock_cabsim_replace_is_dual(old_node_id, None);
+        (id, dual || carries_over)
+    })
 }
 
 /// The `(fender_id, dual_cab)` a [`ReplArg`] would insert, or `None` for `Remove` (no

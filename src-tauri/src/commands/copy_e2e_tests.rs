@@ -320,6 +320,36 @@ mod copy_level_e2e_tests {
         assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
     }
 
+    /// A stock `ACD_CabSimTMS` over a cab model lands dual [HW, fw 1.8.58]: next to a
+    /// second cab that is three cabinet slots, refused before anything is sent.
+    #[test]
+    fn copy_refuses_a_stock_cabinet_that_lands_dual_over_the_cap() {
+        let sim = SimDevice::new().with_preset_json(
+            &r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
+                {"FenderId":"ACD_MarG12H30BB","nodeId":"ACD_MarG12H30BB","dspUnitParameters":{"bypass":false}},
+                {"FenderId":"ACD_AC30BrilliantCabIR","nodeId":"n2","dspUnitParameters":{"bypass":false}}
+            ]}},"info":{"displayName":"Stadium Lead"},"zzTail":"PAD"}"#
+                .replace("PAD", &"x".repeat(120)),
+        );
+        let job = CopyJob {
+            list_index: ListIndex(5),
+            name: "Stadium Lead".into(),
+            ops: vec![model_replace("G1", "ACD_MarG12H30BB", "ACD_CabSimTMS")],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
+        assert!(
+            item.detail.contains("ComboHalfStackCabinetsLimit"),
+            "{}",
+            item.detail
+        );
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, SimEvent::Replace { .. } | SimEvent::Saved(_))),
+            "{ev:?}"
+        );
+    }
+
     #[test]
     fn copy_multi_op_applies_remove_replace_insert_in_order_then_saves() {
         let job = CopyJob {

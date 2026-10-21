@@ -36,7 +36,7 @@ So never assume a FenderId is a node id: `copy_apply` resolves each anchor throu
 ### Saves with a scene current
 
 A save made while a non-base scene is current can store a different block chain than the live one, with no error [HW].
-The firmware expects every node to have an entry in every scene; an insert seeds one and a replace re-keys it (static RE, fw 1.8.58).
+The firmware assumes every node has an entry in every scene, and an insert seeds one and a replace re-keys it (static RE, fw 1.8.58), but nothing guarantees it: presets the unit saves can lack entries [HW].
 A replace of a node that some non-current scene has no entry for still gets `nodeReplaced` and changes the live graph [HW], but leaves the scene state on the old node (static RE, fw 1.8.58), so a save made with a scene current stores the pre-edit block.
 The unit itself makes such presets: one of 8 scene presets checked on a user's unit lacks a scene entry for one block [HW].
 On a 3-scene preset loaded into scene 1, with the cab stored under the non-minted id `cab1` and no scene entry for it, these were lost [HW]:
@@ -50,6 +50,8 @@ After `loadScene(8)` (base), the same saved-block replace and save persisted the
 On a device-made 4-scene preset opened on scene 3, `loadScene(8)` → `replaceNode` → `loadScene(3)` → save stored the replacement and kept `lastLoadedScene` 3, and left every scene's entries as they were, so entries keyed by the replaced node's old id stay behind unused [HW].
 So `copy_apply` and `held_replace_one` make a replace on base whenever some other scene has no entry for its node (`save_proof::scene_to_step_out_of`), and recall the preset's scene before the save; Copy refuses that case under DISCARD CHANGES, whose recall would drop the edit.
 A stock `ACD_CabSimTMS` replacing a standalone cab model took over that cab's model, mic and filters as both of its cabs, with `cabsim2enabled` on [HW].
+That happens only for `replaceNode` (39) over a node whose id is `ACD_` + a cab on the firmware's 68-entry list (`cabsimCarryOver` in `src/models/block-classification.json`); any other replace, and every insert or saved-block replace, gives the block's on-load default (static RE, fw 1.8.58).
+The block caps weigh the carried-over case as 2 and assume the factory on-load default (a single cab) otherwise: the app does not read a user-changed on-load default, so it may under-count one, and the count caps are the app's own (the unit enforces only the CPU budget). The confirm's `nodeJson` re-weighs the landed node.
 So every structural save is proven against the stored copy: `save_proof` reads the slot back with field 8 and compares it with the working copy read just before the save, and a mismatch is an error, never "updated".
 
 ### Three keyed places

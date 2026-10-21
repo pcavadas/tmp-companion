@@ -3,9 +3,10 @@ use crate::{
     commands::bulk_replace::blockcaps_advance, commands::bulk_replace::blockcaps_check,
     commands::bulk_replace::blockcaps_pre_edit_roster, commands::bulk_replace::blockcaps_replaced,
     commands::bulk_replace::confirm_plan_identity, commands::bulk_replace::error_item,
-    commands::bulk_replace::repl_arg_candidate, commands::bulk_replace::BulkReplaceItem,
-    commands::bulk_replace::ItemOutcome, commands::bulk_replace::ReplArg,
-    commands::bulk_replace::ReplacePlan, proto, save_proof, Session,
+    commands::bulk_replace::repl_arg_candidate, commands::bulk_replace::replace_candidate,
+    commands::bulk_replace::BulkReplaceItem, commands::bulk_replace::ItemOutcome,
+    commands::bulk_replace::ReplArg, commands::bulk_replace::ReplacePlan, proto, save_proof,
+    Session,
 };
 #[cfg(test)]
 use crate::{commands::bulk_replace::plan_identity_verdict, ListIndex};
@@ -86,6 +87,8 @@ pub(crate) fn held_replace_one(
     let mut applied = 0usize;
     for (group, node_id) in &plan.targets {
         let replaced = blockcaps_replaced(&roster, group, node_id);
+        let candidate =
+            replace_candidate(candidate, matches!(repl, ReplArg::Model { .. }), node_id);
         if let Err(reason) = blockcaps_check(&counts, candidate, true, replaced) {
             return Ok(BulkReplaceItem {
                 slot: list_index,

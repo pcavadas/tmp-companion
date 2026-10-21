@@ -3,8 +3,9 @@ use crate::blockcaps::{group_roster, Roster};
 use crate::{
     blockcaps, commands::bulk_replace::blockcaps_advance, commands::bulk_replace::blockcaps_check,
     commands::bulk_replace::blockcaps_pre_edit_roster, commands::bulk_replace::blockcaps_replaced,
-    commands::bulk_replace::ItemOutcome, device_gate::with_released_seize, proto, save_proof,
-    session, AppState, ListIndex, Serialize, Session, State,
+    commands::bulk_replace::replace_candidate, commands::bulk_replace::ItemOutcome,
+    device_gate::with_released_seize, proto, save_proof, session, AppState, ListIndex, Serialize,
+    Session, State,
 };
 
 /// The block content a copy `CopyOp` applies — the SAME three "with a block"
@@ -375,6 +376,14 @@ fn copy_apply_one(
             }
         };
         let replaced = target.and_then(|(g, n)| blockcaps_replaced(&roster, g, n));
+        let candidate = match op {
+            CopyOp::Replace {
+                node_id,
+                repl: CopyRepl::Model { .. },
+                ..
+            } => replace_candidate(candidate, true, node_id),
+            _ => candidate,
+        };
         if let Err(reason) = blockcaps_check(&counts, candidate, is_replace, replaced) {
             return Ok(error_item(
                 list_index,

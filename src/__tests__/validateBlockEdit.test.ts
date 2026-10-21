@@ -291,6 +291,29 @@ describe("fw 1.8.58 cabinet and convolution caps", () => {
     expect(checkOp(oneMic, "ACD_CabSimTMS", "after")).toBeNull();
   });
 
+  it("a stock Cabinet over a cab model the unit carries over takes two slots", () => {
+    // HW, fw 1.8.58: a stock ACD_CabSimTMS replacing the cab model ACD_MarG12H30BB came
+    // out with that cab on both sides and its second cab on.
+    const counts = baseCounts(
+      graph([
+        block("ACD_MarG12H30BB", { nodeId: "ACD_MarG12H30BB" }),
+        block(CAB_1),
+      ]),
+    );
+    expect(counts.cabinet).toBe(2);
+    expect(
+      checkOp(counts, "ACD_CabSimTMS", "replace", {
+        anchor: { model: "ACD_MarG12H30BB", nodeId: "ACD_MarG12H30BB" },
+      }),
+    ).toBe("ComboHalfStackCabinetsLimit");
+    // A non-minted id gets the block's on-load default instead: one slot.
+    expect(
+      checkOp(counts, "ACD_CabSimTMS", "replace", {
+        anchor: { model: "ACD_MarG12H30BB", nodeId: "cab1" },
+      }),
+    ).toBeNull();
+  });
+
   it("External Cab neither counts nor is ever refused", () => {
     const counts = baseCounts(graph([block(EXTERNAL_CAB), block(AMP_COMBO)]));
     expect(counts.cabinet).toBe(1);
