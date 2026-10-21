@@ -112,7 +112,7 @@ pub(crate) fn held_replace_one(
                 detail: format!("device rejected replace of {group}/{node_id} (presetError / no nodeReplaced) — NOT saved"),
             });
         }
-        blockcaps_advance(&mut counts, candidate, replaced);
+        blockcaps_advance(&mut counts, candidate, replaced, s.confirmed_node_dual());
         applied += 1;
     }
     if let Some(scene) = step_out {

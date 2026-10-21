@@ -211,6 +211,17 @@ impl Session {
         crate::audiograph::instance_id(&v).map(str::to_string)
     }
 
+    /// The second-cab flag (`cabsim2enabled`) of the node the last confirmed insert/replace
+    /// added, from the confirm's `nodeJson`: what the block caps weigh it by once it landed.
+    /// `None` when the confirm carried no node JSON or the node has no such parameter.
+    pub fn confirmed_node_dual(&self) -> Option<bool> {
+        let reply = self
+            .preset_field(NODE_INSERTED)
+            .or_else(|| self.preset_field(NODE_REPLACED))?;
+        let v: serde_json::Value = serde_json::from_slice(proto::first_bytes(&reply, 3)?).ok()?;
+        v.pointer("/dspUnitParameters/cabsim2enabled")?.as_bool()
+    }
+
     /// [`Self::confirmed_node_id`], else the one node `group` holds that is not in `known`
     /// (a working-copy read) — for a confirm that carried no id. `None` unless exactly
     /// one.

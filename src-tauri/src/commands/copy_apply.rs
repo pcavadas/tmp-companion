@@ -394,7 +394,7 @@ fn copy_apply_one(
         };
         match apply_copy_op(s, op, first, &applied) {
             Ok(true) => {
-                blockcaps_advance(&mut counts, candidate, replaced);
+                blockcaps_advance(&mut counts, candidate, replaced, s.confirmed_node_dual());
                 // Every new block's id — the confirm's, else a read — so later ops in the
                 // group can address it and tell it apart from the next new block.
                 let minted = match op {

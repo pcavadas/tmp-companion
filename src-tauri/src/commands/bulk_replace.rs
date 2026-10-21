@@ -256,14 +256,17 @@ pub(crate) fn blockcaps_check(
 /// Roll the running `counts` forward after a CONFIRMED op, so the NEXT op in the same
 /// job/plan is checked against the up-to-date state (a job can carry multiple ops that
 /// each affect the same caps — e.g. two conv inserts in one job must be checked
-/// cumulatively, not each against the stale pre-edit snapshot).
+/// cumulatively, not each against the stale pre-edit snapshot). `landed_dual` is the new
+/// node's own second-cab flag from the confirm (`Session::confirmed_node_dual`), which
+/// replaces the candidate's predicted one when present.
 pub(crate) fn blockcaps_advance(
     counts: &mut blockcaps::Counts,
     candidate: Option<(&str, bool)>,
     replaced: Option<(&str, bool)>,
+    landed_dual: Option<bool>,
 ) {
     if let Some((id, dual)) = candidate {
-        counts.add(id, dual);
+        counts.add(id, landed_dual.unwrap_or(dual));
     }
     if let Some((id, dual)) = replaced {
         counts.remove(id, dual);
@@ -283,5 +286,35 @@ pub(crate) fn repl_arg_candidate(repl: &ReplArg) -> Option<(&str, bool)> {
             ..
         } => Some((fender_id.as_str(), *dual_cab)),
         ReplArg::Remove => None,
+    }
+}
+
+#[cfg(test)]
+mod advance_tests {
+    use super::*;
+
+    /// A landed node's own second-cab flag, from the confirm, decides its weight: a stock
+    /// `ACD_CabSimTMS` that came out dual takes two cabinet slots [HW].
+    #[test]
+    fn a_landed_dual_cab_weighs_two_whatever_was_predicted() {
+        let mut counts = blockcaps::Counts::default();
+        blockcaps_advance(
+            &mut counts,
+            Some(("ACD_CabSimTMS", false)),
+            None,
+            Some(true),
+        );
+        assert_eq!(counts.cabinet, 2);
+        let mut counts = blockcaps::Counts::default();
+        blockcaps_advance(
+            &mut counts,
+            Some(("ACD_CabSimTMS", true)),
+            None,
+            Some(false),
+        );
+        assert_eq!(counts.cabinet, 1);
+        let mut counts = blockcaps::Counts::default();
+        blockcaps_advance(&mut counts, Some(("ACD_CabSimTMS", true)), None, None);
+        assert_eq!(counts.cabinet, 2, "no confirm JSON keeps the prediction");
     }
 }
