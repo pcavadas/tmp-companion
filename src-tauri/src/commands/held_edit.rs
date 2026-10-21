@@ -5,7 +5,7 @@ use crate::{
     commands::bulk_replace::confirm_plan_identity, commands::bulk_replace::error_item,
     commands::bulk_replace::repl_arg_candidate, commands::bulk_replace::BulkReplaceItem,
     commands::bulk_replace::ItemOutcome, commands::bulk_replace::ReplArg,
-    commands::bulk_replace::ReplacePlan, proto, Session,
+    commands::bulk_replace::ReplacePlan, proto, save_proof, Session,
 };
 #[cfg(test)]
 use crate::{commands::bulk_replace::plan_identity_verdict, ListIndex};
@@ -67,6 +67,8 @@ pub(crate) fn held_replace_one(
     // ── blockcaps guard — read the PRE-edit roster now, before the first structural
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
+    // The pre-edit document `save_proof` tells the edited nodes apart by (same buffer).
+    let pre = s.current_preset_value()?;
     // SAFETY 1b — the loaded preset is the one discovery planned against.
     if let Err(detail) = confirm_plan_identity(s, plan) {
         return Ok(error_item(list_index, name, detail));
@@ -107,10 +109,21 @@ pub(crate) fn held_replace_one(
         applied += 1;
     }
     if save {
+        // The working copy the stored copy must match, read before the save.
+        let live = save_proof::read_live(s);
         if !name.is_empty() {
             s.rename_current_preset(&name)?;
         }
         s.save_current_preset(list_index)?;
+        let proof = live
+            .and_then(|live| save_proof::prove_saved(s, list_index, &pre, &live, &plan.targets));
+        if let Err(why) = proof {
+            return Ok(error_item(
+                list_index,
+                name,
+                format!("saved, but the unit did not store the edit: {why}"),
+            ));
+        }
     }
     // Keep live-controller status before the next preset (no long quiet gap).
     s.heartbeat()?;
@@ -212,6 +225,23 @@ mod plan_identity_tests {
         let sim = SimDevice::new().with_preset_json(&doc_with_id("pid-planned"));
         let (item, ev) = run(sim, &plan(Some("pid-planned")));
         assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
+        assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
+    }
+
+    /// The unit can report a save that its stored copy does not show [HW]: the item is an
+    /// error, never "updated".
+    #[test]
+    fn a_save_the_unit_does_not_store_is_an_error() {
+        let sim = SimDevice::new()
+            .with_preset_json(&doc_with_id("pid-planned"))
+            .with_lost_save();
+        let (item, ev) = run(sim, &plan(Some("pid-planned")));
+        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
+        assert!(
+            item.detail.contains("did not store the edit"),
+            "{}",
+            item.detail
+        );
         assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
     }
 

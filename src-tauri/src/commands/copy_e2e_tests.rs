@@ -176,7 +176,7 @@ mod copy_level_e2e_tests {
     #[test]
     fn copy_replace_happy_path_loads_confirms_renames_and_saves_in_order() {
         let (item, ev) = run_copy(SimDevice::new(), &one_replace_job(5, "Stadium Lead"), true);
-        assert_eq!(item.outcome, ItemOutcome::Updated);
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
         assert_eq!(
             ev,
             vec![
@@ -190,6 +190,25 @@ mod copy_level_e2e_tests {
                 SimEvent::Saved(5),
             ]
         );
+    }
+
+    /// The unit can report a save that its stored copy does not show [HW]: the target is
+    /// an error, never "updated", and the frontend patches nothing.
+    #[test]
+    fn copy_save_the_unit_does_not_store_is_an_error() {
+        let (item, ev) = run_copy(
+            SimDevice::new().with_lost_save(),
+            &one_replace_job(5, "Stadium Lead"),
+            true,
+        );
+        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
+        assert!(
+            item.detail.contains("did not store the edit"),
+            "{}",
+            item.detail
+        );
+        assert!(item.graph.is_none());
+        assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
     }
 
     #[test]
@@ -638,8 +657,8 @@ mod copy_level_e2e_tests {
     fn copy_never_adopts_a_read_back_for_an_edit_the_roster_cannot_see() {
         // A same-model re-stamp leaves the block roster exactly as it was (on the unit a
         // node id IS its FenderId), so a pre-edit and a post-edit document are
-        // indistinguishable by roster: the read is not even requested (the fake records no
-        // `WorkingCopyRead`) and the item carries no graph — the cache keeps the acked edit.
+        // indistinguishable by roster: no read is adopted and the item carries no graph — the
+        // cache keeps the acked edit. The one re-prompt is the save proof's.
         let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
         let job = CopyJob {
             list_index: ListIndex(3),
@@ -656,9 +675,12 @@ mod copy_level_e2e_tests {
             "a roster-invariant edit has no verifiable read-back: {:?}",
             item.graph
         );
-        assert!(
-            !ev.contains(&SimEvent::WorkingCopyRead),
-            "an unverifiable edit must not spend a re-prompt: {ev:?}"
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, SimEvent::WorkingCopyRead))
+                .count(),
+            1,
+            "only the save proof re-prompts for an unverifiable edit: {ev:?}"
         );
     }
 

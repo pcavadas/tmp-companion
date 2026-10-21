@@ -360,6 +360,10 @@ pub(crate) enum Injection {
     BareConfirms,
     /// A save queues a push of the PRE-edit document for the next pump.
     StalePushAfterSave,
+    /// A save reports success but stores none of the working copy's structural edits: the
+    /// slot's stored copy (field 8) keeps its pre-edit block chain. The unit did this for a
+    /// replace saved while a non-base scene was current [HW, fw 1.8.58].
+    LostSave,
     /// The NEXT Settings re-amp OFF leaves the latch ON (once). It is still recorded, as the
     /// device still echoes it.
     DropNextReampOff,
@@ -417,7 +421,8 @@ impl Injection {
             | Injection::RejectReplace { .. }
             | Injection::DropNextReampOff
             | Injection::RejectNextLoad
-            | Injection::QueuedHandshakeFlood => "reachable",
+            | Injection::QueuedHandshakeFlood
+            | Injection::LostSave => "reachable",
             Injection::DropFirstStructural | Injection::BareConfirms => "unreachable",
             Injection::StalePushAfterSave | Injection::ReampOffNeverLands => "unverified",
             #[cfg(feature = "e2e")]
@@ -446,6 +451,7 @@ impl Injection {
             "drop-first-structural" => Injection::DropFirstStructural,
             "bare-confirms" => Injection::BareConfirms,
             "stale-push-after-save" => Injection::StalePushAfterSave,
+            "lost-save" => Injection::LostSave,
             "drop-next-reamp-off" => Injection::DropNextReampOff,
             "reamp-off-never-lands" => Injection::ReampOffNeverLands,
             "reject-next-load" => Injection::RejectNextLoad,
@@ -597,6 +603,12 @@ struct SimState {
     /// PRE-edit (load-time) document for the next `pump` — a stale document a held session
     /// could scrape off its buffer as a post-save read-back.
     stale_push_after_save: bool,
+    /// When set, a `saveCurrentPreset` stores none of the working copy's structural edits
+    /// ([`Injection::LostSave`]).
+    lost_save: bool,
+    /// When set, a field-8 read of a non-scenario slot answers nothing
+    /// ([`SimDevice::with_unanswered_saved_read`]).
+    unanswered_saved_read: bool,
     /// Confirmed structural edits since the last load — see [`WorkingEdit`].
     working_edits: Vec<WorkingEdit>,
     /// Per slot, the structural edits its saves have persisted, applied on top of the slot's
@@ -639,8 +651,8 @@ struct SimState {
     preset_json: String,
     /// Whether a field-8 (SAVED document) read of a non-scenario slot answers with
     /// [`SimState::preset_json`] verbatim ([`SimDevice::with_saved_preset_json`]). Off, such a
-    /// read answers nothing. Never persists a save: the body stays the one the test
-    /// configured.
+    /// read answers the slot's stored rendering (its saved structural edits applied). On,
+    /// never persists a save: the body stays the one the test configured.
     saved_preset_json: bool,
     /// Lazy cache of a parsed [`SimState::scene_render_json_source`], shared by
     /// `overlay_is_full_shaped` (every scene-context `changeParameter` on the live dispatch path)
@@ -823,6 +835,8 @@ impl Default for SimState {
             bare_confirms: false,
             reject_at: None,
             stale_push_after_save: false,
+            lost_save: false,
+            unanswered_saved_read: false,
             working_edits: Vec::new(),
             saved_edits: HashMap::new(),
             string_params: std::collections::BTreeMap::new(),
@@ -1490,6 +1504,22 @@ impl SimDevice {
         self
     }
 
+    /// Every `saveCurrentPreset` reports success but stores none of the working copy's
+    /// structural edits ([`Injection::LostSave`]).
+    #[cfg(test)]
+    pub fn with_lost_save(self) -> SimDevice {
+        self.arm(Injection::LostSave);
+        self
+    }
+
+    /// A field-8 read of a non-scenario slot answers nothing: the unit giving no stored
+    /// document for a slot.
+    #[cfg(test)]
+    pub fn with_unanswered_saved_read(self) -> SimDevice {
+        self.state.lock().expect("sim lock").unanswered_saved_read = true;
+        self
+    }
+
     /// Seed slot `slot0`'s (0-based) saved `lastLoadedScene` — what a subsequent
     /// `loadPreset` for that slot restores `current_scene` to. Lets a test drive the
     /// "loading a preset activates its saved scene, not base" behavior without first
@@ -1556,6 +1586,7 @@ impl SimDevice {
             Injection::DropFirstStructural => st.drop_first = true,
             Injection::BareConfirms => st.bare_confirms = true,
             Injection::StalePushAfterSave => st.stale_push_after_save = true,
+            Injection::LostSave => st.lost_save = true,
             Injection::DropNextReampOff => st.drop_next_reamp_off = true,
             Injection::ReampOffNeverLands => st.reamp_off_never_lands = true,
             Injection::RejectNextLoad => st.reject_next_load = true,
@@ -2101,7 +2132,12 @@ impl SimDevice {
                 let push = frame_multi(&current_preset_data_changed(&json));
                 st.pending_pushes.extend(push);
             }
-            // The working copy's structural edits become slot0's stored roster.
+            // The working copy's structural edits become slot0's stored roster, unless the
+            // save is one the unit loses (`Injection::LostSave`).
+            // The working copy still shows the edits, as the unit's does.
+            if st.lost_save {
+                return Vec::new();
+            }
             let current = st.current_slot;
             let mut stored = st.saved_edits.get(&current).cloned().unwrap_or_default();
             if slot0 == current {
@@ -3843,7 +3879,15 @@ fn saved_slot_json_body(st: &mut SimState, slot0: u32) -> Option<String> {
     if let Some(j) = saved_slot_json(slot0) {
         return Some(j.to_string());
     }
-    st.saved_preset_json.then(|| st.preset_json.clone())
+    if st.saved_preset_json {
+        return Some(st.preset_json.clone());
+    }
+    if st.unanswered_saved_read {
+        return None;
+    }
+    // Any other slot answers its stored rendering: the default document with the slot's
+    // saved structural edits, as a load of it would show.
+    Some(render_json(st, slot0, false))
 }
 
 /// The committed scenario preset JSON for a 0-based list index, cached (the seed module owns
@@ -6039,6 +6083,7 @@ mod oracle_and_census_tests {
             Injection::DropNextReampOff,
             Injection::ReampOffNeverLands,
             Injection::RejectNextLoad,
+            Injection::LostSave,
         ]
         .iter()
         .map(Injection::tag)
@@ -6053,6 +6098,7 @@ mod oracle_and_census_tests {
                 "unverified",
                 "reachable",
                 "unverified",
+                "reachable",
                 "reachable"
             ]
         );

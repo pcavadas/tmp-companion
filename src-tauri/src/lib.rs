@@ -86,6 +86,7 @@ mod replace_inplace;
 mod rig;
 #[cfg(test)]
 mod rig_tests;
+mod save_proof;
 mod saved_blocks;
 // Scene-leveling job planning (amp + knob classification, job build), shared by the
 // scene-leveling commands, the leveller and the probe.

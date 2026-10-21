@@ -3,8 +3,8 @@ use crate::blockcaps::{group_roster, Roster};
 use crate::{
     blockcaps, commands::bulk_replace::blockcaps_advance, commands::bulk_replace::blockcaps_check,
     commands::bulk_replace::blockcaps_pre_edit_roster, commands::bulk_replace::blockcaps_replaced,
-    commands::bulk_replace::ItemOutcome, device_gate::with_released_seize, proto, session,
-    AppState, ListIndex, Serialize, Session, State,
+    commands::bulk_replace::ItemOutcome, device_gate::with_released_seize, proto, save_proof,
+    session, AppState, ListIndex, Serialize, Session, State,
 };
 
 /// The block content a copy `CopyOp` applies — the SAME three "with a block"
@@ -292,6 +292,8 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     // ── blockcaps guard — read the PRE-edit roster now, before the first structural
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
+    // The pre-edit document `save_proof` tells the edited nodes apart by (same buffer).
+    let pre = s.current_preset_value()?;
     let mut ids = DeviceIds::new(&roster);
 
     // Apply each op in order. An unconfirmed FIRST edit with no presetError is read back
@@ -386,7 +388,16 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     }
 
     let graph = if save {
-        save_copy_target(s, &roster, job)?
+        match save_copy_target(s, &roster, &pre, job)? {
+            Ok(graph) => graph,
+            Err(why) => {
+                return Ok(error_item(
+                    list_index,
+                    &name,
+                    format!("saved, but the unit did not store the edit: {why}"),
+                ));
+            }
+        }
     } else {
         None
     };
@@ -427,7 +438,8 @@ fn cap_inputs(op: &CopyOp) -> (Option<Candidate<'_>>, bool, Option<(&str, &str)>
 }
 
 /// Persist a target whose every op confirmed: the working-copy read for the Copy view's
-/// in-place cache patch (no ~22 s re-scan), then rename-to-itself + save.
+/// in-place cache patch (no ~22 s re-scan), then rename-to-itself + save, then the stored-copy
+/// proof (`save_proof`). The inner `Err` is a save the stored copy does not show.
 ///
 /// The read is a field-2 re-prompt of the device's LIVE document, taken after the last
 /// confirmed op and BEFORE the save (the footswitch flow's HW-proven re-prompt-then-save
@@ -437,8 +449,9 @@ fn cap_inputs(op: &CopyOp) -> (Option<Candidate<'_>>, bool, Option<(&str, &str)>
 fn save_copy_target(
     s: &mut Session,
     roster: &[blockcaps::RosterEntry],
+    pre_doc: &serde_json::Value,
     job: &CopyJob,
-) -> Result<Option<session::ActiveGraph>, String> {
+) -> Result<Result<Option<session::ActiveGraph>, String>, String> {
     // What the acked ops leave behind — the oracle the read is checked against. An
     // edit that leaves the roster as it was (a same-model re-stamp: the roster compares
     // FenderIds, so nothing it can see changes) is unverifiable —
@@ -450,13 +463,29 @@ fn save_copy_target(
     );
     let expected = expected_roster(roster, &job.ops);
     let graph = read_working_copy(s, &pre, expected.as_ref(), job.list_index, &job.name);
+    // The working copy the stored copy must match, read before the save: the adopted read's
+    // own document when there is one (still the session's last parse), else a fresh read.
+    let live = match graph {
+        Some(_) => s.current_preset_value(),
+        None => save_proof::read_live(s),
+    };
     // Identity-preserving persist (Pro Control's rename(current name) → save(slot)):
     // keeps the preset's name and song link.
     if !job.name.is_empty() {
         s.rename_current_preset(&job.name)?;
     }
     s.save_current_preset(job.list_index)?;
-    Ok(graph)
+    let targets: Vec<save_proof::NodeRef> = job
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            CopyOp::Replace { group, node_id, .. } => Some((group.clone(), node_id.clone())),
+            _ => None,
+        })
+        .collect();
+    let proof =
+        live.and_then(|live| save_proof::prove_saved(s, job.list_index, pre_doc, &live, &targets));
+    Ok(proof.map(|()| graph))
 }
 
 /// An insert's pre-send checks, given the group's FenderIds before it (`before`): its

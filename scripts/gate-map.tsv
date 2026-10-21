@@ -165,6 +165,7 @@ e2e/specs/level.online.spec.ts	spec-level-online
 # ── copy ──
 src-tauri/src/commands/copy_apply.rs	copy
 src-tauri/src/commands/held_edit.rs	copy
+src-tauri/src/save_proof.rs	copy
 src-tauri/src/session/structural.rs	copy
 e2e/specs/copy.spec.ts	copy
 
