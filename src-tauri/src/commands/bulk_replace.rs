@@ -21,7 +21,9 @@ pub enum ReplArg {
     },
     /// Saved block (user block / dual cab) — `replaceNodeWithBlock` by the device
     /// library `index`. `dual_cab` is the library entry's `dualCabsEnabled`, which the
-    /// installed node's `cabsim2enabled` takes, so the block-count cap can weigh it.
+    /// block-count cap weighs it by. The listing reports it true for every `ACD_CabSimTMS`
+    /// entry, second cab on or off (static RE, fw 1.8.58), so a saved cabinet block weighs
+    /// two slots: the cautious side of the cap.
     Saved {
         #[serde(rename = "fenderId")]
         fender_id: String,

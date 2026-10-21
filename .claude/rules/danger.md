@@ -25,7 +25,8 @@ The mechanism and evidence for each rule live in the linked [`notes/device/`](..
   `footswitch::validate_import_body` and `fixture_gates` also refuse a two-entry row (legal on the device, refused as a conservative choice until the hardware check in the linked section).
   [→](../../notes/device/presets.md#footswitch-json)
 - **DANGER: a structural edit saved while a non-base scene is current can be lost with no error.**
-  The confirms and the working copy still show the edit, so prove every structural save against the stored copy (`save_proof::prove_saved`, a field-8 read-back) and report a mismatch as an error, never "updated".
+  A replace of a node that some scene has no entry for is confirmed and shows in the working copy, but the save stores the old block; the unit makes such presets itself.
+  Prove every structural save against the stored copy (`save_proof::prove_saved`, a field-8 read-back) and report a mismatch as an error, never "updated".
   [→](../../notes/device/structural-edits.md#saves-with-a-scene-current)
 - **DANGER: an `insertNode` (field 34) whose anchor is not a node id in its group, or that exceeds the CPU budget, aborts the device server.**
   Never assume a FenderId is a node id: anchor on the id the confirm returned (`copy_apply`'s `DeviceIds`), check every insert with `blockcaps::check_op`, and read an unconfirmed insert back (`Session::insert_landed`) instead of re-sending it.
