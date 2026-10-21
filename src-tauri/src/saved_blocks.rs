@@ -20,6 +20,18 @@ pub struct SavedBlock {
     pub cab2_id: String,
 }
 
+/// Read the device's saved-block store on its own connection: one in-burst
+/// `requestAllBlockPresets`, kept alive through the reply, then decoded.
+pub(crate) fn read_saved_blocks() -> Result<Vec<SavedBlock>, String> {
+    let mut s = crate::Session::connect_with_burst_request(&proto::request_all_block_presets(
+        Some(proto::BATCH_DRAIN),
+    ))?;
+    s.pump_collect_alive(1000)?;
+    let blob = find_block_presets_blob(&s.push_bodies())
+        .ok_or_else(|| "device sent no allBlockPresetsResponse".to_string())?;
+    parse_block_presets_map(&blob)
+}
+
 /// Decode the `allBlockPresetsResponse.blockPresetsMap` blob (LZ4-block-compressed
 /// JSON map `{ fenderId: [ {cab1Id,cab2Id,dualCabsEnabled,favorite,name}, … ] }`)
 /// into a flat list keyed by `(fender_id, index)`. Auto-generated default entries are

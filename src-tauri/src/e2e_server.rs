@@ -404,7 +404,8 @@ pub fn run_e2e_server() {
             e2e_reamp_off,
             e2e_reamp_state,
             e2e_measure_sound,
-            e2e_read_stored_preset
+            e2e_read_stored_preset,
+            e2e_saved_block
         ))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build e2e mock app");
@@ -761,6 +762,9 @@ struct E2eStoredPreset {
     name: String,
     graph: crate::session::ActiveGraph,
     footswitches: Vec<crate::footswitch::FootswitchInfo>,
+    /// The stored document itself, for checks on node parameters, `lastLoadedScene` and
+    /// scene entries.
+    doc: serde_json::Value,
 }
 
 #[cfg(feature = "e2e")]
@@ -784,7 +788,26 @@ async fn e2e_read_stored_preset(
                 .get("ftsw")
                 .map(|ftsw| crate::footswitch::enumerate_block_footswitches(ftsw, &preset))
                 .unwrap_or_default(),
+            doc: preset,
         })
+    })
+    .await
+}
+
+/// The device's saved-block listing entry for `fender_id` at `index`, as
+/// `replaceNodeWithBlock` addresses it (`saved_blocks::read_saved_blocks`). `None` when the
+/// store has no such entry. Read-only; opens the device, so it runs on the serial queue.
+#[cfg(feature = "e2e")]
+#[tauri::command]
+async fn e2e_saved_block(
+    state: State<'_, AppState>,
+    fender_id: String,
+    index: u32,
+) -> Result<Option<crate::saved_blocks::SavedBlock>, String> {
+    with_released_seize(state.session.clone(), move || {
+        Ok(crate::saved_blocks::read_saved_blocks()?
+            .into_iter()
+            .find(|b| b.fender_id == fender_id && b.index == index))
     })
     .await
 }

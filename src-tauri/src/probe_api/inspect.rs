@@ -2,7 +2,7 @@
 
 use crate::audiograph;
 use crate::proto;
-use crate::saved_blocks::{find_block_presets_blob, parse_block_presets_map, SavedBlock};
+use crate::saved_blocks::SavedBlock;
 use crate::session;
 use crate::session::Session;
 use crate::slot::DeviceSlot;
@@ -288,12 +288,7 @@ pub fn probe_discover_diff(from_id: &str, device_slots: &[DeviceSlot]) -> Result
 }
 
 /// One in-burst `RequestAllBlockPresets` read on its own connection, kept alive through
-/// the reply — the received message bodies.
-pub(super) fn block_presets_bodies() -> Result<Vec<Vec<u8>>, String> {
-    Ok(block_presets_session()?.push_bodies())
-}
-
-/// The connection behind [`block_presets_bodies`], for a caller that keeps using it.
+/// the reply, for a caller that keeps using the connection.
 fn block_presets_session() -> Result<Session, String> {
     let mut s = Session::connect_with_burst_request(&proto::request_all_block_presets(Some(
         proto::BATCH_DRAIN,
@@ -306,10 +301,7 @@ fn block_presets_session() -> Result<Session, String> {
 /// RequestAllBlockPresets → decode → `parse_block_presets_map`, printed as a
 /// summary. Read-only.
 pub fn probe_saved_blocks() -> Result<String, String> {
-    let bodies = block_presets_bodies()?;
-    let blob = find_block_presets_blob(&bodies)
-        .ok_or_else(|| "device sent no allBlockPresetsResponse".to_string())?;
-    let blocks = parse_block_presets_map(&blob)?;
+    let blocks = crate::saved_blocks::read_saved_blocks()?;
     let named: Vec<&SavedBlock> = blocks
         .iter()
         .filter(|b| !b.name.is_empty() && !b.name.to_lowercase().contains("autogen default"))

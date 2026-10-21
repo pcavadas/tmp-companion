@@ -140,6 +140,26 @@ const F_SET_SONG_BPM_ACTIVE: u32 = 23;
 const F_LOAD_PRESET: u32 = 10;
 const F_REPLACE_NODE: u32 = 39;
 const F_REPLACE_WITH_BLOCK: u32 = 100;
+/// `requestAllBlockPresets`(135) → `allBlockPresetsResponse`(136): the saved-block listing.
+const F_ALL_BLOCK_PRESETS_REQUEST: u32 = 135;
+const F_ALL_BLOCK_PRESETS_RESPONSE: u32 = 136;
+
+/// The fake's saved-block store: the firmware's built-in index-0 entry for `ACD_CabSimTMS`
+/// (re-seeded at boot, on every unit; static RE, fw 1.8.58), as the listing describes it.
+const SIM_BLOCK_PRESETS: &str = r#"{"ACD_CabSimTMS":[{"cab1Id":"BlsJrIV_CelestionTypeA","cab2Id":"BlsJrIV_CelestionTypeA","dualCabsEnabled":true,"favorite":false,"name":"ACD_CabSimTMS autogen defaults"}]}"#;
+
+/// The parameters a `replaceNodeWithBlock` of `fender_id` at `index` installs from
+/// [`SIM_BLOCK_PRESETS`]: its cab ids, second cab off (the built-in entry's stored state).
+fn sim_saved_block_params(fender_id: &str, index: u64) -> Option<serde_json::Value> {
+    let map: serde_json::Value = serde_json::from_str(SIM_BLOCK_PRESETS).ok()?;
+    let entry = map.get(fender_id)?.get(usize::try_from(index).ok()?)?;
+    Some(serde_json::json!({
+        "bypass": false,
+        "cabsimid": entry["cab1Id"],
+        "cab2simid": entry["cab2Id"],
+        "cabsim2enabled": false,
+    }))
+}
 const F_INSERT_NODE: u32 = 34;
 const F_REMOVE_NODE: u32 = 35;
 const F_NODE_JSON_REQUEST: u32 = 119;
@@ -542,6 +562,9 @@ enum WorkingEdit {
         /// Whether the replace also re-keyed the node's entry in every scene (a confirmed
         /// replace does; one that missed a scene's entry does not, fw 1.8.58).
         scenes_rekeyed: bool,
+        /// The new node's `dspUnitParameters` when the replace sets them (a saved block's);
+        /// `None` keeps the old node's.
+        params: Option<serde_json::Value>,
     },
     Insert {
         group: String,
@@ -2046,7 +2069,13 @@ impl SimDevice {
                 proto::field_varint(&mut code, 1, 14);
                 return vec![frame(&preset_message(F_PRESET_ERROR, &code))];
             }
-            return confirm_replace(&mut st, group, node_id, fender_id);
+            return confirm_replace(&mut st, group, node_id, fender_id, None);
+        }
+        if proto::first_bytes(&f, F_ALL_BLOCK_PRESETS_REQUEST).is_some() {
+            // allBlockPresetsResponse{ blockPresetsMap(1) = LZ4 block of the saved-block map }.
+            let blob = proto::lz4_block_compress_stored(SIM_BLOCK_PRESETS.as_bytes());
+            let inner = proto::len_delimited(1, &blob);
+            return frame_multi(&preset_message(F_ALL_BLOCK_PRESETS_RESPONSE, &inner));
         }
         if let Some(rb) = proto::first_bytes(&f, F_REPLACE_WITH_BLOCK) {
             let (group, node_id, fender_id) = three_strings(rb);
@@ -2057,7 +2086,8 @@ impl SimDevice {
                 fender_id: fender_id.clone(),
                 index,
             });
-            return confirm_replace(&mut st, group, node_id, fender_id);
+            let params = sim_saved_block_params(&fender_id, index);
+            return confirm_replace(&mut st, group, node_id, fender_id, params);
         }
         if let Some(ins) = proto::first_bytes(&f, F_INSERT_NODE) {
             let inner = proto::parse(ins);
@@ -3746,14 +3776,17 @@ fn confirm_replace(
     group: String,
     node_id: String,
     fender_id: String,
+    params: Option<serde_json::Value>,
 ) -> Vec<Vec<u8>> {
     let new_id =
         crate::audiograph::mint_node_id(&working_group_ids(st, &group, Some(&node_id)), &fender_id);
     // A replace re-keys the node in every scene that is not current; when one has no entry
     // for it, the live graph is replaced but the scene state is not (static RE, fw 1.8.58), and
     // the unit still confirms it [HW]. A later save made with a scene current then loses it.
-    // A replace made on base edits base itself, which such a save keeps [HW].
-    let missed = st.current_scene.is_some() && scene_state_misses(st, &group, &node_id);
+    // The re-key stops at the first scene with no entry, leaving every scene's entries as they
+    // were [HW]. A replace made on base edits base itself, which such a save keeps [HW].
+    let missed = scene_state_misses(st, &group, &node_id);
+    let unsynced = missed && st.current_scene.is_some();
     let reply = node_json_payload(&group, &fender_id, &new_id);
     let reply = confirm_structural(
         st,
@@ -3765,12 +3798,13 @@ fn confirm_replace(
             fender_id,
             new_id: new_id.clone(),
             scenes_rekeyed: !missed,
+            params,
         },
     );
     let landed = st.working_edits.last().is_some_and(
         |e| matches!(e, WorkingEdit::Replace { new_id: n, group: g, .. } if *n == new_id && *g == group),
     );
-    if missed && landed {
+    if unsynced && landed {
         st.scene_unsynced.push((group, new_id));
     }
     reply
@@ -3865,6 +3899,7 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
             fender_id,
             new_id,
             scenes_rekeyed,
+            params,
         } => {
             if *scenes_rekeyed {
                 rekey_scene_entries(v, group, Some(node_id), Some(new_id));
@@ -3880,6 +3915,9 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
                             "FenderId".into(),
                             serde_json::Value::String(fender_id.clone()),
                         );
+                        if let Some(p) = params {
+                            obj.insert("dspUnitParameters".into(), p.clone());
+                        }
                     }
                 }
             }
