@@ -41,15 +41,22 @@ impl Session {
     /// rejected/unconfirmed edit means the wrong preset is active or the node is absent,
     /// and saving would persist the WRONG content (HW: an unconfirmed save corrupted a
     /// slot).
+    ///
+    /// A `presetError` anywhere in the window wins over the success field: a replace can
+    /// change the live graph and still fail to update the preset's scene state, which then
+    /// answers `presetError` 14 (static RE, fw 1.8.58), so one more heartbeat slice is
+    /// pumped after the success field before it counts.
     pub(super) fn confirm_structural_edit(&mut self, success_field: u32) -> Result<bool, String> {
         for _ in 0..10 {
             self.heartbeat()?;
             self.pump_silent(LIVE_BEAT_MS)?;
-            if self.saw_preset_field(success_field) {
-                return Ok(true);
-            }
             if self.saw_preset_field(PRESET_ERROR) {
                 return Ok(false);
+            }
+            if self.saw_preset_field(success_field) {
+                self.heartbeat()?;
+                self.pump_silent(LIVE_BEAT_MS)?;
+                return Ok(!self.saw_preset_field(PRESET_ERROR));
             }
         }
         Ok(false)
@@ -285,7 +292,9 @@ impl Session {
             .preset_field(PRESET_ERROR)
             .map(|err| proto::first_varint(&err, 1).unwrap_or(0));
         match code {
-            Some(14) => "presetError 14: over the device's CPU budget".to_string(),
+            Some(14) => "presetError 14: the edit failed (over the device's CPU budget, an \
+                         unknown node, or a scene with no entry for the node)"
+                .to_string(),
             Some(c) => format!("presetError {c}"),
             None => "no confirm".to_string(),
         }

@@ -273,8 +273,7 @@ mod copy_level_e2e_tests {
         assert!(item.detail.contains("NOT saved"), "detail: {}", item.detail);
         // The fake rejects with code 14, a replace over the CPU budget on fw 1.8.58.
         assert!(
-            item.detail
-                .contains("presetError 14: over the device's CPU budget"),
+            item.detail.contains("presetError 14: the edit failed"),
             "detail: {}",
             item.detail
         );
