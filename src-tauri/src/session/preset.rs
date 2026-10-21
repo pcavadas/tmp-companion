@@ -15,7 +15,7 @@ pub(crate) const LOAD_CONFIRM_ATTEMPTS: u32 = 3;
 /// rule is testable without a device. `release` ends a refused attempt's connection.
 pub(crate) fn confirm_on_fresh_connection(
     mut connect: impl FnMut() -> Result<Session, String>,
-    mut release: impl FnMut(Session),
+    mut release: impl FnMut(Session) -> Result<(), String>,
     list_index: ListIndex,
     expected_name: Option<&str>,
     attempts: u32,
@@ -27,7 +27,9 @@ pub(crate) fn confirm_on_fresh_connection(
             Ok(()) => return Ok(s),
             Err(e) => refused = e,
         }
-        release(s);
+        // A failed release could open the next connection inside the 750 ms window, where
+        // the stale echo would refuse a load that landed: stop rather than retry.
+        release(s)?;
     }
     Err(format!(
         "{refused} (on {} fresh connections)",
@@ -285,22 +287,19 @@ impl Session {
     /// `list_index` on it: the load → drop → reconnect → confirm shape of every save-over
     /// path. The caller ends the load's own connection with [`Self::lapse`].
     ///
-    /// The first connection opened after a load can still report the slot loaded BEFORE it
-    /// in its `PresetLoaded` echo (HW, fw 1.8.58: a load that landed reads stale on the
-    /// next connection, and right on one 16 s later). A session opened inside the unit's
-    /// 0.75 s drop inherits the last one's queued replies ahead of its own, so a refused
-    /// confirm lapses its connection and retries on a new one, [`LOAD_CONFIRM_ATTEMPTS`]
-    /// times in all. The echo still decides every attempt, and a load that really dropped
-    /// still refuses.
+    /// A connection opened within 750 ms of the load connection's last OUT report first gets
+    /// that connection's queued `PresetLoaded` (11) for the slot current before the load
+    /// (HW+RE, fw 1.8.58; `notes/device/presets.md#echo-of-the-previous-slot`). The caller's
+    /// [`Self::lapse`] rules that out, so the retry is defensive: a refused confirm lapses
+    /// its connection and retries on a new one, [`LOAD_CONFIRM_ATTEMPTS`] times in all. The
+    /// echo still decides every attempt, and a load that really dropped still refuses.
     pub fn connect_confirmed(
         list_index: ListIndex,
         expected_name: Option<&str>,
     ) -> Result<Session, String> {
         confirm_on_fresh_connection(
             Session::connect,
-            |mut s| {
-                let _ = s.lapse();
-            },
+            |mut s| s.lapse(),
             list_index,
             expected_name,
             LOAD_CONFIRM_ATTEMPTS,

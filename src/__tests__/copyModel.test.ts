@@ -75,6 +75,30 @@ function setup() {
   return { edit, uid: firstBlock(edit).uid };
 }
 
+describe("applyEditOp replace — a fresh default-param instance", () => {
+  it("keeps none of the anchor's cab fields or second cab slot", () => {
+    const active = graph();
+    active.nodes[1] = {
+      ...active.nodes[1],
+      second_cab_slot: true,
+      cab_sim2_enabled: true,
+    };
+    active.stages = [{ kind: "series", blocks: active.nodes }];
+    const edit = initEdit([1], () => active)[1];
+    const amp = stageBlocks(edit)[1];
+    expect(amp.secondCabSlot).toBe(true);
+    const next = applyEditOp(
+      edit,
+      amp.uid,
+      "replace",
+      "ACD_DeluxeReverb65NoFxCabIR",
+    );
+    const replaced = stageBlocks(next)[1];
+    expect(replaced.secondCabSlot).toBeUndefined();
+    expect(replaced.cabSim2Enabled).toBeUndefined();
+  });
+});
+
 describe("activeFromEditGraph — round-trips an edited graph for the optimistic cache patch", () => {
   it("preserves block group/model/order and re-stamps inserted blocks with a node id", () => {
     // Apply replace + insert-after + remove, then round-trip through the cache shape

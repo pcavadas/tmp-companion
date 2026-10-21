@@ -61,7 +61,7 @@ export interface EditBlock {
   cabSimId2?: string;
   cabSim2Enabled?: boolean;
   /** Whether the block takes a second cabinet-cap slot (`GraphNode.second_cab_slot`);
-   *  a replace carries it onto the replacement, like the dual-cab fields. */
+   *  a replace drops it, since the replacement is a fresh default-param instance. */
   secondCabSlot?: boolean;
 }
 
@@ -514,11 +514,19 @@ export function applyEditOp(
   const anchor = arr[i];
   const newUid = uidMinter(maxUidNum(edit));
   if (mode === "replace") {
-    // A replace is always an edit — even a same-model pick copies the reference block's
-    // settings onto the target. An inserted block (no nodeId) stays "added" since it's
-    // net-new; an original block becomes "replaced".
+    // A replace is always an edit, even a same-model pick: the device installs a fresh
+    // instance with the model's default params (`replaceNode`), so only the anchor's
+    // place carries over, never its cab fields or second cab slot. An inserted block (no
+    // nodeId) stays "added" since it's net-new; an original block becomes "replaced".
     const change: Change = anchor.nodeId == null ? "added" : "replaced";
-    arr[i] = { ...anchor, model, change, bypassed: false };
+    arr[i] = {
+      uid: anchor.uid,
+      group: anchor.group,
+      nodeId: anchor.nodeId,
+      model,
+      change,
+      bypassed: false,
+    };
   } else {
     const inserted: EditBlock = {
       uid: newUid(),

@@ -300,6 +300,18 @@ describe("fw 1.8.58 cabinet and convolution caps", () => {
     expect(checkOp(full, GLOOPER, "after")).toBe("ComboHalfStackCabinetsLimit");
   });
 
+  it("replacing a dual-mic combo with another combo takes one slot, as the Rust guard counts", () => {
+    // A combo with its second mic (2) + a cab (1) = 3 over the cap; the replacement is a
+    // fresh default-param combo: 3 + 1 - 2 = 2, allowed.
+    const anchor = { model: AMP_COMBO, dualCab: true };
+    const counts = baseCounts(
+      graph([block(AMP_COMBO, { secondCabSlot: true }), block(CAB_1)]),
+    );
+    expect(
+      checkOp(counts, "ACD_DeluxeReverb65NoFxCabIR", "replace", { anchor }),
+    ).toBeNull();
+  });
+
   it("a dual flag on a non-member anchor frees no cabinet slot", () => {
     const anchor = { model: GLOOPER, dualCab: true };
     const counts = baseCounts(
