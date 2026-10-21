@@ -243,7 +243,8 @@ test.describe("Copy — the stored copy shows every saved replace", () => {
     expect(doc.lastLoadedScene).toBe(1);
 
     // (2) Through base, on a device-made preset: scene 0 has no entry for the G3 cab
-    // (it files it under G4), and the preset opens on scene 3.
+    // (it files it under G4), and the preset opens on scene 3. The replacement is a
+    // single cab: the preset already holds two, so a dual one would be over the cap.
     const before = await stored(page, hiwatt.slot);
     expect(before.lastLoadedScene).toBe(3);
     const two = await replace(
@@ -254,13 +255,13 @@ test.describe("Copy — the stored copy shows every saved replace", () => {
       "ACD_MarG12H30BB",
       {
         kind: "model",
-        fenderId: "ACD_CabSimTMS",
+        fenderId: "ACD_Mar412G1265",
       },
     );
     expect(two.outcome, two.detail).toBe("updated");
     doc = await stored(page, hiwatt.slot);
     expect(doc.audioGraph.guitarNodes.G3.map((n) => n.FenderId)).toEqual([
-      "ACD_CabSimTMS",
+      "ACD_Mar412G1265",
     ]);
     expect(doc.lastLoadedScene).toBe(3);
     expect(
