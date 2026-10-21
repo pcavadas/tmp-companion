@@ -42,10 +42,9 @@ impl Session {
     /// and saving would persist the WRONG content (HW: an unconfirmed save corrupted a
     /// slot).
     ///
-    /// A `presetError` anywhere in the window wins over the success field: a replace can
-    /// change the live graph and still fail to update the preset's scene state, which then
-    /// answers `presetError` 14 (static RE, fw 1.8.58), so one more heartbeat slice is
-    /// pumped after the success field before it counts.
+    /// A `presetError` anywhere in the window wins over the success field, and a replace's
+    /// `nodeReplaced` counts only after one more heartbeat slice shows no `presetError`
+    /// behind it.
     pub(super) fn confirm_structural_edit(&mut self, success_field: u32) -> Result<bool, String> {
         for _ in 0..10 {
             self.heartbeat()?;
@@ -54,6 +53,9 @@ impl Session {
                 return Ok(false);
             }
             if self.saw_preset_field(success_field) {
+                if success_field != NODE_REPLACED {
+                    return Ok(true);
+                }
                 self.heartbeat()?;
                 self.pump_silent(LIVE_BEAT_MS)?;
                 return Ok(!self.saw_preset_field(PRESET_ERROR));

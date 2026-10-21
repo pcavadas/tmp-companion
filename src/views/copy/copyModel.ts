@@ -70,10 +70,7 @@ export interface EditBlock {
 const CABSIM_CARRY_OVER = new Set<string>(blockClassification.cabsimCarryOver);
 
 /** Whether replacing the block `anchorNodeId` with the stock `model` lands with a second
- *  cab: a stock `ACD_CabSimTMS` over a cabinet model whose node id is on the firmware's
- *  list takes that cab as both cabs, second cab on (HW + static RE, fw 1.8.58). Any other
- *  replace is the model's on-load default, a single cab. Mirrors the Rust
- *  `blockcaps::stock_cabsim_replace_is_dual`. */
+ *  cab; mirrors the Rust `blockcaps::stock_replace_is_dual`. */
 export function stockReplaceIsDual(
   model: string,
   anchorNodeId: string | null | undefined,

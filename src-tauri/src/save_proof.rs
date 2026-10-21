@@ -79,8 +79,8 @@ pub(crate) fn edited_nodes(
 }
 
 /// The scene a replace of `targets` must step out of and back into: the working copy's current
-/// scene, when some OTHER scene has no entry for a target node. The firmware expects every
-/// node to have an entry in every scene; a replace of one that lacks it is confirmed but not
+/// scene, when some OTHER scene has no entry for a target node. The firmware assumes every
+/// node has an entry in every scene; a replace of one that lacks it is confirmed but not
 /// stored by a save made with a scene current [HW, fw 1.8.58], while the same replace made on
 /// base (`loadScene` 8) and saved after the recall back is [HW]. `None`: base is current, or
 /// every scene has an entry for every target.
@@ -91,16 +91,11 @@ pub(crate) fn scene_to_step_out_of(pre: &Value, targets: &[NodeRef]) -> Option<u
         return None;
     }
     let missing = |(group, id): &NodeRef| {
-        let graph = if group.starts_with('M') {
-            "micNodes"
-        } else {
-            "guitarNodes"
-        };
+        let pointer = format!("/{}/{group}/{id}", audiograph::graph_of(group));
         scenes
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != current)
-            .any(|(_, scene)| scene.pointer(&format!("/{graph}/{group}/{id}")).is_none())
+            .any(|(i, scene)| i != current && scene.pointer(&pointer).is_none())
     };
     targets
         .iter()
@@ -109,19 +104,76 @@ pub(crate) fn scene_to_step_out_of(pre: &Value, targets: &[NodeRef]) -> Option<u
         .flatten()
 }
 
-/// Recall base (scene 8) on the held session before a replace that
-/// [`scene_to_step_out_of`] names, keeping the session alive (no idle gap over 300 ms).
-pub(crate) fn step_to_base(s: &mut Session) -> Result<(), String> {
-    recall(s, session::BASE_SCENE_SLOT)
+/// One preset's structural edit on a held session, from the pre-edit read to the proven save:
+/// the replace targets, the pre-edit document the proof tells edited nodes apart by, and the
+/// scene the edits step out of to base ([`scene_to_step_out_of`]).
+pub(crate) struct HeldEdit {
+    pre: Value,
+    targets: Vec<NodeRef>,
+    scene: Option<u32>,
 }
 
-/// Recall `scene` again after the edits, before the save, so the preset keeps opening on it.
-/// Under MAINTAIN CHANGES the recall keeps the base edits; under DISCARD it drops them, so
-/// that case is refused before the step out.
-pub(crate) fn step_back(s: &mut Session, scene: u32) -> Result<(), String> {
-    recall(s, scene)
+impl HeldEdit {
+    /// Take the pre-edit document: the session's last parse, right after the roster read.
+    pub(crate) fn begin_read(s: &Session, targets: Vec<NodeRef>) -> Result<Self, String> {
+        let pre = s.current_preset_value()?;
+        let scene = scene_to_step_out_of(&pre, &targets);
+        Ok(Self {
+            pre,
+            targets,
+            scene,
+        })
+    }
+
+    /// Recall base before the first edit when a target needs it. `scene_discard`: DISCARD
+    /// CHANGES is known to be set, whose recall back would drop the base edits, so such an
+    /// edit is refused before anything is sent.
+    pub(crate) fn step_out(&self, s: &mut Session, scene_discard: bool) -> Result<(), String> {
+        let Some(n) = self.scene else {
+            return Ok(());
+        };
+        if scene_discard {
+            return Err(format!(
+                "a block you're replacing has no setting in one of this preset's scenes, so the \
+                 change has to be made on the base scene and then scene {} recalled, which \
+                 DISCARD CHANGES would undo. On the unit's touchscreen, set SETTINGS → Scene \
+                 Change Behavior to MAINTAIN CHANGES, then unplug and replug the USB cable and \
+                 try again — not edited",
+                n + 1
+            ));
+        }
+        recall(s, session::BASE_SCENE_SLOT)
+    }
+
+    /// Recall the preset's scene again after the edits, so it keeps opening on it.
+    pub(crate) fn end_edits(&self, s: &mut Session) -> Result<(), String> {
+        match self.scene {
+            Some(n) => recall(s, n),
+            None => Ok(()),
+        }
+    }
+
+    /// Rename-to-itself + save, then prove the stored copy against `live`, the working copy
+    /// read before the save. A save the stored copy does not show is an `Err`.
+    pub(crate) fn save(
+        &self,
+        s: &mut Session,
+        list_index: ListIndex,
+        name: &str,
+        live: Result<Value, String>,
+    ) -> Result<(), String> {
+        // Identity-preserving persist (Pro Control's rename(current name) → save(slot)):
+        // keeps the preset's name and song link.
+        if !name.is_empty() {
+            s.rename_current_preset(name)?;
+        }
+        s.save_current_preset(list_index)?;
+        live.and_then(|live| prove_saved(s, list_index, &self.pre, &live, &self.targets))
+            .map_err(|why| format!("saved, but the unit did not store the edit: {why}"))
+    }
 }
 
+/// A scene recall that keeps the held session alive (no idle gap over 300 ms).
 fn recall(s: &mut Session, scene: u32) -> Result<(), String> {
     s.load_scene(scene)?;
     s.heartbeat()?;
@@ -195,7 +247,7 @@ pub(crate) fn read_live(s: &mut Session) -> Result<Value, String> {
 /// Read `list_index`'s stored copy (field 8) on the held session and check it against
 /// `live`, the working copy read just before the save. `Err` names why the save is not
 /// proven: the stored copy differs, or it could not be read.
-pub(crate) fn prove_saved(
+fn prove_saved(
     s: &mut Session,
     list_index: ListIndex,
     pre: &Value,

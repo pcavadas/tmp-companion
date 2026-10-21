@@ -3,10 +3,9 @@ use crate::{
     commands::bulk_replace::blockcaps_advance, commands::bulk_replace::blockcaps_check,
     commands::bulk_replace::blockcaps_pre_edit_roster, commands::bulk_replace::blockcaps_replaced,
     commands::bulk_replace::confirm_plan_identity, commands::bulk_replace::error_item,
-    commands::bulk_replace::repl_arg_candidate, commands::bulk_replace::replace_candidate,
-    commands::bulk_replace::BulkReplaceItem, commands::bulk_replace::ItemOutcome,
-    commands::bulk_replace::ReplArg, commands::bulk_replace::ReplacePlan, proto, save_proof,
-    Session,
+    commands::bulk_replace::repl_arg_candidate, commands::bulk_replace::BulkReplaceItem,
+    commands::bulk_replace::ItemOutcome, commands::bulk_replace::ReplArg,
+    commands::bulk_replace::ReplacePlan, proto, save_proof, Session,
 };
 #[cfg(test)]
 use crate::{commands::bulk_replace::plan_identity_verdict, ListIndex};
@@ -68,27 +67,22 @@ pub(crate) fn held_replace_one(
     // ── blockcaps guard — read the PRE-edit roster now, before the first structural
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
-    // The pre-edit document `save_proof` tells the edited nodes apart by (same buffer).
-    let pre = s.current_preset_value()?;
+    // The pre-edit document `save_proof` reads is this same buffer, so the identity check
+    // below sends nothing before it.
+    let held = save_proof::HeldEdit::begin_read(s, plan.targets.clone())?;
     // SAFETY 1b — the loaded preset is the one discovery planned against.
     if let Err(detail) = confirm_plan_identity(s, plan) {
         return Ok(error_item(list_index, name, detail));
     }
-    let candidate = repl_arg_candidate(repl);
-    // A replace of a block some other scene has no entry for is stored only when made on
-    // base [HW]: step out to base for the edits and back before the save. This path has no
-    // settings snapshot to refuse DISCARD CHANGES by; the stored-copy proof reports it.
-    let step_out = save_proof::scene_to_step_out_of(&pre, &plan.targets);
-    if step_out.is_some() {
-        save_proof::step_to_base(s)?;
-    }
+    // No settings snapshot on this path to refuse DISCARD CHANGES by; the stored-copy proof
+    // reports a base edit the recall back dropped.
+    held.step_out(s, false)?;
 
     // SAFETY 2 — only persist if EVERY replace is confirmed (nodeReplaced/40).
     let mut applied = 0usize;
     for (group, node_id) in &plan.targets {
         let replaced = blockcaps_replaced(&roster, group, node_id);
-        let candidate =
-            replace_candidate(candidate, matches!(repl, ReplArg::Model { .. }), node_id);
+        let candidate = repl_arg_candidate(repl, Some(node_id));
         if let Err(reason) = blockcaps_check(&counts, candidate, true, replaced) {
             return Ok(BulkReplaceItem {
                 slot: list_index,
@@ -118,24 +112,11 @@ pub(crate) fn held_replace_one(
         blockcaps_advance(&mut counts, candidate, replaced, s.confirmed_node_dual());
         applied += 1;
     }
-    if let Some(scene) = step_out {
-        save_proof::step_back(s, scene)?;
-    }
+    held.end_edits(s)?;
     if save {
-        // The working copy the stored copy must match, read before the save.
         let live = save_proof::read_live(s);
-        if !name.is_empty() {
-            s.rename_current_preset(&name)?;
-        }
-        s.save_current_preset(list_index)?;
-        let proof = live
-            .and_then(|live| save_proof::prove_saved(s, list_index, &pre, &live, &plan.targets));
-        if let Err(why) = proof {
-            return Ok(error_item(
-                list_index,
-                name,
-                format!("saved, but the unit did not store the edit: {why}"),
-            ));
+        if let Err(why) = held.save(s, list_index, &name, live) {
+            return Ok(error_item(list_index, name, why));
         }
     }
     // Keep live-controller status before the next preset (no long quiet gap).

@@ -3780,13 +3780,12 @@ fn confirm_replace(
 ) -> Vec<Vec<u8>> {
     let new_id =
         crate::audiograph::mint_node_id(&working_group_ids(st, &group, Some(&node_id)), &fender_id);
-    // A replace re-keys the node in every scene that is not current; when one has no entry
-    // for it, the live graph is replaced but the scene state is not (static RE, fw 1.8.58), and
-    // the unit still confirms it [HW]. A later save made with a scene current then loses it.
-    // The re-key stops at the first scene with no entry, leaving every scene's entries as they
-    // were [HW]. A replace made on base edits base itself, which such a save keeps [HW].
+    // A scene with no entry for the node stops the re-key: every scene's entries stay as
+    // they were, the unit still confirms, and a save made with a scene current loses the
+    // replace, while one made on base keeps it [HW, fw 1.8.58].
     let missed = scene_state_misses(st, &group, &node_id);
     let unsynced = missed && st.current_scene.is_some();
+    let edits_before = st.working_edits.len();
     let reply = node_json_payload(&group, &fender_id, &new_id);
     let reply = confirm_structural(
         st,
@@ -3801,10 +3800,7 @@ fn confirm_replace(
             params,
         },
     );
-    let landed = st.working_edits.last().is_some_and(
-        |e| matches!(e, WorkingEdit::Replace { new_id: n, group: g, .. } if *n == new_id && *g == group),
-    );
-    if unsynced && landed {
+    if unsynced && st.working_edits.len() > edits_before {
         st.scene_unsynced.push((group, new_id));
     }
     reply
@@ -3818,11 +3814,7 @@ fn scene_state_misses(st: &mut SimState, group: &str, node_id: &str) -> bool {
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(&render_json(st, slot0, true)) else {
         return false;
     };
-    let graph = if group.starts_with('M') {
-        "micNodes"
-    } else {
-        "guitarNodes"
-    };
+    let graph = audiograph::graph_of(group);
     let current = st.current_scene.map(|c| c as usize);
     doc.get("scenes")
         .and_then(serde_json::Value::as_array)
@@ -3970,11 +3962,7 @@ fn rekey_scene_entries(
     from: Option<&str>,
     to: Option<&str>,
 ) {
-    let graph = if group.starts_with('M') {
-        "micNodes"
-    } else {
-        "guitarNodes"
-    };
+    let graph = audiograph::graph_of(group);
     let Some(scenes) = v
         .get_mut("scenes")
         .and_then(serde_json::Value::as_array_mut)

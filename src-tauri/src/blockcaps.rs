@@ -76,7 +76,7 @@ struct Sets {
     cabinet: HashSet<String>,
     cabinet_exempt: HashSet<String>,
     /// `cabsimCarryOver`: the node ids a stock replace into `ACD_CabSimTMS` carries over
-    /// ([`stock_cabsim_replace_is_dual`]).
+    /// ([`stock_replace_is_dual`]).
     cabsim_carry_over: HashSet<String>,
     glooper: String,
     fx_loops: HashSet<String>,
@@ -321,14 +321,14 @@ pub fn counts(roster: &[RosterEntry]) -> Counts {
     c
 }
 
-/// Whether a stock `replaceNode` into `ACD_CabSimTMS` of the node `old_node_id` lands with
-/// its second cab on. When the old node's id is `ACD_` + a cab on the firmware's list, the new
-/// node takes that cab as both cabs, with the old mic, position, distance, axis and filters,
-/// and `cabsim2enabled` on [HW + static RE, fw 1.8.58]. Any other old node (an amp with a
-/// built-in cab, an IR, a `_1` or non-minted id) gives the block's on-load default:
-/// `on_load_dual`, the factory single cab when unknown.
-pub fn stock_cabsim_replace_is_dual(old_node_id: &str, on_load_dual: Option<bool>) -> bool {
-    sets().cabsim_carry_over.contains(old_node_id) || on_load_dual.unwrap_or(false)
+/// Whether a stock `replaceNode` of the node `old_node_id` with `candidate_id` lands with its
+/// second cab on: a stock `ACD_CabSimTMS` over a node whose id is `ACD_` + a cab on the
+/// firmware's list (`cabsimCarryOver`) takes that cab as both cabs, with the old mic,
+/// position, distance, axis and filters [HW + static RE, fw 1.8.58]. Any other replace gives
+/// the block's on-load default, taken as the factory single cab (a user-changed on-load
+/// default is not read). Mirrors the TS `stockReplaceIsDual`.
+pub fn stock_replace_is_dual(candidate_id: &str, old_node_id: &str) -> bool {
+    candidate_id == "ACD_CabSimTMS" && sets().cabsim_carry_over.contains(old_node_id)
 }
 
 /// The authoritative per-op guard: would inserting/replacing `candidate_id` break any
@@ -345,7 +345,7 @@ pub fn stock_cabsim_replace_is_dual(old_node_id: &str, on_load_dual: Option<bool
 /// Checked in firmware enum order (0..4); returns the FIRST violated reason. The TS
 /// `checkOp` sibling applies the same rules, and weighs a stock candidate the same way: one
 /// cabinet slot, or two for a stock `ACD_CabSimTMS` over a carried-over cab
-/// ([`stock_cabsim_replace_is_dual`]).
+/// ([`stock_replace_is_dual`]).
 pub fn check_op(
     counts: &Counts,
     candidate_id: &str,
@@ -418,10 +418,10 @@ mod tests {
     #[test]
     fn a_stock_cabsim_replace_lands_dual_only_over_a_listed_cab_id() {
         // A cab model's own id (the HW case), and a listed cab with no catalog tile of its own.
-        assert!(stock_cabsim_replace_is_dual("ACD_MarG12H30BB", None));
-        assert!(stock_cabsim_replace_is_dual(
-            "ACD_TwoRock2x12Vertical",
-            None
+        assert!(stock_replace_is_dual("ACD_CabSimTMS", "ACD_MarG12H30BB"));
+        assert!(stock_replace_is_dual(
+            "ACD_CabSimTMS",
+            "ACD_TwoRock2x12Vertical"
         ));
         // A `_1` id, a non-minted id, an amp with a built-in cab, a cab block itself and
         // a catalog cab the firmware lacks: the on-load default, factory single.
@@ -432,12 +432,10 @@ mod tests {
             "ACD_CabSimTMS",
             "ACD_British212AlnicoBlue",
         ] {
-            assert!(!stock_cabsim_replace_is_dual(id, None), "{id}");
-            assert!(
-                stock_cabsim_replace_is_dual(id, Some(true)),
-                "{id}: a dual on-load default"
-            );
+            assert!(!stock_replace_is_dual("ACD_CabSimTMS", id), "{id}");
         }
+        // Only a Cabinet block carries over.
+        assert!(!stock_replace_is_dual("ACD_Fen57Champ", "ACD_MarG12H30BB"));
         assert_eq!(sets().cabsim_carry_over.len(), 68);
     }
 

@@ -229,9 +229,9 @@ pub(crate) fn blockcaps_replaced<'a>(
 /// Cap-check ONE candidate insert/replace against the running pre-edit `counts`.
 /// `candidate = None` is a bare Remove — no candidate to check; removing a node can
 /// only shrink counts, never push a cap over its max. `candidate` and `replaced` are
-/// `(fender_id, dual_cab)` pairs: the candidate's from [`repl_arg_candidate`] and
-/// [`replace_candidate`] (a fresh Model/Ir block is single except a stock `ACD_CabSimTMS`
-/// over a carried-over cab; a `Saved` block carries its library entry's flag), the
+/// `(fender_id, dual_cab)` pairs: the candidate's from [`repl_arg_candidate`] (a fresh
+/// Model/Ir block is single except a stock `ACD_CabSimTMS` over a carried-over cab; a
+/// `Saved` block carries its library entry's flag), the
 /// replaced node's from [`blockcaps_replaced`] (`None` for an Insert/Remove).
 pub(crate) fn blockcaps_check(
     counts: &blockcaps::Counts,
@@ -274,29 +274,19 @@ pub(crate) fn blockcaps_advance(
     }
 }
 
-/// A REPLACE candidate weighed against the node it replaces: a stock `ACD_CabSimTMS` over a
-/// cabinet model the firmware carries over lands dual (`blockcaps::stock_cabsim_replace_is_dual`;
-/// the on-load default is not read, so the factory single cab stands for it otherwise).
-pub(crate) fn replace_candidate<'a>(
-    candidate: Option<(&'a str, bool)>,
-    stock: bool,
-    old_node_id: &str,
+/// The `(fender_id, dual_cab)` a [`ReplArg`] would insert in place of `replaced_node`, or
+/// `None` for `Remove` (no candidate to cap-check — see [`blockcaps_check`]). A stock model
+/// is single unless it lands dual over that node ([`blockcaps::stock_replace_is_dual`]).
+pub(crate) fn repl_arg_candidate<'a>(
+    repl: &'a ReplArg,
+    replaced_node: Option<&str>,
 ) -> Option<(&'a str, bool)> {
-    candidate.map(|(id, dual)| {
-        let carries_over = stock
-            && id == "ACD_CabSimTMS"
-            && blockcaps::stock_cabsim_replace_is_dual(old_node_id, None);
-        (id, dual || carries_over)
-    })
-}
-
-/// The `(fender_id, dual_cab)` a [`ReplArg`] would insert, or `None` for `Remove` (no
-/// candidate to cap-check — see [`blockcaps_check`]).
-pub(crate) fn repl_arg_candidate(repl: &ReplArg) -> Option<(&str, bool)> {
     match repl {
-        ReplArg::Model { fender_id } | ReplArg::Ir { fender_id, .. } => {
-            Some((fender_id.as_str(), false))
-        }
+        ReplArg::Model { fender_id } => Some((
+            fender_id.as_str(),
+            replaced_node.is_some_and(|n| blockcaps::stock_replace_is_dual(fender_id, n)),
+        )),
+        ReplArg::Ir { fender_id, .. } => Some((fender_id.as_str(), false)),
         ReplArg::Saved {
             fender_id,
             dual_cab,

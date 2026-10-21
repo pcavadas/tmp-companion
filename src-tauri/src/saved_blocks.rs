@@ -23,13 +23,20 @@ pub struct SavedBlock {
 /// Read the device's saved-block store on its own connection: one in-burst
 /// `requestAllBlockPresets`, kept alive through the reply, then decoded.
 pub(crate) fn read_saved_blocks() -> Result<Vec<SavedBlock>, String> {
+    let s = block_presets_session()?;
+    let blob = find_block_presets_blob(&s.push_bodies())
+        .ok_or_else(|| "device sent no allBlockPresetsResponse".to_string())?;
+    parse_block_presets_map(&blob)
+}
+
+/// A connection that asked for the saved-block store in its handshake burst and has pumped
+/// the reply, for a caller that keeps using it.
+pub(crate) fn block_presets_session() -> Result<crate::Session, String> {
     let mut s = crate::Session::connect_with_burst_request(&proto::request_all_block_presets(
         Some(proto::BATCH_DRAIN),
     ))?;
     s.pump_collect_alive(1000)?;
-    let blob = find_block_presets_blob(&s.push_bodies())
-        .ok_or_else(|| "device sent no allBlockPresetsResponse".to_string())?;
-    parse_block_presets_map(&blob)
+    Ok(s)
 }
 
 /// Decode the `allBlockPresetsResponse.blockPresetsMap` blob (LZ4-block-compressed

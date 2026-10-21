@@ -3,9 +3,8 @@ use crate::blockcaps::{group_roster, Roster};
 use crate::{
     blockcaps, commands::bulk_replace::blockcaps_advance, commands::bulk_replace::blockcaps_check,
     commands::bulk_replace::blockcaps_pre_edit_roster, commands::bulk_replace::blockcaps_replaced,
-    commands::bulk_replace::replace_candidate, commands::bulk_replace::ItemOutcome,
-    device_gate::with_released_seize, proto, save_proof, session, AppState, ListIndex, Serialize,
-    Session, State,
+    commands::bulk_replace::ItemOutcome, device_gate::with_released_seize, proto, save_proof,
+    session, AppState, ListIndex, Serialize, Session, State,
 };
 
 /// The block content a copy `CopyOp` applies — the SAME three "with a block"
@@ -51,12 +50,18 @@ impl CopyRepl {
         }
     }
 
-    /// The block-cap candidate: the fender id and whether it takes a second cabinet slot
-    /// (only a dual-cab saved block does).
-    fn cap_candidate(&self) -> (&str, bool) {
+    /// The block-cap candidate in place of `replaced_node`: the fender id and whether it
+    /// takes a second cabinet slot (a dual-cab saved block, or a stock Cabinet that lands
+    /// dual over that node, `blockcaps::stock_replace_is_dual`).
+    fn cap_candidate(&self, replaced_node: Option<&str>) -> (&str, bool) {
+        let id = self.insert_fender_id();
         match self {
-            CopyRepl::Saved { dual_cab, .. } => (self.insert_fender_id(), *dual_cab),
-            CopyRepl::Model { .. } | CopyRepl::Ir { .. } => (self.insert_fender_id(), false),
+            CopyRepl::Saved { dual_cab, .. } => (id, *dual_cab),
+            CopyRepl::Model { .. } => (
+                id,
+                replaced_node.is_some_and(|n| blockcaps::stock_replace_is_dual(id, n)),
+            ),
+            CopyRepl::Ir { .. } => (id, false),
         }
     }
 }
@@ -309,12 +314,8 @@ fn copy_apply_one(
     // ── blockcaps guard — read the PRE-edit roster now, before the first structural
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
-    // The pre-edit document `save_proof` tells the edited nodes apart by (same buffer).
-    let pre = s.current_preset_value()?;
     let mut ids = DeviceIds::new(&roster);
-    // A replace of a block some other scene has no entry for is stored only when made on
-    // base [HW]: step out to base for the edits and back before the save.
-    let replace_targets: Vec<save_proof::NodeRef> = job
+    let replace_targets = job
         .ops
         .iter()
         .filter_map(|op| match op {
@@ -322,24 +323,8 @@ fn copy_apply_one(
             _ => None,
         })
         .collect();
-    let step_out = save_proof::scene_to_step_out_of(&pre, &replace_targets);
-    if let Some(scene) = step_out {
-        if scene_discard {
-            return Ok(error_item(
-                list_index,
-                &name,
-                format!(
-                    "a block you're replacing has no setting in one of this preset's scenes, so \
-                     the change has to be made on the base scene and then scene {} recalled, \
-                     which DISCARD CHANGES would undo. On the unit's touchscreen, set SETTINGS \
-                     → Scene Change Behavior to MAINTAIN CHANGES, then unplug and replug \
-                     the USB cable and try again — not edited",
-                    scene + 1
-                ),
-            ));
-        }
-        save_proof::step_to_base(s)?;
-    }
+    let held = save_proof::HeldEdit::begin_read(s, replace_targets)?;
+    held.step_out(s, scene_discard)?;
 
     // Apply each op in order. An unconfirmed FIRST edit with no presetError is read back
     // before anything is re-sent (`apply_copy_op`). fw 1.8.58 has no silent-drop path for a
@@ -376,14 +361,6 @@ fn copy_apply_one(
             }
         };
         let replaced = target.and_then(|(g, n)| blockcaps_replaced(&roster, g, n));
-        let candidate = match op {
-            CopyOp::Replace {
-                node_id,
-                repl: CopyRepl::Model { .. },
-                ..
-            } => replace_candidate(candidate, true, node_id),
-            _ => candidate,
-        };
         if let Err(reason) = blockcaps_check(&counts, candidate, is_replace, replaced) {
             return Ok(error_item(
                 list_index,
@@ -440,19 +417,11 @@ fn copy_apply_one(
         }
     }
 
-    if let Some(scene) = step_out {
-        save_proof::step_back(s, scene)?;
-    }
+    held.end_edits(s)?;
     let graph = if save {
-        match save_copy_target(s, &roster, &pre, job)? {
+        match save_copy_target(s, &roster, &held, job) {
             Ok(graph) => graph,
-            Err(why) => {
-                return Ok(error_item(
-                    list_index,
-                    &name,
-                    format!("saved, but the unit did not store the edit: {why}"),
-                ));
-            }
+            Err(why) => return Ok(error_item(list_index, &name, why)),
         }
     } else {
         None
@@ -482,11 +451,11 @@ fn cap_inputs(op: &CopyOp) -> (Option<Candidate<'_>>, bool, Option<(&str, &str)>
             node_id,
             repl,
         } => (
-            Some(repl.cap_candidate()),
+            Some(repl.cap_candidate(Some(node_id))),
             true,
             Some((group.as_str(), node_id.as_str())),
         ),
-        CopyOp::Insert { repl, .. } => (Some(repl.cap_candidate()), false, None),
+        CopyOp::Insert { repl, .. } => (Some(repl.cap_candidate(None)), false, None),
         CopyOp::Remove { group, node_id } => {
             (None, false, Some((group.as_str(), node_id.as_str())))
         }
@@ -494,8 +463,8 @@ fn cap_inputs(op: &CopyOp) -> (Option<Candidate<'_>>, bool, Option<(&str, &str)>
 }
 
 /// Persist a target whose every op confirmed: the working-copy read for the Copy view's
-/// in-place cache patch (no ~22 s re-scan), then rename-to-itself + save, then the stored-copy
-/// proof (`save_proof`). The inner `Err` is a save the stored copy does not show.
+/// in-place cache patch (no ~22 s re-scan), then the proven save (`save_proof::HeldEdit`): a
+/// save the stored copy does not show is an `Err`.
 ///
 /// The read is a field-2 re-prompt of the device's LIVE document, taken after the last
 /// confirmed op and BEFORE the save (the footswitch flow's HW-proven re-prompt-then-save
@@ -505,9 +474,9 @@ fn cap_inputs(op: &CopyOp) -> (Option<Candidate<'_>>, bool, Option<(&str, &str)>
 fn save_copy_target(
     s: &mut Session,
     roster: &[blockcaps::RosterEntry],
-    pre_doc: &serde_json::Value,
+    held: &save_proof::HeldEdit,
     job: &CopyJob,
-) -> Result<Result<Option<session::ActiveGraph>, String>, String> {
+) -> Result<Option<session::ActiveGraph>, String> {
     // What the acked ops leave behind — the oracle the read is checked against. An
     // edit that leaves the roster as it was (a same-model re-stamp: the roster compares
     // FenderIds, so nothing it can see changes) is unverifiable —
@@ -525,23 +494,8 @@ fn save_copy_target(
         Some(_) => s.current_preset_value(),
         None => save_proof::read_live(s),
     };
-    // Identity-preserving persist (Pro Control's rename(current name) → save(slot)):
-    // keeps the preset's name and song link.
-    if !job.name.is_empty() {
-        s.rename_current_preset(&job.name)?;
-    }
-    s.save_current_preset(job.list_index)?;
-    let targets: Vec<save_proof::NodeRef> = job
-        .ops
-        .iter()
-        .filter_map(|op| match op {
-            CopyOp::Replace { group, node_id, .. } => Some((group.clone(), node_id.clone())),
-            _ => None,
-        })
-        .collect();
-    let proof =
-        live.and_then(|live| save_proof::prove_saved(s, job.list_index, pre_doc, &live, &targets));
-    Ok(proof.map(|()| graph))
+    held.save(s, job.list_index, &job.name, live)?;
+    Ok(graph)
 }
 
 /// An insert's pre-send checks, given the group's FenderIds before it (`before`): its

@@ -242,16 +242,10 @@ mod copy_level_e2e_tests {
             .unwrap()
             .expect("the stored copy answers");
         let v = crate::session::tolerant_parse_json(&String::from_utf8_lossy(&raw)).unwrap();
-        let g1 = v["audioGraph"]["guitarNodes"]["G1"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|n| {
-                (
-                    n["nodeId"].as_str().unwrap().into(),
-                    n["FenderId"].as_str().unwrap().into(),
-                )
-            })
+        let g1 = crate::audiograph::roster(&v)
+            .into_iter()
+            .filter(|(group, _, _)| group == "G1")
+            .map(|(_, id, fender)| (id, fender))
             .collect();
         (g1, v["lastLoadedScene"].clone())
     }
@@ -297,9 +291,9 @@ mod copy_level_e2e_tests {
             .with_preset_json(&scene_gap_doc(false))
             .with_saved_scene(5, Some(1));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        let item = copy_apply_one(&mut s, &one_replace_job(5, "Stadium Lead"), true, true).unwrap();
-        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
-        assert!(item.detail.contains("MAINTAIN CHANGES"), "{}", item.detail);
+        let err = copy_apply_one(&mut s, &one_replace_job(5, "Stadium Lead"), true, true)
+            .expect_err("refused under DISCARD");
+        assert!(err.contains("MAINTAIN CHANGES"), "{err}");
         assert!(
             !sim.events().iter().any(|e| matches!(
                 e,
