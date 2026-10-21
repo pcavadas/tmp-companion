@@ -222,7 +222,7 @@ mod plan_identity_tests {
         assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
     }
 
-    /// The unit can report a save that its stored copy does not show [HW]: the item is an
+    /// The unit can report a save that its stored copy does not show (HW): the item is an
     /// error, never "updated".
     #[test]
     fn a_save_the_unit_does_not_store_is_an_error() {
@@ -240,7 +240,7 @@ mod plan_identity_tests {
     }
 
     /// A replace of a block another scene has no entry for is made on base and the
-    /// preset's scene recalled before the save, so the save stores it [HW].
+    /// preset's scene recalled before the save, so the save stores it (HW).
     #[test]
     fn a_replace_of_a_block_missing_a_scene_entry_steps_through_base() {
         let doc = format!(
@@ -274,7 +274,7 @@ mod plan_identity_tests {
     }
 
     /// Two single cabinets fill the cap; replacing one with a saved block weighs that
-    /// block's `dualCabsEnabled`, which the installed node's `cabsim2enabled` takes [HW].
+    /// block's `dualCabsEnabled`, which the installed node's `cabsim2enabled` takes (HW).
     fn replace_a_cab_with_saved(dual_cab: bool) -> (BulkReplaceItem, Vec<SimEvent>) {
         let sim = SimDevice::new().with_preset_json(
             r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[

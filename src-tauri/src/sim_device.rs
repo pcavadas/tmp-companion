@@ -382,7 +382,7 @@ pub(crate) enum Injection {
     StalePushAfterSave,
     /// A save reports success but stores none of the working copy's structural edits: the
     /// slot's stored copy (field 8) keeps its pre-edit block chain. The unit did this for a
-    /// replace saved while a non-base scene was current [HW, fw 1.8.58].
+    /// replace saved while a non-base scene was current (HW, fw 1.8.58).
     LostSave,
     /// The NEXT Settings re-amp OFF leaves the latch ON (once). It is still recorded, as the
     /// device still echoes it.

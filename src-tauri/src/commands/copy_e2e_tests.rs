@@ -192,7 +192,7 @@ mod copy_level_e2e_tests {
         );
     }
 
-    /// The unit can report a save that its stored copy does not show [HW]: the target is
+    /// The unit can report a save that its stored copy does not show (HW): the target is
     /// an error, never "updated", and the frontend patches nothing.
     #[test]
     fn copy_save_the_unit_does_not_store_is_an_error() {
@@ -251,9 +251,9 @@ mod copy_level_e2e_tests {
     }
 
     /// The unit confirms a replace of a node some other scene has no entry for, but a save
-    /// made with a scene current stores the pre-edit block [HW, fw 1.8.58]. Copy makes that
+    /// made with a scene current stores the pre-edit block (HW, fw 1.8.58). Copy makes that
     /// replace on base and recalls the preset's scene before the save, so the stored copy
-    /// holds the replacement and the preset still opens on its scene [HW].
+    /// holds the replacement and the preset still opens on its scene (HW).
     #[test]
     fn copy_replace_of_a_block_missing_a_scene_entry_is_made_on_base_and_stored() {
         let sim = SimDevice::new()
@@ -314,7 +314,7 @@ mod copy_level_e2e_tests {
         assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
     }
 
-    /// A stock `ACD_CabSimTMS` over a cab model lands dual [HW, fw 1.8.58]: next to a
+    /// A stock `ACD_CabSimTMS` over a cab model lands dual (HW, fw 1.8.58): next to a
     /// second cab that is three cabinet slots, refused before anything is sent.
     #[test]
     fn copy_refuses_a_stock_cabinet_that_lands_dual_over_the_cap() {

@@ -301,7 +301,7 @@ mod advance_tests {
     use super::*;
 
     /// A landed node's own second-cab flag, from the confirm, decides its weight: a stock
-    /// `ACD_CabSimTMS` that came out dual takes two cabinet slots [HW].
+    /// `ACD_CabSimTMS` that came out dual takes two cabinet slots (HW).
     #[test]
     fn a_landed_dual_cab_weighs_two_whatever_was_predicted() {
         let mut counts = blockcaps::Counts::default();

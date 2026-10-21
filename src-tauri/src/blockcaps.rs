@@ -324,7 +324,7 @@ pub fn counts(roster: &[RosterEntry]) -> Counts {
 /// Whether a stock `replaceNode` of the node `old_node_id` with `candidate_id` lands with its
 /// second cab on: a stock `ACD_CabSimTMS` over a node whose id is `ACD_` + a cab on the
 /// firmware's list (`cabsimCarryOver`) takes that cab as both cabs, with the old mic,
-/// position, distance, axis and filters [HW + static RE, fw 1.8.58]. Any other replace gives
+/// position, distance, axis and filters (HW + static RE, fw 1.8.58). Any other replace gives
 /// the block's on-load default, taken as the factory single cab (a user-changed on-load
 /// default is not read). Mirrors the TS `stockReplaceIsDual`.
 pub fn stock_replace_is_dual(candidate_id: &str, old_node_id: &str) -> bool {

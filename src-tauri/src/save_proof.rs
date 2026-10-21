@@ -3,7 +3,7 @@
 //!
 //! A confirmed edit and the working copy (field 2/3) prove only the LIVE preset. A save made
 //! while a non-base scene is current can store a different block chain than the live one
-//! [HW, fw 1.8.58]: the unit then reports a successful save, and the working copy still
+//! (HW, fw 1.8.58): the unit then reports a successful save, and the working copy still
 //! shows the edit. So every structural save path (`held_edit::held_replace_one`,
 //! `copy_apply`) compares the stored copy against the working copy it read just before the
 //! save, and reports a mismatch as an error, never as "updated".
@@ -81,8 +81,8 @@ pub(crate) fn edited_nodes(
 /// The scene a replace of `targets` must step out of and back into: the working copy's current
 /// scene, when some OTHER scene has no entry for a target node. The firmware assumes every
 /// node has an entry in every scene; a replace of one that lacks it is confirmed but not
-/// stored by a save made with a scene current [HW, fw 1.8.58], while the same replace made on
-/// base (`loadScene` 8) and saved after the recall back is [HW]. `None`: base is current, or
+/// stored by a save made with a scene current (HW, fw 1.8.58), while the same replace made on
+/// base (`loadScene` 8) and saved after the recall back is (HW). `None`: base is current, or
 /// every scene has an entry for every target.
 pub(crate) fn scene_to_step_out_of(pre: &Value, targets: &[NodeRef]) -> Option<u32> {
     let scenes = pre.get("scenes").and_then(Value::as_array)?;
