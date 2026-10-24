@@ -768,19 +768,32 @@ fn showcase_fixture_sql() -> (String, serde_json::Value) {
 #[test]
 fn showcase_fixture_matches_showcase_json() {
     let (sql, _) = showcase_fixture_sql();
-    let regenerated =
-        read_backup_archive(&build_backup_archive(&sql)).expect("decode regenerated archive");
-    let committed = read_backup_archive(
-        &std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../e2e/fixtures/showcase/showcase-fixture.bin"
-        ))
-        .expect("read committed showcase-fixture.bin"),
-    )
-    .expect("decode committed fixture");
+    let regenerated_bytes = build_backup_archive(&sql);
+    let committed_bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/showcase/showcase-fixture.bin"
+    ))
+    .expect("read committed showcase-fixture.bin");
+    let decode = |bytes: &[u8]| {
+        let r = read_backup_archive(bytes).expect("decode archive");
+        let db = super::extract_backup_entries(bytes)
+            .expect("extract archive")
+            .db;
+        let table = |sql: &str| super::run_sql(&db, sql).expect(sql);
+        // The typed rows the tour reads, plus the raw tables: each preset's JSON (parsed,
+        // so key order is canonical) covers fields `BackupPresetRow` drops, and the song
+        // tables are read raw because the typed song query needs columns this fixture's
+        // schema lacks.
+        serde_json::json!({
+            "presets": r.presets,
+            "user_presets": super::raw_user_preset_rows(bytes).expect("raw UserPresets rows"),
+            "songs": table("SELECT * FROM Songs ORDER BY id"),
+            "song_presets": table("SELECT * FROM SongPresets ORDER BY id"),
+        })
+    };
     assert_eq!(
-        serde_json::to_value(&regenerated.presets).expect("serialize regenerated"),
-        serde_json::to_value(&committed.presets).expect("serialize committed"),
+        decode(&regenerated_bytes),
+        decode(&committed_bytes),
         "showcase-fixture.bin is out of sync with showcase.json — rerun \
          `cargo test build_showcase_fixture -- --ignored` and commit the regenerated fixture"
     );
