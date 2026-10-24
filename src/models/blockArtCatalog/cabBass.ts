@@ -84,15 +84,6 @@ export const CABS_BASS: readonly BlockRow[] = [
     false,
   ],
   [
-    "ACD_British212AlnicoBlue",
-    "M2-BLU",
-    "cab2",
-    "marshall",
-    "2X12 BRITISH ALNICO BLUE",
-    "Marshall 'Bluesbreaker' 2x12 (Celestion Alnico Blue)",
-    false,
-  ],
-  [
     "ACD_FenSuperSonic100_412SLST_v30",
     "SS-412",
     "cab4",
@@ -135,6 +126,15 @@ export const CABS_BASS: readonly BlockRow[] = [
     "black",
     "4X12 PEAVEY 5150 SHEFFIELD",
     "Peavey 5150 4x12 (Sheffield 1200)",
+    false,
+  ],
+  [
+    "ACD_TwoRock2x12Vertical",
+    "TR-212",
+    "cab2",
+    "boutique",
+    "2X12 TR-1265B",
+    "Two-Rock vertical 2x12 (WGS 12-65B)",
     false,
   ],
 ];
