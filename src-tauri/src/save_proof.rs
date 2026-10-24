@@ -13,8 +13,9 @@
 //! - the `dspUnitParameters` of every EDITED node (a node id the pre-edit preset lacked, or a
 //!   replace target still present), key by key from the live node.
 //!
-//! The other nodes' parameters are not compared: with a scene current, the live copy shows
-//! that scene's values while the stored copy holds base.
+//! An edited node's stored value passes when it matches either the stored base or the stored
+//! current scene's overlay of it, since the working copy can show either with a scene current.
+//! The other nodes' parameters are not compared.
 use std::collections::BTreeSet;
 
 use serde_json::Value;
@@ -154,7 +155,8 @@ impl HeldEdit {
     }
 
     /// Rename-to-itself + save, then prove the stored copy against `live`, the working copy
-    /// read before the save. A save the stored copy does not show is an `Err`.
+    /// read before the save. A save the stored copy does not show, or one that cannot be
+    /// proven, is an `Err`.
     pub(crate) fn save(
         &self,
         s: &mut Session,
@@ -168,8 +170,12 @@ impl HeldEdit {
             s.rename_current_preset(name)?;
         }
         s.save_current_preset(list_index)?;
-        live.and_then(|live| prove_saved(s, list_index, &self.pre, &live, &self.targets))
-            .map_err(|why| format!("saved, but the unit did not store the edit: {why}"))
+        let live = live.map_err(|why| {
+            format!(
+                "saved, but the save is not proven: the edited preset could not be read ({why})"
+            )
+        })?;
+        prove_saved(s, list_index, &self.pre, &live, &self.targets)
     }
 }
 
@@ -206,14 +212,17 @@ pub(crate) fn check_stored(
             describe(&want)
         ));
     }
+    let scene_view = stored_scene_view(live, stored);
     for node in edited {
         let Some(live_params) = params(live, node) else {
             continue;
         };
         let stored_params = params(stored, node);
+        let scene_params = scene_view.as_ref().and_then(|v| params(v, node));
         for (key, value) in live_params {
             let stored_value = stored_params.and_then(|p| p.get(key));
-            if stored_value != Some(value) {
+            let scene_value = scene_params.and_then(|p| p.get(key));
+            if stored_value != Some(value) && scene_value != Some(value) {
                 return Err(format!(
                     "the stored {}/{} has {key} = {} where the edited preset has {value}",
                     node.0,
@@ -224,6 +233,16 @@ pub(crate) fn check_stored(
         }
     }
     Ok(())
+}
+
+/// `stored` with the live preset's current scene overlaid on its block chain, the values the
+/// working copy shows on that scene; `None` on base or when the stored copy lacks the scene.
+fn stored_scene_view(live: &Value, stored: &Value) -> Option<Value> {
+    let scene = usize::try_from(live.get("lastLoadedScene")?.as_u64()?).ok()?;
+    let overlay = stored.get("scenes")?.as_array()?.get(scene)?;
+    let mut view = stored.clone();
+    crate::scene_jobs::overlay_scene_onto_graph(view.get_mut("audioGraph")?, overlay);
+    Some(view)
 }
 
 fn describe(roster: &[(String, Vec<(String, String)>)]) -> String {
@@ -245,8 +264,8 @@ pub(crate) fn read_live(s: &mut Session) -> Result<Value, String> {
 }
 
 /// Read `list_index`'s stored copy (field 8) on the held session and check it against
-/// `live`, the working copy read just before the save. `Err` names why the save is not
-/// proven: the stored copy differs, or it could not be read.
+/// `live`, the working copy read just before the save. `Err` names why: the stored copy
+/// differs (the edit was lost), or it could not be read (the save is not proven).
 fn prove_saved(
     s: &mut Session,
     list_index: ListIndex,
@@ -254,13 +273,16 @@ fn prove_saved(
     live: &Value,
     replace_targets: &[NodeRef],
 ) -> Result<(), String> {
+    let unproven = |why: &str| format!("saved, but the save is not proven: {why}");
     let raw = s
-        .read_slot_preset_json(list_index.into())?
-        .ok_or_else(|| "the stored preset did not answer the read-back".to_string())?;
+        .read_slot_preset_json(list_index.into())
+        .map_err(|e| unproven(&e))?
+        .ok_or_else(|| unproven("the stored preset did not answer the read-back"))?;
     let stored = session::tolerant_parse_json(&String::from_utf8_lossy(&raw))
         .filter(|v| v.get("audioGraph").is_some())
-        .ok_or_else(|| "the stored preset's read-back had no block chain".to_string())?;
+        .ok_or_else(|| unproven("the stored preset's read-back had no block chain"))?;
     check_stored(live, &stored, &edited_nodes(pre, live, replace_targets))
+        .map_err(|why| format!("saved, but the unit did not store the edit: {why}"))
 }
 
 #[cfg(test)]
@@ -341,6 +363,25 @@ mod tests {
             check_stored(&live, &stored, &edited_nodes(&pre, &live, &targets())),
             Ok(())
         );
+    }
+
+    /// An edited node showing its current scene's value matches the stored scene overlay,
+    /// not the stored base; a value neither holds is still a mismatch.
+    #[test]
+    fn an_edited_node_showing_its_scene_value_matches_the_stored_overlay() {
+        let pre = doc(json!([amp(1.0), cab("cab1", "ACD_Twin212", false)]));
+        let mut live = doc(json!([amp(1.0), cab("ACD_CabSimTMS", "Diezel412FV", true)]));
+        live["lastLoadedScene"] = json!(0);
+        live["audioGraph"]["guitarNodes"]["G1"][1]["dspUnitParameters"]["bypass"] = json!(true);
+        let mut stored = doc(json!([amp(1.0), cab("ACD_CabSimTMS", "Diezel412FV", true)]));
+        stored["lastLoadedScene"] = json!(0);
+        stored["scenes"] = json!([{"guitarNodes": {"G1": {
+            "ACD_CabSimTMS": {"dspUnitParameters": {"bypass": true}}}}}]);
+        let edited = edited_nodes(&pre, &live, &targets());
+        assert_eq!(check_stored(&live, &stored, &edited), Ok(()));
+        stored["scenes"][0]["guitarNodes"]["G1"]["ACD_CabSimTMS"]["dspUnitParameters"]["bypass"] =
+            json!(false);
+        assert!(check_stored(&live, &stored, &edited).is_err());
     }
 
     #[test]
