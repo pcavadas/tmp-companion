@@ -289,8 +289,9 @@ export async function runDoctorCheck(
       "Doctor skipped its Instrument page: this server's store already holds an instrument for these presets",
     ).toBeVisible();
   } else {
+    // The Instrument page shows both, so `.first()` keeps the wait out of strict mode.
     await expect(
-      ask.or(page.getByRole("list", { name: "Steps" })),
+      ask.or(page.getByRole("list", { name: "Steps" })).first(),
     ).toBeVisible();
     if (!(await ask.isVisible())) return;
   }

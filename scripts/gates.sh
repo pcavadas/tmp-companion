@@ -71,7 +71,8 @@
 #              scripts/e2e.sh)
 #   *.sh / gate TSVs touched            → shellcheck (only if installed) +
 #                                          the shell specs (tauri-dev-env,
-#                                          gate-pr, e2e-lane, e2e-evidence)
+#                                          gate-pr, e2e-lane, e2e-evidence,
+#                                          leak-guard)
 #
 # ── Stamp model ────────────────────────────────────────────────────────────
 # The stamp KEY is the git tree-object id of the whole working tree (tracked +
@@ -716,6 +717,7 @@ if [ "$want_shell" -eq 1 ]; then
   run_gate "gate-pr spec" /bin/bash scripts/gate-pr.spec.sh
   run_gate "e2e-lane spec" /bin/bash scripts/e2e-lane.spec.sh
   run_gate "e2e-evidence spec" /bin/bash scripts/e2e-evidence.spec.sh
+  run_gate "leak-guard spec" /bin/bash scripts/leak-guard.spec.sh
 fi
 
 # The frontend and Rust gates share nothing, so they run side by side: the frontend group in a

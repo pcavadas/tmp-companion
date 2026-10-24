@@ -118,11 +118,24 @@ fn signal_paths(graph: &crate::ActiveGraph) -> Vec<Vec<crate::GraphNode>> {
     paths
 }
 
+/// Every committed preset fixture the gates below hold to the cab rules: the scenario
+/// set plus the showcase archive the marketing tour decodes (`backup-fixture.bin` is
+/// drift-locked to the scenario set).
+fn every_fixture_preset() -> Vec<(String, serde_json::Value)> {
+    let scenario = fixtures()
+        .into_iter()
+        .map(|(idx, name, _, preset)| (format!("{name} ({idx})"), preset));
+    let showcase = archive_preset_rows("../e2e/fixtures/showcase/showcase-fixture.bin")
+        .into_iter()
+        .map(|(name, preset)| (format!("showcase {name}"), preset));
+    scenario.chain(showcase).collect()
+}
+
 /// **THE CAB RULE** (standing user directive, enforced structurally so it cannot
-/// silently regress): every guitar amp in every committed fixture is a combo, an
-/// amp+cab-merged model (a cab/IR-suffixed id), or a bare head with a cabinet
-/// block DOWNSTREAM IN ITS OWN LANE. No bare heads — including in the incident
-/// fixtures.
+/// silently regress): every guitar amp in every committed fixture is either an
+/// amp+cab-merged model (a combo or half-stack, a cab/IR-suffixed id) with NO cab
+/// block after it in its lane, or a bare head with a cabinet block DOWNSTREAM IN ITS
+/// OWN LANE. No bare heads and no doubled cabs — including in the incident fixtures.
 ///
 /// "Its own lane" is what makes this non-trivial: `E2E Hiwatt 3S` puts its head in
 /// the pre-split `G1` and a cab in EACH of the two `gtrParallel1` lanes (`G2`,
@@ -132,21 +145,34 @@ fn signal_paths(graph: &crate::ActiveGraph) -> Vec<Vec<crate::GraphNode>> {
 fn every_guitar_amp_in_every_fixture_reaches_a_cab() {
     let cabs = cab_model_ids();
     let mut amps_checked = 0usize;
-    for (idx, name, _, preset) in fixtures() {
+    for (name, preset) in every_fixture_preset() {
         let graph = crate::session::extract_active_graph(&preset, None);
         let paths = signal_paths(&graph);
         assert!(
             !paths.is_empty(),
-            "{name} ({idx}): the routing decoder produced no signal path — a \
+            "{name}: the routing decoder produced no signal path — a \
              template rename would otherwise make this gate pass vacuously"
         );
         for path in &paths {
+            let chain = path
+                .iter()
+                .map(|n| n.model.as_str())
+                .collect::<Vec<_>>()
+                .join(" → ");
             for (i, node) in path.iter().enumerate() {
                 if !crate::scene_jobs::is_amp_model_id(&node.model) {
                     continue;
                 }
                 amps_checked += 1;
                 if is_cab_merged_amp(&node.model) {
+                    assert!(
+                        !path[i + 1..].iter().any(|n| cabs.contains(&n.model)),
+                        "{name}: {} ({}) carries its own cab, yet a cab block follows it \
+                         in its lane [{}] — no cab after a combo or half-stack",
+                        node.node_id,
+                        node.model,
+                        chain
+                    );
                     continue;
                 }
                 // The cab must also be LIVE. A `bypassed: true` cabinet satisfies a
@@ -159,23 +185,42 @@ fn every_guitar_amp_in_every_fixture_reaches_a_cab() {
                     path[i + 1..]
                         .iter()
                         .any(|n| cabs.contains(&n.model) && !n.bypassed),
-                    "{name} ({idx}): amp {} ({}) has no UN-BYPASSED cabinet \
+                    "{name}: amp {} ({}) has no UN-BYPASSED cabinet \
                      downstream in its lane [{}] — every fixture amp must be a \
                      combo, a cab-merged model, or a head + a live cab block",
                     node.node_id,
                     node.model,
-                    path.iter()
-                        .map(|n| n.model.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" → ")
+                    chain
                 );
             }
         }
     }
     assert!(
-        amps_checked >= 6,
+        amps_checked >= 20,
         "expected every fixture's amps to be walked ({amps_checked} seen) — a \
          graph-decode change that emptied the node lists would pass vacuously"
+    );
+}
+
+/// **TWO CABS AT MOST** (standing user directive): no fixture preset holds more than
+/// two cabs/IRs/mics, weighed as the unit's `ComboHalfStackCabinetsLimit` weighs them
+/// (`blockcaps`: a cab, IR, combo or half-stack is one, its second cab or mic another).
+#[test]
+fn every_fixture_holds_at_most_two_cabinet_slots() {
+    let mut at_cap = 0usize;
+    for (name, preset) in every_fixture_preset() {
+        let weight =
+            crate::blockcaps::counts(&crate::blockcaps::roster_from_preset(&preset)).cabinet;
+        assert!(
+            weight <= crate::blockcaps::CABINET_CAP,
+            "{name}: {weight} cabs/IRs/mics — a preset holds two at most"
+        );
+        at_cap += usize::from(weight == crate::blockcaps::CABINET_CAP);
+    }
+    assert!(
+        at_cap > 0,
+        "no fixture sits at the two-cab cap — a roster decode that dropped the cabs \
+         would otherwise pass this gate vacuously"
     );
 }
 
@@ -1229,7 +1274,25 @@ fn e2e_fixtures_use_device_product_id_and_unique_preset_ids() {
     }
 }
 
-/// Same gate as above, applied to `backup-fixture.bin` — the OTHER committed
+/// Every `UserPresets` row of a committed device-backup archive fixture, as
+/// `(displayName, parsed presetJson)` through `backup_read`'s own archive decoder but
+/// without its typed rows, so callers see the raw JSON.
+fn archive_preset_rows(rel: &str) -> Vec<(String, serde_json::Value)> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    let blob = std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} — it is git-tracked, so absence means a moved/renamed fixture, and \
+             skipping would let callers pass vacuously",
+            path.display()
+        )
+    });
+    let rows = crate::backup_read::raw_user_preset_rows(&blob)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert!(!rows.is_empty(), "{}: no UserPresets rows", path.display());
+    rows
+}
+
+/// `e2e_fixtures_use_device_product_id_and_unique_preset_ids`, applied to `backup-fixture.bin` — the OTHER committed
 /// fixture the same defect class can hide in.
 ///
 /// `backup_read::tests::scenario_fixture_matches_scenario_presets_json` (the
@@ -1239,76 +1302,15 @@ fn e2e_fixtures_use_device_product_id_and_unique_preset_ids() {
 /// — that field never made it onto the struct — and even for `preset_id` an equality compare can't
 /// check the things this raw-bytes gate exists for: that every `preset_id` is non-empty and that
 /// no two presets in the fixture share one. This test reads the raw `presetJson`
-/// column directly (mirroring `backup_read::read_backup_archive`'s own
-/// LZ4-frame + tar + `sqlite3` decode) instead of going through
-/// `BackupPresetRow`, so `product_id` drift and `preset_id`
-/// uniqueness/non-emptiness are both actually checked.
+/// ([`archive_preset_rows`]) instead of going through `BackupPresetRow`, so
+/// `product_id` drift and `preset_id` uniqueness/non-emptiness are both actually checked.
 #[test]
 fn backup_fixture_uses_device_product_id_and_unique_preset_ids() {
-    use std::io::Read;
-
-    let path = std::path::Path::new("../e2e/fixtures/backup-fixture.bin");
-    assert!(
-        path.is_file(),
-        "{} is missing — it is git-tracked, so absence means a moved/renamed \
-         fixture or a wrong relative path, and skipping would pass this gate \
-         vacuously",
-        path.display()
-    );
-    let blob = std::fs::read(path).expect("read backup-fixture.bin");
-
-    let mut tar_bytes = Vec::new();
-    lz4_flex::frame::FrameDecoder::new(std::io::Cursor::new(&blob))
-        .read_to_end(&mut tar_bytes)
-        .expect("LZ4-frame decode");
-    let mut db_bytes = None;
-    let mut ar = tar::Archive::new(std::io::Cursor::new(&tar_bytes));
-    for entry in ar.entries().expect("tar entries") {
-        let mut e = entry.expect("tar entry");
-        let path = e
-            .path()
-            .expect("tar entry path")
-            .to_string_lossy()
-            .into_owned();
-        if path == "databaseBackup" || path.ends_with("normalDb.db3") {
-            let mut buf = Vec::new();
-            e.read_to_end(&mut buf).expect("tar extract db");
-            db_bytes = Some(buf);
-        }
-    }
-    let db_bytes = db_bytes.expect("databaseBackup entry present");
-
-    // Deleted on every exit (including a panic from an `expect` below), mirroring
-    // `backup_read::read_backup_archive`'s own `TempDb` guard — without it a
-    // failed assertion here leaks the extracted DB into the temp dir.
-    struct TempDb(std::path::PathBuf);
-    impl Drop for TempDb {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let db_path = std::env::temp_dir().join(format!(
-        "tmp-companion-fixture-gate-{}.db3",
-        std::process::id()
-    ));
-    std::fs::write(&db_path, &db_bytes).expect("write temp db");
-    let _guard = TempDb(db_path.clone());
-    let conn =
-        rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .expect("open fixture db");
-    let rows: Vec<(Option<String>, String)> = conn
-        .prepare("SELECT displayName, presetJson FROM UserPresets")
-        .expect("prepare")
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .expect("query")
-        .collect::<Result<_, _>>()
-        .expect("rows");
-    assert!(!rows.is_empty(), "no UserPresets rows found to check");
+    let rows = archive_preset_rows("../e2e/fixtures/backup-fixture.bin");
 
     let mut ids = Vec::new();
-    for (name, js) in &rows {
-        let name = name.clone().unwrap_or_else(|| "<unnamed>".to_string());
-        let p: serde_json::Value = serde_json::from_str(js).expect("presetJson parses");
+    for (name, p) in &rows {
+        let name = name.clone();
         let info = &p["info"];
 
         assert_eq!(

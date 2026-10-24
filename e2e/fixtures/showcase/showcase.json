@@ -1,5 +1,5 @@
 {
-  "_comment": "Curated, NON-personal demo library for the marketing screenshots. The ONLY hand-edited source. Run `bun run screenshots` (or `cargo test --features e2e build_showcase_fixture -- --ignored`) to regenerate showcase-fixture.bin from this. Block ids map the Claude Design handoff's abstract glyph codes to real Fender model ids verified present in src/models/blockArt.ts. Preset `slot` = device user slot (= list index + 1). `activeSlot` is the hero preset shown on the Level tab. DOCTOR TOUR: slots 5 (Scooped Verse), 12 (Tweed Warm), 168 (Direct Acoustic) are the three presets the Doctor showcase step checks — they MUST stay PLAIN (no `scenes`) so the run is 3 Base-only sounds. Their list indices 4/11/167 map to curated diagnoses in doctor::showcase_profile; Scooped Verse has the lowest slot so it sorts first (worst-first ties break by slot), and its 'lost' row is the one the tour expands to feature the add-a-compressor fix.",
+  "_comment": "Curated, NON-personal demo library for the marketing screenshots. The ONLY hand-edited source. Run `bun run screenshots` (or `cargo test build_showcase_fixture -- --ignored`) to regenerate showcase-fixture.bin from this. Block ids map the Claude Design handoff's abstract glyph codes to real Fender model ids verified present in src/models/blockArt.ts. Preset `slot` = device user slot (= list index + 1). `activeSlot` is the hero preset shown on the Level tab. DOCTOR TOUR: slots 5 (Scooped Verse), 12 (Tweed Warm), 168 (Direct Acoustic) are the three presets the Doctor showcase step checks — they MUST stay PLAIN (no `scenes`) so the run is 3 Base-only sounds. Their list indices 4/11/167 map to curated diagnoses in doctor::showcase_profile; Scooped Verse has the lowest slot so it sorts first (worst-first ties break by slot), and its 'lost' row is the one the tour expands to feature the add-a-compressor fix.",
   "firmware": "1.8.58",
   "activeSlot": 146,
   "presets": [
@@ -8,12 +8,7 @@
       "name": "Clean DI",
       "template": "gtrSeries",
       "groups": {
-        "G1": [
-          "ACD_DynaComp",
-          "ACD_DeluxeReverb65NoFx",
-          "ACD_CabSimTMS",
-          "ACD_TMSpring65"
-        ]
+        "G1": ["ACD_DynaComp", "ACD_DeluxeReverb65NoFxCabIR", "ACD_TMSpring65"]
       },
       "scenes": ["Clean", "Bright"]
     },
@@ -22,7 +17,7 @@
       "name": "Scooped Verse",
       "template": "gtrSeries",
       "groups": {
-        "G1": ["ACD_DeluxeReverb65NoFx", "ACD_CabSimTMS", "ACD_TMSmallHall"]
+        "G1": ["ACD_DeluxeReverb65NoFxCabIR", "ACD_TMSmallHall"]
       }
     },
     {
@@ -30,12 +25,7 @@
       "name": "Studio Clean",
       "template": "gtrSeries",
       "groups": {
-        "G1": [
-          "ACD_DynaComp",
-          "ACD_TwinReverb65NoFx",
-          "ACD_CabSimTMS",
-          "ACD_TMSmallHall"
-        ]
+        "G1": ["ACD_DynaComp", "ACD_TwinReverb65NoFxCabIR", "ACD_TMSmallHall"]
       },
       "scenes": ["Clean", "Sparkle"]
     },
@@ -58,12 +48,7 @@
       "name": "Tweed Warm",
       "template": "gtrSeries",
       "groups": {
-        "G1": [
-          "ACD_ChromeGate",
-          "ACD_TweedDeluxe",
-          "ACD_CabSimTMS",
-          "ACD_TMSpring65"
-        ]
+        "G1": ["ACD_ChromeGate", "ACD_TweedDeluxeCabIR", "ACD_TMSpring65"]
       }
     },
     {
@@ -71,7 +56,7 @@
       "name": "AC Top Boost",
       "template": "gtrSeries",
       "groups": {
-        "G1": ["ACD_ChromeGate", "ACD_AC30Brilliant", "ACD_CabSimTMS"]
+        "G1": ["ACD_ChromeGate", "ACD_AC30BrilliantCabIR"]
       },
       "scenes": ["Chime", "Cut"]
     },
@@ -82,8 +67,7 @@
       "groups": {
         "G1": [
           "ACD_ChromeGate",
-          "ACD_DeluxeReverb65NoFx",
-          "ACD_CabSimTMS",
+          "ACD_DeluxeReverb65NoFxCabIR",
           "ACD_TMSmallHall"
         ]
       },
@@ -109,7 +93,7 @@
       "template": "gtrParallel1",
       "groups": {
         "G1": ["ACD_ChromeGate"],
-        "G2": ["ACD_AC30Brilliant", "ACD_CabSimTMS"],
+        "G2": ["ACD_AC30BrilliantCabIR"],
         "G3": ["ACD_MarshallPlexi", "ACD_CabSimTMS"],
         "G4": ["ACD_TMSmallHall"]
       },
@@ -136,8 +120,8 @@
       "template": "gtrParallel2",
       "groups": {
         "G1": ["ACD_Boost"],
-        "G2": ["ACD_TweedDeluxe"],
-        "G3": ["ACD_PrincetonReverb65NoFx"],
+        "G2": ["ACD_TweedDeluxeCabIR"],
+        "G3": ["ACD_PrincetonReverb65NoFxCabIR"],
         "G4": ["ACD_SpaceEcho"],
         "G5": ["ACD_TMSmallHall"],
         "G6": ["ACD_EcFilter"],
@@ -152,8 +136,7 @@
       "groups": {
         "G1": [
           "ACD_ChromeGate",
-          "ACD_DeluxeReverb65NoFx",
-          "ACD_CabSimTMS",
+          "ACD_DeluxeReverb65NoFxCabIR",
           "ACD_ChorusCE2",
           "ACD_TMSmallHall"
         ]
@@ -167,8 +150,7 @@
       "groups": {
         "G1": [
           "ACD_ChromeGate",
-          "ACD_TwinReverb65NoFx",
-          "ACD_CabSimTMS",
+          "ACD_TwinReverb65NoFxCabIR",
           "ACD_SpaceEcho",
           "ACD_CloudReverb"
         ]
@@ -179,7 +161,9 @@
       "slot": 168,
       "name": "Direct Acoustic",
       "template": "gtrSeries",
-      "groups": { "G1": ["ACD_Acoustasonic", "ACD_TMSmallHall"] }
+      "groups": {
+        "G1": ["ACD_Acoustasonic", "ACD_CabSimTMS", "ACD_TMSmallHall"]
+      }
     }
   ],
   "songs": [

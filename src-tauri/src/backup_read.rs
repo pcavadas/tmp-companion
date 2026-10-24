@@ -384,6 +384,31 @@ fn run_sql(db: &TempDb, sql: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::Value::Array(rows))
 }
 
+/// Every `UserPresets` row of an archive as raw `(displayName, presetJson)`, parsed but
+/// untyped: the fixture gates need fields `BackupPresetRow` drops (`info.product_id`).
+#[cfg(test)]
+pub(crate) fn raw_user_preset_rows(
+    blob: &[u8],
+) -> Result<Vec<(String, serde_json::Value)>, String> {
+    let entries = extract_backup_entries(blob)?;
+    let rows = run_sql(
+        &entries.db,
+        "SELECT displayName, presetJson FROM UserPresets",
+    )?;
+    rows.as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| {
+            let name = r["displayName"].as_str().unwrap_or("<unnamed>").to_string();
+            let js = r["presetJson"]
+                .as_str()
+                .ok_or(format!("{name}: no presetJson"))?;
+            let preset = serde_json::from_str(js).map_err(|e| format!("{name}: {e}"))?;
+            Ok((name, preset))
+        })
+        .collect()
+}
+
 fn open_db(db: &TempDb) -> Result<rusqlite::Connection, String> {
     rusqlite::Connection::open_with_flags(
         &db.0,

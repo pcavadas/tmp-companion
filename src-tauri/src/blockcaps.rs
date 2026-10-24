@@ -68,6 +68,9 @@ impl std::fmt::Display for BlockCapError {
     }
 }
 
+/// `ComboHalfStackCabinetsLimit`: the most cabinet weight a preset may hold.
+pub(crate) const CABINET_CAP: i64 = 2;
+
 /// The membership sets (convolution, cabinet, cabinet exemptions, FX loops) and the
 /// Glooper and stereo/mono FX-loop ids, parsed once from
 /// `block-classification.json` (checked-in, RE-extracted — see the module docs).
@@ -383,7 +386,7 @@ pub fn check_op(
         } else {
             0
         };
-        if counts.cabinet + cand - gone > 2 {
+        if counts.cabinet + cand - gone > CABINET_CAP {
             return Err(BlockCapError::ComboHalfStackCabinetsLimit);
         }
     }
