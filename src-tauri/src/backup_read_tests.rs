@@ -657,18 +657,10 @@ fn backup_settings_bytes_none_without_settings_entry() {
     assert_eq!(result.settings_bytes, None);
 }
 
-/// GENERATOR (not a gate — `#[ignore]`): expand the curated, non-personal
-/// `e2e/fixtures/showcase/showcase.json` into a real device-backup archive
-/// (`showcase-fixture.bin`) the marketing-screenshot tour decodes through the SAME
-/// `read_backup_archive` path the app uses. Reuses the archive-building recipe of
-/// `backup_row_carries_routed_graph` / `backup_carries_song_preset_bindings`
-/// (sqlite → tar `databaseBackup` → LZ4-frame). Run with:
-///   `cargo test --features e2e build_showcase_fixture -- --ignored`
-/// (also chained by `bun run screenshots`). Committed output, regenerated only when
-/// `showcase.json` changes.
-#[test]
-#[ignore = "generator: writes showcase-fixture.bin from showcase.json"]
-fn build_showcase_fixture() {
+/// `showcase.json` → the SQL script the showcase archive is built from, plus the parsed
+/// spec. Shared by the (ignored) generator and the non-ignored drift lock below, so the
+/// two can never diverge on construction.
+fn showcase_fixture_sql() -> (String, serde_json::Value) {
     let src = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../e2e/fixtures/showcase/showcase.json"
@@ -766,6 +758,60 @@ fn build_showcase_fixture() {
             ));
         }
     }
+    (sql, spec)
+}
+
+/// DRIFT LOCK (non-ignored, runs in CI): the committed `showcase-fixture.bin` must stay
+/// in sync with `showcase.json`, the hand-edited source the fixture gates cannot see.
+/// Compares DECODED rows, as the scenario lock does. On failure: rerun
+/// `cargo test build_showcase_fixture -- --ignored` and commit the result.
+#[test]
+fn showcase_fixture_matches_showcase_json() {
+    let (sql, _) = showcase_fixture_sql();
+    let regenerated_bytes = build_backup_archive(&sql);
+    let committed_bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/showcase/showcase-fixture.bin"
+    ))
+    .expect("read committed showcase-fixture.bin");
+    let decode = |bytes: &[u8]| {
+        let r = read_backup_archive(bytes).expect("decode archive");
+        let db = super::extract_backup_entries(bytes)
+            .expect("extract archive")
+            .db;
+        let table = |sql: &str| super::run_sql(&db, sql).expect(sql);
+        // The typed rows the tour reads, plus the raw tables: each preset's JSON (parsed,
+        // so key order is canonical) covers fields `BackupPresetRow` drops, and the song
+        // tables are read raw because the typed song query needs columns this fixture's
+        // schema lacks.
+        serde_json::json!({
+            "presets": r.presets,
+            "user_presets": super::raw_user_preset_rows(bytes).expect("raw UserPresets rows"),
+            "songs": table("SELECT * FROM Songs ORDER BY id"),
+            "song_presets": table("SELECT * FROM SongPresets ORDER BY id"),
+        })
+    };
+    assert_eq!(
+        decode(&regenerated_bytes),
+        decode(&committed_bytes),
+        "showcase-fixture.bin is out of sync with showcase.json — rerun \
+         `cargo test build_showcase_fixture -- --ignored` and commit the regenerated fixture"
+    );
+}
+
+/// GENERATOR (not a gate — `#[ignore]`): expand the curated, non-personal
+/// `e2e/fixtures/showcase/showcase.json` into a real device-backup archive
+/// (`showcase-fixture.bin`) the marketing-screenshot tour decodes through the SAME
+/// `read_backup_archive` path the app uses. Reuses the archive-building recipe of
+/// `backup_row_carries_routed_graph` / `backup_carries_song_preset_bindings`
+/// (sqlite → tar `databaseBackup` → LZ4-frame). Run with:
+///   `cargo test build_showcase_fixture -- --ignored`
+/// (also chained by `bun run screenshots`). Committed output, regenerated only when
+/// `showcase.json` changes.
+#[test]
+#[ignore = "generator: writes showcase-fixture.bin from showcase.json"]
+fn build_showcase_fixture() {
+    let (sql, spec) = showcase_fixture_sql();
 
     // sqlite → tar `databaseBackup` → LZ4-frame, the exact device-backup shape.
     let archive = build_backup_archive(&sql);

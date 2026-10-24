@@ -18,8 +18,9 @@ The gate semantics (advisory while ffmpeg is absent, a real gate once it is pres
 
 ## The cab rule
 
-Every guitar amp in every fixture is a combo, an amp+cab merged model (a cab- or IR-suffixed id), or a bare head with a cabinet block downstream in its own lane.
+Every guitar amp in every fixture, the showcase archive included, is either an amp+cab merged model (a combo or half-stack, an id on the unit's cabinet list `cabinetSet`) with no cab block after it in its lane, or a bare head with a cabinet block downstream in its own lane.
 `fixture_gates::every_guitar_amp_in_every_fixture_reaches_a_cab` enforces it by walking every complete signal path the production routing decoder produces, so a head in the pre-split trunk with a cab in each parallel lane (404's shape) passes, and a head with a cab in a lane it never reaches does not.
+No fixture holds more than two cabs, IRs or mics, weighed as `blockcaps` weighs the unit's cabinet limit; `fixture_gates::every_fixture_holds_at_most_two_cabinet_slots` enforces it.
 How each fixture meets it is the cab-rule table in `COVERAGE.md`.
 
 ## Authoring constraints

@@ -93,7 +93,9 @@ else
       printf 'LEAK-GUARD: cannot read the staged copy of %s — refusing rather than skipping it\n' "$f" >&2
       exit 2
     fi
-    out="$(git show ":$f" | scan)"
+    # `grep -I` stops reading a binary at its first block, so `git show` of one bigger
+    # than a pipe buffer dies of SIGPIPE (141); under pipefail that alone would abort.
+    out="$( { git show ":$f" || [ $? -eq 141 ]; } | scan)"
     if [ -n "$out" ]; then report "$f (staged)" "$out"; fi
   done < <(git diff --cached --name-only -z --diff-filter=ACMRT)
 fi

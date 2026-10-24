@@ -64,10 +64,9 @@ pub(crate) fn amp_model_ids() -> &'static std::collections::HashSet<String> {
 /// Shared by `is_amp_model_id` (catalog amp classification) and
 /// `param_class::classify` (block-scoped parameter overrides) so the one
 /// suffix-collapse rule can't drift between the two call sites.
-/// Device FenderId cab/IR/convolution suffixes, in strip-priority order — shared by
-/// `resolve_base_id` (repeated strip-and-check) and `bakes_in_a_cab` (a single suffix
-/// scan). "CabIRConvRvb" is deliberately absent: it already ends in "ConvRvb", so it is
-/// unreachable in an `any(ends_with)` scan.
+/// Device FenderId cab/IR/convolution suffixes, in strip-priority order, for
+/// `resolve_base_id`'s repeated strip-and-check. "CabIRConvRvb" is deliberately absent:
+/// it strips as "ConvRvb", then "CabIR".
 const CAB_SUFFIXES: [&str; 5] = ["ConvRvb", "CabIR", "NoCab", "Cab", "IR"];
 
 pub(crate) fn resolve_base_id(model_id: &str, contains: impl Fn(&str) -> bool) -> Option<String> {
@@ -87,21 +86,6 @@ pub(crate) fn resolve_base_id(model_id: &str, contains: impl Fn(&str) -> bool) -
             }
         }
     }
-}
-
-/// Does this device FenderId carry its cabinet BAKED IN (a combo / amp+cab-merged
-/// model)? The device spells those with a cab/IR suffix on the bare amp id
-/// (`ACD_DeluxeReverb65BlondeVibratoNoFx` → `…NoFxCabIR`). `NoCab` is the explicit
-/// OPPOSITE and must never match, even though it ends in "Cab" — checked FIRST, before
-/// the shared suffix scan below. Used by `fixture_gates`' cab rule
-/// (`e2e::every_guitar_amp_in_every_fixture_reaches_a_cab`'s `is_cab_merged_amp`) — its
-/// only caller today, hence `#[cfg(test)]` (avoids a dead-code lint on a plain lib build).
-#[cfg(test)]
-pub(crate) fn bakes_in_a_cab(model_id: &str) -> bool {
-    if model_id.ends_with("NoCab") {
-        return false;
-    }
-    CAB_SUFFIXES.iter().any(|s| model_id.ends_with(s))
 }
 
 pub(crate) fn is_amp_model_id(model_id: &str) -> bool {

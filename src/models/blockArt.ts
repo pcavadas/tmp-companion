@@ -277,8 +277,12 @@ export function nodeTileArt(
   // stack branch below; only combo-vs-half_stack needs disambiguating, and the caller
   // resolves it (blockArt must not import catalog → no form lookup here).
   if (isCombo) return base;
-  const halfStack = ampCabHalfStack(base, cabSimId);
-  return halfStack ? { ...base, halfStack } : base;
+  // Not a combo: an amp filed under a combo row is its amp-only model, so it draws on
+  // the head chassis (the Catalog's "(Head)" row of the same id).
+  const head: BlockArtFields =
+    base.icon === "combo" ? { ...base, icon: "amp" } : base;
+  const halfStack = ampCabHalfStack(head, cabSimId);
+  return halfStack ? { ...head, halfStack } : head;
 }
 
 export const HALF_STACK_PAIR: Record<string, string> = HALF_STACK_DEFAULTS;

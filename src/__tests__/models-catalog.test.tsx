@@ -24,9 +24,23 @@ describe("isComboBid — combo-form discriminator (keeps combos off the half-sta
   it("is true for a combo amp id and false for a half-stack-only id", () => {
     // The blonde '65 Twin Reverb is catalogued combo (+ head); the '66 Flip Top is
     // half_stack-only. The two form sets are disjoint, so the discriminator is clean.
-    expect(isComboBid("ACD_TwinReverb65BlondeNoFx")).toBe(true);
+    expect(isComboBid("ACD_TwinReverb65BlondeNoFxCabIR")).toBe(true);
     expect(isComboBid("ACD_Ampeg66B15")).toBe(false);
     expect(isHalfStackBid("ACD_Ampeg66B15")).toBe(true);
+  });
+
+  it("is false for the amp-only id a combo row also names", () => {
+    // NON-REGRESSION: `ACD_TweedDeluxe` / `ACD_AC30Brilliant` carry no cab (the device
+    // does not count them as cabinets); only their `…CabIR` ids are combos. Treating the
+    // bare id as a combo drew a head plus its cab block as two speaker cabinets.
+    for (const amp of [
+      "ACD_TweedDeluxe",
+      "ACD_AC30Brilliant",
+      "ACD_TwinReverb65NoFx",
+    ]) {
+      expect(isComboBid(amp)).toBe(false);
+      expect(isComboBid(`${amp}CabIR`)).toBe(true);
+    }
   });
 
   it("resolves a suffixed device id the same way the tile art does", () => {
