@@ -16,7 +16,9 @@
 //! An edited node's live value passes when it equals the stored base value or the current
 //! scene's stored entry for that key. A scene entry other than `{bypass}`-only rebuilds the
 //! node from the entry alone, with block defaults (which the app does not know) for the keys
-//! it lacks (HW+RE, fw 1.8.58), so with such an entry those keys are not compared.
+//! it lacks (HW+RE, fw 1.8.58), so with such an entry those keys are not compared. An edit
+//! made on base is also read there, before the recall back, and each edited node's base
+//! values must match the stored base key by key.
 //! The other nodes' parameters are not compared.
 use std::collections::BTreeSet;
 
@@ -114,6 +116,8 @@ pub(crate) struct HeldEdit {
     pre: Value,
     targets: Vec<NodeRef>,
     scene: Option<u32>,
+    /// The working copy read on base after edits made there, before the recall back.
+    base: Option<Result<Value, String>>,
 }
 
 impl HeldEdit {
@@ -125,6 +129,7 @@ impl HeldEdit {
             pre,
             targets,
             scene,
+            base: None,
         })
     }
 
@@ -148,12 +153,14 @@ impl HeldEdit {
         recall(s, session::BASE_SCENE_SLOT)
     }
 
-    /// Recall the preset's scene again after the edits, so it keeps opening on it.
-    pub(crate) fn end_edits(&self, s: &mut Session) -> Result<(), String> {
-        match self.scene {
-            Some(n) => recall(s, n),
-            None => Ok(()),
-        }
+    /// Read the edits on base, then recall the preset's scene again, so it keeps opening on
+    /// it.
+    pub(crate) fn end_edits(&mut self, s: &mut Session) -> Result<(), String> {
+        let Some(n) = self.scene else {
+            return Ok(());
+        };
+        self.base = Some(read_live(s));
+        recall(s, n)
     }
 
     /// Rename-to-itself + save, then prove the stored copy against `live`, the working copy
@@ -181,8 +188,42 @@ impl HeldEdit {
                 "saved, but the save is not proven: the edited preset could not be read ({why})"
             )
         })?;
-        prove_saved(s, list_index, &self.pre, &live, &self.targets)
+        let stored = prove_saved(s, list_index, &self.pre, &live, &self.targets)?;
+        match &self.base {
+            None => Ok(()),
+            Some(Err(why)) => Err(format!(
+                "saved, but the save is not proven: the edit on the base scene could not be \
+                 read ({why})"
+            )),
+            Some(Ok(base)) => {
+                check_base(base, &stored, &edited_nodes(&self.pre, base, &self.targets))
+                    .map_err(|why| format!("saved, but the unit did not store the edit: {why}"))
+            }
+        }
     }
+}
+
+/// `Ok` when every `edited` node's parameters in `base`, the working copy read on base, are
+/// the stored base's, key by key.
+fn check_base(base: &Value, stored: &Value, edited: &BTreeSet<NodeRef>) -> Result<(), String> {
+    for node in edited {
+        let Some(base_params) = params(base, node) else {
+            continue;
+        };
+        let stored_params = params(stored, node);
+        for (key, value) in base_params {
+            let stored_value = stored_params.and_then(|p| p.get(key));
+            if stored_value != Some(value) {
+                return Err(format!(
+                    "the stored base {}/{} has {key} = {} where the edit made on base has {value}",
+                    node.0,
+                    node.1,
+                    stored_value.map_or_else(|| "nothing".to_string(), Value::to_string)
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `Err` when `live`, read after the recall back to the preset's scene, shows none of the
@@ -303,7 +344,7 @@ fn prove_saved(
     pre: &Value,
     live: &Value,
     replace_targets: &[NodeRef],
-) -> Result<(), String> {
+) -> Result<Value, String> {
     let unproven = |why: &str| format!("saved, but the save is not proven: {why}");
     let raw = s
         .read_slot_preset_json(list_index.into())
@@ -313,7 +354,8 @@ fn prove_saved(
         .filter(|v| v.get("audioGraph").is_some())
         .ok_or_else(|| unproven("the stored preset's read-back had no block chain"))?;
     check_stored(live, &stored, &edited_nodes(pre, live, replace_targets))
-        .map_err(|why| format!("saved, but the unit did not store the edit: {why}"))
+        .map_err(|why| format!("saved, but the unit did not store the edit: {why}"))?;
+    Ok(stored)
 }
 
 #[cfg(test)]
@@ -437,6 +479,18 @@ mod tests {
         stored["scenes"][0]["guitarNodes"]["G1"]["ACD_CabSimTMS"]["dspUnitParameters"]["level"] =
             json!(0.5);
         assert!(check_stored(&live, &stored, &edited).is_err());
+    }
+
+    /// A full scene entry hides the keys it lacks from the scene-view check, so an edit made
+    /// on base is checked again as read there: a base value the stored base lacks is an error.
+    #[test]
+    fn an_edit_made_on_base_is_checked_against_the_stored_base() {
+        let pre = doc(json!([cab("cab1", "ACD_Twin212", false)]));
+        let base = doc(json!([cab("cab1", "Diezel412FV", true)]));
+        let edited = edited_nodes(&pre, &base, &targets());
+        assert_eq!(check_base(&base, &base, &edited), Ok(()));
+        let err = check_base(&base, &pre, &edited).unwrap_err();
+        assert!(err.contains("stored base G1/cab1"), "{err}");
     }
 
     #[test]

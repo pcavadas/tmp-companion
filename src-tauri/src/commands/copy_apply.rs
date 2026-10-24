@@ -323,7 +323,7 @@ fn copy_apply_one(
             _ => None,
         })
         .collect();
-    let held = save_proof::HeldEdit::begin_read(s, replace_targets)?;
+    let mut held = save_proof::HeldEdit::begin_read(s, replace_targets)?;
     held.step_out(s, scene_discard)?;
 
     // Apply each op in order. An unconfirmed FIRST edit with no presetError is read back

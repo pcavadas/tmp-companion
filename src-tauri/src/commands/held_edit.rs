@@ -69,7 +69,7 @@ pub(crate) fn held_replace_one(
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
     // The pre-edit document `save_proof` reads is this same buffer, so the identity check
     // below sends nothing before it.
-    let held = save_proof::HeldEdit::begin_read(s, plan.targets.clone())?;
+    let mut held = save_proof::HeldEdit::begin_read(s, plan.targets.clone())?;
     // SAFETY 1b — the loaded preset is the one discovery planned against.
     if let Err(detail) = confirm_plan_identity(s, plan) {
         return Ok(error_item(list_index, name, detail));
