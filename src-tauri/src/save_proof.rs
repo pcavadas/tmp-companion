@@ -13,8 +13,10 @@
 //! - the `dspUnitParameters` of every EDITED node (a node id the pre-edit preset lacked, or a
 //!   replace target still present), key by key from the live node.
 //!
-//! An edited node's stored value passes when it matches either the stored base or the stored
-//! current scene's overlay of it, since the working copy can show either with a scene current.
+//! An edited node's live value passes when it equals the stored base value or the current
+//! scene's stored entry for that key. A scene entry other than `{bypass}`-only rebuilds the
+//! node from the entry alone, with block defaults (which the app does not know) for the keys
+//! it lacks (HW+RE, fw 1.8.58), so with such an entry those keys are not compared.
 //! The other nodes' parameters are not compared.
 use std::collections::BTreeSet;
 
@@ -232,16 +234,19 @@ pub(crate) fn check_stored(
             describe(&want)
         ));
     }
-    let scene_view = stored_scene_view(live, stored);
     for node in edited {
         let Some(live_params) = params(live, node) else {
             continue;
         };
-        let stored_params = params(stored, node);
-        let scene_params = scene_view.as_ref().and_then(|v| params(v, node));
+        let base = params(stored, node);
+        let entry = scene_entry(live, stored, node);
+        let rebuilt = entry.is_some_and(|e| e.keys().any(|k| k != "bypass"));
         for (key, value) in live_params {
-            let stored_value = stored_params.and_then(|p| p.get(key));
-            let scene_value = scene_params.and_then(|p| p.get(key));
+            let scene_value = entry.and_then(|e| e.get(key));
+            let stored_value = base.and_then(|p| p.get(key));
+            if rebuilt && scene_value.is_none() {
+                continue;
+            }
             if stored_value != Some(value) && scene_value != Some(value) {
                 return Err(format!(
                     "the stored {}/{} has {key} = {} where the edited preset has {value}",
@@ -255,14 +260,20 @@ pub(crate) fn check_stored(
     Ok(())
 }
 
-/// `stored` with the live preset's current scene overlaid on its block chain, the values the
-/// working copy shows on that scene; `None` on base or when the stored copy lacks the scene.
-fn stored_scene_view(live: &Value, stored: &Value) -> Option<Value> {
+/// The stored copy's entry for `node` in the live preset's current scene; `None` on base or
+/// when that scene has no entry for it.
+fn scene_entry<'a>(
+    live: &Value,
+    stored: &'a Value,
+    (group, id): &NodeRef,
+) -> Option<&'a serde_json::Map<String, Value>> {
     let scene = usize::try_from(live.get("lastLoadedScene")?.as_u64()?).ok()?;
-    let overlay = stored.get("scenes")?.as_array()?.get(scene)?;
-    let mut view = stored.clone();
-    crate::scene_jobs::overlay_scene_onto_graph(view.get_mut("audioGraph")?, overlay);
-    Some(view)
+    let scene = stored.get("scenes")?.as_array()?.get(scene)?;
+    audiograph::GRAPHS
+        .iter()
+        .find_map(|graph| scene.get(*graph)?.get(group)?.get(id))?
+        .get("dspUnitParameters")?
+        .as_object()
 }
 
 fn describe(roster: &[(String, Vec<(String, String)>)]) -> String {
@@ -385,8 +396,8 @@ mod tests {
         );
     }
 
-    /// An edited node showing its current scene's value matches the stored scene overlay,
-    /// not the stored base; a value neither holds is still a mismatch.
+    /// A `{bypass}`-only scene entry merges onto the stored base: an edited node showing the
+    /// entry's value matches it, and a value the entry does not hold is a mismatch.
     #[test]
     fn an_edited_node_showing_its_scene_value_matches_the_stored_overlay() {
         let pre = doc(json!([amp(1.0), cab("cab1", "ACD_Twin212", false)]));
@@ -406,6 +417,28 @@ mod tests {
 
     /// Under DISCARD CHANGES the recall back to the scene reverts the base edit, so the
     /// working copy equals the pre-edit one and the stored copy would "prove" the revert.
+    /// A full scene entry rebuilds the node: a key it lacks plays the block default, which the
+    /// stored copy does not show, so it is not compared; a key it holds must match.
+    #[test]
+    fn a_full_scene_entry_is_compared_only_on_its_own_keys() {
+        let pre = doc(json!([amp(1.0), cab("cab1", "ACD_Twin212", false)]));
+        let mut live = doc(json!([amp(1.0), cab("ACD_CabSimTMS", "Diezel412FV", true)]));
+        live["lastLoadedScene"] = json!(0);
+        let node = &mut live["audioGraph"]["guitarNodes"]["G1"][1]["dspUnitParameters"];
+        node["bypass"] = json!(true);
+        node["level"] = json!(0.25);
+        let mut stored = doc(json!([amp(1.0), cab("ACD_CabSimTMS", "Diezel412FV", true)]));
+        stored["audioGraph"]["guitarNodes"]["G1"][1]["dspUnitParameters"]["level"] = json!(0.8);
+        stored["lastLoadedScene"] = json!(0);
+        stored["scenes"] = json!([{"guitarNodes": {"G1": {"ACD_CabSimTMS": {
+            "dspUnitParameters": {"bypass": true, "cabsimid": "Diezel412FV"}}}}}]);
+        let edited = edited_nodes(&pre, &live, &targets());
+        assert_eq!(check_stored(&live, &stored, &edited), Ok(()));
+        stored["scenes"][0]["guitarNodes"]["G1"]["ACD_CabSimTMS"]["dspUnitParameters"]["level"] =
+            json!(0.5);
+        assert!(check_stored(&live, &stored, &edited).is_err());
+    }
+
     #[test]
     fn a_base_edit_the_scene_recall_dropped_is_refused() {
         let pre = doc(json!([amp(1.0), cab("cab1", "ACD_Twin212", false)]));
