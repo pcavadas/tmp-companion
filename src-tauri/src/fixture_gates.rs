@@ -63,11 +63,11 @@ fn cab_model_ids() -> std::collections::HashSet<String> {
     ids
 }
 
-/// Does this device FenderId carry its cabinet BAKED IN? Delegates to
-/// `scene_jobs::bakes_in_a_cab` so the cab-merged suffix rule can't drift between
-/// the production classifier and this gate.
+/// Does this device amp id carry its cabinet BAKED IN (a combo or half-stack)? Read from
+/// the unit's own cabinet list (`blockcaps::is_cabinet`), the set the two-cab gate weighs
+/// and the strip art (`isComboBid`) reads, so the three never disagree.
 fn is_cab_merged_amp(model_id: &str) -> bool {
-    crate::scene_jobs::bakes_in_a_cab(model_id)
+    crate::blockcaps::is_cabinet(model_id)
 }
 
 /// Fork every path in `paths` into two, extending one copy with `a_blocks` and the
@@ -133,7 +133,7 @@ fn every_fixture_preset() -> Vec<(String, serde_json::Value)> {
 
 /// **THE CAB RULE** (standing user directive, enforced structurally so it cannot
 /// silently regress): every guitar amp in every committed fixture is either an
-/// amp+cab-merged model (a combo or half-stack, a cab/IR-suffixed id) with NO cab
+/// amp+cab-merged model (a combo or half-stack, on the unit's cabinet list) with NO cab
 /// block after it in its lane, or a bare head with a cabinet block DOWNSTREAM IN ITS
 /// OWN LANE. No bare heads and no doubled cabs — including in the incident fixtures.
 ///

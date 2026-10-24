@@ -71,6 +71,13 @@ impl std::fmt::Display for BlockCapError {
 /// `ComboHalfStackCabinetsLimit`: the most cabinet weight a preset may hold.
 pub(crate) const CABINET_CAP: i64 = 2;
 
+/// Whether the unit counts `id` as a cabinet (`cabinetSet`): a cab, an IR, or an amp that
+/// carries its own cab (a combo or half-stack). Only the fixture gates ask today.
+#[cfg(test)]
+pub(crate) fn is_cabinet(id: &str) -> bool {
+    sets().cabinet.contains(id)
+}
+
 /// The membership sets (convolution, cabinet, cabinet exemptions, FX loops) and the
 /// Glooper and stereo/mono FX-loop ids, parsed once from
 /// `block-classification.json` (checked-in, RE-extracted — see the module docs).
