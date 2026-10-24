@@ -118,6 +118,8 @@ pub(crate) fn held_replace_one(
         if let Err(why) = held.save(s, list_index, &name, live) {
             return Ok(error_item(list_index, name, why));
         }
+    } else if let Err(why) = held.check_kept(s) {
+        return Ok(error_item(list_index, name, why));
     }
     // Keep live-controller status before the next preset (no long quiet gap).
     s.heartbeat()?;
@@ -239,11 +241,9 @@ mod plan_identity_tests {
         assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
     }
 
-    /// A replace of a block another scene has no entry for is made on base and the
-    /// preset's scene recalled before the save, so the save stores it (HW).
-    #[test]
-    fn a_replace_of_a_block_missing_a_scene_entry_steps_through_base() {
-        let doc = format!(
+    /// A 2-scene preset opened on scene 1 whose scene 0 has no entry for `n2`.
+    fn gap_doc() -> String {
+        format!(
             r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[
                 {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false}}}},
                 {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
@@ -254,7 +254,14 @@ mod plan_identity_tests {
                     "n2":{{"dspUnitParameters":{{"bypass":false}}}}}}}}}}
             ],"zzTail":"{pad}"}}"#,
             pad = "x".repeat(120)
-        );
+        )
+    }
+
+    /// A replace of a block another scene has no entry for is made on base and the
+    /// preset's scene recalled before the save, so the save stores it (HW).
+    #[test]
+    fn a_replace_of_a_block_missing_a_scene_entry_steps_through_base() {
+        let doc = gap_doc();
         let sim = SimDevice::new()
             .with_preset_json(&doc)
             .with_saved_scene(5, Some(1));
@@ -269,6 +276,34 @@ mod plan_identity_tests {
         assert!(replace < at(&SimEvent::LoadScene(1)), "{ev:?}");
         assert!(
             at(&SimEvent::LoadScene(1)) < at(&SimEvent::Saved(5)),
+            "{ev:?}"
+        );
+    }
+
+    /// A dry run that steps through base still reads the working copy after the recall back,
+    /// so a base edit DISCARD CHANGES dropped is never reported as updated.
+    #[test]
+    fn a_dry_run_through_base_checks_the_edit_survived_the_recall() {
+        let sim = SimDevice::new()
+            .with_preset_json(&gap_doc())
+            .with_saved_scene(5, Some(1));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let repl = ReplArg::Model {
+            fender_id: "ACD_DeluxeReverb65".into(),
+        };
+        let item = held_replace_one(&mut s, &plan(Some("pid-planned")), &repl, false).unwrap();
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
+        let ev = sim.events();
+        let recall = ev
+            .iter()
+            .rposition(|e| e == &SimEvent::LoadScene(1))
+            .expect("the scene was recalled");
+        assert!(
+            ev[recall..].contains(&SimEvent::WorkingCopyRead),
+            "no read after the recall: {ev:?}"
+        );
+        assert!(
+            !ev.iter().any(|e| matches!(e, SimEvent::Saved(_))),
             "{ev:?}"
         );
     }

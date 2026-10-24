@@ -163,6 +163,15 @@ impl HeldEdit {
         recall(s, n)
     }
 
+    /// For a run that does not save: `Err` when an edit made on base is gone after the recall
+    /// back, as [`HeldEdit::save`] refuses it.
+    pub(crate) fn check_kept(&self, s: &mut Session) -> Result<(), String> {
+        if self.scene.is_none() {
+            return Ok(());
+        }
+        recall_kept_edit(&self.pre, &read_live(s)?, &self.targets)
+    }
+
     /// Rename-to-itself + save, then prove the stored copy against `live`, the working copy
     /// read before the save. A save the stored copy does not show, or one that cannot be
     /// proven, is an `Err`; so is an edit made on base that the scene recall dropped (DISCARD
