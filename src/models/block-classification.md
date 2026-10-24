@@ -33,15 +33,16 @@ Never normalize, strip a suffix or append `NoFx` before a lookup: the suffix is 
 - `ACD_TMSuperReverbVibratoCabIRConRvb` carries a typo (`ConRvb`, not `ConvRvb`), so a `/ConvRvb$/` regex misses it [RE].
 - `cabinetSet` is the product profile's `combos`, `halfstacks`, `bassAmps` and `cabinets` categories plus two client overrides, `ACD_CabSimTMS` (cabinets) and `ACD_UserIRTMS` (IR) [RE].
 - The 62 standalone cab models carry an empty `acdCategory`, so an `acdCategory` predictor misses them [RE].
-- `cabinetSet` also keeps 7 amp+cab server units the profile does not list (`ACD_BloomfieldDriveCabIR`, `ACD_DeluxeReverb65NormalCabIR`, `ACD_HypersonicAmp6L6{Blue,Green,Red}HalfCabIR`, `ACD_TMSuperReverbNormalCabIR`, `ACD_TwinReverb65NormalCabIR`) [RE].
-- The client cannot classify those 7 [RE]; each models a cab, so the companion counts them as the fail-closed choice.
+- `cabinetSet` also keeps 13 server units the profile does not list: 7 amp+cab (`ACD_BloomfieldDriveCabIR`, `ACD_DeluxeReverb65NormalCabIR`, `ACD_HypersonicAmp6L6{Blue,Green,Red}HalfCabIR`, `ACD_TMSuperReverbNormalCabIR`, `ACD_TwinReverb65NormalCabIR`) [RE] and 6 standalone cabs (`ACD_Evh5150iii_412st`, `ACD_FenBluesJrLTD_JensenSpecial`, `ACD_FenSuperSonic100_412SLST_v30`, `ACD_Kasino_CTS_137_7014`, `ACD_Peavey5150_4x12_Sheffield_1200`, `ACD_TwoRock2x12Vertical`) [RE].
+- The client cannot classify those 13 [RE]; each models a cab, so the companion counts them as the fail-closed choice.
+  The catalog keeps the 6 standalone cabs unavailable, since the unit does not offer them.
 
 ## Regen recipe (next firmware bump)
 
 1. Convolution: read the literal inserts of the client function that builds the `NodeSelectionRestrictions` convolution set (the one referencing `ACD_TMSpring63Conv`).
-2. Cabinets: take every id in the product profile's `combos`, `halfstacks`, `bassAmps` and `cabinets` categories (the `product_profile.json` the server serves), add `ACD_CabSimTMS` and `ACD_UserIRTMS`, drop the client's exemption list (`ACD_ExternalCab`), and keep any amp+cab server unit the profile omits.
+2. Cabinets: take every id in the product profile's `combos`, `halfstacks`, `bassAmps` and `cabinets` categories (the `product_profile.json` the server serves), add `ACD_CabSimTMS` and `ACD_UserIRTMS`, drop the client's exemption list (`ACD_ExternalCab`), and keep any amp+cab or standalone cab server unit the profile omits.
 3. Re-check the cabinet weight: the `+1` reads `cabsim2enabled` from the node's cab-2 sub-object.
 4. Glooper and FX loops: read the single `ACD_Glooper` compare and the FX-loop compatibility table.
 5. Check every id against the `tm-stomp-server` unit set (548 units on fw 1.8.58) to catch transcription errors; `ACD_FxLoop3`, `ACD_FxLoop4` and `ACD_FxLoop3_4` are profile markers, not DSP units.
 
-Sets recorded for fw 1.8.58: 20 convolution, 133 cabinet (126 the client counts plus the 7 above), 1 exemption, 1 glooper, 5 FX loops [RE].
+Sets recorded for fw 1.8.58: 20 convolution, 139 cabinet (126 the client counts plus the 13 above), 1 exemption, 1 glooper, 5 FX loops [RE].

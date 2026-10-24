@@ -99,6 +99,7 @@ describe("device budget rule (fw 1.8.58)", () => {
   it("charges an uncosted id 20 and uses the 1.8.58 costs", () => {
     expect(chargedCpu("ACD_NotARealBlock")).toBe(20);
     expect(chargedCpu("ACD_LoFi")).toBe(9.5);
-    expect(chargedCpu("ACD_British212AlnicoBlue")).toBe(20);
+    // A real 1.8.58 server cab with no utilization entry.
+    expect(chargedCpu("ACD_TwoRock2x12Vertical")).toBe(20);
   });
 });

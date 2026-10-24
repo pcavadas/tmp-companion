@@ -11,6 +11,7 @@ import {
   checkOp,
   classify,
 } from "../views/copy/validateBlockEdit";
+import { CAB_CATEGORY } from "../models/blockArtCatalog/cabGuitar";
 
 // Real ids used across the cases below.
 const CAB_1 = "ACD_AC30BrilliantCabIR"; // cabinet only
@@ -345,5 +346,14 @@ describe("fw 1.8.58 cabinet and convolution caps", () => {
     expect(checkOp(princeton, CONV_STANDALONE, "after")).toBe(
       "ConvolutionReverbLimit",
     );
+  });
+});
+
+describe("cabinet classification", () => {
+  it("counts every catalogued cabinet, available or not", () => {
+    const missing = CAB_CATEGORY.blocks
+      .map(([id]) => id)
+      .filter((id) => !classify(id).cabinet);
+    expect(missing).toEqual([]);
   });
 });
