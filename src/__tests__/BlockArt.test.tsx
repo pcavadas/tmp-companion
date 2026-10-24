@@ -391,14 +391,18 @@ describe("ampCabHalfStack / nodeTileArt — device-driven half-stack", () => {
     // so on `cabsimid` alone it would wrongly stack (head-over-cab). The isCombo flag
     // is what renders it as the single combo tile instead. Drives the reported bug.
     const cab = "G1265Creamback";
-    expect(
-      nodeTileArt("ACD_TwinReverb65BlondeNoFx", cab, false).halfStack,
-    ).toBeDefined(); // cabsimid alone (no isCombo) still stacks
-    expect(
-      nodeTileArt("ACD_TwinReverb65BlondeNoFx", cab, true).halfStack,
-    ).toBeUndefined(); // isCombo → single combo tile, no synthesized cab
+    const amp = "ACD_TwinReverb65BlondeNoFxCabIR";
+    expect(nodeTileArt(amp, cab, false).halfStack).toBeDefined(); // cabsimid alone still stacks
+    expect(nodeTileArt(amp, cab, true).halfStack).toBeUndefined(); // isCombo → single combo tile
     // and the combo tile is still the amp's own art (icon resolves to a combo chassis)
-    expect(nodeTileArt("ACD_TwinReverb65BlondeNoFx", cab, true).icon).toBe(
+    expect(nodeTileArt(amp, cab, true).icon).toBe("combo");
+  });
+
+  it("an amp-only model a combo row names draws as a head", () => {
+    // NON-REGRESSION: `ACD_TweedDeluxe` (no cab; its combo is `ACD_TweedDeluxeCabIR`)
+    // drew the combo chassis, so a head + its Cab Sim read as two speaker cabinets.
+    expect(nodeTileArt("ACD_TweedDeluxe", undefined, false).icon).toBe("amp");
+    expect(nodeTileArt("ACD_TweedDeluxeCabIR", undefined, true).icon).toBe(
       "combo",
     );
   });

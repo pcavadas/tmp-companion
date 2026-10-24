@@ -20,6 +20,10 @@ import { cpuForBid } from "./cpu";
 // The id-suffix rule lives in the zero-import `deviceId` leaf (shared with cpu and
 // blockArt), so catalog never reaches the block-art tables.
 import { resolveDeviceId } from "./deviceId";
+// The fw 1.8.58 client's cabinet set: every device id that carries a cab (`isComboBid`).
+import blockClassification from "./block-classification.json";
+
+const CABINET_SET = new Set<string>(blockClassification.cabinetSet);
 
 export type Channels = "mono" | "stereo";
 export type Form =
@@ -274,15 +278,17 @@ export function isHalfStackBid(bid: string | null | undefined): boolean {
   return bid != null && (FORMS_BY_BID.get(bid)?.has("half_stack") ?? false);
 }
 
-/** Whether a device model id resolves to a COMBO form (a built-in speaker). A combo
- *  node carries a `cab_sim_id` (its modeled speaker) just like a half-stack head with
- *  a baked cab, so the signal-strip uses this to keep a combo as a single combo tile
- *  instead of a synthesized head-over-cab stack. Resolved through the SAME
- *  suffix-stripping the tile art uses (`resolveDeviceId`) so the form-test and the art
- *  never disagree on the id. `combo` and `half_stack` are disjoint per id, so a true
+/** Whether a device model id is a COMBO: a combo-form amp whose id carries its cab,
+ *  i.e. the device counts it as a cabinet (`cabinetSet`, `ACD_TweedDeluxeCabIR`). The
+ *  bare id the catalog also files as a combo (`ACD_TweedDeluxe`) is the amp-only model,
+ *  so it is not one and its tile draws as a head. A combo node carries a `cab_sim_id`
+ *  (its modeled speaker) just like a half-stack head with a baked cab, so the strip uses
+ *  this to keep a combo as a single combo tile instead of a head-over-cab stack. The
+ *  form resolves through the SAME suffix-stripping the tile art uses
+ *  (`resolveDeviceId`); `combo` and `half_stack` are disjoint per id, so a true
  *  half-stack never matches. */
 export function isComboBid(bid: string | null | undefined): boolean {
-  if (bid == null) return false;
+  if (bid == null || !CABINET_SET.has(bid)) return false;
   const id = resolveDeviceId(bid, (m) => FORMS_BY_BID.has(m));
   return FORMS_BY_BID.get(id)?.has("combo") ?? false;
 }

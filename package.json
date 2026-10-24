@@ -16,7 +16,7 @@
     "lint": "eslint src/ e2e/ --max-warnings 0",
     "lint:fix": "eslint src/ e2e/ --fix --max-warnings 0",
     "typecheck": "tsc --noEmit",
-    "screenshots": "cargo test --manifest-path src-tauri/Cargo.toml --features e2e --lib build_showcase_fixture -- --ignored && playwright test -c e2e/showcase/playwright.showcase.config.ts",
+    "screenshots": "cargo test --manifest-path src-tauri/Cargo.toml --lib build_showcase_fixture -- --ignored && playwright test -c e2e/showcase/playwright.showcase.config.ts",
     "format": "prettier --write 'src/**/*.{ts,tsx}' 'e2e/**/*.ts' '*.config.{js,ts}' .prettierrc index.html",
     "format:check": "prettier --check 'src/**/*.{ts,tsx}' 'e2e/**/*.ts' '*.config.{js,ts}' .prettierrc index.html",
     "leak-guard": "bash scripts/leak-guard.sh --all",

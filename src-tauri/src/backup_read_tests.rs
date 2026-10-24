@@ -657,18 +657,10 @@ fn backup_settings_bytes_none_without_settings_entry() {
     assert_eq!(result.settings_bytes, None);
 }
 
-/// GENERATOR (not a gate — `#[ignore]`): expand the curated, non-personal
-/// `e2e/fixtures/showcase/showcase.json` into a real device-backup archive
-/// (`showcase-fixture.bin`) the marketing-screenshot tour decodes through the SAME
-/// `read_backup_archive` path the app uses. Reuses the archive-building recipe of
-/// `backup_row_carries_routed_graph` / `backup_carries_song_preset_bindings`
-/// (sqlite → tar `databaseBackup` → LZ4-frame). Run with:
-///   `cargo test --features e2e build_showcase_fixture -- --ignored`
-/// (also chained by `bun run screenshots`). Committed output, regenerated only when
-/// `showcase.json` changes.
-#[test]
-#[ignore = "generator: writes showcase-fixture.bin from showcase.json"]
-fn build_showcase_fixture() {
+/// `showcase.json` → the SQL script the showcase archive is built from, plus the parsed
+/// spec. Shared by the (ignored) generator and the non-ignored drift lock below, so the
+/// two can never diverge on construction.
+fn showcase_fixture_sql() -> (String, serde_json::Value) {
     let src = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../e2e/fixtures/showcase/showcase.json"
@@ -766,6 +758,47 @@ fn build_showcase_fixture() {
             ));
         }
     }
+    (sql, spec)
+}
+
+/// DRIFT LOCK (non-ignored, runs in CI): the committed `showcase-fixture.bin` must stay
+/// in sync with `showcase.json`, the hand-edited source the fixture gates cannot see.
+/// Compares DECODED rows, as the scenario lock does. On failure: rerun
+/// `cargo test build_showcase_fixture -- --ignored` and commit the result.
+#[test]
+fn showcase_fixture_matches_showcase_json() {
+    let (sql, _) = showcase_fixture_sql();
+    let regenerated =
+        read_backup_archive(&build_backup_archive(&sql)).expect("decode regenerated archive");
+    let committed = read_backup_archive(
+        &std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../e2e/fixtures/showcase/showcase-fixture.bin"
+        ))
+        .expect("read committed showcase-fixture.bin"),
+    )
+    .expect("decode committed fixture");
+    assert_eq!(
+        serde_json::to_value(&regenerated.presets).expect("serialize regenerated"),
+        serde_json::to_value(&committed.presets).expect("serialize committed"),
+        "showcase-fixture.bin is out of sync with showcase.json — rerun \
+         `cargo test build_showcase_fixture -- --ignored` and commit the regenerated fixture"
+    );
+}
+
+/// GENERATOR (not a gate — `#[ignore]`): expand the curated, non-personal
+/// `e2e/fixtures/showcase/showcase.json` into a real device-backup archive
+/// (`showcase-fixture.bin`) the marketing-screenshot tour decodes through the SAME
+/// `read_backup_archive` path the app uses. Reuses the archive-building recipe of
+/// `backup_row_carries_routed_graph` / `backup_carries_song_preset_bindings`
+/// (sqlite → tar `databaseBackup` → LZ4-frame). Run with:
+///   `cargo test build_showcase_fixture -- --ignored`
+/// (also chained by `bun run screenshots`). Committed output, regenerated only when
+/// `showcase.json` changes.
+#[test]
+#[ignore = "generator: writes showcase-fixture.bin from showcase.json"]
+fn build_showcase_fixture() {
+    let (sql, spec) = showcase_fixture_sql();
 
     // sqlite → tar `databaseBackup` → LZ4-frame, the exact device-backup shape.
     let archive = build_backup_archive(&sql);

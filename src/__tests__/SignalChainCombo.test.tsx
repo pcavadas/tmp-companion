@@ -83,12 +83,24 @@ describe("signal-chain strip — combo amps render as a single combo tile", () =
     renderWithTheme(
       <ActiveSignalChainView
         graph={heroGraph(
-          ampNode("ACD_TwinReverb65BlondeNoFx", "G1265Creamback"),
+          ampNode("ACD_TwinReverb65BlondeNoFxCabIR", "G1265Creamback"),
         )}
       />,
     );
     expect(halfStackProps).toHaveLength(0); // no synthesized head-over-cab
     expect(blockArtProps.some((p) => p.icon === "combo")).toBe(true);
+  });
+
+  it("hero strip: an amp-only model a combo row names → head tile, not a combo", () => {
+    // NON-REGRESSION: `ACD_TweedDeluxe` carries no cab, so with its Cab Sim the strip
+    // drew two speaker cabinets; only `ACD_TweedDeluxeCabIR` is the combo.
+    renderWithTheme(
+      <ActiveSignalChainView
+        graph={heroGraph(ampNode("ACD_TweedDeluxe", ""))}
+      />,
+    );
+    expect(blockArtProps.map((p) => p.icon)).toContain("amp");
+    expect(blockArtProps.some((p) => p.icon === "combo")).toBe(false);
   });
 
   it("hero strip: a true half-stack (head + baked cab) STILL stacks (no regression)", () => {
@@ -105,7 +117,7 @@ describe("signal-chain strip — combo amps render as a single combo tile", () =
   it("Copy strip: a COMBO amp with a cabsimid → BlockArt combo tile, NOT a half-stack", () => {
     renderWithTheme(
       <CopyPath
-        graph={copyGraph("ACD_TwinReverb65BlondeNoFx", "G1265Creamback")}
+        graph={copyGraph("ACD_TwinReverb65BlondeNoFxCabIR", "G1265Creamback")}
       />,
     );
     expect(halfStackProps).toHaveLength(0);
