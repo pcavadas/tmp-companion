@@ -74,8 +74,8 @@ pub(crate) fn held_replace_one(
     if let Err(detail) = confirm_plan_identity(s, plan) {
         return Ok(error_item(list_index, name, detail));
     }
-    // No settings snapshot on this path to refuse DISCARD CHANGES by; the stored-copy proof
-    // reports a base edit the recall back dropped.
+    // No settings snapshot on this path to refuse DISCARD CHANGES by; `HeldEdit::save`
+    // refuses a base edit the recall back dropped.
     held.step_out(s, false)?;
 
     // SAFETY 2 — only persist if EVERY replace is confirmed (nodeReplaced/40).

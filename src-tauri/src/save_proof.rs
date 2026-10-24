@@ -156,7 +156,8 @@ impl HeldEdit {
 
     /// Rename-to-itself + save, then prove the stored copy against `live`, the working copy
     /// read before the save. A save the stored copy does not show, or one that cannot be
-    /// proven, is an `Err`.
+    /// proven, is an `Err`; so is an edit made on base that the scene recall dropped (DISCARD
+    /// CHANGES, whose setting a probe run cannot read), refused before anything is saved.
     pub(crate) fn save(
         &self,
         s: &mut Session,
@@ -164,6 +165,9 @@ impl HeldEdit {
         name: &str,
         live: Result<Value, String>,
     ) -> Result<(), String> {
+        if let (Some(_), Ok(live)) = (self.scene, &live) {
+            recall_kept_edit(&self.pre, live, &self.targets)?;
+        }
         // Identity-preserving persist (Pro Control's rename(current name) → save(slot)):
         // keeps the preset's name and song link.
         if !name.is_empty() {
@@ -177,6 +181,22 @@ impl HeldEdit {
         })?;
         prove_saved(s, list_index, &self.pre, &live, &self.targets)
     }
+}
+
+/// `Err` when `live`, read after the recall back to the preset's scene, shows none of the
+/// edit made on base: the same roster as `pre` and the same parameters on every edited node.
+fn recall_kept_edit(pre: &Value, live: &Value, targets: &[NodeRef]) -> Result<(), String> {
+    let same_params = edited_nodes(pre, live, targets)
+        .iter()
+        .all(|node| params(pre, node) == params(live, node));
+    if roster(pre) == roster(live) && same_params {
+        return Err(
+            "the edit made on the base scene was gone after the scene recall (Scene \
+                    Change Behavior DISCARD CHANGES?) — NOT saved"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// A scene recall that keeps the held session alive (no idle gap over 300 ms).
@@ -382,6 +402,19 @@ mod tests {
         stored["scenes"][0]["guitarNodes"]["G1"]["ACD_CabSimTMS"]["dspUnitParameters"]["bypass"] =
             json!(false);
         assert!(check_stored(&live, &stored, &edited).is_err());
+    }
+
+    /// Under DISCARD CHANGES the recall back to the scene reverts the base edit, so the
+    /// working copy equals the pre-edit one and the stored copy would "prove" the revert.
+    #[test]
+    fn a_base_edit_the_scene_recall_dropped_is_refused() {
+        let pre = doc(json!([amp(1.0), cab("cab1", "ACD_Twin212", false)]));
+        let err = recall_kept_edit(&pre, &pre, &targets()).unwrap_err();
+        assert!(err.contains("NOT saved"), "{err}");
+        let live = doc(json!([amp(1.0), cab("ACD_CabSimTMS", "Diezel412FV", true)]));
+        assert_eq!(recall_kept_edit(&pre, &live, &targets()), Ok(()));
+        let same_id = doc(json!([amp(1.0), cab("cab1", "Diezel412FV", true)]));
+        assert_eq!(recall_kept_edit(&pre, &same_id, &targets()), Ok(()));
     }
 
     #[test]
