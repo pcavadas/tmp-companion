@@ -164,7 +164,7 @@ mod copy_level_e2e_tests {
     /// unfiltered.
     fn run_copy(sim: SimDevice, job: &CopyJob, save: bool) -> (CopyApplyItem, Vec<SimEvent>) {
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        let item = copy_apply_one(&mut s, job, save).unwrap();
+        let item = copy_apply_one(&mut s, job, save, false).unwrap();
         let ev = sim
             .events()
             .into_iter()
@@ -176,7 +176,7 @@ mod copy_level_e2e_tests {
     #[test]
     fn copy_replace_happy_path_loads_confirms_renames_and_saves_in_order() {
         let (item, ev) = run_copy(SimDevice::new(), &one_replace_job(5, "Stadium Lead"), true);
-        assert_eq!(item.outcome, ItemOutcome::Updated);
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
         assert_eq!(
             ev,
             vec![
@@ -189,6 +189,158 @@ mod copy_level_e2e_tests {
                 SimEvent::Renamed("Stadium Lead".into()),
                 SimEvent::Saved(5),
             ]
+        );
+    }
+
+    /// The unit can report a save that its stored copy does not show (HW): the target is
+    /// an error, never "updated", and the frontend patches nothing.
+    #[test]
+    fn copy_save_the_unit_does_not_store_is_an_error() {
+        let (item, ev) = run_copy(
+            SimDevice::new().with_lost_save(),
+            &one_replace_job(5, "Stadium Lead"),
+            true,
+        );
+        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
+        assert!(
+            item.detail.contains("did not store the edit"),
+            "{}",
+            item.detail
+        );
+        assert!(item.graph.is_none());
+        assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
+    }
+
+    /// A two-scene preset whose scene 0 has no entry for `n2`, loaded into scene 1. When
+    /// `canonical`, every node has an entry in every scene, as the firmware expects.
+    fn scene_gap_doc(canonical: bool) -> String {
+        let n2 = if canonical {
+            r#","n2":{"dspUnitParameters":{"bypass":false}}"#
+        } else {
+            ""
+        };
+        format!(
+            r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[
+                {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false}}}},
+                {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
+            ]}}}},"info":{{"displayName":"Stadium Lead"}},"lastLoadedScene":1,
+            "scenes":[
+                {{"sceneName":"A","guitarNodes":{{"G1":{{"n1":{{"dspUnitParameters":{{"bypass":false}}}}{n2}}}}}}},
+                {{"sceneName":"B","guitarNodes":{{"G1":{{"n1":{{"dspUnitParameters":{{"bypass":false}}}},
+                    "n2":{{"dspUnitParameters":{{"bypass":false}}}}}}}}}}
+            ],"zzTail":"{pad}"}}"#,
+            pad = "x".repeat(120)
+        )
+    }
+
+    /// The block chain `slot`'s stored copy (field 8) holds, as `(nodeId, FenderId)` for G1,
+    /// plus the scene it opens on.
+    fn stored_g1(sim: &SimDevice, slot: u32) -> (Vec<(String, String)>, serde_json::Value) {
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let raw = s
+            .read_slot_preset_json(ListIndex(slot).into())
+            .unwrap()
+            .expect("the stored copy answers");
+        let v = crate::session::tolerant_parse_json(&String::from_utf8_lossy(&raw)).unwrap();
+        let g1 = crate::audiograph::roster(&v)
+            .into_iter()
+            .filter(|(group, _, _)| group == "G1")
+            .map(|(_, id, fender)| (id, fender))
+            .collect();
+        (g1, v["lastLoadedScene"].clone())
+    }
+
+    /// The unit confirms a replace of a node some other scene has no entry for, but a save
+    /// made with a scene current stores the pre-edit block (HW, fw 1.8.58). Copy makes that
+    /// replace on base and recalls the preset's scene before the save, so the stored copy
+    /// holds the replacement and the preset still opens on its scene (HW).
+    #[test]
+    fn copy_replace_of_a_block_missing_a_scene_entry_is_made_on_base_and_stored() {
+        let sim = SimDevice::new()
+            .with_preset_json(&scene_gap_doc(false))
+            .with_saved_scene(5, Some(1));
+        let (item, ev) = run_copy(sim.clone(), &one_replace_job(5, "Stadium Lead"), true);
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
+        let at = |want: &SimEvent| ev.iter().position(|e| e == want).unwrap_or(usize::MAX);
+        let replace = ev
+            .iter()
+            .position(|e| matches!(e, SimEvent::Replace { .. }))
+            .expect("the replace was sent");
+        assert!(at(&SimEvent::LoadScene(8)) < replace, "base first: {ev:?}");
+        assert!(
+            replace < at(&SimEvent::LoadScene(1)),
+            "scene recalled after: {ev:?}"
+        );
+        assert!(
+            at(&SimEvent::LoadScene(1)) < at(&SimEvent::Saved(5)),
+            "{ev:?}"
+        );
+        let (g1, scene) = stored_g1(&sim, 5);
+        assert!(
+            g1.iter().any(|(_, f)| f == "ACD_DeluxeReverb65"),
+            "the stored copy holds the replacement: {g1:?}"
+        );
+        assert_eq!(scene, serde_json::json!(1));
+    }
+
+    /// Under DISCARD CHANGES the recall back to the scene would drop the base edit, so such
+    /// a replace is refused before anything is sent.
+    #[test]
+    fn copy_replace_that_must_step_through_base_is_refused_under_discard() {
+        let sim = SimDevice::new()
+            .with_preset_json(&scene_gap_doc(false))
+            .with_saved_scene(5, Some(1));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let err = copy_apply_one(&mut s, &one_replace_job(5, "Stadium Lead"), true, true)
+            .expect_err("refused under DISCARD");
+        assert!(err.contains("MAINTAIN CHANGES"), "{err}");
+        assert!(
+            !sim.events().iter().any(|e| matches!(
+                e,
+                SimEvent::Replace { .. } | SimEvent::LoadScene(_) | SimEvent::Saved(_)
+            )),
+            "{:?}",
+            sim.events()
+        );
+    }
+
+    /// The same replace on a preset that keeps the firmware's scene invariant is stored.
+    #[test]
+    fn copy_replace_on_a_canonical_scene_preset_is_stored() {
+        let sim = SimDevice::new()
+            .with_preset_json(&scene_gap_doc(true))
+            .with_saved_scene(5, Some(1));
+        let (item, _) = run_copy(sim, &one_replace_job(5, "Stadium Lead"), true);
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
+    }
+
+    /// A stock `ACD_CabSimTMS` over a cab model lands dual (HW, fw 1.8.58): next to a
+    /// second cab that is three cabinet slots, refused before anything is sent.
+    #[test]
+    fn copy_refuses_a_stock_cabinet_that_lands_dual_over_the_cap() {
+        let sim = SimDevice::new().with_preset_json(
+            &r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
+                {"FenderId":"ACD_MarG12H30BB","nodeId":"ACD_MarG12H30BB","dspUnitParameters":{"bypass":false}},
+                {"FenderId":"ACD_AC30BrilliantCabIR","nodeId":"n2","dspUnitParameters":{"bypass":false}}
+            ]}},"info":{"displayName":"Stadium Lead"},"zzTail":"PAD"}"#
+                .replace("PAD", &"x".repeat(120)),
+        );
+        let job = CopyJob {
+            list_index: ListIndex(5),
+            name: "Stadium Lead".into(),
+            ops: vec![model_replace("G1", "ACD_MarG12H30BB", "ACD_CabSimTMS")],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
+        assert!(
+            item.detail.contains("ComboHalfStackCabinetsLimit"),
+            "{}",
+            item.detail
+        );
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, SimEvent::Replace { .. } | SimEvent::Saved(_))),
+            "{ev:?}"
         );
     }
 
@@ -254,8 +406,7 @@ mod copy_level_e2e_tests {
         assert!(item.detail.contains("NOT saved"), "detail: {}", item.detail);
         // The fake rejects with code 14, a replace over the CPU budget on fw 1.8.58.
         assert!(
-            item.detail
-                .contains("presetError 14: over the device's CPU budget"),
+            item.detail.contains("presetError 14: the edit failed"),
             "detail: {}",
             item.detail
         );
@@ -422,8 +573,8 @@ mod copy_level_e2e_tests {
         // cache for the "updated" target only — CopyView.tsx's `outcome === "updated"` gate.)
         let sim = SimDevice::new().with_reject_at(2);
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        let a = copy_apply_one(&mut s, &one_replace_job(5, "Target A"), true).unwrap();
-        let b = copy_apply_one(&mut s, &one_replace_job(6, "Target B"), true).unwrap();
+        let a = copy_apply_one(&mut s, &one_replace_job(5, "Target A"), true, false).unwrap();
+        let b = copy_apply_one(&mut s, &one_replace_job(6, "Target B"), true, false).unwrap();
         assert_eq!(a.outcome, ItemOutcome::Updated);
         assert_eq!(b.outcome, ItemOutcome::Error);
         let ev = sim.events();
@@ -462,7 +613,7 @@ mod copy_level_e2e_tests {
                 },
             }],
         };
-        let item = copy_apply_one(&mut s, &job, true).unwrap();
+        let item = copy_apply_one(&mut s, &job, true, false).unwrap();
         assert_eq!(item.outcome, ItemOutcome::Error);
         assert!(
             item.detail.contains("ComboHalfStackCabinetsLimit"),
@@ -503,7 +654,7 @@ mod copy_level_e2e_tests {
                     },
                 }],
             };
-            let item = copy_apply_one(&mut s, &job, false).unwrap();
+            let item = copy_apply_one(&mut s, &job, false, false).unwrap();
             (item, sim.events())
         };
         let (dual, ev) = run(true);
@@ -568,7 +719,7 @@ mod copy_level_e2e_tests {
             }],
         };
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        let item = copy_apply_one(&mut s, &job, true).unwrap();
+        let item = copy_apply_one(&mut s, &job, true, false).unwrap();
         assert_eq!(item.outcome, ItemOutcome::Updated);
         let graph = item
             .graph
@@ -638,8 +789,8 @@ mod copy_level_e2e_tests {
     fn copy_never_adopts_a_read_back_for_an_edit_the_roster_cannot_see() {
         // A same-model re-stamp leaves the block roster exactly as it was (on the unit a
         // node id IS its FenderId), so a pre-edit and a post-edit document are
-        // indistinguishable by roster: the read is not even requested (the fake records no
-        // `WorkingCopyRead`) and the item carries no graph — the cache keeps the acked edit.
+        // indistinguishable by roster: no read is adopted and the item carries no graph — the
+        // cache keeps the acked edit. The one re-prompt is the save proof's.
         let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
         let job = CopyJob {
             list_index: ListIndex(3),
@@ -647,7 +798,7 @@ mod copy_level_e2e_tests {
             ops: vec![model_replace("G1", "n2", "ACD_ChorusCE2")],
         };
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        let item = copy_apply_one(&mut s, &job, true).unwrap();
+        let item = copy_apply_one(&mut s, &job, true, false).unwrap();
         assert_eq!(item.outcome, ItemOutcome::Updated);
         let ev = sim.events();
         assert!(ev.contains(&SimEvent::Saved(3)), "{ev:?}");
@@ -656,9 +807,12 @@ mod copy_level_e2e_tests {
             "a roster-invariant edit has no verifiable read-back: {:?}",
             item.graph
         );
-        assert!(
-            !ev.contains(&SimEvent::WorkingCopyRead),
-            "an unverifiable edit must not spend a re-prompt: {ev:?}"
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, SimEvent::WorkingCopyRead))
+                .count(),
+            1,
+            "only the save proof re-prompts for an unverifiable edit: {ev:?}"
         );
     }
 

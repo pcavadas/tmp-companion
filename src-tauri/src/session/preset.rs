@@ -402,6 +402,16 @@ impl Session {
         &mut self,
         done: impl Fn(&serde_json::Value) -> bool,
     ) -> Result<ActiveGraph, String> {
+        self.live_preset_value_stable(done)?;
+        self.current_audio_graph()
+    }
+
+    /// [`Self::live_audio_graph`]'s read without the graph conversion: the working copy as
+    /// parsed JSON, once `done` accepts it and the payload has stopped growing.
+    pub(crate) fn live_preset_value_stable(
+        &mut self,
+        done: impl Fn(&serde_json::Value) -> bool,
+    ) -> Result<serde_json::Value, String> {
         self.live_preset_value(&done)?;
         let (mut last, mut stable) = (self.raw.len(), 0u32);
         for _ in 0..6 {
@@ -421,7 +431,7 @@ impl Session {
         // The seam's own guarantee: the document handed back is one `done` accepts, even if
         // frames kept landing after the first accepted parse.
         match self.current_preset_value() {
-            Ok(v) if done(&v) => self.current_audio_graph(),
+            Ok(v) if done(&v) => Ok(v),
             Ok(_) => Err("the working-copy reply changed after it was accepted".to_string()),
             Err(e) => Err(e),
         }

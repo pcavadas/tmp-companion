@@ -15,6 +15,16 @@ use serde_json::{Map, Value};
 /// The two node graphs a preset carries.
 pub(crate) const GRAPHS: [&str; 2] = ["guitarNodes", "micNodes"];
 
+/// The graph a group key belongs to: `M*` groups under `micNodes`, the rest under
+/// `guitarNodes`.
+pub(crate) fn graph_of(group: &str) -> &'static str {
+    if group.starts_with('M') {
+        "micNodes"
+    } else {
+        "guitarNodes"
+    }
+}
+
 /// The preset's master `presetLevel` (`audioGraph.presetLevel`, linear amplitude).
 /// Shared by search indexing and the leveling revert snapshot.
 pub(crate) fn preset_level(preset: &Value) -> Option<f64> {

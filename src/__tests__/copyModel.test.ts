@@ -99,6 +99,18 @@ describe("applyEditOp replace — a fresh default-param instance", () => {
   });
 });
 
+describe("applyEditOp replace — a stock Cabinet over a cab model", () => {
+  it("takes the cab as both cabs, so it holds a second cab slot", () => {
+    const active = graph();
+    active.nodes[1] = node("ACD_MarG12H30BB", "ACD_MarG12H30BB");
+    active.stages = [{ kind: "series", blocks: active.nodes }];
+    const edit = initEdit([1], () => active)[1];
+    const cab = stageBlocks(edit)[1];
+    const next = applyEditOp(edit, cab.uid, "replace", "ACD_CabSimTMS");
+    expect(stageBlocks(next)[1].secondCabSlot).toBe(true);
+  });
+});
+
 describe("activeFromEditGraph — round-trips an edited graph for the optimistic cache patch", () => {
   it("preserves block group/model/order and re-stamps inserted blocks with a node id", () => {
     // Apply replace + insert-after + remove, then round-trip through the cache shape

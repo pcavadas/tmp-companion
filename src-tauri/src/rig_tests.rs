@@ -367,7 +367,7 @@ fn a_stopped_scene_is_rolled_back_before_the_batch_save() {
 #[test]
 fn a_preset_read_that_fails_is_the_preset_not_its_footswitches() {
     // No saved body: the stored-row read answers nothing ("no preset data for slot").
-    let dev = SimDevice::new();
+    let dev = SimDevice::new().with_unanswered_saved_read();
     let rig = Rc::new(SimRig::new(dev.clone(), model));
     let jobs = [FootswitchLevelJob {
         switch: 2,

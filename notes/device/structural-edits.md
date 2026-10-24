@@ -33,6 +33,30 @@ An insert or replace mints the model's FenderId, then the first free `<FenderId>
 A load keeps stored ids as they are (`cab1` in the scenario fixtures); a stored duplicate id overwrites the first node's map entry and reads back once [RE].
 So never assume a FenderId is a node id: `copy_apply` resolves each anchor through `DeviceIds` (the confirms' `nodeJson` or a working-copy read) and refuses one it cannot resolve.
 
+### Saves with a scene current
+
+A save made while a non-base scene is current can store a different block chain than the live one, with no error [HW].
+The firmware assumes every node has an entry in every scene: an insert seeds one and a replace re-keys it [RE].
+Nothing guarantees it: presets the unit saves can lack entries [HW].
+A replace of a node that some non-current scene has no entry for still gets `nodeReplaced` and changes the live graph [HW].
+It leaves the scene state on the old node [RE], so a save made with a scene current stores the pre-edit block [HW].
+The unit itself makes such presets: one of 8 scene presets checked on a user's unit lacks a scene entry for one block [HW].
+The loss holds for a saved-block replace (`replaceNodeWithBlock`) and a stock `replaceNode` alike, and for a saved-block replace that follows a stock replace re-minting a non-minted id such as `cab1` [HW].
+The stored copy keeps the pre-edit node, or a bare `{bypass}` node, while the confirms and the working copy (fields 2/3) show the edit [HW].
+The same replace made on base (`loadScene(8)`) and then saved persists the block with every parameter [HW].
+`loadScene(8)` → replace → `loadScene(N)` → save stores the replacement and keeps `lastLoadedScene` N [HW].
+That save leaves every scene's entries as they were, so entries keyed by the replaced node's old id stay behind unused [HW].
+The unit accepts a replace that takes a preset past the app's cabinet cap [HW].
+`blockcaps` refuses such a replace.
+So `copy_apply` and `held_replace_one` make a replace on base whenever some other scene has no entry for its node (`save_proof::scene_to_step_out_of`), and recall the preset's scene before the save; Copy refuses that case under DISCARD CHANGES, whose recall would drop the edit.
+A stock `ACD_CabSimTMS` replacing a standalone cab model takes over that cab's model, mic and filters as both of its cabs, with `cabsim2enabled` on [HW].
+That happens only for `replaceNode` (39) over a node whose id is `ACD_` + a cab on the firmware's 68-entry list (`cabsimCarryOver` in `src/models/block-classification.json`); any other replace, and every insert or saved-block replace, gives the block's on-load default [RE].
+The block caps weigh the carried-over case as 2 and assume the factory on-load default (a single cab) otherwise.
+The app does not read a user-changed on-load default, so it may under-count one.
+The count caps are the app's own: the unit enforces only the CPU budget [RE].
+The confirm's `nodeJson` re-weighs the landed node.
+So every structural save is proven against the stored copy: `save_proof` reads the slot back with field 8 and compares it with the working copy read just before the save, and a mismatch is an error, never "updated".
+
 ### Three keyed places
 
 Block-mutation code (`audiograph.rs`) must touch all three places a block lives:
@@ -62,9 +86,10 @@ The unit's block picker allows a row only while the chain's cab weight plus the 
 
 - A combo, half-stack, bass amp, cabinet (`ACD_CabSimTMS` or a standalone cab model such as `ACD_Diezel412FV`) or IR block weighs 1, plus 1 when its second cab or mic (`cabsim2enabled`) is on [HW+RE].
 - Heads, effects and `ACD_ExternalCab` weigh 0 [HW+RE].
-- A saved block installed by `replaceNodeWithBlock` (100) takes its library entry's `dualCabsEnabled` as the new node's `cabsim2enabled` [HW].
+- A saved block installed by `replaceNodeWithBlock` (100) brings its own `cabsim2enabled` [HW].
+  The saved-block listing's `dualCabsEnabled` is that flag for every block except `ACD_CabSimTMS`, which the listing always reports as dual [RE].
 
 A chain already over the cap greys every picker row, effects included, except External Cabinet, until cab blocks are removed [HW].
 `blockcaps.rs` reads the four caps and their membership sets from `src/models/block-classification.json`, copied from the unit's client.
 Its `cabinetSet` also holds 7 amp+cab ids the client cannot classify, counted as the fail-closed choice ([provenance](../../src/models/block-classification.md#why-literal-extraction-not-acdcategory--regex)).
-A `cabinetSet` member with `cabsim2enabled` on weighs 2, and every other member 1; a saved candidate weighs by its `dualCabsEnabled`.
+A `cabinetSet` member with `cabsim2enabled` on weighs 2, and every other member 1; a saved candidate weighs by its listing `dualCabsEnabled`, so a saved `ACD_CabSimTMS` always weighs 2 and a single-cab one next to another cab is refused although it fits.

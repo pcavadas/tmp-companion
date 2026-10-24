@@ -41,15 +41,24 @@ impl Session {
     /// rejected/unconfirmed edit means the wrong preset is active or the node is absent,
     /// and saving would persist the WRONG content (HW: an unconfirmed save corrupted a
     /// slot).
+    ///
+    /// A `presetError` anywhere in the window wins over the success field, and a replace's
+    /// `nodeReplaced` counts only after one more heartbeat slice shows no `presetError`
+    /// behind it.
     pub(super) fn confirm_structural_edit(&mut self, success_field: u32) -> Result<bool, String> {
         for _ in 0..10 {
             self.heartbeat()?;
             self.pump_silent(LIVE_BEAT_MS)?;
-            if self.saw_preset_field(success_field) {
-                return Ok(true);
-            }
             if self.saw_preset_field(PRESET_ERROR) {
                 return Ok(false);
+            }
+            if self.saw_preset_field(success_field) {
+                if success_field != NODE_REPLACED {
+                    return Ok(true);
+                }
+                self.heartbeat()?;
+                self.pump_silent(LIVE_BEAT_MS)?;
+                return Ok(!self.saw_preset_field(PRESET_ERROR));
             }
         }
         Ok(false)
@@ -204,6 +213,17 @@ impl Session {
         crate::audiograph::instance_id(&v).map(str::to_string)
     }
 
+    /// The second-cab flag (`cabsim2enabled`) of the node the last confirmed insert/replace
+    /// added, from the confirm's `nodeJson`: what the block caps weigh it by once it landed.
+    /// `None` when the confirm carried no node JSON or the node has no such parameter.
+    pub fn confirmed_node_dual(&self) -> Option<bool> {
+        let reply = self
+            .preset_field(NODE_INSERTED)
+            .or_else(|| self.preset_field(NODE_REPLACED))?;
+        let v: serde_json::Value = serde_json::from_slice(proto::first_bytes(&reply, 3)?).ok()?;
+        v.pointer("/dspUnitParameters/cabsim2enabled")?.as_bool()
+    }
+
     /// [`Self::confirmed_node_id`], else the one node `group` holds that is not in `known`
     /// (a working-copy read) — for a confirm that carried no id. `None` unless exactly
     /// one.
@@ -285,7 +305,9 @@ impl Session {
             .preset_field(PRESET_ERROR)
             .map(|err| proto::first_varint(&err, 1).unwrap_or(0));
         match code {
-            Some(14) => "presetError 14: over the device's CPU budget".to_string(),
+            Some(14) => "presetError 14: the edit failed (over the device's CPU budget, an \
+                         unknown node, or a scene with no entry for the node)"
+                .to_string(),
             Some(c) => format!("presetError {c}"),
             None => "no confirm".to_string(),
         }

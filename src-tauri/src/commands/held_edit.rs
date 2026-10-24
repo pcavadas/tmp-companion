@@ -5,7 +5,7 @@ use crate::{
     commands::bulk_replace::confirm_plan_identity, commands::bulk_replace::error_item,
     commands::bulk_replace::repl_arg_candidate, commands::bulk_replace::BulkReplaceItem,
     commands::bulk_replace::ItemOutcome, commands::bulk_replace::ReplArg,
-    commands::bulk_replace::ReplacePlan, proto, Session,
+    commands::bulk_replace::ReplacePlan, proto, save_proof, Session,
 };
 #[cfg(test)]
 use crate::{commands::bulk_replace::plan_identity_verdict, ListIndex};
@@ -67,16 +67,22 @@ pub(crate) fn held_replace_one(
     // ── blockcaps guard — read the PRE-edit roster now, before the first structural
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
+    // The pre-edit document `save_proof` reads is this same buffer, so the identity check
+    // below sends nothing before it.
+    let mut held = save_proof::HeldEdit::begin_read(s, plan.targets.clone())?;
     // SAFETY 1b — the loaded preset is the one discovery planned against.
     if let Err(detail) = confirm_plan_identity(s, plan) {
         return Ok(error_item(list_index, name, detail));
     }
-    let candidate = repl_arg_candidate(repl);
+    // No settings snapshot on this path to refuse DISCARD CHANGES by; `HeldEdit::save`
+    // refuses a base edit the recall back dropped.
+    held.step_out(s, false)?;
 
     // SAFETY 2 — only persist if EVERY replace is confirmed (nodeReplaced/40).
     let mut applied = 0usize;
     for (group, node_id) in &plan.targets {
         let replaced = blockcaps_replaced(&roster, group, node_id);
+        let candidate = repl_arg_candidate(repl, Some(node_id));
         if let Err(reason) = blockcaps_check(&counts, candidate, true, replaced) {
             return Ok(BulkReplaceItem {
                 slot: list_index,
@@ -103,14 +109,17 @@ pub(crate) fn held_replace_one(
                 detail: format!("device rejected replace of {group}/{node_id} (presetError / no nodeReplaced) — NOT saved"),
             });
         }
-        blockcaps_advance(&mut counts, candidate, replaced);
+        blockcaps_advance(&mut counts, candidate, replaced, s.confirmed_node_dual());
         applied += 1;
     }
+    held.end_edits(s)?;
     if save {
-        if !name.is_empty() {
-            s.rename_current_preset(&name)?;
+        let live = save_proof::read_live(s);
+        if let Err(why) = held.save(s, list_index, &name, live) {
+            return Ok(error_item(list_index, name, why));
         }
-        s.save_current_preset(list_index)?;
+    } else if let Err(why) = held.check_kept(s) {
+        return Ok(error_item(list_index, name, why));
     }
     // Keep live-controller status before the next preset (no long quiet gap).
     s.heartbeat()?;
@@ -158,7 +167,7 @@ mod plan_identity_tests {
     use crate::sim_device::{SimDevice, SimEvent};
 
     /// The sim's default two-node graph, under a given `info.preset_id`. The trailing
-    /// `scenes` padding keeps `info` clear of the ≤60 B the session's field-3
+    /// `zzTail` padding keeps `info` clear of the ≤60 B the session's field-3
     /// reassembly drops off every document's tail (see `sim_device`'s `ftsw_tests` note).
     fn doc_with_id(id: &str) -> String {
         format!(
@@ -166,7 +175,7 @@ mod plan_identity_tests {
                 {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false,"outputLevel":0.5}}}},
                 {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
             ]}}}},"info":{{"displayName":"Stadium Lead","preset_id":"{id}"}},
-            "scenes":[{{"sceneName":"{pad}"}}]}}"#,
+            "zzTail":"{pad}"}}"#,
             pad = "x".repeat(120)
         )
     }
@@ -215,14 +224,98 @@ mod plan_identity_tests {
         assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
     }
 
+    /// The unit can report a save that its stored copy does not show (HW): the item is an
+    /// error, never "updated".
+    #[test]
+    fn a_save_the_unit_does_not_store_is_an_error() {
+        let sim = SimDevice::new()
+            .with_preset_json(&doc_with_id("pid-planned"))
+            .with_lost_save();
+        let (item, ev) = run(sim, &plan(Some("pid-planned")));
+        assert_eq!(item.outcome, ItemOutcome::Error, "{}", item.detail);
+        assert!(
+            item.detail.contains("did not store the edit"),
+            "{}",
+            item.detail
+        );
+        assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
+    }
+
+    /// A 2-scene preset opened on scene 1 whose scene 0 has no entry for `n2`.
+    fn gap_doc() -> String {
+        format!(
+            r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[
+                {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false}}}},
+                {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
+            ]}}}},"info":{{"displayName":"Stadium Lead","preset_id":"pid-planned"}},
+            "lastLoadedScene":1,"scenes":[
+                {{"sceneName":"A","guitarNodes":{{"G1":{{"n1":{{"dspUnitParameters":{{"bypass":false}}}}}}}}}},
+                {{"sceneName":"B","guitarNodes":{{"G1":{{"n1":{{"dspUnitParameters":{{"bypass":false}}}},
+                    "n2":{{"dspUnitParameters":{{"bypass":false}}}}}}}}}}
+            ],"zzTail":"{pad}"}}"#,
+            pad = "x".repeat(120)
+        )
+    }
+
+    /// A replace of a block another scene has no entry for is made on base and the
+    /// preset's scene recalled before the save, so the save stores it (HW).
+    #[test]
+    fn a_replace_of_a_block_missing_a_scene_entry_steps_through_base() {
+        let doc = gap_doc();
+        let sim = SimDevice::new()
+            .with_preset_json(&doc)
+            .with_saved_scene(5, Some(1));
+        let (item, ev) = run(sim, &plan(Some("pid-planned")));
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
+        let at = |want: &SimEvent| ev.iter().position(|e| e == want).unwrap_or(usize::MAX);
+        let replace = ev
+            .iter()
+            .position(|e| matches!(e, SimEvent::Replace { .. }))
+            .expect("the replace was sent");
+        assert!(at(&SimEvent::LoadScene(8)) < replace, "{ev:?}");
+        assert!(replace < at(&SimEvent::LoadScene(1)), "{ev:?}");
+        assert!(
+            at(&SimEvent::LoadScene(1)) < at(&SimEvent::Saved(5)),
+            "{ev:?}"
+        );
+    }
+
+    /// A dry run that steps through base still reads the working copy after the recall back,
+    /// so a base edit DISCARD CHANGES dropped is never reported as updated.
+    #[test]
+    fn a_dry_run_through_base_checks_the_edit_survived_the_recall() {
+        let sim = SimDevice::new()
+            .with_preset_json(&gap_doc())
+            .with_saved_scene(5, Some(1));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let repl = ReplArg::Model {
+            fender_id: "ACD_DeluxeReverb65".into(),
+        };
+        let item = held_replace_one(&mut s, &plan(Some("pid-planned")), &repl, false).unwrap();
+        assert_eq!(item.outcome, ItemOutcome::Updated, "{}", item.detail);
+        let ev = sim.events();
+        let recall = ev
+            .iter()
+            .rposition(|e| e == &SimEvent::LoadScene(1))
+            .expect("the scene was recalled");
+        assert!(
+            ev[recall..].contains(&SimEvent::WorkingCopyRead),
+            "no read after the recall: {ev:?}"
+        );
+        assert!(
+            !ev.iter().any(|e| matches!(e, SimEvent::Saved(_))),
+            "{ev:?}"
+        );
+    }
+
     /// Two single cabinets fill the cap; replacing one with a saved block weighs that
-    /// block's `dualCabsEnabled`, which the installed node's `cabsim2enabled` takes [HW].
+    /// block's `dualCabsEnabled`, which the installed node's `cabsim2enabled` takes (HW).
     fn replace_a_cab_with_saved(dual_cab: bool) -> (BulkReplaceItem, Vec<SimEvent>) {
         let sim = SimDevice::new().with_preset_json(
             r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
                 {"FenderId":"ACD_AC30BrilliantCabIR","nodeId":"n1","dspUnitParameters":{"bypass":false}},
                 {"FenderId":"ACD_CabSimTMS","nodeId":"n2","dspUnitParameters":{"bypass":false}}
-            ]}},"info":{"displayName":"Stadium Lead","preset_id":"pid-planned"},"scenes":[{"sceneName":"PAD"}],"zzTail":"PAD"}"#
+            ]}},"info":{"displayName":"Stadium Lead","preset_id":"pid-planned"},"zzTail":"PAD"}"#
                 .replace("PAD", &"x".repeat(120))
                 .as_str(),
         );

@@ -3,8 +3,8 @@ use crate::blockcaps::{group_roster, Roster};
 use crate::{
     blockcaps, commands::bulk_replace::blockcaps_advance, commands::bulk_replace::blockcaps_check,
     commands::bulk_replace::blockcaps_pre_edit_roster, commands::bulk_replace::blockcaps_replaced,
-    commands::bulk_replace::ItemOutcome, device_gate::with_released_seize, proto, session,
-    AppState, ListIndex, Serialize, Session, State,
+    commands::bulk_replace::ItemOutcome, device_gate::with_released_seize, proto, save_proof,
+    session, AppState, ListIndex, Serialize, Session, State,
 };
 
 /// The block content a copy `CopyOp` applies — the SAME three "with a block"
@@ -27,7 +27,9 @@ pub enum CopyRepl {
     },
     /// Saved block (user block / dual cab) — `replaceNodeWithBlock` by the device
     /// library `index`. `dual_cab` is the library entry's `dualCabsEnabled`, which the
-    /// installed node's `cabsim2enabled` takes, so the block-count cap can weigh it.
+    /// block-count cap weighs it by. The listing reports it true for every `ACD_CabSimTMS`
+    /// entry, second cab on or off (static RE, fw 1.8.58), so a saved cabinet block weighs
+    /// two slots: the cautious side of the cap.
     Saved {
         #[serde(rename = "fenderId")]
         fender_id: String,
@@ -48,12 +50,18 @@ impl CopyRepl {
         }
     }
 
-    /// The block-cap candidate: the fender id and whether it takes a second cabinet slot
-    /// (only a dual-cab saved block does).
-    fn cap_candidate(&self) -> (&str, bool) {
+    /// The block-cap candidate in place of `replaced_node`: the fender id and whether it
+    /// takes a second cabinet slot (a dual-cab saved block, or a stock Cabinet that lands
+    /// dual over that node, `blockcaps::stock_replace_is_dual`).
+    fn cap_candidate(&self, replaced_node: Option<&str>) -> (&str, bool) {
+        let id = self.insert_fender_id();
         match self {
-            CopyRepl::Saved { dual_cab, .. } => (self.insert_fender_id(), *dual_cab),
-            CopyRepl::Model { .. } | CopyRepl::Ir { .. } => (self.insert_fender_id(), false),
+            CopyRepl::Saved { dual_cab, .. } => (id, *dual_cab),
+            CopyRepl::Model { .. } => (
+                id,
+                replaced_node.is_some_and(|n| blockcaps::stock_replace_is_dual(id, n)),
+            ),
+            CopyRepl::Ir { .. } => (id, false),
         }
     }
 }
@@ -221,12 +229,19 @@ pub struct CopyApplyItem {
 /// `error`/`skipped`/`rejected` row and the run CONTINUES; an empty `ops` list →
 /// `skipped`.
 #[tauri::command]
-pub(crate) async fn copy_apply(
+pub(crate) async fn copy_apply<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     jobs: Vec<CopyJob>,
     save: bool,
     on_result: tauri::ipc::Channel<CopyApplyItem>,
 ) -> Result<Vec<CopyApplyItem>, String> {
+    // DISCARD CHANGES drops a base edit at the recall back to the preset's scene, so a replace
+    // that must step through base is refused under it (`save_proof::scene_to_step_out_of`).
+    let scene_discard = crate::commands::level_scenes::scene_discard_guard(
+        crate::commands::presets::device_settings_path(&app).as_deref(),
+    )
+    .is_err();
     with_released_seize(state.session.clone(), move || {
         // ONE held session for the whole run: connect once, warm
         // the live-controller heartbeat once (`begin_live_edit`), then `copy_apply_one`
@@ -236,12 +251,14 @@ pub(crate) async fn copy_apply(
         s.begin_live_edit()?;
         let mut out = Vec::with_capacity(jobs.len());
         for job in &jobs {
-            let item = copy_apply_one(&mut s, job, save).unwrap_or_else(|e| CopyApplyItem {
-                slot: job.list_index,
-                name: job.name.clone(),
-                outcome: ItemOutcome::Error,
-                detail: e,
-                graph: None,
+            let item = copy_apply_one(&mut s, job, save, scene_discard).unwrap_or_else(|e| {
+                CopyApplyItem {
+                    slot: job.list_index,
+                    name: job.name.clone(),
+                    outcome: ItemOutcome::Error,
+                    detail: e,
+                    graph: None,
+                }
             });
             let _ = on_result.send(item.clone());
             out.push(item);
@@ -259,7 +276,12 @@ pub(crate) async fn copy_apply(
 /// preset), applies each op (an unconfirmed first op is READ BACK before any re-send — see
 /// [`apply_copy_op`]), and saves ONLY when every op confirmed AND no `presetError`. An
 /// empty op list → skipped.
-fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyApplyItem, String> {
+fn copy_apply_one(
+    s: &mut Session,
+    job: &CopyJob,
+    save: bool,
+    scene_discard: bool,
+) -> Result<CopyApplyItem, String> {
     let list_index = job.list_index;
     let name = job.name.clone();
     if job.ops.is_empty() {
@@ -293,6 +315,16 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
     let mut ids = DeviceIds::new(&roster);
+    let replace_targets = job
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            CopyOp::Replace { group, node_id, .. } => Some((group.clone(), node_id.clone())),
+            _ => None,
+        })
+        .collect();
+    let mut held = save_proof::HeldEdit::begin_read(s, replace_targets)?;
+    held.step_out(s, scene_discard)?;
 
     // Apply each op in order. An unconfirmed FIRST edit with no presetError is read back
     // before anything is re-sent (`apply_copy_op`). fw 1.8.58 has no silent-drop path for a
@@ -348,7 +380,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         };
         match apply_copy_op(s, op, first, &applied) {
             Ok(true) => {
-                blockcaps_advance(&mut counts, candidate, replaced);
+                blockcaps_advance(&mut counts, candidate, replaced, s.confirmed_node_dual());
                 // Every new block's id — the confirm's, else a read — so later ops in the
                 // group can address it and tell it apart from the next new block.
                 let minted = match op {
@@ -385,8 +417,12 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         }
     }
 
+    held.end_edits(s)?;
     let graph = if save {
-        save_copy_target(s, &roster, job)?
+        match save_copy_target(s, &roster, &held, job) {
+            Ok(graph) => graph,
+            Err(why) => return Ok(error_item(list_index, &name, why)),
+        }
     } else {
         None
     };
@@ -415,11 +451,11 @@ fn cap_inputs(op: &CopyOp) -> (Option<Candidate<'_>>, bool, Option<(&str, &str)>
             node_id,
             repl,
         } => (
-            Some(repl.cap_candidate()),
+            Some(repl.cap_candidate(Some(node_id))),
             true,
             Some((group.as_str(), node_id.as_str())),
         ),
-        CopyOp::Insert { repl, .. } => (Some(repl.cap_candidate()), false, None),
+        CopyOp::Insert { repl, .. } => (Some(repl.cap_candidate(None)), false, None),
         CopyOp::Remove { group, node_id } => {
             (None, false, Some((group.as_str(), node_id.as_str())))
         }
@@ -427,7 +463,8 @@ fn cap_inputs(op: &CopyOp) -> (Option<Candidate<'_>>, bool, Option<(&str, &str)>
 }
 
 /// Persist a target whose every op confirmed: the working-copy read for the Copy view's
-/// in-place cache patch (no ~22 s re-scan), then rename-to-itself + save.
+/// in-place cache patch (no ~22 s re-scan), then the proven save (`save_proof::HeldEdit`): a
+/// save the stored copy does not show is an `Err`.
 ///
 /// The read is a field-2 re-prompt of the device's LIVE document, taken after the last
 /// confirmed op and BEFORE the save (the footswitch flow's HW-proven re-prompt-then-save
@@ -437,6 +474,7 @@ fn cap_inputs(op: &CopyOp) -> (Option<Candidate<'_>>, bool, Option<(&str, &str)>
 fn save_copy_target(
     s: &mut Session,
     roster: &[blockcaps::RosterEntry],
+    held: &save_proof::HeldEdit,
     job: &CopyJob,
 ) -> Result<Option<session::ActiveGraph>, String> {
     // What the acked ops leave behind — the oracle the read is checked against. An
@@ -450,12 +488,13 @@ fn save_copy_target(
     );
     let expected = expected_roster(roster, &job.ops);
     let graph = read_working_copy(s, &pre, expected.as_ref(), job.list_index, &job.name);
-    // Identity-preserving persist (Pro Control's rename(current name) → save(slot)):
-    // keeps the preset's name and song link.
-    if !job.name.is_empty() {
-        s.rename_current_preset(&job.name)?;
-    }
-    s.save_current_preset(job.list_index)?;
+    // The working copy the stored copy must match, read before the save: the adopted read's
+    // own document when there is one (still the session's last parse), else a fresh read.
+    let live = match graph {
+        Some(_) => s.current_preset_value(),
+        None => save_proof::read_live(s),
+    };
+    held.save(s, job.list_index, &job.name, live)?;
     Ok(graph)
 }
 

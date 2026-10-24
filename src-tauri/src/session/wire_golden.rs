@@ -62,8 +62,10 @@ const RIG: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
     {"FenderId":"ACD_JC120","nodeId":"ACD_JC120","dspUnitParameters":{"bypass":false,"outputLevel":0.4}}
 ]}},
 "scenes":[
-    {"guitarNodes":{"G1":{"ACD_JC120":{"dspUnitParameters":{"bypass":false,"outputLevel":0.6}}}}},
-    {"guitarNodes":{"G1":{"ACD_TubeScreamer":{"dspUnitParameters":{"bypass":true}}}}}
+    {"guitarNodes":{"G1":{"ACD_TubeScreamer":{"dspUnitParameters":{"bypass":false}},
+        "ACD_JC120":{"dspUnitParameters":{"bypass":false,"outputLevel":0.6}}}}},
+    {"guitarNodes":{"G1":{"ACD_TubeScreamer":{"dspUnitParameters":{"bypass":true}},
+        "ACD_JC120":{"dspUnitParameters":{"bypass":false}}}}}
 ],
 "ftsw":[[{"func":"onOff","nodeId":"ACD_TubeScreamer"}]]}"#;
 
@@ -84,7 +86,11 @@ fn mark(log: &Arc<Mutex<Vec<String>>>, label: &str) {
 /// from run to run against a fake that answers instantly.
 fn record() -> Vec<String> {
     let log = Arc::new(Mutex::new(Vec::new()));
-    let sim = SimDevice::new().with_preset_json(RIG);
+    // The golden records the slot reads timing out, as the sim answered before it served
+    // stored copies; the wire the session sends is the same either way.
+    let sim = SimDevice::new()
+        .with_preset_json(RIG)
+        .with_unanswered_saved_read();
     let mut s = Session::from_transport(Box::new(Recorder {
         inner: sim.clone(),
         log: Arc::clone(&log),

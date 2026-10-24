@@ -4,6 +4,7 @@ import {
   SCENARIO,
   clearScenario,
   ensureScenario,
+  invoke,
   sourceLabels,
   tileLabels,
 } from "../fixtures/scenario";
@@ -148,5 +149,162 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
     // mutated. The next run's pristine-checking seed (e2e_seed.rs's ChainDrift
     // path) restores it; no in-run reseed here — that would duplicate the cost for
     // zero benefit to THIS run.
+  });
+});
+
+// COVERAGE row 48 — every saved replace reaches the stored copy.
+// A replace can be confirmed and show in the working copy while the save stores the old
+// block: the unit does that when some other scene has no entry for the replaced node and a
+// scene is current [HW, fw 1.8.58]. Copy then makes the replace on base and recalls the
+// preset's scene before the save. Each case saves through `copy_apply` and checks the
+// STORED copy (field 8), never a reload, since a lost save reloads as defaults.
+interface StoredNode {
+  FenderId: string;
+  nodeId: string;
+  dspUnitParameters?: Record<string, unknown>;
+}
+interface StoredDoc {
+  lastLoadedScene?: number;
+  audioGraph: { guitarNodes: Record<string, StoredNode[]> };
+  scenes?: { guitarNodes?: Record<string, unknown> }[];
+}
+interface CopyItem {
+  outcome: string;
+  detail: string;
+}
+
+test.describe("Copy — the stored copy shows every saved replace", () => {
+  test.afterEach(async ({ page }) => {
+    await clearScenario(page);
+  });
+
+  const stored = async (page: import("@playwright/test").Page, slot: number) =>
+    (
+      (await invoke(page, "e2e_read_stored_preset", { slot })) as {
+        doc: StoredDoc;
+      }
+    ).doc;
+
+  const replace = async (
+    page: import("@playwright/test").Page,
+    slot: number,
+    name: string,
+    group: string,
+    nodeId: string,
+    repl: Record<string, unknown>,
+  ) => {
+    const items = (await invoke(
+      page,
+      "copy_apply",
+      {
+        jobs: [
+          {
+            listIndex: slot,
+            name,
+            ops: [{ kind: "replace", group, nodeId, repl }],
+          },
+        ],
+        save: true,
+        onResult: "__CHANNEL__:1",
+      },
+      120_000,
+    )) as CopyItem[];
+    expect(items).toHaveLength(1);
+    return items[0];
+  };
+
+  test("a replace on a scene preset, regular and through base, is stored", async ({
+    page,
+  }) => {
+    test.setTimeout(600_000);
+    await ensureScenario(page);
+    const [friedman, hiwatt] = [SCENARIO[10], SCENARIO[4]];
+    expect(friedman.name).toBe("E2E Friedman 3S");
+    expect(hiwatt.name).toBe("E2E Hiwatt 3S");
+
+    // (1) Regular path: the Plexi has an entry in every scene, so the replace is made in
+    // the preset's own scene (1) and stored.
+    const one = await replace(
+      page,
+      friedman.slot,
+      friedman.name,
+      "G1",
+      "ACD_MarshallPlexi",
+      {
+        kind: "model",
+        fenderId: "ACD_TweedDeluxe",
+      },
+    );
+    expect(one.outcome, one.detail).toBe("updated");
+    let doc = await stored(page, friedman.slot);
+    expect(doc.audioGraph.guitarNodes.G1.map((n) => n.FenderId)).toContain(
+      "ACD_TweedDeluxe",
+    );
+    expect(doc.lastLoadedScene).toBe(1);
+
+    // (2) Through base, on a device-made preset: scene 0 has no entry for the G3 cab
+    // (it files it under G4), and the preset opens on scene 3. The replacement is a
+    // single cab: the preset already holds two, so a dual one would be over the cap.
+    const before = await stored(page, hiwatt.slot);
+    expect(before.lastLoadedScene).toBe(3);
+    const two = await replace(
+      page,
+      hiwatt.slot,
+      hiwatt.name,
+      "G3",
+      "ACD_MarG12H30BB",
+      {
+        kind: "model",
+        fenderId: "ACD_Mar412G1265",
+      },
+    );
+    expect(two.outcome, two.detail).toBe("updated");
+    doc = await stored(page, hiwatt.slot);
+    expect(doc.audioGraph.guitarNodes.G3.map((n) => n.FenderId)).toEqual([
+      "ACD_Mar412G1265",
+    ]);
+    expect(doc.lastLoadedScene).toBe(3);
+    expect(
+      doc.scenes,
+      "the other scenes' entries are left as they were",
+    ).toEqual(before.scenes);
+
+    // (3) A saved block through base: cab1 has no entry in scenes 0 and 2. The built-in
+    // index-0 cabinet block is on every unit; its cab differs from the fixture's.
+    const block = (await invoke(page, "e2e_saved_block", {
+      fenderId: "ACD_CabSimTMS",
+      index: 0,
+    })) as { cab1_id: string } | null;
+    expect(
+      block,
+      "the unit's built-in ACD_CabSimTMS block (index 0) is missing",
+    ).not.toBeNull();
+    const three = await replace(
+      page,
+      friedman.slot,
+      friedman.name,
+      "G1",
+      "cab1",
+      {
+        kind: "saved",
+        fenderId: "ACD_CabSimTMS",
+        index: 0,
+        dualCab: true,
+      },
+    );
+    expect(three.outcome, three.detail).toBe("updated");
+    doc = await stored(page, friedman.slot);
+    const cab = doc.audioGraph.guitarNodes.G1.find(
+      (n) => n.FenderId === "ACD_CabSimTMS",
+    );
+    expect(cab, "the stored G1 holds the saved cabinet block").toBeDefined();
+    const params = cab?.dspUnitParameters ?? {};
+    expect(params.cabsimid).toBe(block?.cab1_id);
+    expect(params.cabsimid).not.toBe("ACD_Twin212");
+    expect(
+      typeof params.cabsim2enabled,
+      "the stored node carries its dual state",
+    ).toBe("boolean");
+    expect(doc.lastLoadedScene).toBe(1);
   });
 });

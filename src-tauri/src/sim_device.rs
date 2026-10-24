@@ -140,6 +140,26 @@ const F_SET_SONG_BPM_ACTIVE: u32 = 23;
 const F_LOAD_PRESET: u32 = 10;
 const F_REPLACE_NODE: u32 = 39;
 const F_REPLACE_WITH_BLOCK: u32 = 100;
+/// `requestAllBlockPresets`(135) → `allBlockPresetsResponse`(136): the saved-block listing.
+const F_ALL_BLOCK_PRESETS_REQUEST: u32 = 135;
+const F_ALL_BLOCK_PRESETS_RESPONSE: u32 = 136;
+
+/// The fake's saved-block store: the firmware's built-in index-0 entry for `ACD_CabSimTMS`
+/// (re-seeded at boot, on every unit; static RE, fw 1.8.58), as the listing describes it.
+const SIM_BLOCK_PRESETS: &str = r#"{"ACD_CabSimTMS":[{"cab1Id":"BlsJrIV_CelestionTypeA","cab2Id":"BlsJrIV_CelestionTypeA","dualCabsEnabled":true,"favorite":false,"name":"ACD_CabSimTMS autogen defaults"}]}"#;
+
+/// The parameters a `replaceNodeWithBlock` of `fender_id` at `index` installs from
+/// [`SIM_BLOCK_PRESETS`]: its cab ids, second cab off (the built-in entry's stored state).
+fn sim_saved_block_params(fender_id: &str, index: u64) -> Option<serde_json::Value> {
+    let map: serde_json::Value = serde_json::from_str(SIM_BLOCK_PRESETS).ok()?;
+    let entry = map.get(fender_id)?.get(usize::try_from(index).ok()?)?;
+    Some(serde_json::json!({
+        "bypass": false,
+        "cabsimid": entry["cab1Id"],
+        "cab2simid": entry["cab2Id"],
+        "cabsim2enabled": false,
+    }))
+}
 const F_INSERT_NODE: u32 = 34;
 const F_REMOVE_NODE: u32 = 35;
 const F_NODE_JSON_REQUEST: u32 = 119;
@@ -360,6 +380,10 @@ pub(crate) enum Injection {
     BareConfirms,
     /// A save queues a push of the PRE-edit document for the next pump.
     StalePushAfterSave,
+    /// A save reports success but stores none of the working copy's structural edits: the
+    /// slot's stored copy (field 8) keeps its pre-edit block chain. The unit did this for a
+    /// replace saved while a non-base scene was current (HW, fw 1.8.58).
+    LostSave,
     /// The NEXT Settings re-amp OFF leaves the latch ON (once). It is still recorded, as the
     /// device still echoes it.
     DropNextReampOff,
@@ -417,7 +441,8 @@ impl Injection {
             | Injection::RejectReplace { .. }
             | Injection::DropNextReampOff
             | Injection::RejectNextLoad
-            | Injection::QueuedHandshakeFlood => "reachable",
+            | Injection::QueuedHandshakeFlood
+            | Injection::LostSave => "reachable",
             Injection::DropFirstStructural | Injection::BareConfirms => "unreachable",
             Injection::StalePushAfterSave | Injection::ReampOffNeverLands => "unverified",
             #[cfg(feature = "e2e")]
@@ -446,6 +471,7 @@ impl Injection {
             "drop-first-structural" => Injection::DropFirstStructural,
             "bare-confirms" => Injection::BareConfirms,
             "stale-push-after-save" => Injection::StalePushAfterSave,
+            "lost-save" => Injection::LostSave,
             "drop-next-reamp-off" => Injection::DropNextReampOff,
             "reamp-off-never-lands" => Injection::ReampOffNeverLands,
             "reject-next-load" => Injection::RejectNextLoad,
@@ -533,6 +559,12 @@ enum WorkingEdit {
         node_id: String,
         fender_id: String,
         new_id: String,
+        /// Whether the replace also re-keyed the node's entry in every scene (a confirmed
+        /// replace does; one that missed a scene's entry does not, fw 1.8.58).
+        scenes_rekeyed: bool,
+        /// The new node's `dspUnitParameters` when the replace sets them (a saved block's);
+        /// `None` keeps the old node's.
+        params: Option<serde_json::Value>,
     },
     Insert {
         group: String,
@@ -597,8 +629,18 @@ struct SimState {
     /// PRE-edit (load-time) document for the next `pump` — a stale document a held session
     /// could scrape off its buffer as a post-save read-back.
     stale_push_after_save: bool,
+    /// When set, a `saveCurrentPreset` stores none of the working copy's structural edits
+    /// ([`Injection::LostSave`]).
+    lost_save: bool,
+    /// When set, a field-8 read of a non-scenario slot answers nothing
+    /// ([`SimDevice::with_unanswered_saved_read`]).
+    unanswered_saved_read: bool,
     /// Confirmed structural edits since the last load — see [`WorkingEdit`].
     working_edits: Vec<WorkingEdit>,
+    /// Replaces since the last load that changed the live graph but not the preset's scene
+    /// state, as `(group, new node id)` ([`scene_state_misses`]). A save made while a
+    /// scene is current stores none of them.
+    scene_unsynced: Vec<(String, String)>,
     /// Per slot, the structural edits its saves have persisted, applied on top of the slot's
     /// own document before [`SimState::working_edits`]. Without it a re-opened Copy edit
     /// would name a node id the stored document never got, which the fake answers with a
@@ -639,8 +681,8 @@ struct SimState {
     preset_json: String,
     /// Whether a field-8 (SAVED document) read of a non-scenario slot answers with
     /// [`SimState::preset_json`] verbatim ([`SimDevice::with_saved_preset_json`]). Off, such a
-    /// read answers nothing. Never persists a save: the body stays the one the test
-    /// configured.
+    /// read answers the slot's stored rendering (its saved structural edits applied). On,
+    /// never persists a save: the body stays the one the test configured.
     saved_preset_json: bool,
     /// Lazy cache of a parsed [`SimState::scene_render_json_source`], shared by
     /// `overlay_is_full_shaped` (every scene-context `changeParameter` on the live dispatch path)
@@ -823,7 +865,10 @@ impl Default for SimState {
             bare_confirms: false,
             reject_at: None,
             stale_push_after_save: false,
+            lost_save: false,
+            unanswered_saved_read: false,
             working_edits: Vec::new(),
+            scene_unsynced: Vec::new(),
             saved_edits: HashMap::new(),
             string_params: std::collections::BTreeMap::new(),
             pending_pushes: Vec::new(),
@@ -1490,6 +1535,22 @@ impl SimDevice {
         self
     }
 
+    /// Every `saveCurrentPreset` reports success but stores none of the working copy's
+    /// structural edits ([`Injection::LostSave`]).
+    #[cfg(test)]
+    pub fn with_lost_save(self) -> SimDevice {
+        self.arm(Injection::LostSave);
+        self
+    }
+
+    /// A field-8 read of a non-scenario slot answers nothing: the unit giving no stored
+    /// document for a slot.
+    #[cfg(test)]
+    pub fn with_unanswered_saved_read(self) -> SimDevice {
+        self.state.lock().expect("sim lock").unanswered_saved_read = true;
+        self
+    }
+
     /// Seed slot `slot0`'s (0-based) saved `lastLoadedScene` — what a subsequent
     /// `loadPreset` for that slot restores `current_scene` to. Lets a test drive the
     /// "loading a preset activates its saved scene, not base" behavior without first
@@ -1556,6 +1617,7 @@ impl SimDevice {
             Injection::DropFirstStructural => st.drop_first = true,
             Injection::BareConfirms => st.bare_confirms = true,
             Injection::StalePushAfterSave => st.stale_push_after_save = true,
+            Injection::LostSave => st.lost_save = true,
             Injection::DropNextReampOff => st.drop_next_reamp_off = true,
             Injection::ReampOffNeverLands => st.reamp_off_never_lands = true,
             Injection::RejectNextLoad => st.reject_next_load = true,
@@ -1876,6 +1938,7 @@ impl SimDevice {
             // A real load re-instantiates the stored preset: the working copy starts clean.
             st.template_substituted = false;
             st.working_edits.clear();
+            st.scene_unsynced.clear();
             st.string_params.clear();
             // A tab-5 load makes its song active when the row it names is bound to this
             // preset (a mismatch clears it: presetError 6 on the unit); any other load
@@ -2006,7 +2069,13 @@ impl SimDevice {
                 proto::field_varint(&mut code, 1, 14);
                 return vec![frame(&preset_message(F_PRESET_ERROR, &code))];
             }
-            return confirm_replace(&mut st, group, node_id, fender_id);
+            return confirm_replace(&mut st, group, node_id, fender_id, None);
+        }
+        if proto::first_bytes(&f, F_ALL_BLOCK_PRESETS_REQUEST).is_some() {
+            // allBlockPresetsResponse{ blockPresetsMap(1) = LZ4 block of the saved-block map }.
+            let blob = proto::lz4_block_compress_stored(SIM_BLOCK_PRESETS.as_bytes());
+            let inner = proto::len_delimited(1, &blob);
+            return frame_multi(&preset_message(F_ALL_BLOCK_PRESETS_RESPONSE, &inner));
         }
         if let Some(rb) = proto::first_bytes(&f, F_REPLACE_WITH_BLOCK) {
             let (group, node_id, fender_id) = three_strings(rb);
@@ -2017,7 +2086,8 @@ impl SimDevice {
                 fender_id: fender_id.clone(),
                 index,
             });
-            return confirm_replace(&mut st, group, node_id, fender_id);
+            let params = sim_saved_block_params(&fender_id, index);
+            return confirm_replace(&mut st, group, node_id, fender_id, params);
         }
         if let Some(ins) = proto::first_bytes(&f, F_INSERT_NODE) {
             let inner = proto::parse(ins);
@@ -2101,7 +2171,22 @@ impl SimDevice {
                 let push = frame_multi(&current_preset_data_changed(&json));
                 st.pending_pushes.extend(push);
             }
-            // The working copy's structural edits become slot0's stored roster.
+            // The working copy's structural edits become slot0's stored roster, unless the
+            // save is one the unit loses (`Injection::LostSave`).
+            // The working copy still shows the edits, as the unit's does.
+            if st.lost_save {
+                return Vec::new();
+            }
+            // A save made while a scene is current stores the scene state's copy of the block
+            // chain, which a replace that missed it never reached (static RE + HW, fw 1.8.58).
+            if st.current_scene.is_some() && !st.scene_unsynced.is_empty() {
+                let unsynced = std::mem::take(&mut st.scene_unsynced);
+                st.working_edits.retain(|e| {
+                    !matches!(e, WorkingEdit::Replace { group, new_id, .. }
+                        if unsynced.iter().any(|(g, id)| g == group && id == new_id))
+                });
+            }
+            st.scene_unsynced.clear();
             let current = st.current_slot;
             let mut stored = st.saved_edits.get(&current).cloned().unwrap_or_default();
             if slot0 == current {
@@ -3691,21 +3776,57 @@ fn confirm_replace(
     group: String,
     node_id: String,
     fender_id: String,
+    params: Option<serde_json::Value>,
 ) -> Vec<Vec<u8>> {
     let new_id =
         crate::audiograph::mint_node_id(&working_group_ids(st, &group, Some(&node_id)), &fender_id);
+    // A scene with no entry for the node stops the re-key: every scene's entries stay as
+    // they were, the unit still confirms, and a save made with a scene current loses the
+    // replace, while one made on base keeps it [HW, fw 1.8.58].
+    let missed = scene_state_misses(st, &group, &node_id);
+    let unsynced = missed && st.current_scene.is_some();
+    let edits_before = st.working_edits.len();
     let reply = node_json_payload(&group, &fender_id, &new_id);
-    confirm_structural(
+    let reply = confirm_structural(
         st,
         F_NODE_REPLACED,
         reply,
         WorkingEdit::Replace {
-            group,
+            group: group.clone(),
             node_id,
             fender_id,
-            new_id,
+            new_id: new_id.clone(),
+            scenes_rekeyed: !missed,
+            params,
         },
-    )
+    );
+    if unsynced && st.working_edits.len() > edits_before {
+        st.scene_unsynced.push((group, new_id));
+    }
+    reply
+}
+
+/// Whether a scene other than the current one has no entry for `group`/`node_id` in the
+/// working copy: the preset breaks the firmware's assumption that every node has an entry in
+/// every scene (device-made presets can, fw 1.8.58).
+fn scene_state_misses(st: &mut SimState, group: &str, node_id: &str) -> bool {
+    let slot0 = st.current_slot;
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&render_json(st, slot0, true)) else {
+        return false;
+    };
+    let graph = audiograph::graph_of(group);
+    let current = st.current_scene.map(|c| c as usize);
+    doc.get("scenes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != current)
+        .any(|(_, scene)| {
+            scene
+                .pointer(&format!("/{graph}/{group}/{node_id}"))
+                .is_none()
+        })
 }
 
 /// `NodeInserted`/`NodeReplaced { group = 1, nodeJson = 3 }` — the new node's JSON
@@ -3769,7 +3890,12 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
             node_id,
             fender_id,
             new_id,
+            scenes_rekeyed,
+            params,
         } => {
+            if *scenes_rekeyed {
+                rekey_scene_entries(v, group, Some(node_id), Some(new_id));
+            }
             if let Some(nodes) = group_nodes_mut(v, group, false) {
                 if let Some(node) = nodes
                     .iter_mut()
@@ -3781,6 +3907,9 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
                             "FenderId".into(),
                             serde_json::Value::String(fender_id.clone()),
                         );
+                        if let Some(p) = params {
+                            obj.insert("dspUnitParameters".into(), p.clone());
+                        }
                     }
                 }
             }
@@ -3789,6 +3918,7 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
             if let Some(nodes) = group_nodes_mut(v, group, false) {
                 nodes.retain(|n| audiograph::instance_id(n) != Some(node_id.as_str()));
             }
+            rekey_scene_entries(v, group, Some(node_id), None);
         }
         WorkingEdit::Insert {
             group,
@@ -3816,6 +3946,42 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
                     }),
                 );
             }
+            // An insert seeds the new node an entry in every scene (static RE, fw 1.8.58).
+            rekey_scene_entries(v, group, None, Some(new_id));
+        }
+    }
+}
+
+/// Keep every scene's entries in step with a structural edit, as the unit does: `from` →
+/// `to` moves a node's entry (a replace), `None` → `to` seeds a base-bypass entry (an
+/// insert), `from` → `None` drops it (a remove). A scene with no map for the group is left
+/// as it is.
+fn rekey_scene_entries(
+    v: &mut serde_json::Value,
+    group: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+) {
+    let graph = audiograph::graph_of(group);
+    let Some(scenes) = v
+        .get_mut("scenes")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for scene in scenes {
+        let Some(entries) = scene
+            .get_mut(graph)
+            .and_then(|g| g.get_mut(group))
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        let moved = from.and_then(|f| entries.remove(f));
+        if let Some(to) = to {
+            let entry = moved
+                .unwrap_or_else(|| serde_json::json!({ "dspUnitParameters": { "bypass": false } }));
+            entries.insert(to.to_string(), entry);
         }
     }
 }
@@ -3843,7 +4009,15 @@ fn saved_slot_json_body(st: &mut SimState, slot0: u32) -> Option<String> {
     if let Some(j) = saved_slot_json(slot0) {
         return Some(j.to_string());
     }
-    st.saved_preset_json.then(|| st.preset_json.clone())
+    if st.saved_preset_json {
+        return Some(st.preset_json.clone());
+    }
+    if st.unanswered_saved_read {
+        return None;
+    }
+    // Any other slot answers its stored rendering: the default document with the slot's
+    // saved structural edits, as a load of it would show.
+    Some(render_json(st, slot0, false))
 }
 
 /// The committed scenario preset JSON for a 0-based list index, cached (the seed module owns
@@ -6039,6 +6213,7 @@ mod oracle_and_census_tests {
             Injection::DropNextReampOff,
             Injection::ReampOffNeverLands,
             Injection::RejectNextLoad,
+            Injection::LostSave,
         ]
         .iter()
         .map(Injection::tag)
@@ -6053,6 +6228,7 @@ mod oracle_and_census_tests {
                 "unverified",
                 "reachable",
                 "unverified",
+                "reachable",
                 "reachable"
             ]
         );
@@ -6138,9 +6314,11 @@ mod device_parity_tests {
         "ftsw":[[{"func":"onOff","groupId":"G1","nodeId":"fx","isActive":false}],
                 [{"func":"scene","sceneSlot":1,"isActive":false}]],
         "scenes":[
-            {"sceneName":"A","guitarNodes":{"G1":{"fx":{"dspUnitParameters":{"bypass":true}}}},
+            {"sceneName":"A","guitarNodes":{"G1":{"n1":{"dspUnitParameters":{"bypass":false}},
+                "fx":{"dspUnitParameters":{"bypass":true}}}},
              "ftswStates":[true,false]},
-            {"sceneName":"B","guitarNodes":{},"ftswStates":[false,true]}
+            {"sceneName":"B","guitarNodes":{"G1":{"n1":{"dspUnitParameters":{"bypass":false}},
+                "fx":{"dspUnitParameters":{"bypass":false}}}},"ftswStates":[false,true]}
         ]}"#;
 
     /// The bytes of `field` inside `body`.

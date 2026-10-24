@@ -2,7 +2,7 @@
 
 use crate::audiograph;
 use crate::proto;
-use crate::saved_blocks::{find_block_presets_blob, parse_block_presets_map, SavedBlock};
+use crate::saved_blocks::SavedBlock;
 use crate::session;
 use crate::session::Session;
 use crate::slot::DeviceSlot;
@@ -384,12 +384,7 @@ pub fn probe_bulk_replace_saved(
 ) -> Result<String, String> {
     let mut report = String::new();
     // Resolve the saved dual-cab block (synchronous decode, same path as probe_saved_blocks).
-    let saved = {
-        let bodies = super::inspect::block_presets_bodies()?;
-        let blob = find_block_presets_blob(&bodies)
-            .ok_or_else(|| "device sent no allBlockPresetsResponse".to_string())?;
-        parse_block_presets_map(&blob)?
-    };
+    let saved = crate::saved_blocks::read_saved_blocks()?;
     let duals: Vec<&SavedBlock> = saved.iter().filter(|b| b.dual_cabs_enabled).collect();
     for d in &duals {
         report.push_str(&format!(

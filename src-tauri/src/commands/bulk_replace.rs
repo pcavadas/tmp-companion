@@ -21,7 +21,9 @@ pub enum ReplArg {
     },
     /// Saved block (user block / dual cab) — `replaceNodeWithBlock` by the device
     /// library `index`. `dual_cab` is the library entry's `dualCabsEnabled`, which the
-    /// installed node's `cabsim2enabled` takes, so the block-count cap can weigh it.
+    /// block-count cap weighs it by. The listing reports it true for every `ACD_CabSimTMS`
+    /// entry, second cab on or off (static RE, fw 1.8.58), so a saved cabinet block weighs
+    /// two slots: the cautious side of the cap.
     Saved {
         #[serde(rename = "fenderId")]
         fender_id: String,
@@ -228,7 +230,8 @@ pub(crate) fn blockcaps_replaced<'a>(
 /// `candidate = None` is a bare Remove — no candidate to check; removing a node can
 /// only shrink counts, never push a cap over its max. `candidate` and `replaced` are
 /// `(fender_id, dual_cab)` pairs: the candidate's from [`repl_arg_candidate`] (a fresh
-/// Model/Ir block is never dual; a `Saved` block carries its library entry's flag), the
+/// Model/Ir block is single except a stock `ACD_CabSimTMS` over a carried-over cab; a
+/// `Saved` block carries its library entry's flag), the
 /// replaced node's from [`blockcaps_replaced`] (`None` for an Insert/Remove).
 pub(crate) fn blockcaps_check(
     counts: &blockcaps::Counts,
@@ -254,32 +257,71 @@ pub(crate) fn blockcaps_check(
 /// Roll the running `counts` forward after a CONFIRMED op, so the NEXT op in the same
 /// job/plan is checked against the up-to-date state (a job can carry multiple ops that
 /// each affect the same caps — e.g. two conv inserts in one job must be checked
-/// cumulatively, not each against the stale pre-edit snapshot).
+/// cumulatively, not each against the stale pre-edit snapshot). `landed_dual` is the new
+/// node's own second-cab flag from the confirm (`Session::confirmed_node_dual`), which
+/// replaces the candidate's predicted one when present.
 pub(crate) fn blockcaps_advance(
     counts: &mut blockcaps::Counts,
     candidate: Option<(&str, bool)>,
     replaced: Option<(&str, bool)>,
+    landed_dual: Option<bool>,
 ) {
     if let Some((id, dual)) = candidate {
-        counts.add(id, dual);
+        counts.add(id, landed_dual.unwrap_or(dual));
     }
     if let Some((id, dual)) = replaced {
         counts.remove(id, dual);
     }
 }
 
-/// The `(fender_id, dual_cab)` a [`ReplArg`] would insert, or `None` for `Remove` (no
-/// candidate to cap-check — see [`blockcaps_check`]).
-pub(crate) fn repl_arg_candidate(repl: &ReplArg) -> Option<(&str, bool)> {
+/// The `(fender_id, dual_cab)` a [`ReplArg`] would insert in place of `replaced_node`, or
+/// `None` for `Remove` (no candidate to cap-check — see [`blockcaps_check`]). A stock model
+/// is single unless it lands dual over that node ([`blockcaps::stock_replace_is_dual`]).
+pub(crate) fn repl_arg_candidate<'a>(
+    repl: &'a ReplArg,
+    replaced_node: Option<&str>,
+) -> Option<(&'a str, bool)> {
     match repl {
-        ReplArg::Model { fender_id } | ReplArg::Ir { fender_id, .. } => {
-            Some((fender_id.as_str(), false))
-        }
+        ReplArg::Model { fender_id } => Some((
+            fender_id.as_str(),
+            replaced_node.is_some_and(|n| blockcaps::stock_replace_is_dual(fender_id, n)),
+        )),
+        ReplArg::Ir { fender_id, .. } => Some((fender_id.as_str(), false)),
         ReplArg::Saved {
             fender_id,
             dual_cab,
             ..
         } => Some((fender_id.as_str(), *dual_cab)),
         ReplArg::Remove => None,
+    }
+}
+
+#[cfg(test)]
+mod advance_tests {
+    use super::*;
+
+    /// A landed node's own second-cab flag, from the confirm, decides its weight: a stock
+    /// `ACD_CabSimTMS` that came out dual takes two cabinet slots (HW).
+    #[test]
+    fn a_landed_dual_cab_weighs_two_whatever_was_predicted() {
+        let mut counts = blockcaps::Counts::default();
+        blockcaps_advance(
+            &mut counts,
+            Some(("ACD_CabSimTMS", false)),
+            None,
+            Some(true),
+        );
+        assert_eq!(counts.cabinet, 2);
+        let mut counts = blockcaps::Counts::default();
+        blockcaps_advance(
+            &mut counts,
+            Some(("ACD_CabSimTMS", true)),
+            None,
+            Some(false),
+        );
+        assert_eq!(counts.cabinet, 1);
+        let mut counts = blockcaps::Counts::default();
+        blockcaps_advance(&mut counts, Some(("ACD_CabSimTMS", true)), None, None);
+        assert_eq!(counts.cabinet, 2, "no confirm JSON keeps the prediction");
     }
 }

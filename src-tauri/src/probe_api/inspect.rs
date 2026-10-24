@@ -2,7 +2,7 @@
 
 use crate::audiograph;
 use crate::proto;
-use crate::saved_blocks::{find_block_presets_blob, parse_block_presets_map, SavedBlock};
+use crate::saved_blocks::SavedBlock;
 use crate::session;
 use crate::session::Session;
 use crate::slot::DeviceSlot;
@@ -23,7 +23,7 @@ pub fn probe_re_blocks() -> Result<String, String> {
             .join(" ")
     };
     // Attempt 1: ride the request inside the handshake burst (batch-2 group).
-    let mut s = block_presets_session()?;
+    let mut s = crate::saved_blocks::block_presets_session()?;
     // Attempt 2: send it post-handshake as a request/response message (no batchStatus),
     // keeping the session alive with heartbeats — the framing the ReplaceNode family uses.
     s.heartbeat()?;
@@ -287,29 +287,11 @@ pub fn probe_discover_diff(from_id: &str, device_slots: &[DeviceSlot]) -> Result
     Ok(report)
 }
 
-/// One in-burst `RequestAllBlockPresets` read on its own connection, kept alive through
-/// the reply — the received message bodies.
-pub(super) fn block_presets_bodies() -> Result<Vec<Vec<u8>>, String> {
-    Ok(block_presets_session()?.push_bodies())
-}
-
-/// The connection behind [`block_presets_bodies`], for a caller that keeps using it.
-fn block_presets_session() -> Result<Session, String> {
-    let mut s = Session::connect_with_burst_request(&proto::request_all_block_presets(Some(
-        proto::BATCH_DRAIN,
-    )))?;
-    s.pump_collect_alive(1000)?;
-    Ok(s)
-}
-
 /// Validate the saved-block decode path live (`probe --saved-blocks`):
 /// RequestAllBlockPresets → decode → `parse_block_presets_map`, printed as a
 /// summary. Read-only.
 pub fn probe_saved_blocks() -> Result<String, String> {
-    let bodies = block_presets_bodies()?;
-    let blob = find_block_presets_blob(&bodies)
-        .ok_or_else(|| "device sent no allBlockPresetsResponse".to_string())?;
-    let blocks = parse_block_presets_map(&blob)?;
+    let blocks = crate::saved_blocks::read_saved_blocks()?;
     let named: Vec<&SavedBlock> = blocks
         .iter()
         .filter(|b| !b.name.is_empty() && !b.name.to_lowercase().contains("autogen default"))
