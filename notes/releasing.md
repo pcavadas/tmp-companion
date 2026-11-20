@@ -1,7 +1,7 @@
 # Releasing
 
-One manually dispatched `release.yml` run (Actions tab → release → Run workflow, on `main`) ships every platform.
-There is no `push:` trigger: releases are batched by hand.
+Every push to `main` runs `release.yml`, and one run ships every platform; Actions tab → release → Run workflow, on `main`, re-runs it by hand.
+A push whose commits since the last tag warrant no release (`chore`, `docs`, `ci`) stops after `resolve-version`.
 semantic-release (`.releaserc.json`) picks the version from the conventional commits since the last tag.
 The macOS DMG is the release; the Linux and Windows jobs are `continue-on-error`, so a failed Linux or Windows build ships the release without that platform's asset.
 Developer setup per platform (Linux udev, Windows Sound settings, Windows installer builds) lives in `CONTRIBUTING.md`.
@@ -16,7 +16,7 @@ resolve-version (ubuntu)              semantic-release --dry-run → next versio
    └─► build-nsis (windows)           continue-on-error
               │
               ▼
-        release (macos-14)            builds, signs and notarizes the DMG, runs the real semantic-release with the Linux bundles
+        release (macos-14)            only when a version resolved: builds, signs and notarizes the DMG, runs the real semantic-release with the Linux bundles
               │
               ├─► publish-windows (ubuntu)      attaches the .exe when build-nsis produced one
               ▼

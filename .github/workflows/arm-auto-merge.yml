@@ -13,8 +13,8 @@ name: Arm auto-merge
 #
 # Auto-merge is armed with a GitHub App token, NOT the GITHUB_TOKEN. GitHub does not re-trigger
 # workflows for pushes made by GITHUB_TOKEN, so a GITHUB_TOKEN-armed merge lands on main WITHOUT
-# firing ci.yml's push run. The eventual merge push is attributed to whatever identity ENABLED
-# auto-merge, so arming as the App makes that push trigger ci.yml on main. There is no
+# firing ci.yml's or release.yml's push run. The eventual merge push is attributed to whatever
+# identity ENABLED auto-merge, so arming as the App makes that push trigger both on main. There is no
 # `actions/checkout`, so PR-controlled code never runs; the App private key comes from repo
 # secrets and is never exposed to the PR. The one third-party action (actions/create-github-app-
 # token, GitHub-authored) is pinned to a full commit SHA.
@@ -29,7 +29,7 @@ name: Arm auto-merge
 # auto-merge. The job skips that combination entirely.
 # `pull_request_target` runs keep secrets even for forks, so disarm-on-external-push still works;
 # the review-approval ARM path for a fork PR is instead a manual click by @pcavadas — a
-# user-armed auto-merge attributes the merge push to the user, so ci.yml still fires.
+# user-armed auto-merge attributes the merge push to the user, so ci.yml and release.yml still fire.
 
 on:
   pull_request_target:
