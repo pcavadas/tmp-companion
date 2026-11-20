@@ -1,8 +1,8 @@
 name: release
 
 # Every push to `main` runs this; semantic-release stops after resolve-version
-# when the commits since the last tag warrant no release (no feat/fix/perf and
-# no BREAKING CHANGE footer). workflow_dispatch re-runs a release by hand from
+# when commit-analyzer's default rules find nothing releasable since the last
+# tag (notes/releasing.md). workflow_dispatch re-runs a release by hand from
 # the Actions tab.
 on:
   push:
