@@ -49,6 +49,14 @@
       .tmp-toast-in {
         animation: tmp-toast-in 0.24s cubic-bezier(0.2, 0.7, 0.2, 1);
       }
+      /* Two-line clamp (src/views/catalog/ModelCard.tsx); WebKit still needs the
+         -webkit-box pair for line-clamp. */
+      .tmp-clamp2 {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
       /* Look B focus ring (the `focus` token, #bd5632): keyboard focus only. */
       button:focus-visible,
       input:focus-visible,
