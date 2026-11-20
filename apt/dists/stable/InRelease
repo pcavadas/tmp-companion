@@ -5,35 +5,35 @@ Origin: TMP Companion
 Label: TMP Companion
 Suite: stable
 Codename: stable
-Date: Fri, 20 Nov 2026 21:48:38 UTC
+Date: Fri, 20 Nov 2026 22:03:14 UTC
 Architectures: amd64
 Components: main
 Description: TMP Companion self-hosted apt repository (alpha Linux packaging)
 MD5Sum:
- 9432b02997ec7b2d5c6972eb3962ddbb 882 main/binary-amd64/Packages
- 8581b2eb902c25e79c99206534151558 582 main/binary-amd64/Packages.gz
+ 56c188a20bf2d049a29378d3f9fb5eeb 882 main/binary-amd64/Packages
+ 2b2c5ad89e21ada696cc7f3b010f8ee6 585 main/binary-amd64/Packages.gz
  4d7e57b6ddf63bfead75a257f71a0894 173 main/binary-amd64/Release
 SHA1:
- ce9927224085b35a57e13f7f64dea4dd8ddafd2a 882 main/binary-amd64/Packages
- f771cc6ff78420660f670c42c15318a4eb36d079 582 main/binary-amd64/Packages.gz
+ e7328f68230ad88028cb57c6ca1aa688d098cfbe 882 main/binary-amd64/Packages
+ 504a460cd48ea6ae4caed24b8559aba5d2311a59 585 main/binary-amd64/Packages.gz
  ee079b33c2cdda110fcb6dc407080344f52af345 173 main/binary-amd64/Release
 SHA256:
- 26c5eba236cbe31f63d23e5925f7cedd2105235d028a20e4018edb77fb5d01f5 882 main/binary-amd64/Packages
- ba17d7695c1633262271f9979edfaa3fb0072a70906a26a5b35d4b1e2424b0f1 582 main/binary-amd64/Packages.gz
+ b7c26738d1d5526bbcebde6d1a2ac8d872041742f6ae882937deb870a826ad17 882 main/binary-amd64/Packages
+ 0b21c05698c600bc559658f021ad35abb6f0dbf687622c72aa9e9041fb2c0b95 585 main/binary-amd64/Packages.gz
  c7bdbfe7230972c3c6744e36a9eecf94e04c0ba581306f4007c926c4836bd5aa 173 main/binary-amd64/Release
 -----BEGIN PGP SIGNATURE-----
 
-iQIzBAEBCgAdFiEEcLWcOQXyvHhEIRzpuLX2g5RZYqMFAmsAwDYACgkQuLX2g5RZ
-YqPMMhAAom6aQgyvKqyuXkBS/mCClfJAs19eH00gnKOoIvodISAL9cSy11+sU+Fu
-pveevPlRDXG+MzmqNB5gmSqhhpKFW1y6E41OgR14vZfZQHQMlbh+QieolY1xX1wZ
-XYGZX60O0ZuUV9gcsPTVPw4Wsiq+v3ZkCqMVPJfeKcUgARyqA8oETihZxIfUFMVx
-EBXrxyDLvexqRy7XQ130UY6MaGNB5slKDIn0PGpIBq/49jpO8KA2nsdVTaZ4WPQE
-Wb0PEPcKlHYu0VEuRt6tG6oLTki6Le/YZs2n73DYTdSGNArJmcqzhRLjJP+WfuJv
-RqaN1uoF8PW6d3rllCGVoZIthZcshRTy3liPF6Qr8juGBmDLienfy7IV0eACecyM
-diLLdJ03OuZwfGi1vXH9LjWL+nTyT/M7dxT0ojMWXLjMHFpwDC2tQoTo3fDh3szQ
-u+QQyl4ECWUUNRNnvvAFsG5WG6yBXl1WxGKxMd6rqVmk2ZXOtjt6/u9LOfPTwK9R
-fXmd4PErlMuHE4LdMXgK0eC1tzM9KjYDpNHRnFHkV9BK27coB3ZJ3uAGlCjPL2nM
-y2Xqk6YR6xaG1JKIUIiNjE7eC31o9O5r9Pd6K3u/OPEA6LZLvzDnyF/tD3gs7LOT
-x47vctHWawXOYDrFLyYLTatjFHLzM+jEAJljSFFKxRMV5LjB6MQ=
-=JSyo
+iQIzBAEBCgAdFiEEcLWcOQXyvHhEIRzpuLX2g5RZYqMFAmsAw6IACgkQuLX2g5RZ
+YqPL1g//ddR6Z7ezLF3g6bEbk0wvisGosP3f4PKWQfD70qaHFDIbCG9ZqRc4+dmb
+3+CDAMQ4FlqY5gJemd3RRg6pXhxihkv2YSt9isHyZFg9yCTArkVWOPwju2xaUTyh
+Qvn+9LAfVthWWcQ3QwgiqmqPHtPMEfi2ZIma0hb9ATmsbBVwJSMVpLXd8nuFaDk9
+vlPN8O7e1ftUwSRYDu7SV8FpmNKSaL4PoKNSHlYQ5O8nm1Iz/a/xPVnsPi0vvcDy
+Xg8LCtxm1eqAHbezsNX01OK2sNIOAdEHxDrD5mRqoe7uFpMSljt/HE6RAaab4WOR
+K/zXLz/EP0j/FoXeqb311Z9pxt6QpWdp3lY73/xOpY88VkKBXTdZethGZP+HJF0Z
+RRmRTn0DR/Jq9Xz/Q8Cbp5xVlVrAs8qPos47hvn5qkBQagEi1G1rRIOJ78ND2XkF
+qFBx899MwMSPCt26fjuh46vLcgFzWF6H3KB++0XCcRknTOJVLfO8HuZad05JTVba
+Oxzkg0cxOZJNwVX+uK0sAx5/s83YDOrWt04qzcErLcyYM9PgD/GUerDCgLXav8Od
+0C4u0JPo97L962ey3VVBRV8ip/17/4GnwbjyCTZYayRwdtZ7rtrBqH3hajODsM7J
+K5eEKTo+pBxk4mmUFCdnhXghosRSiIf7twPcHlHQZncuk6CYvbQ=
+=qMku
 -----END PGP SIGNATURE-----
