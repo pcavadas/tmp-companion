@@ -3,7 +3,7 @@
 // only while the wall is sorted by CPU, and "Stereo" / "Convolution" badges. A pressed
 // button that chooses the model for the detail.
 
-import { memo, type CSSProperties } from "react";
+import { memo } from "react";
 
 import type { ThemeTokens } from "../../theme/tokens";
 import { Badge } from "../../ui/Badge";
@@ -37,12 +37,6 @@ export const ModelCard = memo(function ModelCard({
   showCpu,
   onPick,
 }: ModelCardProps) {
-  const clamp2: CSSProperties = {
-    display: "-webkit-box",
-    WebkitLineClamp: 2,
-    WebkitBoxOrient: "vertical",
-    overflow: "hidden",
-  };
   // The selected edge is 2 px; the padding gives back the extra pixel so the
   // contents don't shift when a tile is chosen.
   const edge = selected ? 2 : 1;
@@ -84,21 +78,21 @@ export const ModelCard = memo(function ModelCard({
         }}
       >
         <span
+          className="tmp-clamp2"
           style={{
             fontSize: t.fontBody,
             lineHeight: `${String(t.lineBody)}px`,
             fontWeight: t.weightMedium,
-            ...clamp2,
           }}
         >
           {displayName(r)}
         </span>
         <span
+          className="tmp-clamp2"
           style={{
             fontSize: t.fontCaption,
             lineHeight: `${String(t.lineCaption)}px`,
             color: t.textSecondary,
-            ...clamp2,
           }}
         >
           {realLine(r)}

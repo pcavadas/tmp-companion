@@ -35,7 +35,7 @@ const SR_ONLY: CSSProperties = {
   width: 1,
   height: 1,
   overflow: "hidden",
-  clip: "rect(0 0 0 0)",
+  clipPath: "inset(50%)",
   whiteSpace: "nowrap",
 };
 

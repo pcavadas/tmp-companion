@@ -1,15 +1,18 @@
 name: release
 
-# Manual only: releases are batched and started by hand from the Actions tab
-# (release → Run workflow, on `main`). There is deliberately no `push:` trigger:
-# every merge would queue a run waiting on the `release` environment's approval,
-# each cancelling the one before it.
+# Every push to `main` runs this; semantic-release stops after resolve-version
+# when commit-analyzer's default rules find nothing releasable since the last
+# tag (notes/releasing.md). workflow_dispatch re-runs a release by hand from
+# the Actions tab.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
-# Serialize releases: two manual dispatches could overlap, racing
+# Serialize releases: back-to-back merges (or a dispatch) could overlap, racing
 # semantic-release on release creation. Queue instead of cancel so an in-flight
-# signing/notarization is never aborted mid-run.
+# signing/notarization is never aborted mid-run; GitHub keeps only the newest
+# pending run, which releases every commit the dropped ones would have.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -310,11 +313,11 @@ jobs:
 
   release:
     needs: [resolve-version, build-deb, build-rpm]
-    # Runs whether the Linux jobs succeeded, failed (continue-on-error), or were
-    # skipped (nothing releasable). Only a cancelled run, or a genuine
-    # resolve-version failure (as opposed to "nothing to release"), skips it.
-    if: ${{ !cancelled() && needs.resolve-version.result == 'success' && github.ref == 'refs/heads/main' }}
-    runs-on: macos-14 # macOS-only crate; ARM host cross-builds the universal (arm64+x86_64) binary
+    # Runs whether the Linux jobs succeeded or failed (continue-on-error). A
+    # cancelled run, a resolve-version failure, or nothing to release skips it,
+    # so a push with nothing releasable never spends a macOS runner.
+    if: ${{ !cancelled() && needs.resolve-version.result == 'success' && needs.resolve-version.outputs.version != '' && github.ref == 'refs/heads/main' }}
+    runs-on: macos-15 # macOS-only crate; ARM host cross-builds the universal (arm64+x86_64) binary
     environment: release # gates the Apple signing/notarization secrets to this env
     permissions:
       contents: write

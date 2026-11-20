@@ -1,7 +1,7 @@
 # Releasing
 
-One manually dispatched `release.yml` run (Actions tab → release → Run workflow, on `main`) ships every platform.
-There is no `push:` trigger: releases are batched by hand.
+Every push to `main` runs `release.yml`, and one run ships every platform; Actions tab → release → Run workflow, on `main`, re-runs it by hand.
+`@semantic-release/commit-analyzer`'s default release rules decide whether the commits since the last tag cut a version (`feat`, `fix`, `perf`, a `BREAKING CHANGE:` footer or a revert, minus any commit reverted in the same range); a push with nothing releasable stops after `resolve-version`.
 semantic-release (`.releaserc.json`) picks the version from the conventional commits since the last tag.
 The macOS DMG is the release; the Linux and Windows jobs are `continue-on-error`, so a failed Linux or Windows build ships the release without that platform's asset.
 Developer setup per platform (Linux udev, Windows Sound settings, Windows installer builds) lives in `CONTRIBUTING.md`.
@@ -16,7 +16,7 @@ resolve-version (ubuntu)              semantic-release --dry-run → next versio
    └─► build-nsis (windows)           continue-on-error
               │
               ▼
-        release (macos-14)            builds, signs and notarizes the DMG, runs the real semantic-release with the Linux bundles
+        release (macos-15)            only when a version resolved: builds, signs and notarizes the DMG, runs the real semantic-release with the Linux bundles
               │
               ├─► publish-windows (ubuntu)      attaches the .exe when build-nsis produced one
               ▼
@@ -35,7 +35,7 @@ It is the only check that catches a broken bundler config before release time, b
 ## macOS
 
 - `scripts/release-build.sh` builds `--target universal-apple-darwin`: one fat binary with arm64 and x86_64 slices; the Rust code is arch-agnostic and gates only on `target_os = "macos"`.
-- The `macos-14` ARM runner cross-builds the x86_64 slice; the toolchain step installs both `aarch64-apple-darwin` and `x86_64-apple-darwin`, and output paths use the `universal-apple-darwin/` target directory.
+- The `macos-15` ARM runner cross-builds the x86_64 slice; the toolchain step installs both `aarch64-apple-darwin` and `x86_64-apple-darwin`, and output paths use the `universal-apple-darwin/` target directory.
 - The DMG is code-signed (`release.yml` sets the `APPLE_*` secrets), notarized with `xcrun notarytool submit --wait` and stapled with `xcrun stapler staple` (`scripts/release-build.sh`).
 - The DMG publishes under the stable asset name `TMP-Companion-macOS.dmg`, so the site's download buttons point at `/releases/latest/download/TMP-Companion-macOS.dmg`.
 - The README must not describe an unsigned, `xattr` or Gatekeeper workaround.

@@ -87,7 +87,7 @@ Scenes and footswitches: [`notes/leveling-scenes.md`](notes/leveling-scenes.md);
 - **CodeRabbit reviews progressively on its own: post no command on a reviewed PR.**
   Pushing fix commits or replying to threads is enough; never resolve a thread by hand.
   Auto-merge, the `main` ruleset and stacked PRs: the [`coderabbit` skill](.claude/skills/coderabbit/SKILL.md).
-- Releases start by hand (`release.yml` is `workflow_dispatch` only); a merge never starts one ([`notes/releasing.md`](notes/releasing.md)).
+- Every merge to `main` runs `release.yml`; which commits cut a version is in [`notes/releasing.md`](notes/releasing.md).
 
 ## Read by path
 

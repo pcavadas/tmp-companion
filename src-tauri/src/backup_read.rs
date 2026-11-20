@@ -369,7 +369,10 @@ fn create_private_temp_db(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
 fn run_sql(db: &TempDb, sql: &str) -> Result<serde_json::Value, String> {
     let conn = open_db(db)?;
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let names: Vec<String> = (0..stmt.column_count())
+        .map(|i| stmt.column_name(i).map(str::to_string))
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
             let mut obj = serde_json::Map::with_capacity(names.len());
