@@ -323,6 +323,8 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+    outputs:
+      published: ${{ steps.published.outputs.published }}
     # Backstop a hung `notarytool --wait`: without this the job inherits the 360-min
     # default and can burn ~6h on the 10×-cost macOS runner. A normal run is ~7 min.
     timeout-minutes: 60
@@ -391,6 +393,22 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bunx semantic-release
 
+      # semantic-release exits 0 without publishing when `main` moved on during the
+      # run ("the local branch main is behind the remote one"); the newer push's run
+      # releases instead. The publish jobs key on the release existing, not on this
+      # job's success, so they never attach assets to a version nobody released.
+      - name: Check the release was published
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release: v$VERSION was not published (main moved on during the run)"
+          fi
+
   # Publish the Windows .exe AFTER the release lands, publish-linux-repos-style:
   # build-nsis is continue-on-error and slow (cold-cache MSVC 15-25 min, a hang
   # runs to its 40-min timeout), so keeping it out of the release job's needs
@@ -400,7 +418,7 @@ jobs:
     needs: [resolve-version, build-nsis, release]
     # Artifact presence, not build-nsis's continue-on-error result, determines
     # publication — same shape as publish-linux-repos.
-    if: ${{ !cancelled() && needs.release.result == 'success' && github.ref == 'refs/heads/main' }}
+    if: ${{ !cancelled() && needs.release.outputs.published == 'true' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -442,7 +460,7 @@ jobs:
   publish-linux-repos:
     needs: [resolve-version, build-deb, build-rpm, release]
     # Artifact presence, not continue-on-error build results, determines publication.
-    if: ${{ !cancelled() && needs.release.result == 'success' && github.ref == 'refs/heads/main' }}
+    if: ${{ !cancelled() && needs.release.outputs.published == 'true' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
