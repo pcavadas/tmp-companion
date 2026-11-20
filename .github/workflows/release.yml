@@ -402,12 +402,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.resolve-version.outputs.version }}
+        # Only gh's own "release not found" means absent; any other failure is
+        # retried, then fails the job rather than silently skipping publication.
         run: |
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "release: v$VERSION was not published (main moved on during the run)"
-          fi
+          for try in 1 2 3; do
+            if err="$(gh release view "v$VERSION" 2>&1 >/dev/null)"; then
+              echo "published=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$err" = "release not found" ]; then
+              echo "release: v$VERSION was not published (main moved on during the run)"
+              exit 0
+            fi
+            echo "release lookup failed (try $try): $err" >&2
+            sleep $((try * 10))
+          done
+          echo "::error::could not tell whether v$VERSION was published"
+          exit 1
 
   # Publish the Windows .exe AFTER the release lands, publish-linux-repos-style:
   # build-nsis is continue-on-error and slow (cold-cache MSVC 15-25 min, a hang
