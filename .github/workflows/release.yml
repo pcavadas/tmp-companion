@@ -1,8 +1,9 @@
 name: release
 
 # Every push to `main` runs this; semantic-release stops after resolve-version
-# when the commits since the last tag warrant no release (`chore`, `docs`, `ci`
-# and the like). workflow_dispatch re-runs a release by hand from the Actions tab.
+# when the commits since the last tag warrant no release (no feat/fix/perf and
+# no BREAKING CHANGE footer). workflow_dispatch re-runs a release by hand from
+# the Actions tab.
 on:
   push:
     branches: [main]
@@ -314,7 +315,7 @@ jobs:
     needs: [resolve-version, build-deb, build-rpm]
     # Runs whether the Linux jobs succeeded or failed (continue-on-error). A
     # cancelled run, a resolve-version failure, or nothing to release skips it,
-    # so a push of only `chore`/`docs`/`ci` commits never spends a macOS runner.
+    # so a push with nothing releasable never spends a macOS runner.
     if: ${{ !cancelled() && needs.resolve-version.result == 'success' && needs.resolve-version.outputs.version != '' && github.ref == 'refs/heads/main' }}
     runs-on: macos-15 # macOS-only crate; ARM host cross-builds the universal (arm64+x86_64) binary
     environment: release # gates the Apple signing/notarization secrets to this env

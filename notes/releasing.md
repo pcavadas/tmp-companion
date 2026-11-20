@@ -1,7 +1,7 @@
 # Releasing
 
 Every push to `main` runs `release.yml`, and one run ships every platform; Actions tab → release → Run workflow, on `main`, re-runs it by hand.
-A push whose commits since the last tag warrant no release (`chore`, `docs`, `ci`) stops after `resolve-version`.
+A `feat`, `fix` or `perf` commit, or any commit with a `BREAKING CHANGE:` footer, cuts a version; a push whose commits since the last tag have none of these stops after `resolve-version`.
 semantic-release (`.releaserc.json`) picks the version from the conventional commits since the last tag.
 The macOS DMG is the release; the Linux and Windows jobs are `continue-on-error`, so a failed Linux or Windows build ships the release without that platform's asset.
 Developer setup per platform (Linux udev, Windows Sound settings, Windows installer builds) lives in `CONTRIBUTING.md`.
