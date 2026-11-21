@@ -2,6 +2,7 @@
 
 Every push to `main` runs `release.yml`, and one run ships every platform; Actions tab → release → Run workflow, on `main`, re-runs it by hand.
 `@semantic-release/commit-analyzer`'s default release rules decide whether the commits since the last tag cut a version (`feat`, `fix`, `perf`, a `BREAKING CHANGE:` footer or a revert, minus any commit reverted in the same range); a push with nothing releasable stops after `resolve-version`.
+A run whose `main` moved on before semantic-release published skips publishing (the newer push's run releases), and the Windows and Linux publish jobs skip with it.
 semantic-release (`.releaserc.json`) picks the version from the conventional commits since the last tag.
 The macOS DMG is the release; the Linux and Windows jobs are `continue-on-error`, so a failed Linux or Windows build ships the release without that platform's asset.
 Developer setup per platform (Linux udev, Windows Sound settings, Windows installer builds) lives in `CONTRIBUTING.md`.
